@@ -873,6 +873,7 @@ impl Rpc {
                 if reply.get("v") == Some(&json!(1)) {
                     for (flag, name) in [
                         (&self.chat, "chat"),
+                        (&self.tabs, "tabs"),
                         (&self.orchestrator_create, "orchestrator_create"),
                     ] {
                         if reply.get(name) == Some(&Value::Bool(true)) {

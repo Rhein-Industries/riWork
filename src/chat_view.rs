@@ -143,8 +143,12 @@ pub struct ChatView {
     /// The host's id for the chat; none while a new chat is being made.
     chat_id: Option<String>,
     creation: Option<Creation>,
+    creation_coordinator: Option<crate::chat_tabs::Coordinator>,
+    creation_reservation: Option<crate::chat_tabs::Reservation>,
     model: ChatModel,
     feed: Option<Feed>,
+    feed_started: bool,
+    inventory_info: Option<ChatInfo>,
     /// Hands what the feed delivers to the view; dropped with it.
     pump: Option<Task<()>>,
     /// The request to make a chat, or to delete one, in flight.
@@ -232,14 +236,48 @@ impl ChatView {
         view
     }
 
-    /// The tab of a chat that is yet to be made: the host makes it, and the tab follows it.
-    pub fn create(
-        chat: NewChat,
+    /// A background tab carries inventory metadata without a feed until first rendered.
+    pub fn open_deferred(
+        chat_id: String,
+        info: Option<ChatInfo>,
         config: HostConfig,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut view = Self::blank(config, window, cx);
+        view.chat_id = Some(chat_id);
+        view.inventory_info = info;
+        view
+    }
+
+    /// Keep tab metadata fresh without subscribing to the transcript.
+    pub fn update_inventory(&mut self, info: &ChatInfo, cx: &mut Context<Self>) {
+        if self.inventory_info.as_ref() != Some(info) {
+            self.inventory_info = Some(info.clone());
+            self.announce(cx);
+            cx.notify();
+        }
+    }
+
+    fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.feed_started
+            && !self.deleted()
+            && let Some(id) = self.chat_id.clone()
+        {
+            self.start_feed(id, 0, window, cx);
+        }
+    }
+
+    /// The tab of a chat that is yet to be made: the host makes it, and the tab follows it.
+    pub fn create(
+        chat: NewChat,
+        config: HostConfig,
+        coordinator: crate::chat_tabs::Coordinator,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = Self::blank(config, window, cx);
+        view.creation_coordinator = Some(coordinator);
         view.begin_creation(chat, window, cx);
         view
     }
@@ -276,8 +314,12 @@ impl ChatView {
             window_handle: window.window_handle(),
             chat_id: None,
             creation: None,
+            creation_coordinator: None,
+            creation_reservation: None,
             model: ChatModel::new(),
             feed: None,
+            feed_started: false,
+            inventory_info: None,
             pump: None,
             working: None,
             list,
@@ -336,6 +378,20 @@ impl ChatView {
     /// What the tab strip and the agent counts need.
     pub fn summary(&self) -> Summary {
         let mut summary = self.model.summary();
+        if !self.feed_started || self.model.transcript.info.is_none() {
+            if let Some(info) = &self.inventory_info {
+                summary.title = if info.title.trim().is_empty() {
+                    format!("{} chat", provider_name(info.provider))
+                } else {
+                    info.title.clone()
+                };
+                summary.provider = Some(info.provider);
+                summary.project_id = info.project_id.clone();
+                summary.worktree_id = info.worktree_id.clone();
+                summary.state = info.state.clone();
+                summary.activity = crate::activity::ChatActivity::of_state(&info.state, false);
+            }
+        }
         if let Some(chat) = self.creation.as_ref().map(Creation::chat) {
             summary.provider.get_or_insert(chat.provider);
             if summary.title == "Chat" {
@@ -379,6 +435,10 @@ impl ChatView {
     // -----------------------------------------------------------------------------------
 
     fn begin_creation(&mut self, chat: NewChat, window: &mut Window, cx: &mut Context<Self>) {
+        self.creation_reservation = self
+            .creation_coordinator
+            .as_ref()
+            .map(|c| c.reserve(chat.project_id.as_deref().unwrap_or("")));
         self.creation = Some(Creation::Pending(chat.clone()));
         let ensure = self.config.ensure.clone();
         let work = cx.background_executor().spawn(async move {
@@ -403,6 +463,9 @@ impl ChatView {
         };
         match result {
             Ok(info) => {
+                if let Some(reservation) = self.creation_reservation.take() {
+                    reservation.finish(&info.id);
+                }
                 self.chat_id = Some(info.id.clone());
                 if let Some(mode) = self.pending_display.take() {
                     self.choose_display(mode, cx);
@@ -412,7 +475,10 @@ impl ChatView {
                 self.start_feed(info.id.clone(), 0, window, cx);
                 cx.emit(ChatViewEvent::Created(info.id));
             }
-            Err(error) => self.creation = Some(Creation::Failed(creation.into_chat(), error)),
+            Err(error) => {
+                self.creation_reservation.take();
+                self.creation = Some(Creation::Failed(creation.into_chat(), error));
+            }
         }
         self.announce(cx);
         cx.notify();
@@ -431,6 +497,7 @@ impl ChatView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.feed_started = true;
         let (sender, receiver) = async_channel::unbounded();
         self.feed = Some(Feed::start(
             self.config.ensure.clone(),
@@ -1018,6 +1085,7 @@ impl Creation {
 
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.activate(window, cx);
         let look = Look::of(cx);
         let colors = look.colors;
         if self.window_handle != window.window_handle() {

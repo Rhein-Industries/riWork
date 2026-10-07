@@ -297,6 +297,8 @@ struct TerminalTabsView: View {
     @State private var followOutput = true
     @State private var newTerminal: NewTerminalSheetModel?
     @State private var closing: RemoteSession?
+    @State private var closingTab: SharedTab?
+    @State private var showingWorkers = false
     /// This screen is up (not covered by another one). The terminal is on it only while no chat is.
     @State private var onScreen = false
     /// Counts times the New terminal sheet went away: a chat on screen takes the keyboard back for its composer.
@@ -341,6 +343,25 @@ struct TerminalTabsView: View {
         .statusBarHidden(chrome.statusBarHidden)
         .onChange(of: model.sessionID) { _, _ in sessionInfo = nil; followOutput = true }
         .onChange(of: model.focusMode) { _, _ in model.updateKeepAwake() }
+        .sheet(isPresented: $showingWorkers) {
+            NavigationStack { List(model.hiddenTabs) { entry in
+                Button { Task { do { try await model.openTab(entry.key); showingWorkers = false } catch { model.error = error.localizedDescription } } } label: {
+                    VStack(alignment: .leading) { Text(entry.title); Text("\(entry.kind.rawValue) · \(entry.status.rawValue)").font(.caption) }
+                }
+            }.navigationTitle("Open a worker/shell").toolbar { Button("Done") { showingWorkers = false } } }
+            .desktopThemed(model.theme.style)
+        }
+        .sheet(item: $closingTab) { entry in
+            VStack(alignment: .leading, spacing: 20) {
+                Text("Close \(entry.title)?").font(.headline)
+                Text("Detach keeps the session running. Exit stops it and keeps chat history.")
+                HStack {
+                    Button("Cancel") { closingTab = nil }
+                    Button("Detach") { closeShared(entry, choice: .detach) }
+                    Button("Exit", role: .destructive) { closeShared(entry, choice: .exit) }
+                }
+            }.padding().presentationDetents([.height(220)]).desktopThemed(model.theme.style)
+        }
         .sheet(item: $sessionInfo) { SessionInfoSheet(info: $0).desktopThemed(model.theme.style) }
         .sheet(isPresented: $showingDisplay) { DisplaySettingsSheet(model: model).desktopThemed(model.theme.style) }
         .sheet(item: $newTerminal, onDismiss: { chatRefocus += 1 }) { NewTerminalSheet(sheet: $0).desktopThemed(model.theme.style) }
@@ -358,7 +379,7 @@ struct TerminalTabsView: View {
         }
         .task(id: project.id) { await model.chooseProject(project.id) }
         // Each tab's state changes while the strip is looked at: read the tabs again every few seconds. Focus mode hides the strip.
-        .task(id: focused) { if !focused { await model.keepFresh(.sessions) } }
+        .task(id: project.id) { await model.keepFresh(.sessions) }
         // The terminal is released (its long poll, its pinned size) the moment a chat takes the screen, and picked up again when a terminal tab does.
         .onAppear { onScreen = true; syncTerminalVisible(); openRequestedNewTerminal() }
         .onDisappear { onScreen = false; syncTerminalVisible(); if model.newTerminalRequestedProject == project.id { model.newTerminalRequestedProject = nil } }
@@ -411,6 +432,15 @@ struct TerminalTabsView: View {
                     Button("Refresh output", systemImage: "arrow.clockwise") { Task { await model.readOutput() } }.disabled(model.state != .connected)
                 }
             }
+            if model.desktopFeatures.tabs {
+                Button("Open a worker/shell", systemImage: "rectangle.stack.badge.plus") { showingWorkers = true }
+                if let key = model.selectedChat.map({ "chat:\($0.id)" }) ?? model.session.map({ "shell:\($0.id)" }), let entry = model.sharedTabs?.allEntries.first(where: { $0.key == key }), !entry.pinned {
+                    Button("Close tab", systemImage: "xmark") {
+                        if model.tabCloseBehavior.effectiveChoice(for: entry) == .ask { closingTab = entry }
+                        else { closeShared(entry, choice: nil) }
+                    }
+                }
+            }
             Button("Session info", systemImage: "info.circle") { showSessionInfo() }.disabled(content == .none)
             Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
             // The project's own orchestrator is a row of the New terminal sheet; the global one is here too, a tap away.
@@ -429,6 +459,10 @@ struct TerminalTabsView: View {
                 .frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
         }
             .buttonStyle(.plain)
+    }
+    private func closeShared(_ entry: SharedTab, choice: TabCloseBehavior?) {
+        closingTab = nil
+        Task { do { try await model.closeTab(entry.key, choice: choice) } catch { model.error = error.localizedDescription } }
     }
     private func showSessionInfo() {
         if let chat = model.selectedChat {

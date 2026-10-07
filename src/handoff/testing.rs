@@ -47,6 +47,9 @@ pub fn write_chat(home: &Path, info: ChatInfo, events: Vec<ChatEvent>) -> String
 
 pub fn chat_info(model: Option<&str>) -> ChatInfo {
     ChatInfo {
+        parent_id: None,
+        user_title: None,
+        first_user_message: None,
         id: Uuid::new_v4().to_string(),
         provider: Provider::Codex,
         project_id: None,

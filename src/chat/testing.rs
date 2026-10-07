@@ -226,6 +226,10 @@ fn fake_start(config: DriverConfig, events: Sender<ChatEvent>) -> Result<Box<dyn
 /// What a driver can say about a chat: it does not know the chat's id or title.
 pub fn placeholder_info(config: &DriverConfig, thread_id: &str) -> ChatInfo {
     ChatInfo {
+            parent_id: None,
+            user_title: None,
+            first_user_message: None,
+
         id: String::new(),
         provider: config.provider,
         project_id: None,
@@ -376,6 +380,8 @@ impl TestHost {
 
     pub fn new_chat(&self, provider: Provider) -> NewChat {
         NewChat {
+            parent_id: None,
+
             provider,
             project_id: None,
             worktree_id: None,

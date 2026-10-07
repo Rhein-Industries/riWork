@@ -99,6 +99,8 @@ pub fn classify(request: &Value) -> Lane {
             | "chat.create"
             | "chat.command"
             | "chat.stop"
+            | "tabs.update"
+            | "tabs.open"
             | "shell.paste",
         ) => Lane::Ordered,
         Some("pty.open") => Lane::Attach,

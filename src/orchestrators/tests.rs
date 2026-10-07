@@ -408,6 +408,9 @@ fn closing_a_chat_orchestrator_deletes_its_chat_and_the_next_one_starts_afresh()
 fn chat_orchestrators_are_found_from_disk_while_no_host_runs() {
     let home = short_home();
     let chat = ChatInfo {
+        parent_id: None,
+        user_title: None,
+        first_user_message: None,
         id: Uuid::new_v4().to_string(),
         provider: Provider::Claude,
         project_id: Some(PROJECT.into()),
@@ -589,4 +592,22 @@ fn load_skill_sends_the_full_skill_once_and_only_to_an_idle_chat() {
     // And it is not sent twice.
     load_chat_skill(&sessions, &chat_host, &chat, None).unwrap();
     assert_eq!(sent_texts(&chat).len(), sent.len());
+}
+
+#[test]
+fn the_shared_inventory_keeps_ordinary_and_stopped_chats_while_orchestrators_stay_filtered() {
+    let host = TestHost::new();
+    let mut request = host.new_chat(Provider::Codex);
+    request.project_id = Some(PROJECT.into());
+    let chat = host.client().create(request).unwrap();
+    host.client().close(&chat.id).unwrap();
+    let inventory = running_chats(&chat_host(&host.home)).unwrap();
+    assert_eq!(inventory.len(), 1);
+    assert_eq!(inventory[0].id, chat.id);
+    assert_eq!(inventory[0].state, ChatState::Stopped);
+    assert!(
+        running_chat_orchestrators(&chat_host(&host.home))
+            .unwrap()
+            .is_empty()
+    );
 }

@@ -334,6 +334,10 @@ fn fresh_chat_failed_or_ambiguous_create_send_never_retries_and_claim_precedes_c
                             }
                         } else {
                             let mut info = ChatInfo {
+            parent_id: None,
+            user_title: None,
+            first_user_message: None,
+
                                 id: chat_id,
                                 provider: new.provider,
                                 project_id: new.project_id,

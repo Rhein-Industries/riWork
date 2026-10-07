@@ -81,6 +81,15 @@ pub enum ChatState {
 pub struct ChatInfo {
     /// RiWork's own id for the chat (a UUID), stable across resumes.
     pub id: String,
+    /// RiWork session UUID of the caller, across chat and shell kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    /// Explicit user name, distinct from provider-generated titles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_title: Option<String>,
+    /// First accepted user message, normalized and bounded to 40 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_user_message: Option<String>,
     pub provider: Provider,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
@@ -118,6 +127,8 @@ pub struct ChatInfo {
 /// What a new chat starts with.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NewChat {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     pub provider: Provider,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,

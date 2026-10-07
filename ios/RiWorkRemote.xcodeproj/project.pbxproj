@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        8AD7722E82EF4231B607BBC1 /* SharedTabs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AD7722E82EF4231B607BBC2 /* SharedTabs.swift */; };
+        8AD7722E82EF4231B607BBC3 /* SharedTabsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AD7722E82EF4231B607BBC4 /* SharedTabsTests.swift */; };
 		00D6ABB0BE0582B2124CE3F7 /* RiWorkCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 761DEE92C9DC86427BFBBC1B /* RiWorkCore.framework */; };
 		022A9FD7C8E05AC4E37B307E /* ChatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07661F0D1A3874613BA4233D /* ChatTests.swift */; };
 		0438D07BB6918B5F145C3E56 /* HotkeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D5F916E6F96888283E586EF /* HotkeyStoreTests.swift */; };
@@ -274,6 +276,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+        8AD7722E82EF4231B607BBC2 /* SharedTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedTabs.swift; sourceTree = "<group>"; };
+        8AD7722E82EF4231B607BBC4 /* SharedTabsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedTabsTests.swift; sourceTree = "<group>"; };
 		001FA247070A682651C0F5E0 /* SGRTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SGRTests.swift; sourceTree = "<group>"; };
 		005C04299055A741176AF5B5 /* HotkeyEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyEditor.swift; sourceTree = "<group>"; };
 		00682FCE98709284A8147D26 /* TerminalDictation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalDictation.swift; sourceTree = "<group>"; };
@@ -563,6 +567,7 @@
 				FC76A77536A88AA078AF3DC1 /* ChatModels.swift */,
 				D558F7B0FE2D8E3DEF243B29 /* ChatPresentation.swift */,
 				F94E782A153DC1EB5CDE51AD /* ChatRequests.swift */,
+				8AD7722E82EF4231B607BBC2 /* SharedTabs.swift */,
 				90675A8AC9868B616738958F /* ChatTranscript.swift */,
 				0E55D2BB30B82DC0DF8A162F /* DesktopAppearance.swift */,
 				520666B9CCBDD7C817FE10BE /* DesktopTheme.swift */,
@@ -634,6 +639,7 @@
 				EE615D2BBE055F51DA9655AA /* ChatModelsTests.swift */,
 				38133DE714F1BD5D89FD533F /* ChatPresentationTests.swift */,
 				0203B5F698C476D9D1FE5A69 /* ChatRequestsTests.swift */,
+				8AD7722E82EF4231B607BBC4 /* SharedTabsTests.swift */,
 				07661F0D1A3874613BA4233D /* ChatTests.swift */,
 				F48930DE2A81AED9431E6F6E /* ChatTranscriptTests.swift */,
 				4E2F7282427AE16B096BE300 /* DesktopThemeTests.swift */,
@@ -1016,6 +1022,7 @@
 				A0ED87B0B942E67ACD6488E4 /* ChatModelsTests.swift in Sources */,
 				DC0D02BDAA0B813A5E81A425 /* ChatPresentationTests.swift in Sources */,
 				9C40AC0E4B71313AEE334FED /* ChatRequestsTests.swift in Sources */,
+				8AD7722E82EF4231B607BBC3 /* SharedTabsTests.swift in Sources */,
 				022A9FD7C8E05AC4E37B307E /* ChatTests.swift in Sources */,
 				FC4277CB3F19CF32B42B1872 /* ChatTranscriptTests.swift in Sources */,
 				7310044BC34A81ABBC289835 /* DesktopThemeTests.swift in Sources */,
@@ -1068,6 +1075,7 @@
 				4778FC9F8F9A8014A4D3E96A /* ChatModels.swift in Sources */,
 				D64E7D4DAF3BC5CA1ADBAAE8 /* ChatPresentation.swift in Sources */,
 				3CBEBD103406F820073DADFD /* ChatRequests.swift in Sources */,
+				8AD7722E82EF4231B607BBC1 /* SharedTabs.swift in Sources */,
 				A8747A3E67BA7B6CCE62D6A0 /* ChatTranscript.swift in Sources */,
 				4C09D1E8FECC3FD6F0EA1257 /* DesktopAppearance.swift in Sources */,
 				D1D209D9C9DC029D26B6A160 /* DesktopTheme.swift in Sources */,

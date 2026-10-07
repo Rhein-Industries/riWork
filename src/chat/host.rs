@@ -1149,7 +1149,7 @@ fn create(shared: &Shared, new: NewChat) -> Result<ChatInfo, String> {
 
 fn create_identified(
     shared: &Shared,
-    new: NewChat,
+    mut new: NewChat,
     requested_id: Option<String>,
 ) -> Result<ChatInfo, String> {
     // Serialize caller-owned IDs as well as orchestrators. Never overwrite an
@@ -1164,6 +1164,21 @@ fn create_identified(
         return Err("chat identity already exists; review it without retrying".into());
     }
 
+    if new
+        .parent_id
+        .as_ref()
+        .is_some_and(|id| !Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id))
+    {
+        return Err("parent_id must be a canonical RiWork session UUID".into());
+    }
+    if new.orchestrator.is_some() && new.parent_id.is_some() {
+        return Err("an orchestrator cannot be a child session".into());
+    }
+    new.parent_id = crate::project_tabs::same_project_parent(
+        &shared.home,
+        new.project_id.as_deref(),
+        new.parent_id,
+    );
     if !new.cwd.is_absolute() || !new.cwd.is_dir() {
         return Err(format!(
             "the working directory {} is not an existing absolute directory",
@@ -1208,6 +1223,13 @@ fn create_identified(
             Provider::Claude => "Claude chat".to_owned(),
         });
     let info = ChatInfo {
+        parent_id: new.parent_id,
+        user_title: new
+            .title
+            .as_ref()
+            .filter(|t| !t.trim().is_empty())
+            .map(|_| title.clone()),
+        first_user_message: None,
         id: id.clone(),
         provider: new.provider,
         project_id: new.project_id,
@@ -1234,6 +1256,13 @@ fn create_identified(
         inner: Mutex::new(inner),
     });
     lock(&shared.chats).insert(id, chat.clone());
+    if let Some(project) = chat.info().project_id {
+        if let Err(error) = crate::project_tabs::TabStore::at(&shared.home, &project)
+            .and_then(|store| store.reconcile(&[crate::project_tabs::Session::chat(&chat.info())]))
+        {
+            eprintln!("riwork tabs: {error}");
+        }
+    }
     drop(creation);
     // A driver that cannot start leaves the chat failed, not missing: its
     // message is in the chat, and the next message tries again.
@@ -1327,6 +1356,13 @@ fn delete(shared: &Shared, chat_id: &str) -> Result<(), String> {
         inner.subscribers.clear();
     }
     lock(&shared.chats).remove(chat_id);
+    if let Some(project) = chat.info().project_id {
+        let result = crate::project_tabs::TabStore::at(&shared.home, &project)
+            .and_then(|store| store.forget(&format!("chat:{chat_id}")));
+        if let Err(error) = result {
+            eprintln!("riwork tabs: {error}");
+        }
+    }
     // Files a phone sent to this chat (see `upload_inbox`) go with it.
     crate::upload_inbox::remove(&shared.home, chat_id);
     fs::remove_dir_all(&chat.dir)
@@ -1625,6 +1661,13 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
         return Err("the chat is stopped; send a message to resume it".into());
     };
     lock(&driver).command(command.clone())?;
+    if let ChatCommand::Send { text } = &command {
+        let mut inner = lock(&chat.inner);
+        if inner.info.first_user_message.is_none() {
+            inner.info.first_user_message = Some(crate::project_tabs::message_title(text));
+            inner.publish_info();
+        }
+    }
     if let ChatCommand::Configure {
         model,
         effort,

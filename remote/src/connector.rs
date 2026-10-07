@@ -644,6 +644,9 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                 if chat {
                     features["chat"] = json!(true);
                 }
+                if rpc.tabs_advertised() {
+                    features["tabs"] = json!(true);
+                }
                 if orchestrator_create {
                     features["orchestrator_create"] = json!(true);
                 }

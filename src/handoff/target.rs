@@ -35,6 +35,7 @@ pub fn start_chat(
 ) -> Result<ChatInfo, String> {
     let mut client = Client::connect(socket)?;
     let chat = client.create(NewChat {
+        parent_id: None,
         provider: chat_provider(request.provider)?,
         project_id: origin.project_id.clone(),
         worktree_id: origin.worktree_id.clone(),
@@ -91,7 +92,7 @@ pub fn start_shell(
     let project_id = origin.project_id.clone().ok_or(
         "The source belongs to no project, and a terminal needs one to start in. Hand off to a chat instead.",
     )?;
-    manager.create_harness_with(
+    manager.without_parent().create_harness_with(
         project_id,
         origin.worktree_id.clone(),
         origin.cwd.clone(),
