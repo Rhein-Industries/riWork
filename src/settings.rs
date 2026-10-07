@@ -189,6 +189,12 @@ pub struct Settings {
     /// scroll locally. Off leaves every agent on its own default screen. A
     /// session that is already running keeps the mode it started in.
     pub agent_inline_mode: bool,
+    /// Codex, Claude and Grok terminals opened from the New tab menu, their shortcuts and
+    /// the paired phone start without approval prompts (Codex
+    /// `--dangerously-bypass-approvals-and-sandbox`, Claude `--dangerously-skip-permissions`,
+    /// Grok `--always-approve`). Off, they ask before they act. A session that is already
+    /// running keeps the mode it started in.
+    pub agent_terminals_unrestricted: bool,
     /// How orchestrators created from now on run. An orchestrator that exists
     /// keeps its mode until it is closed and created again.
     pub orchestrator_mode: OrchestratorMode,
@@ -245,6 +251,7 @@ impl Default for Settings {
             selected_codex_account: None,
             status_bar: StatusBarSettings::default(),
             agent_inline_mode: true,
+            agent_terminals_unrestricted: true,
             orchestrator_mode: OrchestratorMode::default(),
             orchestrator_chat_provider: Provider::Codex,
             ui_text_size: TextPoints::DEFAULT,
@@ -311,6 +318,11 @@ impl<'de> Deserialize<'de> for Settings {
                 "agent_inline_mode",
                 defaults.agent_inline_mode,
             ),
+            agent_terminals_unrestricted: lenient_field(
+                &object,
+                "agent_terminals_unrestricted",
+                defaults.agent_terminals_unrestricted,
+            ),
             orchestrator_mode: lenient_field(
                 &object,
                 "orchestrator_mode",
@@ -370,6 +382,19 @@ pub fn agent_inline_mode(home: &Path) -> bool {
         .map_or(Settings::default().agent_inline_mode, |settings| {
             settings.agent_inline_mode
         })
+}
+
+/// Whether a Codex, Claude or Grok terminal opened now from a menu, a shortcut or the
+/// phone runs unrestricted, read from the file of the state directory `home` each time,
+/// like `agent_inline_mode`, so every window and the CLI follow a change at once. A
+/// missing or unreadable file means the default, unrestricted.
+pub fn agent_terminals_unrestricted(home: &Path) -> bool {
+    SettingsStore::open(home)
+        .and_then(|store| store.load())
+        .map_or(
+            Settings::default().agent_terminals_unrestricted,
+            |settings| settings.agent_terminals_unrestricted,
+        )
 }
 
 /// What an orchestrator created now runs as, read from the file of the state
@@ -546,6 +571,7 @@ enum Toggle {
     PanelTabIcons,
     PreviewOnSelect,
     AgentInline,
+    AgentsUnrestricted,
     DictationMic,
     WindowSize,
 }
@@ -557,6 +583,7 @@ impl Toggle {
             Self::PanelTabIcons => "panel-tab-icons",
             Self::PreviewOnSelect => "open-preview-on-select",
             Self::AgentInline => "agent-inline-mode",
+            Self::AgentsUnrestricted => "agent-terminals-unrestricted",
             Self::DictationMic => "dictation-mic",
             Self::WindowSize => "remember-window-size",
         }
@@ -571,6 +598,7 @@ impl Toggle {
             Self::PanelTabIcons => &mut settings.panel_tab_icons,
             Self::PreviewOnSelect => &mut settings.open_preview_on_select,
             Self::AgentInline => &mut settings.agent_inline_mode,
+            Self::AgentsUnrestricted => &mut settings.agent_terminals_unrestricted,
             Self::DictationMic => &mut settings.dictation_mic,
             Self::WindowSize => &mut settings.remember_window_size,
         };
@@ -585,6 +613,7 @@ impl Toggle {
             Self::PanelTabIcons => &mut settings.panel_tab_icons,
             Self::PreviewOnSelect => &mut settings.open_preview_on_select,
             Self::AgentInline => &mut settings.agent_inline_mode,
+            Self::AgentsUnrestricted => &mut settings.agent_terminals_unrestricted,
             Self::DictationMic => &mut settings.dictation_mic,
             Self::WindowSize => &mut settings.remember_window_size,
         };
@@ -624,6 +653,7 @@ pub struct SettingsPanel {
     tab_icons_focus: FocusHandle,
     preview_focus: FocusHandle,
     inline_focus: FocusHandle,
+    unrestricted_focus: FocusHandle,
     mic_focus: FocusHandle,
     orchestrator_mode_focus: FocusHandle,
     orchestrator_provider_focus: FocusHandle,
@@ -1112,6 +1142,7 @@ impl SettingsPanel {
             tab_icons_focus: cx.focus_handle(),
             preview_focus: cx.focus_handle(),
             inline_focus: cx.focus_handle(),
+            unrestricted_focus: cx.focus_handle(),
             mic_focus: cx.focus_handle(),
             orchestrator_mode_focus: cx.focus_handle(),
             orchestrator_provider_focus: cx.focus_handle(),
@@ -1183,6 +1214,7 @@ impl SettingsPanel {
         handles.push(self.text_size_focus.clone());
         handles.push(self.preview_focus.clone());
         handles.push(self.inline_focus.clone());
+        handles.push(self.unrestricted_focus.clone());
         handles.push(self.mic_focus.clone());
         handles.push(self.orchestrator_mode_focus.clone());
         if settings.orchestrator_mode == OrchestratorMode::Chat {
@@ -2330,6 +2362,7 @@ impl SettingsPanel {
             Toggle::PanelTabIcons => &self.tab_icons_focus,
             Toggle::PreviewOnSelect => &self.preview_focus,
             Toggle::AgentInline => &self.inline_focus,
+            Toggle::AgentsUnrestricted => &self.unrestricted_focus,
             Toggle::DictationMic => &self.mic_focus,
             Toggle::WindowSize => &self.size_focus,
         };
@@ -2403,6 +2436,13 @@ impl SettingsPanel {
                 "Keep agent transcripts in scrollback (inline mode)",
                 "New Codex, Grok, and Claude sessions draw on the terminal's main screen, so the whole conversation stays in the terminal's scrollback. You can scroll it locally, and the iOS app can download and scroll it without sending keys to the agent. Off runs them full screen. A session that is already running keeps its mode until it restarts.",
                 settings.agent_inline_mode,
+                cx,
+            ))
+            .child(self.toggle_row(
+                Toggle::AgentsUnrestricted,
+                "Agent terminals run unrestricted",
+                "Codex, Claude and Grok from the New tab menu, ⌘⇧C, ⌘⇧L and ⌘⇧G, and from the iOS app start without approval prompts: Codex with --dangerously-bypass-approvals-and-sandbox, Claude with --dangerously-skip-permissions, Grok with --always-approve. Off, they ask before running commands and editing files. A session that is already running keeps its mode.",
+                settings.agent_terminals_unrestricted,
                 cx,
             ))
             .child(self.toggle_row(
@@ -3571,6 +3611,56 @@ mod tests {
     }
 
     #[test]
+    fn agent_terminals_unrestricted_defaults_on_and_survives_older_odd_and_unreadable_files() {
+        let dir = env::temp_dir().join(format!("riwork-settings-unrestricted-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        let document = |dir: &std::path::Path| -> Value {
+            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap()
+        };
+        assert!(Settings::default().agent_terminals_unrestricted);
+        // No file yet: agents start unrestricted, and nothing is written.
+        assert!(agent_terminals_unrestricted(&dir));
+        assert!(!dir.join("settings.json").exists());
+
+        // A file from a build without the setting reads as on and is not rewritten.
+        let older = r#"{"schema_version":1,"agent_inline_mode":false,"future_setting":[2]}"#;
+        fs::write(dir.join("settings.json"), older).unwrap();
+        assert!(store.load().unwrap().agent_terminals_unrestricted);
+        assert!(agent_terminals_unrestricted(&dir));
+        assert_eq!(
+            fs::read_to_string(dir.join("settings.json")).unwrap(),
+            older
+        );
+
+        // Turning it off writes only that key, and the next launch sees it.
+        let saved = store
+            .update(|settings| Toggle::AgentsUnrestricted.flip(settings))
+            .unwrap();
+        assert!(!saved.agent_terminals_unrestricted);
+        let file = document(&dir);
+        assert_eq!(file["agent_terminals_unrestricted"], false);
+        assert_eq!(file["agent_inline_mode"], false);
+        assert_eq!(file["future_setting"], serde_json::json!([2]));
+        assert!(!agent_terminals_unrestricted(&dir));
+        store
+            .update(|settings| Toggle::AgentsUnrestricted.flip(settings))
+            .unwrap();
+        assert!(agent_terminals_unrestricted(&dir));
+
+        // A value of another shape keeps the default, and so does an unreadable file.
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"agent_terminals_unrestricted":"no"}"#,
+        )
+        .unwrap();
+        assert!(store.load().unwrap().agent_terminals_unrestricted);
+        assert!(agent_terminals_unrestricted(&dir));
+        fs::write(dir.join("settings.json"), "{not json").unwrap();
+        assert!(agent_terminals_unrestricted(&dir));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn agent_inline_mode_defaults_on_and_survives_older_odd_and_unreadable_files() {
         let dir = env::temp_dir().join(format!("riwork-settings-inline-{}", Uuid::new_v4()));
         let store = SettingsStore::open(&dir).unwrap();
@@ -3815,6 +3905,7 @@ mod tests {
             (Toggle::PanelTabIcons, "panel_tab_icons"),
             (Toggle::PreviewOnSelect, "open_preview_on_select"),
             (Toggle::AgentInline, "agent_inline_mode"),
+            (Toggle::AgentsUnrestricted, "agent_terminals_unrestricted"),
             (Toggle::DictationMic, "dictation_mic"),
             (Toggle::WindowSize, "remember_window_size"),
         ] {
@@ -3840,13 +3931,14 @@ mod tests {
             Toggle::PanelTabIcons,
             Toggle::PreviewOnSelect,
             Toggle::AgentInline,
+            Toggle::AgentsUnrestricted,
             Toggle::DictationMic,
             Toggle::WindowSize,
         ]
         .map(Toggle::id)
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
-        assert_eq!(ids.len(), 6);
+        assert_eq!(ids.len(), 7);
     }
 
     #[test]
