@@ -181,7 +181,7 @@ struct ChatComposerField: UIViewRepresentable {
 
 // MARK: - The composer
 
-/// The text field, Send and Interrupt, and the notice above them.
+/// The text field, Send and Interrupt. (What went wrong is said in the banner row above it, `ChatNoticeBanners`.)
 ///
 /// One rounded field spans the row and holds everything: the paperclip at its leading end, the text, and one action at its trailing end
 /// that changes with what is useful now (`ComposerAction`): Send once something is typed, Stop while the agent works, the mic otherwise.
@@ -218,15 +218,6 @@ struct ChatComposer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if let notice = conversation.notice {
-                HStack(alignment: .top, spacing: 6) {
-                    Text(notice).font(style.system(.caption)).foregroundStyle(style.muted).fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                    Button("Dismiss message", systemImage: "xmark") { conversation.notice = nil }.labelStyle(.iconOnly).font(style.system(.caption)).foregroundStyle(style.muted).buttonStyle(TargetButtonStyle())
-                }
-                .padding(.leading, 12)
-                .accessibilityElement(children: .combine)
-            }
             // Every button is centred on the field's last line: on the field's middle while it holds one line, and beside the line
             // being typed (at the bottom, as Messages does) once it grows.
             let actions = actions

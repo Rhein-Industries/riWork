@@ -258,7 +258,8 @@ public struct ChatFeed: Sendable, Equatable {
                 }
                 switch event {
                 case .itemStarted(let item), .itemCompleted(let item):
-                    if !hasItem(item.id), envelope.seq > recoveryThrough { itemArrivals += 1 }
+                    // A provider notice is the banner row's, not a row of the transcript: it is not news there.
+                    if !hasItem(item.id), envelope.seq > recoveryThrough, ChatNotices.isTranscriptRow(item) { itemArrivals += 1 }
                     if hidden.item(item.id) != nil && transcript.item(item.id) == nil { hidden.apply(event) }
                     else { transcript.apply(event) }
                 case .itemDelta(let id, _):

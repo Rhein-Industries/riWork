@@ -386,7 +386,8 @@ import RiWorkCore
         await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "legacy", status: .completed, body: .agentMessage("legacy complete")))])
         _ = try await openChat(rig)
         await eventually("legacy replay explicitly selected") { rig.model.conversation(self.chatID).transcript.item("legacy") != nil }
-        XCTAssertTrue(rig.model.conversation(chatID).notice?.contains("recent-first") == true)
+        // The note about the older desktop goes by itself once its history is in.
+        await eventually("the recent-first note has done its work") { !rig.model.conversation(self.chatID).legacyLoading && rig.model.conversation(self.chatID).alerts.text(.desktop) == nil }
         XCTAssertNil(rig.model.conversation(chatID).feed.historyCursor)
         await finish(rig)
     }
@@ -562,7 +563,7 @@ import RiWorkCore
             XCTAssertEqual(conversation.draft, "resource draft")
             XCTAssertEqual(conversation.openApprovals.first?.requestID, "older-action")
             XCTAssertEqual(conversation.modelCatalogue.count, scenario == "live" ? 1 : 2); XCTAssertEqual(conversation.transcript.usage?.inputTokens, 42)
-            XCTAssertTrue(conversation.notice?.contains("shortened") == true)
+            XCTAssertTrue(conversation.alerts.text(.desktop)?.contains("shortened") == true, "said in the banner row while the replay is degraded")
             let calls = await rig.transport.params(of: "chat.snapshot")
             XCTAssertEqual(calls.filter { $0["cursor"] == nil }.count, 1, "\(scenario): no unchanged bootstrap retries")
             if scenario == "controls" { XCTAssertEqual(conversation.openApprovals.count, 201) }
@@ -1011,6 +1012,79 @@ import RiWorkCore
         let sent = await rig.transport.commands().count
         XCTAssertEqual(sent, 0, "nothing is sent by itself")
         XCTAssertNil(rig.model.chatDrafts.draft(chatID)?.sending, "now an ordinary draft")
+        await finish(rig)
+    }
+
+    // MARK: Messages of the moment
+
+    /// The provider's notices are not transcript rows: the latest of each kind of this turn is one banner line above the composer,
+    /// replaced in place when it recurs, closed with ×, back only when said again, and all of them are in the history.
+    func testProviderNoticesAreOneBannerPerKindAboveTheComposer() async throws {
+        let rig = try await makeRig(look: .nativeDark)
+        await rig.transport.enableSnapshots()
+        let notice = { (id: String, text: String, level: ChatNoticeLevel) in ChatEvent.itemCompleted(ChatItem(id: id, status: .completed, body: .notice(level: level, text: text))) }
+        await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "u1", status: .completed, body: .userMessage("go"))),
+                                            notice("n1", "Reconnecting… 1/5", .warning), notice("n2", "This account is close to the weekly usage limit", .warning)])
+        let field = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        await eventually("two notice lines") { rig.layout.frames.keys.filter { $0.hasPrefix("banner-notice-") }.count == 2 }
+        let scroll = try XCTUnwrap(transcriptScroll(rig))
+        XCTAssertFalse(try renderedTranscriptText(rig, scroll: scroll).contains("Reconnecting"), "not a transcript row")
+        let banners = try XCTUnwrap(rig.layout.frames["banners"])
+        XCTAssertLessThanOrEqual(banners.maxY, field.convert(field.bounds, to: rig.window).minY + 1, "directly above the composer")
+        XCTAssertGreaterThanOrEqual(banners.minY, scroll.convert(scroll.bounds, to: rig.window).maxY - 1, "under the transcript")
+        // It recurs: the same line says the new text.
+        await rig.transport.append(chatID, [notice("n3", "Reconnecting… 2/5", .warning)])
+        await eventually("replaced in place") { (try? self.renderedText(rig, in: rig.layout.frames.first { $0.key.hasPrefix("banner-notice-reconnecting") }?.value ?? .zero).contains("2/5")) == true }
+        XCTAssertEqual(rig.layout.frames.keys.filter { $0.hasPrefix("banner-notice-") }.count, 2, "not stacked")
+        // ×: closed, until the provider says it again.
+        let closeKey = try XCTUnwrap(rig.layout.actions.keys.first { $0.hasPrefix("close-notice-reconnecting") })
+        rig.layout.actions[closeKey]?()
+        await eventually("closed") { !rig.layout.frames.keys.contains { $0.hasPrefix("banner-notice-reconnecting") } }
+        XCTAssertGreaterThanOrEqual(rig.layout.frames["close-notice-this account is close to the weekly usage limit"]?.width ?? 0, 44, "a full target")
+        await rig.transport.append(chatID, [notice("n4", "Reconnecting… 3/5", .warning)])
+        await eventually("back when said again") { rig.layout.frames.keys.contains { $0.hasPrefix("banner-notice-reconnecting") } }
+        // A new turn: last turn's notices go to the history.
+        await rig.transport.append(chatID, [.itemCompleted(ChatItem(id: "u2", status: .completed, body: .userMessage("again")))])
+        await eventually("history only") { !rig.layout.frames.keys.contains { $0.hasPrefix("banner-notice-") } }
+        XCTAssertEqual(ChatNotices.all(conversation.transcript.items).count, 4)
+        await finish(rig)
+    }
+
+    /// The phone's own messages: one line per source, replaced in place, with ×, gone by themselves when the cause is resolved.
+    func testThePhonesMessagesReplaceInPlaceCloseAndGoWhenResolved() async throws {
+        let rig = try await makeRig()
+        _ = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        // An older desktop (no snapshots): the loading note goes when its history is in.
+        await eventually("the legacy note goes once the history is loaded") { conversation.feed.loaded && !conversation.legacyLoading && conversation.alerts.text(.desktop) == nil }
+        conversation.notice = "Couldn’t send: busy"
+        conversation.notice = "Couldn’t send: busy"
+        await eventually("one line") { rig.layout.frames["banner-alert-action"] != nil }
+        XCTAssertEqual(conversation.alerts.items.count, 1)
+        XCTAssertEqual(conversation.alerts.items.first?.repeats, 2, "a recurring error counts up in its one line")
+        try XCTUnwrap(rig.layout.actions["close-alert-action"])()
+        await eventually("closed with ×") { rig.layout.frames["banner-alert-action"] == nil && conversation.notice == nil }
+        // The link: said while down, gone when back, without being closed.
+        await rig.model.disconnect()
+        await eventually("not connected is said") { rig.layout.frames["banner-status"] != nil }
+        await rig.model.connect()
+        await eventually("and goes when the link is back") { rig.layout.frames["banner-status"] == nil }
+        await finish(rig)
+    }
+
+    /// A shell's error is said in the same line, above its input, with ×, in focus mode too.
+    func testAShellErrorIsABannerLineAboveTheInputWithClose() async throws {
+        let rig = try await makeRig()
+        rig.model.error = "Desktop disconnected. Reconnect to refresh output."
+        await eventually("the line is there") { rig.layout.frames["banner-shell-error"] != nil }
+        rig.model.setFocusMode(true)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNotNil(rig.layout.frames["banner-shell-error"], "in focus mode too")
+        XCTAssertGreaterThanOrEqual(rig.layout.frames["close-shell-error"]?.width ?? 0, 44)
+        try XCTUnwrap(rig.layout.actions["close-shell-error"])()
+        await eventually("closed") { rig.model.error == nil && rig.layout.frames["banner-shell-error"] == nil }
+        rig.model.setFocusMode(false)
         await finish(rig)
     }
 

@@ -253,6 +253,8 @@ enum ConnectionState: Equatable {
     @ObservationIgnored let defaults: UserDefaults
     /// What was typed into each chat and not sent, saved (`RemoteModel+Chat.swift`, `restoreDraft`).
     @ObservationIgnored let chatDrafts: ChatDraftStore
+    /// Chats whose message is on its way now (`sendChatMessage`), so a draft made again meanwhile is not taken for one never answered.
+    @ObservationIgnored var chatSendsInFlight: Set<String> = []
     @ObservationIgnored let cellMetrics: @MainActor (Double) -> (width: Double, height: Double)
     @ObservationIgnored let keepAwake: @MainActor (Bool) -> Void
     @ObservationIgnored var keySender: Task<Void, Never>?

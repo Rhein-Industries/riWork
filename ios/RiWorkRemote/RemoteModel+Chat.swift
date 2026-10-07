@@ -33,8 +33,17 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     var sending = false
     /// Requests whose answer is on its way, or has been given and not yet confirmed by the desktop: they leave the bar at once.
     var answered: Set<String> = []
-    /// The last thing that went wrong with a command, said quietly above the composer until the next one goes through.
-    var notice: String?
+    /// The phone's own messages for this chat, one per source, in the banner row above the composer (`ChatNoticeBanners`).
+    var alerts = ChatAlerts()
+    /// The last thing that went wrong with a command, in the banner row until the next one goes through or it is closed.
+    var notice: String? {
+        get { alerts.text(.action) }
+        set { if let newValue { alerts.show(.action, newValue) } else { alerts.clear(.action) } }
+    }
+    /// The provider notices (transcript items) the person closed; one comes back only when the provider says it again.
+    var dismissedNotices: Set<String> = []
+    /// The read error the person closed; it comes back when another one, or the same one after a successful read, is said.
+    var dismissedReadError: String?
     /// Reading the events failed; shown (and retried) while the link is up.
     var readError: ChatControlError?
     var historyLoading = false
@@ -50,13 +59,15 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
         }
         resourceFallbackGeneration = connection; snapshotUnavailableGeneration = connection
         feed.beginDegradedReplay(); readError = nil; legacyLoading = true
-        notice = "Long messages are shortened here; full text is on your Mac."
+        alerts.show(.desktop, "Long messages are shortened here; full text is on your Mac.", level: .info)
         return true
     }
     func install(_ snapshot: ChatSnapshotReply) {
         feed.install(snapshot)
         modelCatalogue = transcript.models; modelCatalogueSource = .live; modelCatalogueRevision &+= 1
         legacyLoading = false
+        // A real snapshot: whatever an older desktop or a degraded replay had to say about loading is over.
+        alerts.clear(.desktop)
     }
     func hydrate(_ snapshot: ChatSnapshotReply) { feed.hydrate(snapshot) }
     func prepend(_ snapshot: ChatSnapshotReply, before: UInt64) { feed.prepend(snapshot, requestedBefore: before) }
@@ -157,7 +168,8 @@ extension RemoteModel {
         let made = ChatConversation(id: id)
         restoreDraft(made)
         if chatConversations.count >= Self.keptConversations {
-            let spare = chatConversations.values.filter { !$0.following && $0.id != selectedChatID }.sorted { $0.lastUsed < $1.lastUsed }
+            // A conversation with a message on its way stays: its answer must land in it, not in one made again later.
+            let spare = chatConversations.values.filter { !$0.following && !$0.sending && $0.id != selectedChatID }.sorted { $0.lastUsed < $1.lastUsed }
             for old in spare.prefix(chatConversations.count - Self.keptConversations + 1) { chatConversations[old.id] = nil }
         }
         chatConversations[id] = made
@@ -170,12 +182,16 @@ extension RemoteModel {
     func restoreDraft(_ conversation: ChatConversation) {
         let id = conversation.id
         if let saved = chatDrafts.draft(id) {
-            let restored = saved.restored
-            conversation.draft = restored.text
-            if restored.uncertain {
-                chatDrafts.setText(restored.text, for: id)
-                chatDrafts.endSending(for: id)
-                conversation.notice = "Your last message may not have reached the Mac. It is back in the composer: check the conversation before sending it again."
+            if chatSendsInFlight.contains(id) {
+                // Its message is on its way in this run (the conversation was let go meanwhile): only the text is the composer's.
+                conversation.draft = saved.text
+            } else {
+                let restored = saved.restored
+                conversation.draft = restored.text
+                if restored.uncertain {
+                    chatDrafts.restoreUncertain(restored.text, for: id)
+                    conversation.alerts.show(.action, "Your last message may not have reached the Mac. It is back in the composer: check the conversation before sending it again.")
+                }
             }
         }
         conversation.onDraftChange = { [weak self] text in self?.chatDrafts.setText(text, for: id) }
@@ -313,7 +329,7 @@ extension RemoteModel {
                     if RemoteError.isUnsupportedMethod(error) {
                         conversation.snapshotUnavailableGeneration = connection
                         conversation.legacyLoading = true
-                        conversation.notice = "Update RiWork on the Mac for recent-first loading. Loading older desktop history…"
+                        conversation.alerts.show(.desktop, "Update RiWork on the Mac for recent-first loading. Loading older desktop history…", level: .info)
                     } else {
                         let failure = ChatControlError.from(error, operation: .events)
                         if case .notFound = failure {
@@ -362,7 +378,11 @@ extension RemoteModel {
                 conversation.readError = nil
                 backoff.success()
                 conversation.accept(reply, since: since)
-                if !reply.more { conversation.legacyLoading = false }
+                if !reply.more {
+                    // The older desktop's history is in: the note about loading it has done its work.
+                    if conversation.legacyLoading, conversation.alerts.text(.desktop)?.hasPrefix("Update RiWork") == true { conversation.alerts.clear(.desktop) }
+                    conversation.legacyLoading = false
+                }
                 if let info = conversation.transcript.info {
                     prepareChatCatalogue(info)
                 }
@@ -432,7 +452,7 @@ extension RemoteModel {
             if case .resourceLimit = failure {
                 _ = conversation.recoverResourceLimit(failure, connection: connection)
             } else if case RemoteError.rpc(let code, _) = error, code == "snapshot_expired" {
-                conversation.reset(); conversation.notice = "History changed on the Mac. Loading the current recent messages again."
+                conversation.reset(); conversation.alerts.show(.desktop, "History changed on the Mac. Loading the current recent messages again.", level: .info)
             } else { conversation.historyError = "Can’t load older messages. Try again." }
         }
     }
@@ -497,8 +517,8 @@ extension RemoteModel {
         guard !conversation.sending else { return .busy }
         conversation.sending = true
         // The text is held until the desktop answers: if the app ends before that, it comes back into the composer.
-        if restoring { chatDrafts.beginSending(text, for: chatID); conversation.draft = "" }
-        defer { conversation.sending = false; if restoring { chatDrafts.endSending(for: chatID) } }
+        if restoring { chatDrafts.beginSending(text, for: chatID); chatSendsInFlight.insert(chatID); conversation.draft = "" }
+        defer { conversation.sending = false; if restoring { chatDrafts.endSending(for: chatID); chatSendsInFlight.remove(chatID) } }
         let failure = await sendChatCommand(chatID, .send(text: text))
         if let failure {
             if restoring { conversation.draft = conversation.draft.isEmpty ? text : text + "\n" + conversation.draft }

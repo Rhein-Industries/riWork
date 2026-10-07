@@ -303,6 +303,8 @@ struct TerminalTabsView: View {
     @State private var chatRefocus = 0
     /// Counts requests from the ⋯ menu to open the chat's model picker (the picker belongs to the chat screen).
     @State private var chatModels = 0
+    /// Counts requests from the ⋯ menu to show the chat's notices.
+    @State private var chatNotices = 0
     private var openSessions: [RemoteSession] { model.openSessions }
     /// What is under the navigation row, for `TabScreenChrome`.
     private var content: TabScreenContent {
@@ -323,7 +325,7 @@ struct TerminalTabsView: View {
                 if let note = model.orchestratorNotice { NoteLine(text: note) { model.clearOrchestratorNotice() } }
             }
             if let chat = model.selectedChat {
-                ChatScreen(model: model, chat: chat, refocus: chatRefocus, openModels: chatModels).id(chat.id)
+                ChatScreen(model: model, chat: chat, refocus: chatRefocus, openModels: chatModels, openNotices: chatNotices).id(chat.id)
             } else if let blocked = model.selectedBlocked {
                 OrchestratorNotice(session: blocked.session, opening: blocked.opening)
             } else if model.sessionID == nil && openSessions.isEmpty {
@@ -395,7 +397,7 @@ struct TerminalTabsView: View {
     private func screenMenu(_ chrome: TabScreenChrome) -> some View {
         Menu {
             if let chat = model.selectedChat {
-                ChatMenuSection(model: model, chat: chat) { chatModels += 1 }
+                ChatMenuSection(model: model, chat: chat, changeModel: { chatModels += 1 }, showNotices: { chatNotices += 1 })
             }
             if chrome.terminalActions {
                 Section("Terminal") {
@@ -744,17 +746,16 @@ struct SessionConsole: View {
                 VStack(spacing: 0) {
                     if !focused {
                         StatusStrip(model: model)
-                        if let error = model.error {
-                            HStack(alignment: .top) {
-                                Image(systemName: "exclamationmark.circle")
-                                Text(error).font(style.system(.footnote))
-                                Spacer(minLength: 0)
-                                Button("Dismiss", systemImage: "xmark") { model.error = nil }.labelStyle(.iconOnly).buttonStyle(TargetButtonStyle(tinted: true))
-                            }.padding(.horizontal, 12).padding(.vertical, 8).background(style.warning.opacity(0.1))
-                        }
                         PendingInputNotice(model: model)
                     }
                     terminal
+                    // What went wrong, in the same place and look as a chat's banner row: above the input, with ×, in focus mode too.
+                    // It goes by itself when the cause is resolved (a read that succeeds, a reconnect).
+                    if let error = model.error {
+                        ChatNoticeLine(line: ChatNoticeBanners.Line(id: "shell-error", level: .warning, icon: ChatNoticeBanners.icon(.warning), text: error,
+                                                                    close: { model.error = nil }))
+                            .padding(.vertical, 4)
+                    }
                     bottomPanel
                 }
                 .background {

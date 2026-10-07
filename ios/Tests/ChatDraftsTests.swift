@@ -76,4 +76,26 @@ import XCTest
         defaults.set(Data("not json".utf8), forKey: ChatDraftStore.key)
         XCTAssertTrue(ChatDraftStore(defaults: defaults).chatIDs.isEmpty)
     }
+    func testAnUncertainMessageStaysFlaggedUntilSentOrEmptied() {
+        let defaults = defaults()
+        let store = ChatDraftStore(defaults: defaults)
+        store.beginSending("deploy", for: "a")
+        // Relaunch: restored as text, still uncertain on the next relaunch too.
+        let first = ChatDraftStore(defaults: defaults)
+        first.restoreUncertain(first.draft("a")!.restored.text, for: "a")
+        XCTAssertEqual(ChatDraftStore(defaults: defaults).draft("a")?.restored.text, "deploy")
+        XCTAssertEqual(ChatDraftStore(defaults: defaults).draft("a")?.restored.uncertain, true, "said again until resolved")
+        // Sending is the decision.
+        first.beginSending("deploy", for: "a"); first.endSending(for: "a"); first.setText("", for: "a")
+        XCTAssertNil(ChatDraftStore(defaults: defaults).draft("a"))
+        // Emptying the composer is one too.
+        first.restoreUncertain("again", for: "b")
+        first.setText("", for: "b")
+        XCTAssertNil(first.draft("b"))
+    }
+    func testADraftSavedBeforeTheUncertainFlagStillReads() throws {
+        let defaults = defaults()
+        defaults.set(Data(#"{"a":{"text":"old","updatedAt":800000000}}"#.utf8), forKey: ChatDraftStore.key)
+        XCTAssertEqual(ChatDraftStore(defaults: defaults, now: { Date(timeIntervalSinceReferenceDate: 800000100) }).draft("a")?.text, "old")
+    }
 }

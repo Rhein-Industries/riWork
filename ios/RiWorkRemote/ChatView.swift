@@ -22,6 +22,10 @@ struct ChatScreen: View {
     @State private var focusToken = 0
     /// The model picker is up.
     @State private var showModels = false
+    /// The history of the provider's notices is up.
+    @State private var showNotices = false
+    /// Counts requests from the tab row's ⋯ menu to show the notices.
+    var openNotices = 0
     /// The height the screen has now. With the software keyboard up it is under half of the phone, and the bars above the composer must
     /// leave the transcript room, so what they may scroll is a share of it.
     @State private var height: CGFloat = 800
@@ -41,7 +45,6 @@ struct ChatScreen: View {
         let questions = conversation.openQuestions
         VStack(spacing: 0) {
             ChatToolbar(model: model, chat: info, conversation: conversation, state: state, showModels: $showModels)
-            ChatStatusLines(model: model, chat: info, conversation: conversation, state: state)
             ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) }, viewportChanged: { transcriptChanged($0, barShown: !approvals.isEmpty || !questions.isEmpty) })
                 .id(chat.id)
             if let approval = approvals.first {
@@ -59,6 +62,8 @@ struct ChatScreen: View {
             if let activity = model.uploadActivity(for: .chat(chat.id)) {
                 UploadStatusBar(activity: activity, cancel: model.cancelUpload, dismiss: model.dismissUploadFailure)
             }
+            // Every message of the moment, in one place: the link, the chat's state, what went wrong, the provider's notices.
+            ChatNoticeBanners(model: model, chat: info, conversation: conversation, state: state, showHistory: { showNotices = true })
             ChatComposer(conversation: conversation, provider: info.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
                          send: { Task { await model.sendChatDraft(chat.id) } }, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } },
                          attach: { picking = $0 }, pasteFiles: pasteFiles)
@@ -73,6 +78,10 @@ struct ChatScreen: View {
         .onChange(of: chat.id) { _, _ in requestFocus() }
         .onChange(of: refocus) { _, _ in requestFocus() }
         .onChange(of: openModels) { _, _ in if connected { showModels = true } }
+        .onChange(of: openNotices) { _, _ in showNotices = true }
+        .sheet(isPresented: $showNotices, onDismiss: requestFocus) {
+            ChatNoticeHistory(notices: ChatNotices.all(conversation.transcript.items)) { showNotices = false }.desktopThemed(model.theme.style)
+        }
         .onChange(of: model.keyboard.hardware.isAttached) { _, _ in requestFocus() }
         // A request that needs the person is announced, since a person using VoiceOver is not looking at the bar.
         .onChange(of: approvals.first?.requestID) { _, id in
@@ -254,6 +263,7 @@ struct ChatMenuSection: View {
     let model: RemoteModel
     let chat: ChatInfo
     let changeModel: () -> Void
+    var showNotices: () -> Void = {}
     var body: some View {
         let conversation = model.chatConversations[chat.id] ?? ChatConversation(id: chat.id)
         let info = conversation.transcript.info ?? chat
@@ -267,6 +277,8 @@ struct ChatMenuSection: View {
             Button("Compact conversation", systemImage: "arrow.down.right.and.arrow.up.left") { Task { await model.compactChat(chat.id) } }
                 .disabled(!connected || state.isBusy || state == .starting)
             Button("Jump to latest", systemImage: "arrow.down.to.line") { conversation.jumpToEnd() }
+            let notices = ChatNotices.all(conversation.transcript.items).count
+            if notices > 0 { Button("Notices (\(notices))…", systemImage: "bell") { showNotices() } }
             if let id = info.providerThreadID { Button("Copy session id", systemImage: "doc.on.doc") { UIPasteboard.general.string = id } }
             Button("Stop agent", systemImage: "stop.circle", role: .destructive) { Task { await model.stopChat(chat.id) } }
                 .disabled(!connected || state == .stopped)
@@ -274,79 +286,183 @@ struct ChatMenuSection: View {
     }
 }
 
-// MARK: - What the chat is doing
+// MARK: - Messages of the moment
 
-/// The lines between the toolbar and the transcript that say something is not simply fine: no link, Starting, Stopped, Failed (with
-/// Retry), a chat that is gone, a transcript that cannot be read.
-private struct ChatStatusLines: View {
+/// The one place a chat says something for a moment, directly above the composer: no link (Reconnect), a chat gone from the Mac
+/// (Back), Starting, Stopped, Failed (Retry), a transcript that cannot be read, what went wrong with the last command, what an older
+/// desktop cannot do, and the provider's notices (rate and usage limits, retries, warnings: the latest of each kind in this turn).
+/// Each line has ×; each goes by itself when its cause is resolved, and a recurring one updates its line instead of adding one. At most
+/// two lines show; the rest are a tap away, and every provider notice of the chat is in the history.
+struct ChatNoticeBanners: View {
     @Environment(\.desktopStyle) private var style
     let model: RemoteModel
     let chat: ChatInfo
     let conversation: ChatConversation
     let state: ChatState
+    let showHistory: () -> Void
+    /// The link or gone line, and the Starting/Stopped/Failed line, the person closed: each stays closed until it says something else.
+    @State private var closedLink: String?
+    @State private var closedState: String?
+    @State private var expanded = false
+
+    struct Line: Identifiable {
+        let id: String
+        let level: ChatNoticeLevel
+        let icon: String
+        let text: String
+        var repeats = 1
+        var working = false
+        var action: (title: String, hint: String, enabled: Bool, run: () -> Void)?
+        let close: () -> Void
+    }
+
+    private var lines: [Line] {
+        var lines: [Line] = []
+        let connected = model.state == .connected
+        // The chat's state and the link: what it is now, so they go when it changes.
+        if conversation.gone {
+            let text = "This chat is gone from the Mac."
+            if closedLink != text { lines.append(Line(id: "status", level: .warning, icon: "questionmark.folder", text: text, action: ("Back", "Back to the terminals", true, { model.deselectChat() }), close: { closedLink = text })) }
+        } else if model.state != .connected {
+            let text = model.state == .connecting ? "Connecting…" : "Not connected. Your chat is kept; it carries on when the link is back."
+            if closedLink != text {
+                lines.append(Line(id: "status", level: .warning, icon: "wifi.slash", text: text, working: model.state == .connecting,
+                                  action: model.state == .connecting ? nil : ("Reconnect", "Connects to the Mac again", true, { Task { await model.connect() } }), close: { closedLink = text }))
+            }
+        } else if let error = conversation.readError, conversation.dismissedReadError != error.message {
+            lines.append(Line(id: "read", level: .warning, icon: "arrow.triangle.2.circlepath", text: error.message, close: { conversation.dismissedReadError = error.message }))
+        }
+        if let banner = ChatBanner(state: state, provider: chat.provider, lastMessage: conversation.transcript.lastUserMessage), closedState != banner.text {
+            switch banner {
+            case .starting: lines.append(Line(id: "state", level: .info, icon: "hourglass", text: banner.text, working: true, close: { closedState = banner.text }))
+            case .stopped: lines.append(Line(id: "state", level: .info, icon: "pause.circle", text: banner.text, close: { closedState = banner.text }))
+            case .failed(_, let retry):
+                lines.append(Line(id: "state", level: .error, icon: "exclamationmark.triangle.fill", text: banner.text,
+                                  action: retry.map { retry in ("Retry", "Sends your last message again", connected && !conversation.sending, { Task { await model.sendChatMessage(chat.id, retry) } }) },
+                                  close: { closedState = banner.text }))
+            }
+        }
+        // What the phone itself has to say: one line per source, replaced in place.
+        for alert in conversation.alerts.ordered {
+            lines.append(Line(id: "alert-\(alert.source.rawValue)", level: alert.level, icon: Self.icon(alert.level), text: alert.text, repeats: alert.repeats,
+                              close: { conversation.alerts.clear(alert.source) }))
+        }
+        // The provider's notices of this turn, the latest of each kind.
+        for notice in ChatNotices.current(conversation.transcript.items, dismissed: conversation.dismissedNotices) {
+            lines.append(Line(id: "notice-\(notice.kind)", level: notice.level, icon: Self.icon(notice.level), text: notice.text,
+                              close: { conversation.dismissedNotices.insert(notice.id) }))
+        }
+        return lines.sorted { $0.level.rank > $1.level.rank }
+    }
+    static func icon(_ level: ChatNoticeLevel) -> String {
+        switch level {
+        case .info: "info.circle"
+        case .warning: "exclamationmark.triangle.fill"
+        case .error: "xmark.octagon.fill"
+        }
+    }
 
     var body: some View {
-        let banner = ChatBanner(state: state, provider: chat.provider, lastMessage: conversation.transcript.lastUserMessage)
-        VStack(spacing: 0) {
-            if conversation.gone {
-                line(icon: "questionmark.folder", text: "This chat is gone from the Mac.", tint: style.warning) {
-                    Button("Back") { model.deselectChat() }.buttonStyle(DesktopButtonStyle(compact: true)).nativeGlass(style, in: Capsule())
-                }
-            } else if model.state != .connected {
-                line(icon: "wifi.slash", text: model.state == .connecting ? "Connecting…" : "Not connected. Your chat is kept; it carries on when the link is back.", tint: style.warning) {
-                    if model.state != .connecting { Button("Reconnect") { Task { await model.connect() } }.buttonStyle(DesktopButtonStyle(compact: true)).nativeGlass(style, in: Capsule()) }
-                }
-            } else if let error = conversation.readError {
-                line(icon: "arrow.triangle.2.circlepath", text: error.message, tint: style.warning) { EmptyView() }
-            }
-            if let banner {
-                line(icon: icon(banner), text: banner.text, tint: tint(banner), working: { if case .starting = banner { true } else { false } }()) {
-                    if case .failed(_, let retry?) = banner {
-                        Button("Retry") { Task { await model.sendChatMessage(chat.id, retry) } }.buttonStyle(DesktopButtonStyle(compact: true)).nativeGlass(style, in: Capsule())
-                            .disabled(model.state != .connected || conversation.sending)
-                            .accessibilityHint("Sends your last message again")
+        let lines = lines
+        let history = ChatNotices.all(conversation.transcript.items).count
+        let shown = expanded ? lines : Array(lines.prefix(2))
+        VStack(spacing: 4) {
+            ForEach(shown) { line in ChatNoticeLine(line: line) }
+            if lines.count > 2 || (history > 0 && !lines.isEmpty) {
+                HStack(spacing: 12) {
+                    if lines.count > 2 {
+                        Button(expanded ? "Show fewer" : "\(lines.count - 2) more") { expanded.toggle() }
+                            .accessibilityLabel(expanded ? "Show fewer messages" : "Show \(lines.count - 2) more messages")
+                    }
+                    Spacer(minLength: 0)
+                    if history > 0 {
+                        Button("\(history) \(history == 1 ? "notice" : "notices")", action: showHistory).accessibilityHint("Every notice of the provider in this chat")
+                            .chatLayoutProbe("notices-history", action: showHistory)
                     }
                 }
+                .font(style.system(.caption)).foregroundStyle(style.link).buttonStyle(.plain)
+                .padding(.horizontal, 14).frame(minHeight: 32).contentShape(Rectangle())
             }
         }
-    }
-
-    private func icon(_ banner: ChatBanner) -> String {
-        switch banner {
-        case .starting: "hourglass"
-        case .stopped: "pause.circle"
-        case .failed: "exclamationmark.triangle.fill"
-        }
-    }
-    private func tint(_ banner: ChatBanner) -> Color {
-        if case .failed = banner { return style.error }
-        return style.muted
-    }
-
-    private func line<Trailing: View>(icon: String, text: String, tint: Color, working: Bool = false, @ViewBuilder trailing: () -> Trailing) -> some View {
-        HStack(alignment: .center, spacing: 8) {
-            if working { ActivityIndicator(activity: .working) } else { Image(systemName: icon).foregroundStyle(tint).accessibilityHidden(true) }
-            Text(text).font(style.system(.footnote)).foregroundStyle(tint == style.muted ? style.muted : style.text).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 4)
-            trailing()
-        }
-        .padding(.horizontal, 12).padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(StatusLineSurface(tint: tint))
-        .accessibilityElement(children: .combine)
+        .padding(.top, lines.isEmpty ? 0 : 4)
+        .animation(.easeInOut(duration: 0.15), value: lines.map(\.id))
+        .onChange(of: model.state) { _, _ in closedLink = nil }
+        .onChange(of: state) { _, _ in closedState = nil }
+        .onChange(of: conversation.readError?.message) { _, message in if message == nil { conversation.dismissedReadError = nil } }
+        .chatLayoutProbe("banners", visible: !lines.isEmpty)
     }
 }
 
-/// What a status line sits on. The terminal look: a band in its signal color with a rule under it. Native: a rounded tinted panel set
-/// in from the edges, as the request bars and the upload line are, and a muted line (Starting, Stopped) on nothing at all.
-private struct StatusLineSurface: ViewModifier {
+/// One line of the banner row: the level's glyph and color, the text, an action when there is one, ×.
+struct ChatNoticeLine: View {
+    @Environment(\.desktopStyle) private var style
+    let line: ChatNoticeBanners.Line
+    private var tint: Color {
+        switch line.level {
+        case .info: style.muted
+        case .warning: style.gold
+        case .error: style.error
+        }
+    }
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            if line.working { ActivityIndicator(activity: .working) } else { Image(systemName: line.icon).foregroundStyle(tint).accessibilityHidden(true) }
+            Text(line.text + (line.repeats > 1 ? " ×\(line.repeats)" : "")).font(style.system(.footnote))
+                .foregroundStyle(line.level == .info ? style.muted : style.text).lineLimit(4).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let action = line.action {
+                Button(action.title, action: action.run).buttonStyle(DesktopButtonStyle(compact: true)).nativeGlass(style, in: Capsule())
+                    .disabled(!action.enabled).accessibilityHint(action.hint)
+            }
+            Button("Close message", systemImage: "xmark", action: line.close).labelStyle(.iconOnly)
+                .font(style.system(.caption, weight: .semibold)).foregroundStyle(style.muted).buttonStyle(TargetButtonStyle())
+                .chatLayoutProbe("close-\(line.id)", action: line.close)
+        }
+        .padding(.leading, 12).padding(.trailing, 2)
+        .modifier(StatusLineSurface(tint: tint))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(line.level == .error ? "Error" : (line.level == .warning ? "Warning" : "Note")): \(line.text)")
+        .chatLayoutProbe("banner-\(line.id)")
+    }
+}
+
+/// Every notice of the provider in this chat, newest first, with how often its kind was said.
+struct ChatNoticeHistory: View {
+    @Environment(\.desktopStyle) private var style
+    let notices: [ChatProviderNotice]
+    let done: () -> Void
+    var body: some View {
+        NavigationStack {
+            List(notices.reversed()) { notice in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: ChatNoticeBanners.icon(notice.level)).foregroundStyle(notice.level == .error ? style.error : (notice.level == .warning ? style.gold : style.muted))
+                        .accessibilityHidden(true)
+                    Text(notice.text).font(style.system(.footnote)).foregroundStyle(style.text).textSelection(.enabled)
+                    Spacer(minLength: 0)
+                    if notice.count > 1 { Text("×\(notice.count)").font(style.system(.caption)).foregroundStyle(style.muted).monospacedDigit() }
+                }
+                .listRowBackground(style.background)
+            }
+            .listStyle(.plain).scrollContentBackground(.hidden).background(style.background)
+            .overlay { if notices.isEmpty { Text("No notices in this chat.").font(style.system(.footnote)).foregroundStyle(style.muted) } }
+            .navigationTitle("Notices").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: done) } }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+/// What a banner line sits on. The terminal look: a band in its signal color with a rule under it. Native: a rounded tinted panel set
+/// in from the edges, as the request bars and the upload line are; a quiet one (a note, Starting, Stopped) in the active fill.
+struct StatusLineSurface: ViewModifier {
     @Environment(\.desktopStyle) private var style
     let tint: Color
     func body(content: Content) -> some View {
         let quiet = tint == style.muted
         if style.native {
-            content.background(tint.opacity(quiet ? 0 : 0.12), in: style.block(12)).padding(.horizontal, 8).padding(.top, quiet ? 0 : 6)
+            content.background(quiet ? style.active.opacity(0.6) : tint.opacity(0.12), in: style.block(12)).padding(.horizontal, 8)
         } else {
-            content.background(tint.opacity(quiet ? 0 : 0.10)).overlay(alignment: .bottom) { DesktopRule() }
+            content.background(quiet ? style.active.opacity(0.5) : tint.opacity(0.10)).overlay(alignment: .top) { DesktopRule() }
         }
     }
 }
@@ -416,7 +532,8 @@ private struct ChatTranscriptList: View {
                             .frame(maxWidth: .infinity, minHeight: 44)
                     }.disabled(conversation.historyLoading).accessibilityLabel("Load older messages").id("chat-history")
                 }
-                ForEach(transcript.items) { item in
+                // The provider's notices are the banner row's (and the history's), not rows of the transcript.
+                ForEach(transcript.items.filter(ChatNotices.isTranscriptRow)) { item in
                     ChatItemRow(item: item, provider: provider, open: open(for: item), toggle: toggle).equatable()
                         .id(item.id)
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frame in

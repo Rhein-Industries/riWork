@@ -362,8 +362,26 @@ import RiWorkCore
                 host.presentedViewController?.dismiss(animated: false)
                 try await Task.sleep(for: .milliseconds(400))
             }
-            await transport.append(chatID, [.state(.idle)])
+            // The banner row: the provider's notices of this turn (one per kind) and the phone's own, above the composer.
+            await transport.append(chatID, [.state(.idle), .itemCompleted(ChatItem(id: "u-notice", status: .completed, body: .userMessage("Run the suite"))),
+                                            .itemCompleted(ChatItem(id: "nr1", status: .completed, body: .notice(level: .warning, text: "Reconnecting… 1/5"))),
+                                            .itemCompleted(ChatItem(id: "nr2", status: .completed, body: .notice(level: .warning, text: "Reconnecting… 2/5"))),
+                                            .itemCompleted(ChatItem(id: "nl", status: .completed, body: .notice(level: .warning, text: "This account is close to the weekly usage limit"))),
+                                            .itemCompleted(ChatItem(id: "ne", status: .completed, body: .notice(level: .error, text: "Request failed: overloaded")))])
+            conversation.notice = "Couldn’t send: the Mac is busy. Your message is kept."
+            try await Task.sleep(for: .milliseconds(600))
+            try await shot(window, prefix + "-20-banners")
+            if let more = layout.actions["notices-history"] {
+                more()
+                try await Task.sleep(for: .milliseconds(800))
+                try await shot(window, prefix + "-21-notice-history")
+                host.presentedViewController?.dismiss(animated: false)
+                try await Task.sleep(for: .milliseconds(400))
+            }
+            conversation.notice = nil
             await model.disconnect()
+            try await Task.sleep(for: .milliseconds(500))
+            try await shot(window, prefix + "-22-not-connected")
             window.isHidden = true
             try? keychain.delete()
         }
