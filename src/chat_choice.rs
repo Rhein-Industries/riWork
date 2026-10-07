@@ -11,8 +11,8 @@ use crate::{
     theme, ui_text,
 };
 use gpui::{
-    AnyElement, Context, Entity, EventEmitter, FocusHandle, IntoElement, Render, Subscription,
-    Window, div, prelude::*, rgb,
+    AnyElement, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
+    Subscription, Window, div, prelude::*, rgb,
 };
 use std::{
     collections::BTreeMap,
@@ -263,6 +263,9 @@ impl ChatChoice {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // Base Dialog registers its trap during layout; it does not autofocus.
+        // Capture the invoker before moving focus to a retained chooser input.
+        let return_focus = window.focused(cx);
         let model = text_input::single_line("", "Provider default, or type a model ID", window, cx);
         let search = text_input::single_line("", "Search saved models", window, cx);
         let subscriptions = [&model, &search]
@@ -294,6 +297,8 @@ impl ChatChoice {
         }
         cx.observe_global::<theme::Appearance>(|_, cx| cx.notify())
             .detach();
+        let entry_focus = search.read(cx).focus_handle(cx);
+        entry_focus.focus(window, cx);
         Self {
             project,
             locations,
@@ -315,7 +320,7 @@ impl ChatChoice {
             _subscriptions: subscriptions,
             focus: cx.focus_handle(),
             dialog: gpui_kit::base::DialogHandle::new(true),
-            return_focus: window.focused(cx),
+            return_focus,
             controls,
         }
     }
@@ -865,31 +870,133 @@ mod tests {
 
     #[gpui::test]
     fn cancel_emits_no_creation_request(cx: &mut TestAppContext) {
-        let (handle, choice) = fixture(cx);
-        let events = Rc::new(RefCell::new((0usize, 0usize)));
-        let observed = events.clone();
-        let _subscription = cx.update(|app| {
-            app.subscribe(&choice, move |_, event: &ChoiceEvent, _| match event {
-                ChoiceEvent::Closed => observed.borrow_mut().0 += 1,
-                ChoiceEvent::Confirmed(_) => observed.borrow_mut().1 += 1,
-            })
+        // Keep a real invoker input mounted while the chooser opens and retires,
+        // matching Workspace's subscribed-close lifecycle without a backend.
+        struct Owner {
+            original: Entity<InputState>,
+            choice: Option<Entity<ChatChoice>>,
+            subscription: Option<Subscription>,
+            closes: usize,
+            creates: usize,
+        }
+        impl Owner {
+            fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<ChatChoice> {
+                let choice = cx.new(|cx| {
+                    let mut choice = ChatChoice::draft(
+                        "fixture-project".into(),
+                        vec![Location {
+                            worktree_id: None,
+                            label: "Project root".into(),
+                            path: "/fixture/root".into(),
+                        }],
+                        None,
+                        None,
+                        false,
+                        window,
+                        cx,
+                    );
+                    choice.apply_models(Default::default(), cx);
+                    choice
+                });
+                self.subscription = Some(cx.subscribe_in(
+                    &choice,
+                    window,
+                    |owner, _, event: &ChoiceEvent, _, cx| {
+                        match event {
+                            ChoiceEvent::Closed => {
+                                owner.closes += 1;
+                                owner.choice = None;
+                            }
+                            ChoiceEvent::Confirmed(_) => owner.creates += 1,
+                        }
+                        cx.notify();
+                    },
+                ));
+                self.choice = Some(choice.clone());
+                cx.notify();
+                choice
+            }
+        }
+        impl Render for Owner {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .size_full()
+                    .child(form_input::frame(
+                        "original-draft",
+                        &self.original,
+                        false,
+                        window,
+                        cx,
+                    ))
+                    .children(self.choice.clone())
+            }
+        }
+        let (handle, owner) = crate::form_input::test_window(cx, |window, cx| Owner {
+            original: text_input::single_line("original draft", "Original", window, cx),
+            choice: None,
+            subscription: None,
+            closes: 0,
+            creates: 0,
+        });
+        let original = owner.read_with(cx, |owner, _| owner.original.clone());
+        let identity = original.entity_id();
+        let mut closed_choice = None;
+        test_turn(cx, handle, |window, app| {
+            let original_focus = original.read(app).focus_handle(app);
+            original_focus.focus(window, app);
+            original.update(app, |input, cx| input.set_selected_range(2..7, cx));
+            closed_choice = Some(owner.update(app, |owner, cx| owner.open(window, cx)));
         });
         test_turn(cx, handle, |window, app| {
-            window.click("new-chat-model-input", app);
+            let choice = owner.read(app).choice.as_ref().unwrap().read(app);
+            assert!(choice.search.read(app).focus_handle(app).is_focused(window));
+            assert!(choice.focus.contains_focused(window, app));
+            // The first key after opening: no field click or manual chooser focus.
+            window.press("escape", app);
+        });
+        test_turn(cx, handle, |window, app| {
+            assert!(owner.read(app).choice.is_none());
+            assert_eq!((owner.read(app).closes, owner.read(app).creates), (1, 0));
+            assert!(original.read(app).focus_handle(app).is_focused(window));
+            assert_eq!(original.read(app).value(), "original draft");
+            assert_eq!(original.read(app).selected_range(), 2..7);
+            assert_eq!(owner.read(app).original.entity_id(), identity);
+            closed_choice
+                .as_ref()
+                .unwrap()
+                .update(app, |choice, cx| choice.confirm(window, cx));
+        });
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(
+                (owner.read(app).closes, owner.read(app).creates),
+                (1, 0),
+                "a queued confirmation after cancellation is inert"
+            );
+            owner.update(app, |owner, cx| {
+                owner.open(window, cx);
+            });
+        });
+        test_turn(cx, handle, |window, app| {
+            let choice = owner.read(app).choice.as_ref().unwrap().read(app);
+            assert!(choice.focus.contains_focused(window, app));
             window.input("typed-fixture", app);
             window.press("enter", app);
         });
-        assert_eq!(*events.borrow(), (0, 0));
-        test_turn(cx, handle, |window, app| window.press("escape", app));
-        assert_eq!(*events.borrow(), (1, 0));
         test_turn(cx, handle, |window, app| {
-            choice.update(app, |choice, cx| choice.confirm(window, cx));
+            let choice = owner.read(app).choice.as_ref().unwrap().read(app);
+            assert_eq!(choice.search.read(app).value(), "typed-fixture");
+            assert_eq!(owner.read(app).creates, 0);
+            assert_eq!(original.read(app).value(), "original draft");
+            window.press("escape", app);
         });
-        assert_eq!(
-            *events.borrow(),
-            (1, 0),
-            "a queued confirmation after cancellation is inert"
-        );
+        test_turn(cx, handle, |window, app| {
+            assert!(owner.read(app).choice.is_none());
+            assert_eq!((owner.read(app).closes, owner.read(app).creates), (2, 0));
+            assert!(original.read(app).focus_handle(app).is_focused(window));
+            assert_eq!(original.read(app).value(), "original draft");
+            assert_eq!(original.read(app).selected_range(), 2..7);
+            assert_eq!(owner.read(app).original.entity_id(), identity);
+        });
     }
 
     #[gpui::test]
