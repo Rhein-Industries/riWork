@@ -1441,7 +1441,7 @@ impl ChatView {
                     .px(px(4.0))
                     .border_color(rgb(if fast { colors.cyan } else { colors.panel }))
                     .bg(if fast {
-                        rgb(look.tint(colors.cyan, 0.18))
+                        rgb(look.tint(colors.cyan, 0.18)).into()
                     } else {
                         transparent_black()
                     })
