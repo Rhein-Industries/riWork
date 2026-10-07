@@ -199,9 +199,9 @@ const WINDOW_CONTROLS_HEIGHT: f32 = 28.0;
 const WINDOW_CONTROLS_CONTENT_INSET: f32 = WINDOW_CONTROLS_WIDTH + 14.0;
 const FOCUS_MAX_WIDTH: f32 = 1100.0;
 const FOCUS_BOTTOM_MARGIN: f32 = 0.30;
-const FOCUS_TOOLBAR_HEIGHT: f32 = 32.0;
 /// Design sizes at 100 % interface text; they grow with it (`ui_text::space`).
 const STATUS_BAR_HEIGHT: f32 = 22.0;
+/// Normal panes and focus mode share the same top bar height.
 const PANE_HEADER_HEIGHT: f32 = 28.0;
 /// Native's pane bar: its buttons are round hovers this wide, this far apart, and kept this
 /// far from the pane's edge; a tab's close mark has a smaller round hover.
@@ -5540,15 +5540,14 @@ impl Workspace {
     /// The bottom bar's usage item is drawn.
     fn usage_chip_visible(&self) -> bool {
         use status_bar::{StatusItemKind, StatusSide};
-        !self.focus_mode
-            && [StatusSide::Left, StatusSide::Right]
-                .into_iter()
-                .any(|side| {
-                    self.settings
-                        .status_bar
-                        .visible_items(side)
-                        .contains(&StatusItemKind::Usage)
-                })
+        [StatusSide::Left, StatusSide::Right]
+            .into_iter()
+            .any(|side| {
+                self.settings
+                    .status_bar
+                    .visible_items(side)
+                    .contains(&StatusItemKind::Usage)
+            })
     }
 
     fn usage_panel_visible(&self) -> bool {
@@ -5647,14 +5646,13 @@ impl Workspace {
     fn metrics_visible(&self) -> bool {
         use status_bar::{StatusItemKind, StatusSide};
         let status = &self.settings.status_bar;
-        let in_status_bar = !self.focus_mode
-            && [StatusSide::Left, StatusSide::Right]
-                .into_iter()
-                .any(|side| {
-                    status
-                        .visible_items(side)
-                        .contains(&StatusItemKind::Resources)
-                });
+        let in_status_bar = [StatusSide::Left, StatusSide::Right]
+            .into_iter()
+            .any(|side| {
+                status
+                    .visible_items(side)
+                    .contains(&StatusItemKind::Resources)
+            });
         in_status_bar
             || self.panes.values().any(|pane| {
                 pane.tabs
@@ -6333,15 +6331,14 @@ impl Workspace {
     /// Whether the status bar shows the layout item, which the layout menu hangs from.
     fn layout_item_shown(&self) -> bool {
         use status_bar::{StatusItemKind, StatusSide};
-        !self.focus_mode
-            && [StatusSide::Left, StatusSide::Right]
-                .into_iter()
-                .any(|side| {
-                    self.settings
-                        .status_bar
-                        .visible_items(side)
-                        .contains(&StatusItemKind::Layout)
-                })
+        [StatusSide::Left, StatusSide::Right]
+            .into_iter()
+            .any(|side| {
+                self.settings
+                    .status_bar
+                    .visible_items(side)
+                    .contains(&StatusItemKind::Layout)
+            })
     }
 
     fn toggle_layout_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -8834,7 +8831,14 @@ impl Workspace {
                 .map(|panel| panel.clone().into_any_element())
                 .unwrap_or_else(|| div().into_any_element()),
             Some(TabContent::Panel(PanelKind::Settings)) => {
-                self.settings_panel.clone().into_any_element()
+                // Settings fills the pane. Keep its large tree out of the workspace's
+                // intrinsic-size passes; lay it out once at the pane's actual size.
+                // Its own notifications (including scrolling and global changes) still
+                // invalidate the cached view.
+                self.settings_panel
+                    .clone()
+                    .cached(gpui::StyleRefinement::default().size_full())
+                    .into_any_element()
             }
             Some(TabContent::Panel(PanelKind::Files)) => active_tab
                 .and_then(|tab| self.file_surfaces.get(&tab.id))
@@ -10084,7 +10088,12 @@ impl Workspace {
         let show_window_controls = window_controls_visible(window);
         let viewport = window.viewport_size();
         let width = viewport.width.as_f32();
-        let height = viewport.height.as_f32();
+        let footer_height = if self.settings.status_bar.enabled {
+            ui_text::space_f32(STATUS_BAR_HEIGHT)
+        } else {
+            0.0
+        };
+        let height = (viewport.height.as_f32() - footer_height).max(0.0);
         let title = self
             .panes
             .get(&self.active_pane)
@@ -10097,7 +10106,7 @@ impl Workspace {
             .flex()
             .flex_none()
             .items_center()
-            .h(ui_text::space(FOCUS_TOOLBAR_HEIGHT))
+            .h(ui_text::space(PANE_HEADER_HEIGHT))
             .pl(px(if show_window_controls {
                 WINDOW_CONTROLS_CONTENT_INSET
             } else {
@@ -10181,7 +10190,7 @@ impl Workspace {
                     })),
             );
         let content = if centered {
-            let toolbar_height = ui_text::space_f32(FOCUS_TOOLBAR_HEIGHT);
+            let toolbar_height = ui_text::space_f32(PANE_HEADER_HEIGHT);
             let top_gap = 20.0_f32.min((height - toolbar_height).max(0.0));
             let content_width = (width - 48.0).max(0.0).min(FOCUS_MAX_WIDTH);
             let content_height =
@@ -10412,7 +10421,7 @@ impl Workspace {
     ) -> AnyElement {
         let colors = theme::palette(cx);
         let (inset_left, inset_top) = root_dock_insets(controls_visible);
-        let footer_height = if self.focus_mode || !self.settings.status_bar.enabled {
+        let footer_height = if !self.settings.status_bar.enabled {
             0.0
         } else {
             ui_text::space_f32(STATUS_BAR_HEIGHT)
@@ -10613,21 +10622,19 @@ impl Render for Workspace {
                         )
                     }),
             )
-            .children(
-                (!self.focus_mode && self.settings.status_bar.enabled).then(|| {
-                    div()
-                        .id("bottom-status-bar")
-                        .w_full()
-                        .h(ui_text::space(STATUS_BAR_HEIGHT))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .bg(rgb(colors.panel))
-                        .border_t_1()
-                        .border_color(rgb(colors.divider))
-                        .child(self.render_status(cx))
-                }),
-            )
+            .children(self.settings.status_bar.enabled.then(|| {
+                div()
+                    .id("bottom-status-bar")
+                    .w_full()
+                    .h(ui_text::space(STATUS_BAR_HEIGHT))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .bg(rgb(colors.panel))
+                    .border_t_1()
+                    .border_color(rgb(colors.divider))
+                    .child(self.render_status(cx))
+            }))
             .children(
                 self.layout_menu_open
                     .then(|| self.render_layout_menu(window.viewport_size().width.as_f32(), cx)),
