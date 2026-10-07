@@ -682,7 +682,7 @@ impl ChatView {
                     })
                 })
         };
-        let content: Vec<AnyElement> = match menu {
+        let mut content: Vec<AnyElement> = match menu {
             Menu::Mode => {
                 let current = info.map(|info| info.approval_mode).unwrap_or_default();
                 toolbar::MODES
@@ -868,6 +868,38 @@ impl ChatView {
                     .into_any_element(),
             ],
         };
+        if menu == Menu::Model {
+            content.push(
+                div()
+                    .mt(ui_text::space(4.0))
+                    .px(ui_text::space(10.0))
+                    .py(ui_text::space(6.0))
+                    .border_t_1()
+                    .border_color(rgb(colors.divider))
+                    .text_size(ui_text::text(10.0))
+                    .text_color(rgb(colors.muted))
+                    .child("New chat")
+                    .into_any_element(),
+            );
+            content.extend(
+                [
+                    (Provider::Codex, "chat-new-codex", "New Codex chat…"),
+                    (Provider::Claude, "chat-new-claude", "New Claude chat…"),
+                ]
+                .into_iter()
+                .map(|(provider, name, label)| {
+                    button(name, label, None, look)
+                        .w_full()
+                        .border_0()
+                        .role(gpui::Role::MenuItem)
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.close_menu(cx);
+                            cx.emit(ChatViewEvent::NewProviderChat { provider });
+                        }))
+                        .into_any_element()
+                }),
+            );
+        }
         // Composer menus are positioned above their triggers by Base Popup. Header menus
         // keep their original placement. Both cap their content to the available pane.
         let in_composer = matches!(menu, Menu::Model | Menu::Effort);
@@ -2172,6 +2204,12 @@ mod tests {
     ) {
         cx.update(|cx| {
             cx.set_global(crate::settings::Settings {
+                theme: theme::ThemeChoice::Hermes,
+                ui_text_matches_terminal: false,
+                ui_text_size: ui_text::TextPoints::new(
+                    ui_text::scale() * ui_text::REFERENCE_SIZE
+                        - ui_text::Face::Hermes.offset(false),
+                ),
                 dictation_mic: true,
                 ..Default::default()
             });
@@ -2183,6 +2221,7 @@ mod tests {
                 error: None,
             });
             text_input::init(cx);
+            ui_text::init(cx);
             let (feed, _) = super::super::feed::Feed::recording();
             let mut chat = None;
             let handle = cx
@@ -2238,6 +2277,138 @@ mod tests {
                 .unwrap();
             cx.run_until_parked();
         }
+    }
+
+    #[gpui::test]
+    fn explicit_provider_buttons_emit_once_and_preserve_conversation_draft_and_attachment_uuid(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::chat::{
+            attachments::{Attachment, AttachmentKind, Preview},
+            model::ChatInfo,
+        };
+        use std::{cell::RefCell, rc::Rc};
+        let previous = ui_text::set_for_tests(1.0, ui_text::Face::Hermes);
+        for catalog in [true, false] {
+            for (provider, button_id, label) in [
+                (Provider::Codex, "chat-new-codex", "New Codex chat…"),
+                (Provider::Claude, "chat-new-claude", "New Claude chat…"),
+            ] {
+                let (handle, view) = hermes_fixture(cx, 720.0);
+                let (feed, recording) = super::super::feed::Feed::recording();
+                let chat_id = uuid::Uuid::from_u128(1).to_string();
+                let attachment = Attachment {
+                    id: uuid::Uuid::from_u128(2).to_string(),
+                    name: "Retained notes.txt".into(),
+                    path: "/inert-fixture/notes.txt".into(),
+                    kind: AttachmentKind::Text,
+                    bytes: 5,
+                    fingerprint: "fixture-fingerprint".into(),
+                    preview: Preview::Text {
+                        excerpt: "notes".into(),
+                    },
+                };
+                let info = ChatInfo {
+                    id: chat_id.clone(),
+                    provider: Provider::Codex,
+                    project_id: Some("fixture-project".into()),
+                    worktree_id: Some("fixture-worktree".into()),
+                    cwd: "/inert-fixture".into(),
+                    title: "Existing conversation".into(),
+                    created_at_unix: 1,
+                    provider_thread_id: Some("existing-provider-thread".into()),
+                    model: Some("fixture-model".into()),
+                    effort: Some("high".into()),
+                    fast: true,
+                    approval_mode: ApprovalMode::Supervised,
+                    codex_account_id: None,
+                    state: ChatState::Running,
+                    orchestrator: None,
+                };
+                cx.update_window(handle.into(), |_, window, cx| {
+                    view.update(cx, |view, cx| {
+                        view.feed = Some(feed);
+                        view.chat_id = Some(chat_id.clone());
+                        view.model.transcript.info = Some(info.clone());
+                        if !catalog {
+                            view.model.transcript.models.clear();
+                        }
+                        view.attachments =
+                            vec![super::super::attachment_ui::Chip::ready(attachment.clone())];
+                        view.composer.update(cx, |state, cx| {
+                            state.set_value("Keep this draft 🦀\nexactly", window, cx)
+                        });
+                        cx.notify();
+                    })
+                })
+                .unwrap();
+                draw_hermes(cx, handle);
+                let (editor, generation) = view.read_with(cx, |view, _| {
+                    (view.composer.entity_id(), view.editor_generation)
+                });
+                let events = Rc::new(RefCell::new(Vec::new()));
+                let captured = events.clone();
+                let _subscription = cx.update(|cx| {
+                    cx.subscribe(&view, move |_, event, _| match event {
+                        ChatViewEvent::NewProviderChat { provider } => {
+                            captured.borrow_mut().push(*provider)
+                        }
+                        _ => panic!("provider button emitted an unrelated event"),
+                    })
+                });
+                cx.update_window(handle.into(), |_, window, cx| {
+                    window.click("chat-model", cx)
+                })
+                .unwrap();
+                draw_hermes(cx, handle);
+                if catalog {
+                    cx.update_window(handle.into(), |_, window, cx| {
+                        window.click("chat-model-search", cx);
+                        window.input("no matching existing model", cx);
+                    })
+                    .unwrap();
+                    draw_hermes(cx, handle);
+                }
+                cx.update_window(handle.into(), |_, window, cx| {
+                    assert_eq!(window.find(button_id).role(), Some(gpui::Role::MenuItem));
+                    assert_eq!(window.find(button_id).label(), Some(label));
+                    window.click(button_id, cx);
+                })
+                .unwrap();
+                draw_hermes(cx, handle);
+                assert_eq!(events.borrow().as_slice(), &[provider]);
+                assert!(matches!(
+                    recording.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                ));
+                view.read_with(cx, |view, cx| {
+                    assert_eq!(view.chat_id.as_deref(), Some(chat_id.as_str()));
+                    assert_eq!(view.model.transcript.info.as_ref(), Some(&info));
+                    assert_eq!(view.composer.entity_id(), editor);
+                    assert_eq!(view.editor_generation, generation);
+                    assert_eq!(
+                        view.composer.read(cx).value(),
+                        "Keep this draft 🦀\nexactly"
+                    );
+                    assert_eq!(view.attachments.len(), 1);
+                    assert_eq!(view.attachments[0].attachment(), Some(&attachment));
+                    assert_eq!(view.attachments[0].id, attachment.id);
+                    assert!(view.submissions.is_empty());
+                });
+                cx.update(|cx| {
+                    assert_eq!(
+                        ui_text::Face::of(cx.global::<crate::settings::Settings>()),
+                        ui_text::Face::Hermes
+                    );
+                    assert_eq!(ui_text::face(), ui_text::Face::Hermes);
+                    assert!(
+                        !cx.global::<crate::settings::Settings>()
+                            .ui_text_matches_terminal
+                    );
+                });
+            }
+        }
+        ui_text::set_for_tests(previous.0, previous.1);
     }
 
     #[gpui::test]
