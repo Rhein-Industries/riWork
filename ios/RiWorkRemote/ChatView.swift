@@ -17,6 +17,8 @@ struct ChatScreen: View {
     let chat: ChatInfo
     /// Counts times a sheet over the screen went away: the composer takes the keyboard back.
     var refocus = 0
+    /// Counts requests from the tab row's ⋯ menu to open the model picker.
+    var openModels = 0
     @State private var focusToken = 0
     /// The model picker is up.
     @State private var showModels = false
@@ -70,6 +72,7 @@ struct ChatScreen: View {
         .onAppear { requestFocus() }
         .onChange(of: chat.id) { _, _ in requestFocus() }
         .onChange(of: refocus) { _, _ in requestFocus() }
+        .onChange(of: openModels) { _, _ in if connected { showModels = true } }
         .onChange(of: model.keyboard.hardware.isAttached) { _, _ in requestFocus() }
         // A request that needs the person is announced, since a person using VoiceOver is not looking at the bar.
         .onChange(of: approvals.first?.requestID) { _, id in
@@ -127,6 +130,8 @@ struct ChatScreen: View {
 
 // MARK: - Toolbar
 
+/// The chat's own row under the tab row: the model, how full the context is, and the approval mode, each a tap away. The chat's
+/// actions (Compact, Stop agent, Copy session id, …) are in the tab row's one ⋯ menu (`ChatMenuSection`), so the screen has a single ⋯.
 private struct ChatToolbar: View {
     @Environment(\.desktopStyle) private var style
     let model: RemoteModel
@@ -137,47 +142,49 @@ private struct ChatToolbar: View {
 
     private var shownMode: ChatApprovalMode { conversation.pendingMode ?? chat.approvalMode }
     private var choices: ChatModelChoices { conversation.modelChoices(fallback: chat) }
-    private func icon(_ mode: ChatApprovalMode) -> String {
-        switch mode {
-        case .supervised: "hand.raised"
-        case .autoEdit: "pencil"
-        case .full: "bolt.shield"
-        case .plan: "list.bullet.rectangle"
-        }
-    }
     private var connected: Bool { model.state == .connected }
-    private var meter: ChatUsageMeter? { conversation.transcript.usage.map(ChatUsageMeter.init) }
+    private var meter: ChatUsageMeter? { conversation.transcript.usage.map(ChatUsageMeter.init).flatMap { $0.tokensText == nil ? nil : $0 } }
 
     var body: some View {
+        // The mode gives up its word before anything wraps; the model's name is cut last (`ChatModelChip` gives way first of all).
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 6) { modelButton; Spacer(minLength: 4); modeButton; options }
+            row(modeTitle: true)
+            row(modeTitle: false)
             VStack(alignment: .leading, spacing: 0) {
-                HStack { modelButton; Spacer(minLength: 4); options }
-                modeButton
+                HStack(spacing: 4) { modelButton; Spacer(minLength: 4); modeButton(title: false) }
+                if let meter { ChatUsageRing(meter: meter) }
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 8)
         .background(style.background)
         .overlay(alignment: .bottom) { if !style.glass { DesktopRule() } }
+    }
+    private func row(modeTitle: Bool) -> some View {
+        HStack(spacing: 2) {
+            modelButton
+            if let meter { ChatUsageRing(meter: meter) }
+            Spacer(minLength: 4)
+            modeButton(title: modeTitle)
+        }
     }
 
     private var modelButton: some View {
         ChatModelChip(choices: choices, enabled: connected, compact: true) { showModels = true }
             .chatLayoutProbe("model")
     }
-    private var modeButton: some View {
+    private func modeButton(title: Bool) -> some View {
         Menu {
             Picker("Approval mode", selection: Binding(get: { shownMode }, set: { mode in Task { await model.setChatMode(chat.id, mode) } })) {
-                ForEach(ChatApprovalMode.allCases) { mode in Label("\(mode.title) · \(mode.detail)", systemImage: icon(mode)).tag(mode) }
+                ForEach(ChatApprovalMode.allCases) { mode in Label("\(mode.title) · \(mode.detail)", systemImage: mode.icon).tag(mode) }
             }
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: icon(shownMode)).accessibilityHidden(true)
-                Text(shownMode.title).font(style.system(.footnote, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 5) {
+                Image(systemName: shownMode.icon).accessibilityHidden(true)
+                if title { Text(shownMode.title).font(style.system(.footnote, weight: .medium)).lineLimit(1).fixedSize() }
                 Image(systemName: "chevron.down").font(style.system(.caption2)).accessibilityHidden(true)
             }
             .foregroundStyle(shownMode == .full ? style.gold : style.muted)
-            .padding(.horizontal, 4).frame(minHeight: 44).contentShape(Rectangle())
+            .padding(.horizontal, 6).frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
         }
         .buttonStyle(.plain).disabled(!connected)
         .accessibilityIdentifier("chat-permission-mode")
@@ -185,25 +192,86 @@ private struct ChatToolbar: View {
         .accessibilityLabel("Approval mode").accessibilityValue("\(shownMode.title), \(shownMode.detail)")
         .accessibilityHint("Choose Supervised, Auto-edit, Full or Plan")
     }
-    private var options: some View {
-        Menu {
-            if let meter, let text = meter.text {
+}
+
+extension ChatApprovalMode {
+    var icon: String {
+        switch self {
+        case .supervised: "hand.raised"
+        case .autoEdit: "pencil"
+        case .full: "bolt.shield"
+        case .plan: "list.bullet.rectangle"
+        }
+    }
+}
+
+/// How full the chat's context is: a ring that fills with the share used, the percent beside it. A tap (or a long press) shows the
+/// tokens used of the window and Claude's cost estimate. It follows the chat's usage as it comes in.
+struct ChatUsageRing: View {
+    @Environment(\.desktopStyle) private var style
+    let meter: ChatUsageMeter
+    @State private var detail = false
+    /// Gold above 80 % and red above 95 %, as the meter always was: a context that is nearly full is about to be compacted.
+    private var tint: Color {
+        let fraction = meter.contextFraction ?? 0
+        return fraction > 0.95 ? style.error : (fraction > 0.8 ? style.gold : style.text)
+    }
+    var body: some View {
+        Button { detail = true } label: {
+            HStack(spacing: 5) {
+                ZStack {
+                    Circle().stroke(style.divider, lineWidth: 2.5)
+                    Circle().trim(from: 0, to: meter.contextFraction ?? 0).stroke(tint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round)).rotationEffect(.degrees(-90))
+                }
+                .frame(width: style.pt(15), height: style.pt(15))
+                .animation(.easeOut(duration: 0.3), value: meter.contextFraction)
+                Text(meter.percentText ?? meter.tokensText?.replacingOccurrences(of: " tokens", with: "") ?? "")
+                    .font(style.system(.footnote, weight: .medium)).monospacedDigit().foregroundStyle(style.muted).lineLimit(1).fixedSize()
+            }
+            .padding(.horizontal, 6).frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .simultaneousGesture(LongPressGesture(minimumDuration: 0.35).onEnded { _ in detail = true })
+        .popover(isPresented: $detail) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Context").font(style.system(.caption, weight: .semibold)).foregroundStyle(style.muted)
+                Text([meter.percentText, meter.tokensText].compactMap { $0 }.joined(separator: " · ")).font(style.system(.subheadline, weight: .semibold)).monospacedDigit().foregroundStyle(style.text)
+                if let cost = meter.costText { Text(cost).font(style.system(.footnote)).foregroundStyle(style.muted) }
+            }
+            .padding(14).fixedSize()
+            .presentationCompactAdaptation(.popover)
+            .accessibilityElement(children: .combine)
+        }
+        .chatLayoutProbe("usage", action: { detail = true })
+        .accessibilityIdentifier("chat-usage")
+        .accessibilityLabel("Context usage").accessibilityValue(meter.spoken ?? "")
+        .accessibilityHint("Shows the tokens used and the cost estimate")
+    }
+}
+
+/// The chat's part of the tab row's ⋯ menu, first in it while a chat is on screen.
+struct ChatMenuSection: View {
+    let model: RemoteModel
+    let chat: ChatInfo
+    let changeModel: () -> Void
+    var body: some View {
+        let conversation = model.chatConversations[chat.id] ?? ChatConversation(id: chat.id)
+        let info = conversation.transcript.info ?? chat
+        let state = model.chatState(info)
+        let connected = model.state == .connected
+        Section("Chat") {
+            if let meter = conversation.transcript.usage.map(ChatUsageMeter.init), let text = meter.text {
                 Text("Usage: \(text)").accessibilityLabel("Usage").accessibilityValue(meter.spoken ?? text)
             }
-            Button("Change model", systemImage: "cpu") { showModels = true }.disabled(!connected || state.isBusy || state == .starting)
+            Button("Change model…", systemImage: "cpu") { changeModel() }.disabled(!connected || state.isBusy || state == .starting)
             Button("Compact conversation", systemImage: "arrow.down.right.and.arrow.up.left") { Task { await model.compactChat(chat.id) } }
                 .disabled(!connected || state.isBusy || state == .starting)
             Button("Jump to latest", systemImage: "arrow.down.to.line") { conversation.jumpToEnd() }
+            if let id = info.providerThreadID { Button("Copy session id", systemImage: "doc.on.doc") { UIPasteboard.general.string = id } }
             Button("Stop agent", systemImage: "stop.circle", role: .destructive) { Task { await model.stopChat(chat.id) } }
                 .disabled(!connected || state == .stopped)
-            if let id = chat.providerThreadID { Button("Copy session id", systemImage: "doc.on.doc") { UIPasteboard.general.string = id } }
-        } label: {
-            Image(systemName: "ellipsis").font(style.system(.body, weight: .semibold)).foregroundStyle(style.muted)
-                .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
         }
-        .buttonStyle(.plain).accessibilityLabel("Chat options")
     }
-
 }
 
 // MARK: - What the chat is doing
@@ -333,7 +401,6 @@ private struct ChatTranscriptList: View {
     var body: some View {
         let transcript = conversation.transcript
         ScrollViewReader { proxy in
-        VStack(spacing: 0) {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if !conversation.feed.loaded {
@@ -359,7 +426,7 @@ private struct ChatTranscriptList: View {
                         .onDisappear { viewport.frames[item.id] = nil }
                 }
                 if state == .running || state == .waiting || state == .starting { workingRow }
-                Color.clear.frame(height: 18).id(Self.end)
+                Color.clear.frame(height: 6).id(Self.end)
             }
             .padding(.top, 12)
         }
@@ -403,10 +470,9 @@ private struct ChatTranscriptList: View {
         .onChange(of: conversation.feed.loaded) { _, loaded in if loaded && !userDriven { jump(proxy) } }
         .accessibilityLabel("\(provider.chatTitle) conversation")
         .onDisappear { cancelHistoryAnchor(); paging?.cancel(); paging = nil; bottomCorrection?.cancel(); bottomCorrection = nil }
-        // Reserve the control's intrinsic size even when hidden; entering reader mode must not resize the viewport.
-        HStack { Spacer(minLength: 0); pill(proxy) }
-            .background(style.background)
-        }
+        // Over the transcript's bottom edge, not in a row of its own: the transcript reaches the composer, and showing or hiding the
+        // pill never resizes the viewport. It is shown only while the reader is scrolled up, so it covers nothing being followed.
+        .overlay(alignment: .bottomTrailing) { pill(proxy).padding(.bottom, 6) }
         }
     }
 

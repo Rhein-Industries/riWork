@@ -301,6 +301,8 @@ struct TerminalTabsView: View {
     @State private var onScreen = false
     /// Counts times the New terminal sheet went away: a chat on screen takes the keyboard back for its composer.
     @State private var chatRefocus = 0
+    /// Counts requests from the ⋯ menu to open the chat's model picker (the picker belongs to the chat screen).
+    @State private var chatModels = 0
     private var openSessions: [RemoteSession] { model.openSessions }
     /// What is under the navigation row, for `TabScreenChrome`.
     private var content: TabScreenContent {
@@ -321,7 +323,7 @@ struct TerminalTabsView: View {
                 if let note = model.orchestratorNotice { NoteLine(text: note) { model.clearOrchestratorNotice() } }
             }
             if let chat = model.selectedChat {
-                ChatScreen(model: model, chat: chat, refocus: chatRefocus).id(chat.id)
+                ChatScreen(model: model, chat: chat, refocus: chatRefocus, openModels: chatModels).id(chat.id)
             } else if let blocked = model.selectedBlocked {
                 OrchestratorNotice(session: blocked.session, opening: blocked.opening)
             } else if model.sessionID == nil && openSessions.isEmpty {
@@ -388,12 +390,15 @@ struct TerminalTabsView: View {
         .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
         .chatLayoutProbe("navigation")
     }
-    /// The screen's menu. The project, Session info, the tabs and the connection are there for every tab; a terminal adds its own section.
+    /// The screen's one menu, in sections: what is on screen (a chat's actions, or a terminal's), then the tab, then the project and the
+    /// connection. A chat has no ⋯ of its own; its row under this one holds only the model, the usage ring and the mode.
     private func screenMenu(_ chrome: TabScreenChrome) -> some View {
         Menu {
-            Text(project.name)
+            if let chat = model.selectedChat {
+                ChatMenuSection(model: model, chat: chat) { chatModels += 1 }
+            }
             if chrome.terminalActions {
-                Section {
+                Section("Terminal") {
                     Button("Focus mode", systemImage: "arrow.up.left.and.arrow.down.right") { model.setFocusMode(true) }
                     if UIDevice.current.userInterfaceIdiom == .pad { Toggle("Follow output", isOn: $followOutput) }
                     else { Button("Jump to latest output", systemImage: "arrow.down.to.line") { model.jumpToLatest() } }
@@ -411,21 +416,25 @@ struct TerminalTabsView: View {
                     Button("Refresh output", systemImage: "arrow.clockwise") { Task { await model.readOutput() } }.disabled(model.state != .connected)
                 }
             }
-            Button("Session info", systemImage: "info.circle") { showSessionInfo() }.disabled(content == .none)
-            Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
-            // The project's own orchestrator is a row of the New terminal sheet; the global one is here too, a tap away.
-            if model.orchestratorsOffered {
-                Button("Global orchestrator", systemImage: "globe") { openGlobalOrchestrator() }
-                    .disabled(model.state != .connected || model.creatingOrchestrator)
+            // The tab: what it is and, for a terminal, closing it. (Closing any tab, and detaching a worker's, belong here too.)
+            Section("Tab") {
+                Button("Session info", systemImage: "info.circle") { showSessionInfo() }.disabled(content == .none)
+                if chrome.terminalActions, let session = model.session, model.canClose(session) {
+                    Button("Close this terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session }
+                }
             }
-            if chrome.terminalActions, let session = model.session, model.canClose(session) {
-                Button("Close this terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session }
+            Section(project.name) {
+                Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                // The project's own orchestrator is a row of the New terminal sheet; the global one is here too, a tap away.
+                if model.orchestratorsOffered {
+                    Button("Global orchestrator", systemImage: "globe") { openGlobalOrchestrator() }
+                        .disabled(model.state != .connected || model.creatingOrchestrator)
+                }
+                if model.state == .connected { Button("Disconnect", systemImage: "wifi.slash") { Task { await model.disconnect() } } }
+                else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
             }
-            Divider()
-            if model.state == .connected { Button("Disconnect", systemImage: "wifi.slash") { Task { await model.disconnect() } } }
-            else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
         } label: {
-            Label("Terminal tabs and connection", systemImage: "ellipsis").labelStyle(.iconOnly)
+            Label("More options", systemImage: "ellipsis").labelStyle(.iconOnly)
                 .frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
         }
             .buttonStyle(.plain)

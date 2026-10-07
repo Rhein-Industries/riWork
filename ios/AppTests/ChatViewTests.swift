@@ -457,7 +457,7 @@ import RiWorkCore
         try await Task.sleep(for: .milliseconds(400))
         XCTAssertEqual(try renderedMessageTop(movedMessage, rig: rig, scroll: list), movedAnchor, accuracy: 4, "late expansion above the anchor preserves its within-row position")
         XCTAssertEqual(conversation.draft, "gated draft")
-        try assertLatestOutsideTranscript(rig, scroll: list)
+        try assertLatestOverTranscriptBottom(rig, scroll: list)
         try snapshot(rig, name: "latest-first-gated-large-text")
         await finish(rig)
     }
@@ -786,12 +786,12 @@ import RiWorkCore
             scroll.setContentOffset(CGPoint(x: 0, y: max(20, bottomOffset(scroll) - scroll.bounds.height - 200)), animated: false)
             try await Task.sleep(for: .milliseconds(150))
             scroll.delegate?.scrollViewDidEndDragging?(scroll, willDecelerate: false)
-            await eventually("Latest has its own reserved row") { rig.layout.visible["latest"] == true }
+            await eventually("Latest shows while reading") { rig.layout.visible["latest"] == true }
             try await Task.sleep(for: .milliseconds(100))
-            try assertLatestOutsideTranscript(rig, scroll: scroll)
+            try assertLatestOverTranscriptBottom(rig, scroll: scroll)
             await rig.transport.append(chatID, [.itemCompleted(ChatItem(id: "layout-live", status: .completed, body: .agentMessage("One new live message.")))])
             await eventually("only the live row counts as new") { (try? self.renderedText(rig, in: rig.layout.frames["latest"] ?? .zero).contains("1 new")) == true }
-            try assertLatestOutsideTranscript(rig, scroll: scroll)
+            try assertLatestOverTranscriptBottom(rig, scroll: scroll)
             if category == .accessibilityExtraLarge { try compactSnapshot(rig, name: "compact-large-text-reader") }
             await rig.transport.append(chatID, [approval("layout-approval"), .state(.waiting)])
             await eventually("approval displayed") { conversation.openApprovals.count == 1 }
@@ -811,7 +811,7 @@ import RiWorkCore
             XCTAssertGreaterThan(allow.height, 40)
             XCTAssertTrue(try renderedText(rig, in: CGRect(x: 0, y: scroll.convert(scroll.bounds, to: rig.window).maxY, width: screen.width, height: composerFrame.minY - scroll.convert(scroll.bounds, to: rig.window).maxY)).contains("Allow"), "approval action is visible above the keyboard")
             XCTAssertGreaterThan(scroll.bounds.height, 24, "conversation retains visible room above approvals")
-            try assertLatestOutsideTranscript(rig, scroll: scroll)
+            try assertLatestOverTranscriptBottom(rig, scroll: scroll)
             print("COMPACT_LAYOUT category=\(category.rawValue) size=\(screen) navigation=\(navigation.height) model=\(modelFrame.height) transcript=\(scroll.convert(scroll.bounds, to: rig.window)) latest=\(rig.layout.frames["latest"] ?? .zero) approval=\(allow) draft=\(composerFrame) keyboardTop=\(keyboardTop)")
             if category == .accessibilityExtraLarge { try compactSnapshot(rig, name: "compact-large-text-approval-keyboard") }
             await rig.transport.append(chatID, [.approvalResolved(requestID: "layout-approval", decision: .accept), .questionRequested(ChatQuestion(requestID: "layout-question", questions: [ChatQuestionPrompt(header: "Scope", question: "Which tests?", options: [ChatQuestionOption(label: "Changed", description: "Focused checks")], multiSelect: false)]))])
@@ -824,12 +824,63 @@ import RiWorkCore
         }
     }
 
+    /// The transcript reaches down to the composer, with the software keyboard up and down: no band between them (Latest used to keep
+    /// a row of its own there), no keyboard inset left inside the transcript, and Latest over the transcript's bottom edge.
+    func testTranscriptReachesTheComposerWithTheKeyboardUpAndDown() async throws {
+        let screen = UIScreen.main.bounds.size
+        for look in [Look.nativeDark, .terminal] {
+            let rig = try await makeRig(hardwareKeyboard: false, width: screen.width, height: screen.height, look: look, mic: true)
+            await rig.transport.enableSnapshots()
+            await rig.transport.append(chatID, [.info(chat()), .models(models), .state(.running)] + (0..<40).map {
+                .itemCompleted(ChatItem(id: "band-\($0)", status: .completed, body: .agentMessage("Message \($0). A readable paragraph in this conversation, long enough to wrap.")))
+            })
+            let field = try await openChat(rig)
+            await eventually("rows loaded") { rig.model.conversation(self.chatID).transcript.items.count >= 40 }
+            try await Task.sleep(for: .milliseconds(350))
+            func assertReaches(_ when: String) throws {
+                let scroll = try XCTUnwrap(transcriptScroll(rig), when)
+                let transcript = scroll.convert(scroll.bounds, to: rig.window)
+                let fieldFrame = field.convert(field.bounds, to: rig.window)
+                XCTAssertLessThanOrEqual(fieldFrame.minY - transcript.maxY, 14, "\(look) \(when): the transcript reaches the composer")
+                XCTAssertGreaterThanOrEqual(fieldFrame.minY, transcript.maxY, "\(look) \(when): the composer is under the transcript")
+                XCTAssertLessThanOrEqual(scroll.adjustedContentInset.bottom, 1, "\(look) \(when): no keyboard or bar inset counted inside the transcript")
+            }
+            try assertReaches("keyboard down")
+            var keyboardTop = screen.height
+            let keyboard = NotificationCenter.default.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: .main) { note in
+                if let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect { keyboardTop = frame.minY }
+            }
+            defer { NotificationCenter.default.removeObserver(keyboard) }
+            field.becomeFirstResponder()
+            await eventually("software keyboard is presented") { keyboardTop < screen.height - 100 && field.isFirstResponder }
+            try await Task.sleep(for: .milliseconds(400))
+            try assertReaches("keyboard up")
+            let fieldFrame = field.convert(field.bounds, to: rig.window)
+            XCTAssertLessThanOrEqual(fieldFrame.maxY, keyboardTop + 2, "\(look): the composer sits on the keyboard")
+            XCTAssertGreaterThanOrEqual(fieldFrame.maxY, keyboardTop - 16, "\(look): and close to it")
+            let scroll = try XCTUnwrap(transcriptScroll(rig))
+            listStartReading(scroll)
+            scroll.setContentOffset(CGPoint(x: 0, y: max(20, bottomOffset(scroll) - 600)), animated: false)
+            try await Task.sleep(for: .milliseconds(150))
+            scroll.delegate?.scrollViewDidEndDragging?(scroll, willDecelerate: false)
+            await eventually("Latest shows while reading") { rig.layout.visible["latest"] == true }
+            try await Task.sleep(for: .milliseconds(100))
+            try assertLatestOverTranscriptBottom(rig, scroll: scroll)
+            try assertReaches("reading, keyboard up")
+            await finish(rig)
+        }
+    }
+
     private func listStartReading(_ scroll: UIScrollView) { scroll.delegate?.scrollViewWillBeginDragging?(scroll) }
-    private func assertLatestOutsideTranscript(_ rig: Rig, scroll: UIScrollView, file: StaticString = #filePath, line: UInt = #line) throws {
+    /// Latest floats over the transcript's bottom edge (it has no row of its own, which left a dead band above the composer), and the
+    /// transcript reaches down to what is under it.
+    private func assertLatestOverTranscriptBottom(_ rig: Rig, scroll: UIScrollView, file: StaticString = #filePath, line: UInt = #line) throws {
         let latest = try XCTUnwrap(rig.layout.frames["latest"], file: file, line: line)
         XCTAssertEqual(rig.layout.visible["latest"], true, file: file, line: line)
         let transcript = scroll.convert(scroll.bounds, to: rig.window)
-        XCTAssertGreaterThanOrEqual(latest.minY, transcript.maxY - 1, "Latest cannot cover any visible transcript text", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(latest.minY, transcript.minY, "Latest is over the transcript", file: file, line: line)
+        XCTAssertLessThanOrEqual(latest.maxY, transcript.maxY + 0.5, "Latest stays inside the transcript", file: file, line: line)
+        XCTAssertLessThanOrEqual(transcript.maxY - latest.maxY, 12, "Latest sits on the transcript's bottom edge", file: file, line: line)
         let field = try XCTUnwrap(composer(rig), file: file, line: line)
         XCTAssertLessThanOrEqual(latest.maxY, field.convert(field.bounds, to: rig.window).minY + 1, file: file, line: line)
     }
@@ -1503,16 +1554,39 @@ import RiWorkCore
             try await Task.sleep(for: .milliseconds(300))
             XCTAssertFalse(rig.model.theme.style.mic, "\(look): off by default, as with a Mac that predates the setting")
             let off = try XCTUnwrap(width(of: ChatComposerTextView.self, in: rig))
+            XCTAssertNil(rig.layout.frames["mic"], "\(look): no mic")
+            XCTAssertNotNil(rig.layout.frames["send"], "\(look): Send, greyed, holds the field's action slot")
             try snapshot(rig, name: named("chat-composer-mic-off", look))
             await setMic(rig, true, look: look, updated: 1_790_000_100)
-            // The mic is 44 points wide, with the row's 4-point spacing.
-            await eventually("\(look): the mic is there") { abs((self.width(of: ChatComposerTextView.self, in: rig) ?? 0) - (off - 48)) < 1 }
+            // With nothing typed the mic takes Send's slot: the field keeps its width.
+            await eventually("\(look): the mic is there") { rig.layout.frames["mic"] != nil && rig.layout.frames["send"] == nil }
+            XCTAssertEqual(try XCTUnwrap(width(of: ChatComposerTextView.self, in: rig)), off, accuracy: 1, "\(look): in the same slot")
+            XCTAssertGreaterThanOrEqual(rig.layout.frames["mic"]?.width ?? 0, 44, "\(look): a full target")
+            rig.model.conversation(chatID).draft = "typed"
+            await eventually("\(look): typing brings Send back in its place") { rig.layout.frames["mic"] == nil && rig.layout.frames["send"] != nil }
+            rig.model.conversation(chatID).draft = ""
             try await Task.sleep(for: .milliseconds(300))
             try snapshot(rig, name: named("chat-composer-mic-on", look))
             await setMic(rig, false, look: look, updated: 1_790_000_200)
-            await eventually("\(look): and gone again, the field closing up") { abs((self.width(of: ChatComposerTextView.self, in: rig) ?? 0) - off) < 1 }
+            await eventually("\(look): and gone again") { rig.layout.frames["mic"] == nil && rig.layout.frames["send"] != nil }
+            XCTAssertEqual(try XCTUnwrap(width(of: ChatComposerTextView.self, in: rig)), off, accuracy: 1)
             await finish(rig)
         }
+    }
+    /// The composer's one action slot: what it holds in every state, Interrupt always reachable while the agent works.
+    func testTheComposerActionSlot() {
+        func slot(typed: Bool, busy: Bool, mic: Bool, dictating: Bool = false) -> [String] {
+            let actions = ComposerActions(typed: typed, busy: busy, mic: mic, dictating: dictating)
+            return [actions.stop ? "stop" : nil, actions.mic ? "mic" : nil, actions.send ? "send" : nil].compactMap { $0 }
+        }
+        XCTAssertEqual(slot(typed: false, busy: false, mic: true), ["mic"])
+        XCTAssertEqual(slot(typed: false, busy: false, mic: false), ["send"], "greyed, holding the slot")
+        XCTAssertEqual(slot(typed: true, busy: false, mic: true), ["send"])
+        XCTAssertEqual(slot(typed: false, busy: true, mic: true), ["stop"])
+        XCTAssertEqual(slot(typed: true, busy: true, mic: true), ["stop", "send"], "Interrupt stays beside Send")
+        XCTAssertEqual(slot(typed: true, busy: false, mic: true, dictating: true), ["mic"], "the mic stays while it listens, whatever is heard")
+        XCTAssertEqual(slot(typed: false, busy: true, mic: true, dictating: true), ["stop", "mic"])
+        XCTAssertEqual(slot(typed: false, busy: false, mic: false, dictating: true), ["mic"], "a dictation the setting has not ended yet keeps its button")
     }
     func testTurningTheSettingOffCancelsAChatDictationInProgress() async throws {
         let rig = try await makeRig(look: .nativeLight, mic: true)

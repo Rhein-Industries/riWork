@@ -264,19 +264,21 @@ struct DictationButton: View {
     let insertion: TextInsertion
     var controller = DictationController.shared
     var isEnabled = true
+    /// Inside the chat composer's field: a smaller glyph in the same 44-point target.
+    var compact = false
 
     var body: some View {
         let phase = controller.phase(for: owner)
         HStack(spacing: 0) {
             if phase.isActive {
                 Button { controller.cancel() } label: {
-                    Image(systemName: "xmark.circle").font(.system(size: style.pt(20))).foregroundStyle(style.muted)
+                    Image(systemName: "xmark.circle").font(.system(size: style.pt(compact ? 17 : 20))).foregroundStyle(style.muted)
                 }
                 .buttonStyle(TargetButtonStyle(dims: false))
                 .accessibilityLabel("Cancel dictation").accessibilityHint("Takes out what was dictated")
                 .transition(.opacity)
             }
-            Button(action: toggle) { DictationGlyph(phase: phase, level: controller.level, size: 24) }
+            Button(action: toggle) { DictationGlyph(phase: phase, level: controller.level, size: compact ? 20 : 24) }
                 .buttonStyle(TargetButtonStyle(dims: false))
                 .disabled(!isEnabled && !phase.isActive)
                 .accessibilityLabel(phase.isActive ? "Stop dictation" : "Dictate")

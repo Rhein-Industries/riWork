@@ -140,6 +140,16 @@ final class ChatPresentationTests: XCTestCase {
         XCTAssertEqual(meter.costText, "≈ $0.42 (estimate)")
         XCTAssertEqual(meter.text, "42% of 200k · ≈ $0.42 (estimate)")
         XCTAssertEqual(meter.spoken, "Context 42 percent full, of 200k tokens. about $0.42 (estimate)")
+        XCTAssertEqual(meter.percentText, "42%")
+        XCTAssertEqual(meter.tokensText, "84k / 200k tokens")
+        XCTAssertEqual(ChatUsageMeter(ChatUsage(contextWindow: 1_000_000, contextUsed: 33_000)).tokensText, "33k / 1M tokens")
+        XCTAssertEqual(ChatUsageMeter(ChatUsage(contextWindow: 1000, contextUsed: 5000)).tokensText, "1k / 1k tokens", "an overfull context is capped, as its percent is")
+    }
+    func testWithoutAWindowTheRingHasNoPercentButTheTokensAreSaid() {
+        let codex = ChatUsageMeter(ChatUsage(inputTokens: 12_345, outputTokens: 1_000))
+        XCTAssertNil(codex.percentText)
+        XCTAssertEqual(codex.tokensText, "13.3k tokens")
+        XCTAssertNil(ChatUsageMeter(ChatUsage()).tokensText)
     }
     func testWithoutAWindowTheTokensSpentAreShownAndCostIsOnlyEverAnEstimate() {
         let codex = ChatUsageMeter(ChatUsage(inputTokens: 12_345, outputTokens: 1_000))

@@ -206,6 +206,14 @@ public struct ChatUsageMeter: Sendable, Equatable {
         let total = usage.inputTokens + usage.outputTokens
         return total > 0 ? "\(Self.tokens(total)) tokens" : nil
     }
+    /// "42%", the number in the header's ring; nil when the window or what is in it is not known.
+    public var percentText: String? { contextFraction.map { "\(Int(($0 * 100).rounded()))%" } }
+    /// "84k / 200k tokens" when the window is known, otherwise the tokens spent ("13.3k tokens"); nil when there is nothing to say.
+    public var tokensText: String? {
+        if let window = usage.contextWindow, window > 0, let used = usage.contextUsed { return "\(Self.tokens(min(used, window))) / \(Self.tokens(window)) tokens" }
+        let total = usage.inputTokens + usage.outputTokens
+        return total > 0 ? "\(Self.tokens(total)) tokens" : nil
+    }
     /// "≈ $0.42 (estimate)": the provider's own figure, never a bill.
     public var costText: String? {
         guard let cost = usage.costUSD, cost.isFinite, cost >= 0 else { return nil }

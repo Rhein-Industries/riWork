@@ -137,8 +137,8 @@ struct ChatComposerField: UIViewRepresentable {
         if coordinator.appliedStyle != style || coordinator.appliedTypeSize != category {
             coordinator.appliedStyle = style
             coordinator.appliedTypeSize = category
-            // Native's field is rounded: the text keeps clear of its ends.
-            let side: CGFloat = style.native ? 10 : 4
+            // The field's rounded ends hold the paperclip and the buttons; the text needs no more room of its own beside them.
+            let side: CGFloat = 4
             view.textContainerInset = UIEdgeInsets(top: Self.verticalInset, left: side, bottom: Self.verticalInset, right: side)
             view.font = Self.font(style, view.traitCollection)
             view.textColor = style.textUI
@@ -181,7 +181,11 @@ struct ChatComposerField: UIViewRepresentable {
 
 // MARK: - The composer
 
-/// The text field, Send and Interrupt, and the notice under them.
+/// The text field, Send and Interrupt, and the notice above them.
+///
+/// One rounded field spans the row and holds everything: the paperclip at its leading end, the text, and one action at its trailing end
+/// that changes with what is useful now (`ComposerAction`): Send once something is typed, Stop while the agent works, the mic otherwise.
+/// Every button keeps a 44-point target inside the field; the glyphs stay small, so the text gets the width.
 struct ChatComposer: View {
     @Environment(\.desktopStyle) private var style
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -198,18 +202,18 @@ struct ChatComposer: View {
     /// The paperclip (a photo or a file goes to the Mac and its path into the message), and a paste of files.
     var attach: ((AttachmentChoice) -> Void)?
     var pasteFiles: (() -> Bool)?
+    var dictation = DictationController.shared
     @State private var focused = false
-    @State private var dictation = TextInsertion()
+    @State private var insertion = TextInsertion()
 
-    private var placeholder: String {
-        switch state {
-        case .stopped, .failed: "Message to start \(provider.title) again"
-        default: "Message \(provider.title)"
-        }
-    }
     private var canSend: Bool { connected && !conversation.sending && !conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var keyContext: ChatKeyContext {
         ChatKeyContext(composerIsEmpty: conversation.draft.isEmpty, approval: approval, busy: state.isBusy, canSend: connected && !conversation.sending)
+    }
+    private var actions: ComposerActions {
+        ComposerActions(typed: !conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, busy: state.isBusy, mic: style.mic,
+                        // A dictation that failed keeps the mic (and the alert it owns) until the alert is dismissed.
+                        dictating: dictation.phase(for: .chat(conversation.id)) != .idle)
     }
 
     var body: some View {
@@ -220,50 +224,58 @@ struct ChatComposer: View {
                     Spacer(minLength: 0)
                     Button("Dismiss message", systemImage: "xmark") { conversation.notice = nil }.labelStyle(.iconOnly).font(style.system(.caption)).foregroundStyle(style.muted).buttonStyle(TargetButtonStyle())
                 }
-                .padding(.horizontal, 12)
+                .padding(.leading, 12)
                 .accessibilityElement(children: .combine)
             }
             // Every button is centred on the field's last line: on the field's middle while it holds one line, and beside the line
             // being typed (at the bottom, as Messages does) once it grows.
-            HStack(alignment: .composerLine, spacing: 4) {
+            let actions = actions
+            HStack(alignment: .composerLine, spacing: 0) {
                 if let attach {
                     ComposerPaperclip(connected: connected, choose: attach).equatable()
                 }
                 ChatComposerField(text: Binding(get: { conversation.draft }, set: { conversation.draft = $0 }), placeholderLabel: "Message to \(provider.title)",
                                   isEnabled: true, answersApproval: approval != nil, focusToken: focusToken, maxLines: typeSize.isAccessibilitySize ? 3 : 6, onKey: handle, onFocusChange: { focused = $0 },
-                                  insertion: dictation, onPasteFiles: pasteFiles)
-                    .overlay(alignment: .topLeading) {
-                        if conversation.draft.isEmpty {
-                            Text(placeholder).chatProse().foregroundStyle(style.muted).padding(.top, ChatComposerField.verticalInset).padding(.leading, style.native ? 14 : 8)
-                                .lineLimit(1).allowsHitTesting(false).accessibilityHidden(true)
-                        }
-                    }
-                    .modifier(ComposerFieldSurface(focused: focused))
+                                  insertion: insertion, onPasteFiles: pasteFiles)
                     .alignmentGuide(.composerLine) { [band = ChatComposerField.lineBand(style, typeSize)] d in d.height - band / 2 }
-                if state.isBusy {
-                    Button(action: interrupt) { Image(systemName: "stop.fill").font(.system(size: 17, weight: .semibold)).foregroundStyle(style.gold).frame(width: 36, height: 36).background(style.gold.opacity(0.12), in: Circle()) }
-                        .buttonStyle(TargetButtonStyle(dims: false))
-                        .disabled(!connected)
-                        .accessibilityLabel("Interrupt").accessibilityHint("Stops what \(provider.title) is doing now")
-                }
-                // Only while the desktop's mic setting is on; off, the row closes up around the field.
-                if style.mic { DictationButton(owner: .chat(conversation.id), insertion: dictation) }
-                Button(action: send) {
-                    Image(systemName: "arrow.up").font(.system(size: 18, weight: .bold))
-                        .foregroundStyle(canSend ? style.background : style.muted)
-                        .frame(width: 36, height: 36).background(canSend ? style.accent : style.active, in: Circle())
-                }
-                .buttonStyle(TargetButtonStyle(dims: false))
-                .disabled(!canSend)
-                .accessibilityLabel("Send").accessibilityHint(conversation.sending ? "Sending" : "Sends the message")
+                    .chatLayoutProbe("composer-field")
+                if actions.stop { stopButton }
+                if actions.mic { DictationButton(owner: .chat(conversation.id), insertion: insertion, compact: true).chatLayoutProbe("mic") }
+                if actions.send { sendButton }
             }
-            .padding(.horizontal, BottomBarGeometry.composerInnerInset).padding(.vertical, 3)
+            .padding(.leading, attach == nil ? 6 : 0).padding(.trailing, 0)
+            .modifier(ComposerFieldSurface(focused: focused))
+            .animation(.easeInOut(duration: 0.12), value: actions)
+            .padding(.horizontal, BottomBarGeometry.composerInnerInset)
+            .chatLayoutProbe("composer")
         }
-        // Lined up with the terminal's key bar: the paperclip and Send sit where its first key and Hide do, and the row stands as close
-        // above the keyboard as the key bar's capsule (`BottomBarGeometry.composerInsets`).
-        .padding(.horizontal, BottomBarGeometry.composerInsets(glass: style.glass).horizontal).padding(.top, 8)
+        // Lined up with the terminal's key bar: the field's ends sit where the key bar's capsule does, and the row stands as close above
+        // the keyboard as the key bar's capsule (`BottomBarGeometry.composerInsets`).
+        .padding(.horizontal, BottomBarGeometry.composerInsets(glass: style.glass).horizontal).padding(.top, 6)
         .padding(.bottom, BottomBarGeometry.composerInsets(glass: style.glass).bottom)
         .background(style.glass ? style.surface : style.background)
+    }
+
+    /// A filled circle in a 44-point target.
+    private func circle(_ symbol: String, fill: Color, glyph: Color, size: CGFloat = 15) -> some View {
+        Image(systemName: symbol).font(.system(size: style.pt(size), weight: .bold)).foregroundStyle(glyph)
+            .frame(width: style.pt(30), height: style.pt(30)).background(fill, in: Circle())
+    }
+    private var sendButton: some View {
+        Button(action: send) { circle("arrow.up", fill: canSend ? style.accent : style.active, glyph: canSend ? style.background : style.muted) }
+            .buttonStyle(TargetButtonStyle(dims: false))
+            .disabled(!canSend)
+            .transition(.scale(scale: 0.6).combined(with: .opacity))
+            .chatLayoutProbe("send")
+            .accessibilityLabel("Send").accessibilityHint(conversation.sending ? "Sending" : "Sends the message")
+    }
+    private var stopButton: some View {
+        Button(action: interrupt) { circle("stop.fill", fill: style.gold.opacity(0.16), glyph: style.gold, size: 12) }
+            .buttonStyle(TargetButtonStyle(dims: false))
+            .disabled(!connected)
+            .transition(.opacity)
+            .chatLayoutProbe("stop")
+            .accessibilityLabel("Interrupt").accessibilityHint("Stops what \(provider.title) is doing now")
     }
 
     /// A key from the hardware keyboard: the router says what it means now.
@@ -296,23 +308,24 @@ private struct ComposerPaperclip: View, Equatable {
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.connected == rhs.connected }
     var body: some View {
         AttachMenu(choose: choose) {
-            Image(systemName: "paperclip").font(.system(size: style.pt(20))).foregroundStyle(connected ? style.muted : style.muted.opacity(0.5))
+            Image(systemName: "paperclip").font(.system(size: style.pt(18))).foregroundStyle(connected ? style.muted : style.muted.opacity(0.5))
                 .frame(width: style.target, height: style.target).contentShape(Rectangle())
         }
-        // No padding of the menu's own around the 44-point target, so the paperclip lines up with the key bar's first key.
+        // No padding of the menu's own around the 44-point target: the paperclip sits in the field's rounded leading end.
         .menuStyle(.button).buttonStyle(.plain)
         .disabled(!connected)
         .accessibilityHint("Sends it to the Mac and puts its path in the message")
     }
 }
 
-/// What the composer's field is drawn on. The terminal look: the background in a hairline frame that turns the accent color with the
-/// keyboard. Native: a rounded field, as Messages draws one; on glass (iOS 26) of glass, otherwise filled and framed the same way.
+/// What the composer's field is drawn on: the whole row, paperclip and buttons included. The terminal look: the background in a hairline
+/// frame that turns the accent color with the keyboard. Native: a rounded field, as Messages draws one; on glass (iOS 26) of glass,
+/// otherwise filled and framed the same way.
 private struct ComposerFieldSurface: ViewModifier {
     @Environment(\.desktopStyle) private var style
     let focused: Bool
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: style.pt(23), style: .continuous)
         if style.glass {
             content.nativeGlass(style, in: shape, interactive: false)
         } else if style.native {
@@ -320,6 +333,19 @@ private struct ComposerFieldSurface: ViewModifier {
         } else {
             content.background(style.background).overlay(RoundedRectangle(cornerRadius: 3).stroke(focused ? style.accent : style.divider, lineWidth: 1))
         }
+    }
+}
+
+/// Which buttons the composer's field holds at its trailing end. One slot, shared: Send once something is typed, Stop while the agent
+/// works and nothing is typed, the mic (when the desktop's mic setting is on) while neither; Send, greyed, when there is no mic. The
+/// mic stays while it listens, whatever the field holds, and Stop stays beside Send while the agent works, so Interrupt is one tap away
+/// in every state (⌘. too, with a keyboard).
+struct ComposerActions: Equatable {
+    let send: Bool, stop: Bool, mic: Bool
+    init(typed: Bool, busy: Bool, mic micOn: Bool, dictating: Bool) {
+        mic = dictating || (micOn && !typed && !busy)
+        stop = busy
+        send = !dictating && (typed || (!busy && !micOn))
     }
 }
 
@@ -356,7 +382,7 @@ struct ChatApprovalBar: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: icon).foregroundStyle(style.gold).accessibilityHidden(true)
                 Text(kindWord).font(style.system(.subheadline, weight: .semibold)).foregroundStyle(style.gold)
@@ -396,7 +422,7 @@ struct ChatApprovalBar: View {
                 Text(Self.hint(for: approval)).font(style.system(.caption)).foregroundStyle(style.muted).lineLimit(1).minimumScaleFactor(0.7).accessibilityHidden(true)
             }
         }
-        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
         .chatRequestSurface(style, tint: style.gold, opacity: 0.12)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Approval needed. \(kindWord) \(approval.title)")
@@ -480,7 +506,7 @@ struct ChatQuestionBar: View {
                 sendButton { Text("Send answer").frame(maxWidth: .infinity) }.buttonStyle(DesktopButtonStyle(prominent: true))
             }
         }
-        .padding(.horizontal, 14).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12).padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading)
         .chatRequestSurface(style, tint: style.accent, opacity: 0.10)
         .accessibilityElement(children: .contain)
     }
