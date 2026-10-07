@@ -16,8 +16,10 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     var modelCatalogue: [ChatModelOption] = []
     var modelCatalogueSource: ChatCatalogueSource = .live
     var modelCatalogueRevision: UInt64 = 0
-    /// What the person has typed and not sent. Kept per chat, so changing tabs loses nothing.
-    var draft = ""
+    /// What the person has typed and not sent. Kept per chat, so changing tabs loses nothing, and saved as it changes
+    /// (`ChatDraftStore`), so leaving the project, the background, a dropped link or a relaunch lose nothing either.
+    var draft = "" { didSet { if draft != oldValue { onDraftChange?(draft) } } }
+    @ObservationIgnored var onDraftChange: ((String) -> Void)?
     /// The cards the person opened (command output, diffs, reasoning), by item id. Kept here because rows come and go as the list scrolls.
     var expanded: Set<String> = []
     /// The mode just chosen, shown until the desktop says so itself.
@@ -153,6 +155,7 @@ extension RemoteModel {
     func conversation(_ id: String) -> ChatConversation {
         if let known = chatConversations[id] { known.lastUsed = .now; return known }
         let made = ChatConversation(id: id)
+        restoreDraft(made)
         if chatConversations.count >= Self.keptConversations {
             let spare = chatConversations.values.filter { !$0.following && $0.id != selectedChatID }.sorted { $0.lastUsed < $1.lastUsed }
             for old in spare.prefix(chatConversations.count - Self.keptConversations + 1) { chatConversations[old.id] = nil }
@@ -161,6 +164,22 @@ extension RemoteModel {
         return made
     }
     static let keptConversations = 8
+    /// Puts back what was typed into a chat the last time it was open (this run or before), and from then on saves every change.
+    /// A message whose sending the desktop never answered (the app ended meanwhile) comes back before it, with a warning: it is not sent
+    /// again by itself.
+    func restoreDraft(_ conversation: ChatConversation) {
+        let id = conversation.id
+        if let saved = chatDrafts.draft(id) {
+            let restored = saved.restored
+            conversation.draft = restored.text
+            if restored.uncertain {
+                chatDrafts.setText(restored.text, for: id)
+                chatDrafts.endSending(for: id)
+                conversation.notice = "Your last message may not have reached the Mac. It is back in the composer: check the conversation before sending it again."
+            }
+        }
+        conversation.onDraftChange = { [weak self] text in self?.chatDrafts.setText(text, for: id) }
+    }
 
     // MARK: Selecting
 
@@ -477,8 +496,9 @@ extension RemoteModel {
         let conversation = conversation(chatID)
         guard !conversation.sending else { return .busy }
         conversation.sending = true
-        if restoring { conversation.draft = "" }
-        defer { conversation.sending = false }
+        // The text is held until the desktop answers: if the app ends before that, it comes back into the composer.
+        if restoring { chatDrafts.beginSending(text, for: chatID); conversation.draft = "" }
+        defer { conversation.sending = false; if restoring { chatDrafts.endSending(for: chatID) } }
         let failure = await sendChatCommand(chatID, .send(text: text))
         if let failure {
             if restoring { conversation.draft = conversation.draft.isEmpty ? text : text + "\n" + conversation.draft }

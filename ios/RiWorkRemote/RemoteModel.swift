@@ -251,6 +251,8 @@ enum ConnectionState: Equatable {
     @ObservationIgnored let previewDelay: Duration
     @ObservationIgnored let reconnectBackoff: Duration
     @ObservationIgnored let defaults: UserDefaults
+    /// What was typed into each chat and not sent, saved (`RemoteModel+Chat.swift`, `restoreDraft`).
+    @ObservationIgnored let chatDrafts: ChatDraftStore
     @ObservationIgnored let cellMetrics: @MainActor (Double) -> (width: Double, height: Double)
     @ObservationIgnored let keepAwake: @MainActor (Bool) -> Void
     @ObservationIgnored var keySender: Task<Void, Never>?
@@ -298,6 +300,7 @@ enum ConnectionState: Equatable {
         self.previewDelay = previewDelay
         self.reconnectBackoff = reconnectBackoff
         self.defaults = defaults
+        self.chatDrafts = ChatDraftStore(defaults: defaults)
         self.themeRefreshInterval = themeRefreshInterval
         self.themeMinimumGap = themeMinimumGap
         self.activityRefreshInterval = activityRefreshInterval

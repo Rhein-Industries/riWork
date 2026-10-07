@@ -62,16 +62,18 @@ import RiWorkCore
         let project: RemoteProject
         var body: some View { TerminalTabsView(model: model, project: project, onBack: {}).desktopThemed(model.theme.style) }
     }
+    /// The navigation stack's path, for a test to go back and forth.
+    @MainActor @Observable final class StackPath { var items = [1] }
     /// The tab screen pushed on a navigation stack with its bar hidden, as the app shows it.
     private struct PushedTabs: View {
         let model: RemoteModel
         let project: RemoteProject
-        @State private var path = [1]
+        @Bindable var stack: StackPath
         var body: some View {
-            NavigationStack(path: $path) {
+            NavigationStack(path: $stack.items) {
                 Text("Projects").toolbar(.hidden, for: .navigationBar)
                     .navigationDestination(for: Int.self) { _ in
-                        TerminalTabsView(model: model, project: project, onBack: { path.removeAll() }).desktopThemed(model.theme.style)
+                        TerminalTabsView(model: model, project: project, onBack: { stack.items.removeAll() }).desktopThemed(model.theme.style)
                             .toolbar(.hidden, for: .navigationBar).edgeSwipeBack()
                     }
             }
@@ -80,8 +82,10 @@ import RiWorkCore
     private struct Rig {
         let model: RemoteModel, transport: ChatTransport, window: UIWindow, host: UIHostingController<AnyView>, keychain: KeychainStore
         let layout: ChatLayoutInspection
+        let defaults: UserDefaults
+        let stack: StackPath
     }
-    private func makeRig(chats: [ChatInfo]? = nil, orchestrators: [String] = [], chatFeature: Bool = true, orchestratorCreate: Bool = false, hardwareKeyboard: Bool = true, width: CGFloat = 402, height: CGFloat = 874, look: Look = .terminal, mic: Bool = false, pushed: Bool = false) async throws -> Rig {
+    private func makeRig(chats: [ChatInfo]? = nil, orchestrators: [String] = [], chatFeature: Bool = true, orchestratorCreate: Bool = false, hardwareKeyboard: Bool = true, width: CGFloat = 402, height: CGFloat = 874, look: Look = .terminal, mic: Bool = false, pushed: Bool = false, defaults suiteName: String? = nil) async throws -> Rig {
         guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene to show a chat in") }
         let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
         let pairing = try Pairing.parse("""
@@ -90,20 +94,22 @@ import RiWorkCore
         var desktop = SavedDesktop(name: "Fixture", pairing: pairing, allowLocalDevelopment: false)
         desktop.selectedProjectID = project; desktop.selectedSessionID = ChatTransport.shell
         try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
-        let suite = "com.riwork.tests.chatview.\(UUID().uuidString)"
-        defaultsNames.append(suite)
+        let suite = suiteName ?? "com.riwork.tests.chatview.\(UUID().uuidString)"
+        if suiteName == nil { defaultsNames.append(suite) }
         let transport = ChatTransport(chats: chats ?? [chat()], appearance: appearance(look, mic: mic))
         await transport.setFeature(chatFeature)
         await transport.setOrchestratorFeature(orchestratorCreate)
         await transport.setOrchestrators(orchestrators)
-        let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: suite)!, chatWaitMilliseconds: 300, chatIdleInterval: .milliseconds(20),
+        let defaults = UserDefaults(suiteName: suite)!
+        let model = RemoteModel(client: transport, keychain: keychain, defaults: defaults, chatWaitMilliseconds: 300, chatIdleInterval: .milliseconds(20),
                                 hardwareKeyboard: HardwareKeyboardMonitor(probe: { hardwareKeyboard }))
         await model.connect()
         if look != .terminal { await eventually("the desktop's Native look is in") { model.theme.style.native } }
         if mic { await eventually("the desktop's mic setting is in") { model.theme.style.mic } }
         let projectValue = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}".utf8))
         let layout = ChatLayoutInspection()
-        let root = pushed ? AnyView(PushedTabs(model: model, project: projectValue).environment(\.chatLayoutInspection, layout))
+        let stack = StackPath()
+        let root = pushed ? AnyView(PushedTabs(model: model, project: projectValue, stack: stack).environment(\.chatLayoutInspection, layout))
             : AnyView(ThemedTabs(model: model, project: projectValue).environment(\.chatLayoutInspection, layout))
         let host = UIHostingController(rootView: root)
         let window = UIWindow(windowScene: scene)
@@ -113,7 +119,7 @@ import RiWorkCore
         window.makeKeyAndVisible()
         windows.append(window)
         await eventually("the terminal is on screen") { !self.descendants(KeyCaptureView.self, in: host.view).isEmpty && model.terminalArea != nil }
-        return Rig(model: model, transport: transport, window: window, host: host, keychain: keychain, layout: layout)
+        return Rig(model: model, transport: transport, window: window, host: host, keychain: keychain, layout: layout, defaults: defaults, stack: stack)
     }
     private func finish(_ rig: Rig) async {
         rig.window.endEditing(true)
@@ -913,6 +919,98 @@ import RiWorkCore
         navigation.popViewController(animated: false)
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertFalse(EdgeSwipeBackDelegate.shared.gestureRecognizerShouldBegin(try XCTUnwrap(navigation.interactivePopGestureRecognizer)), "none on the first screen")
+        await finish(rig)
+    }
+
+    // MARK: Drafts
+
+    /// Types into the composer as a person does: through the text view, so the binding and the saving run as they do on a device.
+    private func type(_ text: String, into field: ChatComposerTextView) {
+        field.text = text
+        field.delegate?.textViewDidChange?(field)
+    }
+    private func secondChat() -> ChatInfo {
+        ChatInfo(id: "dddddddd-2222-4222-8222-222222222222", provider: .codex, projectID: project, cwd: "/fixture", title: "Second", createdAtUnix: 20, state: .idle)
+    }
+
+    func testADraftSurvivesSwitchingTabsAndTwoChatsKeepTheirOwn() async throws {
+        let rig = try await makeRig(chats: [chat(), secondChat()])
+        var field = try await openChat(rig)
+        type("half a thought for the first chat", into: field)
+        rig.model.deselectChat()
+        await eventually("the shell is back") { self.composer(rig) == nil }
+        rig.model.selectChat(secondChat().id)
+        await eventually("the second chat is up") { self.composer(rig) != nil }
+        field = try XCTUnwrap(composer(rig))
+        XCTAssertEqual(field.text, "", "the second chat has its own, empty, composer")
+        type("and one for the second", into: field)
+        rig.model.selectChat(chatID)
+        await eventually("the first chat's draft is back") { self.composer(rig)?.text == "half a thought for the first chat" }
+        rig.model.selectChat(secondChat().id)
+        await eventually("the second chat's draft is back") { self.composer(rig)?.text == "and one for the second" }
+        await finish(rig)
+    }
+
+    func testADraftSurvivesGoingBackToTheProjectsAReconnectAndARelaunch() async throws {
+        let rig = try await makeRig(pushed: true)
+        let field = try await openChat(rig)
+        type("kept across everything", into: field)
+        // Back to the projects and in again.
+        rig.stack.items = []
+        await eventually("the projects are up") { self.composer(rig) == nil }
+        rig.model.deselectChat()
+        rig.stack.items = [1]
+        await eventually("the tab screen is back") { !self.descendants(KeyCaptureView.self, in: rig.host.view).isEmpty }
+        rig.model.selectChat(chatID)
+        await eventually("the draft is back after leaving the project") { self.composer(rig)?.text == "kept across everything" }
+        // The link drops and comes back; the conversations the desktop gave are let go and made again.
+        await rig.model.disconnect()
+        rig.model.chatConversations = [:]
+        await rig.model.connect()
+        rig.model.selectChat(chatID)
+        await eventually("the draft is back after a reconnect") { self.composer(rig)?.text == "kept across everything" }
+        let suite = try XCTUnwrap(defaultsNames.last)
+        await finish(rig)
+        // A new start of the app, on the same saved settings.
+        let relaunched = try await makeRig(defaults: suite)
+        let again = try await openChat(relaunched)
+        XCTAssertEqual(again.text, "kept across everything", "a relaunch restores it")
+        XCTAssertFalse(relaunched.model.conversation(chatID).notice?.contains("may not have reached") == true, "nothing was on its way")
+        await finish(relaunched)
+    }
+
+    func testADraftIsClearedOnlyWhenSentAndAFailedSendKeepsIt() async throws {
+        let rig = try await makeRig()
+        let field = try await openChat(rig)
+        type("ship it", into: field)
+        await rig.transport.failCommand(.rpc(code: "unavailable", message: "The desktop is busy"))
+        await rig.model.sendChatDraft(chatID)
+        XCTAssertEqual(rig.model.conversation(chatID).draft, "ship it", "a refused message comes back")
+        XCTAssertEqual(rig.model.chatDrafts.draft(chatID)?.text, "ship it")
+        XCTAssertNil(rig.model.chatDrafts.draft(chatID)?.sending)
+        await rig.transport.failCommand(nil)
+        await rig.model.sendChatDraft(chatID)
+        await eventually("the composer is empty") { self.composer(rig)?.text == "" }
+        XCTAssertNil(rig.model.chatDrafts.draft(chatID), "sent: nothing kept")
+        XCTAssertNil(ChatDraftStore(defaults: rig.defaults).draft(chatID), "and nothing saved for the next start")
+        await finish(rig)
+    }
+
+    func testAMessageWhoseSendingWasNeverAnsweredComesBackWithAWarning() async throws {
+        let suite = "com.riwork.tests.chatview.\(UUID().uuidString)"
+        defaultsNames.append(suite)
+        // The app ended while a message was on its way.
+        let store = ChatDraftStore(defaults: UserDefaults(suiteName: suite)!)
+        store.beginSending("deploy to staging", for: chatID)
+        store.setText("then tell me", for: chatID)
+        let rig = try await makeRig(defaults: suite)
+        await rig.transport.enableSnapshots()
+        let field = try await openChat(rig)
+        XCTAssertEqual(field.text, "deploy to staging\nthen tell me")
+        XCTAssertTrue(rig.model.conversation(chatID).notice?.contains("may not have reached the Mac") == true, "said, not sent again")
+        let sent = await rig.transport.commands().count
+        XCTAssertEqual(sent, 0, "nothing is sent by itself")
+        XCTAssertNil(rig.model.chatDrafts.draft(chatID)?.sending, "now an ordinary draft")
         await finish(rig)
     }
 
