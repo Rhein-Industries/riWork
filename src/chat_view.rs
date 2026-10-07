@@ -163,6 +163,8 @@ pub struct ChatView {
     preview_root: Option<std::path::PathBuf>,
     /// The interface text scale the list's rows were measured at.
     scale: f32,
+    /// Theme-specific fonts and spacing also change the measured row heights.
+    row_theme: Option<crate::theme::ThemeChoice>,
     focus: FocusHandle,
     composer: Entity<TextareaState>,
     model_input: Entity<InputState>,
@@ -311,6 +313,7 @@ impl ChatView {
             media: Default::default(),
             preview_root: None,
             scale: ui_text::scale(),
+            row_theme: cx.try_global::<crate::theme::Appearance>().map(|a| a.selected),
             focus,
             composer,
             model_input,
@@ -680,12 +683,14 @@ impl ChatView {
         }
     }
 
-    /// The list's rows were measured at another text size.
+    /// The list's rows were measured with different typography.
     fn follow_text_size(&mut self, cx: &mut Context<Self>) {
         let scale = ui_text::scale();
-        if scale != self.scale {
+        let row_theme = cx.try_global::<crate::theme::Appearance>().map(|a| a.selected);
+        if scale != self.scale || row_theme != self.row_theme {
             self.transcript_selection.clear(self.window_handle, cx);
             self.scale = scale;
+            self.row_theme = row_theme;
             self.list.remeasure();
         }
     }
