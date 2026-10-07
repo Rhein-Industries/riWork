@@ -111,7 +111,8 @@ Every kind of tab has the same one-row header (`TabScreenChrome`): Back, the tab
 44 pt targets, so switching between a terminal and a chat never moves, adds or resizes a bar. The ⋯ menu is the screen's only one,
 in sections: what is on screen (a chat's actions, see Chats; or a terminal's: focus mode, jump to latest, Display, text size, the
 line composer, copy screen, refresh output), the tab (Session info; Close this terminal), and the project (refreshing the tabs, the
-global orchestrator, the connection). A tab's short session ID and worktree
+global orchestrator, the connection). A swipe from the left edge goes back to the projects, as Back does, from a terminal and
+from a chat alike (the navigation stack's own gesture, turned back on although the screen hides the bar: `edgeSwipeBack()`). A tab's short session ID and worktree
 branch are in its long-press menu and its accessibility label. **Session info** exposes the full UUID,
 kind and working directory. The compact status row keeps snapshot freshness,
 connection state and measured terminal dimensions visible.

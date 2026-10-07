@@ -112,10 +112,10 @@ struct RemoteRootView: View {
                                              onNewTerminal: { project in model.newTerminalRequestedProject = project.id; path.append(.terminals(project)) },
                                              onNewProject: model.offersNewProject ? { openNewProject() } : nil,
                                              shortcutsActive: path.last == .projects(desktopID) && newProject == nil)
-                    }.background(style.background).id(desktopID).toolbar(.hidden, for: .navigationBar)
+                    }.background(style.background).id(desktopID).toolbar(.hidden, for: .navigationBar).edgeSwipeBack()
                 case .terminals(let project):
                     TerminalTabsView(model: model, project: project, onBack: pop)
-                        .toolbar(.hidden, for: .navigationBar)
+                        .toolbar(.hidden, for: .navigationBar).edgeSwipeBack()
                 }
             }
         }
@@ -1026,4 +1026,46 @@ struct StatusStrip: View {
             .padding(.horizontal, 8).padding(.vertical, 2).background(style.panel)
     }
     private var outputStale: Bool { model.state != .connected || model.snapshotStale || model.outputSessionID != model.sessionID || model.session?.alive != true || !model.viewportReady }
+}
+
+// MARK: - Swiping back
+
+extension View {
+    /// The standard swipe from the left edge goes back, as on any pushed screen, although this screen hides the navigation bar for a
+    /// header of its own (UIKit turns the gesture off with the bar). The navigation stack's own gesture is used, so the swipe is the
+    /// system's (interactive, cancellable) and the stack's path follows it as it does the Back button.
+    func edgeSwipeBack() -> some View { background(EdgeSwipeBack().frame(width: 0, height: 0).accessibilityHidden(true)) }
+}
+
+/// Turns the navigation controller's edge swipe back on for the screen it is on. Only that gesture: it begins only at the screen's
+/// left edge (the tab row's Back is there, the terminal, its key bar and the tab strip start further in), and scrolling views wait
+/// for it to fail there, so a drag from the edge goes back instead of scrolling.
+struct EdgeSwipeBack: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) { controller.enable() }
+
+    final class Controller: UIViewController {
+        override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); enable() }
+        override func viewDidAppear(_ animated: Bool) { super.viewDidAppear(animated); enable() }
+        func enable() {
+            guard let navigation = navigationController, let gesture = navigation.interactivePopGestureRecognizer else { return }
+            EdgeSwipeBackDelegate.shared.navigation = navigation
+            gesture.delegate = EdgeSwipeBackDelegate.shared
+            gesture.isEnabled = true
+        }
+    }
+}
+
+@MainActor final class EdgeSwipeBackDelegate: NSObject, UIGestureRecognizerDelegate {
+    static let shared = EdgeSwipeBackDelegate()
+    weak var navigation: UINavigationController?
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        // Not on the first screen (nothing to go back to), and not while a push or pop is already moving.
+        guard let navigation else { return false }
+        return navigation.viewControllers.count > 1 && navigation.transitionCoordinator == nil && navigation.presentedViewController == nil
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        // A scroll view under the edge (the tab strip, the transcript, the composer) waits for the edge swipe to fail.
+        other.view is UIScrollView
+    }
 }

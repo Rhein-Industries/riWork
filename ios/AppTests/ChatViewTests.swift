@@ -62,11 +62,26 @@ import RiWorkCore
         let project: RemoteProject
         var body: some View { TerminalTabsView(model: model, project: project, onBack: {}).desktopThemed(model.theme.style) }
     }
+    /// The tab screen pushed on a navigation stack with its bar hidden, as the app shows it.
+    private struct PushedTabs: View {
+        let model: RemoteModel
+        let project: RemoteProject
+        @State private var path = [1]
+        var body: some View {
+            NavigationStack(path: $path) {
+                Text("Projects").toolbar(.hidden, for: .navigationBar)
+                    .navigationDestination(for: Int.self) { _ in
+                        TerminalTabsView(model: model, project: project, onBack: { path.removeAll() }).desktopThemed(model.theme.style)
+                            .toolbar(.hidden, for: .navigationBar).edgeSwipeBack()
+                    }
+            }
+        }
+    }
     private struct Rig {
         let model: RemoteModel, transport: ChatTransport, window: UIWindow, host: UIHostingController<AnyView>, keychain: KeychainStore
         let layout: ChatLayoutInspection
     }
-    private func makeRig(chats: [ChatInfo]? = nil, orchestrators: [String] = [], chatFeature: Bool = true, orchestratorCreate: Bool = false, hardwareKeyboard: Bool = true, width: CGFloat = 402, height: CGFloat = 874, look: Look = .terminal, mic: Bool = false) async throws -> Rig {
+    private func makeRig(chats: [ChatInfo]? = nil, orchestrators: [String] = [], chatFeature: Bool = true, orchestratorCreate: Bool = false, hardwareKeyboard: Bool = true, width: CGFloat = 402, height: CGFloat = 874, look: Look = .terminal, mic: Bool = false, pushed: Bool = false) async throws -> Rig {
         guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene to show a chat in") }
         let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
         let pairing = try Pairing.parse("""
@@ -88,7 +103,8 @@ import RiWorkCore
         if mic { await eventually("the desktop's mic setting is in") { model.theme.style.mic } }
         let projectValue = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}".utf8))
         let layout = ChatLayoutInspection()
-        let root = AnyView(ThemedTabs(model: model, project: projectValue).environment(\.chatLayoutInspection, layout))
+        let root = pushed ? AnyView(PushedTabs(model: model, project: projectValue).environment(\.chatLayoutInspection, layout))
+            : AnyView(ThemedTabs(model: model, project: projectValue).environment(\.chatLayoutInspection, layout))
         let host = UIHostingController(rootView: root)
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: width, height: height)
@@ -869,6 +885,35 @@ import RiWorkCore
             try assertReaches("reading, keyboard up")
             await finish(rig)
         }
+    }
+
+    /// A swipe from the left edge goes back to the projects from a shell tab and from a chat, as on any pushed screen, although the
+    /// screen hides the navigation bar for its own header (which turns UIKit's swipe off unless it is turned back on).
+    func testTheEdgeSwipeGoesBackFromAShellAndFromAChat() async throws {
+        let rig = try await makeRig(pushed: true)
+        func find(_ controller: UIViewController) -> UINavigationController? {
+            (controller as? UINavigationController) ?? controller.children.lazy.compactMap(find).first
+        }
+        let navigation = try XCTUnwrap(find(rig.host), "the screen is pushed on a navigation controller")
+        func assertSwipeBack(_ screen: String) throws {
+            let gesture = try XCTUnwrap(navigation.interactivePopGestureRecognizer)
+            XCTAssertTrue(gesture.isEnabled, "\(screen): the edge swipe is on")
+            XCTAssertTrue(gesture.delegate === EdgeSwipeBackDelegate.shared, "\(screen): with the delegate that allows it without a bar")
+            XCTAssertEqual(navigation.viewControllers.count, 2, "\(screen): pushed over the projects")
+            XCTAssertTrue(EdgeSwipeBackDelegate.shared.gestureRecognizerShouldBegin(gesture), "\(screen): it may begin")
+            let scroll = UIScrollView(), pan = scroll.panGestureRecognizer
+            XCTAssertTrue(EdgeSwipeBackDelegate.shared.gestureRecognizer(gesture, shouldBeRequiredToFailBy: pan), "\(screen): a scroll view at the edge waits for it")
+        }
+        try assertSwipeBack("shell")
+        let field = try await openChat(rig)
+        XCTAssertNotNil(field)
+        try await Task.sleep(for: .milliseconds(300))
+        try assertSwipeBack("chat")
+        // Back at the first screen there is nothing to go back to.
+        navigation.popViewController(animated: false)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertFalse(EdgeSwipeBackDelegate.shared.gestureRecognizerShouldBegin(try XCTUnwrap(navigation.interactivePopGestureRecognizer)), "none on the first screen")
+        await finish(rig)
     }
 
     private func listStartReading(_ scroll: UIScrollView) { scroll.delegate?.scrollViewWillBeginDragging?(scroll) }
