@@ -94,8 +94,21 @@ impl ChatView {
             .py(ui_text::space(5.0))
             .rounded(px(if look.native { 8.0 } else { 3.0 }))
             .border_1()
-            .border_color(rgb(look.tint(tone, 0.35)))
-            .bg(rgb(look.tint(tone, 0.10)))
+            // An error weighs more than a warning, also where both share Native's one
+            // signal color.
+            .border_color(rgb(if notice.level == NoticeLevel::Error {
+                tone
+            } else {
+                look.tint(tone, 0.35)
+            }))
+            .bg(rgb(look.tint(
+                tone,
+                if notice.level == NoticeLevel::Error {
+                    0.18
+                } else {
+                    0.10
+                },
+            )))
             .text_size(ui_text::text(11.0))
             .text_color(rgb(ink))
             .role(gpui::Role::Status)
