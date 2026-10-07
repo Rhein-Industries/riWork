@@ -27,7 +27,7 @@ use super::{
     widgets::{self, Look, button, capsule, dimmed},
 };
 
-/// The chat header's inset and control gap, shared with the message box (see `composer`).
+/// The chat header's inset and control gap.
 use super::composer::{BAR_GAP, BAR_INSET};
 /// The space between the message box's edge and its text, clear of its round corners.
 const FIELD_INSET: f32 = 12.0;
@@ -73,6 +73,62 @@ fn composer_path(path: &mut PathBuilder, bounds: gpui::Bounds<gpui::Pixels>, rad
         point(left, top),
     );
     path.close();
+}
+
+/// The message box's card as the design draws it: Hermes's panel with a hairline edge and
+/// small corners; every other design keeps the message field it had, the window's background
+/// in a continuous-corner outline. The edge takes the focus color while the box has focus
+/// (the colorful themes' cyan). The geometry is the same in every design: a one-pixel edge
+/// around the card's padding.
+fn composer_card(card: Stateful<gpui::Div>, look: Look, active: bool) -> Stateful<gpui::Div> {
+    let colors = look.colors;
+    let radius = look.card_radius();
+    if look.hermes() {
+        return card
+            .rounded(radius)
+            .border_1()
+            .border_color(rgb(if active { colors.focus } else { colors.divider }))
+            .bg(rgb(colors.panel));
+    }
+    let outline = match (active, look.native) {
+        (false, _) => colors.divider,
+        (true, true) => colors.focus,
+        (true, false) => colors.cyan,
+    };
+    let surface = canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let bounds = bounds.inset(px(0.5));
+            if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
+                return;
+            }
+            for (mut path, color) in [
+                (PathBuilder::fill(), colors.bg),
+                (PathBuilder::stroke(px(1.)), outline),
+            ] {
+                composer_path(&mut path, bounds, radius);
+                if let Ok(path) = path.build() {
+                    window.paint_path(path, rgb(color));
+                }
+            }
+        },
+    )
+    .absolute()
+    .inset_0();
+    card.relative()
+        .border_1()
+        .border_color(transparent_black())
+        .child(surface)
+}
+
+/// A bar above the message box (a notice, a request, a question) as a card in the same column
+/// as the message box: its inset on the sides and above, the design's card corners.
+fn above_composer<E: Styled>(bar: E, inset: gpui::Pixels, look: Look) -> E {
+    bar.mx(inset)
+        .mt(inset)
+        .w_auto()
+        .border_1()
+        .rounded(look.card_radius())
 }
 
 /// A message box button in the colorful themes: a square of `side` with a one-character mark,
@@ -955,6 +1011,7 @@ impl ChatView {
     /// command did not get through.
     fn banner(&self, look: Look, cx: &mut Context<Self>) -> Option<AnyElement> {
         let colors = look.colors;
+        let inset = px(self.composer_layout(cx).inset);
         // Native leads the line with a symbol of what it says, in the line's color.
         let line = |text: String, color: u32| {
             let symbol = if color == colors.muted {
@@ -962,14 +1019,13 @@ impl ChatView {
             } else {
                 "exclamationmark.triangle"
             };
-            div()
-                .w_full()
+            above_composer(div(), inset, look)
+                .debug_selector(|| "chat-banner".into())
                 .flex()
                 .items_center()
                 .gap(ui_text::space(8.0))
                 .px(ui_text::space(12.0))
                 .py(ui_text::space(5.0))
-                .border_t_1()
                 .border_color(rgb(colors.divider))
                 .bg(rgb(colors.panel))
                 .text_size(ui_text::text(11.0))
@@ -1062,15 +1118,14 @@ impl ChatView {
         let request = pending.request_id.clone();
         // A command is shown as the code it is.
         let command = pending.kind == ApprovalKind::Command;
+        let inset = px(self.composer_layout(cx).inset);
         Some(
-            div()
-                .w_full()
+            above_composer(div(), inset, look)
                 .flex()
                 .flex_col()
                 .gap(ui_text::space(6.0))
                 .px(ui_text::space(12.0))
                 .py(ui_text::space(8.0))
-                .border_t_1()
                 // Native sets the request on the bar's grey under a hairline, and says it
                 // waits with its heading alone, in the signal color.
                 .when(look.native, |bar| {
@@ -1320,10 +1375,9 @@ impl ChatView {
                     )
             })
             .collect::<Vec<_>>();
+        let inset = px(self.composer_layout(cx).inset);
         Some(
-            div()
-                .id("chat-questions")
-                .w_full()
+            above_composer(div().id("chat-questions"), inset, look)
                 .max_h(relative(0.5))
                 .overflow_y_scroll()
                 .flex()
@@ -1331,7 +1385,6 @@ impl ChatView {
                 .gap(ui_text::space(8.0))
                 .px(ui_text::space(12.0))
                 .py(ui_text::space(8.0))
-                .border_t_1()
                 .border_color(rgb(if look.native {
                     colors.divider
                 } else {
@@ -1559,7 +1612,16 @@ impl ChatView {
             .into_any_element()
     }
 
-    /// The reference's + menu contains only actions backed by existing attachment staging.
+    /// The card's layout for the pane as last drawn (see `composer::layout`), the draft as it
+    /// is and the buttons the action row shows now.
+    fn composer_layout(&self, cx: &gpui::App) -> composer::Layout {
+        let empty = self.composer.read(cx).value().is_empty() && self.attachments.is_empty();
+        let actions = 1 + usize::from(dictate::mic_shown(cx)) + usize::from(self.running());
+        composer::layout(self.composer_width.get(), ui_text::scale(), empty, actions)
+    }
+
+    /// The + menu: only actions backed by existing attachment staging. Its trigger is drawn
+    /// as the design draws the message box's other buttons.
     fn composer_attachment_menu(
         &self,
         look: Look,
@@ -1569,13 +1631,12 @@ impl ChatView {
         let open = self.open.contains(ATTACHMENT_MENU_KEY);
         let trigger_bounds = std::rc::Rc::new(std::cell::Cell::new(gpui::Bounds::default()));
         let positioned = trigger_bounds.clone();
-        let trigger = widgets::symbol_button_sized(
-            "chat-attach",
-            "plus",
-            "Attach files or paste an image",
-            look,
-            side,
-        )
+        let tip = "Attach files or paste an image · UTF-8 text, PNG or JPEG · or drop them";
+        let trigger = if look.native || look.hermes() {
+            widgets::symbol_button_sized("chat-attach", "plus", tip, look, side)
+        } else {
+            mark_button("chat-attach", "+", tip, None, side, look)
+        }
         .aria_expanded(open)
         .on_click(cx.listener(|view, _, _, cx| {
             view.menu = None;
@@ -1621,7 +1682,7 @@ impl ChatView {
                             cx.notify();
                         }))
                         .child(div().px(ui_text::space(8.0)).py(ui_text::space(4.0))
-                            .text_size(ui_text::text(10.0)).text_color(rgb(look.colors.muted)).child("ATTACH"))
+                            .text_size(ui_text::text(10.0)).text_color(rgb(look.colors.muted)).child(ui_text::cased("Attach")))
                         .child(button("chat-attach-files", "Files and images…", None, look)
                             .role(gpui::Role::MenuItem)
                             .accessibility_label("Attach UTF-8 text, PNG or JPEG files")
@@ -1653,85 +1714,22 @@ impl ChatView {
             .into_any_element()
     }
 
-    fn composer_box(&self, look: Look, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        if look.hermes() {
-            return self.hermes_composer(look, window, cx);
-        }
+    /// Send, drawn as the design draws a message field's send button: Native's filled round
+    /// symbol, Hermes's filled disc, the colorful themes' bordered mark. It waits until there
+    /// is something to send, taking no click or key meanwhile.
+    fn composer_send(&self, look: Look, side: gpui::Pixels, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
-        let running = self.running();
-        let dictation = self.dictation.phase();
-        // The mic, its key and its status only while Settings shows it in chats.
-        let mic = dictate::mic_shown(cx);
-        // No helper text at rest: only a dictation at work says what it does.
-        let status = composer::status(dictation, mic);
-        // Where the buttons go and how big they are, for the pane's width as last drawn (see
-        // `composer::layout`): the box keeps its minimum and the buttons stay in the pane.
-        let layout = composer::layout(
-            self.composer_width.get(),
-            ui_text::scale(),
-            mic,
-            dictation.is_active(),
-            running,
-        );
-        let side = px(layout.button);
-        let gap = px(layout.gap);
-        // Every button is a square of `side`: Native's symbols, the colorful themes' marks,
-        // their names and keys in the tooltips. Attach shows its fill only under the pointer
-        // and its tooltip names the kinds and paste/drop.
-        let attach = if look.native {
-            widgets::symbol_button_sized(
-                "chat-attach",
-                "paperclip",
-                "Attach files · UTF-8 text, PNG or JPEG · or paste or drop them",
-                look,
-                side,
-            )
-        } else {
-            mark_button(
-                "chat-attach",
-                "+",
-                "Attach files · UTF-8 text, PNG or JPEG · or paste or drop them",
-                None,
-                side,
-                look,
-            )
-        }
-        .on_click(cx.listener(|view, _, window, cx| view.attach_picker(window, cx)));
-        let stop = running.then(|| {
-            if look.native {
-                widgets::round_button_sized(
-                    "chat-interrupt",
-                    "stop.fill",
-                    "Interrupt · ⌘.",
-                    Button::Secondary,
-                    look,
-                    side,
-                )
-            } else {
-                mark_button(
-                    "chat-interrupt",
-                    "■",
-                    "Interrupt · ⌘.",
-                    Some(look.diff.removed),
-                    side,
-                    look,
-                )
-            }
-            .on_click(cx.listener(|view, _, _, cx| view.interrupt(cx)))
-        });
-        let send_tip = if running {
+        let empty = self.draft_empty(cx) || self.pending_submission.is_some();
+        let tip = if self.running() {
             "Send · ⏎ steers the turn · ⇧⏎ new line"
         } else {
             "Send · ⏎ · ⇧⏎ new line"
         };
-        // Send waits until there is something to send: Native's in grey, the colorful
-        // themes' as it is drawn, in every theme taking no click or key meanwhile.
-        let empty = self.draft_empty(cx) || self.pending_submission.is_some();
         let send = if look.native {
             widgets::round_button_sized(
                 "chat-send",
                 "arrow.up",
-                send_tip,
+                tip,
                 if empty {
                     Button::Disabled
                 } else {
@@ -1740,174 +1738,79 @@ impl ChatView {
                 look,
                 side,
             )
-        } else {
-            mark_button("chat-send", "↑", send_tip, Some(colors.cyan), side, look).disabled(empty)
-        }
-        .on_click(cx.listener(|view, _, window, cx| view.send_message(window, cx)));
-        let trailing: Vec<AnyElement> = [
-            layout.mic.then(|| {
-                widgets::beside_field(self.mic_button(look, side, cx))
-                    .debug_selector(|| "composer-mic".into())
-                    .into_any_element()
-            }),
-            stop.map(|stop| {
-                widgets::beside_field(stop)
-                    .debug_selector(|| "composer-stop".into())
-                    .into_any_element()
-            }),
-            Some(
-                widgets::beside_field(send)
-                    .debug_selector(|| "composer-send".into())
-                    .into_any_element(),
-            ),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        let attach = widgets::beside_field(attach).debug_selector(|| "composer-attach".into());
-        let field = div()
-            .flex_1()
-            .min_w_0()
-            .debug_selector(|| "composer-field".into())
-            .child(self.composer_editor(look, window, cx));
-        let buttons_and_field = if layout.stacked {
-            // The box on its own row; Attach at the start of the row under it and the rest at
-            // its end, as the row beside the box has them.
-            div()
-                .w_full()
-                .flex()
-                .flex_col()
-                .gap(gap)
-                .child(div().w_full().flex().child(field))
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .gap(gap)
-                        .child(attach)
-                        .child(div().flex_1())
-                        .children(trailing),
-                )
-        } else {
-            // The buttons keep to the bottom, each centered on the box's last line (see
-            // `widgets::beside_field`): on the box's center while it has one line, beside its
-            // last line once it grows, as a message field keeps them.
-            div()
-                .w_full()
-                .flex()
-                .items_end()
-                .gap(gap)
-                .child(attach)
-                .child(field)
-                .children(trailing)
-        };
-        // The pane's width as laid out, for the next frame's `layout`. It does not depend on
-        // the layout, so it settles after one redraw.
-        let measured = self.composer_width.clone();
-        let measure = canvas(
-            move |bounds, window, _| {
-                let width = f32::from(bounds.size.width);
-                if (measured.get() - width).abs() >= 0.5 {
-                    measured.set(width);
-                    window.refresh();
-                }
-            },
-            |_, _, _, _| {},
-        )
-        .absolute()
-        .top_0()
-        .left_0()
-        .w_full()
-        .h(px(0.));
-        let bar = div()
-            .id("chat-composer-bar")
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap(gap)
-            // The header's inset on the sides, so the field and the buttons line up with its
-            // controls, and the same above and below the field; less in a narrow pane.
-            .p(px(layout.inset))
-            .border_t_1()
-            .border_color(rgb(colors.divider))
-            .bg(rgb(colors.panel))
-            // A drop target only while files are dragged over it.
-            .drag_over::<gpui::ExternalPaths>(move |style, _, _, _| {
-                style.bg(rgb(look.tint(colors.focus, 0.12)))
-            })
-            .on_drop(
-                cx.listener(|view, paths: &gpui::ExternalPaths, window, cx| {
-                    view.dropped_attachments(paths, window, cx)
-                }),
+        } else if look.hermes() {
+            crate::behavior_controls::button_content(
+                "chat-send",
+                tip,
+                icons::symbol_in_box("arrow.up", 14.0, None, (side - px(4.0)).max(px(1.0))),
             )
-            // The draft's attachments above the box, a staged image as its thumbnail, inside
-            // the bar's inset.
-            .children((!self.attachments.is_empty()).then(|| {
-                div()
-                    .id("chat-attachment-queue")
-                    .role(gpui::Role::Group)
-                    .aria_label("Draft attachments")
-                    .max_h(ui_text::space(280.))
-                    .flex_none()
-                    .overflow_y_scroll()
-                    .child(self.attachment_chips(look, cx))
-                    .test_support()
-            }))
-            .child(buttons_and_field)
-            .child(self.composer_choices(look, window, cx))
-            // Saved submissions to review, below the box.
-            .children((!self.submissions.is_empty()).then(|| {
-                div()
-                    .id("chat-submission-reviews")
-                    .max_h(ui_text::space(280.))
-                    .overflow_y_scroll()
-                    .child(self.submission_cards(look, cx))
-            }))
-            .children(status.map(|status| {
-                div()
-                    .text_size(ui_text::text(9.0))
-                    .text_color(rgb(colors.text))
-                    .child(status)
-            }));
-        div()
-            .relative()
-            .w_full()
-            .debug_selector(|| "composer-pane".into())
-            .child(measure)
-            .child(bar)
+            .disabled(empty)
+            .size(side)
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .bg(rgb(colors.text))
+            .text_color(rgb(colors.bg))
+            .border_1()
+            .border_color(transparent_black())
+            .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+            .when(!empty, |button| {
+                button
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(rgb(colors.cyan)))
+            })
+            .child(tooltip::anchor(tip, TipLook::Control))
+        } else {
+            mark_button("chat-send", "↑", tip, Some(colors.cyan), side, look).disabled(empty)
+        };
+        send.on_click(cx.listener(|view, _, window, cx| view.send_message(window, cx)))
             .into_any_element()
     }
 
-    /// A single navy surface: compact at rest, full-width multiline text above its controls
-    /// as soon as there is a draft. The retained Kit textarea still owns every edit.
-    fn hermes_composer(&self, look: Look, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    /// Stop, while a turn runs: Native's grey round symbol, Hermes's bare symbol, the colorful
+    /// themes' mark in the terminal's red.
+    fn composer_stop(&self, look: Look, side: gpui::Pixels, cx: &mut Context<Self>) -> AnyElement {
+        let tip = "Interrupt · ⌘.";
+        if look.native {
+            widgets::round_button_sized(
+                "chat-interrupt",
+                "stop.fill",
+                tip,
+                Button::Secondary,
+                look,
+                side,
+            )
+        } else if look.hermes() {
+            widgets::symbol_button_sized("chat-interrupt", "stop.fill", tip, look, side)
+        } else {
+            mark_button(
+                "chat-interrupt",
+                "■",
+                tip,
+                Some(look.diff.removed),
+                side,
+                look,
+            )
+        }
+        .on_click(cx.listener(|view, _, _, cx| view.interrupt(cx)))
+        .into_any_element()
+    }
+
+    /// The message box: one card in every design, inset from the pane's sides and bottom
+    /// (see `composer::layout`). At rest in a wide pane the empty box shares one row with
+    /// Attach and the controls (the model choices, then the mic, Stop and Send); with a draft
+    /// the box takes the card's whole width and Attach and the controls wrap in a row under
+    /// it, and a narrow pane gives the controls a row of their own. Every design lays it out
+    /// the same; each draws the card and its buttons its own way (`composer_card`,
+    /// `composer_send`, `composer_stop`).
+    fn composer_box(&self, look: Look, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
-        let width = self.composer_width.get();
-        let compact = composer::hermes_compact(
-            width,
-            ui_text::scale(),
-            self.composer.read(cx).value().is_empty() && self.attachments.is_empty(),
-        );
-        let narrow = width > 0.0 && width < ui_text::space_f32(360.0);
-        let inset = if narrow {
-            4.0
-        } else {
-            ui_text::space_f32(14.0)
-        };
-        let padding = if narrow { 4.0 } else { ui_text::space_f32(7.0) };
-        let gap = if narrow { px(4.0) } else { ui_text::space(4.0) };
+        let layout = self.composer_layout(cx);
+        let gap = px(layout.gap);
+        let side = px(layout.button);
         let mic = dictate::mic_shown(cx);
-        let action_count = 1 + usize::from(mic) + usize::from(self.running());
-        let available = if width <= 0.0 {
-            ui_text::space_f32(680.0)
-        } else {
-            (width - 2.0 * (inset + padding) - 2.0).max(1.0)
-        };
-        let side = ui_text::space(widgets::ROUND_BUTTON).min(px(((available
-            - f32::from(gap) * (action_count - 1) as f32)
-            / action_count as f32)
-            .max(1.0)));
         let attach = div()
             .flex_none()
             .debug_selector(|| "composer-attach".into())
@@ -1917,38 +1820,6 @@ impl ChatView {
             .min_w_0()
             .debug_selector(|| "composer-field".into())
             .child(self.composer_editor(look, window, cx));
-        let empty = self.draft_empty(cx) || self.pending_submission.is_some();
-        let send = crate::behavior_controls::button_content(
-            "chat-send",
-            "Send message · Enter sends · Shift Enter adds a line",
-            icons::symbol_in_box("arrow.up", 14.0, None, (side - px(4.0)).max(px(1.0))),
-        )
-        .disabled(empty)
-        .size(side)
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_full()
-        .bg(rgb(colors.text))
-        .text_color(rgb(colors.bg))
-        .border_1()
-        .border_color(transparent_black())
-        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
-        .when(!empty, |button| {
-            button
-                .cursor_pointer()
-                .hover(move |style| style.bg(rgb(colors.cyan)))
-        })
-        .child(tooltip::anchor(
-            if self.running() {
-                "Send · Enter steers the turn · Shift Enter adds a line"
-            } else {
-                "Send · Enter · Shift Enter adds a line"
-            },
-            TipLook::Control,
-        ))
-        .on_click(cx.listener(|view, _, window, cx| view.send_message(window, cx)));
         let actions = div()
             .flex()
             .flex_none()
@@ -1960,18 +1831,15 @@ impl ChatView {
                     .child(self.mic_button(look, side, cx))
             }))
             .children(self.running().then(|| {
-                div().debug_selector(|| "composer-stop".into()).child(
-                    widgets::symbol_button_sized(
-                        "chat-interrupt",
-                        "stop.fill",
-                        "Interrupt · ⌘.",
-                        look,
-                        side,
-                    )
-                    .on_click(cx.listener(|view, _, _, cx| view.interrupt(cx))),
-                )
+                div()
+                    .debug_selector(|| "composer-stop".into())
+                    .child(self.composer_stop(look, side, cx))
             }))
-            .child(div().debug_selector(|| "composer-send".into()).child(send));
+            .child(
+                div()
+                    .debug_selector(|| "composer-send".into())
+                    .child(self.composer_send(look, side, cx)),
+            );
         let controls = div()
             .flex_1()
             .min_w_0()
@@ -1987,7 +1855,7 @@ impl ChatView {
                     .child(self.composer_choices(look, window, cx)),
             )
             .child(actions);
-        let content = if compact {
+        let content = if layout.compact {
             div()
                 .w_full()
                 .flex()
@@ -2011,22 +1879,62 @@ impl ChatView {
                         .items_end()
                         .gap(gap)
                         .child(attach)
-                        .child(controls.when(narrow, |controls| controls.flex_none().w_full())),
+                        .child(
+                            controls.when(layout.narrow, |controls| controls.flex_none().w_full()),
+                        ),
                 )
         };
         let active = self.composer.read(cx).focus_handle(cx).is_focused(window);
-        let surface = div()
-            .id("chat-composer-bar")
+        let card = composer_card(
+            div()
+                .id("chat-composer-bar")
+                .debug_selector(|| "composer-card".into())
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(gap)
+                .p(px(layout.padding))
+                .font_family(look.chat_family()),
+            look,
+            active,
+        )
+        // The draft's attachments above the box, a staged image as its thumbnail.
+        .children((!self.attachments.is_empty()).then(|| {
+            div()
+                .id("chat-attachment-queue")
+                .role(gpui::Role::Group)
+                .aria_label("Draft attachments")
+                .max_h(ui_text::space(280.0))
+                .flex_none()
+                .overflow_y_scroll()
+                .child(self.attachment_chips(look, cx))
+                .test_support()
+        }))
+        .child(content)
+        // Saved submissions to review, below the box.
+        .children((!self.submissions.is_empty()).then(|| {
+            div()
+                .id("chat-submission-reviews")
+                .max_h(ui_text::space(280.0))
+                .overflow_y_scroll()
+                .child(self.submission_cards(look, cx))
+        }))
+        .children(composer::status(self.dictation.phase(), mic).map(|status| {
+            div()
+                .text_size(ui_text::text(10.0))
+                .text_color(rgb(colors.text))
+                .child(status)
+        }));
+        // The pane's width as laid out, for the next frame's `layout`. It does not depend on
+        // the layout, so it settles after one redraw.
+        let measured = self.composer_width.clone();
+        div()
+            .id("chat-composer-pane")
+            .relative()
             .w_full()
-            .flex()
-            .flex_col()
-            .gap(gap)
-            .p(px(padding))
-            .font_family(look.chat_family())
-            .rounded(ui_text::space(5.0))
-            .border_1()
-            .border_color(rgb(if active { colors.focus } else { colors.divider }))
-            .bg(rgb(colors.panel))
+            .debug_selector(|| "composer-pane".into())
+            .p(px(layout.inset))
+            // A drop target while files are dragged over the card or the space around it.
             .drag_over::<gpui::ExternalPaths>(move |style, _, _, _| {
                 style.bg(rgb(look.tint(colors.focus, 0.12)))
             })
@@ -2035,37 +1943,6 @@ impl ChatView {
                     view.dropped_attachments(paths, window, cx)
                 }),
             )
-            .children((!self.attachments.is_empty()).then(|| {
-                div()
-                    .id("chat-attachment-queue")
-                    .role(gpui::Role::Group)
-                    .aria_label("Draft attachments")
-                    .max_h(ui_text::space(280.0))
-                    .flex_none()
-                    .overflow_y_scroll()
-                    .child(self.attachment_chips(look, cx))
-                    .test_support()
-            }))
-            .child(content)
-            .children((!self.submissions.is_empty()).then(|| {
-                div()
-                    .id("chat-submission-reviews")
-                    .max_h(ui_text::space(280.0))
-                    .overflow_y_scroll()
-                    .child(self.submission_cards(look, cx))
-            }))
-            .children(composer::status(self.dictation.phase(), mic).map(|status| {
-                div()
-                    .text_size(ui_text::text(10.0))
-                    .text_color(rgb(colors.text))
-                    .child(status)
-            }));
-        let measured = self.composer_width.clone();
-        div()
-            .relative()
-            .w_full()
-            .debug_selector(|| "composer-pane".into())
-            .p(px(inset))
             .child(
                 canvas(
                     move |bounds, window, _| {
@@ -2083,7 +1960,7 @@ impl ChatView {
                 .w_full()
                 .h(px(0.0)),
             )
-            .child(surface)
+            .child(card)
             .into_any_element()
     }
 
@@ -2157,45 +2034,13 @@ impl ChatView {
         }
     }
 
-    /// Kit's transparent textarea inside the existing continuous-corner shell.
+    /// Kit's transparent textarea: the card around it (`composer_card`) draws its edge.
     fn composer_editor(
         &self,
         look: Look,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Stateful<gpui::Div> {
-        let colors = look.colors;
-        let active = self.composer.read(cx).focus_handle(cx).is_focused(window);
-        let radius = ui_text::space(16.);
-        let outline = if active {
-            if look.native {
-                colors.focus
-            } else {
-                colors.cyan
-            }
-        } else {
-            colors.divider
-        };
-        let surface = canvas(
-            |_, _, _| (),
-            move |bounds, _, window, _| {
-                let bounds = bounds.inset(px(0.5));
-                if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
-                    return;
-                }
-                for (mut path, color) in [
-                    (PathBuilder::fill(), colors.bg),
-                    (PathBuilder::stroke(px(1.)), outline),
-                ] {
-                    composer_path(&mut path, bounds, radius);
-                    if let Ok(path) = path.build() {
-                        window.paint_path(path, rgb(color));
-                    }
-                }
-            },
-        )
-        .absolute()
-        .inset_0();
         let weak = cx.weak_entity();
         let editor = text_input::on_paste_with_reader(
             text_input::textarea("chat-composer", &self.composer, window, cx),
@@ -2237,7 +2082,6 @@ impl ChatView {
             .border_1()
             .bg(transparent_black())
             .border_color(transparent_black())
-            .children((!look.hermes()).then_some(surface))
             .child(editor)
     }
 }
@@ -2248,7 +2092,13 @@ mod tests {
     use crate::chat::model::{QuestionOption, QuestionPrompt};
     use gpui_kit::test::TestWindowExt;
 
-    /// Recording-only fixture: no provider, host staging, clipboard or socket access.
+    /// The designs the layout tests draw: Native, a colorful theme and Hermes.
+    const DESIGNS: [theme::ThemeChoice; 3] = [
+        theme::ThemeChoice::Native,
+        theme::ThemeChoice::RiWork,
+        theme::ThemeChoice::Hermes,
+    ];
+
     fn hermes_fixture(
         cx: &mut gpui::TestAppContext,
         width: f32,
@@ -2256,20 +2106,39 @@ mod tests {
         gpui::WindowHandle<gpui_kit::base::Root>,
         gpui::Entity<ChatView>,
     ) {
+        design_fixture(cx, width, theme::ThemeChoice::Hermes)
+    }
+
+    /// Recording-only fixture in `design`, at the scale the test set: no provider, host
+    /// staging, clipboard or socket access.
+    fn design_fixture(
+        cx: &mut gpui::TestAppContext,
+        width: f32,
+        design: theme::ThemeChoice,
+    ) -> (
+        gpui::WindowHandle<gpui_kit::base::Root>,
+        gpui::Entity<ChatView>,
+    ) {
         cx.update(|cx| {
-            cx.set_global(crate::settings::Settings {
-                theme: theme::ThemeChoice::Hermes,
+            let mut settings = crate::settings::Settings {
+                theme: design,
                 ui_text_matches_terminal: false,
-                ui_text_size: ui_text::TextPoints::new(
-                    ui_text::scale() * ui_text::REFERENCE_SIZE
-                        - ui_text::Face::Hermes.offset(false),
-                ),
                 dictation_mic: true,
                 ..Default::default()
-            });
+            };
+            settings.ui_text_size = ui_text::TextPoints::new(
+                ui_text::scale() * ui_text::REFERENCE_SIZE
+                    - ui_text::Face::of(&settings).offset(false),
+            );
+            cx.set_global(settings);
             cx.set_global(theme::Appearance {
-                selected: theme::ThemeChoice::Hermes,
-                palette: theme::Palette::HERMES,
+                selected: design,
+                palette: match design {
+                    theme::ThemeChoice::Native => theme::Palette::native(false),
+                    theme::ThemeChoice::RiWork => theme::Palette::RIWORK,
+                    theme::ThemeChoice::Hermes => theme::Palette::HERMES,
+                    _ => panic!("the chat layout fixture draws Native, RiWork and Hermes"),
+                },
                 terminal: None,
                 ghostty: None,
                 error: None,
@@ -2292,13 +2161,13 @@ mod tests {
                             let mut view = ChatView::blank(
                                 super::super::HostConfig {
                                     ensure: std::sync::Arc::new(|| {
-                                        panic!("Hermes fixture cannot stage or launch a provider")
+                                        panic!("the fixture cannot stage or launch a provider")
                                     }),
                                 },
                                 window,
                                 cx,
                             );
-                            view.chat_id = Some("hermes-fixture".into());
+                            view.chat_id = Some("layout-fixture".into());
                             view.feed = Some(feed);
                             view.model.transcript.state = ChatState::Running;
                             view.model.transcript.models = vec![crate::chat::model::ModelOption {
@@ -2468,64 +2337,98 @@ mod tests {
     }
 
     #[gpui::test]
-    fn hermes_empty_and_multiline_keep_editor_and_controls_inside_pane(
+    fn every_design_lays_out_the_same_card_with_editor_and_controls_inside_pane(
         cx: &mut gpui::TestAppContext,
     ) {
         for scale in [1.0, 1.5, 2.0] {
             let previous = ui_text::set_for_tests(scale, ui_text::Face::Menlo);
             for width in [100.0, 240.0, 360.0, 720.0, 1440.0] {
-                let (handle, view) = hermes_fixture(cx, width);
-                let editor = view.read_with(cx, |view, _| view.composer.entity_id());
-                for text in ["", "First line 🦀\nSecond line\nThird line\nFourth line"] {
-                    cx.update_window(handle.into(), |_, window, cx| {
-                        view.update(cx, |view, cx| {
-                            view.composer
-                                .update(cx, |state, cx| state.set_value(text, window, cx));
-                            cx.notify();
+                // Every design draws the card and its buttons at the same places.
+                let mut drawn = Vec::new();
+                for design in DESIGNS {
+                    let (handle, view) = design_fixture(cx, width, design);
+                    let editor = view.read_with(cx, |view, _| view.composer.entity_id());
+                    let mut geometry = Vec::new();
+                    for text in ["", "First line 🦀\nSecond line\nThird line\nFourth line"] {
+                        cx.update_window(handle.into(), |_, window, cx| {
+                            view.update(cx, |view, cx| {
+                                view.composer
+                                    .update(cx, |state, cx| state.set_value(text, window, cx));
+                                cx.notify();
+                            })
                         })
-                    })
-                    .unwrap();
-                    draw_hermes(cx, handle);
-                    let mut visual = gpui::VisualTestContext::from_window(handle.into(), cx);
-                    let pane = visual.debug_bounds("composer-pane").unwrap();
-                    let field = visual.debug_bounds("composer-field").unwrap();
-                    for selector in [
-                        "composer-field",
-                        "composer-attach",
-                        "composer-mic",
-                        "composer-stop",
-                        "composer-send",
-                        "composer-model-choices",
-                    ] {
-                        let bounds = visual.debug_bounds(selector).unwrap();
+                        .unwrap();
+                        draw_hermes(cx, handle);
+                        let plan = composer::layout(width, scale, text.is_empty(), 3);
+                        let what = format!("{design:?}, width {width}, scale {scale}, {text:?}");
+                        let mut visual = gpui::VisualTestContext::from_window(handle.into(), cx);
+                        let pane = visual.debug_bounds("composer-pane").unwrap();
+                        let field = visual.debug_bounds("composer-field").unwrap();
+                        assert!((pane.size.width - px(width)).abs() <= px(0.5), "{what}");
+                        let mut row = vec![field];
+                        for selector in [
+                            "composer-field",
+                            "composer-attach",
+                            "composer-mic",
+                            "composer-stop",
+                            "composer-send",
+                            "composer-model-choices",
+                        ] {
+                            let bounds = visual.debug_bounds(selector).unwrap();
+                            // Inside the card, which keeps its inset from the pane.
+                            assert!(
+                                bounds.left() >= pane.left() + px(plan.inset) - px(0.5),
+                                "{selector}: {what}"
+                            );
+                            assert!(
+                                bounds.right() <= pane.right() - px(plan.inset) + px(0.5),
+                                "{selector}: {what}"
+                            );
+                            assert!(bounds.size.width > px(0.0), "{selector}: {what}");
+                            row.push(bounds);
+                        }
+                        for selector in ["composer-mic", "composer-stop", "composer-send"] {
+                            let bounds = visual.debug_bounds(selector).unwrap();
+                            assert!(
+                                (bounds.size.width - px(plan.button)).abs() <= px(0.5),
+                                "{selector} is {:?}, planned {}: {what}",
+                                bounds.size.width,
+                                plan.button
+                            );
+                        }
+                        let send = visual.debug_bounds("composer-send").unwrap();
+                        if !text.is_empty() {
+                            // A draft takes the card's width; the controls go under it.
+                            assert!(send.top() >= field.bottom(), "{what}");
+                        } else if plan.compact {
+                            assert!(send.top() < field.bottom(), "{what}");
+                        }
+                        let header = visual.debug_bounds("chat-header").unwrap();
                         assert!(
-                            bounds.left() >= pane.left() - px(0.5),
-                            "{selector}, width {width}, scale {scale}"
+                            visual.debug_bounds("composer-model-choices").unwrap().top()
+                                >= header.bottom()
                         );
-                        assert!(
-                            bounds.right() <= pane.right() + px(0.5),
-                            "{selector}, width {width}, scale {scale}"
-                        );
-                        assert!(bounds.size.width > px(0.0));
+                        view.read_with(cx, |view, cx| {
+                            assert_eq!(view.composer.entity_id(), editor);
+                            assert_eq!(view.composer.read(cx).value(), text);
+                        });
+                        geometry.push((field, send));
                     }
-                    if !text.is_empty() {
+                    drawn.push((design, geometry));
+                }
+                // The field and Send sit at the same places in every design, give or take the
+                // rounding of the model choices' text in each design's face.
+                let (_, reference) = &drawn[0];
+                for (design, geometry) in &drawn[1..] {
+                    for ((field, send), (field0, send0)) in geometry.iter().zip(reference) {
+                        let what = format!("{design:?}, width {width}, scale {scale}");
+                        assert!((field.left() - field0.left()).abs() <= px(0.5), "{what}");
+                        assert!((send.right() - send0.right()).abs() <= px(0.5), "{what}");
                         assert!(
-                            visual.debug_bounds("composer-send").unwrap().top() >= field.bottom()
-                        );
-                    } else if composer::hermes_compact(width, scale, true) {
-                        assert!(
-                            visual.debug_bounds("composer-send").unwrap().top() < field.bottom()
+                            (send.size.width - send0.size.width).abs() <= px(0.5),
+                            "{what}"
                         );
                     }
-                    let header = visual.debug_bounds("chat-header").unwrap();
-                    assert!(
-                        visual.debug_bounds("composer-model-choices").unwrap().top()
-                            >= header.bottom()
-                    );
-                    view.read_with(cx, |view, cx| {
-                        assert_eq!(view.composer.entity_id(), editor);
-                        assert_eq!(view.composer.read(cx).value(), text);
-                    });
                 }
             }
             ui_text::set_for_tests(previous.0, previous.1);
@@ -2533,11 +2436,55 @@ mod tests {
     }
 
     #[gpui::test]
-    fn hermes_attachment_menu_escape_preserves_draft_and_has_only_backed_actions(
+    fn every_design_sets_a_notice_in_the_message_box_column(cx: &mut gpui::TestAppContext) {
+        let previous = ui_text::set_for_tests(1.0, ui_text::Face::Menlo);
+        for width in [240.0, 720.0] {
+            for design in DESIGNS {
+                let (handle, view) = design_fixture(cx, width, design);
+                cx.update_window(handle.into(), |_, _, cx| {
+                    view.update(cx, |view, cx| {
+                        view.notice = Some("The last message did not get through.".into());
+                        cx.notify();
+                    })
+                })
+                .unwrap();
+                draw_hermes(cx, handle);
+                let what = format!("{design:?} at {width}");
+                let mut visual = gpui::VisualTestContext::from_window(handle.into(), cx);
+                let banner = visual
+                    .debug_bounds("chat-banner")
+                    .expect("the notice is drawn");
+                let card = visual.debug_bounds("composer-card").unwrap();
+                let pane = visual.debug_bounds("composer-pane").unwrap();
+                let inset = px(composer::layout(width, 1.0, true, 3).inset);
+                assert!((banner.left() - card.left()).abs() <= px(0.5), "{what}");
+                assert!((banner.right() - card.right()).abs() <= px(0.5), "{what}");
+                // The card's inset above it is the space between the two.
+                assert!(
+                    (card.top() - banner.bottom() - inset).abs() <= px(0.5),
+                    "{what}"
+                );
+                assert!((pane.top() - banner.bottom()).abs() <= px(0.5), "{what}");
+            }
+        }
+        ui_text::set_for_tests(previous.0, previous.1);
+    }
+
+    #[gpui::test]
+    fn every_design_attachment_menu_escape_preserves_draft_and_has_only_backed_actions(
         cx: &mut gpui::TestAppContext,
     ) {
+        for design in DESIGNS {
+            attachment_menu_escape_preserves_draft_and_has_only_backed_actions(cx, design);
+        }
+    }
+
+    fn attachment_menu_escape_preserves_draft_and_has_only_backed_actions(
+        cx: &mut gpui::TestAppContext,
+        design: theme::ThemeChoice,
+    ) {
         let previous = ui_text::set_for_tests(1.0, ui_text::Face::Menlo);
-        let (handle, view) = hermes_fixture(cx, 360.0);
+        let (handle, view) = design_fixture(cx, 360.0, design);
         cx.update_window(handle.into(), |_, window, cx| {
             view.update(cx, |view, cx| {
                 view.composer.update(cx, |state, cx| {
@@ -2590,7 +2537,7 @@ mod tests {
         view.read_with(cx, |view, cx| {
             assert!(!view.open.contains(ATTACHMENT_MENU_KEY));
             assert_eq!(view.composer.read(cx).value(), "Keep my draft 🦀");
-            assert_eq!(view.chat_id.as_deref(), Some("hermes-fixture"));
+            assert_eq!(view.chat_id.as_deref(), Some("layout-fixture"));
         });
         ui_text::set_for_tests(previous.0, previous.1);
     }

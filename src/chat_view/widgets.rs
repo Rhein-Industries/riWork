@@ -28,9 +28,17 @@ pub(super) struct Look {
 }
 
 impl Look {
-    /// Hermes uses the shared palette contract without adding state to transcript looks.
+    /// Whether the chat is drawn in the Hermes design's style: proportional text, flat panel
+    /// cards with small corners, a filled send disc. It chooses how things look only; every
+    /// design lays the chat out the same.
     pub fn hermes(self) -> bool {
         self.colors == Palette::HERMES
+    }
+
+    /// The corners of the cards at the bottom of the chat (the message box and the bars above
+    /// it): Hermes's small ones, the continuous-corner message field's in every other design.
+    pub fn card_radius(self) -> Pixels {
+        ui_text::space(if self.hermes() { 5.0 } else { 16.0 })
     }
 
     pub fn chat_family(self) -> SharedString {
@@ -480,29 +488,10 @@ pub(super) const ROUND_BUTTON: f32 = 26.0;
 pub(super) const FIELD_TEXT: f32 = 12.0;
 pub(super) const FIELD_PAD_Y: f32 = 6.0;
 
-/// The height of an input box of one line: its text's line box (GPUI's default line height,
-/// φ times the text size, rounded as GPUI rounds it), its padding and its 1 px border.
-pub(super) fn field_line_height() -> Pixels {
-    field_line() + px(2.0 * ui_text::space_f32(FIELD_PAD_Y) + 2.0)
-}
-
-/// The line box of an input box's text, which the box sets explicitly so that
-/// `field_line_height` is its real height.
+/// The line box of an input box's text (GPUI's default line height, φ times the text size,
+/// rounded as GPUI rounds it), which the box sets explicitly.
 pub(super) fn field_line() -> Pixels {
     px((f32::from(ui_text::text(FIELD_TEXT)) * 1.618_034).round())
-}
-
-/// A button beside the message box, centered on the box's line: on the box's own center while
-/// it has one line, and on its last line once it has more, as the row keeps its buttons at the
-/// bottom. Every button of the row sits in one of these, so they share one center line whatever
-/// their height.
-pub(super) fn beside_field(button: impl IntoElement) -> Div {
-    div()
-        .flex_none()
-        .h(field_line_height())
-        .flex()
-        .items_center()
-        .child(button)
 }
 
 /// A button that copies something: `word` ("copy"), then "copied" once it has, in the

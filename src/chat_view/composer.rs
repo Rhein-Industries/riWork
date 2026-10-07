@@ -67,109 +67,71 @@ pub fn status(dictation: &Phase, mic: bool) -> Option<String> {
 }
 
 /// The chat header's inset from the tab's sides and the gap between its controls, in design
-/// points. The message box under the list keeps the same, so its edges line up with the
-/// header's, until a narrow pane makes it give some of that up (see `layout`).
+/// points.
 pub const BAR_INSET: f32 = 10.0;
 pub const BAR_GAP: f32 = 6.0;
-/// The message box bar's inset and gap in a pane too narrow for the usual ones, in pixels:
-/// these do not grow with the text, so a big text size leaves the box its room.
-pub const COMPACT_INSET: f32 = 4.0;
-pub const COMPACT_GAP: f32 = 4.0;
-/// The narrowest the message box may get, in design points.
-pub const MIN_FIELD: f32 = 120.0;
+/// The message box card's inset from the pane's sides and bottom, its padding and the gap
+/// between its pieces, in design points. The bars above it (a notice, a request, a question)
+/// keep the same inset, so the bottom of the chat reads as one column of cards.
+pub const CARD_INSET: f32 = 14.0;
+pub const CARD_PADDING: f32 = 7.0;
+pub const CARD_GAP: f32 = 4.0;
+/// Inset, padding and gap in a pane narrower than `NARROW_PANE`, in pixels: these do not
+/// grow with the text, so a big text size leaves the box its room.
+pub const NARROW_SPACE: f32 = 4.0;
+/// Below this width (in design points) the card gives up its usual insets and its controls
+/// take a row of their own.
+pub const NARROW_PANE: f32 = 360.0;
+/// From this width (in design points) an empty box shares one row with its controls.
+pub const COMPACT_PANE: f32 = 680.0;
 
-/// The empty Hermes field shares a row with the controls only when there is room for a
-/// readable prompt. Drafts always get the full width; narrow panes put controls below.
-pub fn hermes_compact(pane: f32, scale: f32, empty: bool) -> bool {
-    empty && pane >= (680.0 * scale.max(1.0)).round()
-}
-
-/// How the message box bar is laid out in a pane of a given width: in pixels, as drawn.
+/// How the message box card is laid out in a pane of a given width: in pixels, as drawn. The
+/// same in every design; a design only chooses how the card and its buttons look.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {
-    /// The box takes the whole row and the buttons a row under it.
-    pub stacked: bool,
-    /// Whether the mic is shown.
-    pub mic: bool,
-    /// The bar's padding on every side, and the gap between its pieces.
+    /// The empty box shares one row with Attach and the controls. Otherwise the box takes the
+    /// card's whole width and Attach and the controls wrap in a row under it.
+    pub compact: bool,
+    /// A pane too narrow for the usual insets: the controls take a row of their own.
+    pub narrow: bool,
+    /// The card's inset from the pane (also the bars' above it), its padding, and the gap
+    /// between its pieces.
     pub inset: f32,
+    pub padding: f32,
     pub gap: f32,
-    /// Every button's side. Native and the colorful themes draw the same square buttons
-    /// (a symbol or a one-character mark), so one side serves both.
+    /// Every button's side: the round buttons of the action row (the mic, Stop, Send) share
+    /// the room the card leaves them and never grow past `ROUND_BUTTON`.
     pub button: f32,
-    /// The box's width.
-    pub field: f32,
-    /// The width the buttons take in their row (the box's row when not stacked), gaps
-    /// included.
-    pub buttons: f32,
 }
 
-/// The bar's layout for a pane `pane` px wide at interface scale `scale`, with the mic set to
-/// show (`mic`) and kept whatever the room (`keep_mic`, while it dictates), and a turn
-/// running (`running`, which adds Stop). Attach and Send are always there.
-///
-/// With the header's inset and gap, every button goes beside the box while the box keeps
-/// `MIN_FIELD`; else the mic goes first; else the box takes the whole row and the buttons a
-/// row under it, where the mic comes back if there is room. When even that row is short (or
-/// the box is short of its minimum on a row of its own), the bar falls to `COMPACT_INSET` and
-/// `COMPACT_GAP` and the buttons shrink to share the row, so the box keeps
-/// `min(MIN_FIELD, pane - 2 × COMPACT_INSET)` and the buttons never pass the pane's edge.
-/// Lengths in design points grow with the text as `ui_text::space` grows them. A pane not
-/// yet laid out (zero wide) gets the full row.
-pub fn layout(pane: f32, scale: f32, mic: bool, keep_mic: bool, running: bool) -> Layout {
+/// The card's layout for a pane `pane` px wide at interface scale `scale`, with an `empty`
+/// draft (no text, no attachment) and `actions` round buttons in its action row (Send, and
+/// the mic and Stop when shown). A pane not yet laid out (zero wide) gets the usual insets
+/// and full-size buttons.
+pub fn layout(pane: f32, scale: f32, empty: bool, actions: usize) -> Layout {
     let space = |base: f32| (base * scale.max(1.0)).round();
-    let (inset, gap, side, min) = (
-        space(BAR_INSET),
-        space(BAR_GAP),
-        space(super::widgets::ROUND_BUTTON),
-        space(MIN_FIELD),
-    );
-    let base = 2 + usize::from(running);
-    let all = base + usize::from(mic);
-    let needed = if keep_mic && mic { all } else { base };
-    let span = |count: usize, side: f32, gap: f32| count as f32 * (side + gap);
-    let row = pane - 2.0 * inset;
-    let inline = |mic: bool| {
-        let count = base + usize::from(mic);
-        Layout {
-            stacked: false,
-            mic,
-            inset,
-            gap,
-            button: side,
-            field: row - span(count, side, gap),
-            buttons: span(count, side, gap),
-        }
-    };
-    if pane <= 0.0 || row >= min + span(all, side, gap) {
-        return inline(mic);
-    }
-    if !(keep_mic && mic) && row >= min + span(base, side, gap) {
-        return inline(false);
-    }
-    // Under the box: Attach, a space that takes what is left, then the rest; a gap before
-    // each button but the first and one before the space, so one gap per button.
-    let (inset, gap) = if row >= min && row >= span(needed, side, gap) {
-        (inset, gap)
+    let narrow = pane > 0.0 && pane < space(NARROW_PANE);
+    let (inset, padding, gap) = if narrow {
+        (NARROW_SPACE, NARROW_SPACE, NARROW_SPACE)
     } else {
-        (COMPACT_INSET, COMPACT_GAP)
+        (space(CARD_INSET), space(CARD_PADDING), space(CARD_GAP))
     };
-    let row = pane - 2.0 * inset;
-    let side = side.min(
-        ((row - needed as f32 * gap) / needed as f32)
-            .floor()
-            .max(1.0),
-    );
-    let mic = mic && row >= span(all, side, gap);
-    let count = base + usize::from(mic);
+    let actions = actions.max(1);
+    let available = if pane <= 0.0 {
+        space(COMPACT_PANE)
+    } else {
+        // The card's border takes a pixel on each side.
+        (pane - 2.0 * (inset + padding) - 2.0).max(1.0)
+    };
+    let button = space(super::widgets::ROUND_BUTTON)
+        .min(((available - gap * (actions - 1) as f32) / actions as f32).max(1.0));
     Layout {
-        stacked: true,
-        mic,
+        compact: empty && pane >= space(COMPACT_PANE),
+        narrow,
         inset,
+        padding,
         gap,
-        button: side,
-        field: row,
-        buttons: span(count, side, gap),
+        button,
     }
 }
 
@@ -288,51 +250,47 @@ mod tests {
     }
 
     #[test]
-    fn the_box_keeps_its_minimum_and_the_buttons_stay_in_the_pane() {
-        let at = |pane, mic, running| layout(pane, 1.0, mic, false, running);
-        // At 1.0: 10 inset, 6 gap, 26 buttons (the side every composer button is drawn at),
-        // 120 box.
+    fn the_card_keeps_its_insets_and_its_buttons_share_what_the_pane_leaves() {
+        let round = super::super::widgets::ROUND_BUTTON;
+        // At 1.0 in a wide pane: 14 inset, 7 padding, 4 gap and full-size buttons; an empty
+        // box shares the controls' row from 680 px, a draft never does.
+        let wide = layout(900.0, 1.0, true, 3);
         assert_eq!(
-            at(500.0, true, true).button,
-            super::super::widgets::ROUND_BUTTON
+            (wide.inset, wide.padding, wide.gap, wide.button),
+            (14.0, 7.0, 4.0, round)
         );
-        let wide = at(500.0, true, true);
-        assert!(!wide.stacked && wide.mic && wide.field == 480.0 - 4.0 * 32.0);
-        assert!(at(268.0, true, true).mic);
-        let short = at(267.0, true, true);
-        assert!(!short.stacked && !short.mic && short.field >= 120.0);
-        assert!(at(235.0, true, true).stacked);
-        // Not laid out yet: the full row.
-        assert!(!at(0.0, true, true).stacked && at(0.0, true, true).mic);
-        // A dictating mic is never dropped: under the box instead.
-        let dictating = layout(267.0, 1.0, true, true, true);
-        assert!(dictating.stacked && dictating.mic);
+        assert!(wide.compact && !wide.narrow);
+        assert!(!layout(900.0, 1.0, false, 3).compact);
+        assert!(layout(680.0, 1.0, true, 1).compact);
+        assert!(!layout(679.0, 1.0, true, 1).compact);
+        // Under 360 px the card gives up its insets for 4 px ones that do not grow.
+        let narrow = layout(359.0, 1.0, true, 3);
+        assert!(narrow.narrow && !narrow.compact);
+        assert_eq!(
+            (narrow.inset, narrow.padding, narrow.gap),
+            (NARROW_SPACE, NARROW_SPACE, NARROW_SPACE)
+        );
+        assert!(!layout(360.0, 1.0, true, 3).narrow);
+        // Not laid out yet: the usual insets and full-size buttons.
+        let unmeasured = layout(0.0, 1.0, true, 3);
+        assert!(!unmeasured.narrow && !unmeasured.compact && unmeasured.button == round);
         for scale in [0.8, 1.0, 1.5, 24.0 / ui_text::REFERENCE_SIZE] {
-            for pane in [120.0, 160.0, 200.0, 240.0, 300.0, 368.0, 500.0, 900.0] {
-                for (mic, running) in [(true, true), (true, false), (false, true), (false, false)] {
-                    let fit = layout(pane, scale, mic, false, running);
-                    let min = (MIN_FIELD * f32::max(scale, 1.0)).round();
-                    let floor = min.min(pane - 2.0 * COMPACT_INSET);
-                    let what = format!("{pane} px at {scale}× mic {mic} running {running}");
-                    assert!(fit.field >= floor, "box {} < {floor}: {what}", fit.field);
-                    let row = pane - 2.0 * fit.inset;
-                    if fit.stacked {
-                        assert!(
-                            fit.buttons <= row,
-                            "buttons {} > {row}: {what}",
-                            fit.buttons
-                        );
-                        assert_eq!(fit.field, row);
-                    } else {
-                        assert_eq!(fit.field + fit.buttons, row, "{what}");
+            for pane in [100.0, 160.0, 240.0, 300.0, 368.0, 500.0, 720.0, 1440.0] {
+                for actions in 1..=3 {
+                    let fit = layout(pane, scale, true, actions);
+                    let what = format!("{pane} px at {scale}×, {actions} actions");
+                    // The action row fits inside the card, whose insets fit in the pane.
+                    let row = actions as f32 * fit.button + (actions - 1) as f32 * fit.gap;
+                    let inner = pane - 2.0 * (fit.inset + fit.padding) - 2.0;
+                    assert!(row <= inner + 0.01, "row {row} > {inner}: {what}");
+                    assert!(fit.button >= 1.0 && fit.button <= (round * scale.max(1.0)).round());
+                    // A scale grows the insets with the text, the narrow ones stay as they are.
+                    if !fit.narrow {
+                        assert_eq!(fit.inset, (CARD_INSET * scale.max(1.0)).round(), "{what}");
                     }
-                    assert!(!fit.mic || mic, "{what}");
                 }
             }
         }
-        // 24 pt text in the narrowest pane: compact, the box keeps 120.
-        let big = layout(160.0, 24.0 / ui_text::REFERENCE_SIZE, true, false, true);
-        assert!(big.stacked && big.inset == COMPACT_INSET && big.field >= 120.0);
     }
 
     #[test]
