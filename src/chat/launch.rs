@@ -131,9 +131,25 @@ fn assemble(
         fast: info.fast,
         resume,
         extra_args,
+        instructions: instructions(info),
         env,
         env_remove,
     }
+}
+
+/// What the agent is told of the conversation the chat had before it switched provider.
+/// A document that is gone is said once in the host's log and leaves the agent without it.
+pub(crate) fn instructions(info: &ChatInfo) -> Option<String> {
+    let carried = info.carried_over.as_ref()?;
+    let instructions = crate::handoff::carried_over_instructions(&carried.from, &carried.document);
+    if instructions.is_none() {
+        eprintln!(
+            "riwork chat: {}: cannot read {}; the agent starts without the earlier conversation",
+            info.id,
+            carried.document.display()
+        );
+    }
+    instructions
 }
 
 #[cfg(test)]
@@ -158,6 +174,7 @@ mod tests {
             codex_account_id: None,
             state: ChatState::Stopped,
             orchestrator: None,
+            carried_over: None,
         }
     }
 

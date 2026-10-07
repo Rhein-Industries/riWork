@@ -169,9 +169,9 @@ fn warm(cli: &Path) {
 /// `[]`). `chat new` waits `create.delay` seconds if that exists, marks
 /// `create.ran`, then prints `create.json`. `chat events` waits `events.delay`
 /// and prints `events.json`. `chat command` and `chat stop` print the chat they
-/// were given. Each of the `chat` calls fails with the line in its `.error` file
-/// (`list.error`, `create.error`, `events.error`, `command.error`, `stop.error`)
-/// if that exists.
+/// were given. `chat models` prints `models.json`. Each of the `chat` calls fails with the
+/// line in its `.error` file (`list.error`, `create.error`, `events.error`, `command.error`,
+/// `stop.error`, `models.error`) if that exists.
 fn stub_cli(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let cli = dir.join("fake-riwork");
@@ -204,6 +204,7 @@ fn stub_cli(dir: &Path) -> PathBuf {
                cat \"$d/events.json\";;\n\
              'chat command') fail command; printf '{{\"id\":\"%s\",\"status\":\"ok\"}}' \"$3\";;\n\
              'chat stop') fail stop; printf '{{\"id\":\"%s\",\"state\":\"stopped\"}}' \"$3\";;\n\
+             'chat models') fail models; cat \"$d/models.json\";;\n\
              esac\n",
             dir = dir.display()
         ),
@@ -2164,4 +2165,123 @@ async fn bounded_placeholder_uses_product_copy_without_changing_cursor_or_identi
         item["body"]["text"],
         "This message is too long to show here. Full text is on your Mac."
     );
+}
+
+#[tokio::test]
+async fn a_switch_is_rebuilt_from_what_was_checked_and_needs_a_cli_that_has_it() {
+    let f = Fixture::new();
+    let switch = json!({"command":"switch","provider":"claude","model":"opus"});
+    // A CLI that has chats but not the switch is not handed one.
+    let response = f
+        .call("chat.command", json!({"chat_id":f.chat,"command":switch}))
+        .await;
+    assert_eq!(code(&response), "cli_error", "{response}");
+    assert!(
+        message(&response).contains("another provider"),
+        "{response}"
+    );
+    assert!(f.calls_of("chat", "command").is_empty());
+
+    f.says(
+        "capabilities.out",
+        &json!({"v":1,"chat":true,"chat_provider_switch":true}),
+    );
+    let response = f
+        .call("chat.command", json!({"chat_id":f.chat,"command":switch}))
+        .await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(
+        f.calls_of("chat", "command").pop().unwrap()[4],
+        r#"{"command":"switch","model":"opus","provider":"claude"}"#
+    );
+    // Blank is left out, as in configure.
+    f.call(
+        "chat.command",
+        json!({"chat_id":f.chat,"command":{"command":"switch","provider":"codex","effort":" ","fast":true}}),
+    )
+    .await;
+    assert_eq!(
+        f.calls_of("chat", "command").pop().unwrap()[4],
+        r#"{"command":"switch","fast":true,"provider":"codex"}"#
+    );
+    let calls = f.calls_of("chat", "command").len();
+    for bad in [
+        json!({"command":"switch"}),
+        json!({"command":"switch","provider":"grok"}),
+        json!({"command":"switch","provider":null}),
+        json!({"command":"switch","provider":"claude","approval_mode":"full"}),
+        json!({"command":"switch","provider":"claude","fast":"yes"}),
+        json!({"command":"switch","provider":"claude","model":"x".repeat(101)}),
+    ] {
+        let response = f
+            .call("chat.command", json!({"chat_id":f.chat,"command":bad}))
+            .await;
+        assert_eq!(code(&response), "invalid_request", "{bad}: {response}");
+    }
+    assert_eq!(f.calls_of("chat", "command").len(), calls);
+}
+
+#[tokio::test]
+async fn chat_models_passes_on_a_providers_saved_list_and_nothing_else() {
+    let f = Fixture::new();
+    let response = f.call("chat.models", json!({"provider":"claude"})).await;
+    assert_eq!(code(&response), "cli_error", "{response}");
+    assert!(f.calls_of("chat", "models").is_empty());
+
+    f.says(
+        "capabilities.out",
+        &json!({"v":1,"chat":true,"chat_models":true}),
+    );
+    f.says(
+        "models.json",
+        &json!({"provider":"claude","models":[{"id":"opus","name":"Opus","efforts":["high"],"extra":1}],
+                "configured":["claude-opus-4"],"account_label":null,"error":null,"secret":"x"}),
+    );
+    let response = f
+        .call(
+            "chat.models",
+            json!({"provider":"claude","project_id":f.project}),
+        )
+        .await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(
+        response["result"],
+        json!({"provider":"claude","models":[{"id":"opus","name":"Opus","efforts":["high"],"extra":1}],
+               "configured":["claude-opus-4"],"account_label":null,"error":null})
+    );
+    let call = f.calls_of("chat", "models").pop().unwrap();
+    assert_eq!(
+        call[..6],
+        [
+            "chat",
+            "models",
+            "--provider",
+            "claude",
+            "--project",
+            f.project.as_str()
+        ]
+    );
+
+    // An answer for another provider, or one without names, does not reach the phone.
+    f.says(
+        "models.json",
+        &json!({"provider":"codex","models":[],"configured":[]}),
+    );
+    let response = f.call("chat.models", json!({"provider":"claude"})).await;
+    assert_eq!(code(&response), "cli_error", "{response}");
+    f.says(
+        "models.json",
+        &json!({"provider":"claude","models":[{"id":"opus"}],"configured":[]}),
+    );
+    let response = f.call("chat.models", json!({"provider":"claude"})).await;
+    assert_eq!(code(&response), "cli_error", "{response}");
+    for bad in [
+        json!({}),
+        json!({"provider":"grok"}),
+        json!({"provider":"claude","project_id":"nope"}),
+        json!({"provider":"claude","x":1}),
+    ] {
+        let response = f.call("chat.models", bad.clone()).await;
+        assert_eq!(code(&response), "invalid_request", "{bad}: {response}");
+    }
 }

@@ -349,6 +349,7 @@ fn fresh_chat_failed_or_ambiguous_create_send_never_retries_and_claim_precedes_c
                                 codex_account_id: new.codex_account_id,
                                 state: ChatState::Idle,
                                 orchestrator: None,
+                                carried_over: None,
                             };
                             match failure {
                                 Failure::WrongId => info.id = Uuid::new_v4().to_string(),

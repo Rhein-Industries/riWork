@@ -354,6 +354,7 @@ mod tests {
             codex_account_id: None,
             state,
             orchestrator: None,
+            carried_over: None,
         }
     }
 

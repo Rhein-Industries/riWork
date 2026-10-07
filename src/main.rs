@@ -135,8 +135,6 @@ actions!(
         OpenClaude,
         OpenGrok,
         OpenNewChat,
-        OpenCodexChat,
-        OpenClaudeChat,
         CreateProject,
         ToggleFocusMode,
         OpenSettings,
@@ -6528,30 +6526,6 @@ impl Workspace {
         cx.notify();
     }
 
-    fn open_codex_chat_action(
-        &mut self,
-        _: &OpenCodexChat,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.modal_open() {
-            return;
-        }
-        self.begin_new_chat(Some(Provider::Codex), false, window, cx);
-    }
-
-    fn open_claude_chat_action(
-        &mut self,
-        _: &OpenClaudeChat,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.modal_open() {
-            return;
-        }
-        self.begin_new_chat(Some(Provider::Claude), false, window, cx);
-    }
-
     fn open_new_chat_action(
         &mut self,
         _: &OpenNewChat,
@@ -6715,7 +6689,11 @@ impl Workspace {
         let tab_id = self.next_tab_id;
         self.next_tab_id += 1;
         let (names, paths) = speech_context(&self.state, &self.project_id);
-        view.update(cx, |view, _| view.set_speech_context(names, paths));
+        let home = self.sessions.state_home().to_path_buf();
+        view.update(cx, |view, _| {
+            view.set_speech_context(names, paths);
+            view.set_catalog_home(home);
+        });
         cx.subscribe_in(
             &view,
             window,
@@ -6844,16 +6822,16 @@ impl Workspace {
                 }
             }
             ChatViewEvent::HandOff => self.begin_handoff_from_chat(view, window, cx),
-            ChatViewEvent::NewProviderChat { provider } => {
-                if place.is_some()
-                    && !self.modal_open()
-                    && view.read(cx).info().is_some_and(|info| {
-                        info.project_id.as_deref() == Some(self.project_id.as_str())
-                    })
-                {
+            ChatViewEvent::NewChat => {
+                let provider = view.read(cx).info().and_then(|info| {
+                    (info.project_id.as_deref() == Some(self.project_id.as_str()))
+                        .then_some(info.provider)
+                });
+                if place.is_some() && !self.modal_open() && provider.is_some() {
                     // The picker row disappears; cancel returns to the retained composer.
                     view.update(cx, |view, cx| view.focus(window, cx));
-                    self.begin_new_chat(Some(*provider), false, window, cx);
+                    // The chooser starts at this chat's provider; any model may be chosen.
+                    self.begin_new_chat(provider, false, window, cx);
                 }
             }
             ChatViewEvent::OpenFile { target } => {
@@ -10495,8 +10473,6 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_claude_action))
             .on_action(cx.listener(Self::open_grok_action))
             .on_action(cx.listener(Self::open_new_chat_action))
-            .on_action(cx.listener(Self::open_codex_chat_action))
-            .on_action(cx.listener(Self::open_claude_chat_action))
             .on_action(cx.listener(Self::split_right_action))
             .on_action(cx.listener(Self::split_down_action))
             .on_action(cx.listener(Self::close_tab_action))
@@ -11730,8 +11706,8 @@ fn main() {
             KeyBinding::new("cmd-shift-c", OpenCodex, None),
             KeyBinding::new("cmd-shift-l", OpenClaude, None),
             KeyBinding::new("cmd-shift-g", OpenGrok, None),
-            KeyBinding::new("cmd-alt-shift-c", OpenCodexChat, None),
-            KeyBinding::new("cmd-alt-shift-l", OpenClaudeChat, None),
+            // One chat for every provider: the model chosen in it decides.
+            KeyBinding::new("cmd-alt-shift-c", OpenNewChat, None),
             KeyBinding::new("cmd-.", chat_view::InterruptChat, Some("ChatView")),
             KeyBinding::new("ctrl-alt-d", ToggleDictation, Some("ChatView")),
         ]);
@@ -15048,12 +15024,18 @@ mod chat_tab_tests {
                 .iter()
                 .any(|(keystroke, _)| keystroke == "cmd-shift-space")
         );
-        for chat in ["alt-cmd-shift-c", "alt-cmd-shift-l"] {
-            assert!(
-                keys.iter().any(|(keystroke, _)| keystroke == chat),
-                "{chat}"
-            );
-        }
+        // One chat for every provider, so one key opens it.
+        assert!(
+            keys.iter()
+                .any(|(keystroke, _)| keystroke == "alt-cmd-shift-c"),
+            "{keys:?}"
+        );
+        assert!(
+            !keys
+                .iter()
+                .any(|(keystroke, _)| keystroke == "alt-cmd-shift-l"),
+            "{keys:?}"
+        );
         // The terminal agents' shortcuts stay as they were.
         for terminal in [
             "cmd-shift-c",

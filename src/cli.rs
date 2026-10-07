@@ -101,6 +101,8 @@ riwork chat ensure                      Start the chat host if it is not running
 riwork chat list [--project ID] [--json]   List Codex and Claude chats, running or not
 riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
                 [--model NAME] [--effort LEVEL] [--fast] [--title TEXT]
+riwork chat models --provider codex|claude [--project ID] [--json]
+                                        The models chats of that provider reported, read from saved chats
 riwork chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
 riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [--json]
                                         Read a chat's events after N, waiting up to M ms for the first
@@ -153,9 +155,14 @@ chat snapshot UUID --json reads current full items and controls directly from di
 starting a host. --max is 1–100 (default 50); --max-bytes bounds the complete response.
 Use its cursor and before with --cursor TOKEN --before ORDER to page older full items.
 chat command takes one ChatCommand as JSON (send, interrupt, approve,
-answer, configure, compact, stop) and refuses unknown fields; errors that start with
+answer, configure, compact, stop, switch) and refuses unknown fields; errors that start with
 `invalid_request:` are about the command, anything else about the host or the chat.
-capabilities --json has \"chat\": true and \"orchestrator_create\": true.
+{\"command\":\"switch\",\"provider\":\"claude\"} goes on with the other provider in the same chat
+(optional model, effort, fast); it is refused while a turn runs or waits.
+chat models lists what a chat of that provider can be set to, read from saved chats; a
+project selects the Codex account the list is for.
+capabilities --json has \"chat\": true, \"orchestrator_create\": true,
+\"chat_provider_switch\": true and \"chat_models\": true.
 handoff writes the source conversation into RIWORK_HOME/handoffs/ID.md (owner-only) and
 starts the target in the same project, worktree and directory with a first message that
 points at it (a chat gets a short document inline); the source is neither stopped nor
@@ -852,7 +859,9 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
             "chat": true,
             "orchestrator_create": true,
             "shell_paste": true,
-            "shell_create_as_settings": true
+            "shell_create_as_settings": true,
+            "chat_provider_switch": true,
+            "chat_models": true
         }));
     }
     println!("verifies_shell yes");
@@ -862,6 +871,8 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     println!("orchestrator_create yes");
     println!("shell_paste yes");
     println!("shell_create_as_settings yes");
+    println!("chat_provider_switch yes");
+    println!("chat_models yes");
     Ok(())
 }
 
@@ -2148,12 +2159,59 @@ fn chat_client_command(
                 Ok(format!("Stopped {id}\n"))
             }
         }
+        "models" => {
+            let provider = match take_option(&mut args, "--provider")?.as_deref() {
+                Some("codex") => crate::chat::model::Provider::Codex,
+                Some("claude") => crate::chat::model::Provider::Claude,
+                _ => return Err(CHAT_MODELS_USAGE.to_owned()),
+            };
+            let project = take_option(&mut args, "--project")?;
+            ensure_empty(&args)?;
+            // Read from what chats saved: no host is started, no provider asked.
+            let project_id = match project {
+                Some(selector) => Some(
+                    Store::open(home)?
+                        .snapshot()?
+                        .project(&selector)?
+                        .id
+                        .clone(),
+                ),
+                None => None,
+            };
+            let catalog = crate::chat::catalog::saved(home, project_id.as_deref(), provider);
+            if json {
+                json_text(&json!({
+                    "provider": provider,
+                    "models": catalog.supported,
+                    "configured": catalog.configured,
+                    "account_label": catalog.account_label,
+                    "error": catalog.error,
+                }))
+            } else if let Some(error) = catalog.error {
+                Err(error)
+            } else {
+                Ok(catalog
+                    .supported
+                    .iter()
+                    .map(|model| format!("{}\t{}\n", model.id, model.name))
+                    .chain(
+                        catalog
+                            .configured
+                            .iter()
+                            .map(|id| format!("{id}\t(previously configured)\n")),
+                    )
+                    .collect())
+            }
+        }
         _ => Err(
-            "Usage: riwork chat serve|ensure|list|new|snapshot|events|command|send|stop (riwork help)"
+            "Usage: riwork chat serve|ensure|list|new|models|snapshot|events|command|send|stop (riwork help)"
                 .to_owned(),
         ),
     }
 }
+
+const CHAT_MODELS_USAGE: &str =
+    "Usage: riwork chat models --provider codex|claude [--project ID] [--json]";
 
 const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--title TEXT]";
 

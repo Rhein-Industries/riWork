@@ -1,12 +1,14 @@
-//! Explicit new-chat choices. Reading saved model metadata never contacts the host.
+//! Explicit new-chat choices: one list of every provider's models, where the model chosen
+//! decides whether the chat is Codex's or Claude's. Reading saved model metadata
+//! (`chat::catalog`) never contacts the host.
 
 use crate::{
     behavior_controls as behavior,
     chat::{
-        log,
-        model::{ApprovalMode, ChatInfo, ModelOption, NewChat, Provider},
+        catalog::{self, Catalog as Models},
+        model::{ApprovalMode, ModelOption, NewChat, Provider},
     },
-    codex_accounts, controls, form_input, sessions,
+    codex_accounts, controls, form_input,
     text_input::{self, InputEvent, InputState},
     theme, ui_text,
 };
@@ -14,12 +16,7 @@ use gpui::{
     AnyElement, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
     Subscription, Window, div, prelude::*, rgb,
 };
-use std::{
-    collections::BTreeMap,
-    fs::File,
-    io::{BufRead, BufReader, Read, Seek, SeekFrom},
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, path::PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Location {
@@ -34,113 +31,6 @@ pub fn context_matches(request: &NewChat, project: &str, locations: &[Location])
         && locations.iter().any(|location| {
             location.worktree_id == request.worktree_id && location.path == request.cwd
         })
-}
-
-#[derive(Default)]
-struct Models {
-    supported: Vec<ModelOption>,
-    configured: Vec<String>,
-    account: Option<String>,
-    account_label: Option<String>,
-    error: Option<String>,
-}
-
-fn eligible(info: &ChatInfo, provider: Provider, account: Option<&str>) -> bool {
-    info.provider == provider
-        && (provider == Provider::Claude || info.codex_account_id.as_deref() == account)
-}
-
-fn decode_models(id: &str, line: &[u8]) -> Option<Vec<ModelOption>> {
-    if line.last() != Some(&b'\n') {
-        return None;
-    }
-    let envelope: crate::chat::wire::Envelope = serde_json::from_slice(line).ok()?;
-    if envelope.chat_id != id {
-        return None;
-    }
-    match envelope.event {
-        crate::chat::model::ChatEvent::Models { models } => Some(models),
-        _ => None,
-    }
-}
-
-/// Read only a bounded log tail, excluding incomplete lines and foreign UUIDs.
-/// Opening a ChatLog would repair/write its tail; this reader never does that.
-fn model_metadata(home: &Path, id: &str) -> Option<Vec<ModelOption>> {
-    let dir = log::chat_dir(home, id)?;
-    let mut file = File::open(dir.join("events.jsonl")).ok()?;
-    let length = file.metadata().ok()?.len();
-    let start = length.saturating_sub(2 * 1024 * 1024);
-    file.seek(SeekFrom::Start(start)).ok()?;
-    let mut reader = BufReader::new(file.take(length - start));
-    if start > 0 {
-        reader.skip_until(b'\n').ok()?;
-    }
-    let mut latest = None;
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        if reader.read_until(b'\n', &mut line).ok()? == 0 || line.last() != Some(&b'\n') {
-            break;
-        }
-        if let Some(models) = decode_models(id, &line) {
-            latest = Some(models);
-        }
-    }
-    latest
-}
-
-/// Use the newest saved driver list for this provider/account, and label other
-/// saved model IDs as previously configured. Never claim they are supported.
-fn saved_models(home: &Path, project: &str, provider: Provider) -> Models {
-    let binding = match provider {
-        Provider::Codex => match sessions::selected_codex_binding(home, Some(project)) {
-            Ok(binding) => Some(binding),
-            Err(error) => {
-                return Models {
-                    error: Some(error),
-                    ..Default::default()
-                };
-            }
-        },
-        Provider::Claude => None,
-    };
-    let mut result = Models {
-        account: binding.as_ref().and_then(|binding| binding.id.clone()),
-        account_label: binding
-            .map(|binding| binding.label.unwrap_or_else(|| "System default".into())),
-        ..Default::default()
-    };
-    let mut found_metadata = false;
-    let infos = log::read_infos(home);
-    for info in infos
-        .iter()
-        .rev()
-        .filter(|info| eligible(info, provider, result.account.as_deref()))
-        .take(12)
-    {
-        if let Some(id) = &info.model
-            && valid_model(id)
-            && !result.configured.contains(id)
-        {
-            result.configured.push(id.clone());
-        }
-        if !found_metadata && let Some(models) = model_metadata(home, &info.id) {
-            found_metadata = true;
-            result.supported = models
-                .into_iter()
-                .filter(|model| valid_model(&model.id))
-                .collect();
-        }
-    }
-    result
-        .configured
-        .retain(|id| !result.supported.iter().any(|model| &model.id == id));
-    result
-}
-
-fn valid_model(id: &str) -> bool {
-    !id.trim().is_empty() && id.chars().count() <= 100 && !id.chars().any(char::is_control)
 }
 
 /// Main/unlocked routing is independent of the Sessions filter and focus mode.
@@ -238,8 +128,8 @@ impl ChatChoice {
         let metadata_project = project.clone();
         let work = cx.background_executor().spawn(async move {
             [
-                saved_models(&home, &metadata_project, Provider::Codex),
-                saved_models(&home, &metadata_project, Provider::Claude),
+                catalog::saved(&home, Some(&metadata_project), Provider::Codex),
+                catalog::saved(&home, Some(&metadata_project), Provider::Claude),
             ]
         });
         cx.spawn(async move |this, cx| {
@@ -266,7 +156,7 @@ impl ChatChoice {
         // Base Dialog registers its trap during layout; it does not autofocus.
         // Capture the invoker before moving focus to a retained chooser input.
         let return_focus = window.focused(cx);
-        let model = text_input::single_line("", "Provider default, or type a model ID", window, cx);
+        let model = text_input::single_line("", "Or type a model ID", window, cx);
         let search = text_input::single_line("", "Search saved models", window, cx);
         let subscriptions = [&model, &search]
             .into_iter()
@@ -278,13 +168,12 @@ impl ChatChoice {
             .unwrap_or(0);
         let mut controls = BTreeMap::new();
         for key in [
-            "provider-0",
-            "provider-1",
+            "model-default-0",
+            "model-default-1",
             "mode-0",
             "mode-1",
             "mode-2",
             "mode-3",
-            "model-default",
             "effort-default",
             "fast",
             "cancel",
@@ -355,7 +244,16 @@ impl ChatChoice {
         }
     }
 
-    fn pick_model(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+    /// Choose a model of `provider`; an empty `id` is the provider's own default. The
+    /// provider follows the model, and a typed id is the chosen provider's.
+    fn pick_model(
+        &mut self,
+        provider: Provider,
+        id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.provider = provider;
         form_input::set_value(&self.model, id, window, cx);
         self.effort = None;
         self.fast = false;
@@ -390,7 +288,7 @@ impl ChatChoice {
             return;
         }
         let id = self.model.read(cx).value().trim().to_owned();
-        if !id.is_empty() && !valid_model(&id) {
+        if !id.is_empty() && !catalog::valid_model(&id) {
             self.error =
                 Some("Use a model ID of at most 100 characters without control characters.".into());
             cx.notify();
@@ -555,25 +453,6 @@ impl Render for ChatChoice {
         let colors = theme::palette(cx);
         let index = provider_index(self.provider);
         let blocked = self.loading || self.models[index].error.is_some() || self.confirmation.0;
-        let providers = [Provider::Codex, Provider::Claude]
-            .into_iter()
-            .enumerate()
-            .map(|(index, provider)| {
-                self.radio(
-                    format!("provider-{index}"),
-                    provider_label(provider).into(),
-                    self.provider == provider,
-                    cx,
-                    move |choice, window, cx| {
-                        if choice.provider != provider {
-                            choice.provider = provider;
-                            choice.pick_model(String::new(), window, cx);
-                            form_input::set_value(&choice.search, String::new(), window, cx);
-                        }
-                    },
-                )
-            })
-            .collect();
         let modes = MODES
             .into_iter()
             .enumerate()
@@ -609,46 +488,60 @@ impl Render for ChatChoice {
             .collect();
         let query = self.search.read(cx).value().trim().to_lowercase();
         let current = self.model.read(cx).value().trim().to_owned();
-        let mut model_rows = vec![self.radio(
-            "model-default".into(),
-            "Provider default".into(),
-            current.is_empty(),
-            cx,
-            |choice, window, cx| choice.pick_model(String::new(), window, cx),
-        )];
-        for (row, model) in self.models[index].supported.iter().enumerate() {
-            if !format!("{} {} {}", model.name, model.id, model.description)
-                .to_lowercase()
-                .contains(&query)
-            {
-                continue;
-            }
-            let id = model.id.clone();
-            model_rows.push(self.radio(
-                format!("model-{index}-{row}"),
-                format!(
-                    "{}{}",
-                    model.name,
-                    if model.is_default { " · default" } else { "" }
-                ),
-                current == id,
-                cx,
-                move |choice, window, cx| choice.pick_model(id.clone(), window, cx),
-            ));
-        }
-        for (row, id) in self.models[index].configured.iter().enumerate() {
-            if !id.to_lowercase().contains(&query) {
-                continue;
-            }
-            let id = id.clone();
-            model_rows.push(self.radio(
-                format!("configured-{index}-{row}"),
-                format!("{id} · previously configured"),
-                current == id,
-                cx,
-                move |choice, window, cx| choice.pick_model(id.clone(), window, cx),
-            ));
-        }
+        let model_groups: Vec<AnyElement> = [Provider::Codex, Provider::Claude]
+            .into_iter()
+            .map(|provider| {
+                let group = provider_index(provider);
+                let chosen = self.provider == provider;
+                let mut rows = vec![self.radio(
+                    format!("model-default-{group}"),
+                    format!("{} default", provider_label(provider)),
+                    chosen && current.is_empty(),
+                    cx,
+                    move |choice, window, cx| {
+                        choice.pick_model(provider, String::new(), window, cx)
+                    },
+                )];
+                for (row, model) in self.models[group].supported.iter().enumerate() {
+                    if !format!("{} {} {}", model.name, model.id, model.description)
+                        .to_lowercase()
+                        .contains(&query)
+                    {
+                        continue;
+                    }
+                    let id = model.id.clone();
+                    rows.push(self.radio(
+                        format!("model-{group}-{row}"),
+                        format!(
+                            "{}{}",
+                            model.name,
+                            if model.is_default { " · default" } else { "" }
+                        ),
+                        chosen && current == id,
+                        cx,
+                        move |choice, window, cx| {
+                            choice.pick_model(provider, id.clone(), window, cx)
+                        },
+                    ));
+                }
+                for (row, id) in self.models[group].configured.iter().enumerate() {
+                    if !id.to_lowercase().contains(&query) {
+                        continue;
+                    }
+                    let id = id.clone();
+                    rows.push(self.radio(
+                        format!("configured-{group}-{row}"),
+                        format!("{id} · previously configured"),
+                        chosen && current == id,
+                        cx,
+                        move |choice, window, cx| {
+                            choice.pick_model(provider, id.clone(), window, cx)
+                        },
+                    ));
+                }
+                Self::group(provider_label(provider), rows)
+            })
+            .collect();
         let selected = self.selected_model(cx);
         let efforts = selected
             .map(|model| model.efforts.clone())
@@ -680,11 +573,17 @@ impl Render for ChatChoice {
             }
         }
         let note = if self.loading {
-            "Reading saved model choices…"
+            "Reading saved model choices…".to_owned()
         } else if self.models[index].supported.is_empty() {
-            "No saved supported-model list. Use provider default or type an ID; refresh models in the chat."
+            format!(
+                "No saved {} model list. Use its default or type an ID; the chat lists its models once it runs.",
+                provider_label(self.provider)
+            )
         } else {
-            "Models from saved provider metadata. Availability is checked when the chat starts."
+            format!(
+                "A typed ID is a {} model. Models come from saved provider metadata; availability is checked when the chat starts.",
+                provider_label(self.provider)
+            )
         };
         let panel = div()
             .id("new-chat-dialog")
@@ -720,12 +619,6 @@ impl Render for ChatChoice {
                 }),
             )
             .child(div().text_size(ui_text::text(18.0)).child("New chat"))
-            .child(Self::group("Provider", providers))
-            .children(self.models[index].account_label.as_ref().map(|label| {
-                div()
-                    .text_color(rgb(colors.muted))
-                    .child(format!("Codex account · {label}"))
-            }))
             .child(Self::group("Worktree", locations))
             .children(self.locations.get(self.location).map(|location| {
                 div()
@@ -749,9 +642,22 @@ impl Render for ChatChoice {
             .child(
                 div()
                     .id("new-chat-model-list")
-                    .max_h(ui_text::space(170.0))
+                    .max_h(ui_text::space(220.0))
                     .overflow_y_scroll()
-                    .child(Self::group("Model", model_rows)),
+                    .flex()
+                    .flex_col()
+                    .gap(ui_text::space(10.0))
+                    .children(model_groups),
+            )
+            .children(
+                (self.provider == Provider::Codex)
+                    .then(|| self.models[index].account_label.as_ref())
+                    .flatten()
+                    .map(|label| {
+                        div()
+                            .text_color(rgb(colors.muted))
+                            .child(format!("Codex account · {label}"))
+                    }),
             )
             .child(form_input::frame(
                 "new-chat-model-input",
@@ -904,41 +810,40 @@ mod tests {
             (choice.model.entity_id(), choice.search.entity_id())
         });
         test_turn(cx, handle, |window, app| {
+            // One list of both providers' models; there is no provider to pick first.
             for (id, checked) in [
-                ("new-chat-provider-0", true),
-                ("new-chat-provider-1", false),
                 ("new-chat-location-0", false),
                 ("new-chat-location-1", true),
                 ("new-chat-mode-0", true),
                 ("new-chat-mode-2", false),
-                ("new-chat-model-default", true),
+                ("new-chat-model-default-0", true),
                 ("new-chat-model-0-0", false),
+                ("new-chat-model-default-1", false),
+                ("new-chat-model-1-0", false),
                 ("new-chat-effort-default", true),
                 ("new-chat-effort-high", false),
             ] {
                 assert_radio(window, app, id, checked);
             }
+            assert!(window.try_find("new-chat-provider-0").is_none());
             assert_fast(window, app, false);
             let cancel = form_input::test_ax_node(window, app, "new-chat-cancel");
             assert_eq!(cancel.role(), gpui::Role::Button);
             assert_eq!(cancel.is_selected(), None);
             assert_eq!(cancel.toggled(), None);
             window.click("new-chat-location-0", app);
-            window.click("new-chat-provider-1", app);
             window.click("new-chat-model-search", app);
             window.input("Claude", app);
         });
         assert!(requests.borrow().is_empty());
         test_turn(cx, handle, |window, app| {
-            assert_radio(window, app, "new-chat-provider-0", false);
-            assert_radio(window, app, "new-chat-provider-1", true);
             assert_radio(window, app, "new-chat-location-0", true);
             assert_radio(window, app, "new-chat-location-1", false);
-            assert_radio(window, app, "new-chat-model-default", true);
+            assert_radio(window, app, "new-chat-model-default-0", true);
             assert_radio(window, app, "new-chat-model-1-0", false);
             assert!(
                 window.try_find("new-chat-model-0-0").is_none(),
-                "Codex models do not appear under Claude"
+                "the search leaves out the Codex model"
             );
             window.click("new-chat-location-1", app);
             window.click("new-chat-model-1-0", app);
@@ -949,7 +854,9 @@ mod tests {
             assert_radio(window, app, "new-chat-location-1", true);
             assert_radio(window, app, "new-chat-mode-0", false);
             assert_radio(window, app, "new-chat-mode-2", true);
-            assert_radio(window, app, "new-chat-model-default", false);
+            // The Claude model is chosen, and with it Claude.
+            assert_radio(window, app, "new-chat-model-default-0", false);
+            assert_radio(window, app, "new-chat-model-default-1", false);
             assert_radio(window, app, "new-chat-model-1-0", true);
             window.click("new-chat-effort-high", app);
             window.click("new-chat-fast", app);
@@ -1019,10 +926,9 @@ mod tests {
         });
         assert!(keyboard_requests.borrow().is_empty());
         for (key, previous, activation) in [
-            ("provider-1", "provider-0", "space"),
             ("location-0", "location-1", "enter"),
             ("mode-1", "mode-0", "space"),
-            ("model-1-0", "model-default", "enter"),
+            ("model-1-0", "model-default-0", "enter"),
             ("effort-high", "effort-default", "space"),
         ] {
             test_turn(cx, keyboard_handle, |window, app| {
@@ -1252,30 +1158,6 @@ mod tests {
             requests[0].codex_account_id.as_deref(),
             Some(codex_accounts::SYSTEM_DEFAULT_ID)
         );
-    }
-
-    #[test]
-    fn saved_model_metadata_requires_the_exact_uuid_and_a_complete_line() {
-        let id = uuid::Uuid::from_u128(0xabcdef).to_string();
-        let other = uuid::Uuid::from_u128(2).to_string();
-        let mut line = serde_json::to_vec(&crate::chat::wire::Envelope {
-            chat_id: id.clone(),
-            seq: 1,
-            event: crate::chat::model::ChatEvent::Models {
-                models: vec![ModelOption {
-                    id: "fixture".into(),
-                    name: "Fixture".into(),
-                    ..Default::default()
-                }],
-            },
-        })
-        .unwrap();
-        assert_eq!(decode_models(&id, &line), None);
-        line.push(b'\n');
-        assert_eq!(decode_models(&id, &line).unwrap()[0].id, "fixture");
-        assert_eq!(decode_models(&other, &line), None);
-        assert!(log::chat_dir(Path::new("/fixture"), "../escape").is_none());
-        assert!(log::chat_dir(Path::new("/fixture"), &id.to_uppercase()).is_none());
     }
 
     #[test]

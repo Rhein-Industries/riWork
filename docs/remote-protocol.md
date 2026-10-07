@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-08: Additive, in the same "Chat extension": one chat for both providers. A `switch` command for `chat.command` (`{"command":"switch","provider":"codex|claude"}`, optional `model`, `effort`, `fast`) moves a chat to the other provider in place: the same `chat_id`, the same events, a new agent on a thread of its own that is given the conversation so far; refused while a turn runs or waits. The log says so with an `info` event naming the new `provider` and an `item_completed` `notice` ("Continued with Claude (opus), which has the conversation so far."); `ChatInfo` gains optional `carried_over` (`{document, from}`). One new method, `chat.models` (`{"provider":"codex|claude"}`, optional `project_id`), lists the models saved chats of a provider reported, for a provider the chat does not run yet. `features.chat_provider_switch` and `features.chat_models` in `ready` say the installed CLI has them (`riwork capabilities --json`). No new error code. A desktop from before it refuses `switch` (`invalid_request`, unknown command) and `chat.models` ("unsupported RPC method"); an older phone sees the switch as an ordinary `info` and `notice` and follows the chat as before. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-08: Additive, in the "Terminal creation extension", no new method and no new error code: an agent `shell.create` that leaves `unrestricted` out now starts unrestricted or not as the desktop's **Agent terminals run unrestricted** setting says (on by default), and `ready.features.shell_create_as_settings` (`true`) says the desktop does that. Without the feature (an older connector or `riwork` CLI) leaving it out still means restricted. An explicit `unrestricted` is honored as before, so an older phone, which always sends it, is unaffected. The desktop's New Tab menu now has one entry per agent, unrestricted as that setting says. Applies to v1 and v2 sessions. Existing bytes and fixtures are unchanged.
 - 2026-10-05: Chat items may carry optional `presentation` with `phase` (`commentary` or `final`) and `images` (`label`, `source`). Image sources are tagged by `kind`: `local` (`path`), `data` (`mime`, `base64`), `url` (`url`), or `unavailable` (`reason`). Providers retain at most eight images and 8 MiB of encoded image data per item, with 4 MiB per image; unsupported or larger data is marked unavailable. Remote page/frame trimming replaces an image source that cannot fit with `unavailable`, rather than truncating base64. Existing clients may ignore presentation; existing events and their ordering remain intact. Desktop Normal/Verbose is a local saved display preference, with no new RPC or command.
 - 2026-10-05: Additive chat orchestrators and orchestrator creation, no new error code. `orchestrators.list` (and `shells.list`) entries gain optional `mode` (`terminal|chat`) and, for an orchestrator that runs as a chat, `chat_id` (equal to `id`) and `provider` (`codex|claude`), so the phone can open it as a chat tab with the existing `chats.list`, `chat.events` and `chat.command` methods; the `shell.*` methods on a chat orchestrator's id are `invalid_request`; see "Chat orchestrators" under "Chat extension" below. A desktop without chat orchestrators leaves the fields out and an older phone ignores them; the connector checks each field's shape, leaves a malformed one out, and passes `chat_id` and `provider` only for an entry whose `mode` is `chat`. A project's orchestrator that runs as a chat also counts in that project's `agents` and `last_activity_unix` of `projects.list`, as a terminal one does. One new method, `orchestrator.create` (`{}` or `{"project_id":"UUID"}`), makes the global or a project's orchestrator, in the mode the desktop's "Orchestrator runs as" setting says, or returns the one that exists (`created` false); it runs in the ordered lane and a creation is not cut short when the phone's session ends, and `features.orchestrator_create` in `ready` says the installed CLI has it; see "Orchestrator creation extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates `orchestrator.create` answers `invalid_request` "unsupported RPC method", and one whose `riwork` CLI predates it leaves `features.orchestrator_create` out.
@@ -1240,8 +1241,10 @@ reason to fail a page.
   (UUID, either may be absent), `cwd`, `title`, `created_at_unix`, `approval_mode`
   (`supervised|auto_edit|full|plan`), `state`, `fast` (boolean: the person asked for the
   provider's fast mode; absent, so `false`, in a chat from before 2026-10-05) and, when
-  known, `provider_thread_id`, `model`, `effort`, `codex_account_id` and, for an
-  orchestrator's chat, `orchestrator` (see "Chat orchestrators").
+  known, `provider_thread_id`, `model`, `effort`, `codex_account_id`, for an
+  orchestrator's chat, `orchestrator` (see "Chat orchestrators") and, for a chat that
+  switched provider, `carried_over` (see "Switching provider"). `provider` can change
+  during a chat's life since 2026-10-08.
 - `state` is `{"state":"starting|idle|running|waiting|stopped"}` or
   `{"state":"failed","message":"..."}`. `waiting` means a turn waits for an approval or an
   answer. `stopped` has no agent process: the next message resumes the chat. `failed`
@@ -1445,6 +1448,7 @@ fields of its kind, none null and none unknown:
 | `configure` | at least one of `model` (at most 100 characters), `effort` (at most 32), `approval_mode`, `fast` (boolean, since 2026-10-05) | changes them for the next turns (`fast: false` turns fast mode off; an effort the model does not take is left out and a `notice` item says so) |
 | `compact` | | compacts the context |
 | `stop` | | stops the agent process, like `chat.stop` |
+| `switch` | `provider` (`codex` or `claude`), optional `model` (at most 100 characters), `effort` (at most 32), `fast` (boolean); since 2026-10-08 | goes on with the other provider in the same chat (see "Switching provider" below); with the provider the chat has, the same as `configure` |
 
 Result `{"status":"ok"}`: the chat host accepted the command, which says nothing about
 how the agent takes it; the effect arrives as events. An approval or a question is
@@ -1458,6 +1462,42 @@ The connector gives the CLI 60 seconds, and a command that takes longer is a `cl
 that says so (the command may have been taken: read the chat's events); a client's timeout
 should allow about 90.
 `invalid_request` and `not_found` as for the other methods.
+
+**Switching provider** (since 2026-10-08, `features.chat_provider_switch`). One chat is
+Codex's or Claude's at a time, and `switch` moves it to the other one in place: the
+`chat_id`, the event log, its `seq` numbers and the approval mode stay. The host stops the
+agent, writes the conversation so far down from the chat's own log, and starts the new
+agent on a thread of its own with that conversation in its instructions, at every start
+and resume from then on. The model is the one asked for or else the provider's default;
+the effort and fast mode are the ones asked for or else none and off; a switch to Codex runs
+under the Codex account a new chat of the project would get. It is refused while a turn
+runs or waits for an approval or an answer (`cli_error` with the host's "Wait for the turn
+to finish, or interrupt it, before going on with Claude."), and before anything changes when
+the new provider cannot have the chat. The events say what happened, in this order: an
+`info` whose `provider` is the new one (`provider_thread_id` absent until the new agent
+names it, `carried_over` `{"document": PATH, "from": "Codex chat \"Fix it\" (1234abcd)"}`),
+then an `item_completed` with a `notice` item (`level` `info`, id `switch-N`), then the
+states of the new agent's start and its `models`. A client that folds the events drops the
+old provider's `models` and `usage` when an `info` names another provider. An older client
+shows the notice and the new provider name as it shows any. A connector whose CLI predates
+the switch answers `cli_error` "the installed riwork CLI cannot move a chat to another
+provider; update RiWork", and an older connector refuses the command as unknown
+(`invalid_request`).
+
+**`chat.models`** (since 2026-10-08, `features.chat_models`) lists what a chat of a provider
+can be set to, for a provider the chat does not run yet (the running provider's own list
+is its `models` event). Params `{"provider":"codex|claude"}` and optionally
+`"project_id":"UUID"` (the project whose Codex account the list is for; without it, the
+desktop's own selection). Result `{"provider", "models": [ModelOption], "configured":
+[model id], "account_label": string|null, "error": string|null}`: the newest list a driver
+of that provider reported in a saved chat, the other ids chats were set to (never claimed
+to be supported), the Codex account's name, and why the provider cannot be offered (a Codex
+account that cannot be used). It is read from what chats saved: no chat host or agent is
+started, and an empty `models` means no chat of the provider has said yet, so a client
+offers the provider's default and a typed id. A model entry has at least `id` and `name`
+and is passed on as the CLI printed it; any other field of the CLI's answer is left out.
+`invalid_request` for bad params, `not_found` for an unknown project, `cli_error` for a
+CLI without it or an answer for another provider.
 
 **`chat.stop`** stops the chat's agent process and keeps its history. Params
 `{"chat_id":"UUID"}`, result `{"status":"stopped"}`. A chat that is stopped, or a desktop
@@ -1928,6 +1968,15 @@ ready response. Values are test-only and must never provision production devices
   `RIWORK_HOME/uploads/TARGET/` under a name the desktop makes. A client that never calls the
   methods is unaffected, and an older desktop answers `invalid_request` "unsupported RPC
   method". Needs the iOS worker's agreement; the iOS side implements the same text.
+- 2026-10-08: additive and backward compatible. One chat for both providers in the Chat
+  extension. A `switch` command (`provider` `codex|claude`, optional `model`, `effort`,
+  `fast`) for `chat.command`, which moves a chat to the other provider in place and is
+  refused while a turn runs or waits; `carried_over` on `ChatInfo`; a new method,
+  `chat.models` (`provider`, optional `project_id`), in the read lane, that lists a
+  provider's saved models without starting anything; `ready.features.chat_provider_switch`
+  and `ready.features.chat_models` when the CLI says `"chat_provider_switch": true` and
+  `"chat_models": true` in `riwork capabilities --json`. No new error code. Needs the iOS
+  worker's agreement; the iOS side implements the same text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),

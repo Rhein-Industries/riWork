@@ -787,6 +787,13 @@ fn a_command_that_is_not_strictly_a_command_is_refused_before_a_host_is_asked() 
         r#"{"command":"approve","request_id":"r","decision":"yes"}"#,
         r#"{"command":"approve","request_id":"r"}"#,
         r#"{"command":"answer","request_id":"r","answers":["a"]}"#,
+        // A switch names the provider it goes on with, and only what a switch takes.
+        r#"{"command":"switch"}"#,
+        r#"{"command":"switch","provider":null}"#,
+        r#"{"command":"switch","provider":"grok"}"#,
+        r#"{"command":"switch","provider":"claude","approval_mode":"full"}"#,
+        r#"{"command":"switch","provider":"claude","model":""}"#,
+        r#"{"command":"switch","provider":"claude","effort":"x234567890123456789012345678901234"}"#,
         wrong_answer.as_str(),
     ] {
         let error = refuse(bad);
@@ -1150,5 +1157,66 @@ fn bounded_body_placeholder_says_full_text_is_on_the_mac_and_keeps_identity() {
     assert_eq!(
         page.events[0].event["item"]["body"]["text"],
         "This message is too long to show here. Full text is on your Mac."
+    );
+}
+
+#[test]
+fn a_switch_goes_through_chat_command_and_moves_the_chat_to_the_other_provider() {
+    let host = TestHost::new();
+    let (chat, _) = idle_chat(&host);
+    let answer: Value = serde_json::from_str(
+        &command(
+            &host,
+            &chat.id,
+            r#"{"command":"switch","provider":"claude","model":"opus","effort":null}"#,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answer, json!({"id": chat.id, "status": "ok"}));
+    let info = host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
+    assert_eq!(info.provider, Provider::Claude);
+    assert_eq!(info.model.as_deref(), Some("opus"));
+    assert!(info.carried_over.is_some());
+    // The host did it; no driver was asked to.
+    assert!(
+        !host
+            .fake()
+            .commands()
+            .iter()
+            .any(|command| matches!(command, ChatCommand::Switch { .. }))
+    );
+}
+
+#[test]
+fn models_lists_what_saved_chats_of_a_provider_reported_without_a_host() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Claude);
+    host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
+    emit(
+        &host,
+        &chat,
+        vec![ChatEvent::Models {
+            models: vec![crate::chat::model::ModelOption {
+                id: "opus".into(),
+                name: "Opus".into(),
+                ..Default::default()
+            }],
+        }],
+    );
+    let claude = run_json(&host.home, &["models", "--provider", "claude"]);
+    assert_eq!(claude["provider"], "claude");
+    assert_eq!(claude["models"][0]["id"], "opus");
+    assert_eq!(claude["error"], Value::Null);
+    let codex = run_json(&host.home, &["models", "--provider", "codex"]);
+    assert_eq!(codex["models"], json!([]), "no Codex chat has said");
+    assert_eq!(
+        run(&host.home, &["models", "--provider", "claude"], false).unwrap(),
+        "opus\tOpus\n"
+    );
+    assert!(
+        run(&host.home, &["models", "--provider", "grok"], true)
+            .unwrap_err()
+            .contains("Usage")
     );
 }

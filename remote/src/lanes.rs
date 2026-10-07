@@ -427,6 +427,7 @@ mod tests {
             "shells.list",
             "appearance.get",
             "chats.list",
+            "chat.models",
             "upload.begin",
             "upload.chunk",
             "upload.finish",

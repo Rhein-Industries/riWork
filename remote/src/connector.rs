@@ -648,6 +648,16 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                 );
                 if chat {
                     features["chat"] = json!(true);
+                    // A chat can go on with the other provider (`switch`), and the models of a
+                    // provider it does not run yet can be asked for (`chat.models`). The answer
+                    // above has set both when the CLI has them, so these ask again only an
+                    // older CLI.
+                    if rpc.chat_provider_switch_supported().await {
+                        features["chat_provider_switch"] = json!(true);
+                    }
+                    if rpc.chat_models_supported().await {
+                        features["chat_models"] = json!(true);
+                    }
                 }
                 if orchestrator_create {
                     features["orchestrator_create"] = json!(true);
