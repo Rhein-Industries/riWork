@@ -25,7 +25,7 @@ struct ChatModelChip: View {
                 Image(systemName: "chevron.down").font(style.system(.caption2)).foregroundStyle(style.muted).accessibilityHidden(true)
             }
             .foregroundStyle(style.text).padding(.horizontal, 8)
-            .frame(minHeight: compact ? 44 : style.pt(40)).contentShape(Rectangle())
+            .frame(minHeight: style.target).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         Group {
@@ -62,7 +62,7 @@ struct ChatEffortSegments: View {
                 let chosen = effort == selected
                 Button { choose(index, effort) } label: {
                     Text(ChatEffort.title(effort)).font(style.face(12, bold: chosen, relativeTo: .subheadline)).lineLimit(1).minimumScaleFactor(0.7)
-                        .padding(.horizontal, 2).frame(maxWidth: .infinity, minHeight: style.pt(38))
+                        .padding(.horizontal, 2).frame(maxWidth: .infinity, minHeight: style.target)
                         .background { if chosen { Capsule().fill(chosenFill).shadow(color: .black.opacity(0.12), radius: 2, y: 1) } }
                         .overlay { if ringed == index { Capsule().stroke(style.accent, lineWidth: 2) } }
                         .contentShape(Capsule())
@@ -83,7 +83,7 @@ struct ChatEffortSegments: View {
                 let chosen = effort == selected
                 Button { choose(index, effort) } label: {
                     Text(ChatEffort.title(effort)).font(style.face(12, bold: chosen, relativeTo: .subheadline)).lineLimit(1).minimumScaleFactor(0.7)
-                        .padding(.horizontal, 2).frame(maxWidth: .infinity, minHeight: style.pt(44))
+                        .padding(.horizontal, 2).frame(maxWidth: .infinity, minHeight: style.target)
                         .background(chosen ? style.active : .clear)
                         .overlay(alignment: .bottom) { if chosen { Rectangle().fill(style.accent).frame(height: 2) } }
                         .overlay { if ringed == index { Rectangle().stroke(style.accent, lineWidth: 2) } }
@@ -179,7 +179,7 @@ struct ChatModelSheet: View {
                 messageRow(error, icon: "exclamationmark.triangle")
             }
             if conversation.modelCatalogueSource != .live || modelsError != nil {
-                Button("Retry live models") { Task { await loadModels() } }.padding(12).disabled(loadingModels || !connected)
+                Button("Retry live models") { Task { await loadModels() } }.buttonStyle(TargetButtonStyle(tinted: true)).padding(.horizontal, 12).disabled(loadingModels || !connected)
             }
             Text("Current model: \(choices.current?.name ?? choices.modelID ?? "Provider default")")
                 .font(style.system(.caption)).foregroundStyle(style.muted).padding(.horizontal, 12)
@@ -199,7 +199,7 @@ struct ChatModelSheet: View {
             if choices.showsFast {
                 sectionLabel("Speed")
                 ChatFastToggle(isOn: Binding(get: { choices.fastIsOn }, set: { on in place(.fast); send(.fast(on)) }), enabled: connected)
-                    .padding(.horizontal, 12).padding(.vertical, 6).frame(minHeight: style.pt(52)).overlay { ring(.fast) }
+                    .padding(.horizontal, 12).padding(.vertical, 6).frame(minHeight: max(style.target, style.pt(52))).overlay { ring(.fast) }
             }
         }
         .padding(.bottom, 8)
@@ -269,7 +269,7 @@ struct ChatModelSheet: View {
                 }
                 Spacer(minLength: 4)
             }
-            .padding(.horizontal, 12).padding(.vertical, 8).frame(maxWidth: .infinity, minHeight: style.pt(52), alignment: .leading)
+            .padding(.horizontal, 12).padding(.vertical, 8).frame(maxWidth: .infinity, minHeight: max(style.target, style.pt(52)), alignment: .leading)
             .overlay { ring(.model(index)) }
             .desktopRowFill(style, selected: selected)
         }
@@ -298,7 +298,7 @@ struct ChatModelSheet: View {
                 Text("↑↓ move   ←→ effort   ⏎ choose   ⎋ close").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
                     .lineLimit(1).minimumScaleFactor(0.7).padding(.horizontal, 12).accessibilityHidden(true)
             }
-            Button(action: close) { Text("Done").font(style.face(14, bold: true, relativeTo: .headline)).frame(maxWidth: .infinity, minHeight: style.pt(48)) }
+            Button(action: close) { Text("Done").font(style.face(14, bold: true, relativeTo: .headline)).frame(maxWidth: .infinity, minHeight: max(style.target, style.pt(48))) }
                 .buttonStyle(DesktopButtonStyle(prominent: true)).padding(.horizontal, 12).padding(.bottom, 8)
         }
         .background(style.glass ? style.surface : style.panel)
