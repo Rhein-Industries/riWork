@@ -706,3 +706,245 @@ fn attachment_send_refusal_retains_exact_draft_and_requires_explicit_resend(
     assert_eq!(retried, command);
     assert!(recording.try_recv().is_err());
 }
+
+#[test]
+fn retained_raw_image_budget_bounds_aggregate_bytes_without_large_allocations() {
+    assert!(raw_image_admission([], RAW_TIFF_BYTES).is_ok());
+    assert!(
+        raw_image_admission([], RAW_TIFF_BYTES + 1)
+            .unwrap_err()
+            .contains("remove an existing image")
+    );
+    assert!(raw_image_admission([FILE_BYTES, RAW_TIFF_BYTES - FILE_BYTES - 1], 1).is_ok());
+    assert!(
+        raw_image_admission([FILE_BYTES, RAW_TIFF_BYTES - FILE_BYTES - 1], 2)
+            .unwrap_err()
+            .contains("64 MiB")
+    );
+    assert!(raw_image_admission([RAW_TIFF_BYTES], 1).is_err());
+    assert!(
+        raw_image_admission([u64::MAX, 1], 1).is_err(),
+        "overflow must refuse"
+    );
+    assert!(raw_image_admission([1; SEND_COUNT - 1], 1).is_ok());
+    assert!(
+        raw_image_admission([1; SEND_COUNT], 1)
+            .unwrap_err()
+            .contains("remove an existing image")
+    );
+}
+
+#[gpui::test]
+fn repeated_failed_image_pastes_bound_raw_queue_without_changing_retained_drafts(
+    cx: &mut TestAppContext,
+) {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let count = attempts.clone();
+    let (handle, view, recording) = editor_tests::mount_config(
+        cx,
+        HostConfig {
+            ensure: Arc::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+                Err("private refusing Ensure fixture".into())
+            }),
+        },
+    );
+    let images = [
+        Image::from_bytes(ImageFormat::Png, image_bytes(image::ImageFormat::Png)),
+        Image::from_bytes(ImageFormat::Tiff, image_bytes(image::ImageFormat::Tiff)),
+    ];
+    let mixed = |image: &Image| {
+        let mut item = ClipboardItem::new_string("must not replace the draft".into());
+        item.entries.push(ClipboardEntry::Image(image.clone()));
+        item
+    };
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("chat-composer", cx);
+        window.input("exact retained draft 🦀  ", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    for i in 0..SEND_COUNT {
+        cx.update_window(handle.into(), |_, window, cx| {
+            cx.write_to_clipboard(mixed(&images[i % 2]));
+            window.press("cmd-v", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(attempts.load(Ordering::SeqCst), i + 1);
+    }
+    let (keys, previews, generation, tasks) = view.read_with(cx, |v, cx| {
+        assert_eq!(v.attachments.len(), SEND_COUNT);
+        assert_eq!(v.composer_text(cx), "exact retained draft 🦀  ");
+        for (i, chip) in v.attachments.iter().enumerate() {
+            assert!(matches!(chip.state, Stage::Failed(_)));
+            let Some(Source::Image { image, .. }) = &chip.source else {
+                panic!("failed retry source lost")
+            };
+            assert_eq!(image.as_ref(), &images[i % 2]);
+        }
+        (
+            v.attachments
+                .iter()
+                .map(|c| c.id.clone())
+                .collect::<Vec<_>>(),
+            v.attachments
+                .iter()
+                .map(|c| c.local_preview.clone().unwrap())
+                .collect::<Vec<_>>(),
+            v.editor_generation,
+            v.attachment_tasks.len(),
+        )
+    });
+    for image in &images {
+        cx.update_window(handle.into(), |_, window, cx| {
+            cx.write_to_clipboard(mixed(image));
+            window.press("cmd-v", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        view.read_with(cx, |v, cx| {
+            assert_eq!(
+                v.attachments.len(),
+                SEND_COUNT,
+                "no over-budget Failed source may be added"
+            );
+            assert_eq!(v.editor_generation, generation);
+            assert_eq!(
+                v.attachment_tasks.len(),
+                tasks,
+                "refusal starts no preview/staging task"
+            );
+            assert!(
+                v.notice
+                    .as_ref()
+                    .unwrap()
+                    .contains("remove an existing image"),
+                "mixed text must not hide admission notice"
+            );
+            assert_eq!(v.composer_text(cx), "exact retained draft 🦀  ");
+            for (i, chip) in v.attachments.iter().enumerate() {
+                assert_eq!(chip.id, keys[i]);
+                let Some(Source::Image { image, .. }) = &chip.source else {
+                    panic!("existing raw source changed")
+                };
+                assert_eq!(image.as_ref(), &images[i % 2]);
+                assert!(Arc::ptr_eq(
+                    chip.local_preview.as_ref().unwrap(),
+                    &previews[i]
+                ));
+            }
+        });
+        assert_eq!(attempts.load(Ordering::SeqCst), SEND_COUNT);
+    }
+    // Retry is a replacement of the same retained raw source, not an admission.
+    let retried = cx
+        .update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |v, cx| {
+                v.retry_staging(&keys[0], window, cx);
+                let retried = v.attachments[0].id.clone();
+                assert_ne!(retried, keys[0]);
+                assert!(matches!(v.attachments[0].state, Stage::Pending));
+                let generation = v.editor_generation;
+                let tasks = v.attachment_tasks.len();
+                assert!(v.paste_attachments(&mixed(&images[0]), window, cx));
+                assert_eq!(
+                    v.editor_generation, generation,
+                    "Pending sources also consume budget"
+                );
+                assert_eq!(v.attachment_tasks.len(), tasks);
+                assert_eq!(v.attachments.len(), SEND_COUNT);
+                v.staging_finished(&keys[0], Err("stale attempt".into()), cx);
+                assert!(matches!(v.attachments[0].state, Stage::Pending));
+                retried
+            })
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(attempts.load(Ordering::SeqCst), SEND_COUNT + 1);
+    let ready = locally_staged().remove(0);
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |v, cx| {
+            v.remove_attachment(&retried, cx);
+            v.staging_finished(&retried, Ok(ready.clone()), cx);
+            v.local_preview_finished(&retried, Some(previews[0].clone()), cx);
+            assert_eq!(
+                v.attachments.len(),
+                SEND_COUNT - 1,
+                "late removed attempt cannot return"
+            );
+            assert_eq!(v.attachments[0].id, keys[1]);
+            assert!(Arc::ptr_eq(
+                v.attachments[0].local_preview.as_ref().unwrap(),
+                &previews[1]
+            ));
+            assert!(v.paste_attachments(&mixed(&images[0]), window, cx));
+            assert_eq!(
+                v.attachments.len(),
+                SEND_COUNT,
+                "removal restores admission capacity"
+            );
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(attempts.load(Ordering::SeqCst), SEND_COUNT + 2);
+    // Source::File paths keep their existing admission and filename semantics.
+    let files = [
+        PathBuf::from("/private/fixture/first.txt"),
+        PathBuf::from("/private/fixture/second.txt"),
+    ];
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |v, cx| {
+            v.stage_sources(
+                files.iter().cloned().map(Source::File).collect(),
+                window,
+                cx,
+            )
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(attempts.load(Ordering::SeqCst), SEND_COUNT + 4);
+    view.read_with(cx, |v, cx| {
+        assert_eq!(v.attachments.len(), SEND_COUNT + files.len());
+        for (chip, path) in v.attachments[SEND_COUNT..].iter().zip(&files) {
+            assert_eq!(chip.name, path.file_name().unwrap().to_str().unwrap());
+            assert!(matches!(&chip.source, Some(Source::File(kept)) if kept == path));
+        }
+        assert_eq!(v.composer_text(cx), "exact retained draft 🦀  ");
+    });
+    // A successful staging receipt retires its raw source. Ready snapshots and
+    // File paths must not consume the newly available raw-image admission slot.
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |v, cx| {
+            v.retry_staging(&keys[1], window, cx);
+            let staged_attempt = v.attachments[0].id.clone();
+            v.staging_finished(&staged_attempt, Ok(ready.clone()), cx);
+            assert!(v.attachments[0].source.is_none());
+            assert!(v.paste_attachments(&mixed(&images[1]), window, cx));
+            assert_eq!(v.attachments.len(), SEND_COUNT + files.len() + 1);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(attempts.load(Ordering::SeqCst), SEND_COUNT + 6);
+    view.read_with(cx, |v, cx| {
+        assert!(
+            matches!(v.attachments[0].state, Stage::Ready(_)),
+            "late failed retry cannot overwrite Ready"
+        );
+        assert_eq!(
+            v.attachments
+                .iter()
+                .filter(|chip| matches!(&chip.source, Some(Source::Image { .. })))
+                .count(),
+            SEND_COUNT
+        );
+        assert_eq!(v.composer_text(cx), "exact retained draft 🦀  ");
+    });
+    assert!(
+        recording.try_recv().is_err(),
+        "refused raw sources never dispatch a message"
+    );
+}

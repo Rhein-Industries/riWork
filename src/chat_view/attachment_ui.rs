@@ -7,7 +7,8 @@ use super::{
 use crate::{
     chat::{
         attachments::{
-            Attachment, Preview, SEND_COUNT, image_thumbnail, normalize_clipboard_image,
+            Attachment, Preview, RAW_TIFF_BYTES, SEND_COUNT, image_thumbnail,
+            normalize_clipboard_image,
         },
         client::Client,
     },
@@ -150,6 +151,31 @@ pub(super) fn clipboard_sources(item: &ClipboardItem) -> Option<Vec<Source>> {
     (!images.is_empty()).then_some(images)
 }
 
+/// Failed/pending images still own retry bytes. Admission is independent of the
+/// staged-send quota; Ready chips have no Source and consume no raw-image budget.
+fn raw_image_admission(
+    retained_bytes: impl IntoIterator<Item = u64>,
+    incoming_bytes: u64,
+) -> Result<(), String> {
+    let (count, bytes) = retained_bytes
+        .into_iter()
+        .fold((0usize, 0u64), |(count, bytes), len| {
+            (count.saturating_add(1), bytes.saturating_add(len))
+        });
+    if count >= SEND_COUNT {
+        return Err(format!(
+            "at most {SEND_COUNT} clipboard images can retain retry data; remove an existing image before pasting another"
+        ));
+    }
+    if bytes
+        .checked_add(incoming_bytes)
+        .is_none_or(|total| total > RAW_TIFF_BYTES)
+    {
+        return Err("clipboard image retry data would exceed 64 MiB; remove an existing image before pasting another".into());
+    }
+    Ok(())
+}
+
 fn clipboard_image_bytes(image: &Image) -> Result<std::borrow::Cow<'_, [u8]>, String> {
     if !matches!(
         image.format(),
@@ -261,10 +287,11 @@ impl ChatView {
             .entries
             .iter()
             .any(|e| matches!(e, ClipboardEntry::String(text) if !text.text().is_empty()));
-        self.stage_sources(sources, window, cx);
         if mixed {
             self.notice = Some("Pasted attachments; clipboard text was not inserted.".into());
         }
+        // Queue admission notices must take precedence over the mixed-paste notice.
+        self.stage_sources(sources, window, cx);
         true
     }
     pub(super) fn dropped_attachments(
@@ -290,6 +317,19 @@ impl ChatView {
             return;
         }
         for source in sources {
+            if let Source::Image { image, .. } = &source {
+                let retained = self
+                    .attachments
+                    .iter()
+                    .filter_map(|chip| match &chip.source {
+                        Some(Source::Image { image, .. }) => Some(image.bytes().len() as u64),
+                        _ => None,
+                    });
+                if let Err(error) = raw_image_admission(retained, image.bytes().len() as u64) {
+                    self.notice = Some(format!("Clipboard image was not added: {error}"));
+                    continue;
+                }
+            }
             let id = Uuid::new_v4().to_string();
             let name = source.name();
             let ready_or_pending = self
