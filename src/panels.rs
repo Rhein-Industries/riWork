@@ -4203,7 +4203,10 @@ mod search_regression_tests {
                 assert!(editor.bounds().bottom() <= search.bounds().bottom());
                 let input = owner.read(app).inputs[0].1.clone();
                 assert_eq!(input.entity_id(), entity);
-                assert_eq!(input.read(app).placeholder().as_ref(), "Search  ⌘F");
+                assert_eq!(
+                    input.read(app).presentation().placeholder().as_ref(),
+                    "Search  ⌘F"
+                );
                 let caret = input
                     .read(app)
                     .range_to_bounds(&(0..0))
