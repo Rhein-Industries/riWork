@@ -4259,7 +4259,12 @@ mod search_regression_tests {
                 .within(("search-fixture-panel", 101u64))
                 .click("projects-search-icon", app)
         });
-        test_turn(cx, handle, |window, app| window.input("Alpha", app));
+        // Input dispatches per-character keystrokes; drain each Change effect
+        // before the next character so its callback reads that edit's value.
+        for character in "Alpha".chars() {
+            let character = character.to_string();
+            test_turn(cx, handle, |window, app| window.input(&character, app));
+        }
         test_turn(cx, handle, |window, app| {
             assert_eq!(owner.read(app).queries[&101], "Alpha");
             assert_eq!(owner.read(app).queries[&202], "");
@@ -4295,14 +4300,24 @@ mod search_regression_tests {
                 .within(("search-fixture-panel", 202u64))
                 .click("projects-search-icon", app);
         });
-        test_turn(cx, handle, |window, app| window.input("Beta", app));
+        for character in "Beta".chars() {
+            let character = character.to_string();
+            test_turn(cx, handle, |window, app| window.input(&character, app));
+        }
         test_turn(cx, handle, |window, app| {
             let fixture = owner.read(app);
             assert_eq!(fixture.focused, Some(202));
             assert_eq!(
                 fixture.changes,
                 [
+                    (101u64, String::from("A")),
+                    (101u64, String::from("Al")),
+                    (101u64, String::from("Alp")),
+                    (101u64, String::from("Alph")),
                     (101u64, String::from("Alpha")),
+                    (202u64, String::from("B")),
+                    (202u64, String::from("Be")),
+                    (202u64, String::from("Bet")),
                     (202u64, String::from("Beta"))
                 ]
             );
