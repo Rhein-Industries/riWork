@@ -1,5 +1,5 @@
 //! Headless ChatView events and actual private, locally staged thumbnails.
-//! Recording Feed only; no socket, provider, host startup or native GUI.
+//! Recording Feed and explicitly private socket stand-ins; no provider, host startup or GUI.
 use super::*;
 use crate::{
     chat::{
@@ -626,6 +626,43 @@ fn clipboard_staging_owns_normalized_tiff_and_exact_png_jpeg_bytes() {
             original,
             "source identity and bytes survive normalization"
         );
+        // Build actual provider inputs from the owned normalized snapshot,
+        // without starting a host or either provider.
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let mime = if format == image::ImageFormat::Jpeg {
+            "image/jpeg"
+        } else {
+            "image/png"
+        };
+        let text = "  exact attachment text 🦀  ";
+        let codex = attachments::inputs(text, std::slice::from_ref(&staged), false).unwrap();
+        let claude = attachments::inputs(text, std::slice::from_ref(&staged), true).unwrap();
+        assert_eq!(codex[0]["text"], text);
+        assert_eq!(claude[0]["text"], text);
+        assert_eq!(codex[1]["text"], format!("Attached image: {}", staged.name));
+        let prefix = format!("data:{mime};base64,");
+        assert_eq!(
+            STANDARD
+                .decode(
+                    codex[2]["url"]
+                        .as_str()
+                        .unwrap()
+                        .strip_prefix(&prefix)
+                        .unwrap()
+                )
+                .unwrap(),
+            owned
+        );
+        assert_eq!(claude[2]["source"]["media_type"], mime);
+        assert_eq!(
+            STANDARD
+                .decode(claude[2]["source"]["data"].as_str().unwrap())
+                .unwrap(),
+            owned
+        );
+        let mut stale = staged.clone();
+        stale.fingerprint = "changed fixture descriptor".into();
+        assert!(attachments::inputs(text, &[stale], false).is_err());
     }
     for (scratch, _) in server.join().unwrap() {
         assert!(
