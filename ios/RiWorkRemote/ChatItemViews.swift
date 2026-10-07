@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import RiWorkCore
 
 // One row of the transcript for each kind of item. A row is `Equatable` on its item and on which of its parts are open, so a message
@@ -48,7 +49,7 @@ struct ChatItemRow: View, Equatable {
     private var rowSpacing: CGFloat {
         switch item.body {
         case .userMessage, .agentMessage: 12
-        default: 5
+        default: 3
         }
     }
 
@@ -175,7 +176,7 @@ private struct ChecklistCard: View {
                 Spacer(minLength: 0)
                 if !steps.isEmpty { Text("\(done)/\(steps.count)").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).monospacedDigit() }
             }
-            .padding(.horizontal, 8).padding(.vertical, 6).background(style.cardHeader)
+            .padding(.horizontal, 10).padding(.vertical, 8).background(style.cardHeader)
             VStack(alignment: .leading, spacing: 6) {
                 if let explanation, !explanation.isEmpty {
                     Text(explanation).font(style.system(.footnote)).foregroundStyle(style.muted).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
@@ -183,7 +184,7 @@ private struct ChecklistCard: View {
                 ForEach(steps.indices, id: \.self) { StepRow(step: steps[$0]) }
                 if steps.isEmpty { Text("No steps yet.").font(style.system(.footnote)).foregroundStyle(style.muted) }
             }
-            .padding(12)
+            .padding(.horizontal, 10).padding(.top, 2).padding(.bottom, 10)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(title.capitalized), \(done) of \(steps.count) done")
@@ -214,29 +215,72 @@ private struct StepRow: View {
 
 // MARK: - Cards
 
-/// The header line of a collapsible card.
-private struct CardHeader<Title: View>: View {
+/// The one header row of a collapsible card: the status, what it is (bold), what it was about (muted, after it on the same line, cut to
+/// one line while the card is closed), anything else worth a glance (`trailing`: counts, exit code, Copy while open) and one chevron.
+/// A closed card is this row alone.
+private struct CardHeader<Trailing: View>: View {
     @Environment(\.desktopStyle) private var style
     let isOpen: Bool
     let label: String
+    let status: ChatItemStatus
+    var errored = false
+    let title: String
+    var titleFont: Font?
+    var subtitle: String = ""
+    var subtitleFont: Font?
+    /// How the subtitle is cut: a path keeps its end, a command its start.
+    var truncation: Text.TruncationMode = .tail
     let toggle: () -> Void
-    @ViewBuilder var title: () -> Title
+    @ViewBuilder var trailing: () -> Trailing
     var body: some View {
-        Button(action: toggle) {
-            HStack(alignment: .top, spacing: 6) {
-                title()
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.right").font(style.system(.caption2, weight: .semibold)).foregroundStyle(style.muted)
-                    .rotationEffect(.degrees(isOpen ? 90 : 0)).padding(.top, 3).accessibilityHidden(true)
+        HStack(alignment: .center, spacing: 6) {
+            Button(action: toggle) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    ChatStatusGlyph(status: status, errored: errored).alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+                    Text(title).font(titleFont ?? style.system(.subheadline, weight: .semibold)).foregroundStyle(style.text)
+                        .lineLimit(isOpen ? 6 : 1).layoutPriority(subtitle.isEmpty ? 1 : 0.5).fixedSize(horizontal: !subtitle.isEmpty && titleFont == nil, vertical: false)
+                    if !subtitle.isEmpty {
+                        Text(subtitle).font(subtitleFont ?? style.codeSmall).foregroundStyle(style.muted)
+                            .lineLimit(isOpen ? 4 : 1).truncationMode(truncation).multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(minHeight: style.target).contentShape(Rectangle())
             }
-            .padding(.horizontal, 12).padding(.vertical, 10).frame(minHeight: 44, alignment: .leading).contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityLabel(label)
+            .accessibilityValue(isOpen ? "Expanded" : "Collapsed")
+            .accessibilityHint(isOpen ? "Collapses the details" : "Shows the details")
+            .accessibilityAddTraits(.isButton)
+            trailing()
+            Button(action: toggle) {
+                Image(systemName: "chevron.right").font(style.system(.caption2, weight: .semibold)).foregroundStyle(style.muted)
+                    .rotationEffect(.degrees(isOpen ? 90 : 0)).frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).accessibilityHidden(true)
         }
-        .buttonStyle(.plain)
+        .padding(.leading, 10)
         .background(style.cardHeader)
-        .accessibilityLabel(label)
-        .accessibilityValue(isOpen ? "Expanded" : "Collapsed")
-        .accessibilityHint(isOpen ? "Collapses the details" : "Shows the details")
-        .accessibilityAddTraits(.isButton)
+    }
+}
+extension CardHeader where Trailing == EmptyView {
+    init(isOpen: Bool, label: String, status: ChatItemStatus, errored: Bool = false, title: String, titleFont: Font? = nil, subtitle: String = "",
+         subtitleFont: Font? = nil, truncation: Text.TruncationMode = .tail, toggle: @escaping () -> Void) {
+        self.init(isOpen: isOpen, label: label, status: status, errored: errored, title: title, titleFont: titleFont, subtitle: subtitle,
+                  subtitleFont: subtitleFont, truncation: truncation, toggle: toggle) { EmptyView() }
+    }
+}
+
+/// The body of an open card: tight insets, set off from the header by a hairline.
+private struct CardBody<Content: View>: View {
+    @Environment(\.desktopStyle) private var style
+    var spacing: CGFloat = 6
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: spacing, content: content)
+            .padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .top) { DesktopRule().opacity(0.6) }
     }
 }
 
@@ -258,7 +302,7 @@ private struct OutputText: View {
             }
             if more || preview.hidden > 0 {
                 Button(more ? "Show less output" : "Show more output") { more.toggle() }
-                    .font(style.system(.footnote)).frame(minHeight: 44)
+                    .font(style.system(.footnote)).frame(minHeight: 44).contentShape(Rectangle())
                     .buttonStyle(.plain).foregroundStyle(style.link)
                     .accessibilityIdentifier("chat-tool-output-toggle")
                     .chatLayoutProbe("output-toggle", action: { more.toggle() })
@@ -279,22 +323,20 @@ private struct CommandCard: View {
     private var errored: Bool { (exitCode ?? 0) != 0 }
     var body: some View {
         ChatCard {
-            CardHeader(isOpen: isOpen, label: "\(ChatItemBody.command(command: command, cwd: cwd, output: "", exitCode: exitCode).summary), \(item.status.spoken)", toggle: toggle) {
-                ChatStatusGlyph(status: item.status, errored: errored)
-                Text("$ \(command)").font(style.code).foregroundStyle(style.text).lineLimit(isOpen ? 8 : 2).multilineTextAlignment(.leading)
+            CardHeader(isOpen: isOpen, label: "\(ChatItemBody.command(command: command, cwd: cwd, output: "", exitCode: exitCode).summary), \(item.status.spoken)",
+                       status: item.status, errored: errored, title: "$ \(command)", titleFont: style.code, toggle: toggle) {
                 if let exitCode, exitCode != 0 { Text("exit \(exitCode)").font(style.face(10, bold: true, relativeTo: .caption2)).foregroundStyle(style.error).fixedSize() }
+                if isOpen, !output.isEmpty { CopyButton(title: "Copy output", text: { output }, iconOnly: true) }
             }
             if isOpen {
-                VStack(alignment: .leading, spacing: 6) {
+                CardBody(spacing: 4) {
                     if let cwd, !cwd.isEmpty { Text(cwd).font(style.mono(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1).truncationMode(.head) }
                     OutputText(text: output)
-                    if !output.isEmpty { HStack { Spacer(); CopyButton(title: "Copy output", text: { output }) } }
                 }
-                .padding(12)
             } else if item.status == .inProgress, !output.isEmpty {
                 // Output as it arrives, three lines of it, without opening the card.
                 Text(verbatim: ChatOutput.tail(output, lines: 3).text).font(style.codeSmall).foregroundStyle(style.muted).lineLimit(3)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8).padding(.vertical, 6).accessibilityHidden(true)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.bottom, 6).accessibilityHidden(true)
             }
         }
     }
@@ -310,28 +352,22 @@ private struct ToolCard: View {
     let isOpen: Bool
     let toggle: () -> Void
     var body: some View {
-        let line = ChatToolSummary.line(for: input)
         ChatCard {
-            CardHeader(isOpen: isOpen, label: "\(item.body.summary), \(item.status.spoken)", toggle: toggle) {
-                ChatStatusGlyph(status: item.status)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text([server, tool].compactMap { $0 }.joined(separator: " · ")).font(style.system(.subheadline, weight: .semibold)).foregroundStyle(style.text).lineLimit(1)
-                    if !line.isEmpty { Text(line).font(style.codeSmall).foregroundStyle(style.muted).lineLimit(isOpen ? 4 : 1).multilineTextAlignment(.leading) }
-                }
+            CardHeader(isOpen: isOpen, label: "\(item.body.summary), \(item.status.spoken)", status: item.status,
+                       title: [server, tool].compactMap { $0 }.joined(separator: " · "), subtitle: ChatToolSummary.line(for: input), truncation: .head, toggle: toggle) {
+                if isOpen, let output, !output.isEmpty { CopyButton(title: "Copy result", text: { output }, iconOnly: true) }
             }
             if isOpen {
-                VStack(alignment: .leading, spacing: 8) {
+                CardBody {
                     if input != .null {
                         ChatCaption(text: "Input")
                         Text(verbatim: ChatToolSummary.pretty(input)).font(style.codeSmall).foregroundStyle(style.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                     }
                     if let output, !output.isEmpty {
-                        ChatCaption(text: "Result")
+                        ChatCaption(text: "Result").padding(.top, 2)
                         OutputText(text: output)
-                        HStack { Spacer(); CopyButton(title: "Copy result", text: { output }) }
                     }
                 }
-                .padding(12)
             }
         }
     }
@@ -363,39 +399,48 @@ private struct FileChangeCard: View {
             if let diff = change.diff { let parsed = DiffCache.parse(diff); total.0 += parsed.added; total.1 += parsed.removed }
         }
     }
+    private var subtitle: String {
+        guard let first = changes.first else { return "" }
+        return first.path + (changes.count > 1 ? " and \(changes.count - 1) more" : "")
+    }
     var body: some View {
         let total = counts
         let isOpen = open.contains(item.id)
+        // One file: the card is the file, and opening it shows its diff. Several: each file is a row of its own that opens its diff.
+        let single = changes.count == 1 ? changes.first : nil
+        let verb = single.map { FileRow.verb($0.kind) } ?? "Edit"
         ChatCard {
-            CardHeader(isOpen: isOpen, label: "\(item.body.summary), \(item.status.spoken), \(total.added) added, \(total.removed) removed", toggle: { toggle(item.id) }) {
-                ChatStatusGlyph(status: item.status)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(changes.count == 1 ? "Edit" : "Edit · \(changes.count) files").font(style.system(.subheadline, weight: .semibold)).foregroundStyle(style.text)
-                        if total.added + total.removed > 0 {
-                            Text("+\(total.added)").foregroundStyle(style.added).monospacedDigit()
-                            Text("−\(total.removed)").foregroundStyle(style.removed).monospacedDigit()
-                        }
+            CardHeader(isOpen: isOpen, label: "\(single.map { "\(FileRow.word($0.kind)) \($0.path)" } ?? item.body.summary), \(item.status.spoken), \(total.added) added, \(total.removed) removed",
+                       status: item.status, title: single == nil ? "Edit · \(changes.count) files" : verb, subtitle: isOpen && single == nil ? "" : subtitle, truncation: .head,
+                       toggle: { toggle(item.id) }) {
+                if total.added + total.removed > 0 {
+                    HStack(spacing: 4) {
+                        Text("+\(total.added)").foregroundStyle(style.added)
+                        Text("−\(total.removed)").foregroundStyle(style.removed)
                     }
-                    .font(style.face(11, bold: true, relativeTo: .caption))
-                    if !isOpen, let first = changes.first {
-                        Text(first.path + (changes.count > 1 ? " and \(changes.count - 1) more" : "")).font(style.codeSmall).foregroundStyle(style.muted).lineLimit(1).truncationMode(.head)
-                    }
+                    .font(style.face(11, bold: true, relativeTo: .caption)).monospacedDigit().fixedSize()
                 }
+                if isOpen, let diff = single?.diff { CopyButton(title: "Copy diff", text: { diff }, iconOnly: true) }
             }
             if isOpen {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(changes.indices, id: \.self) { index in
-                        FileRow(change: changes[index], isOpen: open.contains("\(item.id)#\(changes[index].path)"),
-                                toggle: { toggle("\(item.id)#\(changes[index].path)") })
+                if let single {
+                    if let diff = single.diff { DiffView(text: diff, flush: true) }
+                    else { CardBody { Text("\(FileRow.word(single.kind)) \(single.path). No diff was sent.").font(style.system(.footnote)).foregroundStyle(style.muted) } }
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(changes.indices, id: \.self) { index in
+                            FileRow(change: changes[index], isOpen: open.contains("\(item.id)#\(changes[index].path)"),
+                                    toggle: { toggle("\(item.id)#\(changes[index].path)") })
+                        }
                     }
+                    .overlay(alignment: .top) { DesktopRule().opacity(0.6) }
                 }
-                .padding(12)
             }
         }
     }
 }
 
+/// One file of an edit of several: its change, its path and, opened, its diff flush with the card.
 private struct FileRow: View {
     @Environment(\.desktopStyle) private var style
     let change: ChatFileChange
@@ -410,52 +455,69 @@ private struct FileRow: View {
         }
     }
     private var color: Color { change.kind == .add ? style.added : (change.kind == .delete ? style.removed : style.muted) }
-    private var word: String { change.kind == .add ? "Added" : (change.kind == .delete ? "Deleted" : (change.kind == .rename ? "Renamed" : "Edited")) }
+    private var word: String { Self.word(change.kind) }
+    static func word(_ kind: ChatChangeKind) -> String { kind == .add ? "Added" : (kind == .delete ? "Deleted" : (kind == .rename ? "Renamed" : "Edited")) }
+    /// The title of a one-file edit's card: what was done to the file.
+    static func verb(_ kind: ChatChangeKind) -> String {
+        switch kind {
+        case .add: "New file"
+        case .modify: "Edit"
+        case .delete: "Delete"
+        case .rename: "Rename"
+        }
+    }
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Button(action: { if change.diff != nil { toggle() } }) {
-                HStack(spacing: 6) {
-                    Image(systemName: icon).foregroundStyle(color).accessibilityHidden(true)
-                    Text(change.path).font(style.code).foregroundStyle(style.text).lineLimit(1).truncationMode(.head)
-                    Spacer(minLength: 4)
-                    if change.diff != nil { Image(systemName: "chevron.right").font(style.system(.caption2, weight: .semibold)).foregroundStyle(style.muted).rotationEffect(.degrees(isOpen ? 90 : 0)) }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Button(action: { if change.diff != nil { toggle() } }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: icon).font(style.system(.caption)).foregroundStyle(color).accessibilityHidden(true)
+                        Text(change.path).font(style.codeSmall).foregroundStyle(style.text).lineLimit(1).truncationMode(.head)
+                        Spacer(minLength: 4)
+                        if change.diff != nil {
+                            Image(systemName: "chevron.right").font(style.system(.caption2, weight: .semibold)).foregroundStyle(style.muted).rotationEffect(.degrees(isOpen ? 90 : 0))
+                        }
+                    }
+                    .padding(.leading, 12).padding(.trailing, 10)
+                    .frame(minHeight: style.target).contentShape(Rectangle())
                 }
-                .frame(minHeight: 44).contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(word) \(change.path)")
+                .accessibilityValue(change.diff == nil ? "" : (isOpen ? "Diff shown" : "Diff hidden"))
+                .accessibilityHint(change.diff == nil ? "" : (isOpen ? "Hides the diff" : "Shows the diff"))
+                if isOpen, let diff = change.diff { CopyButton(title: "Copy diff", text: { diff }, iconOnly: true).padding(.trailing, 4) }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(word) \(change.path)")
-            .accessibilityValue(change.diff == nil ? "" : (isOpen ? "Diff shown" : "Diff hidden"))
-            .accessibilityHint(change.diff == nil ? "" : (isOpen ? "Hides the diff" : "Shows the diff"))
-            if isOpen, let text = change.diff { DiffView(text: text) }
+            if isOpen, let text = change.diff { DiffView(text: text, flush: true) }
         }
     }
 }
 
 /// A unified diff in monospace: added lines green, removed red, hunk headers muted. Lines do not wrap (the whole diff scrolls sideways),
-/// so a line is a line.
+/// so a line is a line. In a card it is `flush`: edge to edge under the header, on the content's background, with no frame of its own
+/// (the card's rounding is the only one); elsewhere (the approval bar) it is a framed block. Copy is the card's (or a long press).
 struct DiffView: View {
     @Environment(\.desktopStyle) private var style
     let text: String
+    var flush = false
     /// The width of the frame the diff sits in, so that the bands of added and removed lines reach across it, not just across their text.
     @State private var width: CGFloat = 0
     var body: some View {
         let diff = DiffCache.parse(text)
-        VStack(alignment: .leading, spacing: 4) {
-            ScrollView(.horizontal, showsIndicators: false) {
+        VStack(alignment: .leading, spacing: 0) {
+            let lines = ScrollView(.horizontal, showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(diff.lines.indices, id: \.self) { index in DiffLineView(line: diff.lines[index]) }
                 }
+                .padding(.vertical, 4)
                 .frame(minWidth: width, alignment: .leading)
             }
-            .background(style.background).clipShape(style.block(10)).overlay(style.block(10).stroke(style.divider, lineWidth: 1))
+            .background(style.background)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+            .contextMenu { Button("Copy diff", systemImage: "doc.on.doc") { UIPasteboard.general.string = text } }
+            if flush { lines } else { lines.clipShape(style.block(10)).overlay(style.block(10).stroke(style.divider, lineWidth: 1)) }
             if diff.hiddenLines > 0 {
                 Text("… \(diff.hiddenLines) more lines not shown").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
-            }
-            HStack(spacing: 8) {
-                Text("+\(diff.added) −\(diff.removed)").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).monospacedDigit()
-                Spacer()
-                CopyButton(title: "Copy diff", text: { text })
+                    .padding(.horizontal, flush ? 10 : 0).padding(.vertical, 4)
             }
         }
     }

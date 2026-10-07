@@ -82,14 +82,21 @@ struct CopyButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let title: String
     let text: @MainActor () -> String
+    /// Only the glyph, as in a card's header; the target stays 44 points.
+    var iconOnly = false
     @State private var copied = false
     var body: some View {
         Button(action: copy) {
-            Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc").labelStyle(.titleAndIcon)
-                .font(style.system(.caption)).foregroundStyle(copied ? style.accent : style.muted)
-                .padding(.trailing, 8)
-                .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
-                .contentShape(Rectangle())
+            Group {
+                if iconOnly {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc").frame(minWidth: 44, minHeight: 44)
+                } else {
+                    Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc").labelStyle(.titleAndIcon)
+                        .padding(.trailing, 8).frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                }
+            }
+            .font(style.system(.caption)).foregroundStyle(copied ? style.accent : style.muted)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
