@@ -2,7 +2,11 @@
 //! Recording Feed only; no socket, provider, host startup or native GUI.
 use super::*;
 use crate::{
-    chat::{attachments, client::CallError, model::ChatCommand},
+    chat::{
+        attachments::{self, FILE_BYTES},
+        client::CallError,
+        model::ChatCommand,
+    },
     chat_view::{HostConfig, attachment_draft, editor_tests, feed, state::Link},
 };
 use gpui::{SharedString, TestAppContext};
@@ -302,7 +306,7 @@ fn mixed_image_paste_preview_survives_refusal_and_retry_guards_attempt_identity(
     );
     let images = [
         Image::from_bytes(ImageFormat::Png, image_bytes(image::ImageFormat::Png)),
-        Image::from_bytes(ImageFormat::Jpeg, image_bytes(image::ImageFormat::Jpeg)),
+        Image::from_bytes(ImageFormat::Tiff, image_bytes(image::ImageFormat::Tiff)),
     ];
     let staged = locally_staged();
     cx.update_window(handle.into(), |_, window, cx| {
@@ -536,4 +540,169 @@ fn pure_clipboard_thumbnail_keeps_shared_static_image_admission() {
         .write_to(&mut Cursor::new(&mut wide), image::ImageFormat::Png)
         .unwrap();
     assert!(image_thumbnail(&wide).is_err());
+}
+
+#[test]
+fn clipboard_staging_owns_normalized_tiff_and_exact_png_jpeg_bytes() {
+    use crate::chat::wire::{Request, Response};
+    use std::{
+        io::{BufRead, BufReader},
+        os::unix::net::UnixListener,
+        thread,
+    };
+    let root = crate::chat::testing::short_home();
+    let chat = root.join("chat");
+    fs::create_dir(&chat).unwrap();
+    let socket = root.join("stage.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let served_chat = chat.clone();
+    let server = thread::spawn(move || {
+        let mut content = Vec::new();
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let Request::StageAttachment { id, chat_id, path } =
+                serde_json::from_str(&line).unwrap()
+            else {
+                panic!("only stage_attachment is allowed")
+            };
+            assert_eq!(chat_id, "fixture-chat");
+            let source_bytes = fs::read(&path).unwrap();
+            let attachment = attachments::stage(&served_chat, &path).unwrap();
+            assert_eq!(fs::read(&attachment.path).unwrap(), source_bytes);
+            let Preview::Image { path: preview } = &attachment.preview else {
+                panic!("image preview missing")
+            };
+            assert_eq!(
+                fs::read(preview).unwrap(),
+                image_thumbnail(&source_bytes).unwrap()
+            );
+            writeln!(
+                stream,
+                "{}",
+                serde_json::to_string(&Response {
+                    id,
+                    ok: true,
+                    result: Some(serde_json::to_value(&attachment).unwrap()),
+                    error: None
+                })
+                .unwrap()
+            )
+            .unwrap();
+            content.push((path, source_bytes));
+        }
+        content
+    });
+    let ensure: super::super::feed::Ensure = Arc::new(move || Ok(socket.clone()));
+    for (format, gpui_format) in [
+        (image::ImageFormat::Png, ImageFormat::Png),
+        (image::ImageFormat::Jpeg, ImageFormat::Jpeg),
+        (image::ImageFormat::Tiff, ImageFormat::Tiff),
+    ] {
+        let image = Arc::new(Image::from_bytes(gpui_format, image_bytes(format)));
+        let original = image.bytes().to_vec();
+        let source = Source::Image {
+            name: format!("private-clipboard-fixture.{gpui_format:?}"),
+            image: image.clone(),
+        };
+        let staged = stage_source(&ensure, "fixture-chat", &source).unwrap();
+        let owned = fs::read(&staged.path).unwrap();
+        if format == image::ImageFormat::Tiff {
+            assert_eq!(
+                image::guess_format(&owned).unwrap(),
+                image::ImageFormat::Png
+            );
+            assert_eq!(
+                image::load_from_memory(&owned).unwrap(),
+                image::load_from_memory(&original).unwrap()
+            );
+        } else {
+            assert_eq!(owned, original);
+        }
+        assert_eq!(
+            image.bytes(),
+            original,
+            "source identity and bytes survive normalization"
+        );
+    }
+    for (scratch, _) in server.join().unwrap() {
+        assert!(
+            !scratch.exists(),
+            "only private scratch source is removed after staging"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[gpui::test]
+fn attachment_send_refusal_retains_exact_draft_and_requires_explicit_resend(
+    cx: &mut TestAppContext,
+) {
+    let (handle, view, recording) = editor_tests::mount_selection(cx);
+    let attachment = locally_staged().remove(0);
+    let text = "  exact refused draft 🦀  ";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |v, cx| {
+            v.attachments.push(Chip::ready(attachment.clone()));
+            v.bump_generation();
+        });
+        window.click("chat-composer", cx);
+        window.input(text, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |v, cx| v.send_message(window, cx));
+    })
+    .unwrap();
+    let feed::Delivery::Submission { id, command } = recording.try_recv().unwrap() else {
+        panic!("attachment submission missing")
+    };
+    assert_eq!(
+        command,
+        ChatCommand::SendAttachments {
+            text: text.into(),
+            attachments: vec![attachment.clone()]
+        }
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |v, cx| {
+            v.submission_receipt(
+                id,
+                command.clone(),
+                Err(CallError::Refused(
+                    "running legacy backend does not support attachments; refresh then retry"
+                        .into(),
+                )),
+                window,
+                cx,
+            );
+            assert_eq!(v.composer_text(cx), text);
+            assert_eq!(v.attachments[0].attachment(), Some(&attachment));
+            assert_eq!(v.submissions[0].snapshot.text, text);
+            assert_eq!(
+                v.submissions[0].snapshot.attachments,
+                vec![attachment.clone()]
+            );
+            assert!(matches!(v.submissions[0].status, Status::Refused(_)));
+            assert!(
+                recording.try_recv().is_err(),
+                "no automatic retry or text fallback"
+            );
+            v.resend_snapshot(id, window, cx);
+        });
+    })
+    .unwrap();
+    let feed::Delivery::Submission {
+        id: retry,
+        command: retried,
+    } = recording.try_recv().unwrap()
+    else {
+        panic!("explicit resend missing")
+    };
+    assert_ne!(retry, id);
+    assert_eq!(retried, command);
+    assert!(recording.try_recv().is_err());
 }

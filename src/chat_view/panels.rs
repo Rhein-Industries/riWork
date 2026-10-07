@@ -1708,12 +1708,20 @@ impl ChatView {
         .absolute()
         .inset_0();
         let weak = cx.weak_entity();
-        let editor = text_input::on_paste(
+        let editor = text_input::on_paste_with_reader(
             text_input::textarea("chat-composer", &self.composer, window, cx),
             &self.composer,
+            super::attachment_ui::read_composer_clipboard,
             move |item, window, cx| {
-                weak.update(cx, |view, cx| view.paste_attachments(item, window, cx))
-                    .unwrap_or(false)
+                weak.update(cx, |view, cx| match item {
+                    Ok(item) => view.paste_attachments(item, window, cx),
+                    Err(error) => {
+                        view.notice = Some(format!("Clipboard attachment: {error}"));
+                        cx.notify();
+                        true
+                    }
+                })
+                .unwrap_or(false)
             },
         )
         .border_0()

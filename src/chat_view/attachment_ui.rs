@@ -6,7 +6,9 @@ use super::{
 };
 use crate::{
     chat::{
-        attachments::{Attachment, FILE_BYTES, Preview, SEND_COUNT, image_thumbnail},
+        attachments::{
+            Attachment, Preview, SEND_COUNT, image_thumbnail, normalize_clipboard_image,
+        },
         client::Client,
     },
     ui_text,
@@ -25,8 +27,20 @@ use std::{
 };
 use uuid::Uuid;
 
+#[cfg(target_os = "macos")]
+mod native_paste;
 #[cfg(test)]
 mod tests;
+
+pub(super) fn read_composer_clipboard(cx: &mut gpui::App) -> Result<Option<ClipboardItem>, String> {
+    // Headless test builds always use GPUI's injected clipboard. Native tests
+    // must pass an explicit private NSPasteboard to read_board instead.
+    #[cfg(all(target_os = "macos", not(test)))]
+    if let Some(item) = native_paste::read_general_attachments()? {
+        return Ok(Some(item));
+    }
+    Ok(cx.read_from_clipboard())
+}
 
 #[derive(Clone)]
 pub(super) enum Source {
@@ -122,6 +136,7 @@ pub(super) fn clipboard_sources(item: &ClipboardItem) -> Option<Vec<Source>> {
                 let extension = match image.format() {
                     ImageFormat::Png => "png",
                     ImageFormat::Jpeg => "jpg",
+                    ImageFormat::Tiff => "png",
                     _ => "unsupported",
                 };
                 Some(Source::Image {
@@ -135,27 +150,38 @@ pub(super) fn clipboard_sources(item: &ClipboardItem) -> Option<Vec<Source>> {
     (!images.is_empty()).then_some(images)
 }
 
+fn clipboard_image_bytes(image: &Image) -> Result<std::borrow::Cow<'_, [u8]>, String> {
+    if !matches!(
+        image.format(),
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Tiff
+    ) {
+        return Err("clipboard format is unsupported; use static PNG, JPEG or TIFF".into());
+    }
+    normalize_clipboard_image(image.bytes())
+}
+
 fn stage_source(
     ensure: &super::feed::Ensure,
     chat: &str,
     source: &Source,
 ) -> Result<Attachment, String> {
     let name = source.name();
+    // Normalize on this background worker before any host call. PNG/JPEG are
+    // borrowed unchanged; TIFF becomes bounded static PNG for host ownership.
+    let normalized = match source {
+        Source::Image { image, .. } => {
+            Some(clipboard_image_bytes(image).map_err(|e| format!("Attachment {name}: {e}"))?)
+        }
+        Source::File(_) => None,
+    };
     let socket = ensure().map_err(|e| format!("Attachment {name}: {e}"))?;
     let mut client = Client::connect(&socket).map_err(|e| format!("Attachment {name}: {e}"))?;
     match source {
         Source::File(path) => client
             .stage_attachment(chat, path)
             .map_err(|e| format!("Attachment {name}: {e}")),
-        Source::Image { name, image } => {
-            if !matches!(image.format(), ImageFormat::Png | ImageFormat::Jpeg) {
-                return Err(format!(
-                    "Attachment {name}: clipboard format is unsupported; use static PNG or JPEG"
-                ));
-            }
-            if image.bytes().len() as u64 > FILE_BYTES {
-                return Err(format!("Attachment {name}: exceeds 4 MiB"));
-            }
+        Source::Image { name, .. } => {
+            let bytes = normalized.as_ref().expect("image source was normalized");
             // Child-owned scratch storage, no inherited RIWORK_HOME or credential access.
             // Host copies/validates the bytes before this source is removed.
             let dir = std::env::temp_dir().join(format!("riwork-chat-paste-{}", Uuid::new_v4()));
@@ -172,7 +198,7 @@ fn stage_source(
                     .custom_flags(libc::O_NOFOLLOW)
                     .open(&path)
                     .map_err(|e| e.to_string())?;
-                file.write_all(image.bytes())
+                file.write_all(bytes)
                     .and_then(|()| file.sync_all())
                     .map_err(|e| e.to_string())?;
                 client
@@ -306,10 +332,8 @@ impl ChatView {
         let image = image.clone();
         // Independent task: never waits for Ensure, a socket or host staging.
         let work = cx.background_executor().spawn(async move {
-            if !matches!(image.format(), ImageFormat::Png | ImageFormat::Jpeg) {
-                return None;
-            }
-            image_thumbnail(image.bytes()).ok().map(|bytes| {
+            let bytes = clipboard_image_bytes(&image).ok()?;
+            image_thumbnail(&bytes).ok().map(|bytes| {
                 let mut preview = Image::from_bytes(ImageFormat::Png, bytes);
                 // Own this asset independently of identical images in other
                 // chips/windows, so retirement cannot evict their cache.

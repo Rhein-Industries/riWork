@@ -15,6 +15,10 @@ use std::{
 use uuid::Uuid;
 
 pub const FILE_BYTES: u64 = 4 << 20;
+/// Raw clipboard TIFF is often uncompressed. Only normalized PNG may be staged.
+pub const RAW_TIFF_BYTES: u64 = 64 << 20;
+mod clipboard_image;
+pub use clipboard_image::normalize_clipboard_image;
 pub const TEXT_BYTES: usize = 1 << 20;
 pub const SEND_BYTES: u64 = 8 << 20;
 pub const SEND_COUNT: usize = 8;
