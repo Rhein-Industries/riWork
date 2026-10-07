@@ -109,6 +109,33 @@ unsafe fn read_representations(board: *mut AnyObject) -> Result<Option<Clipboard
         if types.is_null() {
             return Ok(None);
         }
+        // AppKit advertises a synthesized TIFF representation for GIF and
+        // other source images. Refuse unsupported image types before selecting
+        // that conversion, which could silently flatten animation to one frame.
+        let image_type: *mut AnyObject =
+            msg_send![class!(UTType), typeWithIdentifier: string("public.image")];
+        let supported: Vec<*mut AnyObject> = ["public.png", "public.jpeg", "public.tiff"]
+            .into_iter()
+            .map(|kind| msg_send![class!(UTType), typeWithIdentifier: string(kind)])
+            .collect();
+        let count: usize = msg_send![types, count];
+        for i in 0..count {
+            let kind: *mut AnyObject = msg_send![types, objectAtIndex: i];
+            let ty: *mut AnyObject = msg_send![class!(UTType), typeWithIdentifier: kind];
+            if ty.is_null() {
+                continue;
+            }
+            let is_image: bool = msg_send![ty, conformsToType: image_type];
+            let accepted = supported.iter().any(|accepted| {
+                let matches: bool = msg_send![ty, conformsToType: *accepted];
+                matches
+            });
+            if is_image && !accepted {
+                return Err(
+                    "unsupported clipboard image format; use static PNG, JPEG or TIFF".into(),
+                );
+            }
+        }
         for (kind, format, cap) in [
             ("public.png", ImageFormat::Png, FILE_BYTES),
             ("public.jpeg", ImageFormat::Jpeg, FILE_BYTES),
@@ -138,23 +165,6 @@ unsafe fn read_representations(board: *mut AnyObject) -> Result<Option<Clipboard
             return Ok(Some(ClipboardItem {
                 entries: vec![ClipboardEntry::Image(Image::from_bytes(format, bytes))],
             }));
-        }
-        // Refuse other image UTIs explicitly, even when accompanied by text.
-        // Falling through here would reproduce the image+URL loss for GIF/HEIC/etc.
-        let image_type: *mut AnyObject =
-            msg_send![class!(UTType), typeWithIdentifier: string("public.image")];
-        let count: usize = msg_send![types, count];
-        for i in 0..count {
-            let kind: *mut AnyObject = msg_send![types, objectAtIndex: i];
-            let ty: *mut AnyObject = msg_send![class!(UTType), typeWithIdentifier: kind];
-            if !ty.is_null() {
-                let is_image: bool = msg_send![ty, conformsToType: image_type];
-                if is_image {
-                    return Err(
-                        "unsupported clipboard image format; use static PNG, JPEG or TIFF".into(),
-                    );
-                }
-            }
         }
         // Preserve GPUI's normal string+metadata path for ordinary text.
         Ok(None)
@@ -255,7 +265,13 @@ mod tests {
                 "public.utf8-plain-text",
                 b"https://fixture.invalid/animated",
             );
-            put(board, "com.compuserve.gif", b"GIF89a");
+            // A complete static GIF. Even a valid source must not be treated as
+            // AppKit's synthesized TIFF, nor replaced by its accompanying URL.
+            put(board, "com.compuserve.gif", &[
+                71, 73, 70, 56, 57, 97, 1, 0, 1, 0, 128, 0, 0,
+                0, 0, 0, 255, 255, 255, 33, 249, 4, 1, 0, 0, 0, 0,
+                44, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 1, 68, 0, 59,
+            ]);
             let error = read_board(board).unwrap_err();
             let types: *mut AnyObject = msg_send![board, types];
             let description: *mut AnyObject = msg_send![types, description];
