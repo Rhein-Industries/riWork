@@ -1801,6 +1801,36 @@ fn restored_auth_and_usage_notices_resolve_on_the_first_successful_turn() {
 }
 
 #[test]
+fn a_usage_stop_follows_the_exhausted_windows_reset_when_a_later_update_brings_it() {
+    let fake = Fake::new(&[]);
+    let (sender, events) = mpsc::channel();
+    let config = fake.config(Provider::Codex);
+    let mut session = Session::new(&config, sender);
+    session.notification(
+        "error",
+        &json!({"error":{"message":"usage exhausted","codexErrorInfo":"usageLimitExceeded"}}),
+    );
+    // First quota data: nothing at 100% yet, so the soonest reset stands in.
+    session.notification(
+        "account/rateLimits/updated",
+        &json!({"rateLimits":{"primary":{"usedPercent":60,"windowDurationMins":300,"resetsAt":200}}}),
+    );
+    // Then the exhausted weekly window, which resets later.
+    session.notification(
+        "account/rateLimits/updated",
+        &json!({"rateLimits":{"secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":900}}}),
+    );
+    let resets: Vec<Option<u64>> = completed_notices(&events.try_iter().collect::<Vec<_>>())
+        .iter()
+        .map(|item| match &item.body {
+            ItemBody::Notice { resets_at, .. } => *resets_at,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(resets.last(), Some(&Some(900)), "{resets:?}");
+}
+
+#[test]
 fn rate_limits_are_read_once_after_initialize_and_sparse_notifications_merge() {
     let mut run = Run::start("rate_limits");
     run.until(|e| matches!(e, ChatEvent::RateLimits { windows } if windows.iter().any(|w| w.id == "primary" && w.used_percent == 55.0)));

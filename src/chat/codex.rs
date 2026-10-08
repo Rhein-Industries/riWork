@@ -1607,12 +1607,13 @@ impl Session {
                 windows: self.rate_limits.windows.clone(),
             });
             // A hard stop can race the background read. Fill in its reset once
-            // quota data arrives, preserving the notice's identity.
+            // quota data arrives, and follow it when a later update moves it (the
+            // exhausted window's reset replaces a fallback), keeping the notice's identity.
             if let Some(reset) = self.rate_limits.blocking_reset() {
                 let mut update = None;
                 if let Some(item) = self.open_notices.get_mut("rate_limit:codex") {
                     if let ItemBody::Notice { resets_at, .. } = &mut item.body {
-                        if resets_at.is_none() {
+                        if *resets_at != Some(reset) {
                             *resets_at = Some(reset);
                             update = Some(item.clone());
                         }
