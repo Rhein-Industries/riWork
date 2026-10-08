@@ -482,3 +482,69 @@ fn the_usage_chip_shows_the_most_used_window_past_its_warning_and_opens_usage(
     .unwrap();
     notices::TEST_NOW.with(|now| now.set(None));
 }
+
+#[gpui::test]
+fn the_usage_chip_and_meter_fit_a_narrow_chat_by_leaving_out_detail(cx: &mut TestAppContext) {
+    let start = 1_800_000_000;
+    notices::TEST_NOW.with(|now| now.set(Some(start)));
+    let mut widths = Vec::new();
+    for width in [900.0_f32, 520.0, 360.0, 260.0] {
+        let (handle, view, _recording) = super::editor_tests::mount_sized(
+            cx,
+            HostConfig {
+                ensure: std::sync::Arc::new(|| Err("fixture staging is disabled".into())),
+            },
+            width,
+        );
+        view.update(cx, |view, cx| {
+            view.model.link = state::Link::Live;
+            view.model.transcript.apply(&ChatEvent::RateLimits {
+                windows: vec![crate::chat::model::RateWindow {
+                    id: "seven_day_sonnet".into(),
+                    label: "weekly Sonnet".into(),
+                    used_percent: 95.0,
+                    resets_at: Some(start + 3 * 86_400),
+                    warn_at: 70.0,
+                }],
+            });
+            view.model.transcript.apply(&ChatEvent::Usage {
+                usage: crate::chat::model::Usage {
+                    input_tokens: 150_000,
+                    output_tokens: 20_000,
+                    cached_input_tokens: 0,
+                    context_window: Some(200_000),
+                    context_used: Some(172_000),
+                    cost_usd: Some(12.345),
+                },
+            });
+            cx.notify();
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            // The first frame measures the chat; the next ones fit the group to it.
+            for _ in 0..3 {
+                window.render_frame(cx);
+            }
+            let group = window.find("chat-usage-group").bounds();
+            let chip = window.find("chat-usage-chip").bounds();
+            let meter = window.find("chat-context-meter").bounds();
+            let what = format!("{width} px: group {group:?}");
+            assert!(
+                group.left() >= px(0.) && group.right() <= px(width),
+                "{what}"
+            );
+            for part in [chip, meter] {
+                assert!(part.right() <= group.right() + px(0.5), "{what}: {part:?}");
+                assert!(part.size.width > px(0.), "{what}: {part:?} shown");
+            }
+            widths.push(group.size.width);
+        })
+        .unwrap();
+    }
+    // Narrower chats leave out more: the group never grows as the chat shrinks.
+    assert!(
+        widths.windows(2).all(|pair| pair[1] <= pair[0]),
+        "{widths:?}"
+    );
+    assert!(widths[3] < widths[0], "{widths:?}");
+    notices::TEST_NOW.with(|now| now.set(None));
+}

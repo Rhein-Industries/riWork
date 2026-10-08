@@ -59,6 +59,19 @@ pub(super) fn mount_config(
     Entity<ChatView>,
     Receiver<feed::Delivery>,
 ) {
+    mount_sized(cx, config, 700.)
+}
+
+/// `mount_config` in a window `width` px wide.
+pub(super) fn mount_sized(
+    cx: &mut TestAppContext,
+    config: HostConfig,
+    width: f32,
+) -> (
+    WindowHandle<gpui_kit::base::Root>,
+    Entity<ChatView>,
+    Receiver<feed::Delivery>,
+) {
     let (handle, view, recording) = cx.update(|cx| {
         cx.set_global(crate::settings::Settings::default());
         cx.set_global(crate::theme::Appearance {
@@ -76,7 +89,7 @@ pub(super) fn mount_config(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                         point(px(0.), px(0.)),
-                        size(px(700.), px(800.)),
+                        size(px(width), px(800.)),
                     ))),
                     ..Default::default()
                 },
