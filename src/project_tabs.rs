@@ -38,7 +38,8 @@ pub struct Entry {
     #[serde(default)]
     pub title_priority: u8,
     pub status: Status,
-    pub pinned: bool,
+    /// Stores written before pins were removed carry a `pinned` field; it is ignored on load
+    /// and not written again.
     pub hidden: bool,
     #[serde(default)]
     pub worker: bool,
@@ -70,12 +71,6 @@ pub struct Session {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Update {
-    Pin {
-        key: String,
-    },
-    Unpin {
-        key: String,
-    },
     Hide {
         key: String,
     },
@@ -95,9 +90,7 @@ pub enum Update {
 impl Update {
     pub fn key(&self) -> &str {
         match self {
-            Self::Pin { key }
-            | Self::Unpin { key }
-            | Self::Hide { key }
+            Self::Hide { key }
             | Self::Unhide { key }
             | Self::Move { key, .. }
             | Self::Rename { key, .. } => key,
@@ -413,10 +406,7 @@ impl TabStore {
                 .entries
                 .iter()
                 .filter(|e| {
-                    e.hidden
-                        && !e.pinned
-                        && stopped.contains(e.key.as_str())
-                        && !parents.contains(&e.key)
+                    e.hidden && stopped.contains(e.key.as_str()) && !parents.contains(&e.key)
                 })
                 .collect::<Vec<_>>();
             hidden.sort_by_key(|e| std::cmp::Reverse((e.created, &e.key)));
@@ -492,7 +482,6 @@ impl TabStore {
                             || (entry.created == 0 && !entry.legacy_dismissed)
                             || (entry.title.is_empty() && !entry.hidden))
                     {
-                        entry.pinned = true;
                         entry.hidden = false;
                     }
                     if session.title_priority >= entry.title_priority {
@@ -522,7 +511,6 @@ impl TabStore {
                         base_title: session.title.clone(),
                         title_priority: session.title_priority,
                         status: session.status.clone(),
-                        pinned: session.orchestrator,
                         hidden: session.worker
                             || (session.kind == Kind::Shell && session.status == Status::Stopped),
                         worker: session.worker,
@@ -617,20 +605,7 @@ impl TabStore {
                 .position(|e| e.key == update.key())
                 .ok_or("session tab not found")?;
             match update {
-                Update::Pin { .. } => {
-                    if state.entries[at].parent.is_some() {
-                        return Err("only root tabs can be pinned".into());
-                    }
-                    state.entries[at].pinned = true;
-                    state.entries[at].hidden = false;
-                }
-                Update::Unpin { .. } => state.entries[at].pinned = false,
-                Update::Hide { .. } => {
-                    if state.entries[at].pinned {
-                        return Err("unpin the tab before hiding it".into());
-                    }
-                    state.entries[at].hidden = true;
-                }
+                Update::Hide { .. } => state.entries[at].hidden = true,
                 Update::Unhide { .. } => state.entries[at].hidden = false,
                 Update::Rename { title, .. } => {
                     state.entries[at].rename =
@@ -644,19 +619,13 @@ impl TabStore {
                     if before.as_deref() == Some(update.key()) {
                         return Ok(tree(state));
                     }
-                    // Any tab of the same pin group is a place to go: a worker sits beside
-                    // tabs that are not its siblings in the one order every strip draws, and
-                    // keeps its parent wherever it goes.
-                    let pinned = state.entries[at].pinned;
-                    if let Some(before) = before {
-                        let target = state
-                            .entries
-                            .iter()
-                            .find(|e| &e.key == before)
-                            .ok_or("move target not found")?;
-                        if target.pinned != pinned {
-                            return Err("move target must be in the same pin group".into());
-                        }
+                    // Any tab is a place to go: a worker sits beside tabs that are not its
+                    // siblings in the one order every strip draws, and keeps its parent
+                    // wherever it goes.
+                    if let Some(before) = before
+                        && !state.entries.iter().any(|e| &e.key == before)
+                    {
+                        return Err("move target not found".into());
                     }
                     let entry = state.entries.remove(at);
                     let into = before
@@ -693,7 +662,6 @@ fn seed(state: &mut State, key: String, hidden: bool) {
         base_title: String::new(),
         title_priority: 0,
         status: Status::Stopped,
-        pinned: false,
         hidden,
         worker: false,
         legacy_user_opened,
@@ -727,18 +695,11 @@ fn bound_parent_depth(state: &mut State) {
             cursor = parent.clone();
             depth += 1;
         }
-        if entry.parent.is_some() {
-            entry.pinned = false;
-        }
     }
 }
 fn normalize(state: &mut State) {
-    state.entries.sort_by_key(|e| !e.pinned);
     for (order, e) in state.entries.iter_mut().enumerate() {
         e.order = order;
-        if e.pinned {
-            e.hidden = false;
-        }
         e.children.clear();
         e.child_count = 0;
     }
@@ -989,7 +950,7 @@ pub fn wire(entries: &[Entry]) -> serde_json::Value {
             .iter()
             .filter_map(|k| take(k, nodes, children))
             .collect::<Vec<_>>();
-        let mut value = serde_json::json!({"key":e.key,"kind":e.kind,"title":e.title,"status":e.status,"pinned":e.pinned,"hidden":e.hidden,"worker":e.worker,"order":e.order,"parent":e.parent,"child_count":e.child_count});
+        let mut value = serde_json::json!({"key":e.key,"kind":e.kind,"title":e.title,"status":e.status,"hidden":e.hidden,"worker":e.worker,"order":e.order,"parent":e.parent,"child_count":e.child_count});
         value
             .as_object_mut()
             .unwrap()
@@ -1120,7 +1081,7 @@ mod tests {
     }
     #[test]
     fn update_rejects_unknown_fields_on_every_variant() {
-        for action in ["pin", "unpin", "hide", "unhide", "move", "rename"] {
+        for action in ["hide", "unhide", "move", "rename"] {
             let mut value = serde_json::json!({"action":action,"key":session(2).key});
             if action == "rename" {
                 value["title"] = serde_json::json!("title");
@@ -1178,7 +1139,7 @@ mod tests {
         let sessions = vec![session(2), session(3), harness, orch];
         let list = f.store.reconcile(&sessions).unwrap();
         let orch = list.iter().find(|entry| entry.key == session(5).key).unwrap();
-        assert!(orch.pinned && !orch.hidden && !orch.worker);
+        assert!(!orch.hidden && !orch.worker);
         assert!(
             !list
                 .iter()
@@ -1267,7 +1228,7 @@ mod tests {
         assert!(!entries.iter().find(|e| e.key == user.key).unwrap().hidden);
     }
     #[test]
-    fn new_sessions_append_and_pin_groups_are_first() {
+    fn new_sessions_append_and_any_tab_hides() {
         let f = Fixture::new();
         f.store.reconcile(&[session(3), session(2)]).unwrap();
         let keys = f
@@ -1278,36 +1239,17 @@ mod tests {
             .map(|e| e.key)
             .collect::<Vec<_>>();
         assert_eq!(keys, vec![session(2).key, session(3).key, session(4).key]);
-        let list = f
-            .store
-            .update(&Update::Pin {
-                key: session(4).key,
-            })
-            .unwrap();
-        assert_eq!(list[0].key, session(4).key);
         assert!(
             f.store
                 .update(&Update::Hide {
                     key: session(4).key
                 })
-                .is_err()
-        );
-        f.store
-            .update(&Update::Unpin {
-                key: session(4).key,
-            })
-            .unwrap();
-        assert!(
-            f.store
-                .update(&Update::Hide {
-                    key: session(4).key
-                })
-                .unwrap()[0]
+                .unwrap()[2]
                 .hidden
         );
     }
     #[test]
-    fn stale_inventory_keeps_hide_pin_and_rename() {
+    fn stale_inventory_keeps_hide_and_rename() {
         let f = Fixture::new();
         let s = session(2);
         f.store.reconcile(&[s.clone()]).unwrap();
@@ -1322,13 +1264,11 @@ mod tests {
         let entries = f.store.reconcile(&[s.clone()]).unwrap();
         assert_eq!(entries[0].title, "Mine");
         assert!(entries[0].hidden);
-        f.store.update(&Update::Pin { key: s.key }).unwrap();
-        let entries = other.list().unwrap();
-        assert!(entries[0].pinned);
-        assert!(!entries[0].hidden);
+        f.store.update(&Update::Unhide { key: s.key }).unwrap();
+        assert!(!other.list().unwrap()[0].hidden);
     }
     #[test]
-    fn moves_are_durable_and_do_not_cross_pin_groups() {
+    fn moves_are_durable_and_need_a_known_target() {
         let f = Fixture::new();
         f.store
             .reconcile(&[session(2), session(3), session(4)])
@@ -1341,20 +1281,62 @@ mod tests {
             })
             .unwrap();
         assert_eq!(list[0].key, session(4).key);
-        f.store
-            .update(&Update::Pin {
-                key: session(2).key,
-            })
-            .unwrap();
-        assert!(
+        assert_eq!(
             f.store
                 .update(&Update::Move {
                     key: session(3).key,
-                    before: Some(session(2).key)
+                    before: Some(session(9).key)
                 })
-                .is_err()
+                .unwrap_err(),
+            "move target not found"
         );
-        assert_eq!(f.store.list().unwrap()[1].key, session(4).key);
+        assert_eq!(f.store.list().unwrap()[1].key, session(2).key);
+    }
+    #[test]
+    fn pins_are_gone_from_old_stores_the_wire_and_updates() {
+        let f = Fixture::new();
+        let mut orch = session(3);
+        orch.orchestrator = true;
+        f.store.reconcile(&[session(2), orch.clone()]).unwrap();
+        // A store written while pins existed: the orchestrator pinned and sorted first.
+        let path = f.home.join("project-tabs").join(format!("{}.json", id(1)));
+        let mut old: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let entries = old["entries"].as_array_mut().unwrap();
+        entries.reverse();
+        for entry in entries.iter_mut() {
+            entry["pinned"] = (entry["key"] == orch.key.as_str()).into();
+        }
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let list = f.store.list().unwrap();
+        assert_eq!(list[0].key, orch.key, "the order it had is kept");
+        // The orchestrator is an ordinary tab: it moves after others and hides.
+        let list = f
+            .store
+            .update(&Update::Move {
+                key: orch.key.clone(),
+                before: None,
+            })
+            .unwrap();
+        assert_eq!(list[1].key, orch.key);
+        assert!(
+            f.store
+                .update(&Update::Hide {
+                    key: orch.key.clone()
+                })
+                .unwrap()[1]
+                .hidden
+        );
+        assert!(
+            !String::from_utf8(std::fs::read(&path).unwrap())
+                .unwrap()
+                .contains("pinned")
+        );
+        assert!(!wire(&list).to_string().contains("pinned"));
+        for action in ["pin", "unpin"] {
+            let value = serde_json::json!({"action":action,"key":orch.key});
+            assert!(serde_json::from_value::<Update>(value).is_err());
+        }
     }
     #[test]
     fn a_root_moves_beside_another_tabs_worker_and_the_worker_keeps_its_parent() {
@@ -1507,10 +1489,11 @@ mod tests {
             .store
             .reconcile(&[orch, session(3), dismissed_orch])
             .unwrap();
-        assert_eq!(list[0].key, session(2).key);
-        assert!(list[0].pinned);
+        // The saved pane order stands; the orchestrator is visible but not put first.
+        assert_eq!(list[0].key, session(3).key);
+        assert_eq!(list[1].key, session(2).key);
+        assert!(!list[1].hidden);
         assert!(list[2].hidden);
-        assert!(!list[2].pinned);
         layout.detached_chat_ids.clear();
         LayoutStore::open(&f.home)
             .unwrap()
@@ -1680,10 +1663,6 @@ mod tests {
                 .unwrap()
                 .parent
                 .is_some()
-        );
-        assert_eq!(
-            f.store.update(&Update::Pin { key: child.key }).unwrap_err(),
-            "only root tabs can be pinned"
         );
     }
     #[test]

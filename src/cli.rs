@@ -4308,9 +4308,6 @@ fn tabs_result(
         store.update(&update).map_err(|error| {
             let code = match error.as_str() {
                 "session tab not found" | "move target not found" => "not_found",
-                "unpin the tab before hiding it"
-                | "only root tabs can be pinned"
-                | "move target must be a sibling in the same pin group" => "invalid_request",
                 _ => "cli_error",
             };
             (code, error)

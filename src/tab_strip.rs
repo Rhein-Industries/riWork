@@ -1,7 +1,6 @@
 //! The project's one tab strip. A local project's pane bar draws the shared tab list
 //! (see `project_tabs`): its built-in panels as a compact leading segment of symbols, then
-//! the pinned session tabs, then the rest in shared order, scrolling sideways when they do
-//! not fit, then ＋ and, when tabs are out of sight, All tabs. Each session tab is a Kit
+//! the session tabs in shared order, scrolling sideways when they do not fit, then ＋ and, when tabs are out of sight, All tabs. Each session tab is a Kit
 //! button with the tab role, a status dot, its canonical title and a close mark revealed on
 //! hover. Tabs are the pane bar's flat cells (`flat_cell`). Remote projects keep their own
 //! pane bar.
@@ -35,8 +34,8 @@ pub(crate) struct StripShape {
     /// shared Move, a rename or a peer's update can shift it without changing the rest.
     position: Option<usize>,
     lead: i32,
-    /// The selected tab's own width, and what sits fixed before the scrolling tabs (panels
-    /// and pinned tabs): renaming either moves the selected tab's edges.
+    /// The selected tab's own width, and what sits fixed beside the scrolling tabs:
+    /// renaming the tab or a change of panels moves the selected tab's edges.
     own: i32,
     fixed: i32,
     /// Frames left to keep the selected tab in view after a change.
@@ -67,15 +66,14 @@ const DOT: f32 = 7.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StripSlot {
     Panel,
-    Pinned,
     Session,
 }
 
-/// The order the strip draws a pane's tabs in: panels in the pane's order, then pinned
-/// sessions, then the rest, both in shared order (`rank`, the entry's `order`); a view
-/// without a shared entry keeps its place after them. Indices into the pane's tabs.
+/// The order the strip draws a pane's tabs in: panels in the pane's order, then the
+/// sessions in shared order (`rank`, the entry's `order`); a view without a shared entry
+/// keeps its place after them. Indices into the pane's tabs.
 pub(crate) fn strip_order(slots: &[(StripSlot, usize)]) -> Vec<usize> {
-    [StripSlot::Panel, StripSlot::Pinned, StripSlot::Session]
+    [StripSlot::Panel, StripSlot::Session]
         .into_iter()
         .flat_map(|group| {
             let mut members = slots
@@ -108,12 +106,6 @@ pub(crate) fn numbered_session(
         1..=8 => sessions.get(number - 1).copied(),
         _ => None,
     }
-}
-
-/// Whether pinned tabs `width` wide would leave the other tabs less than half of `room`;
-/// they then scroll with them.
-pub(crate) fn pins_scroll(width: f32, room: f32) -> bool {
-    width > room / 2.0
 }
 
 /// Whether the scrolling tabs need more than `room`: the strip then offers All tabs.
@@ -193,11 +185,10 @@ pub(crate) fn flat_cell<E: Styled>(
 }
 
 /// The `before` of a Move that takes the tab drawn at `from` to where the tab at `to` is:
-/// the next tab of its pin group after that spot, or `None` for the group's end. `None`
-/// overall when the spot is in the other pin group, or nothing moves. Parents do not part
-/// the strip: a tab goes beside another tab's workers as beside any other tab.
+/// the next tab after that spot, or `None` for the end. `None` overall when nothing
+/// moves. Parents do not part the strip: a tab goes beside another tab's workers as beside
+/// any other tab.
 pub(crate) fn strip_move(
-    entries: &[project_tabs::Entry],
     drawn: &[(TabId, String)],
     from: usize,
     to: usize,
@@ -205,18 +196,12 @@ pub(crate) fn strip_move(
     if from == to {
         return None;
     }
-    let entry = |key: &str| entries.iter().find(|e| e.key == key);
-    let moved = entry(&drawn[from].1)?;
-    let same = |key: &str| entry(key).is_some_and(|e| e.pinned == moved.pinned);
-    if !same(&drawn[to].1) {
-        return None;
-    }
     let after = if to > from { to + 1 } else { to };
     Some(
         drawn[after..]
             .iter()
             .map(|(_, key)| key)
-            .find(|key| **key != drawn[from].1 && same(key))
+            .find(|key| **key != drawn[from].1)
             .cloned(),
     )
 }
@@ -247,17 +232,7 @@ impl Workspace {
                 // Carried foreign views rank after this project's tabs.
                 let shared = session_tab_key(tab)
                     .and_then(|key| self.shared_tab_entries().iter().find(|e| e.key == key));
-                let pinned = session_tab_key(tab)
-                    .and_then(|key| self.strip_entry(&key))
-                    .is_some_and(|e| e.pinned);
-                (
-                    if pinned {
-                        StripSlot::Pinned
-                    } else {
-                        StripSlot::Session
-                    },
-                    shared.map_or(usize::MAX, |e| e.order),
-                )
+                (StripSlot::Session, shared.map_or(usize::MAX, |e| e.order))
             })
             .collect()
     }
@@ -324,7 +299,7 @@ impl Workspace {
                     Some(target) => drawn.iter().position(|(id, _)| *id == target)?,
                     None => drawn.len() - 1,
                 };
-                strip_move(self.shared_tab_entries(), &drawn, from, to)
+                strip_move(&drawn, from, to)
                     .map(|before| project_tabs::Update::Move { key, before })
             })
             .flatten();
@@ -343,16 +318,12 @@ impl Workspace {
         };
         let slots = self.strip_slots(pane);
         let scrolls = self.strip_scrolls.borrow();
-        let Some((handle, pins_scroll, _)) = scrolls.get(&pane_id) else {
+        let Some((handle, _)) = scrolls.get(&pane_id) else {
             return;
         };
         let scrolled = strip_order(&slots)
             .into_iter()
-            .filter(|index| match slots[*index].0 {
-                StripSlot::Panel => false,
-                StripSlot::Pinned => *pins_scroll,
-                StripSlot::Session => true,
-            })
+            .filter(|index| slots[*index].0 == StripSlot::Session)
             .position(|index| pane.tabs[index].id == tab_id);
         if let Some(index) = scrolled {
             handle.scroll_to_item(index);
@@ -485,41 +456,19 @@ impl Workspace {
                 .filter(|index| slots[*index].0 == group)
                 .collect::<Vec<_>>()
         };
-        let (panels, pinned, sessions) = (
-            in_group(StripSlot::Panel),
-            in_group(StripSlot::Pinned),
-            in_group(StripSlot::Session),
-        );
+        let (panels, sessions) = (in_group(StripSlot::Panel), in_group(StripSlot::Session));
         // Cells sit edge to edge, each with its hairlines.
         let gap = 2.0;
         let width = |index: usize| {
             let tab = &pane.tabs[index];
-            let closable = tab_can_close && slots[index].0 != StripSlot::Pinned;
             ui_text::space_f32(8.0 + DOT + 6.0)
                 + native_label_width(&self.strip_title(tab, cx), cx)
                     .min(ui_text::space_f32(TITLE_MAX_WIDTH))
-                + ui_text::space_f32(if closable { 6.0 + 16.0 + 4.0 } else { 8.0 })
-                + if slots[index].0 == StripSlot::Pinned {
-                    ui_text::space_f32(8.0 + 6.0)
-                } else {
-                    0.0
-                }
+                + ui_text::space_f32(if tab_can_close { 6.0 + 16.0 + 4.0 } else { 8.0 })
         };
         let base = panels.len() as f32 * (ui_text::space_f32(NATIVE_ICON_TAB_FULL) + gap)
             + 2.0 * (ui_text::space_f32(STRIP_BUTTON) + gap);
-        let pinned_width = pinned.iter().map(|i| width(*i) + gap).sum::<f32>();
-        // Pinned tabs stay put while they leave the others at least half the room; in a
-        // pane too narrow for that they scroll too, still first, so ＋ and All tabs stay.
-        let pins_scroll = pins_scroll(pinned_width, room - base);
-        let (pinned, sessions) = if pins_scroll {
-            (
-                Vec::new(),
-                pinned.into_iter().chain(sessions).collect::<Vec<_>>(),
-            )
-        } else {
-            (pinned, sessions)
-        };
-        let fixed = base + if pins_scroll { 0.0 } else { pinned_width };
+        let fixed = base;
         let all_open = self.strip_menu
             == Some(StripMenu {
                 pane: pane_id,
@@ -535,7 +484,6 @@ impl Workspace {
         let scroll = {
             let mut scrolls = self.strip_scrolls.borrow_mut();
             let entry = scrolls.entry(pane_id).or_default();
-            entry.1 = pins_scroll;
             // The selected tab comes into view when the strip changes width or contents,
             // or another tab is selected; otherwise the strip stays where it was scrolled.
             let position = sessions.iter().position(|index| *index == pane.active);
@@ -553,14 +501,14 @@ impl Workspace {
             };
             // GPUI measures against the previous frame, so the request is repeated for the
             // frames that settle the strip's layout after a change.
-            if !entry.2.same_place(&shape) {
-                entry.2 = StripShape {
+            if !entry.1.same_place(&shape) {
+                entry.1 = StripShape {
                     settling: 3,
                     ..shape
                 };
             }
-            if entry.2.settling > 0 {
-                entry.2.settling -= 1;
+            if entry.1.settling > 0 {
+                entry.1.settling -= 1;
                 if let Some(at) = sessions.iter().position(|index| *index == pane.active) {
                     entry.0.scroll_to_item(at);
                 }
@@ -570,15 +518,7 @@ impl Workspace {
         };
         let error = theme::diff_colors(cx).removed;
         let tab = |index: usize, cx: &mut Context<Self>| {
-            self.strip_tab(
-                pane_id,
-                index,
-                slots[index].0,
-                pane_selected,
-                tab_can_close,
-                error,
-                cx,
-            )
+            self.strip_tab(pane_id, index, pane_selected, tab_can_close, error, cx)
         };
         let panel_segment = (!panels.is_empty()).then(|| {
             behavior_controls::segments(("strip-panels", pane_id), "Panels", colors)
@@ -685,7 +625,6 @@ impl Workspace {
                     .h_full()
                     .items_center()
                     .children(panel_segment)
-                    .children(pinned.iter().map(|index| tab(*index, cx)))
                     .child(
                         div()
                             .id(("tab-strip-scroll", pane_id))
@@ -843,7 +782,6 @@ impl Workspace {
         &self,
         pane_id: PaneId,
         index: usize,
-        slot: StripSlot,
         pane_selected: bool,
         tab_can_close: bool,
         error: u32,
@@ -856,18 +794,14 @@ impl Workspace {
         let tab_id = tab.id;
         let active = index == pane.active;
         let key = session_tab_key(tab);
-        let pinned = slot == StripSlot::Pinned;
         let shared = key
             .as_deref()
             .is_some_and(|key| self.shared_tab_entries().iter().any(|e| e.key == key));
         let title = self.strip_title(tab, cx);
         let status = self.strip_status(tab, cx);
-        let closable = tab_can_close && !pinned;
+        let closable = tab_can_close;
         let spoken = {
             let mut name = title.clone();
-            if pinned {
-                name.push_str(", pinned");
-            }
             if let Some(status) = &status {
                 name.push_str(", ");
                 name.push_str(status_word(status));
@@ -909,16 +843,6 @@ impl Workspace {
             .drag_over::<DraggedTab>(move |style, _, _, _| {
                 style.border_l_2().border_color(rgb(colors.cyan))
             })
-            .children(pinned.then(|| {
-                if native {
-                    icons::symbol("pin.fill", 8.0, Some(ink))
-                } else {
-                    div()
-                        .text_color(rgb(colors.magenta))
-                        .child("◆")
-                        .into_any_element()
-                }
-            }))
             .children(
                 status
                     .as_ref()
@@ -1296,17 +1220,17 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use StripSlot::{Panel, Pinned, Session};
+    use StripSlot::{Panel, Session};
 
     #[test]
-    fn panels_lead_then_pinned_sessions_then_the_rest_in_shared_order() {
+    fn panels_lead_then_sessions_in_shared_order() {
         let slots = [
             (Session, 7),
             (Panel, 0),
-            (Pinned, 1),
+            (Session, 1),
             (Session, 3),
             (Panel, 0),
-            (Pinned, 0),
+            (Session, 0),
         ];
         assert_eq!(strip_order(&slots), vec![1, 4, 5, 2, 3, 0]);
         // A view without a shared entry keeps its place after the shared tabs.
@@ -1319,7 +1243,7 @@ mod tests {
         let slots = [
             (Panel, 0),
             (Session, 2),
-            (Pinned, 0),
+            (Session, 0),
             (Session, 3),
             (Session, 4),
         ];
@@ -1333,43 +1257,27 @@ mod tests {
         assert_eq!(numbered_session(&order, &slots, 0), None);
     }
 
-    fn entry(key: &str, pinned: bool, parent: Option<&str>) -> project_tabs::Entry {
-        serde_json::from_value(serde_json::json!({"key":key,"kind":"chat","title":key,"status":"done","pinned":pinned,"hidden":false,"worker":false,"order":0,"parent":parent,"children":[],"child_count":0})).unwrap()
-    }
-
     #[test]
-    fn a_strip_drag_moves_within_its_pin_group_across_parents() {
-        let entries = [
-            entry("p", true, None),
-            entry("a", false, None),
-            entry("b", false, None),
-            entry("c", false, None),
-            entry("w", false, Some("a")),
-        ];
-        let drawn = ["p", "a", "b", "c", "w"]
+    fn a_strip_drag_moves_anywhere_across_parents() {
+        // "w" is a worker of "a": parents do not part the strip.
+        let drawn = ["o", "a", "b", "c", "w"]
             .iter()
             .enumerate()
             .map(|(i, key)| (i as TabId, key.to_string()))
             .collect::<Vec<_>>();
         // Leftward lands before the target, rightward after it.
-        assert_eq!(strip_move(&entries, &drawn, 3, 1), Some(Some("a".into())));
-        assert_eq!(strip_move(&entries, &drawn, 1, 2), Some(Some("c".into())));
-        assert_eq!(strip_move(&entries, &drawn, 1, 3), Some(Some("w".into())));
+        assert_eq!(strip_move(&drawn, 3, 1), Some(Some("a".into())));
+        assert_eq!(strip_move(&drawn, 1, 2), Some(Some("c".into())));
+        assert_eq!(strip_move(&drawn, 1, 3), Some(Some("w".into())));
         // A root dropped on another tab's worker lands beside it, and a worker among roots:
         // the drop the strip used to refuse, so the dragged tab sprang back.
-        assert_eq!(strip_move(&entries, &drawn, 2, 4), Some(None));
-        assert_eq!(strip_move(&entries, &drawn, 4, 2), Some(Some("b".into())));
-        // No move onto itself or into the pinned group.
-        assert_eq!(strip_move(&entries, &drawn, 2, 2), None);
-        assert_eq!(strip_move(&entries, &drawn, 2, 0), None);
-        assert_eq!(strip_move(&entries, &drawn, 0, 2), None);
-    }
-
-    #[test]
-    fn pinned_tabs_scroll_when_they_would_take_over_half_the_strip() {
-        assert!(!pins_scroll(200.0, 400.0));
-        assert!(pins_scroll(201.0, 400.0));
-        assert!(pins_scroll(10.0, 0.0));
+        assert_eq!(strip_move(&drawn, 2, 4), Some(None));
+        assert_eq!(strip_move(&drawn, 4, 2), Some(Some("b".into())));
+        // The orchestrator moves like any tab, and anything moves before it.
+        assert_eq!(strip_move(&drawn, 0, 2), Some(Some("c".into())));
+        assert_eq!(strip_move(&drawn, 2, 0), Some(Some("o".into())));
+        // No move onto itself.
+        assert_eq!(strip_move(&drawn, 2, 2), None);
     }
 
     #[test]
