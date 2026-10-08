@@ -5734,6 +5734,8 @@ impl Workspace {
         })
         .detach();
         self.shared_tab_menu = Some(menu);
+        // The Kit popup places itself after measuring; draw the frame that shows it.
+        cx.on_next_frame(window, |_, _, cx| cx.notify());
         cx.notify();
     }
 

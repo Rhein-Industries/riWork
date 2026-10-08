@@ -363,6 +363,8 @@ impl Workspace {
         self.strip_menu = Some(menu);
         self.begin_tab_drag(cx);
         self.menu_focus.focus(window, cx);
+        // The Kit popup places itself after measuring; draw the frame that shows it.
+        cx.on_next_frame(window, |_, _, cx| cx.notify());
         cx.notify();
     }
 
