@@ -106,7 +106,8 @@ struct TerminalMicButton: View {
             .buttonStyle(TargetButtonStyle(dims: false))
             .disabled(!isEnabled && !phase.isActive)
             .accessibilityLabel(phase.isActive ? "Stop dictation" : "Dictate").accessibilityIdentifier("dictation.terminal")
-            .dictationAlert(controller, owner: .terminal)
+            // A failure is said in the shell's banner line above its input (`SessionConsole`), as a chat says it.
+            .dictationAlert(controller, owner: .terminal, enabled: false)
     }
 }
 

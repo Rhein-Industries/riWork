@@ -112,10 +112,10 @@ struct RemoteRootView: View {
                                              onNewTerminal: { project in model.newTerminalRequestedProject = project.id; path.append(.terminals(project)) },
                                              onNewProject: model.offersNewProject ? { openNewProject() } : nil,
                                              shortcutsActive: path.last == .projects(desktopID) && newProject == nil)
-                    }.background(style.background).id(desktopID).toolbar(.hidden, for: .navigationBar)
+                    }.background(style.background).id(desktopID).toolbar(.hidden, for: .navigationBar).edgeSwipeBack()
                 case .terminals(let project):
                     TerminalTabsView(model: model, project: project, onBack: pop)
-                        .toolbar(.hidden, for: .navigationBar)
+                        .toolbar(.hidden, for: .navigationBar).edgeSwipeBack()
                 }
             }
         }
@@ -297,12 +297,24 @@ struct TerminalTabsView: View {
     @State private var followOutput = true
     @State private var newTerminal: NewTerminalSheetModel?
     @State private var closing: RemoteSession?
+    // The shared tab list (docs/shared-tabs.md), when the desktop has one: the tab asked to be closed (the Detach / Exit sheet), the
+    // one being renamed, the "Open shell/worker…" picker, the Edit tabs sheet and the tab a drag is over.
     @State private var closingTab: SharedTab?
+    /// The close sheet offers Exit (not for an orchestrator).
+    @State private var closingAllowsExit = true
+    @State private var renamingTab: SharedTab?
+    @State private var renameText = ""
     @State private var showingWorkers = false
+    @State private var showingEditTabs = false
+    @State private var dropTarget: String?
     /// This screen is up (not covered by another one). The terminal is on it only while no chat is.
     @State private var onScreen = false
     /// Counts times the New terminal sheet went away: a chat on screen takes the keyboard back for its composer.
     @State private var chatRefocus = 0
+    /// Counts requests from the ⋯ menu to open the chat's model picker (the picker belongs to the chat screen).
+    @State private var chatModels = 0
+    /// Counts requests from the ⋯ menu to show the chat's notices.
+    @State private var chatNotices = 0
     private var openSessions: [RemoteSession] { model.openSessions }
     /// What is under the navigation row, for `TabScreenChrome`.
     private var content: TabScreenContent {
@@ -323,7 +335,7 @@ struct TerminalTabsView: View {
                 if let note = model.orchestratorNotice { NoteLine(text: note) { model.clearOrchestratorNotice() } }
             }
             if let chat = model.selectedChat {
-                ChatScreen(model: model, chat: chat, refocus: chatRefocus).id(chat.id)
+                ChatScreen(model: model, chat: chat, refocus: chatRefocus, openModels: chatModels, openNotices: chatNotices).id(chat.id)
             } else if let blocked = model.selectedBlocked {
                 OrchestratorNotice(session: blocked.session, opening: blocked.opening)
             } else if model.sessionID == nil && openSessions.isEmpty {
@@ -343,25 +355,40 @@ struct TerminalTabsView: View {
         .statusBarHidden(chrome.statusBarHidden)
         .onChange(of: model.sessionID) { _, _ in sessionInfo = nil; followOutput = true }
         .onChange(of: model.focusMode) { _, _ in model.updateKeepAwake() }
+        // A confirmation asked on the last connection does not carry over to this one.
+        .onChange(of: model.connectionEpoch) { _, _ in closing = nil; closingTab = nil }
+        // A desktop that no longer offers shared tabs (a reconnect to an older one): what was open for them goes.
+        .onChange(of: model.desktopFeatures.tabs && model.sharedTabs != nil) { _, shared in
+            if !shared { showingWorkers = false; showingEditTabs = false; closingTab = nil; renamingTab = nil; dropTarget = nil }
+        }
         .sheet(isPresented: $showingWorkers) {
-            NavigationStack { List(model.hiddenTabs) { entry in
-                Button { Task { do { try await model.openTab(entry.key); showingWorkers = false } catch { model.error = error.localizedDescription } } } label: {
-                    VStack(alignment: .leading) { Text(entry.title); Text("\(entry.kind.rawValue) · \(entry.status.rawValue)").font(.caption) }
-                }
-            }.navigationTitle("Open a worker/shell").toolbar { Button("Done") { showingWorkers = false } } }
-            .desktopThemed(model.theme.style)
+            OpenTabSheet(rows: SharedTabStrip.openable(model.sharedTabs), open: { key in
+                showingWorkers = false
+                tabAction { try await model.openTab(key) }
+            }, done: { showingWorkers = false }).desktopThemed(model.theme.style)
         }
-        .sheet(item: $closingTab) { entry in
-            VStack(alignment: .leading, spacing: 20) {
-                Text("Close \(entry.title)?").font(.headline)
-                Text("Detach keeps the session running. Exit stops it and keeps chat history.")
-                HStack {
-                    Button("Cancel") { closingTab = nil }
-                    Button("Detach") { closeShared(entry, choice: .detach) }
-                    Button("Exit", role: .destructive) { closeShared(entry, choice: .exit) }
-                }
-            }.padding().presentationDetents([.height(220)]).desktopThemed(model.theme.style)
+        .sheet(isPresented: $showingEditTabs) {
+            EditTabsSheet(model: model, move: { update in tabAction { try await model.updateTabs(update) } }, done: { showingEditTabs = false })
+                .desktopThemed(model.theme.style)
         }
+        // Ask: Detach keeps the session running; Exit stops it (a chat keeps its history). The same words as the Mac's dialog.
+        .confirmationDialog(closingTab.map { "Close \($0.title)?" } ?? "", isPresented: Binding(get: { closingTab != nil }, set: { if !$0 { closingTab = nil } }),
+                            titleVisibility: .visible, presenting: closingTab) { entry in
+            Button("Detach") { close(entry, .detach) }
+            if closingAllowsExit { Button("Exit", role: .destructive) { close(entry, .exit) } }
+            Button("Cancel", role: .cancel) { closingTab = nil }
+        } message: { entry in
+            if !closingAllowsExit { Text("Detach keeps the orchestrator running on your Mac. Stop it on the Mac.") }
+            else {
+                Text(entry.kind == .chat ? "Detach keeps the chat running on your Mac. Exit stops it; its history stays."
+                                         : "Detach keeps the shell running on your Mac. Exit closes it and ends its process.")
+            }
+        }
+        .alert("Rename tab", isPresented: Binding(get: { renamingTab != nil }, set: { if !$0 { renamingTab = nil } }), presenting: renamingTab) { entry in
+            TextField("Title", text: $renameText)
+            Button("Rename") { let title = renameText.trimmingCharacters(in: .whitespacesAndNewlines); tabAction { try await model.renameTab(entry.key, title: title) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in Text("On your Mac too. Leave it empty to use the session's own name.") }
         .sheet(item: $sessionInfo) { SessionInfoSheet(info: $0).desktopThemed(model.theme.style) }
         .sheet(isPresented: $showingDisplay) { DisplaySettingsSheet(model: model).desktopThemed(model.theme.style) }
         .sheet(item: $newTerminal, onDismiss: { chatRefocus += 1 }) { NewTerminalSheet(sheet: $0).desktopThemed(model.theme.style) }
@@ -399,22 +426,99 @@ struct TerminalTabsView: View {
             } else {
                 tabStrip
             }
+            newTabButton
+            screenMenu(chrome)
+        }
+        .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
+        .chatLayoutProbe("navigation")
+        // Hosted tests and the screenshot harness open what a person reaches through menus (inert outside DEBUG).
+        .background {
+            Color.clear
+                .chatLayoutProbe("open-workers", action: { showingWorkers = true })
+                .chatLayoutProbe("edit-tabs", action: { showingEditTabs = true })
+                .chatLayoutProbe("display-settings", action: { showingDisplay = true })
+                .chatLayoutProbe("close-current", action: { if let entry = currentEntry { requestClose(entry) } })
+                .chatLayoutProbe("drop-preview", action: { dropTarget = model.sharedTabs?.visible.dropFirst().first?.key })
+        }
+    }
+    /// ＋: a new terminal; with the desktop's shared tabs also "Open shell/worker…", the hidden chats and shells (workers first).
+    @ViewBuilder private var newTabButton: some View {
+        if model.desktopFeatures.tabs, model.sharedTabs != nil {
+            let hidden = SharedTabStrip.openable(model.sharedTabs).count
+            Menu {
+                Button("New terminal…", systemImage: "plus") { openNewTerminal() }
+                    .disabled(model.state != .connected || model.projectID != project.id)
+                Button(hidden > 0 ? "Open shell/worker… (\(hidden))" : "Open shell/worker…", systemImage: "rectangle.stack.badge.plus") { showingWorkers = true }
+                    .disabled(model.state != .connected)
+                Button("Edit tabs…", systemImage: "arrow.up.arrow.down") { showingEditTabs = true }
+            } label: {
+                Image(systemName: "plus").frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("New tab").accessibilityHint("A new terminal, or a hidden shell or worker")
+        } else {
             Button("New terminal", systemImage: "plus") { openNewTerminal() }.labelStyle(.iconOnly)
                 .buttonStyle(TargetButtonStyle()).disabled(model.state != .connected || model.projectID != project.id)
                 // A desktop that is too old still answers a tap, with the reason.
                 .opacity(model.terminalControl == .unsupported ? 0.45 : 1)
                 .accessibilityHint(model.terminalControl == .unsupported ? TerminalControlError.unsupportedMessage : "Opens a shell or an agent on your Mac")
-            screenMenu(chrome)
         }
-        .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
-        .chatLayoutProbe("navigation")
     }
-    /// The screen's menu. The project, Session info, the tabs and the connection are there for every tab; a terminal adds its own section.
+    /// The shared entry of the tab on screen, if the desktop shares its tabs.
+    private var currentEntry: SharedTab? {
+        guard model.desktopFeatures.tabs else { return nil }
+        if let chat = model.selectedChat { return SharedTabStrip.entry(chatID: chat.id, sessionID: nil, in: model.sharedTabs) }
+        guard !model.terminalCovered, let session = model.session else { return nil }
+        return SharedTabStrip.entry(chatID: nil, sessionID: session.id, in: model.sharedTabs)
+    }
+    /// A tab's own actions on the shared list: pin or unpin, rename, close (by the setting); the same in its long-press menu and in ⋯.
+    @ViewBuilder private func sharedTabItems(_ entry: SharedTab) -> some View {
+        let actions = SharedTabStrip.actions(entry)
+        if actions.pin { Button("Pin", systemImage: "pin") { tabAction { try await model.pinTab(entry.key) } } }
+        if actions.unpin { Button("Unpin", systemImage: "pin.slash") { tabAction { try await model.unpinTab(entry.key) } } }
+        if actions.rename { Button("Rename…", systemImage: "pencil") { renameText = entry.title; renamingTab = entry } }
+        // One place at a time within its group, as the Mac's tab menu has it (and a reorder without dragging).
+        if let shared = model.sharedTabs {
+            let left = SharedTabStrip.moveLeft(entry, in: shared), right = SharedTabStrip.moveRight(entry, in: shared)
+            if left != nil || right != nil {
+                Button("Move left", systemImage: "arrow.left") { if let left { tabAction { try await model.updateTabs(left) } } }.disabled(left == nil)
+                Button("Move right", systemImage: "arrow.right") { if let right { tabAction { try await model.updateTabs(right) } } }.disabled(right == nil)
+            }
+        }
+        Button("Edit tabs…", systemImage: "arrow.up.arrow.down") { showingEditTabs = true }
+        if actions.close {
+            Button(entry.isWorker ? "Close (detach)" : "Close tab…", systemImage: "xmark") { requestClose(entry) }
+        }
+    }
+    /// Closing by the setting: Ask shows the sheet; Detach and Exit go at once; a worker always detaches; a pinned tab is unpinned first.
+    private func requestClose(_ entry: SharedTab) {
+        switch SharedTabStrip.closePlan(entry, setting: model.tabCloseBehavior, orchestrator: model.isOrchestrator(entry)) {
+        case .unpinFirst: report("Unpin \(entry.title) before closing it.")
+        case .ask(let exitAllowed): closingAllowsExit = exitAllowed; closingTab = entry
+        case .detach: close(entry, .detach)
+        case .exit: close(entry, .exit)
+        }
+    }
+    private func close(_ entry: SharedTab, _ choice: TabCloseBehavior) {
+        closingTab = nil
+        tabAction { try await model.closeTab(entry.key, choice: choice) }
+    }
+    /// One change to the shared list; its reply is installed by the model, and a failure is said where the screen says things.
+    private func tabAction(_ run: @escaping @MainActor () async throws -> Void) {
+        Task { @MainActor in do { try await run() } catch { report(error.localizedDescription) } }
+    }
+    private func report(_ message: String) {
+        if let chat = model.selectedChat { model.conversation(chat.id).alerts.show(.action, message) } else { model.error = message }
+    }
+    /// The screen's one menu, in sections: what is on screen (a chat's actions, or a terminal's), then the tab, then the project and the
+    /// connection. A chat has no ⋯ of its own; its row under this one holds only the model, the usage ring and the mode.
     private func screenMenu(_ chrome: TabScreenChrome) -> some View {
         Menu {
-            Text(project.name)
+            if let chat = model.selectedChat {
+                ChatMenuSection(model: model, chat: chat, changeModel: { chatModels += 1 }, showNotices: { chatNotices += 1 })
+            }
             if chrome.terminalActions {
-                Section {
+                Section("Terminal") {
                     Button("Focus mode", systemImage: "arrow.up.left.and.arrow.down.right") { model.setFocusMode(true) }
                     if UIDevice.current.userInterfaceIdiom == .pad { Toggle("Follow output", isOn: $followOutput) }
                     else { Button("Jump to latest output", systemImage: "arrow.down.to.line") { model.jumpToLatest() } }
@@ -432,37 +536,30 @@ struct TerminalTabsView: View {
                     Button("Refresh output", systemImage: "arrow.clockwise") { Task { await model.readOutput() } }.disabled(model.state != .connected)
                 }
             }
-            if model.desktopFeatures.tabs {
-                Button("Open a worker/shell", systemImage: "rectangle.stack.badge.plus") { showingWorkers = true }
-                if let key = model.selectedChat.map({ "chat:\($0.id)" }) ?? model.session.map({ "shell:\($0.id)" }), let entry = model.sharedTabs?.allEntries.first(where: { $0.key == key }), !entry.pinned {
-                    Button("Close tab", systemImage: "xmark") {
-                        if model.tabCloseBehavior.effectiveChoice(for: entry) == .ask { closingTab = entry }
-                        else { closeShared(entry, choice: nil) }
-                    }
+            // The tab: what it is and, for a terminal, closing it. (Closing any tab, and detaching a worker's, belong here too.)
+            Section("Tab") {
+                Button("Session info", systemImage: "info.circle") { showSessionInfo() }.disabled(content == .none)
+                if let entry = currentEntry { sharedTabItems(entry) }
+                // Without shared tabs only: with them, closing goes by the tab (a worker detaches; Ask / Detach / Exit; Hide before Exit).
+                if chrome.terminalActions, let session = model.session, model.legacyCloseAvailable(session) {
+                    Button("Close this terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session }
                 }
             }
-            Button("Session info", systemImage: "info.circle") { showSessionInfo() }.disabled(content == .none)
-            Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
-            // The project's own orchestrator is a row of the New terminal sheet; the global one is here too, a tap away.
-            if model.orchestratorsOffered {
-                Button("Global orchestrator", systemImage: "globe") { openGlobalOrchestrator() }
-                    .disabled(model.state != .connected || model.creatingOrchestrator)
+            Section(project.name) {
+                Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                // The project's own orchestrator is a row of the New terminal sheet; the global one is here too, a tap away.
+                if model.orchestratorsOffered {
+                    Button("Global orchestrator", systemImage: "globe") { openGlobalOrchestrator() }
+                        .disabled(model.state != .connected || model.creatingOrchestrator)
+                }
+                if model.state == .connected { Button("Disconnect", systemImage: "wifi.slash") { Task { await model.disconnect() } } }
+                else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
             }
-            if chrome.terminalActions, let session = model.session, model.canClose(session) {
-                Button("Close this terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session }
-            }
-            Divider()
-            if model.state == .connected { Button("Disconnect", systemImage: "wifi.slash") { Task { await model.disconnect() } } }
-            else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
         } label: {
-            Label("Terminal tabs and connection", systemImage: "ellipsis").labelStyle(.iconOnly)
+            Label("More options", systemImage: "ellipsis").labelStyle(.iconOnly)
                 .frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
         }
             .buttonStyle(.plain)
-    }
-    private func closeShared(_ entry: SharedTab, choice: TabCloseBehavior?) {
-        closingTab = nil
-        Task { do { try await model.closeTab(entry.key, choice: choice) } catch { model.error = error.localizedDescription } }
     }
     private func showSessionInfo() {
         if let chat = model.selectedChat {
@@ -501,22 +598,62 @@ struct TerminalTabsView: View {
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {
                     ForEach(model.tabs) { tab in
-                        switch tab {
-                        case .terminal(let session): terminalTab(session)
-                        case .chat(let chat): chatTab(chat)
-                        case .orchestratorChat(let session, let chat): chatTab(chat, orchestrator: session)
-                        case .unavailable(let session, let opening): unavailableTab(session, opening)
+                        let entry = sharedEntry(tab)
+                        Group {
+                            switch tab {
+                            case .terminal(let session): terminalTab(session, entry: entry)
+                            case .chat(let chat): chatTab(chat, entry: entry)
+                            case .orchestratorChat(let session, let chat): chatTab(chat, orchestrator: session, entry: entry)
+                            case .unavailable(let session, let opening): unavailableTab(session, opening)
+                            }
                         }
+                        .modifier(SharedTabDrag(entry: entry, target: $dropTarget, drop: drop))
+                    }
+                    // Past the last tab: a drop here puts a tab at the end of its group.
+                    if model.sharedTabs != nil, model.desktopFeatures.tabs {
+                        Color.clear.frame(width: 32, height: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
+                            .overlay(alignment: .leading) { if dropTarget == "end" { Capsule().fill(style.accent).frame(width: 3).padding(.vertical, 8) } }
+                            .dropDestination(for: String.self) { keys, _ in drop(keys.first, onto: nil) } isTargeted: { dropTarget = $0 ? "end" : (dropTarget == "end" ? nil : dropTarget) }
                     }
                 }
             }.scrollIndicators(.hidden)
                 .onChange(of: model.sessionID) { _, id in if let id, !model.terminalCovered { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
                 .onChange(of: model.selectedChatID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
                 .onChange(of: model.selectedBlockedID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
+                // The tab on screen is in view when the row comes up, and when the list changes under it (a move, a tab opened or
+                // closed, here or on the Mac).
+                .onAppear { scrollToSelected(proxy, animated: false) }
+                .onChange(of: model.tabs.map(\.id)) { _, _ in scrollToSelected(proxy, animated: true) }
+                // Titles and pins change widths (a rename on the Mac) without changing which tabs there are.
+                .onChange(of: model.sharedTabs?.visible.map { "\($0.key)|\($0.title)|\($0.pinned)" }) { _, _ in scrollToSelected(proxy, animated: true) }
         }
     }
+    private func scrollToSelected(_ proxy: ScrollViewProxy, animated: Bool) {
+        let id = model.selectedChatID ?? model.selectedBlockedID ?? (model.terminalCovered ? nil : model.sessionID)
+        guard let id else { return }
+        // After this layout pass, when the tabs have their widths.
+        DispatchQueue.main.async { if animated { withAnimation { proxy.scrollTo(id, anchor: .center) } } else { proxy.scrollTo(id, anchor: .center) } }
+    }
+    /// The shared entry of a tab of the row (nil without the desktop's shared tabs: the old strip).
+    private func sharedEntry(_ tab: ProjectTab) -> SharedTab? {
+        guard model.desktopFeatures.tabs, let shared = model.sharedTabs else { return nil }
+        switch tab {
+        case .terminal(let session): return SharedTabStrip.entry(chatID: nil, sessionID: session.id, in: shared)
+        case .chat(let info): return SharedTabStrip.entry(chatID: info.id, sessionID: nil, in: shared)
+        case .orchestratorChat(let session, let info): return SharedTabStrip.entry(chatID: info.id, sessionID: session.id, in: shared)
+        case .unavailable: return nil
+        }
+    }
+    /// A tab dropped on another (it goes before it) or past the last (`target` nil): one Move, only within its sibling and pin group.
+    private func drop(_ key: String?, onto target: SharedTab?) -> Bool {
+        dropTarget = nil
+        guard let key, let shared = model.sharedTabs, let dragged = shared.allEntries.first(where: { $0.key == key }) else { return false }
+        guard let update = SharedTabStrip.move(dragged, onto: target, in: shared) else { return false }
+        tabAction { try await model.updateTabs(update) }
+        return true
+    }
     /// A terminal's tab: a shell, an agent, or an orchestrator that runs in a terminal.
-    private func terminalTab(_ session: RemoteSession) -> some View {
+    private func terminalTab(_ session: RemoteSession, entry: SharedTab? = nil) -> some View {
         let selected = !model.terminalCovered && model.sessionID == session.id
         return Button { Task { await model.chooseSession(session) } } label: {
             VStack(alignment: .leading, spacing: 1) {
@@ -527,25 +664,34 @@ struct TerminalTabsView: View {
                             .foregroundStyle(session.kind == "orchestrator" ? style.magenta : style.text)
                     }.font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
                     ActivityIndicator(activity: session.shownActivity, subagents: session.subagents_working)
+                    if entry?.pinned == true { PinMark() }
                 }
             }
             .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
             .tabChrome(selected: selected, waiting: session.shownActivity == .waiting)
         }
         .buttonStyle(.plain).id(session.id)
-        .accessibilityLabel(["\(session.title), \(tabDetail(session))", session.activitySummary].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityLabel(["\(session.title), \(tabDetail(session))", entry?.pinned == true ? "pinned" : nil, session.activitySummary].compactMap { $0 }.joined(separator: ", "))
         .accessibilityAddTraits(selected ? .isSelected : [])
         .contextMenu {
             Text(tabDetail(session))
+            if let entry { Section { sharedTabItems(entry) } }
             Button("New terminal", systemImage: "plus") { openNewTerminal() }
-            if model.canClose(session) { Button("Close terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session } }
+            if model.legacyCloseAvailable(session) { Button("Close terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session } }
         }
-        .accessibilityAction(named: "Close terminal") { if model.canClose(session) { closing = session } }
+        // The same close as the menu's: by the shared tab when there is one, else the terminal's own.
+        .accessibilityActions {
+            if let entry {
+                Button(entry.isWorker ? "Close (detach)" : "Close tab") { requestClose(entry) }
+            } else if model.legacyCloseAvailable(session) {
+                Button("Close terminal") { if model.legacyCloseAvailable(session) { closing = session } }
+            }
+        }
     }
     /// A chat's tab, beside the terminals': its provider's glyph, its name and the same activity indicator. An orchestrator that runs
     /// as a chat has this look too, under the orchestrator's name ("Project orchestrator", already the chat's title here); it is
     /// opened by its chat's id.
-    private func chatTab(_ chat: ChatInfo, orchestrator: RemoteSession? = nil) -> some View {
+    private func chatTab(_ chat: ChatInfo, orchestrator: RemoteSession? = nil, entry: SharedTab? = nil) -> some View {
         let selected = model.selectedChatID == chat.id
         let activity = model.chatActivity(chat)
         let state = model.chatState(chat)
@@ -557,6 +703,7 @@ struct TerminalTabsView: View {
                         .font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
                     ActivityIndicator(activity: activity)
                     if case .failed = state { Image(systemName: "exclamationmark.triangle.fill").font(style.system(.caption2)).foregroundStyle(style.error).accessibilityHidden(true) }
+                    if entry?.pinned == true { PinMark() }
                 }
             }
             .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
@@ -564,10 +711,11 @@ struct TerminalTabsView: View {
             .opacity(state == .stopped && !selected ? 0.6 : 1)
         }
         .buttonStyle(.plain).id(chat.id)
-        .accessibilityLabel([ChatTabs.title(chat) + ", " + ChatTabs.detail(chat, branch: branch), state.spokenCondition, activity.spoken()].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityLabel([ChatTabs.title(chat) + ", " + ChatTabs.detail(chat, branch: branch), entry?.pinned == true ? "pinned" : nil, state.spokenCondition, activity.spoken()].compactMap { $0 }.joined(separator: ", "))
         .accessibilityAddTraits(selected ? .isSelected : [])
         .contextMenu {
             Text(ChatTabs.detail(chat, branch: branch))
+            if let entry { Section { sharedTabItems(entry) } }
             Button("New terminal", systemImage: "plus") { openNewTerminal() }
             Button("Stop agent", systemImage: "stop.circle", role: .destructive) { Task { await model.stopChat(chat.id) } }.disabled(state == .stopped || model.state != .connected)
         }
@@ -762,6 +910,7 @@ struct SessionConsole: View {
     @State private var paneSize = CGSize.zero
     private var fontSize: Double { pinchScale.map { TerminalFontSize.pinched(from: model.terminalFontSize, scale: $0) } ?? model.terminalFontSize }
     private var focused: Bool { model.focusMode }
+    private var shellUploadFailed: Bool { model.sessionID.flatMap { model.uploadActivity(for: .shell($0)) }?.failed == true }
     var body: some View {
         let _ = Perf.count("body.SessionConsole")
         Group {
@@ -769,17 +918,23 @@ struct SessionConsole: View {
                 VStack(spacing: 0) {
                     if !focused {
                         StatusStrip(model: model)
-                        if let error = model.error {
-                            HStack(alignment: .top) {
-                                Image(systemName: "exclamationmark.circle")
-                                Text(error).font(style.system(.footnote))
-                                Spacer(minLength: 0)
-                                Button("Dismiss", systemImage: "xmark") { model.error = nil }.labelStyle(.iconOnly).buttonStyle(TargetButtonStyle(tinted: true))
-                            }.padding(.horizontal, 12).padding(.vertical, 8).background(style.warning.opacity(0.1))
-                        }
                         PendingInputNotice(model: model)
                     }
                     terminal
+                    // What went wrong, in the same place and look as a chat's banner row: above the input, with ×, in focus mode too.
+                    // It goes by itself when the cause is resolved (a read that succeeds, a reconnect).
+                    VStack(spacing: 4) {
+                        if let error = model.error {
+                            ChatNoticeLine(line: ChatNoticeBanners.Line(id: "shell-error", level: .warning, icon: ChatNoticeBanners.icon(.warning), text: error,
+                                                                        close: { model.error = nil }))
+                        }
+                        if let id = model.sessionID, let activity = model.uploadActivity(for: .shell(id)), case .failed(let message) = activity.phase {
+                            ChatNoticeLine(line: ChatNoticeBanners.Line(id: "upload", level: .warning, icon: ChatNoticeBanners.icon(.warning), text: message,
+                                                                        close: { model.dismissUploadFailure() }))
+                        }
+                        if let line = ChatNoticeBanners.dictationLine(.terminal) { ChatNoticeLine(line: line) }
+                    }
+                    .padding(.vertical, model.error != nil || ChatNoticeBanners.dictationLine(.terminal) != nil || shellUploadFailed ? 4 : 0)
                     bottomPanel
                 }
                 .background {
@@ -875,7 +1030,7 @@ struct SessionConsole: View {
         .onChange(of: style.mic) { _, on in if !on { dictatedLine = nil } }
         // A file on its way to the Mac: at the top, clear of the chip and notices at the bottom.
         .overlay(alignment: .top) {
-            if let id = model.sessionID, let activity = model.uploadActivity(for: .shell(id)) {
+            if let id = model.sessionID, let activity = model.uploadActivity(for: .shell(id)), !activity.failed {
                 UploadStatusBar(activity: activity, cancel: model.cancelUpload, dismiss: model.dismissUploadFailure)
             }
         }
@@ -1038,6 +1193,8 @@ struct StatusStrip: View {
     let model: RemoteModel
     var body: some View {
         HStack(spacing: 6) {
+            // The two symbols differ in height by a fraction of a point, so this strip's height follows the state; the terminal under
+            // it ignores sub-point changes of its area (`reportTerminalArea`), or the two could feed each other without end.
             Image(systemName: outputStale ? "clock.badge.exclamationmark" : "checkmark.circle")
             Text(outputStale ? "Stale · \(model.state.label.lowercased())" : (model.syncMode == .live ? "Live" : "Latest snapshot"))
             if model.syncMode != .live || outputStale, let date = model.lastOutputAt { Text(date, style: .time) }
@@ -1051,4 +1208,177 @@ struct StatusStrip: View {
             .padding(.horizontal, 8).padding(.vertical, 2).background(style.panel)
     }
     private var outputStale: Bool { model.state != .connected || model.snapshotStale || model.outputSessionID != model.sessionID || model.session?.alive != true || !model.viewportReady }
+}
+
+// MARK: - Swiping back
+
+extension View {
+    /// The standard swipe from the left edge goes back, as on any pushed screen, although this screen hides the navigation bar for a
+    /// header of its own (UIKit turns the gesture off with the bar). The navigation stack's own gesture is used, so the swipe is the
+    /// system's (interactive, cancellable) and the stack's path follows it as it does the Back button.
+    func edgeSwipeBack() -> some View { background(EdgeSwipeBack().frame(width: 0, height: 0).accessibilityHidden(true)) }
+}
+
+/// Turns the navigation controller's edge swipe back on for the screen it is on. Only that gesture: it begins only at the screen's
+/// left edge (the tab row's Back is there, the terminal, its key bar and the tab strip start further in), and scrolling views wait
+/// for it to fail there, so a drag from the edge goes back instead of scrolling.
+struct EdgeSwipeBack: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) { controller.enable() }
+
+    final class Controller: UIViewController {
+        override func viewWillAppear(_ animated: Bool) { super.viewWillAppear(animated); enable() }
+        override func viewDidAppear(_ animated: Bool) { super.viewDidAppear(animated); enable() }
+        func enable() {
+            guard let navigation = navigationController, let gesture = navigation.interactivePopGestureRecognizer else { return }
+            EdgeSwipeBackDelegate.shared.navigation = navigation
+            gesture.delegate = EdgeSwipeBackDelegate.shared
+            gesture.isEnabled = true
+        }
+    }
+}
+
+@MainActor final class EdgeSwipeBackDelegate: NSObject, UIGestureRecognizerDelegate {
+    static let shared = EdgeSwipeBackDelegate()
+    weak var navigation: UINavigationController?
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        // Not on the first screen (nothing to go back to), and not while a push or pop is already moving.
+        guard let navigation else { return false }
+        return navigation.viewControllers.count > 1 && navigation.transitionCoordinator == nil && navigation.presentedViewController == nil
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        // A scroll view under the edge (the tab strip, the transcript, the composer) waits for the edge swipe to fail.
+        other.view is UIScrollView
+    }
+}
+
+// MARK: - Shared tabs
+
+/// The small pin of a pinned tab (the project orchestrator starts pinned).
+private struct PinMark: View {
+    @Environment(\.desktopStyle) private var style
+    var body: some View {
+        Image(systemName: "pin.fill").font(.system(size: style.pt(9), weight: .semibold)).foregroundStyle(style.muted).rotationEffect(.degrees(45))
+            .accessibilityHidden(true)
+    }
+}
+
+/// A tab of the row as a drag source and a drop target for reordering: a long press lifts it (the row's horizontal scroll and the
+/// screen's edge swipe are plain drags and are untouched), dropping it on another tab puts it before that one, within its group. A
+/// bar shows where it would go.
+private struct SharedTabDrag: ViewModifier {
+    @Environment(\.desktopStyle) private var style
+    let entry: SharedTab?
+    @Binding var target: String?
+    let drop: (String?, SharedTab?) -> Bool
+    func body(content: Content) -> some View {
+        if let entry {
+            // A tab keeps the width of its title: dragging wraps it in a view that would otherwise propose less.
+            content.fixedSize(horizontal: true, vertical: false)
+                .draggable(entry.key) {
+                    Text(entry.title).font(style.face(12, relativeTo: .subheadline)).lineLimit(1).padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(style.active, in: Capsule())
+                }
+                .dropDestination(for: String.self) { keys, _ in drop(keys.first, entry) } isTargeted: { over in
+                    if over { target = entry.key } else if target == entry.key { target = nil }
+                }
+                .overlay(alignment: .leading) { if target == entry.key { Capsule().fill(style.accent).frame(width: 3).padding(.vertical, 8).accessibilityHidden(true) } }
+                .chatLayoutProbe("tab-\(entry.key)")
+        } else {
+            content
+        }
+    }
+}
+
+/// "Open shell/worker…": the hidden chats and shells of the project, workers first, each with its kind, state and the tab it belongs
+/// to. Opening one shows it as a tab here and on the Mac (it starts nothing).
+struct OpenTabSheet: View {
+    @Environment(\.desktopStyle) private var style
+    let rows: [SharedTabStrip.Openable]
+    let open: (String) -> Void
+    let done: () -> Void
+    var body: some View {
+        NavigationStack {
+            List(rows) { row in
+                Button { open(row.tab.key) } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: row.tab.kind == .chat ? "bubble.left.and.text.bubble.right" : "terminal").foregroundStyle(style.accent)
+                            .frame(width: 24).accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.tab.title).font(style.system(.body)).foregroundStyle(style.text).lineLimit(1)
+                            Text(detail(row)).font(style.system(.caption)).foregroundStyle(style.muted).lineLimit(1)
+                        }
+                        Spacer(minLength: 4)
+                        Text(Self.status(row.tab.status)).font(style.system(.caption, weight: .medium)).foregroundStyle(row.tab.status == .waiting ? style.gold : (row.tab.status == .error ? style.error : style.muted))
+                    }
+                    .frame(minHeight: style.target).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(style.background)
+                .accessibilityLabel("\(row.tab.title), \(detail(row)), \(Self.status(row.tab.status))").accessibilityHint("Opens it as a tab")
+                .chatLayoutProbe("open-\(row.tab.key)", action: { open(row.tab.key) })
+            }
+            .listStyle(.plain).scrollContentBackground(.hidden).background(style.background)
+            .overlay { if rows.isEmpty { Text("Nothing hidden to open.").font(style.system(.footnote)).foregroundStyle(style.muted) } }
+            .navigationTitle("Open shell/worker").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: done) } }
+        }
+        .presentationDetents([.medium, .large])
+    }
+    private func detail(_ row: SharedTabStrip.Openable) -> String {
+        let kind = row.tab.kind == .chat ? "Chat" : "Shell"
+        let role = row.tab.isWorker ? "Worker" : kind
+        return [row.tab.isWorker ? "\(role) · \(kind.lowercased())" : role, row.parentTitle.map { "in \($0)" }].compactMap { $0 }.joined(separator: " · ")
+    }
+    static func status(_ status: SharedTab.Status) -> String {
+        switch status {
+        case .working: "Working"
+        case .waiting: "Waiting"
+        case .error: "Error"
+        case .done: "Done"
+        case .stopped: "Stopped"
+        case .unknown: ""
+        }
+    }
+}
+
+/// Edit tabs: the row's tabs in groups (pinned, the others, each parent's opened children) with drag handles; a move is one Move of
+/// the shared list within its group. The accessible way to reorder, beside dragging in the row.
+struct EditTabsSheet: View {
+    @Environment(\.desktopStyle) private var style
+    let model: RemoteModel
+    let move: (TabUpdate) -> Void
+    let done: () -> Void
+    var body: some View {
+        NavigationStack {
+            List {
+                if let shared = model.sharedTabs {
+                    ForEach(SharedTabStrip.groups(shared)) { group in
+                        Section(group.title) {
+                            ForEach(group.tabs) { tab in
+                                HStack(spacing: 10) {
+                                    Image(systemName: tab.kind == .chat ? "bubble.left.and.text.bubble.right" : "terminal").foregroundStyle(style.accent).frame(width: 24)
+                                        .accessibilityHidden(true)
+                                    Text(tab.title).foregroundStyle(style.text).lineLimit(1)
+                                    Spacer(minLength: 4)
+                                    if tab.pinned { PinMark() }
+                                }
+                                .frame(minHeight: style.target)
+                                .listRowBackground(style.background)
+                            }
+                            .onMove { from, to in
+                                guard let source = from.first, let update = SharedTabStrip.move(in: group.tabs, from: source, to: to) else { return }
+                                move(update)
+                            }
+                        }
+                    }
+                }
+            }
+            .listStyle(.insetGrouped).scrollContentBackground(.hidden).background(style.background)
+            .environment(\.editMode, .constant(.active))
+            .navigationTitle("Edit tabs").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: done) } }
+        }
+        .presentationDetents([.medium, .large])
+    }
 }

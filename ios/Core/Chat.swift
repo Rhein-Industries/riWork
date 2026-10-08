@@ -289,10 +289,12 @@ public enum ChatItemBody: Sendable, Equatable, Codable {
     case webSearch(String)
     case todo([ChatStep])
     case compaction
-    case notice(level: ChatNoticeLevel, text: String)
+    /// `kind` is the host's dedupe key ("rate_limit:seven_day", "api_retry", "reconnecting", …): notices of one kind are one line of
+    /// the banner row. Older hosts send none.
+    case notice(level: ChatNoticeLevel, text: String, kind: String? = nil)
 
     private enum Keys: String, CodingKey {
-        case type, text, explanation, steps, command, cwd, output, changes, server, tool, input, query, items, level
+        case type, text, explanation, steps, command, cwd, output, changes, server, tool, input, query, items, level, kind
         case exitCode = "exit_code"
     }
     public init(from decoder: any Decoder) throws {
@@ -313,7 +315,10 @@ public enum ChatItemBody: Sendable, Equatable, Codable {
         case "web_search": self = .webSearch(try c.decode(String.self, forKey: .query))
         case "todo": self = .todo(c.leniently([ChatStep].self, forKey: .items))
         case "compaction": self = .compaction
-        case "notice": self = .notice(level: c.lenient(ChatNoticeLevel.self, forKey: .level, default: .info), text: try c.decode(String.self, forKey: .text))
+        case "notice":
+            // A kind that is not a non-empty string is no kind (the notice is then its own line, by its text).
+            let kind = (try? c.decodeIfPresent(String.self, forKey: .kind))?.flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
+            self = .notice(level: c.lenient(ChatNoticeLevel.self, forKey: .level, default: .info), text: try c.decode(String.self, forKey: .text), kind: kind)
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "Unknown item type \(type)")
         }
     }
@@ -335,7 +340,8 @@ public enum ChatItemBody: Sendable, Equatable, Codable {
         case .webSearch(let query): try c.encode("web_search", forKey: .type); try c.encode(query, forKey: .query)
         case .todo(let items): try c.encode("todo", forKey: .type); try c.encode(items, forKey: .items)
         case .compaction: try c.encode("compaction", forKey: .type)
-        case .notice(let level, let text): try c.encode("notice", forKey: .type); try c.encode(level, forKey: .level); try c.encode(text, forKey: .text)
+        case .notice(let level, let text, let kind):
+            try c.encode("notice", forKey: .type); try c.encode(level, forKey: .level); try c.encode(text, forKey: .text); try c.encodeIfPresent(kind, forKey: .kind)
         }
     }
 }

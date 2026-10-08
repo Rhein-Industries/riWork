@@ -62,11 +62,30 @@ import RiWorkCore
         let project: RemoteProject
         var body: some View { TerminalTabsView(model: model, project: project, onBack: {}).desktopThemed(model.theme.style) }
     }
+    /// The navigation stack's path, for a test to go back and forth.
+    @MainActor @Observable final class StackPath { var items = [1] }
+    /// The tab screen pushed on a navigation stack with its bar hidden, as the app shows it.
+    private struct PushedTabs: View {
+        let model: RemoteModel
+        let project: RemoteProject
+        @Bindable var stack: StackPath
+        var body: some View {
+            NavigationStack(path: $stack.items) {
+                Text("Projects").toolbar(.hidden, for: .navigationBar)
+                    .navigationDestination(for: Int.self) { _ in
+                        TerminalTabsView(model: model, project: project, onBack: { stack.items.removeAll() }).desktopThemed(model.theme.style)
+                            .toolbar(.hidden, for: .navigationBar).edgeSwipeBack()
+                    }
+            }
+        }
+    }
     private struct Rig {
         let model: RemoteModel, transport: ChatTransport, window: UIWindow, host: UIHostingController<AnyView>, keychain: KeychainStore
         let layout: ChatLayoutInspection
+        let defaults: UserDefaults
+        let stack: StackPath
     }
-    private func makeRig(chats: [ChatInfo]? = nil, orchestrators: [String] = [], chatFeature: Bool = true, orchestratorCreate: Bool = false, hardwareKeyboard: Bool = true, width: CGFloat = 402, height: CGFloat = 874, look: Look = .terminal, mic: Bool = false) async throws -> Rig {
+    private func makeRig(chats: [ChatInfo]? = nil, orchestrators: [String] = [], chatFeature: Bool = true, orchestratorCreate: Bool = false, hardwareKeyboard: Bool = true, width: CGFloat = 402, height: CGFloat = 874, look: Look = .terminal, mic: Bool = false, pushed: Bool = false, defaults suiteName: String? = nil) async throws -> Rig {
         guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene to show a chat in") }
         let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
         let pairing = try Pairing.parse("""
@@ -75,20 +94,23 @@ import RiWorkCore
         var desktop = SavedDesktop(name: "Fixture", pairing: pairing, allowLocalDevelopment: false)
         desktop.selectedProjectID = project; desktop.selectedSessionID = ChatTransport.shell
         try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
-        let suite = "com.riwork.tests.chatview.\(UUID().uuidString)"
-        defaultsNames.append(suite)
+        let suite = suiteName ?? "com.riwork.tests.chatview.\(UUID().uuidString)"
+        if suiteName == nil { defaultsNames.append(suite) }
         let transport = ChatTransport(chats: chats ?? [chat()], appearance: appearance(look, mic: mic))
         await transport.setFeature(chatFeature)
         await transport.setOrchestratorFeature(orchestratorCreate)
         await transport.setOrchestrators(orchestrators)
-        let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: suite)!, chatWaitMilliseconds: 300, chatIdleInterval: .milliseconds(20),
+        let defaults = UserDefaults(suiteName: suite)!
+        let model = RemoteModel(client: transport, keychain: keychain, defaults: defaults, chatWaitMilliseconds: 300, chatIdleInterval: .milliseconds(20),
                                 hardwareKeyboard: HardwareKeyboardMonitor(probe: { hardwareKeyboard }))
         await model.connect()
         if look != .terminal { await eventually("the desktop's Native look is in") { model.theme.style.native } }
         if mic { await eventually("the desktop's mic setting is in") { model.theme.style.mic } }
         let projectValue = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}".utf8))
         let layout = ChatLayoutInspection()
-        let root = AnyView(ThemedTabs(model: model, project: projectValue).environment(\.chatLayoutInspection, layout))
+        let stack = StackPath()
+        let root = pushed ? AnyView(PushedTabs(model: model, project: projectValue, stack: stack).environment(\.chatLayoutInspection, layout))
+            : AnyView(ThemedTabs(model: model, project: projectValue).environment(\.chatLayoutInspection, layout))
         let host = UIHostingController(rootView: root)
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: width, height: height)
@@ -97,7 +119,7 @@ import RiWorkCore
         window.makeKeyAndVisible()
         windows.append(window)
         await eventually("the terminal is on screen") { !self.descendants(KeyCaptureView.self, in: host.view).isEmpty && model.terminalArea != nil }
-        return Rig(model: model, transport: transport, window: window, host: host, keychain: keychain, layout: layout)
+        return Rig(model: model, transport: transport, window: window, host: host, keychain: keychain, layout: layout, defaults: defaults, stack: stack)
     }
     private func finish(_ rig: Rig) async {
         rig.window.endEditing(true)
@@ -364,7 +386,8 @@ import RiWorkCore
         await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "legacy", status: .completed, body: .agentMessage("legacy complete")))])
         _ = try await openChat(rig)
         await eventually("legacy replay explicitly selected") { rig.model.conversation(self.chatID).transcript.item("legacy") != nil }
-        XCTAssertTrue(rig.model.conversation(chatID).notice?.contains("recent-first") == true)
+        // The note about the older desktop goes by itself once its history is in.
+        await eventually("the recent-first note has done its work") { !rig.model.conversation(self.chatID).legacyLoading && rig.model.conversation(self.chatID).alerts.text(.desktop) == nil }
         XCTAssertNil(rig.model.conversation(chatID).feed.historyCursor)
         await finish(rig)
     }
@@ -457,7 +480,7 @@ import RiWorkCore
         try await Task.sleep(for: .milliseconds(400))
         XCTAssertEqual(try renderedMessageTop(movedMessage, rig: rig, scroll: list), movedAnchor, accuracy: 4, "late expansion above the anchor preserves its within-row position")
         XCTAssertEqual(conversation.draft, "gated draft")
-        try assertLatestOutsideTranscript(rig, scroll: list)
+        try assertLatestOverTranscriptBottom(rig, scroll: list)
         try snapshot(rig, name: "latest-first-gated-large-text")
         await finish(rig)
     }
@@ -540,7 +563,7 @@ import RiWorkCore
             XCTAssertEqual(conversation.draft, "resource draft")
             XCTAssertEqual(conversation.openApprovals.first?.requestID, "older-action")
             XCTAssertEqual(conversation.modelCatalogue.count, scenario == "live" ? 1 : 2); XCTAssertEqual(conversation.transcript.usage?.inputTokens, 42)
-            XCTAssertTrue(conversation.notice?.contains("shortened") == true)
+            XCTAssertTrue(conversation.alerts.text(.desktop)?.contains("shortened") == true, "said in the banner row while the replay is degraded")
             let calls = await rig.transport.params(of: "chat.snapshot")
             XCTAssertEqual(calls.filter { $0["cursor"] == nil }.count, 1, "\(scenario): no unchanged bootstrap retries")
             if scenario == "controls" { XCTAssertEqual(conversation.openApprovals.count, 201) }
@@ -786,12 +809,12 @@ import RiWorkCore
             scroll.setContentOffset(CGPoint(x: 0, y: max(20, bottomOffset(scroll) - scroll.bounds.height - 200)), animated: false)
             try await Task.sleep(for: .milliseconds(150))
             scroll.delegate?.scrollViewDidEndDragging?(scroll, willDecelerate: false)
-            await eventually("Latest has its own reserved row") { rig.layout.visible["latest"] == true }
+            await eventually("Latest shows while reading") { rig.layout.visible["latest"] == true }
             try await Task.sleep(for: .milliseconds(100))
-            try assertLatestOutsideTranscript(rig, scroll: scroll)
+            try assertLatestOverTranscriptBottom(rig, scroll: scroll)
             await rig.transport.append(chatID, [.itemCompleted(ChatItem(id: "layout-live", status: .completed, body: .agentMessage("One new live message.")))])
             await eventually("only the live row counts as new") { (try? self.renderedText(rig, in: rig.layout.frames["latest"] ?? .zero).contains("1 new")) == true }
-            try assertLatestOutsideTranscript(rig, scroll: scroll)
+            try assertLatestOverTranscriptBottom(rig, scroll: scroll)
             if category == .accessibilityExtraLarge { try compactSnapshot(rig, name: "compact-large-text-reader") }
             await rig.transport.append(chatID, [approval("layout-approval"), .state(.waiting)])
             await eventually("approval displayed") { conversation.openApprovals.count == 1 }
@@ -811,7 +834,7 @@ import RiWorkCore
             XCTAssertGreaterThan(allow.height, 40)
             XCTAssertTrue(try renderedText(rig, in: CGRect(x: 0, y: scroll.convert(scroll.bounds, to: rig.window).maxY, width: screen.width, height: composerFrame.minY - scroll.convert(scroll.bounds, to: rig.window).maxY)).contains("Allow"), "approval action is visible above the keyboard")
             XCTAssertGreaterThan(scroll.bounds.height, 24, "conversation retains visible room above approvals")
-            try assertLatestOutsideTranscript(rig, scroll: scroll)
+            try assertLatestOverTranscriptBottom(rig, scroll: scroll)
             print("COMPACT_LAYOUT category=\(category.rawValue) size=\(screen) navigation=\(navigation.height) model=\(modelFrame.height) transcript=\(scroll.convert(scroll.bounds, to: rig.window)) latest=\(rig.layout.frames["latest"] ?? .zero) approval=\(allow) draft=\(composerFrame) keyboardTop=\(keyboardTop)")
             if category == .accessibilityExtraLarge { try compactSnapshot(rig, name: "compact-large-text-approval-keyboard") }
             await rig.transport.append(chatID, [.approvalResolved(requestID: "layout-approval", decision: .accept), .questionRequested(ChatQuestion(requestID: "layout-question", questions: [ChatQuestionPrompt(header: "Scope", question: "Which tests?", options: [ChatQuestionOption(label: "Changed", description: "Focused checks")], multiSelect: false)]))])
@@ -824,12 +847,760 @@ import RiWorkCore
         }
     }
 
+    /// The transcript reaches down to the composer, with the software keyboard up and down: no band between them (Latest used to keep
+    /// a row of its own there), no keyboard inset left inside the transcript, and Latest over the transcript's bottom edge.
+    func testTranscriptReachesTheComposerWithTheKeyboardUpAndDown() async throws {
+        let screen = UIScreen.main.bounds.size
+        for look in [Look.nativeDark, .terminal] {
+            let rig = try await makeRig(hardwareKeyboard: false, width: screen.width, height: screen.height, look: look, mic: true)
+            await rig.transport.enableSnapshots()
+            await rig.transport.append(chatID, [.info(chat()), .models(models), .state(.running)] + (0..<40).map {
+                .itemCompleted(ChatItem(id: "band-\($0)", status: .completed, body: .agentMessage("Message \($0). A readable paragraph in this conversation, long enough to wrap.")))
+            })
+            let field = try await openChat(rig)
+            await eventually("rows loaded") { rig.model.conversation(self.chatID).transcript.items.count >= 40 }
+            try await Task.sleep(for: .milliseconds(350))
+            func assertReaches(_ when: String) throws {
+                let scroll = try XCTUnwrap(transcriptScroll(rig), when)
+                let transcript = scroll.convert(scroll.bounds, to: rig.window)
+                let fieldFrame = field.convert(field.bounds, to: rig.window)
+                XCTAssertLessThanOrEqual(fieldFrame.minY - transcript.maxY, 14, "\(look) \(when): the transcript reaches the composer")
+                XCTAssertGreaterThanOrEqual(fieldFrame.minY, transcript.maxY, "\(look) \(when): the composer is under the transcript")
+                XCTAssertLessThanOrEqual(scroll.adjustedContentInset.bottom, 1, "\(look) \(when): no keyboard or bar inset counted inside the transcript")
+            }
+            try assertReaches("keyboard down")
+            var keyboardTop = screen.height
+            let keyboard = NotificationCenter.default.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: .main) { note in
+                if let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect { keyboardTop = frame.minY }
+            }
+            defer { NotificationCenter.default.removeObserver(keyboard) }
+            field.becomeFirstResponder()
+            await eventually("software keyboard is presented") { keyboardTop < screen.height - 100 && field.isFirstResponder }
+            try await Task.sleep(for: .milliseconds(400))
+            try assertReaches("keyboard up")
+            let fieldFrame = field.convert(field.bounds, to: rig.window)
+            XCTAssertLessThanOrEqual(fieldFrame.maxY, keyboardTop + 2, "\(look): the composer sits on the keyboard")
+            XCTAssertGreaterThanOrEqual(fieldFrame.maxY, keyboardTop - 16, "\(look): and close to it")
+            let scroll = try XCTUnwrap(transcriptScroll(rig))
+            listStartReading(scroll)
+            scroll.setContentOffset(CGPoint(x: 0, y: max(20, bottomOffset(scroll) - 600)), animated: false)
+            try await Task.sleep(for: .milliseconds(150))
+            scroll.delegate?.scrollViewDidEndDragging?(scroll, willDecelerate: false)
+            await eventually("Latest shows while reading") { rig.layout.visible["latest"] == true }
+            try await Task.sleep(for: .milliseconds(100))
+            try assertLatestOverTranscriptBottom(rig, scroll: scroll)
+            try assertReaches("reading, keyboard up")
+            await finish(rig)
+        }
+    }
+
+    /// A swipe from the left edge goes back to the projects from a shell tab and from a chat, as on any pushed screen, although the
+    /// screen hides the navigation bar for its own header (which turns UIKit's swipe off unless it is turned back on).
+    ///
+    /// Checked against the real screen: the navigation controller's own edge recognizer (a left-edge pan) is on and may begin, and every
+    /// scroll view actually on screen — the tab strip, the terminal, the key bar, the transcript, the composer — waits for it, through
+    /// their real pan recognizers; a pop updates the stack's path as Back does. What a hosted test cannot do is move a finger: XCTest
+    /// has no touch synthesis outside UI tests, and the app has no fixture launch mode for a UI-test target, so the drag itself (tracking,
+    /// cancelling half way) is the system's and is not exercised here.
+    func testTheEdgeSwipeGoesBackFromAShellAndFromAChat() async throws {
+        // With a hardware keyboard the key bar stands alone at the bottom, on screen without the software keyboard.
+        let rig = try await makeRig(pushed: true)
+        func find(_ controller: UIViewController) -> UINavigationController? {
+            (controller as? UINavigationController) ?? controller.children.lazy.compactMap(find).first
+        }
+        let navigation = try XCTUnwrap(find(rig.host), "the screen is pushed on a navigation controller")
+        let gesture = try XCTUnwrap(navigation.interactivePopGestureRecognizer)
+        let edge = try XCTUnwrap(gesture as? UIScreenEdgePanGestureRecognizer, "the system's edge pan")
+        XCTAssertEqual(edge.edges, .left)
+        XCTAssertTrue(gesture.view === navigation.view, "on the navigation controller's view, over the whole screen")
+        func assertSwipeBack(_ screen: String, expecting kinds: [String]) throws {
+            XCTAssertTrue(gesture.isEnabled, "\(screen): the edge swipe is on")
+            XCTAssertTrue(gesture.delegate === EdgeSwipeBackDelegate.shared, "\(screen): with the delegate that allows it without a bar")
+            XCTAssertEqual(navigation.viewControllers.count, 2, "\(screen): pushed over the projects")
+            XCTAssertTrue(EdgeSwipeBackDelegate.shared.gestureRecognizerShouldBegin(gesture), "\(screen): it may begin")
+            let scrolls = descendants(UIScrollView.self, in: rig.window).filter { $0.window != nil && !$0.isHidden }
+            XCTAssertFalse(scrolls.isEmpty)
+            for scroll in scrolls {
+                XCTAssertTrue(EdgeSwipeBackDelegate.shared.gestureRecognizer(gesture, shouldBeRequiredToFailBy: scroll.panGestureRecognizer),
+                              "\(screen): \(Swift.type(of: scroll)) waits for the edge swipe")
+            }
+            let names = scrolls.map { "\(Swift.type(of: $0))" }
+            for kind in kinds { XCTAssertTrue(names.contains { $0.contains(kind) }, "\(screen): \(kind) is on screen and covered (\(names))") }
+            // Nothing else on the screen claims a touch at the left edge before the swipe: no other recognizer there is a left-edge pan.
+            let atEdge = descendants(UIView.self, in: rig.window).filter { view in
+                view.window != nil && view.convert(view.bounds, to: nil).contains(CGPoint(x: 4, y: rig.window.bounds.midY))
+            }
+            let rivals = atEdge.flatMap { $0.gestureRecognizers ?? [] }.compactMap { $0 as? UIScreenEdgePanGestureRecognizer }
+                // The navigation controller's own (iOS 26 adds a content-wide back swipe beside the edge one) go back too.
+                .filter { $0 !== gesture && $0.edges.contains(.left) && $0.view !== navigation.view }
+            XCTAssertTrue(rivals.isEmpty, "\(screen): no other left-edge recognizer: \(rivals.map { "\(Swift.type(of: $0)) on \(Swift.type(of: $0.view!)) delegate \(String(describing: $0.delegate.map { Swift.type(of: $0) })) enabled \($0.isEnabled)" })")
+        }
+        try assertSwipeBack("shell", expecting: ["ScrollView"])
+        let field = try await openChat(rig)
+        try await Task.sleep(for: .milliseconds(300))
+        try assertSwipeBack("chat", expecting: ["ChatComposerTextView"])
+        XCTAssertNotNil(field)
+        // Going back (what the swipe finishes with) updates the stack's path, as Back does.
+        navigation.popViewController(animated: false)
+        await eventually("the path follows the pop") { rig.stack.items.isEmpty }
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(EdgeSwipeBackDelegate.shared.gestureRecognizerShouldBegin(gesture), "none on the first screen")
+        await finish(rig)
+    }
+
+    // MARK: Drafts
+
+    /// Types into the composer as a person does: through the text view, so the binding and the saving run as they do on a device.
+    private func type(_ text: String, into field: ChatComposerTextView) {
+        field.text = text
+        field.delegate?.textViewDidChange?(field)
+    }
+    private func secondChat() -> ChatInfo {
+        ChatInfo(id: "dddddddd-2222-4222-8222-222222222222", provider: .codex, projectID: project, cwd: "/fixture", title: "Second", createdAtUnix: 20, state: .idle)
+    }
+
+    func testADraftSurvivesSwitchingTabsAndTwoChatsKeepTheirOwn() async throws {
+        let rig = try await makeRig(chats: [chat(), secondChat()])
+        var field = try await openChat(rig)
+        type("half a thought for the first chat", into: field)
+        rig.model.deselectChat()
+        await eventually("the shell is back") { self.composer(rig) == nil }
+        rig.model.selectChat(secondChat().id)
+        await eventually("the second chat is up") { self.composer(rig) != nil }
+        field = try XCTUnwrap(composer(rig))
+        XCTAssertEqual(field.text, "", "the second chat has its own, empty, composer")
+        type("and one for the second", into: field)
+        rig.model.selectChat(chatID)
+        await eventually("the first chat's draft is back") { self.composer(rig)?.text == "half a thought for the first chat" }
+        rig.model.selectChat(secondChat().id)
+        await eventually("the second chat's draft is back") { self.composer(rig)?.text == "and one for the second" }
+        await finish(rig)
+    }
+
+    func testADraftSurvivesGoingBackToTheProjectsAReconnectAndARelaunch() async throws {
+        let rig = try await makeRig(pushed: true)
+        let field = try await openChat(rig)
+        type("kept across everything", into: field)
+        // Back to the projects and in again.
+        rig.stack.items = []
+        await eventually("the projects are up") { self.composer(rig) == nil }
+        rig.model.deselectChat()
+        rig.stack.items = [1]
+        await eventually("the tab screen is back") { !self.descendants(KeyCaptureView.self, in: rig.host.view).isEmpty }
+        rig.model.selectChat(chatID)
+        await eventually("the draft is back after leaving the project") { self.composer(rig)?.text == "kept across everything" }
+        // The link drops and comes back; the conversations the desktop gave are let go and made again.
+        await rig.model.disconnect()
+        rig.model.chatConversations = [:]
+        await rig.model.connect()
+        rig.model.selectChat(chatID)
+        await eventually("the draft is back after a reconnect") { self.composer(rig)?.text == "kept across everything" }
+        let suite = try XCTUnwrap(defaultsNames.last)
+        await finish(rig)
+        // A new start of the app, on the same saved settings.
+        let relaunched = try await makeRig(defaults: suite)
+        let again = try await openChat(relaunched)
+        XCTAssertEqual(again.text, "kept across everything", "a relaunch restores it")
+        XCTAssertFalse(relaunched.model.conversation(chatID).notice?.contains("may not have reached") == true, "nothing was on its way")
+        await finish(relaunched)
+    }
+
+    func testADraftIsClearedOnlyWhenSentAndAFailedSendKeepsIt() async throws {
+        let rig = try await makeRig()
+        let field = try await openChat(rig)
+        type("ship it", into: field)
+        await rig.transport.failCommand(.rpc(code: "unavailable", message: "The desktop is busy"))
+        await rig.model.sendChatDraft(chatID)
+        XCTAssertEqual(rig.model.conversation(chatID).draft, "ship it", "a refused message comes back")
+        XCTAssertEqual(rig.model.chatDrafts.draft(chatID)?.text, "ship it")
+        XCTAssertNil(rig.model.chatDrafts.draft(chatID)?.sending)
+        await rig.transport.failCommand(nil)
+        await rig.model.sendChatDraft(chatID)
+        await eventually("the composer is empty") { self.composer(rig)?.text == "" }
+        XCTAssertNil(rig.model.chatDrafts.draft(chatID), "sent: nothing kept")
+        XCTAssertNil(ChatDraftStore(defaults: rig.defaults).draft(chatID), "and nothing saved for the next start")
+        await finish(rig)
+    }
+
+    func testAMessageWhoseSendingWasNeverAnsweredComesBackWithAWarning() async throws {
+        let suite = "com.riwork.tests.chatview.\(UUID().uuidString)"
+        defaultsNames.append(suite)
+        // The app ended while a message was on its way.
+        let store = ChatDraftStore(defaults: UserDefaults(suiteName: suite)!)
+        store.beginSending("deploy to staging", for: chatID)
+        store.setText("then tell me", for: chatID)
+        let rig = try await makeRig(defaults: suite)
+        await rig.transport.enableSnapshots()
+        let field = try await openChat(rig)
+        XCTAssertEqual(field.text, "deploy to staging\nthen tell me")
+        XCTAssertTrue(rig.model.conversation(chatID).notice?.contains("may not have reached the Mac") == true, "said, not sent again")
+        let sent = await rig.transport.commands().count
+        XCTAssertEqual(sent, 0, "nothing is sent by itself")
+        XCTAssertNil(rig.model.chatDrafts.draft(chatID)?.sending, "now an ordinary draft")
+        await finish(rig)
+    }
+
+    /// A message on its way keeps its chat's one-at-a-time guard when the conversation is let go (another desktop, the chat gone from
+    /// a list, eviction) and made again: a second send is refused, and the first one's answer lands in the conversation now shown
+    /// without touching what was typed since.
+    func testAnInFlightSendKeepsItsGuardWhenTheConversationIsMadeAgain() async throws {
+        for outcome in ["sent", "refused"] {
+            let rig = try await makeRig()
+            let field = try await openChat(rig)
+            type("first message", into: field)
+            await rig.transport.gateCommands(true)
+            let first = Task { await rig.model.sendChatDraft(chatID) }
+            await eventually("\(outcome): on its way") { rig.model.chatSendsInFlight.contains(self.chatID) }
+            // The conversation is let go and made again while the message is on its way.
+            rig.model.chatConversations[chatID] = nil
+            let again = rig.model.conversation(chatID)
+            XCTAssertTrue(again.sending, "\(outcome): the guard comes with it")
+            let refused = await rig.model.sendChatMessage(chatID, "second message", restoring: false)
+            XCTAssertEqual(refused, .busy, "\(outcome): no second message before the first is answered")
+            again.draft = "typed since"
+            if outcome == "refused" { await rig.transport.failCommand(.rpc(code: "unavailable", message: "The desktop is busy")) }
+            await rig.transport.gateCommands(false)
+            _ = await first.value
+            XCTAssertFalse(again.sending, "\(outcome): the guard is released on the conversation shown")
+            XCTAssertFalse(rig.model.chatSendsInFlight.contains(chatID))
+            if outcome == "sent" {
+                XCTAssertEqual(again.draft, "typed since", "the answer does not overwrite what was typed since")
+            } else {
+                XCTAssertEqual(again.draft, "first message\ntyped since", "a refused message comes back before it, in the conversation shown")
+                XCTAssertNotNil(again.notice)
+            }
+            XCTAssertEqual(rig.model.chatDrafts.draft(chatID)?.text, again.draft, "\(outcome): the saved draft is the one shown")
+            XCTAssertNil(rig.model.chatDrafts.draft(chatID)?.sending, "\(outcome): nothing left marked as on its way")
+            let commands = await rig.transport.commands().count
+            XCTAssertEqual(commands, 1, "\(outcome): one message sent, once")
+            await finish(rig)
+        }
+    }
+
+    /// A send's failure that arrives after its conversation was made again, typed into, and let go once more (another desktop) goes
+    /// into the saved draft before what was typed since, never over it from the conversation the send started in; the next composer
+    /// shows it.
+    func testAStaleSendFailureNeverOverwritesANewerDraft() async throws {
+        let rig = try await makeRig()
+        let field = try await openChat(rig)
+        type("first message", into: field)
+        let a = rig.model.conversation(chatID)
+        await rig.transport.gateCommands(true)
+        let send = Task { await rig.model.sendChatDraft(chatID) }
+        await eventually("on its way") { rig.model.chatSendsInFlight.contains(self.chatID) }
+        // Made again (B), and the person types there.
+        rig.model.chatConversations[chatID] = nil
+        let b = rig.model.conversation(chatID)
+        XCTAssertFalse(a === b)
+        b.draft = "newer text"
+        // Let go again (as a desktop switch does), with nothing in its place when the answer comes.
+        rig.model.chatConversations = [:]
+        await rig.transport.failCommand(.rpc(code: "unavailable", message: "The desktop is busy"))
+        await rig.transport.gateCommands(false)
+        let failure = await send.value
+        XCTAssertNotNil(failure)
+        XCTAssertEqual(rig.model.chatDrafts.draft(chatID)?.text, "first message\nnewer text", "back before the newer text, which is kept")
+        XCTAssertEqual(a.draft, "", "the conversation let go is not written to")
+        XCTAssertNil(rig.model.chatDrafts.draft(chatID)?.sending)
+        let c = rig.model.conversation(chatID)
+        XCTAssertEqual(c.draft, "first message\nnewer text", "the next composer shows it")
+        XCTAssertFalse(c.sending)
+        await finish(rig)
+    }
+
+    /// A send whose outcome is unknown (the link dropped, it timed out, or the Mac's answer could not be read) comes back to the
+    /// composer flagged, and stays flagged across a relaunch, until the person sends it again or empties the composer.
+    func testAnUncertainSendStaysUncertainAcrossARelaunch() async throws {
+        for (name, error, expected) in [("timeout", RemoteError.timeout, ChatControlError.outcomeUnknown(.command)),
+                                        ("unreadable reply", RemoteError.rpc(code: "invalid_reply", message: "garbled"), ChatControlError.unreadableReply)] {
+            let rig = try await makeRig()
+            await rig.transport.enableSnapshots()
+            let field = try await openChat(rig)
+            type("deploy to staging", into: field)
+            await rig.transport.failCommand(error)
+            let failure = await rig.model.sendChatDraft(chatID)
+            XCTAssertEqual(failure, expected, name)
+            XCTAssertEqual(rig.model.conversation(chatID).draft, "deploy to staging", name)
+            XCTAssertEqual(rig.model.conversation(chatID).notice, expected.message, "\(name): said")
+            XCTAssertEqual(rig.model.chatDrafts.draft(chatID)?.uncertain, true, "\(name): flagged in the saved draft")
+            let suite = try XCTUnwrap(defaultsNames.last)
+            await finish(rig)
+            let relaunched = try await makeRig(defaults: suite)
+            await relaunched.transport.enableSnapshots()
+            let again = try await openChat(relaunched)
+            XCTAssertEqual(again.text, "deploy to staging", name)
+            XCTAssertTrue(relaunched.model.conversation(chatID).notice?.contains("may not have reached the Mac") == true, "\(name): still said after a relaunch")
+            let sent = await relaunched.transport.commands().count
+            XCTAssertEqual(sent, 0, "\(name): never sent again by itself")
+            // Sending it is the person's decision; then it is an ordinary chat again.
+            await relaunched.model.sendChatDraft(chatID)
+            XCTAssertNil(relaunched.model.chatDrafts.draft(chatID), name)
+            await finish(relaunched)
+        }
+    }
+
+    /// A provider notice that recurs says how often in its one line ("×3"), as the phone's own messages do.
+    func testAProviderNoticeLineCountsItsRepeats() async throws {
+        let rig = try await makeRig(look: .nativeDark)
+        await rig.transport.enableSnapshots()
+        let notice = { (id: String, text: String) in ChatEvent.itemCompleted(ChatItem(id: id, status: .completed, body: .notice(level: .warning, text: text, kind: "api_retry"))) }
+        await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "u1", status: .completed, body: .userMessage("go"))),
+                                            notice("r1", "Retrying in 1 s"), notice("r2", "Retrying in 2 s"), notice("r3", "Retrying in 4 s")])
+        _ = try await openChat(rig)
+        await eventually("one line") { rig.layout.frames["banner-notice-kind:api_retry"] != nil }
+        var text = ""
+        await eventually("drawn") {
+            text = (try? self.renderedText(rig, in: rig.layout.frames["banner-notice-kind:api_retry"] ?? .zero)) ?? ""
+            return text.contains("×3")
+        }
+        XCTAssertTrue(text.contains("4 s"), "the latest: \(text)")
+        XCTAssertTrue(text.contains("×3"), "with how often: \(text)")
+        await finish(rig)
+    }
+
+    // MARK: Shared tabs
+
+    private let userChatID = "dddddddd-3333-4333-8333-333333333333", workerChatID = "eeeeeeee-4444-4444-8444-444444444444"
+    private func sharedChats() -> [ChatInfo] {
+        [ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Project orchestrator", createdAtUnix: 10, state: .idle),
+         ChatInfo(id: userChatID, provider: .codex, projectID: project, cwd: "/fixture", title: "User chat", createdAtUnix: 20, state: .idle),
+         ChatInfo(id: workerChatID, provider: .codex, projectID: project, cwd: "/fixture", title: "Worker chat", createdAtUnix: 30, state: .idle)]
+    }
+    /// A pinned orchestrator chat, a user chat with a hidden worker chat, and the fixture shell.
+    private func sharedRig() async throws -> Rig {
+        let rig = try await makeRig(chats: sharedChats())
+        await rig.transport.setSharedTabs([
+            .init(key: "chat:\(chatID)", kind: "chat", title: "Project orchestrator", pinned: true),
+            .init(key: "chat:\(userChatID)", kind: "chat", title: "Shared title"),
+            .init(key: "chat:\(workerChatID)", kind: "chat", title: "Worker chat", status: "waiting", hidden: true, worker: true, parent: "chat:\(userChatID)"),
+            .init(key: "shell:\(ChatTransport.shell)", kind: "shell", title: "zsh")])
+        // The shared list is offered from the next connection on.
+        await rig.model.disconnect(); await rig.model.connect()
+        await eventually("the shared list is in") { rig.model.desktopFeatures.tabs && rig.model.sharedTabs != nil && rig.model.tabs.count == 3 }
+        return rig
+    }
+
+    func testTheRowDrawsTheSharedListInItsOrderWithoutHiddenWorkers() async throws {
+        let rig = try await sharedRig()
+        XCTAssertEqual(rig.model.tabs.map(\.id), [chatID, userChatID, ChatTransport.shell], "shared order; the hidden worker is not a tab")
+        XCTAssertEqual(rig.model.tabs[1].chatInfo?.title, "Shared title", "the shared title")
+        await eventually("the row is drawn with drag targets") { rig.layout.frames["tab-chat:\(self.chatID)"] != nil && rig.layout.frames["tab-shell:\(ChatTransport.shell)"] != nil }
+        let first = try XCTUnwrap(rig.layout.frames["tab-chat:\(chatID)"]), last = try XCTUnwrap(rig.layout.frames["tab-shell:\(ChatTransport.shell)"])
+        XCTAssertLessThan(first.minX, last.minX)
+        XCTAssertEqual(SharedTabStrip.openable(rig.model.sharedTabs).map(\.tab.key), ["chat:\(workerChatID)"], "the picker offers the worker")
+        // Opening it: tabs.open, shown here (and on the Mac), and on screen.
+        try await rig.model.openTab("chat:\(workerChatID)")
+        let opens = await rig.transport.params(of: "tabs.open")
+        XCTAssertEqual(opens.last?["key"]?.string, "chat:\(workerChatID)")
+        XCTAssertEqual(rig.model.selectedChatID, workerChatID)
+        XCTAssertTrue(rig.model.tabs.contains { $0.id == self.workerChatID })
+        await finish(rig)
+    }
+
+    func testWithoutSharedTabsTheOldStripStays() async throws {
+        let rig = try await makeRig(chats: sharedChats())
+        await eventually("the strip is up") { rig.model.tabs.count == 4 }
+        XCTAssertFalse(rig.model.desktopFeatures.tabs)
+        XCTAssertNil(rig.model.sharedTabs)
+        XCTAssertTrue(rig.model.tabs.contains { $0.id == self.workerChatID }, "an older desktop: every chat is a tab")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(rig.layout.frames.keys.contains { $0.hasPrefix("tab-") }, "no reordering without the shared list")
+        let calls = await rig.transport.calls.map(\.method)
+        XCTAssertFalse(calls.contains { $0.hasPrefix("tabs.") }, "nothing asked of a desktop that does not offer it")
+        do { try await rig.model.moveTab("chat:\(userChatID)", before: nil); XCTFail("refused") } catch {}
+        await finish(rig)
+    }
+
+    func testMovesPinsAndRenamesAreOneUpdateEachAndTheReplyIsTheRow() async throws {
+        let rig = try await sharedRig()
+        let shared = try XCTUnwrap(rig.model.sharedTabs)
+        let all = Dictionary(shared.allEntries.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        let shell = try XCTUnwrap(all["shell:\(ChatTransport.shell)"]), user = try XCTUnwrap(all["chat:\(userChatID)"]), pinned = try XCTUnwrap(all["chat:\(chatID)"])
+        XCTAssertNil(SharedTabStrip.move(shell, onto: pinned, in: shared), "a drop into the pinned group is not sent")
+        try await rig.model.updateTabs(try XCTUnwrap(SharedTabStrip.move(shell, onto: user, in: shared)))
+        var updates = await rig.transport.params(of: "tabs.update")
+        XCTAssertEqual(updates.last?["update"], .object(["action": .string("move"), "key": .string(shell.key), "before": .string(user.key)]))
+        XCTAssertEqual(rig.model.tabs.map(\.id), [chatID, ChatTransport.shell, userChatID], "the authoritative reply is the row")
+        try await rig.model.pinTab(user.key)
+        XCTAssertEqual(rig.model.sharedTabs?.allEntries.first { $0.key == user.key }?.pinned, true)
+        try await rig.model.renameTab(user.key, title: "Renamed")
+        XCTAssertEqual(rig.model.tabs.first { $0.id == self.userChatID }?.chatInfo?.title, "Renamed")
+        updates = await rig.transport.params(of: "tabs.update")
+        XCTAssertEqual(updates.count, 3)
+        await finish(rig)
+    }
+
+    func testClosingFollowsTheSettingAndAWorkerOnlyEverDetaches() async throws {
+        let rig = try await sharedRig()
+        func commands() async -> [String] { await rig.transport.commands().compactMap { $0["command"].string } }
+        // Ask: nothing changes until the sheet's choice.
+        rig.model.tabCloseBehavior = .ask
+        let asked = try await rig.model.closeTab("chat:\(userChatID)")
+        XCTAssertFalse(asked)
+        var hides = await rig.transport.params(of: "tabs.update").filter { $0["update"]?["action"].string == "hide" }
+        XCTAssertTrue(hides.isEmpty, "Ask changes nothing by itself")
+        // The sheet's Detach: hidden, the chat keeps running.
+        _ = try await rig.model.closeTab("chat:\(userChatID)", choice: .detach)
+        hides = await rig.transport.params(of: "tabs.update").filter { $0["update"]?["action"].string == "hide" }
+        XCTAssertEqual(hides.count, 1)
+        let afterDetach = await commands()
+        XCTAssertFalse(afterDetach.contains("stop"), "Detach stops nothing")
+        XCTAssertFalse(rig.model.tabs.contains { $0.id == self.userChatID })
+        // A worker, opened and then closed with Exit set: it only detaches.
+        try await rig.model.openTab("chat:\(workerChatID)")
+        rig.model.tabCloseBehavior = .exit
+        _ = try await rig.model.closeTab("chat:\(workerChatID)")
+        let afterWorker = await commands()
+        XCTAssertFalse(afterWorker.contains("stop"), "a worker is never stopped by closing its tab")
+        // A user tab with Exit: hidden and stopped.
+        try await rig.model.openTab("chat:\(userChatID)")
+        _ = try await rig.model.closeTab("chat:\(userChatID)")
+        let afterExit = await commands()
+        XCTAssertTrue(afterExit.contains("stop"), "Exit stops the chat (its history stays)")
+        // A pinned tab is unpinned before it can be closed.
+        let pinned = try XCTUnwrap(rig.model.sharedTabs?.allEntries.first { $0.key == "chat:\(self.chatID)" })
+        XCTAssertEqual(SharedTabStrip.closePlan(pinned, setting: .exit), .unpinFirst)
+        await finish(rig)
+    }
+
+    /// A Hide that fails ends the whole close: the tab stays, nothing is stopped, and the failure is said.
+    func testAFailedHideAbortsTheCloseAndStopsNothing() async throws {
+        let rig = try await sharedRig()
+        rig.model.selectChat(userChatID)
+        await eventually("on screen") { rig.model.selectedChatID == self.userChatID }
+        await rig.transport.failNextTabUpdate(.rpc(code: "cli_error", message: "The tab list could not be saved"))
+        do { _ = try await rig.model.closeTab("chat:\(userChatID)", choice: .exit); XCTFail("the close fails") } catch {}
+        let stops = await rig.transport.commands().compactMap { $0["command"].string }.filter { $0 == "stop" }
+        XCTAssertTrue(stops.isEmpty, "no Exit after a failed Hide")
+        XCTAssertTrue(rig.model.tabs.contains { $0.id == self.userChatID }, "the tab stays")
+        XCTAssertEqual(rig.model.selectedChatID, userChatID)
+        await finish(rig)
+    }
+    /// A desktop whose tab store was reset (a new epoch) is believed even at a lower revision.
+    func testAResetTabStoreIsAcceptedAtALowerRevision() async throws {
+        let rig = try await sharedRig()
+        for _ in 0..<3 { try await rig.model.moveTab("shell:\(ChatTransport.shell)", before: "chat:\(userChatID)"); try await rig.model.moveTab("shell:\(ChatTransport.shell)", before: nil) }
+        let before = try XCTUnwrap(rig.model.sharedTabs?.revision)
+        XCTAssertGreaterThan(before, 1)
+        await rig.transport.resetTabStore([.init(key: "chat:\(userChatID)", kind: "chat", title: "After reset"), .init(key: "shell:\(ChatTransport.shell)", kind: "shell", title: "zsh")])
+        try await rig.model.listTabs()
+        XCTAssertEqual(rig.model.sharedTabs?.revision, 1)
+        XCTAssertEqual(rig.model.tabs.map(\.id), [userChatID, ChatTransport.shell])
+        await finish(rig)
+    }
+
+    /// With shared tabs, an opened worker's shell can never be closed (`shell.close`) from the phone: its tab only detaches, from the
+    /// menu, the VoiceOver action or the model, and the terminal's own Close is not offered.
+    func testAnOpenedWorkerShellNeverReachesShellClose() async throws {
+        let rig = try await makeRig(chats: sharedChats())
+        await rig.transport.setSharedTabs([
+            .init(key: "chat:\(userChatID)", kind: "chat", title: "User chat"),
+            .init(key: "shell:\(ChatTransport.shell)", kind: "shell", title: "worker zsh", worker: true, parent: "chat:\(userChatID)")])
+        await rig.model.disconnect(); await rig.model.connect()
+        await eventually("the shared list is in") { rig.model.sharedTabs != nil && rig.model.tabs.contains { $0.id == ChatTransport.shell } }
+        let shell = try XCTUnwrap(rig.model.sessions.first { $0.id == ChatTransport.shell })
+        // The model refuses the terminal's own close for a worker.
+        let refused = await rig.model.closeTerminal(shell)
+        XCTAssertNotNil(refused)
+        // Every setting: the tab detaches.
+        for setting in TabCloseBehavior.allCases {
+            rig.model.tabCloseBehavior = setting
+            _ = try await rig.model.closeTab("shell:\(ChatTransport.shell)", choice: setting == .ask ? .exit : nil)
+            try await rig.model.openTab("shell:\(ChatTransport.shell)")
+        }
+        // The VoiceOver action on its tab is the tab's close, not the terminal's.
+        rig.model.tabCloseBehavior = .exit
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(customActions(named: "Close terminal", in: rig.host.view).isEmpty, "no terminal Close for a shared tab")
+        let detach = customActions(named: "Close (detach)", in: rig.host.view)
+        XCTAssertFalse(detach.isEmpty, "its tab offers the detach")
+        let hidesBefore = await rig.transport.params(of: "tabs.update").filter { $0["update"]?["action"].string == "hide" }.count
+        if let action = detach.first { _ = action.actionHandler?(action) }
+        await eventually("hidden") { await rig.transport.params(of: "tabs.update").filter { $0["update"]?["action"].string == "hide" }.count == hidesBefore + 1 }
+        // A desktop that shares tabs but whose list could not be read: the terminal's own close stays refused, and is not offered.
+        rig.model.sharedTabs = nil
+        let unknown = await rig.model.closeTerminal(shell)
+        XCTAssertNotNil(unknown, "no Exit while the tab list is unavailable")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(customActions(named: "Close terminal", in: rig.host.view).isEmpty)
+        let closes = await rig.transport.count("shell.close")
+        XCTAssertEqual(closes, 0, "shell.close never sent for a worker")
+        await finish(rig)
+    }
+
+    /// A Hide whose answer comes back on another connection ends the close: nothing is stopped through the new one.
+    func testACloseWhoseHideOutlivesItsConnectionStopsNothing() async throws {
+        let rig = try await sharedRig()
+        rig.model.tabCloseBehavior = .exit
+        await rig.transport.hold(["tabs.update"])
+        let close = Task { try await rig.model.closeTab("chat:\(self.userChatID)") }
+        await eventually("the Hide is on its way") { await rig.transport.count("tabs.update") == 1 }
+        // The connection ends (a new generation) and the Hide's answer arrives only then; the disconnect itself may wait behind it.
+        let old = rig.model.generation
+        let release = Task { @MainActor in
+            while rig.model.generation == old { try? await Task.sleep(for: .milliseconds(3)) }
+            await rig.transport.releaseHeld()
+        }
+        await rig.model.disconnect()
+        await release.value
+        do { _ = try await close.value; XCTFail("the close ends") } catch { XCTAssertEqual(error as? TabCloseError, .connectionChanged) }
+        await rig.model.connect()
+        let stops = await rig.transport.commands().compactMap { $0["command"].string }.filter { $0 == "stop" }
+        XCTAssertTrue(stops.isEmpty, "no Stop through the new connection")
+        await finish(rig)
+    }
+
+    /// A quiet refresh whose reads started before a chat was made (and selected) and whose answers arrive after it is older than the
+    /// screen: it is dropped, and the new tab stays selected.
+    func testAnOverlappingOlderRefreshDoesNotClearANewlySelectedTab() async throws {
+        let rig = try await sharedRig()
+        await rig.transport.hold(["chats.list", "shells.list", "tabs.list"])
+        let refresh = Task { await rig.model.refreshSessionsQuietly() }
+        await eventually("the refresh's reads are out") { await rig.transport.count("tabs.list") >= 2 && rig.model.chatSupport != .unsupported }
+        try await Task.sleep(for: .milliseconds(100))
+        // A chat made meanwhile: its list and membership are installed, and it is selected.
+        let made = "ffffffff-6666-4666-8666-666666666666"
+        await rig.transport.setChats(sharedChats() + [ChatInfo(id: made, provider: .claude, projectID: project, cwd: "/fixture", title: "Just made", createdAtUnix: 50, state: .idle)])
+        await rig.transport.peerChange { $0.append(.init(key: "chat:\(made)", kind: "chat", title: "Just made")) }
+        await rig.model.refreshChatsQuietly()
+        try await rig.model.listTabs()
+        rig.model.selectChat(made)
+        XCTAssertEqual(rig.model.selectedChatID, made)
+        // The older refresh lands now.
+        await rig.transport.releaseHeld()
+        await refresh.value
+        XCTAssertEqual(rig.model.selectedChatID, made, "the new tab stays selected")
+        XCTAssertTrue(rig.model.tabs.contains { $0.id == made })
+        await finish(rig)
+    }
+
+    /// An orchestrator is detached from the phone, never exited: Exit is refused before anything is hidden.
+    func testAnOrchestratorIsNeverExited() async throws {
+        let rig = try await sharedRig()
+        let orchestrator = "{\"id\":\"99999999-9999-4999-8999-999999999999\",\"project_id\":\"\(project)\",\"worktree_id\":null,\"kind\":\"orchestrator\",\"cwd\":\"/fixture\",\"harness\":null,\"alive\":true,\"created_at_unix\":3,\"mode\":\"chat\",\"chat_id\":\"\(userChatID)\",\"provider\":\"codex\"}"
+        await rig.transport.setOrchestrators([orchestrator])
+        await rig.model.refresh()
+        let entry = try XCTUnwrap(rig.model.sharedTabs?.allEntries.first { $0.key == "chat:\(self.userChatID)" })
+        await eventually("known as an orchestrator") { rig.model.isOrchestrator(entry) }
+        XCTAssertEqual(SharedTabStrip.closePlan(entry, setting: .exit, orchestrator: true), .ask(exitAllowed: false))
+        let updatesBefore = await rig.transport.count("tabs.update")
+        do { _ = try await rig.model.closeTab(entry.key, choice: .exit); XCTFail("refused") } catch { XCTAssertEqual(error as? TabCloseError, .orchestratorExit) }
+        rig.model.tabCloseBehavior = .exit
+        do { _ = try await rig.model.closeTab(entry.key); XCTFail("refused") } catch { XCTAssertEqual(error as? TabCloseError, .orchestratorExit) }
+        let updatesAfter = await rig.transport.count("tabs.update")
+        XCTAssertEqual(updatesAfter, updatesBefore, "nothing hidden")
+        // Detach is allowed.
+        _ = try await rig.model.closeTab(entry.key, choice: .detach)
+        let stops = await rig.transport.commands().compactMap { $0["command"].string }.filter { $0 == "stop" }
+        XCTAssertTrue(stops.isEmpty)
+        await finish(rig)
+    }
+
+    /// Closing a worker's shell tab and opening it again (the only terminal, so nothing is selected in between) settles: no layout loop
+    /// (the status strip used to change height by a fraction of a point between Stale and Live, which could flip the terminal's rows
+    /// and the state again without end, freezing the app).
+    func testReopeningAClosedShellTabSettles() async throws {
+        let rig = try await makeRig(chats: sharedChats())
+        await rig.transport.setSharedTabs([
+            .init(key: "chat:\(userChatID)", kind: "chat", title: "User chat"),
+            .init(key: "shell:\(ChatTransport.shell)", kind: "shell", title: "worker zsh", worker: true, parent: "chat:\(userChatID)")])
+        await rig.model.disconnect(); await rig.model.connect()
+        await eventually("the shared list is in") { rig.model.sharedTabs != nil && rig.model.tabs.contains { $0.id == ChatTransport.shell } }
+        final class Flag { var done = false }
+        let flag = Flag()
+        Task { @MainActor in
+            for setting in TabCloseBehavior.allCases {
+                rig.model.tabCloseBehavior = setting
+                _ = try? await rig.model.closeTab("shell:\(ChatTransport.shell)", choice: setting == .ask ? .exit : nil)
+                try? await rig.model.openTab("shell:\(ChatTransport.shell)")
+            }
+            flag.done = true
+        }
+        await eventually("closing and reopening settles", timeout: 10) { flag.done }
+        XCTAssertEqual(rig.model.sessionID, ChatTransport.shell)
+        // And the screen is still answering: a later frame is drawn.
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(flag.done)
+        await finish(rig)
+    }
+
+    /// Choosing the terminal that is already on screen (its own tab, or opening it from the picker) changes nothing: no new read, the
+    /// line being typed is kept, and it returns at once.
+    func testChoosingTheTerminalAlreadyOnScreenIsANoOp() async throws {
+        let rig = try await makeRig(chats: sharedChats())
+        await rig.transport.setSharedTabs([.init(key: "shell:\(ChatTransport.shell)", kind: "shell", title: "zsh")])
+        await rig.model.disconnect(); await rig.model.connect()
+        await eventually("on screen") { rig.model.sharedTabs != nil && rig.model.sessionID == ChatTransport.shell && rig.model.outputSessionID == ChatTransport.shell }
+        let shell = try XCTUnwrap(rig.model.sessions.first { $0.id == ChatTransport.shell })
+        rig.model.draft = "half a command"
+        let reads = await rig.transport.count("shell.output")
+        let started = ContinuousClock.now
+        await rig.model.chooseSession(shell)
+        try await rig.model.openTab("shell:\(ChatTransport.shell)")
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(2))
+        XCTAssertEqual(rig.model.draft, "half a command", "the line being typed is kept")
+        XCTAssertEqual(rig.model.sessionID, ChatTransport.shell)
+        let after = await rig.transport.count("shell.output")
+        XCTAssertLessThanOrEqual(after - reads, 1, "no read of its own (a live poll may land meanwhile)")
+        await finish(rig)
+    }
+
+    /// A reconnect: while the new connection's capabilities and tab list are still on their way, no close is offered and the terminal's
+    /// own close is refused; a confirmation asked before the reconnect does not close anything after it (a user shell goes by its tab
+    /// once the desktop shares tabs); a shell once seen as a worker is never closed, even by a desktop that no longer shares tabs.
+    func testAReconnectNeverLetsATerminalCloseReachShellClose() async throws {
+        for worker in [true, false] {
+            let rig = try await makeRig(chats: sharedChats())
+            await rig.transport.setSharedTabs([
+                .init(key: "chat:\(userChatID)", kind: "chat", title: "User chat"),
+                .init(key: "shell:\(ChatTransport.shell)", kind: "shell", title: "zsh", worker: worker, parent: worker ? "chat:\(userChatID)" : nil)])
+            await rig.model.disconnect(); await rig.model.connect()
+            await eventually("shared list in") { rig.model.sharedTabs != nil && rig.model.capabilitiesKnown }
+            let shell = try XCTUnwrap(rig.model.sessions.first { $0.id == ChatTransport.shell })
+            XCTAssertFalse(rig.model.legacyCloseAvailable(shell), "worker=\(worker): the terminal's own close is not offered with shared tabs")
+            let epoch = rig.model.connectionEpoch
+            // A reconnect whose tab list is held back: the window before the capabilities are known.
+            await rig.model.disconnect()
+            await rig.transport.hold(["tabs.list"])
+            let reconnect = Task { await rig.model.connect() }
+            await eventually("connected, capabilities pending") { rig.model.state == .connected && !rig.model.capabilitiesKnown }
+            XCTAssertGreaterThan(rig.model.connectionEpoch, epoch, "a pending confirmation is dropped")
+            XCTAssertFalse(rig.model.legacyCloseAvailable(shell), "worker=\(worker): nothing offered while capabilities are unknown")
+            // The confirmation asked before the reconnect lands now.
+            let during = await rig.model.closeTerminal(shell)
+            XCTAssertNotNil(during, "worker=\(worker): refused while unknown")
+            await rig.transport.releaseHeld()
+            await reconnect.value
+            XCTAssertTrue(rig.model.capabilitiesKnown)
+            let after = await rig.model.closeTerminal(shell)
+            XCTAssertNotNil(after, "worker=\(worker): with shared tabs it goes by its tab")
+            if worker {
+                // A desktop that no longer shares tabs: a shell once a worker is still never closed from here.
+                await rig.model.disconnect(); await rig.transport.setTabsFeature(false); await rig.model.connect()
+                await eventually("capabilities known") { rig.model.capabilitiesKnown && !rig.model.desktopFeatures.tabs }
+                XCTAssertFalse(rig.model.legacyCloseAvailable(shell))
+                let legacy = await rig.model.closeTerminal(shell)
+                XCTAssertNotNil(legacy)
+            }
+            let closes = await rig.transport.count("shell.close")
+            XCTAssertEqual(closes, 0, "worker=\(worker): shell.close never sent")
+            await finish(rig)
+        }
+    }
+
+    func testTheSettingIsThisDevicesAndKeptUnderItsKey() async throws {
+        let rig = try await makeRig()
+        XCTAssertEqual(rig.model.tabCloseBehavior, .ask, "Ask until chosen")
+        rig.model.tabCloseBehavior = .detach
+        XCTAssertEqual(rig.defaults.string(forKey: "tab_close_behavior"), "detach")
+        let suite = try XCTUnwrap(defaultsNames.last)
+        await finish(rig)
+        let again = try await makeRig(defaults: suite)
+        XCTAssertEqual(again.model.tabCloseBehavior, .detach)
+        await finish(again)
+    }
+
+    /// A change on the Mac (order, title, a tab opened there) is in the row at the next refresh, and the tab on screen stays on screen.
+    func testPeerChangesArriveWithoutDisturbingTheSelectedTab() async throws {
+        let rig = try await sharedRig()
+        rig.model.selectChat(userChatID)
+        await eventually("on screen") { rig.model.selectedChatID == self.userChatID }
+        let worker = "chat:\(workerChatID)", user = "chat:\(userChatID)"
+        await rig.transport.peerChange { tabs in
+            let shell = tabs.remove(at: tabs.firstIndex { $0.kind == "shell" }!)
+            tabs.insert(shell, at: 1)
+            if let i = tabs.firstIndex(where: { $0.key == user }) { tabs[i].title = "Renamed on the Mac" }
+            if let i = tabs.firstIndex(where: { $0.key == worker }) { tabs[i].hidden = false }
+        }
+        await eventually("the next refresh has it", timeout: 8) { rig.model.tabs.first { $0.id == self.userChatID }?.chatInfo?.title == "Renamed on the Mac" }
+        XCTAssertEqual(rig.model.tabs.map(\.id), [chatID, ChatTransport.shell, userChatID, workerChatID])
+        XCTAssertEqual(rig.model.selectedChatID, userChatID, "the selected tab is left alone")
+        await finish(rig)
+    }
+
+    // MARK: Messages of the moment
+
+    /// The provider's notices are not transcript rows: the latest of each kind of this turn is one banner line above the composer,
+    /// replaced in place when it recurs, closed with ×, back only when said again, and all of them are in the history.
+    func testProviderNoticesAreOneBannerPerKindAboveTheComposer() async throws {
+        let rig = try await makeRig(look: .nativeDark)
+        await rig.transport.enableSnapshots()
+        let notice = { (id: String, text: String, kind: String) in ChatEvent.itemCompleted(ChatItem(id: id, status: .completed, body: .notice(level: .warning, text: text, kind: kind))) }
+        await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "u1", status: .completed, body: .userMessage("go"))),
+                                            notice("n1", "Reconnecting… 1/5", "reconnecting"), notice("n2", "This account is close to the weekly usage limit", "rate_limit:seven_day")])
+        let field = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        await eventually("two notice lines") { rig.layout.frames.keys.filter { $0.hasPrefix("banner-notice-") }.count == 2 }
+        let scroll = try XCTUnwrap(transcriptScroll(rig))
+        XCTAssertFalse(try renderedTranscriptText(rig, scroll: scroll).contains("Reconnecting"), "not a transcript row")
+        let banners = try XCTUnwrap(rig.layout.frames["banners"])
+        XCTAssertLessThanOrEqual(banners.maxY, field.convert(field.bounds, to: rig.window).minY + 1, "directly above the composer")
+        XCTAssertGreaterThanOrEqual(banners.minY, scroll.convert(scroll.bounds, to: rig.window).maxY - 1, "under the transcript")
+        // It recurs: the same line says the new text.
+        await rig.transport.append(chatID, [notice("n3", "Reconnecting… 2/5", "reconnecting")])
+        await eventually("replaced in place") { (try? self.renderedText(rig, in: rig.layout.frames.first { $0.key == "banner-notice-kind:reconnecting" }?.value ?? .zero).contains("2/5")) == true }
+        XCTAssertEqual(rig.layout.frames.keys.filter { $0.hasPrefix("banner-notice-") }.count, 2, "not stacked")
+        // ×: closed, until the provider says it again.
+        let closeKey = try XCTUnwrap(rig.layout.actions.keys.first { $0 == "close-notice-kind:reconnecting" })
+        rig.layout.actions[closeKey]?()
+        await eventually("closed") { rig.layout.frames["banner-notice-kind:reconnecting"] == nil }
+        XCTAssertGreaterThanOrEqual(rig.layout.frames["close-notice-kind:rate_limit:seven_day"]?.width ?? 0, 44, "a full target")
+        await rig.transport.append(chatID, [notice("n4", "Reconnecting… 3/5", "reconnecting")])
+        await eventually("back when said again") { rig.layout.frames["banner-notice-kind:reconnecting"] != nil }
+        // A new turn: last turn's notices go to the history.
+        await rig.transport.append(chatID, [.itemCompleted(ChatItem(id: "u2", status: .completed, body: .userMessage("again")))])
+        await eventually("history only") { !rig.layout.frames.keys.contains { $0.hasPrefix("banner-notice-") } }
+        XCTAssertEqual(ChatNotices.all(conversation.transcript.items).count, 4)
+        await finish(rig)
+    }
+
+    /// The phone's own messages: one line per source, replaced in place, with ×, gone by themselves when the cause is resolved.
+    func testThePhonesMessagesReplaceInPlaceCloseAndGoWhenResolved() async throws {
+        let rig = try await makeRig()
+        _ = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        // An older desktop (no snapshots): the loading note goes when its history is in.
+        await eventually("the legacy note goes once the history is loaded") { conversation.feed.loaded && !conversation.legacyLoading && conversation.alerts.text(.desktop) == nil }
+        conversation.notice = "Couldn’t send: busy"
+        conversation.notice = "Couldn’t send: busy"
+        await eventually("one line") { rig.layout.frames["banner-alert-action"] != nil }
+        XCTAssertEqual(conversation.alerts.items.count, 1)
+        XCTAssertEqual(conversation.alerts.items.first?.repeats, 2, "a recurring error counts up in its one line")
+        try XCTUnwrap(rig.layout.actions["close-alert-action"])()
+        await eventually("closed with ×") { rig.layout.frames["banner-alert-action"] == nil && conversation.notice == nil }
+        // The link: said while down, gone when back, without being closed.
+        await rig.model.disconnect()
+        await eventually("not connected is said") { rig.layout.frames["banner-status"] != nil }
+        await rig.model.connect()
+        await eventually("and goes when the link is back") { rig.layout.frames["banner-status"] == nil }
+        await finish(rig)
+    }
+
+    /// A shell's error is said in the same line, above its input, with ×, in focus mode too.
+    func testAShellErrorIsABannerLineAboveTheInputWithClose() async throws {
+        let rig = try await makeRig()
+        rig.model.error = "Desktop disconnected. Reconnect to refresh output."
+        await eventually("the line is there") { rig.layout.frames["banner-shell-error"] != nil }
+        rig.model.setFocusMode(true)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNotNil(rig.layout.frames["banner-shell-error"], "in focus mode too")
+        XCTAssertGreaterThanOrEqual(rig.layout.frames["close-shell-error"]?.width ?? 0, 44)
+        try XCTUnwrap(rig.layout.actions["close-shell-error"])()
+        await eventually("closed") { rig.model.error == nil && rig.layout.frames["banner-shell-error"] == nil }
+        rig.model.setFocusMode(false)
+        await finish(rig)
+    }
+
     private func listStartReading(_ scroll: UIScrollView) { scroll.delegate?.scrollViewWillBeginDragging?(scroll) }
-    private func assertLatestOutsideTranscript(_ rig: Rig, scroll: UIScrollView, file: StaticString = #filePath, line: UInt = #line) throws {
+    /// Latest floats over the transcript's bottom edge (it has no row of its own, which left a dead band above the composer), and the
+    /// transcript reaches down to what is under it.
+    private func assertLatestOverTranscriptBottom(_ rig: Rig, scroll: UIScrollView, file: StaticString = #filePath, line: UInt = #line) throws {
         let latest = try XCTUnwrap(rig.layout.frames["latest"], file: file, line: line)
         XCTAssertEqual(rig.layout.visible["latest"], true, file: file, line: line)
         let transcript = scroll.convert(scroll.bounds, to: rig.window)
-        XCTAssertGreaterThanOrEqual(latest.minY, transcript.maxY - 1, "Latest cannot cover any visible transcript text", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(latest.minY, transcript.minY, "Latest is over the transcript", file: file, line: line)
+        XCTAssertLessThanOrEqual(latest.maxY, transcript.maxY + 0.5, "Latest stays inside the transcript", file: file, line: line)
+        XCTAssertLessThanOrEqual(transcript.maxY - latest.maxY, 12, "Latest sits on the transcript's bottom edge", file: file, line: line)
         let field = try XCTUnwrap(composer(rig), file: file, line: line)
         XCTAssertLessThanOrEqual(latest.maxY, field.convert(field.bounds, to: rig.window).minY + 1, file: file, line: line)
     }
@@ -955,6 +1726,9 @@ import RiWorkCore
         _ = try await openChat(rig)
         await eventually("fresh chat loaded") { rig.model.conversation(self.chatID).transcript.items.count == 12 }
         try await Task.sleep(for: .milliseconds(400))
+        // The banner row's note about an older desktop goes once its history is in, and the transcript grows into its room: match the
+        // scroll view to the measured frame once both have settled.
+        await eventually("the transcript's frame has settled") { self.transcriptScroll(rig) != nil }
         let scroll = try XCTUnwrap(transcriptScroll(rig))
         await eventually("fresh loaded chat at valid bottom") { self.isAtValidBottom(scroll) }
         if jumpFirst {
@@ -1313,13 +2087,16 @@ import RiWorkCore
     /// those of the bars over the composer. (Over the keyboard the transcript can be shorter than a bar's, so size does not tell.)
     private func transcriptScroll(_ rig: Rig) -> UIScrollView? {
         guard let frame = rig.layout.frames["transcript"] else { return nil }
-        // Match the actual transcript viewport; compact tabs and nested horizontal output also use UIScrollView.
-        return descendants(UIScrollView.self, in: rig.host.view).first { scroll in
+        // Match the actual transcript viewport; compact tabs and nested horizontal output also use UIScrollView. Its top and width
+        // identify it; its height is the scroll view's own (the measured one can lag a line of the banner row going away).
+        let candidates = descendants(UIScrollView.self, in: rig.host.view).filter { scroll in
             guard !(scroll is UITextView), scroll.window != nil else { return false }
             let actual = scroll.convert(scroll.bounds, to: rig.window)
-            return abs(actual.minY - frame.minY) < 1 && abs(actual.width - frame.width) < 1 && abs(actual.height - frame.height) < 1
+            return abs(actual.minY - frame.minY) < 1 && abs(actual.width - frame.width) < 1 && actual.height > 40
         }
+        return candidates.max { $0.bounds.height < $1.bounds.height }
     }
+
     private func questionAndStatusLines(_ look: Look, height: CGFloat = 874, name: String = "chat-question-failed") async throws -> Rig {
         let rig = try await makeRig(chats: [chat(state: .failed("the process exited with status 1"))], height: height, look: look)
         await rig.transport.append(chatID, [
@@ -1466,6 +2243,20 @@ import RiWorkCore
         while !FileManager.default.fileExists(atPath: shot.path), Date() < deadline { try await Task.sleep(for: .milliseconds(250)) }
         try? FileManager.default.removeItem(at: ready)
     }
+    /// The VoiceOver custom actions named `name` anywhere on the screen.
+    private func customActions(named name: String, in view: UIView) -> [UIAccessibilityCustomAction] {
+        var seen = Set<ObjectIdentifier>(), budget = 6000, found: [UIAccessibilityCustomAction] = []
+        func search(_ element: NSObject) {
+            guard budget > 0, seen.insert(ObjectIdentifier(element)).inserted else { return }
+            budget -= 1
+            if (element as? UIView)?.isHidden == true { return }
+            found += (element.accessibilityCustomActions ?? []).filter { $0.name == name }
+            ((element.accessibilityElements as? [NSObject]) ?? []).forEach(search)
+            (element as? UIView)?.subviews.forEach(search)
+        }
+        search(view)
+        return found
+    }
     /// Activates the accessibility element with `label` on the screen, as VoiceOver's double tap does.
     private func activate(_ label: String, in view: UIView) -> Bool {
         // The tree is walked once, each node at most once and only so far: the terminal's views can expose a great many elements.
@@ -1503,16 +2294,39 @@ import RiWorkCore
             try await Task.sleep(for: .milliseconds(300))
             XCTAssertFalse(rig.model.theme.style.mic, "\(look): off by default, as with a Mac that predates the setting")
             let off = try XCTUnwrap(width(of: ChatComposerTextView.self, in: rig))
+            XCTAssertNil(rig.layout.frames["mic"], "\(look): no mic")
+            XCTAssertNotNil(rig.layout.frames["send"], "\(look): Send, greyed, holds the field's action slot")
             try snapshot(rig, name: named("chat-composer-mic-off", look))
             await setMic(rig, true, look: look, updated: 1_790_000_100)
-            // The mic is 44 points wide, with the row's 4-point spacing.
-            await eventually("\(look): the mic is there") { abs((self.width(of: ChatComposerTextView.self, in: rig) ?? 0) - (off - 48)) < 1 }
+            // With nothing typed the mic takes Send's slot: the field keeps its width.
+            await eventually("\(look): the mic is there") { rig.layout.frames["mic"] != nil && rig.layout.frames["send"] == nil }
+            XCTAssertEqual(try XCTUnwrap(width(of: ChatComposerTextView.self, in: rig)), off, accuracy: 1, "\(look): in the same slot")
+            XCTAssertGreaterThanOrEqual(rig.layout.frames["mic"]?.width ?? 0, 44, "\(look): a full target")
+            rig.model.conversation(chatID).draft = "typed"
+            await eventually("\(look): typing brings Send back in its place") { rig.layout.frames["mic"] == nil && rig.layout.frames["send"] != nil }
+            rig.model.conversation(chatID).draft = ""
             try await Task.sleep(for: .milliseconds(300))
             try snapshot(rig, name: named("chat-composer-mic-on", look))
             await setMic(rig, false, look: look, updated: 1_790_000_200)
-            await eventually("\(look): and gone again, the field closing up") { abs((self.width(of: ChatComposerTextView.self, in: rig) ?? 0) - off) < 1 }
+            await eventually("\(look): and gone again") { rig.layout.frames["mic"] == nil && rig.layout.frames["send"] != nil }
+            XCTAssertEqual(try XCTUnwrap(width(of: ChatComposerTextView.self, in: rig)), off, accuracy: 1)
             await finish(rig)
         }
+    }
+    /// The composer's one action slot: what it holds in every state, Interrupt always reachable while the agent works.
+    func testTheComposerActionSlot() {
+        func slot(typed: Bool, busy: Bool, mic: Bool, dictating: Bool = false) -> [String] {
+            let actions = ComposerActions(typed: typed, busy: busy, mic: mic, dictating: dictating)
+            return [actions.stop ? "stop" : nil, actions.mic ? "mic" : nil, actions.send ? "send" : nil].compactMap { $0 }
+        }
+        XCTAssertEqual(slot(typed: false, busy: false, mic: true), ["mic"])
+        XCTAssertEqual(slot(typed: false, busy: false, mic: false), ["send"], "greyed, holding the slot")
+        XCTAssertEqual(slot(typed: true, busy: false, mic: true), ["send"])
+        XCTAssertEqual(slot(typed: false, busy: true, mic: true), ["stop"])
+        XCTAssertEqual(slot(typed: true, busy: true, mic: true), ["stop", "send"], "Interrupt stays beside Send")
+        XCTAssertEqual(slot(typed: true, busy: false, mic: true, dictating: true), ["mic"], "the mic stays while it listens, whatever is heard")
+        XCTAssertEqual(slot(typed: false, busy: true, mic: true, dictating: true), ["stop", "mic"])
+        XCTAssertEqual(slot(typed: false, busy: false, mic: false, dictating: true), ["mic"], "a dictation the setting has not ended yet keeps its button")
     }
     func testTurningTheSettingOffCancelsAChatDictationInProgress() async throws {
         let rig = try await makeRig(look: .nativeLight, mic: true)

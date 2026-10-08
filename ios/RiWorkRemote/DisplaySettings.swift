@@ -15,10 +15,13 @@ struct DisplaySettingsSheet: View {
         VStack(spacing: 0) {
             WorkspaceBar(title: style.cased("Display")) { Button("Done") { dismiss() } }
             List {
-                Section("Tabs") {
+                Section {
                     Picker("When closing a tab", selection: $model.tabCloseBehavior) {
                         ForEach(TabCloseBehavior.allCases) { Text($0.title).tag($0) }
                     }
+                    .accessibilityIdentifier("tab-close-behavior")
+                } header: { Text("Tabs") } footer: {
+                    Text("Ask shows Detach and Exit when you close a chat or shell you opened. Detach keeps it running on your Mac; Exit stops it (a chat keeps its history). A worker's tab always detaches. This iPhone only.")
                 }
 
                 Section {

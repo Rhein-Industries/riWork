@@ -62,7 +62,7 @@ extension RemoteModel {
     /// each tab's state is current. The selection is left alone; a terminal that went away is found by the live read, as before.
     func refreshSessionsQuietly() async {
         guard state == .connected, let project = projectID, loadedProjectID == project else { return }
-        let token = generation
+        let token = generation, stamp = inventoryStamp
         async let workers = try? rpc("shells.list", ["project_id": .string(project)])["shells"].decode([RemoteSession].self)
         async let managers = try? rpc("orchestrators.list")["orchestrators"].decode([RemoteSession].self)
         // The chats are tabs in the same strip, and have states of their own.
@@ -70,7 +70,10 @@ extension RemoteModel {
         async let talks = chatsOfProject(project)
         let (listedShells, listedManagers, listedChats, listedTabs) = await (workers, managers, talks, tabList)
         guard generation == token, projectID == project, loadedProjectID == project, state == .connected else { return }
-        if let listedTabs { acceptSharedTabs(listedTabs) }
+        // Something newer was installed while these were read (a chat or terminal made here, a tab change's reply): this read is older
+        // than the screen, its lists with it; the next refresh brings them. Its tab list is only believed if not older either.
+        guard inventoryStamp == stamp else { return }
+        if let listedTabs, !acceptSharedTabs(listedTabs) { return }
         if let listedChats { installChats(listedChats, project: project) }
         if let listedShells, listedShells != shells { shells = listedShells }
         if let listedManagers, listedManagers != orchestrators { orchestrators = listedManagers }

@@ -264,19 +264,23 @@ struct DictationButton: View {
     let insertion: TextInsertion
     var controller = DictationController.shared
     var isEnabled = true
+    /// Inside the chat composer's field: a smaller glyph in the same 44-point target.
+    var compact = false
+    /// Says a failure in an alert of its own; off where the screen says it in its banner row (the chat).
+    var alerts = true
 
     var body: some View {
         let phase = controller.phase(for: owner)
         HStack(spacing: 0) {
             if phase.isActive {
                 Button { controller.cancel() } label: {
-                    Image(systemName: "xmark.circle").font(.system(size: style.pt(20))).foregroundStyle(style.muted)
+                    Image(systemName: "xmark.circle").font(.system(size: style.pt(compact ? 17 : 20))).foregroundStyle(style.muted)
                 }
                 .buttonStyle(TargetButtonStyle(dims: false))
                 .accessibilityLabel("Cancel dictation").accessibilityHint("Takes out what was dictated")
                 .transition(.opacity)
             }
-            Button(action: toggle) { DictationGlyph(phase: phase, level: controller.level, size: 24) }
+            Button(action: toggle) { DictationGlyph(phase: phase, level: controller.level, size: compact ? 20 : 24) }
                 .buttonStyle(TargetButtonStyle(dims: false))
                 .disabled(!isEnabled && !phase.isActive)
                 .accessibilityLabel(phase.isActive ? "Stop dictation" : "Dictate")
@@ -285,7 +289,7 @@ struct DictationButton: View {
                 .accessibilityIdentifier("dictation.\(owner.identifier)")
         }
         .animation(.easeInOut(duration: 0.15), value: phase.isActive)
-        .dictationAlert(controller, owner: owner)
+        .dictationAlert(controller, owner: owner, enabled: alerts)
         // Another chat in the same composer, or the chat gone from the screen: its words must not land in the field now shown.
         .onChange(of: owner) { old, _ in if controller.isActive(for: old) { controller.cancel() } }
         .onDisappear { if controller.isActive(for: owner) { controller.cancel() } }
@@ -333,15 +337,16 @@ extension DictationOwner {
 
 extension View {
     /// Says why a dictation of `owner` stopped, with the way to Settings when a permission is off.
-    func dictationAlert(_ controller: DictationController, owner: DictationOwner) -> some View {
-        modifier(DictationAlert(controller: controller, owner: owner))
+    func dictationAlert(_ controller: DictationController, owner: DictationOwner, enabled: Bool = true) -> some View {
+        modifier(DictationAlert(controller: controller, owner: owner, enabled: enabled))
     }
 }
 private struct DictationAlert: ViewModifier {
     let controller: DictationController
     let owner: DictationOwner
+    let enabled: Bool
     func body(content: Content) -> some View {
-        let problem: DictationProblem? = if case .failed(let problem) = controller.phase(for: owner) { problem } else { nil }
+        let problem: DictationProblem? = if enabled, case .failed(let problem) = controller.phase(for: owner) { problem } else { nil }
         content.alert("Dictation", isPresented: Binding(get: { problem != nil }, set: { if !$0 { controller.dismiss() } })) {
             if problem?.opensSettings == true {
                 Button("Open Settings") {

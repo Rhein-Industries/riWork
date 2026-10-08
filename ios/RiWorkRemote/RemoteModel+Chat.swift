@@ -16,8 +16,10 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     var modelCatalogue: [ChatModelOption] = []
     var modelCatalogueSource: ChatCatalogueSource = .live
     var modelCatalogueRevision: UInt64 = 0
-    /// What the person has typed and not sent. Kept per chat, so changing tabs loses nothing.
-    var draft = ""
+    /// What the person has typed and not sent. Kept per chat, so changing tabs loses nothing, and saved as it changes
+    /// (`ChatDraftStore`), so leaving the project, the background, a dropped link or a relaunch lose nothing either.
+    var draft = "" { didSet { if draft != oldValue { onDraftChange?(draft) } } }
+    @ObservationIgnored var onDraftChange: ((String) -> Void)?
     /// The cards the person opened (command output, diffs, reasoning), by item id. Kept here because rows come and go as the list scrolls.
     var expanded: Set<String> = []
     /// The mode just chosen, shown until the desktop says so itself.
@@ -31,8 +33,17 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     var sending = false
     /// Requests whose answer is on its way, or has been given and not yet confirmed by the desktop: they leave the bar at once.
     var answered: Set<String> = []
-    /// The last thing that went wrong with a command, said quietly above the composer until the next one goes through.
-    var notice: String?
+    /// The phone's own messages for this chat, one per source, in the banner row above the composer (`ChatNoticeBanners`).
+    var alerts = ChatAlerts()
+    /// The last thing that went wrong with a command, in the banner row until the next one goes through or it is closed.
+    var notice: String? {
+        get { alerts.text(.action) }
+        set { if let newValue { alerts.show(.action, newValue) } else { alerts.clear(.action) } }
+    }
+    /// The provider notices (transcript items) the person closed; one comes back only when the provider says it again.
+    var dismissedNotices: Set<String> = []
+    /// The read error the person closed; it comes back when another one, or the same one after a successful read, is said.
+    var dismissedReadError: String?
     /// Reading the events failed; shown (and retried) while the link is up.
     var readError: ChatControlError?
     var historyLoading = false
@@ -48,13 +59,15 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
         }
         resourceFallbackGeneration = connection; snapshotUnavailableGeneration = connection
         feed.beginDegradedReplay(); readError = nil; legacyLoading = true
-        notice = "Long messages are shortened here; full text is on your Mac."
+        alerts.show(.desktop, "Long messages are shortened here; full text is on your Mac.", level: .info)
         return true
     }
     func install(_ snapshot: ChatSnapshotReply) {
         feed.install(snapshot)
         modelCatalogue = transcript.models; modelCatalogueSource = .live; modelCatalogueRevision &+= 1
         legacyLoading = false
+        // A real snapshot: whatever an older desktop or a degraded replay had to say about loading is over.
+        alerts.clear(.desktop)
     }
     func hydrate(_ snapshot: ChatSnapshotReply) { feed.hydrate(snapshot) }
     func prepend(_ snapshot: ChatSnapshotReply, before: UInt64) { feed.prepend(snapshot, requestedBefore: before) }
@@ -133,7 +146,6 @@ extension RemoteModel {
     /// The chat on screen, if one is: a listed chat, or the chat (`chat_id`) of an orchestrator that runs as one.
     var selectedChat: ChatInfo? {
         guard let id = selectedChatID else { return nil }
-        if openedChildViews.contains("chat:\(id)"), sharedTabs?.allEntries.contains(where: { $0.key == "chat:\(id)" && !$0.hidden }) == true { return chats.first { $0.id == id } }
         return tabs.lazy.compactMap(\.chatInfo).first { $0.id == id }
     }
     /// A chat is the screen on top of the tabs, so the terminal is not.
@@ -170,20 +182,44 @@ extension RemoteModel {
     func conversation(_ id: String) -> ChatConversation {
         if let known = chatConversations[id] { known.lastUsed = .now; return known }
         let made = ChatConversation(id: id)
+        restoreDraft(made)
         if chatConversations.count >= Self.keptConversations {
-            let spare = chatConversations.values.filter { !$0.following && $0.id != selectedChatID }.sorted { $0.lastUsed < $1.lastUsed }
+            // A conversation with a message on its way stays: its answer must land in it, not in one made again later.
+            let spare = chatConversations.values.filter { !$0.following && !$0.sending && $0.id != selectedChatID }.sorted { $0.lastUsed < $1.lastUsed }
             for old in spare.prefix(chatConversations.count - Self.keptConversations + 1) { chatConversations[old.id] = nil }
         }
         chatConversations[id] = made
         return made
     }
     static let keptConversations = 8
+    /// Puts back what was typed into a chat the last time it was open (this run or before), and from then on saves every change.
+    /// A message whose sending the desktop never answered (the app ended meanwhile) comes back before it, with a warning: it is not sent
+    /// again by itself.
+    func restoreDraft(_ conversation: ChatConversation) {
+        let id = conversation.id
+        if chatSendsInFlight.contains(id) { conversation.sending = true }
+        if let saved = chatDrafts.draft(id) {
+            if chatSendsInFlight.contains(id) {
+                // Its message is on its way in this run (the conversation was let go meanwhile, with the desktop or the project): only
+                // the text is the composer's, and the guard goes with it, so a second message is not sent before the first is answered.
+                conversation.draft = saved.text
+            } else {
+                let restored = saved.restored
+                conversation.draft = restored.text
+                if restored.uncertain {
+                    chatDrafts.restoreUncertain(restored.text, for: id)
+                    conversation.alerts.show(.action, "Your last message may not have reached the Mac. It is back in the composer: check the conversation before sending it again.")
+                }
+            }
+        }
+        conversation.onDraftChange = { [weak self] text in self?.chatDrafts.setText(text, for: id) }
+    }
 
     // MARK: Selecting
 
     /// Puts a chat on screen. The terminal behind it is released by the screen, which stops showing it.
     func selectChat(_ id: String) {
-        guard tabs.contains(where: { $0.chatInfo?.id == id }) || (openedChildViews.contains("chat:\(id)") && chats.contains(where: { $0.id == id })) else { return }
+        guard tabs.contains(where: { $0.chatInfo?.id == id }) else { return }
         _ = conversation(id)
         selectedChatID = id; selectedBlockedID = nil
     }
@@ -215,7 +251,7 @@ extension RemoteModel {
         reconcileChatSelection()
         // A chat the desktop no longer has is not held on to (an orchestrator's chat is the orchestrator list's to keep).
         let known = Set(ordered.map(\.id)).union(tabs.compactMap { $0.chatInfo?.id })
-        for id in chatConversations.keys where !known.contains(id) && chatConversations[id]?.following != true { chatConversations[id] = nil }
+        for id in chatConversations.keys where !known.contains(id) && chatConversations[id]?.following != true && !chatSendsInFlight.contains(id) { chatConversations[id] = nil }
         lastListRead[.sessions] = .now
     }
 
@@ -313,7 +349,7 @@ extension RemoteModel {
                     if RemoteError.isUnsupportedMethod(error) {
                         conversation.snapshotUnavailableGeneration = connection
                         conversation.legacyLoading = true
-                        conversation.notice = "Update RiWork on the Mac for recent-first loading. Loading older desktop history…"
+                        conversation.alerts.show(.desktop, "Update RiWork on the Mac for recent-first loading. Loading older desktop history…", level: .info)
                     } else {
                         let failure = ChatControlError.from(error, operation: .events)
                         if case .notFound = failure {
@@ -362,7 +398,11 @@ extension RemoteModel {
                 conversation.readError = nil
                 backoff.success()
                 conversation.accept(reply, since: since)
-                if !reply.more { conversation.legacyLoading = false }
+                if !reply.more {
+                    // The older desktop's history is in: the note about loading it has done its work.
+                    if conversation.legacyLoading, conversation.alerts.text(.desktop)?.hasPrefix("Update RiWork") == true { conversation.alerts.clear(.desktop) }
+                    conversation.legacyLoading = false
+                }
                 if let info = conversation.transcript.info {
                     prepareChatCatalogue(info)
                 }
@@ -432,7 +472,7 @@ extension RemoteModel {
             if case .resourceLimit = failure {
                 _ = conversation.recoverResourceLimit(failure, connection: connection)
             } else if case RemoteError.rpc(let code, _) = error, code == "snapshot_expired" {
-                conversation.reset(); conversation.notice = "History changed on the Mac. Loading the current recent messages again."
+                conversation.reset(); conversation.alerts.show(.desktop, "History changed on the Mac. Loading the current recent messages again.", level: .info)
             } else { conversation.historyError = "Can’t load older messages. Try again." }
         }
     }
@@ -494,18 +534,43 @@ extension RemoteModel {
     @discardableResult
     func sendChatMessage(_ chatID: String, _ text: String, restoring: Bool = false) async -> ChatControlError? {
         let conversation = conversation(chatID)
-        guard !conversation.sending else { return .busy }
+        // One message at a time per chat, also across a conversation let go and made again while the first is on its way.
+        guard !conversation.sending, !chatSendsInFlight.contains(chatID) else { return .busy }
         conversation.sending = true
+        chatSendsInFlight.insert(chatID)
+        // The text is held until the desktop answers: if the app ends before that, it comes back into the composer. The token ties the
+        // answer to this send in the saved draft.
+        let token = restoring ? chatDrafts.beginSending(text, for: chatID) : nil
         if restoring { conversation.draft = "" }
-        defer { conversation.sending = false }
+        // The conversation the person sees now, if any: the one this send started from may have been let go and made again (or let
+        // go with nothing in its place). A conversation let go is never written to: its text may be older than the saved draft.
+        var live: ChatConversation? { chatConversations[chatID] }
+        defer {
+            conversation.sending = false; live?.sending = false
+            chatSendsInFlight.remove(chatID)
+        }
         let failure = await sendChatCommand(chatID, .send(text: text))
         if let failure {
-            if restoring { conversation.draft = conversation.draft.isEmpty ? text : text + "\n" + conversation.draft }
-            conversation.notice = failure.message
+            if let token {
+                // The saved draft has whatever was typed since, in whichever composer: the message comes back before it there, and the
+                // composer shown (if any) shows the same. A stale answer (another send owns the draft now) changes nothing.
+                let uncertain = failure.outcomeIsUncertain
+                if let back = chatDrafts.returnUnsent(text, token: token, uncertain: uncertain, for: chatID), let live {
+                    live.draft = back
+                }
+                if uncertain {
+                    // The Mac may have it (the link dropped, it timed out, or its answer could not be read): flagged in the saved draft
+                    // until the person sends it again or empties the composer, across relaunches; never sent again by itself.
+                    live?.alerts.show(.action, failure.message)
+                    return failure
+                }
+            }
+            (live ?? conversation).notice = failure.message
             return failure
         }
-        conversation.notice = nil
-        conversation.jumpToEnd()
+        if let token { chatDrafts.endSending(for: chatID, token: token) }
+        live?.notice = nil
+        live?.jumpToEnd()
         return nil
     }
 

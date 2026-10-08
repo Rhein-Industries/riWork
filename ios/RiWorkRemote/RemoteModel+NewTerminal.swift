@@ -24,6 +24,11 @@ extension RemoteModel {
     func canClose(_ session: RemoteSession) -> Bool {
         session.kind != "orchestrator" && state == .connected && terminalControl != .unsupported && closingTerminalID == nil
     }
+    /// The terminal's own Close (not a shared tab's): only once the connection's capabilities are known, only for a desktop that does
+    /// not share tabs, and never for a shell ever seen as a shared worker.
+    func legacyCloseAvailable(_ session: RemoteSession) -> Bool {
+        capabilitiesKnown && !desktopFeatures.tabs && !everSharedWorkers.contains(session.id) && canClose(session)
+    }
 
     /// The form for the project on screen, with the target and kind a person most likely wants.
     func newTerminalForm() -> NewTerminalForm? {
@@ -71,11 +76,23 @@ extension RemoteModel {
 
     /// Closes a project terminal on the desktop (the process in it ends), after the person confirmed. Returns nil on success.
     @discardableResult
-    func closeTerminal(_ session: RemoteSession) async -> TerminalControlError? {
+    /// Ends a terminal (`shell.close`). `viaSharedTab`: called by a shared tab's Exit, after its Hide (`closeTab`); any other caller is
+    /// the terminal's own Close, which exists only for a desktop known not to share tabs.
+    func closeTerminal(_ session: RemoteSession, viaSharedTab: Bool = false) async -> TerminalControlError? {
         guard session.kind != "orchestrator" else { return .failed("Orchestrators are closed on the Mac.") }
+        // A shell ever seen as a shared worker is only ever detached, on any connection: nothing here ends it.
+        if everSharedWorkers.contains(session.id) || sharedEntry(ofSession: session.id)?.isWorker == true {
+            return .failed("A worker's shell is detached, not closed, from the phone.")
+        }
         guard closingTerminalID == nil else { return .busy }
         guard state == .connected else { return .notConnected }
         guard terminalControl != .unsupported else { return .unsupported }
+        if !viaSharedTab {
+            // The connection's capabilities are not known yet (just connected), or the desktop shares tabs: closing goes by the tab
+            // (Ask / Detach / Exit, Hide before Exit), never straight to shell.close. A confirmation from before a reconnect ends here.
+            guard capabilitiesKnown else { return .failed("Still reading what the Mac offers. Try again in a moment.") }
+            guard !desktopFeatures.tabs else { return .failed("Close it from its tab.") }
+        }
         let request: CloseTerminalRequest
         do { request = try CloseTerminalRequest(shellID: session.id) } catch { return .failed(error.localizedDescription) }
         closingTerminalID = session.id

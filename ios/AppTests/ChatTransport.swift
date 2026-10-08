@@ -49,8 +49,85 @@ actor ChatTransport: RemoteTransport {
     /// What `shell.output` gives for the fixture shell.
     var shellOutput = "screen"
     private var created = 0
+    /// The desktop's shared tab list (`tabs.*`, docs/shared-tabs.md): offered once a test sets it.
+    struct Tab: Sendable, Equatable {
+        var key: String, kind: String, title: String, status = "working", pinned = false, hidden = false, worker = false, order = 0, parent: String? = nil
+    }
+    var tabsFeature = false
+    var sharedTabs: [Tab] = []
+    var tabsRevision = 0
+    var tabsEpoch = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    /// The next request of each of these methods is answered as things are when it arrives, but only once `releaseHeld()` is called:
+    /// an answer that was read before something changed and arrives after it.
+    var holdNext: Set<String> = []
+    var heldReleased = false
+    func hold(_ methods: Set<String>) { holdNext = methods; heldReleased = false }
+    func releaseHeld() { heldReleased = true }
+    private func held(_ method: String, _ reply: JSONValue) async throws -> JSONValue {
+        guard holdNext.remove(method) != nil else { return reply }
+        while !heldReleased { try await Task.sleep(for: .milliseconds(3)) }
+        return reply
+    }
+    /// The next `tabs.update` fails with this (the list is left as it was).
+    var tabUpdateError: RemoteError?
+    func failNextTabUpdate(_ error: RemoteError?) { tabUpdateError = error }
+    func setTabsFeature(_ on: Bool) { tabsFeature = on }
+    /// The desktop's store was reset: a new epoch, counting from 1 again.
+    func resetTabStore(_ tabs: [Tab]) {
+        tabsEpoch = UUID().uuidString.lowercased(); tabsRevision = 1
+        sharedTabs = tabs.enumerated().map { var tab = $0.element; tab.order = $0.offset; return tab }
+    }
 
     init(chats: [ChatInfo] = [], appearance: JSONValue? = nil) { self.chats = chats; self.appearance = appearance }
+
+    /// Offers shared tabs with these entries (in this order).
+    func setSharedTabs(_ tabs: [Tab]) {
+        tabsFeature = true
+        sharedTabs = tabs.enumerated().map { var tab = $0.element; tab.order = $0.offset; return tab }
+        tabsRevision += 1
+    }
+    /// A change made on the Mac (another device): the next `tabs.list` has it.
+    func peerChange(_ change: @Sendable (inout [Tab]) -> Void) {
+        change(&sharedTabs)
+        for index in sharedTabs.indices { sharedTabs[index].order = index }
+        tabsRevision += 1
+    }
+    private func tabsReply() -> JSONValue {
+        func node(_ tab: Tab) -> JSONValue {
+            let children = sharedTabs.filter { $0.parent == tab.key }
+            return .object(["key": .string(tab.key), "kind": .string(tab.kind), "title": .string(tab.title), "status": .string(tab.status),
+                            "pinned": .bool(tab.pinned), "hidden": .bool(tab.hidden), "worker": .bool(tab.worker), "order": .number(Double(tab.order)),
+                            "parent": tab.parent.map(JSONValue.string) ?? .null, "children": .array(children.map(node)), "child_count": .number(Double(children.count))])
+        }
+        let keys = Set(sharedTabs.map(\.key))
+        return .object(["epoch": .string(tabsEpoch), "revision": .number(Double(tabsRevision)), "entries": .array(sharedTabs.filter { $0.parent == nil || !keys.contains($0.parent!) }.map(node))])
+    }
+    private func applyTabUpdate(_ update: [String: JSONValue]) throws {
+        guard let key = update["key"]?.string, let index = sharedTabs.firstIndex(where: { $0.key == key }) else { throw RemoteError.rpc(code: "not_found", message: "no such tab") }
+        switch update["action"]?.string {
+        case "pin": sharedTabs[index].pinned = true; sharedTabs[index].hidden = false
+        case "unpin": sharedTabs[index].pinned = false
+        case "hide":
+            guard !sharedTabs[index].pinned else { throw RemoteError.rpc(code: "invalid_request", message: "unpin before hiding") }
+            sharedTabs[index].hidden = true
+        case "unhide": sharedTabs[index].hidden = false
+        case "rename": sharedTabs[index].title = update["title"]?.string ?? sharedTabs[index].title
+        case "move":
+            let moving = sharedTabs.remove(at: index)
+            if let before = update["before"]?.string, let target = sharedTabs.firstIndex(where: { $0.key == before }) {
+                guard sharedTabs[target].parent == moving.parent, sharedTabs[target].pinned == moving.pinned else {
+                    sharedTabs.insert(moving, at: index); throw RemoteError.rpc(code: "invalid_request", message: "another group")
+                }
+                sharedTabs.insert(moving, at: target)
+            } else {
+                let last = sharedTabs.lastIndex { $0.parent == moving.parent && $0.pinned == moving.pinned }.map { $0 + 1 } ?? sharedTabs.count
+                sharedTabs.insert(moving, at: last)
+            }
+            for i in sharedTabs.indices { sharedTabs[i].order = i }
+        default: throw RemoteError.rpc(code: "invalid_request", message: "unknown action")
+        }
+        tabsRevision += 1
+    }
 
     // MARK: Script
 
@@ -100,6 +177,7 @@ actor ChatTransport: RemoteTransport {
         var features: [String: JSONValue] = [:]
         if chatFeature { features["chat"] = .bool(true) }
         if orchestratorFeature { features["orchestrator_create"] = .bool(true) }
+        if tabsFeature { features["tabs"] = .bool(true) }
         return features.isEmpty ? DesktopFeatures() : DesktopFeatures(ready: .object(["features": .object(features)]))
     }
 
@@ -114,7 +192,7 @@ actor ChatTransport: RemoteTransport {
         case "orchestrators.list": return .object(["orchestrators": .array(orchestratorEntries)])
         case "shells.list":
             let entry = "[{\"id\":\"\(Self.shell)\",\"project_id\":\"\(Self.project)\",\"kind\":\"project\",\"cwd\":\"/fixture\",\"harness\":null,\"alive\":true,\"created_at_unix\":5}]"
-            return .object(["shells": try JSONDecoder().decode(JSONValue.self, from: Data(entry.utf8))])
+            return try await held(method, .object(["shells": try JSONDecoder().decode(JSONValue.self, from: Data(entry.utf8))]))
         case "shell.output": return .object(["shell_id": params["shell_id"]!, "output": .string(shellOutput)])
         case "shell.resize": return .object(["shell_id": params["shell_id"]!, "columns": params["columns"]!, "rows": params["rows"]!])
         case "shell.resize.clear": return .object(["shell_id": params["shell_id"]!, "status": .string("cleared")])
@@ -123,7 +201,7 @@ actor ChatTransport: RemoteTransport {
             throw RemoteError.rpc(code: "not_found", message: "appearance not published")
         case "chats.list":
             guard chatFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
-            return .object(["chats": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(chats))])
+            return try await held(method, .object(["chats": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(chats))]))
         case "chat.create":
             while createMode == .gated { try await Task.sleep(for: .milliseconds(3)) }
             switch createMode {
@@ -141,6 +219,18 @@ actor ChatTransport: RemoteTransport {
                 return .object(["chat": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(info))])
             }
         case "chat.snapshot": return try await snapshot(params)
+        case "tabs.list":
+            guard tabsFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            return try await held(method, tabsReply())
+        case "tabs.open":
+            guard tabsFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            try applyTabUpdate(["action": .string("unhide"), "key": params["key"] ?? .null])
+            return tabsReply()
+        case "tabs.update":
+            guard tabsFeature, case .object(let update)? = params["update"] else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            if let tabUpdateError { self.tabUpdateError = nil; throw tabUpdateError }
+            try applyTabUpdate(update)
+            return try await held(method, tabsReply())
         case "chat.events":
             guard chatFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
             return try await events(params)

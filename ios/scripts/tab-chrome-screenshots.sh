@@ -26,8 +26,8 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 cd "$(dirname "$0")/.."
-TEST_RUNNER_RIWORK_TAB_SCREENSHOTS="$dir" TEST_RUNNER_RIWORK_TAB_SCREENSHOTS_LANDSCAPE=$landscape xcodebuild -project RiWorkRemote.xcodeproj -scheme RiWorkRemote -destination "platform=iOS Simulator,id=$udid" -derivedDataPath .derivedData \
-  CODE_SIGN_IDENTITY=- -only-testing:RiWorkAppTests/TabChromeScreenshots test-without-building > "$dir/xcodebuild.log" 2>&1 &
+TEST_RUNNER_RIWORK_TAB_SCREENSHOTS_ONLY="${RIWORK_TAB_SCREENSHOTS_ONLY:-}" TEST_RUNNER_RIWORK_TAB_SCREENSHOTS="$dir" TEST_RUNNER_RIWORK_TAB_SCREENSHOTS_LANDSCAPE=$landscape xcodebuild -project RiWorkRemote.xcodeproj -scheme RiWorkRemote -destination "platform=iOS Simulator,id=$udid" -derivedDataPath .derivedData \
+  CODE_SIGN_IDENTITY=- -only-testing:RiWorkAppTests/TabChromeScreenshots${RIWORK_TAB_SCREENSHOTS_ONLY:+/$RIWORK_TAB_SCREENSHOTS_ONLY} test-without-building > "$dir/xcodebuild.log" 2>&1 &
 build=$!
 deadline=$(( SECONDS + 900 ))
 while kill -0 $build 2>/dev/null; do
