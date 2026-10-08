@@ -324,6 +324,8 @@ struct Settings {
 }
 
 struct Session {
+    identity_config: DriverConfig,
+    identity: Option<super::account_identity::Identity>,
     events: Sender<ChatEvent>,
     next_request: i64,
     waiting: HashMap<i64, Reply>,
@@ -382,6 +384,8 @@ struct Session {
 impl Session {
     fn new(config: &DriverConfig, events: Sender<ChatEvent>) -> Self {
         Self {
+            identity_config: config.clone(),
+            identity: super::account_identity::for_config(config),
             events,
             next_request: 0,
             waiting: HashMap::new(),
@@ -1629,9 +1633,12 @@ impl Session {
         if generation != self.account_notification_generation {
             return;
         }
-        if let Some(identity) =
-            super::account_identity::reported(super::model::Provider::Codex, value)
-        {
+        if let Some(identity) = super::account_identity::canonical(
+            &self.identity_config,
+            Some(value),
+            self.identity.as_ref(),
+        ) {
+            self.identity = Some(identity.clone());
             self.emit(ChatEvent::ProviderAccountIdentity {
                 identity: Some(identity),
             });
@@ -1677,15 +1684,25 @@ impl Session {
             || (method == "account/login/completed" && params["success"].as_bool() == Some(true))
         {
             self.account_notification_generation += 1;
-            if let Some(identity) =
-                super::account_identity::reported(super::model::Provider::Codex, params)
+            if let Some(identity) = params
+                .get("account")
+                .filter(|v| v.is_object())
+                .and_then(|_| {
+                    super::account_identity::canonical(
+                        &self.identity_config,
+                        Some(params),
+                        self.identity.as_ref(),
+                    )
+                })
             {
+                self.identity = Some(identity.clone());
                 self.emit(ChatEvent::ProviderAccountIdentity {
                     identity: Some(identity),
                 });
             } else {
                 // account/updated normally reports authMode and planType, not identity.
                 // Do not retain the previous login's scope while the new read is pending.
+                self.identity = None;
                 self.emit(ChatEvent::ProviderAccountIdentity { identity: None });
                 if method == "account/login/completed"
                     || !params["authMode"].is_null()

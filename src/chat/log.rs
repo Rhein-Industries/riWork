@@ -45,21 +45,11 @@ impl ChatLog {
         &self.dir
     }
 
-    pub(super) fn save_account_identity(&self, identity: Option<&str>) -> Result<(), String> {
-        let temporary = self
-            .dir
-            .join(format!(".account-identity-{}.tmp", Uuid::new_v4()));
-        let result = (|| -> io::Result<()> {
-            let mut file = private_options().create_new(true).open(&temporary)?;
-            file.write_all(&serde_json::to_vec(&identity)?)?;
-            file.sync_all()?;
-            fs::rename(&temporary, self.dir.join("account-identity.json"))
-        })();
-        if let Err(error) = result {
-            let _ = fs::remove_file(&temporary);
-            return Err(error.to_string());
-        }
-        Ok(())
+    pub(super) fn save_account_identity(
+        &self,
+        identity: Option<&super::account_identity::Identity>,
+    ) -> Result<(), String> {
+        write_account_identity(&self.dir, identity)
     }
 
     /// A new chat: its directory (owner-only), `info.json`, and an empty log.
@@ -128,6 +118,26 @@ impl ChatLog {
         }
         Ok(())
     }
+}
+
+pub(super) fn write_account_identity(
+    dir: &Path,
+    identity: Option<&super::account_identity::Identity>,
+) -> Result<(), String> {
+    let temporary = dir.join(format!(".account-identity-{}.tmp", Uuid::new_v4()));
+    let result = (|| -> io::Result<()> {
+        let mut file = private_options().create_new(true).open(&temporary)?;
+        file.write_all(&serde_json::to_vec(&super::account_identity::record(
+            dir, identity,
+        ))?)?;
+        file.sync_all()?;
+        fs::rename(&temporary, dir.join("account-identity.json"))
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 fn private_options() -> OpenOptions {

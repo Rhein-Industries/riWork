@@ -365,7 +365,7 @@ impl Subscriber {
 }
 
 struct Inner {
-    provider_account_identity: Option<String>,
+    provider_account_identity: Option<super::account_identity::Identity>,
     info: ChatInfo,
     log: ChatLog,
     next_seq: u64,
@@ -405,22 +405,40 @@ impl Inner {
     }
 
     fn account_scope(&self) -> Option<&str> {
-        self.info
-            .codex_account_id
-            .as_deref()
-            .or(self.provider_account_identity.as_deref())
+        self.provider_account_identity
+            .as_ref()
+            .filter(|identity| identity.rank() > 0)
+            .map(|identity| identity.scope.as_str())
     }
 
-    fn set_account_identity(&mut self, identity: Option<String>) {
-        let identity = identity.filter(|s| super::account_identity::valid(s));
+    fn set_account_identity(&mut self, identity: Option<super::account_identity::Identity>) {
+        let identity = identity.filter(|s| s.valid() && s.rank() > 0);
         if identity == self.provider_account_identity {
+            if let Some(identity) = &identity {
+                if let Err(error) = lock(&self.dismissals).migrate(
+                    self.info.provider,
+                    identity,
+                    self.info.codex_account_id.as_deref(),
+                ) {
+                    eprintln!("riwork chat: {error}");
+                }
+            }
             return;
         }
         // Persist before matching notices; a failure must not reuse another login's scope.
-        if let Err(error) = self.log.save_account_identity(identity.as_deref()) {
+        if let Err(error) = self.log.save_account_identity(identity.as_ref()) {
             eprintln!("riwork chat: {error}");
         }
         self.provider_account_identity = identity;
+        if let Some(identity) = &self.provider_account_identity {
+            if let Err(error) = lock(&self.dismissals).migrate(
+                self.info.provider,
+                identity,
+                self.info.codex_account_id.as_deref(),
+            ) {
+                eprintln!("riwork chat: {error}");
+            }
+        }
         if let Ok(transcript) = log::read_notice_transcript(self.log.dir()) {
             for mut item in transcript.items {
                 let changed = lock(&self.dismissals).mark(
@@ -766,7 +784,7 @@ impl Host {
         let dismissals = Arc::new(Mutex::new(super::notice_dismissals::Dismissals::open(
             &home,
         )?));
-        let chats = load_chats(&home, &dismissals);
+        let chats = load_chats(&home, &dismissals, &providers);
         let listener = UnixListener::bind(&paths.socket)
             .map_err(|error| format!("Cannot listen on {}: {error}", paths.socket.display()))?;
         fs::set_permissions(&paths.socket, fs::Permissions::from_mode(0o600))
@@ -1362,12 +1380,49 @@ fn check_orchestrator_scope(new: &NewChat, scope: &OrchestratorScope) -> Result<
 fn load_chats(
     home: &Path,
     dismissals: &Arc<Mutex<super::notice_dismissals::Dismissals>>,
+    providers: &Providers,
 ) -> HashMap<String, Arc<Chat>> {
     let mut chats = HashMap::new();
     let Ok(entries) = fs::read_dir(log::chats_dir(home)) else {
         return chats;
     };
-    for entry in entries.flatten() {
+    let entries: Vec<_> = entries.flatten().collect();
+    // Discover every saved chat first; default migration must see all accounts,
+    // rather than depending on directory iteration order. This starts no provider.
+    let mut identities = Vec::new();
+    for entry in &entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(dir) = log::chat_dir(home, &name).filter(|dir| dir.is_dir()) else {
+            continue;
+        };
+        let Ok(bytes) = fs::read(dir.join("info.json")) else {
+            continue;
+        };
+        let Ok(info) = serde_json::from_slice::<ChatInfo>(&bytes) else {
+            continue;
+        };
+        if info.id != name {
+            continue;
+        }
+        let previous = super::account_identity::read(&dir);
+        let identity = (providers.config)(home, &info, info.provider_thread_id.clone())
+            .ok()
+            .and_then(|config| super::account_identity::canonical(&config, None, previous.as_ref()))
+            .or_else(|| previous.filter(|identity| identity.rank() > 0));
+        if let Some(identity) = identity {
+            if let Err(error) = log::write_account_identity(&dir, Some(&identity)) {
+                eprintln!("riwork chat: {error}");
+                continue;
+            }
+            identities.push((info.provider, identity, info.codex_account_id));
+        }
+    }
+    for (provider, identity, managed) in identities {
+        if let Err(error) = lock(dismissals).migrate(provider, &identity, managed.as_deref()) {
+            eprintln!("riwork chat: {error}");
+        }
+    }
+    for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
         let Some(dir) = log::chat_dir(home, &name).filter(|dir| dir.is_dir()) else {
             continue;
@@ -1505,7 +1560,11 @@ fn ensure_running(shared: &Shared, chat: &Arc<Chat>) -> Result<(), String> {
         Ok(config) => config,
         Err(error) => return fail_start(chat, generation, error),
     };
-    lock(&chat.inner).set_account_identity(super::account_identity::from_config(&config));
+    let mut inner = lock(&chat.inner);
+    let identity =
+        super::account_identity::canonical(&config, None, inner.provider_account_identity.as_ref());
+    inner.set_account_identity(identity);
+    drop(inner);
     // Only the log's tail, and only its notices: a long chat does not hold up the start,
     // and one that cannot be read leaves nothing to resolve.
     config.outstanding_notices =

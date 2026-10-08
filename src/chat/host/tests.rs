@@ -1490,7 +1490,7 @@ impl NoticeHost {
         let dismissals = Arc::new(Mutex::new(
             super::super::notice_dismissals::Dismissals::open(home).unwrap(),
         ));
-        let chats = load_chats(home, &dismissals);
+        let chats = load_chats(home, &dismissals, &fake_providers());
         Shared {
             home: home.to_owned(),
             dismissals,
@@ -1527,7 +1527,9 @@ impl NoticeHost {
         let dir = log::chat_dir(&self.home, &info.id).unwrap();
         let chat_log = ChatLog::create(&dir, &info).unwrap();
         let mut inner = Inner::new(info.clone(), chat_log, 0, self.shared.dismissals.clone());
-        inner.set_account_identity(Some(super::super::account_identity::hash("test-login")));
+        inner.set_account_identity(Some(super::super::account_identity::Identity::fixture(
+            super::super::account_identity::hash("test-login"),
+        )));
         inner.append(ChatEvent::Info { info: info.clone() });
         let chat = Arc::new(Chat {
             dir,
@@ -1727,6 +1729,9 @@ fn account_notice_keys_persist_but_a_worsened_limit_and_another_account_show() {
     for (chat, account) in [(&first, "account-a"), (&second, "account-b")] {
         let mut inner = lock(&chat.inner);
         inner.info.codex_account_id = Some(account.into());
+        inner.set_account_identity(Some(super::super::account_identity::Identity::fixture(
+            super::super::account_identity::hash(account),
+        )));
         inner.publish_info();
     }
     let reset = super::super::notice_dismissals::now() + 3600;
@@ -1742,7 +1747,10 @@ fn account_notice_keys_persist_but_a_worsened_limit_and_another_account_show() {
     assert!(host.dismissed(&first, "warning"));
     assert!(!host.dismissed(&second, "other"));
     let id = first.info().id;
-    let expected = format!("codex:account-a|rate_limit:seven_day@{reset}");
+    let expected = format!(
+        "codex:{}|rate_limit:seven_day@{reset}",
+        super::super::account_identity::hash("account-a")
+    );
     let snapshot = log::read_snapshot(&host.home, &id, None, u64::MAX, 50, 1 << 20, &[]).unwrap();
     assert_eq!(snapshot.dismissed_notices, [expected.clone()]);
     assert!(
@@ -1802,7 +1810,11 @@ fn system_login_scopes_isolate_dismissals_and_survive_host_restart() {
         let mut host = NoticeHost::new();
         let chat = host.create(provider);
         let id = chat.info().id;
-        let account = |email| super::super::account_identity::hash(email);
+        let account = |email| {
+            super::super::account_identity::Identity::fixture(super::super::account_identity::hash(
+                email,
+            ))
+        };
         lock(&chat.inner).set_account_identity(Some(account("private-a@example.com")));
         let reset = super::super::notice_dismissals::now() + 3600;
         host.emit(
@@ -1882,4 +1894,147 @@ fn resolving_a_dismissed_limit_preserves_its_occurrence_key() {
     host.emit(&chat, item);
     assert!(host.dismissed(&chat, "blocking"));
     assert_eq!(fs::read(path).unwrap(), keys);
+}
+
+#[test]
+fn canonical_claude_dismissal_survives_rotated_tokens_and_host_restart() {
+    let fake = crate::chat::testkit::Fake::new(&[]);
+    let config = fake.config(Provider::Claude);
+    let dir = config
+        .env
+        .iter()
+        .find(|(name, _)| name == "CLAUDE_CONFIG_DIR")
+        .unwrap()
+        .1
+        .clone();
+    let credentials = |token| serde_json::json!({"oauthAccount":{"accountUuid":"account-a","emailAddress":"private@example.test"},"claudeAiOauth":{"refreshToken":token}});
+    let path = PathBuf::from(dir).join(".credentials.json");
+    fs::write(&path, serde_json::to_vec(&credentials("before")).unwrap()).unwrap();
+    let mut host = NoticeHost::new();
+    let chat = host.create(Provider::Claude);
+    let identity = super::super::account_identity::canonical(&config, None, None).unwrap();
+    lock(&chat.inner).set_account_identity(Some(identity.clone()));
+    let reset = super::super::notice_dismissals::now() + 3600;
+    host.emit(
+        &chat,
+        dismissal_notice("weekly", "rate_limit:seven_day", Some(reset)),
+    );
+    host.dismiss(&chat, "weekly");
+    let id = chat.info().id;
+    drop(chat);
+    fs::write(&path, serde_json::to_vec(&credentials("after")).unwrap()).unwrap();
+    host.restart();
+    let chat = host.shared.find(&id).unwrap();
+    let fresh = super::super::account_identity::canonical(
+        &config,
+        None,
+        lock(&chat.inner).provider_account_identity.as_ref(),
+    )
+    .unwrap();
+    assert_eq!(fresh.scope, identity.scope);
+    lock(&chat.inner).set_account_identity(Some(fresh));
+    assert!(host.dismissed(&chat, "weekly"));
+    let snapshot = log::read_snapshot(&host.home, &id, None, u64::MAX, 50, 1 << 20, &[]).unwrap();
+    assert_eq!(
+        snapshot.dismissed_notices,
+        [format!(
+            "claude:{}|rate_limit:seven_day@{reset}",
+            identity.scope
+        )]
+    );
+    let persisted = fs::read_to_string(chat.dir.join("account-identity.json")).unwrap();
+    assert!(!persisted.contains("private@example"));
+    assert!(!persisted.contains("account-a"));
+    assert!(!persisted.contains("before"));
+    assert!(!persisted.contains("after"));
+}
+
+#[test]
+fn a_legacy_token_scope_is_migration_evidence_only_and_never_a_new_scope() {
+    let mut host = NoticeHost::new();
+    let chat = host.create(Provider::Claude);
+    let id = chat.info().id;
+    let old = super::super::account_identity::hash("Claude:credential:legacy-token");
+    fs::write(
+        chat.dir.join("account-identity.json"),
+        serde_json::to_vec(&Some(old)).unwrap(),
+    )
+    .unwrap();
+    drop(chat);
+    host.restart();
+    let chat = host.shared.find(&id).unwrap();
+    assert!(lock(&chat.inner).account_scope().is_none());
+    host.emit(
+        &chat,
+        dismissal_notice(
+            "blocking",
+            "rate_limit:seven_day",
+            Some(super::super::notice_dismissals::now() + 3600),
+        ),
+    );
+    assert!(
+        dismiss_notice(&host.shared, &chat, "blocking")
+            .unwrap_err()
+            .contains("identity is unavailable")
+    );
+}
+
+#[test]
+fn a_verified_codex_email_to_id_mapping_survives_logout_and_restart() {
+    let fake = crate::chat::testkit::Fake::new(&[]);
+    let mut config = fake.config(Provider::Codex);
+    let mut host = NoticeHost::new();
+    let chat = host.create(Provider::Codex);
+    let id = chat.info().id;
+    for (name, value) in &mut config.env {
+        if name == "RIWORK_HOME" {
+            *value = host.home.as_os_str().to_owned();
+        }
+    }
+    config
+        .env
+        .push(("RIWORK_CHAT_ID".into(), id.clone().into()));
+    let auth = PathBuf::from(
+        config
+            .env
+            .iter()
+            .find(|(name, _)| name == "CODEX_HOME")
+            .unwrap()
+            .1
+            .clone(),
+    )
+    .join("auth.json");
+    let email_frame = serde_json::json!({"account":{"email":"a@example.test"}});
+    fs::write(&auth, serde_json::to_vec(&email_frame).unwrap()).unwrap();
+    let email = super::super::account_identity::canonical(&config, None, None).unwrap();
+    lock(&chat.inner).set_account_identity(Some(email.clone()));
+    let reset = super::super::notice_dismissals::now() + 3600;
+    host.emit(
+        &chat,
+        dismissal_notice("weekly", "rate_limit:codex", Some(reset)),
+    );
+    host.dismiss(&chat, "weekly");
+    fs::write(&auth, br#"{"tokens":{"account_id":"account-a"}}"#).unwrap();
+    let account =
+        super::super::account_identity::canonical(&config, Some(&email_frame), Some(&email))
+            .unwrap();
+    assert_ne!(account.scope, email.scope);
+    lock(&chat.inner).set_account_identity(Some(account.clone()));
+    assert!(host.dismissed(&chat, "weekly"));
+    lock(&chat.inner).set_account_identity(None);
+    assert!(lock(&chat.inner).account_scope().is_none());
+    drop(chat);
+    fs::write(&auth, serde_json::to_vec(&email_frame).unwrap()).unwrap();
+    host.restart();
+    let returned =
+        super::super::account_identity::canonical(&config, Some(&email_frame), None).unwrap();
+    assert_eq!(returned.scope, account.scope);
+    let chat = host.shared.find(&id).unwrap();
+    lock(&chat.inner).set_account_identity(Some(returned));
+    assert!(host.dismissed(&chat, "weekly"));
+    let snapshot = log::read_snapshot(&host.home, &id, None, u64::MAX, 50, 1 << 20, &[]).unwrap();
+    assert_eq!(
+        snapshot.dismissed_notices,
+        [format!("codex:{}|rate_limit:codex@{reset}", account.scope)]
+    );
 }

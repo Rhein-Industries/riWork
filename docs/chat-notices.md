@@ -141,37 +141,54 @@ The single host atomically replaces the owner-only
 
 - With a reset: `<provider>:<account scope>|<kind>@<Unix seconds>`, for example
   `claude:sha256:0123456789abcdef0123456789abcdef|rate_limit:seven_day@1760000000` or
-  `codex:account-a|rate_limit:codex@1760000000`.
+  `codex:sha256:fedcba9876543210fedcba9876543210|rate_limit:codex@1760000000`.
 - Without a reset: `<provider>:<account scope>|<kind>#<item id>`.
 
-Managed Codex uses the chat's `codex_account_id`. System-login Codex and Claude
-use `sha256:<32 hex characters>`, a SHA-256 fingerprint of the reported account
-UUID/id/email (the first 128 bits, namespaced by provider). Claude learns account
-identity from system init/status frames when supplied; Codex requests `account/read`
-once after initialization and rechecks it on account updates/login completion.
-Pending reads from a previous login are ignored; until the new identity is known,
-the host stops matching the previous scope. The
-host stores only this fingerprint in each chat's owner-only `account-identity.json`,
-so stopped-chat snapshots and host restarts retain the account scope. Raw emails,
-account identifiers and tokens are never stored in dismissal files.
+All providers use a canonical `sha256:<32 hex characters>` account scope (the
+first 128 bits of SHA-256, namespaced by provider). One resolver combines live
+provider frames, the configured credential directory and previously verified
+account metadata. Codex prefers an account id (`tokens.account_id` in `auth.json`,
+or an id from `account/read`), otherwise email. An email-only server response does
+not replace an id supplied by the current credentials. A matching email previously
+associated with an id retains that id even if the latest source omits it.
 
-Before starting a driver, the host rechecks its configured credential directory.
-Claude prefers an `oauthAccount` identity from its configuration, falling back to a
-hash of the refresh token (access token if necessary) in `.credentials.json`.
-Codex prefers `tokens.account_id` in `auth.json`, falling back to an API-key hash.
-Credential hashes are stable across restarts while credentials stay unchanged;
-when no stable account id exists, token rotation also ends the previous scope.
-No keychain access is required. Unidentifiable logins have no persistent dismissal
-scope and cannot match another login's keys; persistent dismissal returns an
-identity-unavailable error. Keys cover all chats of that provider **and account**
-with the same reset, including new notices with different ids. A changed reset is
-a new occurrence; `auth_required` with a new id shows again. A dismissal suppresses
-only its recorded severity or lower. A new higher-level notice ends the lower-level
-dismissal and removes its key, so an old warning close never hides a blocking error.
+Claude prefers the account id/email in system init/status frames, supplemented by
+account fields in `.credentials.json`, `.claude.json` under `CLAUDE_CONFIG_DIR`,
+or `~/.claude.json` for the default directory. Account UUID wins over email;
+organization UUID is a last resort when neither exists. Access/refresh tokens are
+**never canonical identities**. Rotating tokens with unchanged account fields
+therefore preserves dismissal. With no account fields, persistent dismissal is
+unavailable. No keychain access is required.
+
+The host atomically saves only hashes (canonical scope, account id/email hashes,
+and verified alias hashes) in each chat's owner-only `account-identity.json`.
+The file contains an `active` identity and hashed `known` account associations;
+logout clears `active` while preserving verified email-to-id mappings for later
+restarts. History alone never grants an active scope: it must match current
+account fields.
+Driver initialization, account reads and login changes use the same resolver;
+Codex re-reads identity after login changes and rejects stale read responses.
+Host startup discovers all saved chats before reconciling dismissals. Stopped-chat
+snapshots use the persisted canonical metadata and verified alias mapping, without
+writing files. Raw identifiers, emails and tokens are never persisted here.
+
+Migration is one-way and atomic in `notice-dismissals.json`: old email/other-source
+fingerprints and the old Claude token fingerprint are recomputed from the current
+login's credentials and mapped to its canonical scope. Verified email-to-id
+upgrades migrate the existing keys and retain dismissal; ids never migrate back
+to email. Conflicting account identities do not inherit each other's aliases.
+Previously used managed Codex binding scopes migrate when that binding's canonical
+account is identified. A `default` key migrates only when exactly one canonical
+identity is known for its provider in this home. Ambiguous/unidentified defaults
+are dropped on pruning; expired entries are also pruned. Discovery precedes this
+pruning so a uniquely identifiable legacy login can migrate. Duplicate migrated
+occurrences retain their highest dismissed severity. Repeating migration is a no-op.
+
+Keys cover all chats of that provider and account with the same reset, including
+notices with different ids. A changed reset is a new occurrence; `auth_required`
+with a new id shows again. A dismissal suppresses only its recorded severity or
+lower. A higher-level notice ends the lower-level dismissal and removes its key.
 Project changes, tab close/reopen, window reloads and host/app restarts preserve it.
-The first implementation's provider-only entries remain readable: they migrate to
-the legacy `default` account scope and conservatively count as warning dismissals.
-`default` is never selected by current clients/hosts, so these keys stop matching.
 
 `chat.snapshot` additionally includes optional `dismissed_notices: [key, ...]` for
 active dismissals in that chat's account scope (omitted when empty; default empty

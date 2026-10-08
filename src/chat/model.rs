@@ -533,7 +533,7 @@ pub enum ChatEvent {
     /// Driver-to-host only: never logged or sent to clients.
     #[serde(skip)]
     ProviderAccountIdentity {
-        identity: Option<String>,
+        identity: Option<super::account_identity::Identity>,
     },
     /// The chat's metadata changed (thread id learned, model or mode changed).
     Info {

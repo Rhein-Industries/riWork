@@ -506,6 +506,8 @@ struct Totals {
 }
 
 struct Core {
+    identity_config: DriverConfig,
+    identity: Option<super::account_identity::Identity>,
     events: Sender<ChatEvent>,
     // The process.
     generation: u64,
@@ -570,6 +572,8 @@ struct Core {
 impl Core {
     fn new(config: &DriverConfig, events: Sender<ChatEvent>, session_id: String) -> Self {
         Self {
+            identity_config: config.clone(),
+            identity: super::account_identity::for_config(config),
             events,
             generation: 0,
             proc: None,
@@ -1254,9 +1258,12 @@ impl Core {
     }
 
     fn on_system(&mut self, frame: &Value) {
-        if let Some(identity) =
-            super::account_identity::reported(super::model::Provider::Claude, frame)
-        {
+        if let Some(identity) = super::account_identity::canonical(
+            &self.identity_config,
+            Some(frame),
+            self.identity.as_ref(),
+        ) {
+            self.identity = Some(identity.clone());
             self.emit(ChatEvent::ProviderAccountIdentity {
                 identity: Some(identity),
             });

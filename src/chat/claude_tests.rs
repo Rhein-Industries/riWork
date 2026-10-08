@@ -2397,6 +2397,6 @@ fn system_frames_report_only_hashed_login_identity_to_the_host() {
         })
         .unwrap();
     assert_ne!(first, second);
-    assert!(first.starts_with("sha256:"));
-    assert!(!first.contains("private"));
+    assert!(first.scope.starts_with("sha256:"));
+    assert!(!first.scope.contains("private"));
 }
