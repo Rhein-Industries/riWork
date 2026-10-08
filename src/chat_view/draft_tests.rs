@@ -342,3 +342,79 @@ fn deleting_a_chat_forgets_its_draft_only_on_success(cx: &mut TestAppContext) {
     }
     let _ = std::fs::remove_dir_all(home);
 }
+
+#[gpui::test]
+fn a_send_in_one_window_keeps_the_newer_draft_of_another(cx: &mut TestAppContext) {
+    let home = home();
+    start(cx, &home);
+    let a = chat_id();
+    let (first, _, first_tabs) = mount(cx, &[&a]);
+    let (second, _, second_tabs) = mount(cx, &[&a]);
+    type_into(cx, first, "sent from the first window");
+    cx.update_window(first, |_, window, cx| {
+        first_tabs[0]
+            .0
+            .update(cx, |v, cx| v.send_message(window, cx));
+    })
+    .unwrap();
+    let feed::Delivery::Submission { id, command } = first_tabs[0].1.try_recv().unwrap() else {
+        panic!("a submission");
+    };
+    // The second window saves newer text before the first hears its send went through.
+    type_into(cx, second, "newer in the second window");
+    cx.update_window(first, |_, window, cx| {
+        first_tabs[0].0.update(cx, |v, cx| {
+            v.submission_receipt(id, command, Ok(()), window, cx)
+        });
+    })
+    .unwrap();
+    assert_eq!(text(cx, &first_tabs[0].0), "");
+    assert_eq!(
+        cx.update(|cx| chat_drafts::draft(&a, cx)).as_deref(),
+        Some("newer in the second window")
+    );
+    cx.update(|cx| cx.global::<ChatDrafts>().0.flush());
+    assert_eq!(
+        Drafts::load(&home, SystemTime::now()).get(&a),
+        Some("newer in the second window")
+    );
+    drop((first_tabs, second_tabs));
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[gpui::test]
+fn a_failed_send_after_the_chat_was_deleted_does_not_bring_its_draft_back(cx: &mut TestAppContext) {
+    let home = home();
+    start(cx, &home);
+    let a = chat_id();
+    let (handle, _, tabs) = mount(cx, &[&a]);
+    type_into(cx, handle, "lost with the chat");
+    cx.update_window(handle, |_, window, cx| {
+        tabs[0].0.update(cx, |v, cx| v.send_message(window, cx));
+    })
+    .unwrap();
+    let feed::Delivery::Submission { id, command } = tabs[0].1.try_recv().unwrap() else {
+        panic!("a submission");
+    };
+    // The deletion is heard before the send's failure.
+    cx.update_window(handle, |_, window, cx| {
+        tabs[0].0.update(cx, |v, cx| {
+            v.accept(vec![FeedMsg::Link(Link::Deleted)], window, cx);
+            v.submission_receipt(
+                id,
+                command,
+                Err(CallError::Refused("gone".into())),
+                window,
+                cx,
+            );
+        });
+    })
+    .unwrap();
+    // Nor does a late save of what the view still holds.
+    tabs[0].0.update(cx, |v, cx| v.remember_draft(cx));
+    assert_eq!(cx.update(|cx| chat_drafts::draft(&a, cx)), None);
+    cx.update(|cx| cx.global::<ChatDrafts>().0.flush());
+    assert_eq!(Drafts::load(&home, SystemTime::now()).get(&a), None);
+    drop(tabs);
+    let _ = std::fs::remove_dir_all(home);
+}

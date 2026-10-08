@@ -21,6 +21,9 @@ fn symbol(level: NoticeLevel) -> &'static str {
     }
 }
 
+/// The tallest the banners get together before they scroll.
+pub(super) const MAX_STACK: f32 = 200.0;
+
 fn escape(event: &KeyDownEvent) -> bool {
     event.keystroke.key == "escape"
 }
@@ -32,6 +35,33 @@ impl ChatView {
         self.focus_composer = true;
         window.refresh();
         cx.notify();
+    }
+
+    /// A limit's banner goes at its reset time, also in a chat where nothing else happens:
+    /// redraw then, and look for the next one.
+    pub(super) fn schedule_notice_expiry(&mut self, cx: &mut Context<Self>) {
+        let now = notices::now_unix();
+        let Some(at) = self.notices.next_expiry(&self.model.transcript, now) else {
+            self.notice_expiry = None;
+            return;
+        };
+        if self
+            .notice_expiry
+            .as_ref()
+            .is_some_and(|(due, _)| *due == at)
+        {
+            return;
+        }
+        let wait = std::time::Duration::from_secs(at.saturating_sub(now));
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |view, cx| {
+                view.notice_expiry = None;
+                view.schedule_notice_expiry(cx);
+                cx.notify();
+            });
+        });
+        self.notice_expiry = Some((at, task));
     }
 
     pub(super) fn toggle_notice_history(&mut self, cx: &mut Context<Self>) {
@@ -200,11 +230,24 @@ impl ChatView {
                 .gap(ui_text::space(4.0))
                 .role(gpui::Role::Group)
                 .aria_label("Notices")
-                .children(
-                    banners
-                        .iter()
-                        .take(shown)
-                        .map(|notice| self.notice_banner(notice, look, cx)),
+                .child(
+                    // However many there are, the stack scrolls within a bound, so the
+                    // message box and "Show fewer" stay in reach.
+                    div()
+                        .id("chat-notices-list")
+                        .w_full()
+                        .max_h(ui_text::space(MAX_STACK))
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap(ui_text::space(4.0))
+                        .children(
+                            banners
+                                .iter()
+                                .take(shown)
+                                .map(|notice| self.notice_banner(notice, look, cx)),
+                        )
+                        .test_support(),
                 )
                 .children((hidden > 0).then(|| {
                     let label = if self.notices.expanded {

@@ -11,7 +11,7 @@
 //! The text alone is kept: attachments are staged files that a restart does not keep.
 use gpui::{App, Global};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -29,6 +29,8 @@ pub const MAX_BYTES: usize = 256 * 1024;
 /// The drafts of one RiWork data directory, with writes queued off the UI thread.
 pub struct Drafts {
     texts: HashMap<String, String>,
+    /// Chats deleted in this run: a late write for one must not bring its draft back.
+    deleted: HashSet<String>,
     writer: Option<Sender<WriteDraft>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -71,6 +73,7 @@ impl Drafts {
             .expect("start the chat draft writer");
         Self {
             texts,
+            deleted: HashSet::new(),
             writer: Some(writer),
             thread: Some(thread),
         }
@@ -84,6 +87,9 @@ impl Drafts {
     /// is not a UUID, or a draft over the size bound, is kept for this run only: an older
     /// copy on disk is removed rather than come back after a restart.
     pub fn set(&mut self, chat_id: &str, text: &str) -> Result<(), String> {
+        if self.deleted.contains(chat_id) {
+            return Ok(());
+        }
         if text.is_empty() {
             self.texts.remove(chat_id);
         } else {
@@ -94,6 +100,22 @@ impl Drafts {
             .ok_or_else(|| "The chat draft writer has stopped".to_owned())?
             .send(WriteDraft::Set(chat_id.to_owned(), text.to_owned()))
             .map_err(|error| format!("Cannot queue the chat draft: {error}"))
+    }
+
+    /// `sent` went out: the draft goes, unless it is no longer what was sent (another
+    /// window of the chat has saved newer text since).
+    pub fn clear_sent(&mut self, chat_id: &str, sent: &str) -> Result<(), String> {
+        if self.texts.get(chat_id).is_some_and(|kept| kept != sent) {
+            return Ok(());
+        }
+        self.set(chat_id, "")
+    }
+
+    /// The chat is gone: its draft goes, and stays gone for the rest of the run.
+    pub fn forget(&mut self, chat_id: &str) -> Result<(), String> {
+        let result = self.set(chat_id, "");
+        self.deleted.insert(chat_id.to_owned());
+        result
     }
 
     fn finish(&mut self) {
@@ -127,16 +149,37 @@ enum WriteDraft {
     Flush(Sender<()>),
 }
 
+/// The first wait before a failed write is tried again; it doubles up to `RETRY_MAX`.
+const RETRY_FIRST: Duration = Duration::from_millis(250);
+const RETRY_MAX: Duration = Duration::from_secs(30);
+/// Tries left for what still fails when the app quits.
+const RETRIES_AT_QUIT: u32 = 3;
+
 fn write_drafts(
     dir: PathBuf,
     mut persisted: HashMap<String, String>,
     receiver: Receiver<WriteDraft>,
 ) {
-    while let Ok(first) = receiver.recv() {
-        let mut pending = HashMap::new();
+    // What failed to be written, kept until it is written or replaced by newer text.
+    let mut failed: HashMap<String, String> = HashMap::new();
+    let mut wait = RETRY_FIRST;
+    loop {
+        let first = if failed.is_empty() {
+            match receiver.recv() {
+                Ok(message) => Some(message),
+                Err(_) => break,
+            }
+        } else {
+            match receiver.recv_timeout(wait) {
+                Ok(message) => Some(message),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        };
+        let mut pending = std::mem::take(&mut failed);
         #[cfg(test)]
         let mut flush = None;
-        let mut next = Some(first);
+        let mut next = first;
         while let Some(message) = next {
             match message {
                 WriteDraft::Set(id, text) => {
@@ -150,27 +193,55 @@ fn write_drafts(
             }
             next = receiver.try_recv().ok();
         }
-        for (id, text) in pending {
-            if !is_chat_id(&id) || persisted.get(&id).is_some_and(|kept| kept == &text) {
-                continue;
-            }
-            // A failed write stays out of the cache, so identical text retries it.
-            match persist(&dir, &id, &text) {
-                Ok(()) => {
-                    if text.is_empty() {
-                        persisted.remove(&id);
-                    } else {
-                        persisted.insert(id, text);
-                    }
-                }
-                Err(error) => eprintln!("riwork: {error}"),
-            }
-        }
+        failed = write_pending(&dir, &mut persisted, pending);
+        wait = if failed.is_empty() {
+            RETRY_FIRST
+        } else {
+            (wait * 2).min(RETRY_MAX)
+        };
         #[cfg(test)]
         if let Some(sender) = flush {
             let _ = sender.send(());
         }
     }
+    // The app quits: what still fails gets a few last tries.
+    for _ in 0..RETRIES_AT_QUIT {
+        if failed.is_empty() {
+            break;
+        }
+        failed = write_pending(&dir, &mut persisted, failed);
+        if !failed.is_empty() {
+            thread::sleep(RETRY_FIRST);
+        }
+    }
+}
+
+/// Write each chat's newest text; what fails comes back, to be tried again.
+fn write_pending(
+    dir: &Path,
+    persisted: &mut HashMap<String, String>,
+    pending: HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut failed = HashMap::new();
+    for (id, text) in pending {
+        if !is_chat_id(&id) || persisted.get(&id).is_some_and(|kept| kept == &text) {
+            continue;
+        }
+        match persist(dir, &id, &text) {
+            Ok(()) => {
+                if text.is_empty() {
+                    persisted.remove(&id);
+                } else {
+                    persisted.insert(id, text);
+                }
+            }
+            Err(error) => {
+                eprintln!("riwork: {error}");
+                failed.insert(id, text);
+            }
+        }
+    }
+    failed
 }
 
 fn persist(dir: &Path, chat_id: &str, text: &str) -> Result<(), String> {
@@ -248,6 +319,26 @@ pub fn draft(chat_id: &str, cx: &App) -> Option<String> {
         .0
         .get(chat_id)
         .map(str::to_owned)
+}
+
+/// The chat's draft goes once `sent` went out, unless it has changed since.
+pub fn clear_sent(chat_id: &str, sent: &str, cx: &mut App) {
+    if !cx.has_global::<ChatDrafts>() {
+        return;
+    }
+    if let Err(error) = cx.global_mut::<ChatDrafts>().0.clear_sent(chat_id, sent) {
+        eprintln!("riwork: {error}");
+    }
+}
+
+/// The chat was deleted: its draft goes for good.
+pub fn forget(chat_id: &str, cx: &mut App) {
+    if !cx.has_global::<ChatDrafts>() {
+        return;
+    }
+    if let Err(error) = cx.global_mut::<ChatDrafts>().0.forget(chat_id) {
+        eprintln!("riwork: {error}");
+    }
 }
 
 pub fn remember(chat_id: &str, text: &str, cx: &mut App) {
@@ -406,6 +497,69 @@ mod tests {
         let later = SystemTime::now() + MAX_AGE + Duration::from_secs(60);
         assert!(Drafts::load(&home, later).texts.is_empty());
         assert_eq!(fs::read_dir(home.join(DIR_NAME)).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn clearing_a_sent_draft_keeps_newer_text_and_a_deleted_chat_keeps_none() {
+        let home = home();
+        let (a, b) = (id(), id());
+        let mut drafts = Drafts::load(&home, SystemTime::now());
+        drafts.set(&a, "newer").unwrap();
+        drafts.clear_sent(&a, "sent").unwrap();
+        assert_eq!(drafts.get(&a), Some("newer"));
+        drafts.clear_sent(&a, "newer").unwrap();
+        assert_eq!(drafts.get(&a), None);
+        drafts.set(&b, "gone with the chat").unwrap();
+        drafts.forget(&b).unwrap();
+        drafts.set(&b, "a late write").unwrap();
+        assert_eq!(drafts.get(&b), None);
+        drafts.flush();
+        assert!(!home.join(DIR_NAME).join(&b).exists());
+        drop(drafts);
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_failed_write_is_tried_again_without_another_edit() {
+        let home = home();
+        let a = id();
+        let dir = home.join(DIR_NAME);
+        fs::write(&dir, "blocks the directory").unwrap();
+        let mut drafts = Drafts::load(&home, SystemTime::now());
+        drafts.set(&a, "written later").unwrap();
+        drafts.flush();
+        assert!(dir.is_file(), "the first write failed");
+        fs::remove_file(&dir).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !dir.join(&a).exists() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(fs::read_to_string(dir.join(&a)).unwrap(), "written later");
+        drop(drafts);
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn what_still_fails_at_quit_gets_last_tries() {
+        let home = home();
+        let a = id();
+        let dir = home.join(DIR_NAME);
+        fs::write(&dir, "blocks the directory").unwrap();
+        let mut drafts = Drafts::load(&home, SystemTime::now());
+        drafts.set(&a, "saved at quit").unwrap();
+        drafts.flush();
+        let unblock = {
+            let dir = dir.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(100));
+                fs::remove_file(&dir).unwrap();
+            })
+        };
+        // Quitting before the next scheduled retry.
+        drop(drafts);
+        unblock.join().unwrap();
+        assert_eq!(fs::read_to_string(dir.join(&a)).unwrap(), "saved at quit");
         let _ = fs::remove_dir_all(home);
     }
 }

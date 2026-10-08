@@ -11,6 +11,12 @@ use std::collections::{HashMap, HashSet};
 
 use crate::chat::model::{ItemBody, NoticeLevel, Transcript, notice_kind};
 
+#[cfg(test)]
+thread_local! {
+    /// The time `now_unix` says in a test that sets one.
+    pub(super) static TEST_NOW: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
 /// How many banners show before the rest fold into "n more".
 pub(super) const VISIBLE: usize = 2;
 
@@ -117,6 +123,15 @@ impl Notices {
         } else {
             self.dismissed.insert(id.to_owned());
         }
+    }
+
+    /// The soonest time a shown banner's limit resets, when it must go without anything
+    /// else happening.
+    pub fn next_expiry(&self, transcript: &Transcript, now: u64) -> Option<u64> {
+        provider_banners(transcript, &self.dismissed, now)
+            .iter()
+            .filter_map(|banner| banner.resets_at)
+            .min()
     }
 
     /// What shows, newest first, the tab's errors among the provider's notices by when
@@ -264,6 +279,10 @@ pub(super) fn reset_text(resets_at: u64, now: u64) -> Option<String> {
 }
 
 pub(super) fn now_unix() -> u64 {
+    #[cfg(test)]
+    if let Some(now) = TEST_NOW.with(std::cell::Cell::get) {
+        return now;
+    }
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())

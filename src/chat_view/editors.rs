@@ -337,6 +337,7 @@ impl ChatView {
         let command = submission
             .command()
             .expect("a new snapshot is undispatched");
+        let sent = submission.snapshot.text.clone();
         self.submissions.push(submission);
         self.pending_submission = Some(id);
         self.sent_at = Some(Instant::now());
@@ -344,9 +345,10 @@ impl ChatView {
         self.notices.clear(notices::LocalKey::Send);
         self.notices.clear(notices::LocalKey::Attachment);
         self.list.set_follow_mode(gpui::FollowMode::Tail);
+        // Another window of the chat may have saved newer text: only what is sent goes.
         if editor == self.composer.entity_id().as_u64() && generation == self.editor_generation {
             if let Some(id) = &self.chat_id {
-                crate::chat_drafts::remember(id, "", cx);
+                crate::chat_drafts::clear_sent(id, &sent, cx);
             }
         }
         let result = self
@@ -451,6 +453,7 @@ impl ChatView {
         if submission.status != Status::Pending || command != submission.expected_command() {
             return;
         }
+        let sent = submission.snapshot.text.clone();
         let clear = submission.settle(
             self.composer.entity_id().as_u64(),
             self.editor_generation,
@@ -462,7 +465,9 @@ impl ChatView {
         if clear {
             self.composer
                 .update(cx, |state, cx| state.set_value("", window, cx));
-            self.remember_draft(cx);
+            if let Some(id) = &self.chat_id {
+                crate::chat_drafts::clear_sent(id, &sent, cx);
+            }
             self.attachments.clear();
             self.bump_generation();
         }

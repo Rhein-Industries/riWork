@@ -200,6 +200,8 @@ pub struct ChatView {
     drafts: HashMap<String, Draft>,
     /// The banners above the message box: the provider's notices and this tab's errors.
     notices: notices::Notices,
+    /// The redraw due when a shown limit resets (`schedule_notice_expiry`), and when.
+    notice_expiry: Option<(u64, Task<()>)>,
     /// The copy button that was just pressed, until it is forgotten.
     copied: Option<String>,
     forget_copy: Option<Task<()>>,
@@ -328,6 +330,7 @@ impl ChatView {
             answered: HashSet::new(),
             drafts: HashMap::new(),
             notices: notices::Notices::default(),
+            notice_expiry: None,
             copied: None,
             forget_copy: None,
             caches: RefCell::new(Caches::default()),
@@ -489,7 +492,7 @@ impl ChatView {
                     }
                     if link == Link::Deleted {
                         if let Some(id) = &self.chat_id {
-                            crate::chat_drafts::remember(id, "", cx);
+                            crate::chat_drafts::forget(id, cx);
                         }
                         self.transcript_selection.retire(self.window_handle, cx);
                         self.feed = None;
@@ -518,6 +521,7 @@ impl ChatView {
         }
         let applied = self.model.apply(&events);
         self.notices.observe(self.model.transcript.items.len());
+        self.schedule_notice_expiry(cx);
         self.sync_list(&applied, cx);
         self.forget_settled();
         self.ready_inputs(window, cx);
@@ -830,7 +834,7 @@ impl ChatView {
         match result {
             Ok(()) => {
                 if let Some(id) = &self.chat_id {
-                    crate::chat_drafts::remember(id, "", cx);
+                    crate::chat_drafts::forget(id, cx);
                 }
                 cx.emit(ChatViewEvent::Close);
             }

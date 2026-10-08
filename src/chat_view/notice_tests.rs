@@ -164,3 +164,80 @@ fn a_tab_error_updates_in_place_and_clears_when_the_host_answers(cx: &mut TestAp
     })
     .unwrap();
 }
+
+#[gpui::test]
+fn a_limit_banner_goes_by_itself_at_its_reset_time(cx: &mut TestAppContext) {
+    let start = 1_800_000_000;
+    notices::TEST_NOW.with(|now| now.set(Some(start)));
+    let (handle, view, _recording) = mount(cx);
+    push(&view, cx, "u", ItemBody::UserMessage { text: "hi".into() });
+    let mut body = ItemBody::notice(
+        NoticeLevel::Warning,
+        "This account is close to the weekly usage limit.",
+        Some("rate_limit:seven_day"),
+    );
+    if let ItemBody::Notice { resets_at, .. } = &mut body {
+        *resets_at = Some(start + 30);
+    }
+    push(&view, cx, "limit", body);
+    view.update(cx, |view, cx| view.schedule_notice_expiry(cx));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(shown(window, "limit"));
+    })
+    .unwrap();
+    let redraws = std::rc::Rc::new(std::cell::Cell::new(0));
+    let counted = redraws.clone();
+    cx.update(|cx| {
+        cx.observe(&view, move |_, _| counted.set(counted.get() + 1))
+            .detach()
+    });
+    // Nothing happens in the chat; only the clock moves past the reset.
+    notices::TEST_NOW.with(|now| now.set(Some(start + 31)));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(31));
+    cx.run_until_parked();
+    assert!(redraws.get() > 0, "the reset time redraws the tab");
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!shown(window, "limit"));
+    })
+    .unwrap();
+    view.read_with(cx, |view, _| assert!(view.notice_expiry.is_none()));
+    notices::TEST_NOW.with(|now| now.set(None));
+}
+
+#[gpui::test]
+fn many_expanded_banners_scroll_and_leave_the_message_box_in_reach(cx: &mut TestAppContext) {
+    let (handle, view, _recording) = mount(cx);
+    push(&view, cx, "u", ItemBody::UserMessage { text: "hi".into() });
+    for n in 0..12 {
+        push(
+            &view,
+            cx,
+            &format!("n{n}"),
+            ItemBody::notice(NoticeLevel::Warning, format!("Warning number {n}"), None),
+        );
+    }
+    view.update(cx, |view, cx| {
+        view.notices.expanded = true;
+        cx.notify();
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let list = window.find("chat-notices-list");
+        assert!(
+            list.bounds().size.height <= ui_text::space(notice_ui::MAX_STACK) + px(1.),
+            "the stack is bounded: {:?}",
+            list.bounds()
+        );
+        let fewer = window.find("chat-notices-more");
+        assert!(fewer.visible());
+        assert_eq!(fewer.label(), Some("Show fewer"));
+        let field = window.find("chat-composer");
+        assert!(field.visible());
+        assert!(fewer.bounds().bottom() <= field.bounds().top());
+        assert!(field.bounds().bottom() <= px(800.));
+    })
+    .unwrap();
+}
