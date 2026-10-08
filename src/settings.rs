@@ -1151,6 +1151,9 @@ impl SettingsPanel {
             .detach();
         cx.observe_global::<CuaSetupState>(|_, cx| cx.notify())
             .detach();
+        // The Text size row describes Ghostty's size while it matches it.
+        cx.observe_global::<ui_text::TerminalFontSize>(|_, cx| cx.notify())
+            .detach();
         // RemoteState also changes when polling is merely scheduled. Only the
         // host rows and their error affect this panel; do not redraw for a tick.
         let mut remote_rows = remote_service::hosts(cx);
