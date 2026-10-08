@@ -1,7 +1,7 @@
 //! The notice banners inside the message box's bar, and the history the ⋯ menu opens (see
 //! `notices` for which ones show).
 
-use gpui::{AnyElement, Context, KeyDownEvent, Window, div, prelude::*, px, rgb};
+use gpui::{AnyElement, Context, KeyDownEvent, Pixels, Window, div, prelude::*, px, rgb};
 use gpui_kit::base::TestSupportExt as _;
 
 use crate::{chat::model::NoticeLevel, icons, ui_text};
@@ -20,6 +20,12 @@ fn symbol(level: NoticeLevel) -> &'static str {
         NoticeLevel::Error => "xmark.octagon",
     }
 }
+
+/// The height of one line of a banner's text, and of what sits beside it.
+pub(super) const LINE: f32 = 16.0;
+
+/// A banner's padding above and below its text.
+pub(super) const PAD_Y: f32 = 5.0;
 
 /// The tallest the banners get together before they scroll.
 pub(super) const MAX_STACK: f32 = 200.0;
@@ -71,19 +77,34 @@ impl ChatView {
     }
 
     /// The close button of a banner or the history: a focusable Kit button that Esc also
-    /// presses while it has the focus.
+    /// presses while it has the focus. In a banner (`line`) it is one text line tall and
+    /// has no edge, so it adds nothing to the banner's height.
     fn close_button(
         &self,
         id: String,
         name: &'static str,
         look: Look,
+        line: Option<Pixels>,
         on_close: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + Clone + 'static,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let close = if look.native {
-            widgets::symbol_button_sized(id, "xmark", name, look, ui_text::space(18.0))
-        } else {
-            button(id, "×", None, look).accessibility_label(name)
+        let close = match (look.native, line) {
+            (true, line) => widgets::symbol_button_sized(
+                id,
+                "xmark",
+                name,
+                look,
+                line.unwrap_or(ui_text::space(18.0)),
+            ),
+            (false, None) => button(id, "×", None, look).accessibility_label(name),
+            (false, Some(line)) => button(id, "×", None, look)
+                .accessibility_label(name)
+                .border_0()
+                .bg(gpui::transparent_black())
+                .px(ui_text::space(4.0))
+                .py(px(0.0))
+                .line_height(line)
+                .text_size(ui_text::text(12.0)),
         };
         let on_key = on_close.clone();
         close
@@ -97,8 +118,10 @@ impl ChatView {
             .into_any_element()
     }
 
-    /// One banner: its level's symbol and color, the text, a usage limit's reset time and
-    /// the way to the Usage panel, and ×.
+    /// One banner, a single row: its level's symbol, the text (wrapping, with a usage
+    /// limit's reset time under it), the way to the Usage panel, and ×. The symbol and the
+    /// buttons sit beside the text's first line, each in a box one line tall, so the banner
+    /// is as tall as its text and the same padding goes all around it.
     fn notice_banner(&self, notice: &Banner, look: Look, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
         let tone = look.tone(cards::notice_tone(notice.level));
@@ -110,6 +133,9 @@ impl ChatView {
         let reset = notice
             .resets_at
             .and_then(|at| notices::reset_text(at, notices::now_unix()));
+        let line = ui_text::text(LINE);
+        let beside_first_line =
+            |child: AnyElement| div().flex_none().h(line).flex().items_center().child(child);
         let id = notice.id.clone();
         div()
             .id(gpui::SharedString::from(format!(
@@ -121,7 +147,7 @@ impl ChatView {
             .items_start()
             .gap(ui_text::space(8.0))
             .px(ui_text::space(10.0))
-            .py(ui_text::space(5.0))
+            .py(ui_text::space(PAD_Y))
             .rounded(px(if look.native { 8.0 } else { 3.0 }))
             .border_1()
             // An error weighs more than a warning, also where both share Native's one
@@ -140,14 +166,14 @@ impl ChatView {
                 },
             )))
             .text_size(ui_text::text(11.0))
+            .line_height(line)
             .text_color(rgb(ink))
             .role(gpui::Role::Status)
             .aria_label(notice.text.clone())
             .children(look.native.then(|| {
-                div()
-                    .flex_none()
-                    .pt(ui_text::space(2.0))
-                    .child(icons::symbol(symbol(notice.level), 11.0, Some(tone)))
+                beside_first_line(
+                    icons::symbol(symbol(notice.level), 11.0, Some(tone)).into_any_element(),
+                )
             }))
             .child(
                 div()
@@ -155,7 +181,6 @@ impl ChatView {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(ui_text::space(2.0))
                     .child(
                         // A long message scrolls here and leaves × in reach.
                         div()
@@ -165,40 +190,39 @@ impl ChatView {
                             )))
                             .max_h(ui_text::space(90.0))
                             .overflow_y_scroll()
-                            .child(notice.text.clone()),
+                            .child(notice.text.clone())
+                            .test_support(),
                     )
-                    .children((notice.usage_limit()).then(|| {
+                    .children(reset.map(|reset| {
                         div()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap(ui_text::space(8.0))
                             .text_size(ui_text::text(10.0))
                             .text_color(rgb(colors.muted))
-                            .children(
-                                reset.map(|reset| div().child(widgets::sentence(&reset, look))),
-                            )
-                            .child(
-                                button(
-                                    format!("chat-notice-usage:{}", notice.id),
-                                    "Show usage",
-                                    None,
-                                    look,
-                                )
-                                .on_click(
-                                    cx.listener(|_, _, _, cx| cx.emit(ChatViewEvent::ShowUsage)),
-                                ),
-                            )
+                            .child(widgets::sentence(&reset, look))
                     })),
             )
+            .children(notice.usage_limit().then(|| {
+                beside_first_line(
+                    button(
+                        format!("chat-notice-usage:{}", notice.id),
+                        "Show usage",
+                        None,
+                        look,
+                    )
+                    .py(px(0.0))
+                    .line_height(line)
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(ChatViewEvent::ShowUsage)))
+                    .into_any_element(),
+                )
+            }))
             .test_support()
-            .child(self.close_button(
+            .child(beside_first_line(self.close_button(
                 format!("chat-notice-close:{}", notice.id),
                 "Dismiss",
                 look,
+                Some(line),
                 move |view, window, cx| view.dismiss_notice(&id, window, cx),
                 cx,
-            ))
+            )))
             .into_any_element()
     }
 
@@ -312,6 +336,7 @@ impl ChatView {
                         "chat-notice-history-close".into(),
                         "Close notices",
                         look,
+                        None,
                         close,
                         cx,
                     )),
