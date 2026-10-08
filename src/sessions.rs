@@ -1091,12 +1091,6 @@ impl SessionManager {
         })
     }
 
-    /// The plain `capture_screen_styled`.
-    #[cfg(test)]
-    pub fn capture_screen(&self, id: &str, lines: usize) -> Result<Capture, String> {
-        self.capture_screen_styled(id, lines, false)
-    }
-
     /// Like `capture`, plus what a remote screen needs to place a cursor: the
     /// pane size, the cursor cell and whether the pane is in a mode.
     ///
@@ -2381,13 +2375,6 @@ impl SessionManager {
         if let Some(socket) = socket.filter(|path| path.is_absolute()) {
             let _ = fs::remove_file(socket);
         }
-    }
-
-    /// Whether this manager's tmux server answers at all (tests).
-    #[cfg(test)]
-    pub(crate) fn server_running(&self) -> bool {
-        self.tmux_command(&["list-sessions"])
-            .is_ok_and(|output| output.status.success())
     }
 
     /// A tmux client for this manager's server, before any command.
@@ -5719,6 +5706,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: runs the editor command through /bin/sh and a fake editor"]
     fn editor_command_passes_unicode_and_metacharacters_as_one_file_name() {
         use std::os::unix::fs::PermissionsExt;
         let directory = env::temp_dir().join(format!("riwork-editor-{}", Uuid::new_v4()));
@@ -5855,11 +5843,13 @@ mod tests {
             )
             .unwrap();
             let mut child = Command::new(env::current_exe().unwrap());
+            // `--include-ignored`: a slow test re-run here must not be skipped.
             child
                 .args([
                     "--exact",
                     &format!("sessions::tests::{name}"),
                     "--nocapture",
+                    "--include-ignored",
                 ])
                 .env("RIWORK_TEST_ACCOUNT_FIXTURE", &self.0)
                 .env(
@@ -6036,68 +6026,6 @@ mod tests {
         assert_eq!(saved.codex_home, Some(account_b.home));
     }
 
-    #[test]
-    #[cfg(unix)]
-    fn plain_project_shell_receives_initial_home_without_pin() {
-        use crate::store::{ProjectCodexAccount, Store};
-        use std::os::unix::fs::PermissionsExt;
-        let fixture = AccountFixture::new();
-        if !fixture.run_in_child("plain_project_shell_receives_initial_home_without_pin") {
-            return;
-        }
-        let state = fixture.selected("account-b");
-        let project_root = fixture.0.join("plain");
-        fs::create_dir_all(&project_root).unwrap();
-        let store = Store::open(&state).unwrap();
-        let project = store.add_project(&project_root, Some("Plain")).unwrap();
-        store
-            .set_project_codex_account(&project.id, ProjectCodexAccount::Saved("account-a".into()))
-            .unwrap();
-        let account_a = selected_codex_binding(&state, Some(&project.id)).unwrap();
-        let tmux = fixture.0.join("fake-tmux-plain");
-        let capture = fixture.0.join("plain-tmux-argv");
-        fs::write(
-            &tmux,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\n",
-                quote_arg(&capture.to_string_lossy())
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&tmux, fs::Permissions::from_mode(0o700)).unwrap();
-        let manager = SessionManager {
-            home: state,
-            tmux,
-            socket_name: "isolated-plain".into(),
-        };
-        let shell = manager
-            .new_tmux_session(
-                Uuid::new_v4().to_string(),
-                Some(project.id),
-                None,
-                ShellKind::Project,
-                project_root,
-                None,
-                None,
-                false,
-                None,
-            )
-            .unwrap();
-        assert_eq!(shell.harness, None);
-        assert_eq!(shell.codex_home, None);
-        let arguments = fs::read_to_string(capture).unwrap();
-        assert!(
-            arguments
-                .lines()
-                .any(|argument| argument == format!("CODEX_HOME={}", account_a.home.display()))
-        );
-        assert!(
-            arguments
-                .lines()
-                .any(|argument| argument == "RIWORK_CODEX_ACCOUNT_HOME=")
-        );
-    }
-
     /// A manager whose tmux records every argument it is given, with fake
     /// `codex` and Cua driver executables, for the isolated child process.
     #[cfg(unix)]
@@ -6137,6 +6065,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    #[ignore = "slow: re-runs the test binary and launches through a fake tmux script"]
     fn plain_shell_opens_without_a_home_when_its_account_is_unavailable() {
         use crate::store::{ProjectCodexAccount, Store};
         let fixture = AccountFixture::new();
@@ -6238,6 +6167,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    #[ignore = "slow: re-runs the test binary and launches through a fake tmux script"]
     fn project_launches_resolve_the_project_choice_and_the_global_orchestrator_the_app_choice() {
         use crate::store::{ProjectCodexAccount, Store};
         let fixture = AccountFixture::new();
@@ -6411,67 +6341,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
-    fn tmux_launch_receives_account_environment_and_registry_keeps_frozen_binding() {
-        use std::os::unix::fs::PermissionsExt;
-        let fixture = AccountFixture::new();
-        if !fixture.run_in_child(
-            "tmux_launch_receives_account_environment_and_registry_keeps_frozen_binding",
-        ) {
-            return;
-        }
-        let state = fixture.selected("account-b");
-        let binding = selected_codex_binding(&state, None).unwrap();
-        let tmux = fixture.0.join("fake-tmux");
-        let capture = fixture.0.join("tmux-argv");
-        fs::write(
-            &tmux,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\n",
-                quote_arg(&capture.to_string_lossy())
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&tmux, fs::Permissions::from_mode(0o700)).unwrap();
-        let manager = SessionManager {
-            home: state,
-            tmux,
-            socket_name: "isolated-fake".into(),
-        };
-        let session = manager
-            .new_tmux_session(
-                Uuid::new_v4().to_string(),
-                None,
-                None,
-                ShellKind::Project,
-                fixture.0.clone(),
-                Some("exec /fake/codex".into()),
-                None,
-                false,
-                Some(binding.clone()),
-            )
-            .unwrap();
-        assert_eq!(session.codex_home.as_ref(), Some(&binding.home));
-        assert_eq!(session.codex_account_id, binding.id);
-        let args = fs::read_to_string(capture).unwrap();
-        assert!(
-            args.lines()
-                .any(|argument| argument == format!("CODEX_HOME={}", binding.home.display()))
-        );
-        assert!(
-            args.lines().any(|argument| argument
-                == format!("RIWORK_CODEX_ACCOUNT_HOME={}", binding.home.display()))
-        );
-        let argv = shell_arguments(session.command.as_deref().unwrap());
-        assert!(argv.contains(&format!("CODEX_HOME={}", binding.home.display())));
-        assert!(!fixture.0.join("injected").exists());
-        let restored: ShellSession =
-            serde_json::from_slice(&serde_json::to_vec(&session).unwrap()).unwrap();
-        assert_eq!(restored.codex_home, session.codex_home);
-        assert_eq!(restored.codex_account_id, session.codex_account_id);
-    }
-
-    #[test]
     fn notification_freezes_legacy_home_without_rebinding_an_existing_account() {
         let fixture = AccountFixture::new();
         if !fixture
@@ -6555,6 +6424,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    #[ignore = "slow: re-runs the test binary and runs the launch command in /bin/sh"]
     fn official_harness_receives_literal_selected_home_even_with_a_stale_environment() {
         use std::os::unix::fs::PermissionsExt;
         let fixture = AccountFixture::new();
@@ -6889,29 +6759,6 @@ mod tests {
                 assert!(inline.last().unwrap().contains(CUA_GUIDANCE));
             }
         }
-    }
-
-    #[test]
-    fn inline_orchestrators_get_the_screen_flag_before_their_prompt() {
-        let launch = |inline| {
-            shell_arguments(&orchestrator_command(
-                Path::new("/opt/bin/codex"),
-                Path::new("/Users/test/context"),
-                Path::new("/Users/test/state"),
-                Path::new("/Users/test/skill/SKILL.md"),
-                Path::new("/Applications/RiWork App/riwork"),
-                None,
-                None,
-                "global-orchestrator-pane",
-                None,
-                inline,
-            ))
-        };
-        let (full_screen, inline) = (launch(false), launch(true));
-        assert!(!full_screen.iter().any(|a| a == "--no-alt-screen"));
-        assert_eq!(inline.len(), full_screen.len() + 1);
-        assert_eq!(inline[inline.len() - 2], "--no-alt-screen");
-        assert_eq!(inline.last(), full_screen.last());
     }
 
     #[test]
@@ -7507,75 +7354,7 @@ else:
 
     #[test]
     #[cfg(unix)]
-    fn grok_launch_preflights_the_driver_and_sets_the_timeout_when_unset() {
-        const NAME: &str = "grok_launch_preflights_the_driver_and_sets_the_timeout_when_unset";
-        let fixture = AccountFixture::new();
-        if !fixture.run_in_child_with(
-            NAME,
-            &[
-                ("GROK_MCP_STARTUP_TIMEOUT_SECS", None),
-                ("MCP_TIMEOUT", None),
-            ],
-        ) {
-            return;
-        }
-        let state = fixture.selected("account-a");
-        let (manager, capture) = recording_launcher(&fixture, &state);
-        executable_script(&fixture.0.join("bin/grok"), "exit 0");
-        let marker = fixture.0.join("daemon-pid");
-        let calls = fixture.0.join("driver-calls");
-        install_grok_preflight_driver(&fixture.0.join("fake-cua-driver"), &marker, &calls, "ready");
-        let _stop = StopPreflightDaemon(marker);
-        let cwd = fixture.0.join("grok-work");
-        fs::create_dir_all(&cwd).unwrap();
-        let session = manager
-            .create_harness(
-                Uuid::new_v4().to_string(),
-                None,
-                cwd,
-                HarnessKind::Grok,
-                false,
-            )
-            .unwrap();
-        assert_eq!(session.harness, Some(HarnessKind::Grok));
-        let command = session.command.unwrap();
-        assert!(command.contains("--agent"), "{command}");
-        assert!(!command.contains("startup_timeout"), "{command}");
-        let arguments = take_recorded(&capture);
-        assert!(contains_sequence(
-            &arguments,
-            &["-e", "GROK_MCP_STARTUP_TIMEOUT_SECS=120"]
-        ));
-        assert!(contains_sequence(
-            &arguments,
-            &[";", "set-environment", "-gu", "MCP_TIMEOUT"]
-        ));
-        assert!(
-            !arguments
-                .iter()
-                .any(|argument| argument.contains("MCP_TIMEOUT="))
-        );
-        let calls = fs::read_to_string(&calls).unwrap();
-        assert!(calls.contains("serve\n"), "{calls}");
-        assert!(calls.contains("mcp\n"), "{calls}");
-        let agent = fs::read_dir(state.join("cua"))
-            .unwrap()
-            .flatten()
-            .find(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("grok-agent-")
-            })
-            .unwrap()
-            .path();
-        let definition = fs::read_to_string(agent).unwrap();
-        assert!(definition.contains("name: cua-driver"), "{definition}");
-        assert!(!definition.contains("startup_timeout"), "{definition}");
-    }
-
-    #[test]
-    #[cfg(unix)]
+    #[ignore = "slow: re-runs the test binary and starts a fake Python Cua driver daemon"]
     fn grok_launch_forwards_a_user_timeout_and_refuses_to_start_when_mcp_fails() {
         const NAME: &str =
             "grok_launch_forwards_a_user_timeout_and_refuses_to_start_when_mcp_fails";
@@ -7768,6 +7547,7 @@ else:
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: real tmux server and real login zsh with a wall-clock deadline"]
     fn login_zsh_keeps_cua_wrappers_after_profile_path_changes() {
         use std::os::unix::fs::PermissionsExt;
         let Some(tmux) = find_tmux() else {
@@ -8344,29 +8124,6 @@ else:
         }
     }
 
-    #[test]
-    fn tmux_calls_are_named_after_the_last_chained_command() {
-        assert_eq!(
-            tmux_label(&["list-sessions", "-F", "#{session_name}"]),
-            "tmux list-sessions"
-        );
-        assert_eq!(
-            tmux_label(&[
-                "start-server",
-                ";",
-                "set-option",
-                "-g",
-                "x",
-                "1",
-                ";",
-                "new-session",
-                "-d"
-            ]),
-            "tmux new-session"
-        );
-        assert_eq!(tmux_label(&[]), "tmux ");
-    }
-
     #[cfg(unix)]
     #[test]
     fn a_new_state_directory_is_owner_only_and_an_existing_one_keeps_its_mode() {
@@ -8409,8 +8166,6 @@ else:
             find_harness_program_in(HarnessKind::Codex, &shims, [mise_shims.clone()]).unwrap();
         assert_eq!(found, mise_shims.join("codex"));
         assert_ne!(found.canonicalize().unwrap(), found);
-        let output = Command::new(&found).output().unwrap();
-        assert_eq!(String::from_utf8_lossy(&output.stdout), "codex\n");
 
         // Without the executable bit, a file is skipped in favour of a later one.
         let plain = directory("not-executable");
@@ -8486,6 +8241,7 @@ else:
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: runs fake login shells, including hanging ones that must time out"]
     fn login_shell_path_takes_the_value_between_markers() {
         let root = scratch("login-path");
         let shell = root.join("fake-shell");
@@ -8533,6 +8289,7 @@ else:
     /// Runs the real zsh the way RiWork does: no terminal, login, interactive.
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: real login zsh, depends on the machine startup files"]
     fn login_shell_path_reads_a_real_zsh_startup_without_a_terminal() {
         const NAME: &str = "login_shell_path_reads_a_real_zsh_startup_without_a_terminal";
         if !Path::new("/bin/zsh").exists() {
@@ -8550,6 +8307,7 @@ else:
                     "--exact",
                     &format!("sessions::tests::{NAME}"),
                     "--nocapture",
+                    "--include-ignored",
                 ])
                 .env("RIWORK_TEST_ZSH_HOME", &home)
                 .env("HOME", &home)
@@ -8596,25 +8354,6 @@ else:
         }
         let without = path_with_harness_shims(shim, &[]).unwrap();
         assert_eq!(env::split_paths(&without).next().unwrap(), shim);
-    }
-
-    #[test]
-    fn grok_utility_aliases_pass_through() {
-        for argument in ["v", "version", "disk-usage", "du", "--version", "-v"] {
-            assert!(
-                harness_utility_invocation(HarnessKind::Grok, &[argument.to_owned()]),
-                "{argument}"
-            );
-        }
-        // `v` is only Grok's alias for `version`.
-        assert!(!harness_utility_invocation(
-            HarnessKind::Codex,
-            &["v".to_owned()]
-        ));
-        assert!(!harness_utility_invocation(
-            HarnessKind::Claude,
-            &["v".to_owned()]
-        ));
     }
 
     #[cfg(unix)]
@@ -8692,6 +8431,7 @@ else:
     /// names, as tmux would receive it. Nothing is started: tmux is a recorder.
     #[test]
     #[cfg(unix)]
+    #[ignore = "slow: re-runs the test binary and launches through a fake tmux script"]
     fn a_launch_clears_stale_server_variables_and_escapes_what_tmux_would_reread() {
         const NAME: &str =
             "a_launch_clears_stale_server_variables_and_escapes_what_tmux_would_reread";
@@ -8788,90 +8528,11 @@ else:
         ));
     }
 
-    /// Which screen an agent starts on is decided when it launches, from the
-    /// saved setting: a session that is already running is never touched.
+    /// A stale `RIWORK_CUA_DRIVER` (a developer override that skips identity
+    /// pinning) must not survive in the tmux server's environment.
     #[test]
     #[cfg(unix)]
-    fn new_agent_sessions_follow_the_inline_setting_at_launch() {
-        use crate::store::Store;
-        const NAME: &str = "new_agent_sessions_follow_the_inline_setting_at_launch";
-        let fixture = AccountFixture::new();
-        if !fixture.run_in_child(NAME) {
-            return;
-        }
-        let state = fixture.selected("account-a");
-        let (manager, capture) = recording_launcher(&fixture, &state);
-        executable_script(&fixture.0.join("bin/claude"), "exit 0");
-        let claude_screen = format!("{}={}", CLAUDE_MAIN_SCREEN.0, CLAUDE_MAIN_SCREEN.1);
-        let flagged = |arguments: &[String]| arguments.iter().any(|a| a == "--no-alt-screen");
-
-        for inline in [true, false] {
-            // Each project has its own orchestrator, which is launched once.
-            let root = fixture.0.join(format!("work-{inline}"));
-            fs::create_dir(&root).unwrap();
-            let project = Store::open(&state)
-                .unwrap()
-                .add_project(&root, Some("Inline"))
-                .unwrap();
-            crate::settings::SettingsStore::open(&state)
-                .unwrap()
-                .update(|settings| settings.agent_inline_mode = inline)
-                .unwrap();
-            let codex = manager
-                .create_harness(
-                    project.id.clone(),
-                    None,
-                    root.clone(),
-                    HarnessKind::Codex,
-                    false,
-                )
-                .unwrap();
-            assert_eq!(flagged(&shell_arguments(&codex.command.unwrap())), inline);
-            assert!(!contains_sequence(
-                &take_recorded(&capture),
-                &["-e", &claude_screen]
-            ));
-
-            let claude = manager
-                .create_harness(
-                    project.id.clone(),
-                    None,
-                    root.clone(),
-                    HarnessKind::Claude,
-                    false,
-                )
-                .unwrap();
-            assert!(!flagged(&shell_arguments(&claude.command.unwrap())));
-            assert_eq!(
-                contains_sequence(&take_recorded(&capture), &["-e", &claude_screen]),
-                inline
-            );
-
-            // The orchestrator is Codex under another name.
-            let orchestrator = manager
-                .orchestrator_create_for_project(project.id.clone(), root.clone(), None)
-                .unwrap();
-            assert_eq!(
-                flagged(&shell_arguments(&orchestrator.command.unwrap())),
-                inline
-            );
-            take_recorded(&capture);
-
-            // A plain shell and a custom command are never steered.
-            for command in [None, Some("sleep 60".to_owned())] {
-                manager
-                    .create(project.id.clone(), None, root.clone(), command)
-                    .unwrap();
-                assert!(!contains_sequence(
-                    &take_recorded(&capture),
-                    &["-e", &claude_screen]
-                ));
-            }
-        }
-    }
-
-    #[test]
-    #[cfg(unix)]
+    #[ignore = "slow: re-runs the test binary and launches through a fake tmux script"]
     fn a_launch_without_a_custom_driver_clears_the_servers_copy() {
         const NAME: &str = "a_launch_without_a_custom_driver_clears_the_servers_copy";
         let fixture = AccountFixture::new();

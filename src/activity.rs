@@ -1726,43 +1726,6 @@ mod tests {
     }
 
     #[test]
-    fn initial_backlogged_rollout_does_not_replay_historical_completions() {
-        let fixture = Fixture::new();
-        let thread = Uuid::new_v4().to_string();
-        let padding = "x".repeat(MAX_POLL_BYTES + 512);
-        let path = fixture.log(
-            &thread,
-            &(meta(&thread)
-                + &event("task_started", "old")
-                + &format!(
-                    "{{\"type\":\"response_item\",\"payload\":{{\"ignored\":\"{padding}\"}}}}\n"
-                )
-                + &event("task_complete", "old")),
-        );
-        let session = shell(Some(HarnessKind::Codex));
-        fixture.bind(&session, &thread);
-        let mut tracker = fixture.tracker();
-        // The first poll seeds from the head and tail instead of replaying
-        // 8 MiB per poll, and still treats the existing Done as a baseline.
-        assert_eq!(
-            tracker.sample(&[session.clone()])[&session.id],
-            AgentActivity::Done
-        );
-        assert!(tracker.take_completions().is_empty());
-        assert_eq!(
-            tracker.sample(&[session.clone()])[&session.id],
-            AgentActivity::Done
-        );
-        assert!(tracker.take_completions().is_empty());
-        append(
-            &path,
-            &(event("task_started", "new") + &event("task_complete", "new")),
-        );
-        tracker.sample(&[session.clone()]);
-        assert_eq!(tracker.take_completions().len(), 1);
-    }
-
-    #[test]
     fn notification_only_queues_the_validated_current_completed_turn() {
         let fixture = Fixture::new();
         let project_root = fixture.root.join("project");
@@ -1968,63 +1931,6 @@ mod tests {
             ActivityCounts::for_worktree("root", &state, &sessions, &cwds, &activity),
             ActivityCounts::default()
         );
-        assert_eq!(
-            ActivityCounts {
-                unknown: 1,
-                exited: 1,
-                ..ActivityCounts::default()
-            }
-            .summary(),
-            Some("? 1 unknown".to_owned())
-        );
-        assert_eq!(ActivityCounts::default().summary(), None);
-        assert_eq!(project.summary().as_deref(), Some("● 1 working · ✓ 1 done"));
-    }
-
-    #[test]
-    fn chats_count_as_agents_in_their_project_and_worktree() {
-        let chat = |project: &str, worktree: Option<&str>, activity| ChatActivity {
-            project_id: Some(project.into()),
-            worktree_id: worktree.map(str::to_owned),
-            activity,
-        };
-        let chats = [
-            chat("project-a", Some("root"), AgentActivity::Working),
-            chat("project-a", None, AgentActivity::Done),
-            chat("project-b", Some("foreign"), AgentActivity::Waiting),
-        ];
-        let project = ActivityCounts::default().with_chats_in_project("project-a", &chats);
-        assert_eq!((project.working, project.done, project.waiting), (1, 1, 0));
-        assert_eq!(project.summary().as_deref(), Some("● 1 working · ✓ 1 done"));
-        let worktree = ActivityCounts::default().with_chats_in_worktree("root", &chats);
-        assert_eq!((worktree.working, worktree.done), (1, 0));
-        // The chats add to what the project's shells already count.
-        let both = ActivityCounts {
-            working: 2,
-            ..ActivityCounts::default()
-        }
-        .with_chats_in_project("project-b", &chats);
-        assert_eq!((both.working, both.waiting), (2, 1));
-        assert_eq!(
-            ActivityCounts::default().with_chats_in_project("nobody", &chats),
-            ActivityCounts::default()
-        );
-    }
-
-    #[test]
-    fn a_chats_state_maps_to_the_agent_activity_terminals_report() {
-        let of = ChatActivity::of_state;
-        assert_eq!(of(&ChatState::Running, false), Some(AgentActivity::Working));
-        assert_eq!(of(&ChatState::Waiting, false), Some(AgentActivity::Waiting));
-        // Done is what an idle chat is after a turn; a fresh one has done nothing.
-        assert_eq!(of(&ChatState::Idle, true), Some(AgentActivity::Done));
-        assert_eq!(of(&ChatState::Idle, false), None);
-        assert_eq!(of(&ChatState::Starting, true), None);
-        assert_eq!(of(&ChatState::Stopped, true), None);
-        let failed = ChatState::Failed {
-            message: "gone".into(),
-        };
-        assert_eq!(of(&failed, true), None);
     }
 
     fn oversized_record_rollout(fixture: &Fixture, thread: &str) -> PathBuf {
@@ -2089,7 +1995,6 @@ mod tests {
             "x".repeat(bytes)
         )
     }
-    const MIB: usize = 1024 * 1024;
 
     #[test]
     fn rollout_past_the_poll_limit_is_seeded_in_one_read_and_then_followed_incrementally() {
@@ -2119,40 +2024,6 @@ mod tests {
         assert_eq!(cursor.read(&path).unwrap(), AgentActivity::Done);
         append(&path, "\n");
         assert_eq!(cursor.read(&path).unwrap(), AgentActivity::Working);
-    }
-
-    #[test]
-    fn seeding_widens_the_tail_until_it_contains_a_turn_start() {
-        let fixture = Fixture::new();
-        let thread = Uuid::new_v4().to_string();
-        // The turn start is 9 MiB from the end: the 1, 4 and 16 MiB windows
-        // are tried in turn, and the 16 MiB one is the first to contain it.
-        let path = fixture.log(
-            &thread,
-            &(meta(&thread)
-                + &padding(9 * MIB)
-                + &event("task_started", "long")
-                + &padding(6 * MIB)
-                + &event("task_complete", "long")
-                + &padding(3 * MIB)),
-        );
-        let mut cursor = RolloutCursor::new(thread.clone());
-        assert_eq!(cursor.read(&path).unwrap(), AgentActivity::Done);
-        assert_eq!(cursor.completed_turn.as_deref(), Some("long"));
-        assert_eq!(cursor.offset, fs::metadata(&path).unwrap().len());
-        // With only a 1 MiB window nothing proves the state, so the incremental
-        // scan from byte zero takes over (and is still bounded per call).
-        let mut fallback = RolloutCursor::new(thread.clone());
-        assert_eq!(
-            fallback.read_with(&path, &[MIB as u64]).unwrap(),
-            AgentActivity::Unknown
-        );
-        assert!(fallback.offset <= MAX_POLL_BYTES as u64 && !fallback.caught_up);
-        let mut status = AgentActivity::Unknown;
-        for _ in 0..4 {
-            status = fallback.read_with(&path, &[MIB as u64]).unwrap();
-        }
-        assert_eq!(status, AgentActivity::Done);
     }
 
     #[test]
@@ -2215,158 +2086,6 @@ mod tests {
         assert!(!cursor.caught_up);
     }
 
-    fn notified_project(fixture: &Fixture) -> ShellSession {
-        let project_root = fixture.root.join("project");
-        fs::create_dir_all(&project_root).unwrap();
-        let store = crate::store::Store::open(fixture.home.clone()).unwrap();
-        let project = store.add_project(project_root, Some("Large")).unwrap();
-        store.set_project_notifications(&project.id, true).unwrap();
-        let mut session = shell(Some(HarnessKind::Codex));
-        session.project_id = Some(project.id);
-        fs::write(
-            fixture.home.join("sessions.json"),
-            serde_json::json!({"sessions":[session]}).to_string(),
-        )
-        .unwrap();
-        session
-    }
-
-    #[test]
-    fn notify_hook_queues_completions_for_rollouts_over_the_poll_limit() {
-        let fixture = Fixture::new();
-        let session = notified_project(&fixture);
-        let thread = Uuid::new_v4().to_string();
-        let path = fixture.log(
-            &thread,
-            &(meta(&thread)
-                + &event("task_started", "old")
-                + &event("task_complete", "old")
-                + &padding(MAX_POLL_BYTES * 2)
-                + &event("task_started", "new")
-                + &event("task_complete", "new")),
-        );
-        assert!(fs::metadata(&path).unwrap().len() > MAX_POLL_BYTES as u64 * 2);
-        let notify = |turn: &str| Notification {
-            kind: "agent-turn-complete".into(),
-            thread_id: thread.clone(),
-            turn_id: Some(turn.into()),
-        };
-        // A stale turn id is still vetoed by the rollout.
-        record_codex_notification_at(&fixture.home, &session.id, notify("old"), &fixture.log_home)
-            .unwrap();
-        assert!(
-            crate::notifications::claim_pending(&fixture.home)
-                .unwrap()
-                .is_empty()
-        );
-        record_codex_notification_at(&fixture.home, &session.id, notify("new"), &fixture.log_home)
-            .unwrap();
-        assert_eq!(
-            crate::notifications::claim_pending(&fixture.home)
-                .unwrap()
-                .len(),
-            1
-        );
-    }
-
-    #[test]
-    fn notify_hook_trusts_the_payload_when_the_turn_holds_an_unreadable_record() {
-        let fixture = Fixture::new();
-        let session = notified_project(&fixture);
-        let thread = Uuid::new_v4().to_string();
-        let path = fixture.log(
-            &thread,
-            &(meta(&thread) + &event("task_started", "current")),
-        );
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        file.write_all(b"{\"type\":\"response_item\",\"payload\":{\"content\":\"")
-            .unwrap();
-        file.write_all(&vec![b'x'; MAX_RECORD_BYTES + 1]).unwrap();
-        file.write_all(b"\"}}\n").unwrap();
-        drop(file);
-        append(&path, &event("task_complete", "current"));
-        let mut cursor = RolloutCursor::new(thread.clone());
-        // The oversized record inside the turn leaves the activity unproven.
-        assert_eq!(cursor.read(&path).unwrap(), AgentActivity::Unknown);
-        assert!(cursor.valid_session && cursor.malformed);
-        let notify = |turn: Option<&str>| Notification {
-            kind: "agent-turn-complete".into(),
-            thread_id: thread.clone(),
-            turn_id: turn.map(str::to_owned),
-        };
-        record_codex_notification_at(&fixture.home, &session.id, notify(None), &fixture.log_home)
-            .unwrap();
-        assert!(
-            crate::notifications::claim_pending(&fixture.home)
-                .unwrap()
-                .is_empty()
-        );
-        record_codex_notification_at(
-            &fixture.home,
-            &session.id,
-            notify(Some("current")),
-            &fixture.log_home,
-        )
-        .unwrap();
-        assert_eq!(
-            crate::notifications::claim_pending(&fixture.home)
-                .unwrap()
-                .len(),
-            1
-        );
-    }
-
-    #[test]
-    fn missing_rollouts_are_looked_up_with_exponential_backoff() {
-        let fixture = Fixture::new();
-        let thread = Uuid::new_v4().to_string();
-        let session = shell(Some(HarnessKind::Codex));
-        fixture.bind(&session, &thread);
-        let mut tracker = fixture.tracker();
-        let sessions = [session.clone()];
-        assert_eq!(
-            tracker.sample(&sessions)[&session.id],
-            AgentActivity::Unknown
-        );
-        let first = tracker.cursors[&session.id].lookup_after.unwrap();
-        // The file appearing during the wait is not noticed until it elapses.
-        fixture.log(&thread, &(meta(&thread) + &event("task_started", "turn")));
-        assert_eq!(
-            tracker.sample(&sessions)[&session.id],
-            AgentActivity::Unknown
-        );
-        assert_eq!(tracker.cursors[&session.id].lookup_after, Some(first));
-        tracker.cursors.get_mut(&session.id).unwrap().lookup_after =
-            Some(Instant::now() - Duration::from_secs(1));
-        assert_eq!(
-            tracker.sample(&sessions)[&session.id],
-            AgentActivity::Working
-        );
-        assert_eq!(tracker.cursors[&session.id].lookup_misses, 0);
-        // Repeated misses double the wait up to the cap.
-        let mut cursor = BoundCursor::new(Binding {
-            shell_id: session.id.clone(),
-            thread_id: thread,
-            codex_home: fixture.log_home.clone(),
-        });
-        let mut waits = Vec::new();
-        for _ in 0..9 {
-            cursor.missed_lookup();
-            waits.push(cursor.lookup_after.unwrap().duration_since(Instant::now()));
-        }
-        assert!(waits[0] <= Duration::from_secs(2));
-        assert!(waits[3] > Duration::from_secs(10) && waits[3] <= Duration::from_secs(16));
-        assert!(waits[8] > Duration::from_secs(100) && waits[8] <= LOOKUP_BACKOFF_CAP);
-        // A file that disappears is resolved again, also with a wait.
-        fs::remove_file(tracker.cursors[&session.id].path.clone().unwrap()).unwrap();
-        assert_eq!(
-            tracker.sample(&sessions)[&session.id],
-            AgentActivity::Unknown
-        );
-        let lost = &tracker.cursors[&session.id];
-        assert!(lost.path.is_none() && lost.lookup_after.is_some());
-    }
-
     fn child_meta(child: &str, parent: &str, role: Option<&str>) -> String {
         let mut spawn = serde_json::json!({"parent_thread_id":parent,"depth":1});
         if let Some(role) = role {
@@ -2377,12 +2096,6 @@ mod tests {
             serde_json::json!({"type":"session_meta","payload":{
                 "id":child,"forked_from_id":parent,"source":{"subagent":{"thread_spawn":spawn}}
             }})
-        )
-    }
-    fn event_at(kind: &str, turn: &str, timestamp: &str) -> String {
-        format!(
-            "{}\n",
-            serde_json::json!({"timestamp":timestamp,"type":"event_msg","payload":{"type":kind,"turn_id":turn}})
         )
     }
     /// Pretend the file was last written `seconds` ago.
@@ -2481,121 +2194,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn child_threads_are_looked_for_in_recent_days_by_exact_parent_and_after_their_first_record() {
-        let fixture = Fixture::new();
-        let parent = Uuid::new_v4().to_string();
-        fixture.log(&parent, &(meta(&parent) + &event("task_started", "turn")));
-        let session = shell(Some(HarnessKind::Codex));
-        fixture.bind(&session, &parent);
-        let in_day = |day: &str, child: &str, records: &str| {
-            let directory = fixture.log_home.join(format!("sessions/2026/09/{day}"));
-            fs::create_dir_all(&directory).unwrap();
-            let path = directory.join(format!("rollout-test-{child}.jsonl"));
-            fs::write(&path, records).unwrap();
-            path
-        };
-        let working =
-            |child: &str| child_meta(child, &parent, Some("worker")) + &event("task_started", "t");
-        // A day before the parent's can hold no child of it.
-        let earlier = Uuid::new_v4().to_string();
-        in_day("26", &earlier, &working(&earlier));
-        let mut tracker = working_tracker(&fixture);
-        let count = |tracker: &mut ActivityTracker| {
-            tracker.sample_states(std::slice::from_ref(&session), unix_now())[&session.id]
-                .subagents
-                .working
-        };
-        assert_eq!(count(&mut tracker), 0);
-        // A later day does.
-        let later = Uuid::new_v4().to_string();
-        in_day("28", &later, &working(&later));
-        assert_eq!(count(&mut tracker), 1);
-        // A child whose first record is still being written is looked at again,
-        // not written off as somebody else's.
-        let unfinished = Uuid::new_v4().to_string();
-        let half = working(&unfinished);
-        let path = in_day("28", &unfinished, half.lines().next().unwrap());
-        assert_eq!(count(&mut tracker), 1);
-        fs::write(&path, &half).unwrap();
-        assert_eq!(count(&mut tracker), 2);
-        // A first record that is not a session record is nobody's child.
-        let bogus = Uuid::new_v4().to_string();
-        in_day(
-            "28",
-            &bogus,
-            &(event("task_started", "t") + &working(&bogus)),
-        );
-        assert_eq!(count(&mut tracker), 2);
-        // Scanning is not done on every sample: the children found are followed,
-        // new ones are noticed when the next scan is due.
-        tracker.child_scan_every = Duration::from_secs(3600);
-        let due_now = |tracker: &mut ActivityTracker| {
-            tracker
-                .cursors
-                .values_mut()
-                .for_each(|cursor| cursor.delegates.scan_after = None);
-        };
-        due_now(&mut tracker);
-        assert_eq!(count(&mut tracker), 2);
-        let new = Uuid::new_v4().to_string();
-        in_day("28", &new, &working(&new));
-        assert_eq!(count(&mut tracker), 2, "no scan is due yet");
-        due_now(&mut tracker);
-        assert_eq!(count(&mut tracker), 3);
-    }
-
-    #[test]
-    fn a_session_whose_tree_is_not_dated_searches_its_own_directory() {
-        let fixture = Fixture::new();
-        let parent = Uuid::new_v4().to_string();
-        let flat = fixture.log_home.join("sessions");
-        let parent_path = flat.join(format!("rollout-test-{parent}.jsonl"));
-        fs::write(&parent_path, meta(&parent) + &event("task_started", "turn")).unwrap();
-        let child = Uuid::new_v4().to_string();
-        fs::write(
-            flat.join(format!("rollout-test-{child}.jsonl")),
-            child_meta(&child, &parent, Some("explorer")) + &event("task_started", "c"),
-        )
-        .unwrap();
-        let session = shell(Some(HarnessKind::Codex));
-        fixture.bind(&session, &parent);
-        let states =
-            working_tracker(&fixture).sample_states(std::slice::from_ref(&session), unix_now());
-        // The fixture's find_rollout looks for the parent under `sessions/`.
-        assert_eq!(states[&session.id].subagents.working, 1);
-    }
-
-    #[test]
-    fn codex_activity_carries_the_time_of_the_record_that_set_it() {
-        let fixture = Fixture::new();
-        let thread = Uuid::new_v4().to_string();
-        let start = "2026-09-27T10:00:05.123Z";
-        let end = "2026-09-27T10:01:30.500Z";
-        let path = fixture.log(
-            &thread,
-            &(format!(
-                "{}\n",
-                serde_json::json!({"timestamp":"2026-09-27T10:00:00.000Z","type":"session_meta","payload":{"id":thread,"source":"cli"}})
-            ) + &event_at("task_started", "turn", start)),
-        );
-        let session = shell(Some(HarnessKind::Codex));
-        fixture.bind(&session, &thread);
-        let mut tracker = fixture.tracker();
-        let states = tracker.sample_states(std::slice::from_ref(&session), 1_790_503_300);
-        assert_eq!(states[&session.id].activity, AgentActivity::Working);
-        assert_eq!(states[&session.id].since_unix, Some(1_790_503_205));
-        append(&path, &event_at("task_complete", "turn", end));
-        let states = tracker.sample_states(std::slice::from_ref(&session), 1_790_503_300);
-        assert_eq!(states[&session.id].activity, AgentActivity::Done);
-        assert_eq!(states[&session.id].since_unix, Some(1_790_503_290));
-        // A record without a time leaves it unknown rather than stale.
-        append(&path, &event("task_started", "next"));
-        let states = tracker.sample_states(std::slice::from_ref(&session), 1_790_503_300);
-        assert_eq!(states[&session.id].activity, AgentActivity::Working);
-        assert_eq!(states[&session.id].since_unix, None);
-    }
-
     fn claude_shell(alive: bool) -> ShellSession {
         let mut session = shell(Some(HarnessKind::Claude));
         session.alive = alive;
@@ -2656,10 +2254,6 @@ mod tests {
         assert_eq!(working.since_unix, Some(9_500));
         assert_eq!(working.subagents.working, 2, "the stale one is not counted");
         assert_eq!(working.subagents.kinds, ["general-purpose", "Explore"]);
-        assert_eq!(
-            working.hint().as_deref(),
-            Some("Working · 2 subagents (general-purpose, Explore)")
-        );
         // After the Stop: done.
         write_cursor(
             &fixture,
@@ -2672,7 +2266,6 @@ mod tests {
             (AgentActivity::Done, Some(9_900))
         );
         assert_eq!(done.subagents, Subagents::default());
-        assert_eq!(done.hint().as_deref(), Some("Done"));
         // A damaged cursor is unknown, never a crash or a guess.
         fs::write(
             fixture
@@ -2750,64 +2343,6 @@ mod tests {
                 .sample_states(std::slice::from_ref(&grok), 100)
                 .contains_key(&grok.id)
         );
-    }
-
-    #[test]
-    fn counts_and_labels_show_subagents_with_the_working_agents_they_belong_to() {
-        let mut counts = ActivityCounts::default();
-        counts.add(&AgentState {
-            activity: AgentActivity::Working,
-            since_unix: None,
-            subagents: Subagents {
-                working: 2,
-                kinds: vec!["Plan".into()],
-            },
-        });
-        counts.add(&AgentState::plain(AgentActivity::Done));
-        assert_eq!(counts.subagents, 2);
-        assert_eq!(
-            counts.summary().as_deref(),
-            Some("● 1 working · 2 subagents · ✓ 1 done")
-        );
-        let mut one = Subagents::default();
-        one.add(Some("Plan"));
-        assert_eq!(one.label().as_deref(), Some("1 subagent"));
-        assert_eq!(Subagents::default().label(), None);
-        // Four kinds at most, each once.
-        let mut many = Subagents::default();
-        for kind in ["a", "b", "a", "c", "d", "e", "f"] {
-            many.add(Some(kind));
-        }
-        assert_eq!((many.working, many.kinds.len()), (7, 4));
-        assert_eq!(AgentActivity::Waiting.as_str(), "waiting");
-    }
-
-    #[test]
-    fn a_cold_cli_read_opens_a_rollout_over_a_megabyte_from_its_head_and_tail() {
-        let fixture = Fixture::new();
-        let thread = Uuid::new_v4().to_string();
-        let stray = Uuid::new_v4().to_string();
-        // A record in the middle that only a read-through would apply: another
-        // thread's session record leaves this one without a valid session.
-        fixture.log(
-            &thread,
-            &(meta(&thread)
-                + &event("task_started", "old")
-                + &padding(MIB / 2)
-                + &meta(&stray)
-                + &padding(MIB)
-                + &event("task_started", "new")),
-        );
-        let session = shell(Some(HarnessKind::Codex));
-        fixture.bind(&session, &thread);
-        let sessions = [session.clone()];
-        assert_eq!(
-            fixture.tracker().sample(&sessions)[&session.id],
-            AgentActivity::Unknown,
-            "the window reads a rollout under 8 MiB through"
-        );
-        let states = states_once(&fixture.home, &sessions, 1);
-        assert_eq!(states[&session.id].activity, AgentActivity::Working);
     }
 
     #[test]

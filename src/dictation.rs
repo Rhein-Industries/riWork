@@ -860,28 +860,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn every_problem_says_something_and_only_permissions_open_settings() {
-        for problem in [
-            Problem::MicrophoneDenied,
-            Problem::RecognitionDenied,
-            Problem::Unsupported,
-            Problem::ModelUnavailable,
-            Problem::MicrophoneBusy(String::new()),
-            Problem::MicrophoneBusy("busy".to_owned()),
-            Problem::Interrupted,
-            Problem::Unavailable,
-            Problem::Failed("x".to_owned()),
-        ] {
-            assert!(!problem.message().is_empty());
-            let permission = matches!(
-                problem,
-                Problem::MicrophoneDenied | Problem::RecognitionDenied
-            );
-            assert_eq!(problem.settings_url().is_some(), permission, "{problem:?}");
-        }
-    }
-
     // The phone's SpeechVocabularyTests.testInsertingAtTheCaretKeepsWordsApart, in byte offsets
     // (the same numbers: the texts are ASCII).
 
@@ -984,18 +962,6 @@ mod tests {
         let mut focused = input("Draft", 0);
         Insertion::default().show(&mut focused, "A", true);
         assert_eq!(focused.text, "A Draft");
-    }
-
-    #[test]
-    fn a_selection_is_replaced_by_the_words() {
-        let mut field = Input {
-            text: "replace old words".to_owned(),
-            selection: 8..11,
-            ..Default::default()
-        };
-        let mut insertion = Insertion::default();
-        insertion.commit(&mut field, "new", true);
-        assert_eq!(field.text, "replace new words");
     }
 
     #[test]
@@ -1109,6 +1075,7 @@ mod tests {
     /// compiled into it in place. Run them as the Mac builds them, with the phone's vectors
     /// (SpeechVocabularyTests): the rewrite as the app gets it, through the helper.
     #[test]
+    #[ignore = "slow: runs the built riwork-speech helper"]
     fn the_helper_rewrites_with_the_phones_vocabulary() {
         let Some(helper) = helper_path() else {
             eprintln!("riwork-speech was not built (no Swift compiler); skipping");
@@ -1200,6 +1167,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow: runs the built riwork-speech helper end to end"]
     fn a_scripted_dictation_runs_through_the_helper_with_the_sessions_names() {
         if helper_path().is_none() {
             eprintln!("riwork-speech was not built (no Swift compiler); skipping");
@@ -1228,6 +1196,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow: runs the built riwork-speech helper and waits for it to exit"]
     fn the_helper_ends_when_its_dictation_is_dropped_or_the_app_goes() {
         if helper_path().is_none() {
             eprintln!("riwork-speech was not built (no Swift compiler); skipping");

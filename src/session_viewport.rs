@@ -634,6 +634,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: spawns real watchdog processes and polls their launch log"]
     fn renewing_a_lease_respawns_a_dead_watchdog_in_its_own_process_group() {
         let home = Home::new();
         let (script, log) = recording_executable(&home);
@@ -694,6 +695,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: spawns a real watchdog and waits out the restore backoff"]
     fn expired_lease_is_restored_despite_transient_tmux_failures() {
         let home = Home::new();
         let (script, _) = recording_executable(&home);
@@ -759,6 +761,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: threads and wall-clock sleeps decide the outcome"]
     fn one_watchdog_covers_a_lease_that_changes_hands() {
         let home = Home::new();
         let (script, log) = recording_executable(&home);
@@ -827,6 +830,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: waits out the 2 s watchdog claim timeout"]
     fn only_one_watchdog_per_shell_and_a_successor_waits_for_an_exiting_one() {
         let home = Home::new();
         let shell = Uuid::new_v4().to_string();

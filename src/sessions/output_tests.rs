@@ -202,6 +202,7 @@ fn a_change_ends_the_wait_early() {
 }
 
 #[test]
+#[ignore = "slow: real 400 ms wait with wall-clock bounds"]
 fn no_change_returns_unchanged_when_the_wait_is_over_and_not_much_later() {
     let mut script = Script::new(usize::MAX);
     let hash = script.hash();

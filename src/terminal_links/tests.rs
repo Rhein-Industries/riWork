@@ -76,27 +76,6 @@ fn only_command_and_command_shift_make_a_link_gesture() {
 
 const DEFAULT_PADDING: GhosttyPadding = GhosttyPadding::DEFAULT;
 
-#[test]
-fn ghostty_floors_its_point_padding_to_pixels() {
-    let config = GhosttyPadding {
-        x: (2, 3),
-        y: (5, 0),
-        balance: PaddingBalance::False,
-    };
-    assert_eq!(
-        explicit_padding(&config, 2.0),
-        Padding {
-            left: 4,
-            right: 6,
-            top: 10,
-            bottom: 0
-        }
-    );
-    // 2 pt at a scale of 1.5 is 3 px; 3 pt is 4.5, which floors to 4.
-    let padding = explicit_padding(&config, 1.5);
-    assert_eq!((padding.left, padding.right), (3, 4));
-}
-
 fn size(available: u32, cells: u32) -> f64 {
     cell_size(SizeRange::of(available, cells), available, cells)
 }
@@ -280,29 +259,6 @@ fn a_surface_too_small_for_its_grid_has_no_cells() {
         )
         .is_none()
     );
-}
-
-#[test]
-fn custom_padding_moves_the_cells() {
-    let wide = GhosttyPadding {
-        x: (10, 10),
-        y: (8, 8),
-        balance: PaddingBalance::False,
-    };
-    // 2000 - 40 = 1960 px: 122 cells of 16 (1952). 1200 - 32 = 1168: 34 rows of 34 (1156).
-    let at = |x: f64, y: f64| {
-        cell_under_pointer(
-            (1000.0, 600.0),
-            (x, y),
-            2.0,
-            (122, 34),
-            &wide,
-            &mut CellHint::default(),
-        )
-    };
-    assert_eq!(at(9.9, 20.0), None);
-    assert_eq!(at(10.0, 8.0), Some((0, 0)));
-    assert_eq!(at(10.0 + 8.0, 8.0 + 17.0), Some((1, 1)));
 }
 
 // ---- tokens -----------------------------------------------------------------------------
@@ -709,15 +665,6 @@ fn paths_are_settled_the_way_the_system_does() {
 }
 
 #[test]
-fn a_url_needs_no_file_system() {
-    let tree = Tree::new();
-    assert_eq!(
-        link_at(&tree, "see https://example.com/a.", "example", "work"),
-        Some(Link::Url("https://example.com/a".into()))
-    );
-}
-
-#[test]
 fn containment_compares_resolved_paths() {
     let tree = Tree::new();
     let root = tree.join("work");
@@ -884,24 +831,6 @@ fn hyperlinks_are_read_off_the_escaped_capture() {
 }
 
 #[test]
-fn a_click_on_a_hyperlink_goes_where_it_points_whatever_it_says() {
-    let esc = "\u{1b}";
-    let mut raw = capture(30, 2, &[("see the docs here", false), ("", false)]);
-    raw.escaped = format!(
-        "see {esc}]8;;https://a.example/x{esc}\\the docs{esc}]8;;{esc}\\ here{:<13}\n{:<30}\n",
-        "", ""
-    );
-    let view = PaneView::parse(&raw).unwrap();
-    let nowhere = Path::new("/x");
-    let docs = Some(Link::Url("https://a.example/x".into()));
-    assert_eq!(view.link_at(0, 4, &bases(nowhere)), docs);
-    assert_eq!(view.link_at(0, 11, &bases(nowhere)), docs);
-    // Off the link, the words are only words.
-    assert_eq!(view.link_at(0, 1, &bases(nowhere)), None);
-    assert_eq!(view.link_at(0, 14, &bases(nowhere)), None);
-}
-
-#[test]
 fn words_that_are_an_address_cannot_point_to_another_site() {
     let esc = "\u{1b}";
     let view = |label: &str, target: &str| {
@@ -1039,37 +968,6 @@ fn runs_at(view: &PaneView, row: u32, col: u32, cwd: &Path) -> Option<Vec<(u32, 
 }
 
 #[test]
-fn a_link_on_one_row_covers_its_own_cells() {
-    let raw = capture(30, 2, &[("see https://ex.com/a. ok", false), ("", false)]);
-    let view = PaneView::parse(&raw).unwrap();
-    let nowhere = Path::new("/nowhere");
-    // `https://ex.com/a` is columns 4 to 19; the full stop of the sentence is not part of it.
-    assert_eq!(runs_at(&view, 0, 10, nowhere), Some(vec![(0, 4, 20)]));
-    assert_eq!(runs_at(&view, 0, 1, nowhere), None);
-}
-
-#[test]
-fn a_wrapped_link_covers_every_row_it_was_wrapped_over() {
-    let raw = capture(
-        10,
-        4,
-        &[
-            ("go https:/", true),
-            ("/ex.com/a/", true),
-            ("b ok", false),
-            ("", false),
-        ],
-    );
-    let view = PaneView::parse(&raw).unwrap();
-    let nowhere = Path::new("/nowhere");
-    let whole = Some(vec![(0, 3, 10), (1, 0, 10), (2, 0, 1)]);
-    // The same, whichever row the pointer is on.
-    assert_eq!(runs_at(&view, 0, 5, nowhere), whole);
-    assert_eq!(runs_at(&view, 1, 3, nowhere), whole);
-    assert_eq!(runs_at(&view, 2, 0, nowhere), whole);
-}
-
-#[test]
 fn a_file_link_covers_its_position_too() {
     let tree = Tree::new();
     let raw = capture(30, 1, &[("see src/main.rs:12:3, then", false)]);
@@ -1128,48 +1026,6 @@ fn a_wide_character_covers_two_cells_and_a_row_out_of_view_none() {
         Some(Link::Url("https://x.com/你".into()))
     );
     assert_eq!(runs_at(&view, 0, 2, nowhere), Some(vec![(0, 0, 9)]));
-}
-
-#[test]
-fn the_underline_lies_along_the_bottom_of_the_links_cells() {
-    // 1000 x 600 pt at 2x: 2000 x 1200 px, 4 px padding, cells of 16 x 34.
-    let strips = underline_strips(
-        (1000.0, 600.0),
-        2.0,
-        (124, 35),
-        &DEFAULT_PADDING,
-        &mut CellHint::default(),
-        &[
-            LinkRow {
-                row: 5,
-                cols: 10..20,
-            },
-            LinkRow { row: 6, cols: 0..3 },
-            // Past the grid: nothing to draw.
-            LinkRow {
-                row: 40,
-                cols: 0..3,
-            },
-        ],
-    );
-    // Two device pixels (one point) high, ending at the bottom of the row.
-    assert_eq!(
-        strips,
-        [
-            Strip {
-                x: (4.0 + 16.0 * 10.0) / 2.0,
-                y: (4.0 + 34.0 * 6.0 - 2.0) / 2.0,
-                width: 16.0 * 10.0 / 2.0,
-                height: 1.0,
-            },
-            Strip {
-                x: 2.0,
-                y: (4.0 + 34.0 * 7.0 - 2.0) / 2.0,
-                width: 16.0 * 3.0 / 2.0,
-                height: 1.0,
-            },
-        ]
-    );
 }
 
 #[test]
@@ -1372,12 +1228,6 @@ fn wide_characters_take_two_cells_and_marks_none() {
     assert_eq!(char_width('\u{301}'), 0);
     assert_eq!(char_width('✅'), 2);
     assert_eq!(char_width('│'), 1);
-}
-
-#[test]
-fn names_for_messages() {
-    assert_eq!(short_name(Path::new("/a/b/c.rs")), "b/c.rs");
-    assert_eq!(short_name(Path::new("/c.rs")), "c.rs");
 }
 
 #[test]

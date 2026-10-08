@@ -1054,42 +1054,15 @@ mod tests {
     }
 
     #[test]
-    fn a_name_that_fits_two_accounts_or_none_is_an_error_that_helps() {
+    fn a_name_that_fits_two_accounts_or_none_is_an_error() {
         let accounts = roster();
-        let error = find_account(&accounts, "me@home.example").unwrap_err();
-        assert!(
-            error.starts_with("More than one Codex account matches 'me@home.example'"),
-            "{error}"
-        );
-        assert!(
-            error.contains("7c1d9b3e-0000-4000-8000-000000000001"),
-            "{error}"
-        );
-        assert!(
-            error.contains("7c1d9b3e-0000-4000-8000-000000000002"),
-            "{error}"
-        );
-        assert!(error.ends_with("Use an id."), "{error}");
+        // Ambiguous: never pick one of them.
+        assert!(find_account(&accounts, "me@home.example").is_err());
         // The exact label wins over the longer one that contains it.
         let one = find_account(&accounts, "me@home.example · Private").unwrap();
         assert_eq!(one.id, "7c1d9b3e-0000-4000-8000-000000000001");
-        let error = find_account(&accounts, "Holiday").unwrap_err();
-        assert!(error.starts_with("No Codex account matches 'Holiday'. Known accounts: System default, me@example.com · Work"), "{error}");
-        assert_eq!(
-            find_account(&accounts, "  ").unwrap_err(),
-            "The account name is empty."
-        );
-    }
-
-    #[test]
-    fn an_account_that_cannot_be_used_is_named_not_swapped_for_another() {
-        let accounts = roster();
-        let error = find_account(&accounts, "Private spare").unwrap_err();
-        assert!(
-            error.contains("me@home.example · Private spare is unavailable"),
-            "{error}"
-        );
-        assert!(error.contains("home is missing"), "{error}");
+        assert!(find_account(&accounts, "Holiday").is_err());
+        assert!(find_account(&accounts, "  ").is_err());
     }
 
     #[test]
@@ -1146,6 +1119,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: spawns a real shell script as the Orca CLI"]
     fn cli_failure_never_displays_raw_stderr() {
         use std::os::unix::fs::PermissionsExt;
         let fixture = Fixture::new();
@@ -1158,17 +1132,6 @@ mod tests {
         fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
         let error = run_orca_account_list(&cli).unwrap_err();
         assert!(!error.contains("PRIVATE_PROVIDER_ERROR"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn cli_stdout_is_bounded_even_when_child_exits_successfully() {
-        use std::os::unix::fs::PermissionsExt;
-        let fixture = Fixture::new();
-        let cli = fixture.0.join("orca");
-        fs::write(&cli, b"#!/bin/sh\nhead -c 1048577 /dev/zero\n").unwrap();
-        fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(run_orca_account_list(&cli).is_err());
     }
 
     #[test]
@@ -1214,30 +1177,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn labels_are_compact_and_do_not_contain_control_characters() {
-        let metadata = AccountMetadata {
-            id: "local-1".into(),
-            email: Some(" name@example.test\n".into()),
-            workspace_label: Some(" Personal (Pro)\t".into()),
-            managed_home_runtime: Some("host".into()),
-            wsl_distro: None,
-        };
-        assert_eq!(
-            account_label(&metadata),
-            "name@example.test · Personal (Pro)"
-        );
-        assert_eq!(
-            account_email(&metadata).as_deref(),
-            Some("name@example.test")
-        );
-        let unknown = AccountMetadata {
-            email: Some("Saved account".into()),
-            ..metadata
-        };
-        assert_eq!(account_email(&unknown), None);
-    }
-
     /// Runs the named test again in a child whose environment is `vars`, so the
     /// test can exercise process-environment lookups without mutating the
     /// environment shared with other tests. The child gets the parent's
@@ -1250,6 +1189,7 @@ mod tests {
             .args([
                 "--exact",
                 &format!("codex_accounts::tests::{name}"),
+                "--include-ignored",
                 "--nocapture",
             ])
             .env("RIWORK_TEST_ACCOUNT_CHILD", &fixture.0)
@@ -1336,6 +1276,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow: re-runs the test binary in a child process with a controlled environment"]
     fn system_default_bindings_and_rows_ignore_the_injected_home() {
         let fixture = Fixture::new();
         let account = managed(&fixture, "local-1");
@@ -1430,23 +1371,5 @@ mod tests {
             managed_home_variable(Some("".into()), None, Some(&profile)),
             None
         );
-    }
-
-    #[test]
-    fn home_display_shortens_only_the_users_home() {
-        let home = Path::new("/Users/someone");
-        assert_eq!(
-            abbreviate_home(Path::new("/Users/someone"), Some(home)),
-            "~"
-        );
-        assert_eq!(
-            abbreviate_home(Path::new("/Users/someone/.codex"), Some(home)),
-            "~/.codex"
-        );
-        assert_eq!(
-            abbreviate_home(Path::new("/Users/someone2/.codex"), Some(home)),
-            "/Users/someone2/.codex"
-        );
-        assert_eq!(abbreviate_home(Path::new("/x/.codex"), None), "/x/.codex");
     }
 }

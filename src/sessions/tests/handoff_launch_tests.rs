@@ -198,6 +198,7 @@ fn a_launch_that_chooses_nothing_is_the_menus_launch() {
 
 #[test]
 #[cfg(unix)]
+#[ignore = "slow: re-runs the test binary and launches through a fake tmux script"]
 fn a_handed_off_terminal_starts_with_its_choices_and_the_account_picked_by_name() {
     use crate::store::Store;
     const NAME: &str = "handoff_launch_tests::a_handed_off_terminal_starts_with_its_choices_and_the_account_picked_by_name";

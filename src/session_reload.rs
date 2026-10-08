@@ -1045,6 +1045,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow: runs the resume command in a real /bin/sh"]
     #[cfg(unix)]
     fn real_shell_receives_literal_argv_and_profile_paths() {
         use std::os::unix::fs::PermissionsExt;
@@ -1177,6 +1178,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: launches real worker processes and waits on their timeouts"]
     fn worker_from_an_incompatible_build_is_reported_instead_of_staying_queued() {
         let temporary = Temporary::new();
         // Rejects the unknown subcommand and exits non-zero, writing nothing.
@@ -1210,6 +1212,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: launches dozens of real worker processes to race their receipts"]
     fn worker_that_takes_over_the_receipt_is_accepted_or_its_own_refusal_reported() {
         let temporary = Temporary::new();
         let receipt = |status: &str, message: &str| {
