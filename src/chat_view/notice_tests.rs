@@ -407,43 +407,33 @@ fn host_dismissed_notice_has_no_banner_and_close_sends_the_host_command(cx: &mut
 }
 
 #[gpui::test]
-fn the_usage_chip_shows_the_most_used_window_past_its_warning_and_opens_usage(
-    cx: &mut TestAppContext,
-) {
+fn a_window_near_its_limit_is_no_chip_and_the_meter_opens_usage(cx: &mut TestAppContext) {
     let start = 1_800_000_000;
     notices::TEST_NOW.with(|now| now.set(Some(start)));
     let (handle, view, _recording) = mount(cx);
-    let window = |id: &str, label: &str, used: f64| crate::chat::model::RateWindow {
-        id: id.into(),
-        label: label.into(),
-        used_percent: used,
-        resets_at: Some(start + 30),
-        warn_at: 70.0,
-    };
-    let set = |view: &Entity<ChatView>, cx: &mut TestAppContext, windows| {
-        view.update(cx, |view, cx| {
-            view.model.link = state::Link::Live;
-            view.model
-                .transcript
-                .apply(&ChatEvent::RateLimits { windows });
-            view.schedule_notice_expiry(cx);
-            cx.notify();
-        })
-    };
-    set(&view, cx, vec![window("five_hour", "5h", 40.0)]);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.try_find("chat-usage-chip").is_none(), "under 70%");
-    })
-    .unwrap();
-    set(
-        &view,
-        cx,
-        vec![
-            window("five_hour", "5h", 40.0),
-            window("seven_day", "weekly", 91.0),
-        ],
-    );
+    view.update(cx, |view, cx| {
+        view.model.link = state::Link::Live;
+        view.model.transcript.apply(&ChatEvent::RateLimits {
+            windows: vec![crate::chat::model::RateWindow {
+                id: "seven_day".into(),
+                label: "weekly".into(),
+                used_percent: 91.0,
+                resets_at: Some(start + 30),
+                warn_at: 70.0,
+            }],
+        });
+        view.model.transcript.apply(&ChatEvent::Usage {
+            usage: crate::chat::model::Usage {
+                input_tokens: 600_000,
+                output_tokens: 20_000,
+                cached_input_tokens: 0,
+                context_window: Some(1_000_000),
+                context_used: Some(563_000),
+                cost_usd: Some(344.31),
+            },
+        });
+        cx.notify();
+    });
     let opened = std::rc::Rc::new(std::cell::Cell::new(false));
     let seen = opened.clone();
     cx.update(|cx| {
@@ -456,39 +446,25 @@ fn the_usage_chip_shows_the_most_used_window_past_its_warning_and_opens_usage(
     });
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        let chip = window.find("chat-usage-chip");
-        assert!(chip.visible());
-        assert!(
-            chip.label()
-                .is_some_and(|label| label.starts_with("⚠ weekly 91% · resets")),
-            "{:?}",
-            chip.label()
-        );
-        // No banner: nearing a limit is the chip's.
+        assert!(window.try_find("chat-usage-chip").is_none(), "no chip");
+        // No banner either: nearing a limit is the Usage panel's.
         assert!(window.try_find("chat-notices").is_none());
-        window.click("chat-usage-chip", cx);
+        let meter = window.find("chat-context-meter");
+        assert_eq!(meter.role(), Some(gpui::Role::Button));
+        assert_eq!(meter.label(), Some("Context 56% used, open Usage"));
+        window.click("chat-context-meter", cx);
     })
     .unwrap();
-    assert!(opened.get(), "the chip opens the Usage panel");
-    // The reset passes with nothing else happening: the chip goes.
-    notices::TEST_NOW.with(|now| now.set(Some(start + 31)));
-    cx.executor()
-        .advance_clock(std::time::Duration::from_secs(31));
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.try_find("chat-usage-chip").is_none());
-    })
-    .unwrap();
+    assert!(opened.get(), "the meter opens the Usage panel");
     notices::TEST_NOW.with(|now| now.set(None));
 }
 
 #[gpui::test]
-fn the_usage_chip_and_meter_fit_a_narrow_chat_by_leaving_out_detail(cx: &mut TestAppContext) {
+fn the_meter_fits_a_narrow_chat_by_leaving_out_its_cost(cx: &mut TestAppContext) {
     let start = 1_800_000_000;
     notices::TEST_NOW.with(|now| now.set(Some(start)));
     let mut widths = Vec::new();
-    for width in [900.0_f32, 520.0, 360.0, 260.0] {
+    for width in [900.0_f32, 520.0, 360.0, 200.0] {
         let (handle, view, _recording) = super::editor_tests::mount_sized(
             cx,
             HostConfig {
@@ -525,14 +501,14 @@ fn the_usage_chip_and_meter_fit_a_narrow_chat_by_leaving_out_detail(cx: &mut Tes
                 window.render_frame(cx);
             }
             let group = window.find("chat-usage-group").bounds();
-            let chip = window.find("chat-usage-chip").bounds();
+            assert!(window.try_find("chat-usage-chip").is_none());
             let meter = window.find("chat-context-meter").bounds();
             let what = format!("{width} px: group {group:?}");
             assert!(
                 group.left() >= px(0.) && group.right() <= px(width),
                 "{what}"
             );
-            for part in [chip, meter] {
+            for part in [meter] {
                 assert!(part.right() <= group.right() + px(0.5), "{what}: {part:?}");
                 assert!(part.size.width > px(0.), "{what}: {part:?} shown");
             }
@@ -547,4 +523,27 @@ fn the_usage_chip_and_meter_fit_a_narrow_chat_by_leaving_out_detail(cx: &mut Tes
     );
     assert!(widths[3] < widths[0], "{widths:?}");
     notices::TEST_NOW.with(|now| now.set(None));
+}
+
+#[gpui::test]
+fn the_session_id_card_stays_in_the_row_and_copies_the_whole_id(cx: &mut TestAppContext) {
+    let (handle, view, _recording) = mount(cx);
+    view.update(cx, |view, cx| {
+        view.model.link = state::Link::Live;
+        let mut info = super::testing::info("chat");
+        info.provider_thread_id = Some("cc2091da-0000-4000-8000-feedfacecafe".into());
+        view.model.transcript.apply(&ChatEvent::Info { info });
+        cx.notify();
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("chat-thread", cx);
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("cc2091da-0000-4000-8000-feedfacecafe")
+        );
+    })
+    .unwrap();
 }

@@ -1,9 +1,11 @@
-//! The usage chip beside the context meter: the account's most used limit window once it
-//! nears its limit ("⚠ weekly 87% · resets Thu 14:00"). A warning is no banner; only a
-//! blocking limit is (see `notices`). docs/chat-notices.md has the windows' wire shape.
+//! The context meter in the chat's toolbar: a ring filling by the share of the context in use,
+//! the counts and the cost. The account's limit windows are in its hover hint and the Usage
+//! panel it opens; nearing a limit is no banner and no chip, only a blocking limit is a banner
+//! (see `notices`). docs/chat-notices.md has the windows' wire shape.
 
 use gpui::{
-    AnyElement, Context, Pixels, SharedString, TextRun, Window, div, prelude::*, px, relative, rgb,
+    AnyElement, Context, PathBuilder, Pixels, SharedString, TextRun, Window, canvas, div, point,
+    prelude::*, px, rgb,
 };
 use gpui_kit::base::TestSupportExt as _;
 
@@ -15,41 +17,35 @@ use crate::{
 
 use super::{ChatView, ChatViewEvent, notices, toolbar, widgets::Look};
 
-/// From this use on the chip's words are bold.
-pub(super) const URGENT: f64 = 90.0;
-
-/// What the chip and the context meter leave out to fit their row, in that order: the
-/// meter's cost, the chip's reset time, the chip's window name.
+/// What the context meter leaves out to fit its row: the cost.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Detail {
     Full,
     NoCost,
-    NoReset,
-    NoName,
 }
 
 impl Detail {
-    const ALL: [Self; 4] = [Self::Full, Self::NoCost, Self::NoReset, Self::NoName];
+    const ALL: [Self; 2] = [Self::Full, Self::NoCost];
 }
 
-/// The most the group can show in `available` px, given what each step needs.
+/// The most the meter can show in `available` px, given what each step needs.
 pub(super) fn fit(available: f32, need: impl Fn(Detail) -> f32) -> Detail {
     Detail::ALL
         .into_iter()
         .find(|detail| need(*detail) <= available)
-        .unwrap_or(Detail::NoName)
+        .unwrap_or(Detail::NoCost)
 }
 
-/// What else shares the group's line with it at the least: the ⋯ button, the row's padding.
+/// What else shares the meter's line with it at the least: the ⋯ button, the row's padding.
 const RESERVE: f32 = 64.0;
-/// The chip's padding, the gaps, and the meter's bar.
-const CHIP_PAD: f32 = 12.0;
-const GAP: f32 = 8.0;
+/// The gaps, and the meter's ring.
 const METER_GAP: f32 = 6.0;
-const BAR: f32 = 44.0;
+const RING: f32 = 12.0;
+/// The ring's line, at the row's scale.
+const RING_LINE: f32 = 2.0;
 
-/// The window the chip shows: of the ones at or past their warning, the most used, while
-/// its reset has not passed.
+/// The window nearest its limit: of the ones at or past their warning, the most used, while
+/// its reset has not passed (the meter's hint is redrawn when it resets).
 pub(super) fn warned(windows: &[RateWindow], now: u64) -> Option<&RateWindow> {
     windows
         .iter()
@@ -64,20 +60,6 @@ fn reset(window: &RateWindow, now: u64) -> Option<String> {
         .resets_at
         .and_then(|at| notices::reset_text(at, now))
         .map(|text| text.replacen(" at ", " ", 1))
-}
-
-/// The chip's words: "⚠ weekly 87% · resets Thu 14:00", then without the reset time,
-/// then without the window's name ("⚠ 87%").
-pub(super) fn chip_text(window: &RateWindow, now: u64, detail: Detail) -> String {
-    let percent = window.used_percent.round() as u32;
-    if detail >= Detail::NoName {
-        return format!("⚠ {percent}%");
-    }
-    let used = format!("⚠ {} {percent}%", window.label);
-    match reset(window, now) {
-        Some(reset) if detail < Detail::NoReset => format!("{used} · {reset}"),
-        _ => used,
-    }
 }
 
 fn text_width(text: &str, family: SharedString, size: Pixels, bold: bool, window: &Window) -> f32 {
@@ -100,7 +82,7 @@ fn text_width(text: &str, family: SharedString, size: Pixels, bold: bool, window
     f32::from(line.width)
 }
 
-/// Every window, for the chip's hover hint (one line: a hint does not wrap).
+/// Every window, for the meter's hover hint (one line: a hint does not wrap).
 pub(super) fn chip_details(windows: &[RateWindow], now: u64) -> String {
     windows
         .iter()
@@ -120,60 +102,39 @@ pub(super) fn chip_details(windows: &[RateWindow], now: u64) -> String {
 }
 
 impl ChatView {
-    /// The usage chip and the context meter, together so they wrap as one, leaving out
-    /// detail (`Detail`) until they fit the chat's width, and never wider than their row.
+    /// The context meter, leaving out its cost (`Detail`) until it fits the chat's width, and
+    /// never wider than its row.
     pub(super) fn usage_group(
         &self,
         look: Look,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let now = notices::now_unix();
-        let windows = &self.model.transcript.rate_limits;
-        let warned = warned(windows, now);
-        let usage = self.model.transcript.usage.as_ref();
-        if warned.is_none() && usage.is_none() {
-            return None;
-        }
+        let usage = self.model.transcript.usage.as_ref()?;
         let measured = self.composer_width.get();
         let detail = if measured <= 0.0 {
             Detail::Full
         } else {
             let space = |base: f32| f32::from(ui_text::space(base));
-            let chip = |detail| {
-                warned.map_or(0.0, |w| {
-                    text_width(
-                        &chip_text(w, now, detail),
-                        ui_text::ui_family(),
-                        ui_text::text(11.0),
-                        w.used_percent >= URGENT,
-                        window,
-                    ) + space(CHIP_PAD)
-                        + space(GAP)
-                })
+            let mono = |text: &str| {
+                text_width(
+                    text,
+                    ui_text::mono_family(),
+                    ui_text::text(10.0),
+                    false,
+                    window,
+                )
             };
-            let meter = |detail| {
-                usage.map_or(0.0, |usage| {
-                    let mono = |text: &str| {
-                        text_width(
-                            text,
-                            ui_text::mono_family(),
-                            ui_text::text(10.0),
-                            false,
-                            window,
-                        )
-                    };
-                    let cost = usage
-                        .cost_usd
-                        .filter(|_| detail == Detail::Full)
-                        .map_or(0.0, |cost| {
-                            mono(&toolbar::cost_text(cost)) + space(METER_GAP)
-                        });
-                    space(BAR) + space(METER_GAP) + mono(&toolbar::usage_text(usage)) + cost
-                })
-            };
-            fit(measured - space(RESERVE), |detail| {
-                chip(detail) + meter(detail)
+            let ring = toolbar::percent_text(usage).map_or(0.0, |percent| {
+                space(RING) + space(METER_GAP / 2.0) + mono(&percent) + space(METER_GAP)
+            });
+            let counts = ring + mono(&toolbar::usage_text(usage));
+            let cost = usage.cost_usd.map_or(0.0, |cost| {
+                space(METER_GAP) + mono(&toolbar::cost_text(cost))
+            });
+            fit(measured - space(RESERVE), |detail| match detail {
+                Detail::Full => counts + cost,
+                Detail::NoCost => counts,
             })
         };
         Some(
@@ -184,68 +145,34 @@ impl ChatView {
                 .overflow_hidden()
                 .flex()
                 .items_center()
-                .gap(ui_text::space(GAP))
-                .children(warned.map(|w| self.usage_chip(w, detail, look, cx)))
-                .children(usage.map(|usage| self.context_meter(usage, detail, look)))
+                .child(self.context_meter(usage, detail, look, cx))
                 .test_support()
                 .into_any_element(),
         )
     }
 
-    fn usage_chip(
-        &self,
-        window: &RateWindow,
-        detail: Detail,
-        look: Look,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let now = notices::now_unix();
-        let windows = &self.model.transcript.rate_limits;
-        let tone = look.tone(super::cards::notice_tone(
-            crate::chat::model::NoticeLevel::Warning,
-        ));
-        div()
-            .id("chat-usage-chip")
-            .relative()
-            .min_w_0()
-            .flex()
-            .items_center()
-            .px(ui_text::space(CHIP_PAD / 2.0))
-            .rounded(px(if look.native { 9.0 } else { 3.0 }))
-            .bg(rgb(look.tint(tone, 0.10)))
-            .font_family(ui_text::ui_family())
-            .text_size(ui_text::text(11.0))
-            .text_color(rgb(tone))
-            .when(window.used_percent >= URGENT, |chip| {
-                chip.font_weight(gpui::FontWeight::BOLD)
-            })
-            .cursor_pointer()
-            .role(gpui::Role::Button)
-            .aria_label(chip_text(window, now, Detail::Full))
-            .on_click(cx.listener(|_, _, _, cx| cx.emit(ChatViewEvent::ShowUsage)))
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .child(chip_text(window, now, detail)),
-            )
-            .child(tooltip::anchor(
-                chip_details(windows, now),
-                TipLook::Control,
-            ))
-            .test_support()
-            .into_any_element()
-    }
-
-    /// How full the context window is: a bar and the counts, and the cost while it fits.
+    /// How full the context window is: a ring filling by the share in use with the percent
+    /// beside it, then the counts, and the cost while it fits.
     fn context_meter(
         &self,
         usage: &crate::chat::model::Usage,
         detail: Detail,
         look: Look,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = look.colors;
         let fraction = toolbar::context_fraction(usage);
+        let now = notices::now_unix();
+        let windows = &self.model.transcript.rate_limits;
+        let hint = if windows.is_empty() {
+            toolbar::usage_details(usage)
+        } else {
+            format!(
+                "{}; {}",
+                toolbar::usage_details(usage),
+                chip_details(windows, now)
+            )
+        };
         div()
             .id("chat-context-meter")
             .relative()
@@ -258,28 +185,28 @@ impl ChatView {
             // Counts, in the monospace accent where Native keeps one.
             .font_family(ui_text::mono_family())
             .whitespace_nowrap()
+            .cursor_pointer()
+            .role(gpui::Role::Button)
+            .aria_label(match toolbar::percent_text(usage) {
+                Some(percent) => format!("Context {percent} used, open Usage"),
+                None => "Open Usage".to_owned(),
+            })
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(ChatViewEvent::ShowUsage)))
             .children(fraction.map(|fraction| {
+                let fill = if fraction >= 0.9 {
+                    look.error()
+                } else if fraction >= 0.7 {
+                    colors.gold
+                } else {
+                    colors.cyan
+                };
                 div()
                     .flex_none()
-                    .w(ui_text::space(BAR))
-                    .h(ui_text::space(5.0))
-                    .rounded(px(3.0))
-                    .when(look.native, |track| track.rounded_full())
-                    .bg(rgb(colors.divider))
-                    .child(
-                        div()
-                            .h_full()
-                            .rounded(px(3.0))
-                            .when(look.native, |fill| fill.rounded_full())
-                            .w(relative(fraction))
-                            .bg(rgb(if fraction >= 0.9 {
-                                look.error()
-                            } else if fraction >= 0.7 {
-                                colors.gold
-                            } else {
-                                colors.cyan
-                            })),
-                    )
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(METER_GAP / 2.0))
+                    .child(ring(fraction, colors.divider, fill))
+                    .children(toolbar::percent_text(usage))
             }))
             .child(div().min_w_0().truncate().child(toolbar::usage_text(usage)))
             .children(
@@ -288,13 +215,65 @@ impl ChatView {
                     .filter(|_| detail == Detail::Full)
                     .map(|cost| div().flex_none().child(toolbar::cost_text(cost))),
             )
-            .child(tooltip::anchor(
-                toolbar::usage_details(usage),
-                TipLook::Control,
-            ))
+            .child(tooltip::anchor(hint, TipLook::Control))
             .test_support()
             .into_any_element()
     }
+}
+
+/// A circle outline in `track`, its share in use drawn over it in `fill` from the top,
+/// clockwise, as the iPhone's meter draws it.
+fn ring(fraction: f32, track: u32, fill: u32) -> AnyElement {
+    let line = f32::from(ui_text::space(RING_LINE));
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let side = f32::from(bounds.size.width.min(bounds.size.height));
+            let radius = (side - line) / 2.0;
+            let center = (side / 2.0, side / 2.0);
+            let stroke = |points: Vec<(f32, f32)>, closed: bool| {
+                let mut path = PathBuilder::stroke(px(line));
+                let points: Vec<_> = points
+                    .into_iter()
+                    .map(|(x, y)| point(px(x), px(y)))
+                    .collect();
+                path.add_polygon(&points, closed);
+                path.translate(bounds.origin);
+                path.build().ok()
+            };
+            let mut track_points = toolbar::ring_arc(1.0, center, radius);
+            track_points.pop();
+            if let Some(path) = stroke(track_points, true) {
+                window.paint_path(path, rgb(track));
+            }
+            let arc = toolbar::ring_arc(fraction, center, radius);
+            // Round ends: a dot of the line's width on each end of an open arc.
+            let caps: Vec<(f32, f32)> = match (arc.first(), arc.last()) {
+                (Some(&start), Some(&end)) if fraction < 1.0 => vec![start, end],
+                _ => Vec::new(),
+            };
+            if arc.len() >= 2
+                && let Some(path) = stroke(arc, fraction >= 1.0)
+            {
+                window.paint_path(path, rgb(fill));
+            }
+            for (x, y) in caps {
+                let mut dot = PathBuilder::fill();
+                let rim: Vec<_> = toolbar::ring_arc(1.0, (x, y), line / 2.0)
+                    .into_iter()
+                    .map(|(x, y)| point(px(x), px(y)))
+                    .collect();
+                dot.add_polygon(&rim, true);
+                dot.translate(bounds.origin);
+                if let Ok(dot) = dot.build() {
+                    window.paint_path(dot, rgb(fill));
+                }
+            }
+        },
+    )
+    .flex_none()
+    .size(ui_text::space(RING))
+    .into_any_element()
 }
 
 #[cfg(test)]
@@ -338,47 +317,32 @@ mod tests {
     }
 
     #[test]
-    fn the_group_leaves_out_the_cost_then_the_reset_then_the_name_to_fit() {
+    fn the_meter_leaves_out_the_cost_to_fit() {
         let need = |detail: Detail| match detail {
-            Detail::Full => 400.0,
-            Detail::NoCost => 300.0,
-            Detail::NoReset => 200.0,
-            Detail::NoName => 120.0,
+            Detail::Full => 300.0,
+            Detail::NoCost => 200.0,
         };
-        assert_eq!(fit(500.0, need), Detail::Full);
-        assert_eq!(fit(399.0, need), Detail::NoCost);
-        assert_eq!(fit(250.0, need), Detail::NoReset);
-        assert_eq!(fit(150.0, need), Detail::NoName);
+        assert_eq!(fit(400.0, need), Detail::Full);
+        assert_eq!(fit(299.0, need), Detail::NoCost);
         // Narrower still, the least there is (and the row clips it).
-        assert_eq!(fit(50.0, need), Detail::NoName);
+        assert_eq!(fit(50.0, need), Detail::NoCost);
     }
 
     #[test]
-    fn the_chip_reads_as_window_percent_and_reset_and_shortens_when_tight() {
+    fn the_hint_lists_each_window_with_its_reset() {
         use chrono::{Local, TimeZone};
         let now = Local.with_ymd_and_hms(2026, 10, 8, 9, 0, 0).unwrap();
-        let thursday = Local.with_ymd_and_hms(2026, 10, 10, 14, 0, 0).unwrap();
+        let saturday = Local.with_ymd_and_hms(2026, 10, 10, 14, 0, 0).unwrap();
         let w = window(
             "seven_day",
             "weekly",
             86.6,
             70.0,
-            Some(thursday.timestamp() as u64),
+            Some(saturday.timestamp() as u64),
         );
-        let now = now.timestamp() as u64;
-        assert_eq!(
-            chip_text(&w, now, Detail::Full),
-            "⚠ weekly 87% · resets Sat 14:00"
-        );
-        assert_eq!(
-            chip_text(&w, now, Detail::NoCost),
-            chip_text(&w, now, Detail::Full)
-        );
-        assert_eq!(chip_text(&w, now, Detail::NoReset), "⚠ weekly 87%");
-        assert_eq!(chip_text(&w, now, Detail::NoName), "⚠ 87%");
         let five = window("five_hour", "5h", 40.0, 70.0, None);
         assert_eq!(
-            chip_details(&[w, five], now),
+            chip_details(&[w, five], now.timestamp() as u64),
             "weekly 87% used · resets Sat 14:00; 5h 40% used"
         );
     }

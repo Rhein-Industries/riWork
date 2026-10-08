@@ -142,7 +142,7 @@ impl Drop for FakeHost {
     }
 }
 
-fn info(id: &str) -> ChatInfo {
+pub(super) fn info(id: &str) -> ChatInfo {
     ChatInfo {
         parent_id: None,
         user_title: None,
