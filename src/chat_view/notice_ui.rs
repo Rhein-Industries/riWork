@@ -24,8 +24,27 @@ fn symbol(level: NoticeLevel) -> &'static str {
 /// The height of one line of a banner's text, and of what sits beside it.
 pub(super) const LINE: f32 = 16.0;
 
-/// A banner's padding above and below its text.
+/// A banner's padding above and below its text when it is open.
 pub(super) const PAD_Y: f32 = 5.0;
+
+/// A closed banner's height: the message box's buttons'.
+pub(super) const ROW: f32 = crate::controls::TOOLBAR_BUTTON;
+
+/// The side of a banner's chevron and ×.
+const CONTROL: f32 = 18.0;
+
+/// Past this many characters, a banner's text likely does not fit its one line.
+const SHORT: usize = 64;
+
+/// The first line of a notice's text, what a closed banner shows.
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or_default()
+}
+
+/// Whether a banner has more than its one line shows: a chevron opens the rest.
+fn expandable(notice: &Banner) -> bool {
+    notice.text.trim_end().contains('\n') || notice.text.chars().count() > SHORT
+}
 
 /// The tallest the banners get together before they scroll.
 pub(super) const MAX_STACK: f32 = 200.0;
@@ -119,10 +138,11 @@ impl ChatView {
             .into_any_element()
     }
 
-    /// One banner, a single row: its level's symbol, the text (wrapping, with a usage
-    /// limit's reset time under it), the way to the Usage panel, and ×. The symbol and the
-    /// buttons sit beside the text's first line, each in a box one line tall, so the banner
-    /// is as tall as its text and the same padding goes all around it.
+    /// One banner. Closed (the default) it is one line as tall as the message box's
+    /// buttons: its level's symbol, the text's first line cut to fit (the whole text in a
+    /// tooltip), a usage limit's reset time and the way to the Usage panel, a chevron when
+    /// there is more to read, and ×. Open, the text wraps and the symbol and buttons stay
+    /// beside its first line. A long error opens by itself.
     fn notice_banner(&self, notice: &Banner, look: Look, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
         let tone = look.tone(cards::notice_tone(notice.level));
@@ -134,10 +154,52 @@ impl ChatView {
         let reset = notice
             .resets_at
             .and_then(|at| notices::reset_text(at, notices::now_unix()));
+        let more = expandable(notice);
+        let open = more
+            && self
+                .notices
+                .opened
+                .get(&notice.id)
+                .copied()
+                .unwrap_or(notice.level == NoticeLevel::Error);
         let line = ui_text::text(LINE);
-        let beside_first_line =
-            |child: AnyElement| div().flex_none().h(line).flex().items_center().child(child);
+        let row = ui_text::space(ROW);
+        // Closed, everything centers in the row; open, it sits beside the first line.
+        let beside = |child: AnyElement| {
+            div()
+                .flex_none()
+                .h(if open { line } else { row })
+                .flex()
+                .items_center()
+                .child(child)
+        };
         let id = notice.id.clone();
+        let text_id = gpui::SharedString::from(format!("chat-notice-text:{}", notice.id));
+        let text = if open {
+            // A long message scrolls here and leaves × in reach.
+            div()
+                .id(text_id)
+                .flex_1()
+                .min_w_0()
+                .max_h(ui_text::space(90.0))
+                .overflow_y_scroll()
+                .child(notice.text.clone())
+                .test_support()
+                .into_any_element()
+        } else {
+            div()
+                .id(text_id)
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(first_line(&notice.text).to_owned())
+                .children(more.then(|| {
+                    crate::tooltip::anchor(notice.text.clone(), crate::tooltip::Look::Control)
+                }))
+                .test_support()
+                .into_any_element()
+        };
         div()
             .id(gpui::SharedString::from(format!(
                 "chat-notice:{}",
@@ -145,11 +207,14 @@ impl ChatView {
             )))
             .w_full()
             .flex()
-            .items_start()
-            .gap(ui_text::space(8.0))
-            .px(ui_text::space(10.0))
-            .py(ui_text::space(PAD_Y))
-            .rounded(px(if look.native { 8.0 } else { 3.0 }))
+            .when(open, |banner| {
+                banner.items_start().py(ui_text::space(PAD_Y))
+            })
+            .when(!open, |banner| banner.items_center().h(row))
+            .gap(ui_text::space(6.0))
+            .pl(ui_text::space(8.0))
+            .pr(ui_text::space(3.0))
+            .rounded(px(if look.native { 6.0 } else { 3.0 }))
             .border_1()
             // An error weighs more than a warning, also where both share Native's one
             // signal color.
@@ -172,37 +237,21 @@ impl ChatView {
             .role(gpui::Role::Status)
             .aria_label(notice.text.clone())
             .children(look.native.then(|| {
-                beside_first_line(
-                    icons::symbol(symbol(notice.level), 11.0, Some(tone)).into_any_element(),
+                beside(icons::symbol(symbol(notice.level), 11.0, Some(tone)).into_any_element())
+            }))
+            .child(text)
+            .children(reset.map(|reset| {
+                beside(
+                    div()
+                        .text_size(ui_text::text(10.0))
+                        .text_color(rgb(colors.muted))
+                        .whitespace_nowrap()
+                        .child(widgets::sentence(&reset, look))
+                        .into_any_element(),
                 )
             }))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        // A long message scrolls here and leaves × in reach.
-                        div()
-                            .id(gpui::SharedString::from(format!(
-                                "chat-notice-text:{}",
-                                notice.id
-                            )))
-                            .max_h(ui_text::space(90.0))
-                            .overflow_y_scroll()
-                            .child(notice.text.clone())
-                            .test_support(),
-                    )
-                    .children(reset.map(|reset| {
-                        div()
-                            .text_size(ui_text::text(10.0))
-                            .text_color(rgb(colors.muted))
-                            .child(widgets::sentence(&reset, look))
-                    })),
-            )
             .children(notice.usage_limit().then(|| {
-                beside_first_line(
+                beside(
                     button(
                         format!("chat-notice-usage:{}", notice.id),
                         "Show usage",
@@ -216,11 +265,29 @@ impl ChatView {
                 )
             }))
             .test_support()
-            .child(beside_first_line(self.close_button(
+            .children(more.then(|| {
+                let key = notice.id.clone();
+                beside(
+                    widgets::symbol_button_sized(
+                        format!("chat-notice-more:{}", notice.id),
+                        if open { "chevron.up" } else { "chevron.down" },
+                        if open { "Show less" } else { "Show all" },
+                        look,
+                        ui_text::space(CONTROL),
+                    )
+                    .aria_expanded(open)
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.notices.opened.insert(key.clone(), !open);
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+                )
+            }))
+            .child(beside(self.close_button(
                 format!("chat-notice-close:{}", notice.id),
                 "Dismiss",
                 look,
-                Some(line),
+                Some(ui_text::space(CONTROL)),
                 move |view, window, cx| view.dismiss_notice(&id, window, cx),
                 cx,
             )))

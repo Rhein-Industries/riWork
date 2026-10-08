@@ -243,21 +243,35 @@ fn many_expanded_banners_scroll_and_leave_the_message_box_in_reach(cx: &mut Test
 }
 
 #[gpui::test]
-fn a_banner_is_one_row_as_tall_as_its_text_with_even_padding(cx: &mut TestAppContext) {
-    let wrapped = "The API failed with an overloaded error and Claude is retrying the request; \
-                   this can take a while when many people are using it at the same time, so the \
-                   turn keeps running and answers once the API is back.";
+fn a_banner_is_one_line_as_tall_as_the_buttons_and_a_long_one_opens(cx: &mut TestAppContext) {
+    let long = "The API failed with an overloaded error and Claude is retrying the request; \
+                this can take a while when many people are using it at the same time, so the \
+                turn keeps running and answers once the API is back.";
+    // (level, text, kind, opens by itself)
     let cases = [
-        (NoticeLevel::Info, "Fast mode is off", Some("fast_mode")),
-        (NoticeLevel::Warning, wrapped, Some("provider_warning")),
-        (NoticeLevel::Error, "The turn failed", Some("turn_failed")),
+        (
+            NoticeLevel::Info,
+            "Fast mode is off",
+            Some("fast_mode"),
+            false,
+        ),
+        (NoticeLevel::Warning, long, Some("provider_warning"), false),
+        (
+            NoticeLevel::Error,
+            "The turn failed",
+            Some("turn_failed"),
+            false,
+        ),
         (
             NoticeLevel::Warning,
             "Close to the weekly limit.",
             Some("rate_limit:seven_day"),
+            false,
         ),
-        (NoticeLevel::Error, wrapped, Some("rate_limit:five_hour")),
+        (NoticeLevel::Error, long, Some("rate_limit:five_hour"), true),
     ];
+    let start = 1_800_000_000;
+    notices::TEST_NOW.with(|now| now.set(Some(start)));
     for native in [false, true] {
         let (handle, view, _recording) = mount(cx);
         cx.update(|cx| {
@@ -274,75 +288,88 @@ fn a_banner_is_one_row_as_tall_as_its_text_with_even_padding(cx: &mut TestAppCon
             })
         });
         push(&view, cx, "u", ItemBody::UserMessage { text: "hi".into() });
-        for (n, (level, text, kind)) in cases.iter().enumerate() {
-            push(
-                &view,
-                cx,
-                &format!("n{n}"),
-                ItemBody::notice(*level, *text, *kind),
-            );
+        for (n, (level, text, kind, _)) in cases.iter().enumerate() {
+            let mut body = ItemBody::notice(*level, *text, *kind);
+            if let ItemBody::Notice { resets_at, .. } = &mut body {
+                *resets_at = kind
+                    .is_some_and(|kind| kind.starts_with("rate_limit:"))
+                    .then_some(start + 3600);
+            }
+            push(&view, cx, &format!("n{n}"), body);
         }
         view.update(cx, |view, cx| {
             view.notices.expanded = true;
             cx.notify();
         });
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            window.render_frame(cx);
-            let line = ui_text::text(notice_ui::LINE);
-            let pad = ui_text::space(notice_ui::PAD_Y);
-            for (n, (_, text, kind)) in cases.iter().enumerate() {
-                let what = format!("native {native}, {kind:?}");
-                let banner = window
-                    .find(SharedString::from(format!("chat-notice:n{n}")))
-                    .bounds();
-                let body = window
-                    .find(SharedString::from(format!("chat-notice-text:n{n}")))
-                    .bounds();
-                let close = window
-                    .find(SharedString::from(format!("chat-notice-close:n{n}")))
-                    .bounds();
-                let near = |a: gpui::Pixels, b: gpui::Pixels| (a - b).abs() <= px(1.0);
-                // The text has the same inset above and below; × adds nothing.
-                let above = body.top() - banner.top();
-                let below = banner.bottom() - body.bottom();
-                if kind.is_some_and(|kind| kind.starts_with("rate_limit:")) {
-                    // A usage limit's reset line may follow the text; here there is none.
-                    assert!(
-                        window
-                            .try_find(SharedString::from(format!("chat-notice-usage:n{n}")))
-                            .is_some()
-                    );
+        let near = |a: gpui::Pixels, b: gpui::Pixels| (a - b).abs() <= px(1.0);
+        let find = |window: &Window, what: &str, n: usize| {
+            window
+                .try_find(SharedString::from(format!("chat-notice{what}:n{n}")))
+                .map(|node| node.bounds())
+        };
+        // Pressing the chevron opens the long warning.
+        for pressed in [false, true] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                if pressed {
+                    window.click("chat-notice-more:n1", cx);
                 }
-                assert!(
-                    near(above, below),
-                    "{what}: {above:?} above, {below:?} below"
-                );
-                assert!(near(above, pad + px(1.0)), "{what}: padding {above:?}");
-                let lines = (body.size.height / line).round();
-                if *text == wrapped {
-                    assert!(lines >= 2.0, "{what}: wraps ({lines} lines)");
-                } else {
-                    assert_eq!(lines, 1.0, "{what}: one line");
+                window.render_frame(cx);
+                window.render_frame(cx);
+                let line = ui_text::text(notice_ui::LINE);
+                for (n, (_, text, kind, opens)) in cases.iter().enumerate() {
+                    let what = format!("native {native}, pressed {pressed}, {kind:?}");
+                    let open = *opens || (pressed && n == 1);
+                    let banner = find(window, "", n).unwrap();
+                    let body = find(window, "-text", n).unwrap();
+                    let close = find(window, "-close", n).unwrap();
+                    let chevron = find(window, "-more", n);
+                    assert_eq!(chevron.is_some(), *text == long, "{what}: chevron");
+                    let mut controls = vec![close];
+                    controls.extend(chevron);
+                    controls.extend(find(window, "-usage", n));
+                    if kind.is_some_and(|kind| kind.starts_with("rate_limit:")) {
+                        assert!(find(window, "-usage", n).is_some(), "{what}: Show usage");
+                    }
+                    for control in &controls {
+                        assert!(control.left() >= body.right(), "{what}: after the text");
+                        assert!(
+                            control.top() >= banner.top() && control.bottom() <= banner.bottom(),
+                            "{what}: {control:?} inside {banner:?}"
+                        );
+                    }
+                    if open {
+                        // The whole text, the same inset above and below; the buttons beside
+                        // its first line.
+                        assert!((body.size.height / line).round() >= 2.0, "{what}: wraps");
+                        let above = body.top() - banner.top();
+                        let below = banner.bottom() - body.bottom();
+                        assert!(
+                            near(above, below),
+                            "{what}: {above:?} above, {below:?} below"
+                        );
+                        for control in &controls {
+                            assert!(near(control.center().y, body.top() + line / 2.0), "{what}");
+                        }
+                    } else {
+                        // One line, as tall as the message box's buttons, all centered.
+                        assert!(
+                            near(banner.size.height, ui_text::space(notice_ui::ROW)),
+                            "{what}: {banner:?}"
+                        );
+                        assert!(near(body.size.height, line), "{what}: one line {body:?}");
+                        for control in controls.iter().chain([&body]) {
+                            assert!(near(control.center().y, banner.center().y), "{what}");
+                        }
+                    }
+                    if let Some(chevron) = chevron {
+                        let node =
+                            window.find(SharedString::from(format!("chat-notice-more:n{n}")));
+                        assert_eq!(node.expanded(), Some(open), "{what}: {chevron:?}");
+                    }
                 }
-                // ×, and the action beside it, sit on the first line, in the same row.
-                let first = body.top() + line / 2.0;
-                assert!(
-                    near(close.center().y, first),
-                    "{what}: × {close:?}, text {body:?}"
-                );
-                assert!(close.left() >= body.right(), "{what}: × after the text");
-                if let Some(usage) =
-                    window.try_find(SharedString::from(format!("chat-notice-usage:n{n}")))
-                {
-                    let usage = usage.bounds();
-                    assert!(near(usage.center().y, first), "{what}: action {usage:?}");
-                    assert!(usage.left() >= body.right() && usage.right() <= close.left());
-                    assert!(usage.top() >= banner.top() && usage.bottom() <= banner.bottom());
-                }
-                assert!(close.top() >= banner.top() && close.bottom() <= banner.bottom());
-            }
-        })
-        .unwrap();
+            })
+            .unwrap();
+        }
     }
+    notices::TEST_NOW.with(|now| now.set(None));
 }

@@ -91,6 +91,8 @@ pub(super) struct Notices {
     pub expanded: bool,
     /// The history of every notice is open above the message box.
     pub history: bool,
+    /// Banners whose chevron was pressed, by id: open (whole text) or closed (one line).
+    pub opened: HashMap<String, bool>,
 }
 
 impl Notices {
