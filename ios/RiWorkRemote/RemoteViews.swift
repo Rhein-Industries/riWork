@@ -439,6 +439,9 @@ struct TerminalTabsView: View {
                 .chatLayoutProbe("display-settings", action: { showingDisplay = true })
                 .chatLayoutProbe("close-current", action: { if let entry = currentEntry { requestClose(entry) } })
                 .chatLayoutProbe("drop-preview", action: { dropTarget = model.sharedTabs?.visible.dropFirst().first?.key })
+                // The terminal's own Close confirmation, as its menu presents it and as its Close button confirms it.
+                .chatLayoutProbe("legacy-close-confirmation", visible: closing != nil, action: { if let session = model.session, model.legacyCloseAvailable(session) { closing = session } })
+                .chatLayoutProbe("legacy-close-confirm", action: { if let session = closing { close(session) } })
         }
     }
     /// ＋: a new terminal; with the desktop's shared tabs also "Open shell/worker…", the hidden chats and shells (workers first).
