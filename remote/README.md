@@ -180,8 +180,8 @@ desktop's `src/appearance_file.rs` to keep the two validators identical.
 `shell.create` starts a terminal in a project or worktree of the desktop (a plain shell,
 Codex, Claude or Grok, optionally with the agent's `unrestricted` flag or a command for
 a plain shell) and `shell.close` ends one (the contract is in
-[remote-protocol.md](../docs/remote-protocol.md)). An agent whose request leaves
-`unrestricted` out gets `--as-settings`, so the desktop's **Agent terminals run
+[remote-protocol.md](../docs/remote-protocol.md)). An agent whose request has
+`"as_settings": true` gets `--as-settings`, so the desktop's **Agent terminals run
 unrestricted** decides, when `riwork capabilities --json` says `"shell_create_as_settings":
 true` (asked with the chat and orchestrator questions, announced as
 `features.shell_create_as_settings`); an older CLI starts it restricted, as before. The connector validates every field

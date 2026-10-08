@@ -428,21 +428,25 @@ enum CreateTarget {
 struct CreateSpec {
     target: CreateTarget,
     kind: CreateKind,
-    /// `None` when the phone left it out: an agent then runs as the desktop's
-    /// **Agent terminals run unrestricted** says, if the installed CLI can ask it
-    /// (`shell create --as-settings`), and restricted otherwise.
-    unrestricted: Option<bool>,
+    /// Left out, as `false`: restricted, as it always was.
+    unrestricted: bool,
+    /// The phone leaves the choice to the desktop: an agent runs as its **Agent terminals
+    /// run unrestricted** says, if the installed CLI can ask it (`shell create
+    /// --as-settings`), and restricted otherwise. Only a phone that knows the feature sends
+    /// it, so an older phone's request without `unrestricted` keeps meaning restricted.
+    as_settings: bool,
     command: Option<String>,
 }
-const CREATE_FIELDS: [&str; 5] = [
+const CREATE_FIELDS: [&str; 6] = [
     "project_id",
     "worktree_id",
     "kind",
     "unrestricted",
+    "as_settings",
     "command",
 ];
 
-/// The params of `shell.create`, strictly: an object with only the five fields
+/// The params of `shell.create`, strictly: an object with only the six fields
 /// below, none of them null, before any CLI runs.
 fn create_spec(params: &Value) -> std::result::Result<CreateSpec, Fault> {
     let object = params
@@ -473,14 +477,21 @@ fn create_spec(params: &Value) -> std::result::Result<CreateSpec, Fault> {
         text("kind")?.ok_or_else(|| invalid("kind is required: shell, codex, claude or grok"))?;
     let kind = CreateKind::parse(kind)
         .ok_or_else(|| invalid("kind must be shell, codex, claude or grok"))?;
-    let unrestricted = match object.get("unrestricted") {
-        None => None,
-        Some(Value::Bool(flag)) => Some(*flag),
-        Some(_) => return Err(invalid("unrestricted must be a boolean")),
+    let flag = |name: &str| -> std::result::Result<Option<bool>, Fault> {
+        match object.get(name) {
+            None => Ok(None),
+            Some(Value::Bool(flag)) => Ok(Some(*flag)),
+            Some(_) => Err(invalid(format!("{name} must be a boolean"))),
+        }
     };
-    if unrestricted == Some(true) && kind.harness().is_none() {
+    let (unrestricted, as_settings) = (flag("unrestricted")?, flag("as_settings")?);
+    if unrestricted.is_some() && as_settings.is_some() {
+        return Err(invalid("give either unrestricted or as_settings"));
+    }
+    let (unrestricted, as_settings) = (unrestricted.unwrap_or(false), as_settings.unwrap_or(false));
+    if (unrestricted || as_settings) && kind.harness().is_none() {
         return Err(invalid(
-            "unrestricted only applies to codex, claude and grok",
+            "unrestricted and as_settings only apply to codex, claude and grok",
         ));
     }
     let command = match text("command")? {
@@ -497,6 +508,7 @@ fn create_spec(params: &Value) -> std::result::Result<CreateSpec, Fault> {
         target,
         kind,
         unrestricted,
+        as_settings,
         command,
     })
 }
@@ -524,8 +536,8 @@ fn create_command(command: &str) -> std::result::Result<(), Fault> {
 }
 /// The CLI's argv for a validated request. `--json` is added by `read`. Every
 /// value is its own argument; nothing here passes through a shell. `as_settings`
-/// says the CLI has `--as-settings`, which an agent whose request left
-/// `unrestricted` out is given.
+/// says the CLI has `--as-settings`, which an agent whose request asked for the
+/// desktop's Settings is given.
 fn create_args(spec: &CreateSpec, as_settings: bool) -> Vec<String> {
     let mut args: Vec<String> = vec!["shell".into(), "create".into()];
     match &spec.target {
@@ -534,11 +546,10 @@ fn create_args(spec: &CreateSpec, as_settings: bool) -> Vec<String> {
     }
     if let Some(harness) = spec.kind.harness() {
         args.extend(["--harness".into(), harness.into()]);
-        match spec.unrestricted {
-            Some(true) => args.push("--unrestricted".into()),
-            Some(false) => {}
-            None if as_settings => args.push("--as-settings".into()),
-            None => {}
+        if spec.unrestricted {
+            args.push("--unrestricted".into());
+        } else if spec.as_settings && as_settings {
+            args.push("--as-settings".into());
         }
     }
     if let Some(command) = &spec.command {
@@ -1888,7 +1899,7 @@ impl Rpc {
             .await
     }
     /// What `ready` announces as `features.shell_create_as_settings`: a phone that sees it may
-    /// leave `unrestricted` out of `shell.create`, and the desktop's Settings decide. Short, like
+    /// send `as_settings` in `shell.create`, and the desktop's Settings decide. Short, like
     /// `chat_supported`.
     pub async fn shell_create_as_settings_supported(&self) -> bool {
         self.shell_create_as_settings_known(Duration::from_secs(3))
@@ -1908,7 +1919,7 @@ impl Rpc {
         }
         // An agent the phone left to the desktop runs as its Settings say, when the CLI can
         // ask them; an older CLI starts it restricted, as before.
-        let as_settings = spec.unrestricted.is_none()
+        let as_settings = spec.as_settings
             && spec.kind.harness().is_some()
             && self.shell_create_as_settings_known(CLI_TIMEOUT).await?;
         self.target_exists(&spec.target, create_fault).await?;
@@ -2335,7 +2346,8 @@ mod tests {
         let spec = CreateSpec {
             target: CreateTarget::Project(project_id.clone()),
             kind: CreateKind::Shell,
-            unrestricted: None,
+            unrestricted: false,
+            as_settings: false,
             command: None,
         };
         let mut cli = json!({

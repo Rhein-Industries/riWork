@@ -220,6 +220,11 @@ async fn parameters_are_validated_before_any_cli_runs() {
         json!({"project_id":p,"kind":"codex","unrestricted":1}),
         json!({"project_id":p,"kind":"codex","unrestricted":null}),
         json!({"project_id":p,"kind":"shell","unrestricted":true}),
+        // as_settings: a boolean, only for the agents, and never with unrestricted.
+        json!({"project_id":p,"kind":"codex","as_settings":"true"}),
+        json!({"project_id":p,"kind":"codex","as_settings":null}),
+        json!({"project_id":p,"kind":"shell","as_settings":true}),
+        json!({"project_id":p,"kind":"codex","as_settings":true,"unrestricted":false}),
         // command: a plain shell's only.
         json!({"project_id":p,"kind":"codex","command":"ls"}),
         json!({"project_id":p,"kind":"claude","command":"ls"}),
@@ -446,37 +451,44 @@ async fn an_agent_left_to_the_desktop_follows_its_settings_when_the_cli_can_ask_
         "capabilities.json",
         &json!({"v": 1, "shell_create_as_settings": true}).to_string(),
     );
-    for (kind, unrestricted, flags, asks) in [
-        // Left out: the CLI decides from Settings.
+    for (kind, extra, flags, asks) in [
+        // Left to the desktop: the CLI decides from Settings.
         (
             "codex",
-            None,
+            json!({"as_settings": true}),
             vec!["--harness", "codex", "--as-settings"],
             true,
         ),
         (
             "claude",
-            None,
+            json!({"as_settings": true}),
             vec!["--harness", "claude", "--as-settings"],
             true,
         ),
         (
             "grok",
-            None,
+            json!({"as_settings": true}),
             vec!["--harness", "grok", "--as-settings"],
             true,
         ),
         // Said: honored as it always was, without a question.
-        ("codex", Some(false), vec!["--harness", "codex"], false),
+        (
+            "codex",
+            json!({"unrestricted": false}),
+            vec!["--harness", "codex"],
+            false,
+        ),
         (
             "claude",
-            Some(true),
+            json!({"unrestricted": true}),
             vec!["--harness", "claude", "--unrestricted"],
             false,
         ),
+        // Left out, as an older phone does for its switch's off: restricted, as before.
+        ("codex", json!({}), vec!["--harness", "codex"], false),
         // A plain shell is never unrestricted, and nothing is asked for it.
-        ("shell", None, vec![], false),
-        ("shell", Some(false), vec![], false),
+        ("shell", json!({}), vec![], false),
+        ("shell", json!({"unrestricted": false}), vec![], false),
     ] {
         let harness = if kind == "shell" {
             Value::Null
@@ -489,8 +501,8 @@ async fn an_agent_left_to_the_desktop_follows_its_settings_when_the_cli_can_ask_
         }));
         let before = f.calls_of("capabilities", "--json").len();
         let mut params = json!({"project_id":p,"kind":kind});
-        if let Some(flag) = unrestricted {
-            params["unrestricted"] = json!(flag);
+        for (name, value) in extra.as_object().unwrap() {
+            params[name] = value.clone();
         }
         let response = f.create(params.clone()).await;
         assert_eq!(response["ok"], true, "{params}: {response}");
@@ -513,7 +525,7 @@ async fn an_agent_left_to_the_desktop_follows_its_settings_when_the_cli_can_ask_
         "cwd": "/x", "harness": "codex", "alive": true, "created_at_unix": 1
     }));
     let response = older
-        .create(json!({"project_id":older.project,"kind":"codex"}))
+        .create(json!({"project_id":older.project,"kind":"codex","as_settings":true}))
         .await;
     assert_eq!(response["ok"], true, "{response}");
     assert_eq!(

@@ -257,7 +257,7 @@ riwork shell attach SHELL_UUID
 riwork shell attach SHELL_UUID --exec [--ignore-size] [--read-only]
 ```
 
-An agent from `shell create --harness` asks before it acts unless you add `--unrestricted`, which passes the agent's permission bypass flag, so a script keeps its meaning. `--as-settings` does what the New tab menu does instead: unrestricted while **Agent terminals run unrestricted** is on in Settings, asking while it is off. The phone's `shell.create` uses it when it leaves `unrestricted` out.
+An agent from `shell create --harness` asks before it acts unless you add `--unrestricted`, which passes the agent's permission bypass flag, so a script keeps its meaning. `--as-settings` does what the New tab menu does instead: unrestricted while **Agent terminals run unrestricted** is on in Settings, asking while it is off. The phone's `shell.create` uses it when it asks for the desktop's setting (`"as_settings": true`).
 
 `shell attach` prints the tmux command a terminal runs to show the shell; with `--exec` it runs it instead, replacing the `riwork` process with the tmux client (`--ignore-size` keeps this display from resizing the shell's window, `--read-only` makes the client watch only). A remote desktop's terminal stream uses it (`remote/README.md`). In a terminal that says `xterm-ghostty` it announces that when the app bundle (or the caller's `TERMINFO`) has Ghostty's terminfo, otherwise `xterm-256color`.
 
