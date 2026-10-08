@@ -94,7 +94,11 @@ final class SharedTabStripTests: XCTestCase {
             XCTAssertEqual(SharedTabStrip.closePlan(all["Worker chat"]!, setting: setting), .detach, "a worker never asks and never exits")
             XCTAssertEqual(SharedTabStrip.closePlan(all["Project orchestrator"]!, setting: setting), .unpinFirst)
         }
-        XCTAssertEqual(SharedTabStrip.closePlan(all["User chat"]!, setting: .ask), .ask)
+        XCTAssertEqual(SharedTabStrip.closePlan(all["User chat"]!, setting: .ask), .ask(exitAllowed: true))
+        for setting in [TabCloseBehavior.ask, .exit] {
+            XCTAssertEqual(SharedTabStrip.closePlan(all["User chat"]!, setting: setting, orchestrator: true), .ask(exitAllowed: false), "an orchestrator: Detach only")
+        }
+        XCTAssertEqual(SharedTabStrip.closePlan(all["User chat"]!, setting: .detach, orchestrator: true), .detach)
         XCTAssertEqual(SharedTabStrip.closePlan(all["User chat"]!, setting: .detach), .detach)
         XCTAssertEqual(SharedTabStrip.closePlan(all["zsh"]!, setting: .exit), .exit)
         XCTAssertEqual(SharedTabStrip.actions(all["Project orchestrator"]!), .init(pin: false, unpin: true, rename: true, close: false))

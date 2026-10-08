@@ -27,15 +27,16 @@ enum ConnectionState: Equatable {
     /// desktop has a figure of its own, so a new project is not sorted behind the ones with activity (see `ProjectSorting.sorted`).
     var touchedProjects: [String: UInt64] = [:]
     var worktrees: [RemoteWorktree] = []
-    var openedChildViews: Set<String> = []
-    var sharedTabs: SharedTabsReply?
+    var sharedTabs: SharedTabsReply? { didSet { inventoryStamp &+= 1 } }
+    /// Counts installs of the project's lists (shells, chats, shared tabs): a quiet refresh whose reads started before a newer install
+    /// is older than what is on screen, and is dropped whole.
+    @ObservationIgnored var inventoryStamp = 0
     /// "When closing a tab: Ask / Detach / Exit", this device's own (`tab_close_behavior` in the app's defaults; Ask until chosen).
     var tabCloseBehavior = TabCloseBehavior.ask {
         didSet { defaults.set(tabCloseBehavior.rawValue, forKey: TabCloseBehavior.settingKey) }
     }
-    var hiddenTabs: [SharedTab] { sharedTabs?.allEntries.filter { $0.hidden && !($0.kind == .shell && $0.status == .stopped) } ?? [] }
 
-    var shells: [RemoteSession] = []
+    var shells: [RemoteSession] = [] { didSet { inventoryStamp &+= 1 } }
     var orchestrators: [RemoteSession] = []
     var output = "" { didSet { hasOutput = !output.isEmpty } }
     /// Whether `output` holds anything. Views read this rather than `output`, which is a new string with every live answer and would
@@ -84,7 +85,7 @@ enum ConnectionState: Equatable {
     /// Whether the desktop has native chats. Read from `features.chat` when a connection begins, and reset by every new one.
     var chatSupport: ChatSupport = .unknown
     /// The chosen project's chats, from `chats.list`: tabs in the strip beside the terminals.
-    var chats: [ChatInfo] = []
+    var chats: [ChatInfo] = [] { didSet { inventoryStamp &+= 1 } }
     /// The chat on screen; nil while a terminal is. Not remembered across launches.
     var selectedChatID: String?
     /// The orchestrator whose tab is on screen although it can be opened as neither a terminal nor a chat (it runs as a chat on a
@@ -608,7 +609,7 @@ enum ConnectionState: Equatable {
         if wantsConnection, state == .suspended { await connect() }
     }
     private func clearSnapshot() {
-        sharedTabs = nil; openedChildViews = []
+        sharedTabs = nil
         projects = []; touchedProjects = [:]; worktrees = []; shells = []; orchestrators = []; loadedProjectID = nil; resetOutput(); snapshotStale = true
         chats = []; selectedChatID = nil; selectedBlockedID = nil; chatConversations = [:]
         clearOrchestratorNotice()
@@ -663,7 +664,6 @@ enum ConnectionState: Equatable {
         do {
             if state == .connected { try? await synchronizeViewport(token: generation, forceRelease: true) }
             if projectID != id {
-                openedChildViews = []
                 try updateDesktop {
                     if let previousProject = $0.selectedProjectID, let previousSession = $0.selectedSessionID {
                         var selections = $0.projectSessionIDs ?? [:]; selections[previousProject] = previousSession; $0.projectSessionIDs = selections
@@ -1057,11 +1057,24 @@ extension Duration {
 // Shared tab plumbing for the phone strip. Every method returns the authoritative
 // list; there is no optimistic hiding and no session stop/delete side effect.
 extension RemoteModel {
-    func acceptSharedTabs(_ reply: SharedTabsReply) {
-        guard reply.supersedes(sharedTabs) else { return }
+    /// Installs a reply unless it is older than the list on screen; says whether it did.
+    @discardableResult func acceptSharedTabs(_ reply: SharedTabsReply) -> Bool {
+        guard reply.supersedes(sharedTabs) else { return false }
         sharedTabs = reply
-        let available = Set(reply.allEntries.filter { !$0.hidden && $0.parent != nil }.map(\.key))
-        openedChildViews.formIntersection(available)
+        return true
+    }
+    /// Whether a shared entry is an orchestrator (in a terminal, or running as a chat): it is detached from the phone, never exited.
+    func isOrchestrator(_ entry: SharedTab) -> Bool {
+        switch entry.kind {
+        case .chat: return orchestrator(ofChat: entry.sessionID) != nil || orchestrators.contains { $0.chat_id == entry.sessionID }
+        case .shell: return sessions.contains { $0.id == entry.sessionID && $0.kind == "orchestrator" }
+        case .unknown: return false
+        }
+    }
+    /// The shared entry of a terminal, when the desktop shares its tabs: closing it then goes through `closeTab`.
+    func sharedEntry(ofSession id: String) -> SharedTab? {
+        guard desktopFeatures.tabs else { return nil }
+        return sharedTabs?.allEntries.first { $0.kind == .shell && $0.sessionID == id }
     }
     func sharedTabsOfProject(_ project: String) async -> SharedTabsReply? {
         guard desktopFeatures.tabs else { return nil }
@@ -1088,19 +1101,6 @@ extension RemoteModel {
         reconcileChatSelection()
         try reconcileSelectedSession()
     }
-    /// Opens a child view locally, without promoting it into the shared strip.
-    func openChildTab(_ key: String) async throws {
-        guard let entry = sharedTabs?.allEntries.first(where: { $0.key == key }) else { throw ChatValidationError.invalidID }
-        let token = generation, project = projectID
-        if entry.hidden { try await unhideTab(key) }
-        guard generation == token, projectID == project else { return }
-        openedChildViews.insert(key)
-        switch entry.kind {
-        case .chat: selectChat(entry.sessionID)
-        case .shell: if let shell = sessions.first(where: { $0.id == entry.sessionID && $0.alive }) { await chooseSession(shell) }
-        case .unknown: break
-        }
-    }
     /// Explicit open changes shared visibility, then selects only on this device.
     func openTab(_ key: String) async throws {
         guard desktopFeatures.tabs, let project = projectID else { throw ChatValidationError.malformed }
@@ -1112,12 +1112,21 @@ extension RemoteModel {
         if entry.kind == .chat { selectChat(entry.sessionID) }
         else if let shell = sessions.first(where: { $0.id == entry.sessionID && $0.alive }) { await chooseSession(shell) }
     }
-    /// Ask is returned to the UI without a mutation. The sheet supplies an explicit choice.
+    /// Ask is returned to the UI without a mutation. The sheet supplies an explicit choice. A worker only ever detaches; an
+    /// orchestrator is never exited from here (refused before anything changes); a Hide that fails, or whose answer belongs to another
+    /// connection or project, ends the close before any Stop.
     @discardableResult func closeTab(_ key: String, choice: TabCloseBehavior? = nil) async throws -> Bool {
         guard desktopFeatures.tabs, let entry = sharedTabs?.allEntries.first(where: { $0.key == key }) else { throw ChatValidationError.invalidID }
-        let effective = (choice ?? tabCloseBehavior).effectiveChoice(for: entry)
+        var effective = (choice ?? tabCloseBehavior).effectiveChoice(for: entry)
+        if isOrchestrator(entry) {
+            guard effective != .exit else { throw TabCloseError.orchestratorExit }
+            if choice == nil, effective == .ask { return false }
+            effective = effective == .ask ? .ask : .detach
+        }
         guard effective != .ask else { return false }
+        let token = generation, project = projectID
         try await hideTab(key)
+        guard generation == token, projectID == project else { throw TabCloseError.connectionChanged }
         if effective == .exit {
             if entry.kind == .chat { if let failure = await sendChatCommand(entry.sessionID, .stop) { throw NSError(domain: "RiWorkTabs", code: 1, userInfo: [NSLocalizedDescriptionKey: failure.message]) } }
             else if entry.kind == .shell, let shell = sessions.first(where: { $0.id == entry.sessionID }) {
@@ -1126,11 +1135,21 @@ extension RemoteModel {
         }
         return true
     }
-    func closeChildView(_ key: String) async throws { try await hideTab(key); openedChildViews.remove(key); reconcileChatSelection(); try reconcileSelectedSession() }
     func pinTab(_ key: String) async throws { try await updateTabs(.pin(key)) }
     func unpinTab(_ key: String) async throws { try await updateTabs(.unpin(key)) }
     func hideTab(_ key: String) async throws { try await updateTabs(.hide(key)) }
     func unhideTab(_ key: String) async throws { try await updateTabs(.unhide(key)) }
     func moveTab(_ key: String, before: String?) async throws { try await updateTabs(.move(key, before: before)) }
     func renameTab(_ key: String, title: String) async throws { try await updateTabs(.rename(key, title: title)) }
+}
+
+/// Why closing a shared tab stopped short.
+enum TabCloseError: LocalizedError, Equatable {
+    case orchestratorExit, connectionChanged
+    var errorDescription: String? {
+        switch self {
+        case .orchestratorExit: "An orchestrator is detached from the phone, not exited. Stop it on the Mac."
+        case .connectionChanged: "The connection changed while the tab was closing. Nothing was stopped."
+        }
+    }
 }

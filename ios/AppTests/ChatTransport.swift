@@ -57,6 +57,17 @@ actor ChatTransport: RemoteTransport {
     var sharedTabs: [Tab] = []
     var tabsRevision = 0
     var tabsEpoch = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    /// The next request of each of these methods is answered as things are when it arrives, but only once `releaseHeld()` is called:
+    /// an answer that was read before something changed and arrives after it.
+    var holdNext: Set<String> = []
+    var heldReleased = false
+    func hold(_ methods: Set<String>) { holdNext = methods; heldReleased = false }
+    func releaseHeld() { heldReleased = true }
+    private func held(_ method: String, _ reply: JSONValue) async throws -> JSONValue {
+        guard holdNext.remove(method) != nil else { return reply }
+        while !heldReleased { try await Task.sleep(for: .milliseconds(3)) }
+        return reply
+    }
     /// The next `tabs.update` fails with this (the list is left as it was).
     var tabUpdateError: RemoteError?
     func failNextTabUpdate(_ error: RemoteError?) { tabUpdateError = error }
@@ -180,7 +191,7 @@ actor ChatTransport: RemoteTransport {
         case "orchestrators.list": return .object(["orchestrators": .array(orchestratorEntries)])
         case "shells.list":
             let entry = "[{\"id\":\"\(Self.shell)\",\"project_id\":\"\(Self.project)\",\"kind\":\"project\",\"cwd\":\"/fixture\",\"harness\":null,\"alive\":true,\"created_at_unix\":5}]"
-            return .object(["shells": try JSONDecoder().decode(JSONValue.self, from: Data(entry.utf8))])
+            return try await held(method, .object(["shells": try JSONDecoder().decode(JSONValue.self, from: Data(entry.utf8))]))
         case "shell.output": return .object(["shell_id": params["shell_id"]!, "output": .string(shellOutput)])
         case "shell.resize": return .object(["shell_id": params["shell_id"]!, "columns": params["columns"]!, "rows": params["rows"]!])
         case "shell.resize.clear": return .object(["shell_id": params["shell_id"]!, "status": .string("cleared")])
@@ -189,7 +200,7 @@ actor ChatTransport: RemoteTransport {
             throw RemoteError.rpc(code: "not_found", message: "appearance not published")
         case "chats.list":
             guard chatFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
-            return .object(["chats": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(chats))])
+            return try await held(method, .object(["chats": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(chats))]))
         case "chat.create":
             while createMode == .gated { try await Task.sleep(for: .milliseconds(3)) }
             switch createMode {
@@ -209,7 +220,7 @@ actor ChatTransport: RemoteTransport {
         case "chat.snapshot": return try await snapshot(params)
         case "tabs.list":
             guard tabsFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
-            return tabsReply()
+            return try await held(method, tabsReply())
         case "tabs.open":
             guard tabsFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
             try applyTabUpdate(["action": .string("unhide"), "key": params["key"] ?? .null])
@@ -218,7 +229,7 @@ actor ChatTransport: RemoteTransport {
             guard tabsFeature, case .object(let update)? = params["update"] else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
             if let tabUpdateError { self.tabUpdateError = nil; throw tabUpdateError }
             try applyTabUpdate(update)
-            return tabsReply()
+            return try await held(method, tabsReply())
         case "chat.events":
             guard chatFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
             return try await events(params)

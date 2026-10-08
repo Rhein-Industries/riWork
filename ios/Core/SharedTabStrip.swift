@@ -108,19 +108,20 @@ public enum SharedTabStrip {
     public enum ClosePlan: Sendable, Equatable {
         /// A pinned tab is not closed: it must be unpinned first (the desktop refuses to hide a pinned one).
         case unpinFirst
-        /// Ask: the sheet with Detach, Exit and Cancel; nothing changes until a choice.
-        case ask
+        /// Ask: the sheet with Detach (and Exit, unless the tab is an orchestrator's) and Cancel; nothing changes until a choice.
+        case ask(exitAllowed: Bool)
         /// Hide it; its process carries on (always, for a worker).
         case detach
         /// Hide it, then stop the chat or close the shell; a chat's history stays.
         case exit
     }
-    public static func closePlan(_ tab: SharedTab, setting: TabCloseBehavior) -> ClosePlan {
+    /// An orchestrator (`orchestrator`) is never exited from the phone: Ask and Exit both show the sheet with Detach only.
+    public static func closePlan(_ tab: SharedTab, setting: TabCloseBehavior, orchestrator: Bool = false) -> ClosePlan {
         if tab.pinned { return .unpinFirst }
         switch setting.effectiveChoice(for: tab) {
-        case .ask: return .ask
+        case .ask: return .ask(exitAllowed: !orchestrator)
         case .detach: return .detach
-        case .exit: return .exit
+        case .exit: return orchestrator ? .ask(exitAllowed: false) : .exit
         }
     }
 

@@ -1289,6 +1289,107 @@ import RiWorkCore
         await finish(rig)
     }
 
+    /// With shared tabs, an opened worker's shell can never be closed (`shell.close`) from the phone: its tab only detaches, from the
+    /// menu, the VoiceOver action or the model, and the terminal's own Close is not offered.
+    func testAnOpenedWorkerShellNeverReachesShellClose() async throws {
+        let rig = try await makeRig(chats: sharedChats())
+        await rig.transport.setSharedTabs([
+            .init(key: "chat:\(userChatID)", kind: "chat", title: "User chat"),
+            .init(key: "shell:\(ChatTransport.shell)", kind: "shell", title: "worker zsh", worker: true, parent: "chat:\(userChatID)")])
+        await rig.model.disconnect(); await rig.model.connect()
+        await eventually("the shared list is in") { rig.model.sharedTabs != nil && rig.model.tabs.contains { $0.id == ChatTransport.shell } }
+        let shell = try XCTUnwrap(rig.model.sessions.first { $0.id == ChatTransport.shell })
+        // The model refuses the terminal's own close for a worker.
+        let refused = await rig.model.closeTerminal(shell)
+        XCTAssertNotNil(refused)
+        // Every setting: the tab detaches.
+        for setting in TabCloseBehavior.allCases {
+            rig.model.tabCloseBehavior = setting
+            _ = try await rig.model.closeTab("shell:\(ChatTransport.shell)", choice: setting == .ask ? .exit : nil)
+            try await rig.model.unhideTab("shell:\(ChatTransport.shell)")
+        }
+        // The VoiceOver action on its tab is the tab's close, not the terminal's.
+        rig.model.tabCloseBehavior = .exit
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(customActions(named: "Close terminal", in: rig.host.view).isEmpty, "no terminal Close for a shared tab")
+        let detach = customActions(named: "Close (detach)", in: rig.host.view)
+        XCTAssertFalse(detach.isEmpty, "its tab offers the detach")
+        let hidesBefore = await rig.transport.params(of: "tabs.update").filter { $0["update"]?["action"].string == "hide" }.count
+        if let action = detach.first { _ = action.actionHandler?(action) }
+        await eventually("hidden") { await rig.transport.params(of: "tabs.update").filter { $0["update"]?["action"].string == "hide" }.count == hidesBefore + 1 }
+        let closes = await rig.transport.count("shell.close")
+        XCTAssertEqual(closes, 0, "shell.close never sent for a worker")
+        await finish(rig)
+    }
+
+    /// A Hide whose answer comes back on another connection ends the close: nothing is stopped through the new one.
+    func testACloseWhoseHideOutlivesItsConnectionStopsNothing() async throws {
+        let rig = try await sharedRig()
+        rig.model.tabCloseBehavior = .exit
+        await rig.transport.hold(["tabs.update"])
+        let close = Task { try await rig.model.closeTab("chat:\(self.userChatID)") }
+        await eventually("the Hide is on its way") { await rig.transport.count("tabs.update") == 1 }
+        // The connection ends (a new generation) and the Hide's answer arrives only then; the disconnect itself may wait behind it.
+        let old = rig.model.generation
+        let release = Task { @MainActor in
+            while rig.model.generation == old { try? await Task.sleep(for: .milliseconds(3)) }
+            await rig.transport.releaseHeld()
+        }
+        await rig.model.disconnect()
+        await release.value
+        do { _ = try await close.value; XCTFail("the close ends") } catch { XCTAssertEqual(error as? TabCloseError, .connectionChanged) }
+        await rig.model.connect()
+        let stops = await rig.transport.commands().compactMap { $0["command"].string }.filter { $0 == "stop" }
+        XCTAssertTrue(stops.isEmpty, "no Stop through the new connection")
+        await finish(rig)
+    }
+
+    /// A quiet refresh whose reads started before a chat was made (and selected) and whose answers arrive after it is older than the
+    /// screen: it is dropped, and the new tab stays selected.
+    func testAnOverlappingOlderRefreshDoesNotClearANewlySelectedTab() async throws {
+        let rig = try await sharedRig()
+        await rig.transport.hold(["chats.list", "shells.list", "tabs.list"])
+        let refresh = Task { await rig.model.refreshSessionsQuietly() }
+        await eventually("the refresh's reads are out") { await rig.transport.count("tabs.list") >= 2 && rig.model.chatSupport != .unsupported }
+        try await Task.sleep(for: .milliseconds(100))
+        // A chat made meanwhile: its list and membership are installed, and it is selected.
+        let made = "ffffffff-6666-4666-8666-666666666666"
+        await rig.transport.setChats(sharedChats() + [ChatInfo(id: made, provider: .claude, projectID: project, cwd: "/fixture", title: "Just made", createdAtUnix: 50, state: .idle)])
+        await rig.transport.peerChange { $0.append(.init(key: "chat:\(made)", kind: "chat", title: "Just made")) }
+        await rig.model.refreshChatsQuietly()
+        try await rig.model.listTabs()
+        rig.model.selectChat(made)
+        XCTAssertEqual(rig.model.selectedChatID, made)
+        // The older refresh lands now.
+        await rig.transport.releaseHeld()
+        await refresh.value
+        XCTAssertEqual(rig.model.selectedChatID, made, "the new tab stays selected")
+        XCTAssertTrue(rig.model.tabs.contains { $0.id == made })
+        await finish(rig)
+    }
+
+    /// An orchestrator is detached from the phone, never exited: Exit is refused before anything is hidden.
+    func testAnOrchestratorIsNeverExited() async throws {
+        let rig = try await sharedRig()
+        let orchestrator = "{\"id\":\"99999999-9999-4999-8999-999999999999\",\"project_id\":\"\(project)\",\"worktree_id\":null,\"kind\":\"orchestrator\",\"cwd\":\"/fixture\",\"harness\":null,\"alive\":true,\"created_at_unix\":3,\"mode\":\"chat\",\"chat_id\":\"\(userChatID)\",\"provider\":\"codex\"}"
+        await rig.transport.setOrchestrators([orchestrator])
+        await rig.model.refresh()
+        let entry = try XCTUnwrap(rig.model.sharedTabs?.allEntries.first { $0.key == "chat:\(self.userChatID)" })
+        await eventually("known as an orchestrator") { rig.model.isOrchestrator(entry) }
+        XCTAssertEqual(SharedTabStrip.closePlan(entry, setting: .exit, orchestrator: true), .ask(exitAllowed: false))
+        let updatesBefore = await rig.transport.count("tabs.update")
+        do { _ = try await rig.model.closeTab(entry.key, choice: .exit); XCTFail("refused") } catch { XCTAssertEqual(error as? TabCloseError, .orchestratorExit) }
+        rig.model.tabCloseBehavior = .exit
+        do { _ = try await rig.model.closeTab(entry.key); XCTFail("refused") } catch { XCTAssertEqual(error as? TabCloseError, .orchestratorExit) }
+        let updatesAfter = await rig.transport.count("tabs.update")
+        XCTAssertEqual(updatesAfter, updatesBefore, "nothing hidden")
+        // Detach is allowed.
+        _ = try await rig.model.closeTab(entry.key, choice: .detach)
+        let stops = await rig.transport.commands().compactMap { $0["command"].string }.filter { $0 == "stop" }
+        XCTAssertTrue(stops.isEmpty)
+        await finish(rig)
+    }
+
     func testTheSettingIsThisDevicesAndKeptUnderItsKey() async throws {
         let rig = try await makeRig()
         XCTAssertEqual(rig.model.tabCloseBehavior, .ask, "Ask until chosen")
@@ -2043,6 +2144,20 @@ import RiWorkCore
         let deadline = Date().addingTimeInterval(300)
         while !FileManager.default.fileExists(atPath: shot.path), Date() < deadline { try await Task.sleep(for: .milliseconds(250)) }
         try? FileManager.default.removeItem(at: ready)
+    }
+    /// The VoiceOver custom actions named `name` anywhere on the screen.
+    private func customActions(named name: String, in view: UIView) -> [UIAccessibilityCustomAction] {
+        var seen = Set<ObjectIdentifier>(), budget = 6000, found: [UIAccessibilityCustomAction] = []
+        func search(_ element: NSObject) {
+            guard budget > 0, seen.insert(ObjectIdentifier(element)).inserted else { return }
+            budget -= 1
+            if (element as? UIView)?.isHidden == true { return }
+            found += (element.accessibilityCustomActions ?? []).filter { $0.name == name }
+            ((element.accessibilityElements as? [NSObject]) ?? []).forEach(search)
+            (element as? UIView)?.subviews.forEach(search)
+        }
+        search(view)
+        return found
     }
     /// Activates the accessibility element with `label` on the screen, as VoiceOver's double tap does.
     private func activate(_ label: String, in view: UIView) -> Bool {

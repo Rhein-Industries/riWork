@@ -300,6 +300,8 @@ struct TerminalTabsView: View {
     // The shared tab list (docs/shared-tabs.md), when the desktop has one: the tab asked to be closed (the Detach / Exit sheet), the
     // one being renamed, the "Open shell/worker…" picker, the Edit tabs sheet and the tab a drag is over.
     @State private var closingTab: SharedTab?
+    /// The close sheet offers Exit (not for an orchestrator).
+    @State private var closingAllowsExit = true
     @State private var renamingTab: SharedTab?
     @State private var renameText = ""
     @State private var showingWorkers = false
@@ -371,11 +373,14 @@ struct TerminalTabsView: View {
         .confirmationDialog(closingTab.map { "Close \($0.title)?" } ?? "", isPresented: Binding(get: { closingTab != nil }, set: { if !$0 { closingTab = nil } }),
                             titleVisibility: .visible, presenting: closingTab) { entry in
             Button("Detach") { close(entry, .detach) }
-            Button("Exit", role: .destructive) { close(entry, .exit) }
+            if closingAllowsExit { Button("Exit", role: .destructive) { close(entry, .exit) } }
             Button("Cancel", role: .cancel) { closingTab = nil }
         } message: { entry in
-            Text(entry.kind == .chat ? "Detach keeps the chat running on your Mac. Exit stops it; its history stays."
-                                     : "Detach keeps the shell running on your Mac. Exit closes it and ends its process.")
+            if !closingAllowsExit { Text("Detach keeps the orchestrator running on your Mac. Stop it on the Mac.") }
+            else {
+                Text(entry.kind == .chat ? "Detach keeps the chat running on your Mac. Exit stops it; its history stays."
+                                         : "Detach keeps the shell running on your Mac. Exit closes it and ends its process.")
+            }
         }
         .alert("Rename tab", isPresented: Binding(get: { renamingTab != nil }, set: { if !$0 { renamingTab = nil } }), presenting: renamingTab) { entry in
             TextField("Title", text: $renameText)
@@ -485,9 +490,9 @@ struct TerminalTabsView: View {
     }
     /// Closing by the setting: Ask shows the sheet; Detach and Exit go at once; a worker always detaches; a pinned tab is unpinned first.
     private func requestClose(_ entry: SharedTab) {
-        switch SharedTabStrip.closePlan(entry, setting: model.tabCloseBehavior) {
+        switch SharedTabStrip.closePlan(entry, setting: model.tabCloseBehavior, orchestrator: model.isOrchestrator(entry)) {
         case .unpinFirst: report("Unpin \(entry.title) before closing it.")
-        case .ask: closingTab = entry
+        case .ask(let exitAllowed): closingAllowsExit = exitAllowed; closingTab = entry
         case .detach: close(entry, .detach)
         case .exit: close(entry, .exit)
         }
@@ -533,7 +538,8 @@ struct TerminalTabsView: View {
             Section("Tab") {
                 Button("Session info", systemImage: "info.circle") { showSessionInfo() }.disabled(content == .none)
                 if let entry = currentEntry { sharedTabItems(entry) }
-                if chrome.terminalActions, let session = model.session, model.canClose(session) {
+                // Without shared tabs only: with them, closing goes by the tab (a worker detaches; Ask / Detach / Exit; Hide before Exit).
+                if currentEntry == nil, chrome.terminalActions, let session = model.session, model.canClose(session), model.sharedEntry(ofSession: session.id) == nil {
                     Button("Close this terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session }
                 }
             }
@@ -669,9 +675,12 @@ struct TerminalTabsView: View {
             Text(tabDetail(session))
             if let entry { Section { sharedTabItems(entry) } }
             Button("New terminal", systemImage: "plus") { openNewTerminal() }
-            if model.canClose(session) { Button("Close terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session } }
+            if entry == nil, model.canClose(session) { Button("Close terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session } }
         }
-        .accessibilityAction(named: "Close terminal") { if model.canClose(session) { closing = session } }
+        // The same close as the menu's: by the shared tab when there is one, else the terminal's own.
+        .accessibilityAction(named: entry.map { $0.isWorker ? "Close (detach)" : "Close tab" } ?? "Close terminal") {
+            if let entry { requestClose(entry) } else if model.canClose(session) { closing = session }
+        }
     }
     /// A chat's tab, beside the terminals': its provider's glyph, its name and the same activity indicator. An orchestrator that runs
     /// as a chat has this look too, under the orchestrator's name ("Project orchestrator", already the chat's title here); it is

@@ -73,6 +73,8 @@ extension RemoteModel {
     @discardableResult
     func closeTerminal(_ session: RemoteSession) async -> TerminalControlError? {
         guard session.kind != "orchestrator" else { return .failed("Orchestrators are closed on the Mac.") }
+        // With shared tabs a worker's shell is only ever detached: closing its tab hides it (`closeTab`), and nothing here ends it.
+        if let entry = sharedEntry(ofSession: session.id), entry.isWorker { return .failed("A worker's shell is detached, not closed, from the phone.") }
         guard closingTerminalID == nil else { return .busy }
         guard state == .connected else { return .notConnected }
         guard terminalControl != .unsupported else { return .unsupported }

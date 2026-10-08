@@ -72,14 +72,13 @@ Workers are registered in membership **hidden by default**. `worker` persists th
 
 `RemoteModel` exposes:
 
-- `sharedTabs: SharedTabsReply?`, `hiddenTabs: [SharedTab]` (hidden, openable chats/shells), `tabCloseBehavior`.
+- `sharedTabs: SharedTabsReply?`, `tabCloseBehavior`. The picker's rows are `SharedTabStrip.openable(sharedTabs)` (hidden, openable chats/shells, workers first).
 - `listTabs()` and `updateTabs(_:)`, both async throwing and capability gated.
 - `openTab(_ key: String)`: shared Unhide followed by device-local chat/shell selection. No process creation.
 - `closeTab(_ key: String, choice: TabCloseBehavior? = nil) async throws -> Bool`: false means Ask requires a sheet, with **no mutation**. A supplied choice is the sheet result. Workers force Detach regardless of the supplied choice/preference. True means the requested operation completed. Failures throw; UI displays them.
 - `pinTab`, `unpinTab`, `hideTab`, `unhideTab`, `moveTab(_:before:)`, `renameTab(_:title:)` wrappers.
-- Legacy `openChildTab`/`closeChildView` wrappers remain; new chrome should use `openTab`/`closeTab`.
 
-Use `sharedTabs.visible` for chrome and `hiddenTabs` for “Open a worker/shell”. After a mutation install its reply, without an optimistic hide or automatic retry of an uncertain result. Connection/project generations discard stale replies. `SharedTabsReply.supersedes(_:)` accepts a changed `epoch` even at a lower revision; within the same epoch smaller revisions are ignored and same-revision status is accepted. `epoch` is optional for older hosts, which retain the revision-only comparison when both replies omit it. Creation fetches shared membership after inventory. Connected foreground session refreshes run every four seconds, including focus mode. Mac refreshes every two seconds. Phone connection does not independently seed membership.
+Use `sharedTabs.visible` for chrome and `SharedTabStrip.openable` for “Open shell/worker…”. After a mutation install its reply, without an optimistic hide or automatic retry of an uncertain result. Connection/project generations discard stale replies. `SharedTabsReply.supersedes(_:)` accepts a changed `epoch` even at a lower revision; within the same epoch smaller revisions are ignored and same-revision status is accepted. `epoch` is optional for older hosts, which retain the revision-only comparison when both replies omit it. Creation fetches shared membership after inventory. Connected foreground session refreshes run every four seconds, including focus mode. Mac refreshes every two seconds. Phone connection does not independently seed membership.
 
 ## Close setting and presentation
 
