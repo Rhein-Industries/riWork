@@ -353,6 +353,10 @@ struct TerminalTabsView: View {
         .statusBarHidden(chrome.statusBarHidden)
         .onChange(of: model.sessionID) { _, _ in sessionInfo = nil; followOutput = true }
         .onChange(of: model.focusMode) { _, _ in model.updateKeepAwake() }
+        // A desktop that no longer offers shared tabs (a reconnect to an older one): what was open for them goes.
+        .onChange(of: model.desktopFeatures.tabs && model.sharedTabs != nil) { _, shared in
+            if !shared { showingWorkers = false; showingEditTabs = false; closingTab = nil; renamingTab = nil; dropTarget = nil }
+        }
         .sheet(isPresented: $showingWorkers) {
             OpenTabSheet(rows: SharedTabStrip.openable(model.sharedTabs), open: { key in
                 showingWorkers = false
@@ -604,6 +608,8 @@ struct TerminalTabsView: View {
                 // closed, here or on the Mac).
                 .onAppear { scrollToSelected(proxy, animated: false) }
                 .onChange(of: model.tabs.map(\.id)) { _, _ in scrollToSelected(proxy, animated: true) }
+                // Titles and pins change widths (a rename on the Mac) without changing which tabs there are.
+                .onChange(of: model.sharedTabs?.visible.map { "\($0.key)|\($0.title)|\($0.pinned)" }) { _, _ in scrollToSelected(proxy, animated: true) }
         }
     }
     private func scrollToSelected(_ proxy: ScrollViewProxy, animated: Bool) {

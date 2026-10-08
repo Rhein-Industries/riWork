@@ -46,10 +46,22 @@ final class SharedTabStripTests: XCTestCase {
         XCTAssertEqual(SharedTabStrip.move(zsh, onto: user, in: reply), .move(zsh.key, before: user.key))
         XCTAssertNil(SharedTabStrip.move(user, onto: zsh, in: reply), "already right before it")
         XCTAssertEqual(SharedTabStrip.move(user, onto: nil, in: reply), .move(user.key, before: nil), "to the end of its group")
-        XCTAssertNil(SharedTabStrip.move(zsh, onto: nil, in: reply), "already last")
+        XCTAssertEqual(SharedTabStrip.move(zsh, onto: nil, in: reply), .move(zsh.key, before: nil), "hidden tabs follow it in its group: a real move")
         XCTAssertNil(SharedTabStrip.move(zsh, onto: pinned, in: reply), "not into the pinned group")
         XCTAssertNil(SharedTabStrip.move(worker, onto: user, in: reply), "not out of its parent")
         XCTAssertNil(SharedTabStrip.move(zsh, onto: zsh, in: reply))
+    }
+    func testHiddenMembersOfAGroupCountForMovesAndUnknownKindsAreNotEdited() throws {
+        // Shared order [A, B, hidden H] and [A, hidden H, B].
+        func reply(_ entries: [JSONValue]) throws -> SharedTabsReply { try JSONValue.object(["revision": .number(1), "entries": .array(entries)]).decode(SharedTabsReply.self) }
+        let end = try reply([tab("chat", 1, "A", order: 0), tab("chat", 2, "B", order: 1), tab("chat", 3, "H", order: 2, hidden: true)])
+        let b = end.allEntries.first { $0.title == "B" }!
+        XCTAssertEqual(SharedTabStrip.move(b, onto: nil, in: end), .move(b.key, before: nil), "past the hidden H: a real move")
+        let middle = try reply([tab("chat", 1, "A", order: 0), tab("chat", 3, "H", order: 1, hidden: true), tab("chat", 2, "B", order: 2)])
+        let a = middle.allEntries.first { $0.title == "A" }!, b2 = middle.allEntries.first { $0.title == "B" }!
+        XCTAssertEqual(SharedTabStrip.move(a, onto: b2, in: middle), .move(a.key, before: b2.key), "H sits between them in the shared order")
+        let unknown = try reply([tab("chat", 1, "A", order: 0), tab("future", 4, "Future", order: 1)])
+        XCTAssertEqual(SharedTabStrip.groups(unknown).flatMap(\.tabs).map(\.title), ["A"], "an unknown kind is not reordered from here")
     }
     func testTheEditSheetGroupsAndItsListMoves() throws {
         let reply = try reply()

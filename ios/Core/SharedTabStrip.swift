@@ -21,7 +21,9 @@ public enum SharedTabStrip {
     /// The move for dropping `dragged` on `target` (it goes before it), or at the end of its group when `target` is nil. Nil when the
     /// drop says nothing (on itself, or where it already is) or is not allowed (another group: the desktop would refuse it).
     public static func move(_ dragged: SharedTab, onto target: SharedTab?, in reply: SharedTabsReply) -> TabUpdate? {
-        let group = reply.visible.filter { sameGroup($0, dragged) }
+        // The whole group in shared order, hidden members included: a move is in that order, and showing one later must not reveal a
+        // different order than the one the person made.
+        let group = reply.allEntries.filter { sameGroup($0, dragged) }.sorted { $0.order < $1.order }
         guard let from = group.firstIndex(where: { $0.key == dragged.key }) else { return nil }
         guard let target else { return from == group.count - 1 ? nil : .move(dragged.key, before: nil) }
         guard target.key != dragged.key, sameGroup(target, dragged), let to = group.firstIndex(where: { $0.key == target.key }) else { return nil }
@@ -47,7 +49,8 @@ public enum SharedTabStrip {
         public var id: String { "\(parent ?? "root"):\(pinned)" }
     }
     public static func groups(_ reply: SharedTabsReply) -> [Group] {
-        let visible = reply.visible
+        // Kinds this phone does not know are ignored (the contract), so never reordered from here.
+        let visible = reply.visible.filter { $0.kind != .unknown }
         let titles = Dictionary(reply.allEntries.map { ($0.key, $0.title) }, uniquingKeysWith: { first, _ in first })
         var groups: [Group] = []
         var seen: [String: Int] = [:]
