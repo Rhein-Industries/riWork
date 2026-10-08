@@ -604,8 +604,23 @@ impl Core {
             sigint_at: None,
             notice_prefix: Uuid::new_v4().simple().to_string()[..8].to_owned(),
             notice_counter: 0,
-            open_notices: HashMap::new(),
-            rate_status: HashMap::new(),
+            open_notices: config.outstanding_notices.clone(),
+            rate_status: config
+                .outstanding_notices
+                .iter()
+                .filter_map(|(kind, item)| {
+                    let window = kind.strip_prefix("rate_limit:")?;
+                    let ItemBody::Notice { level, .. } = &item.body else {
+                        return None;
+                    };
+                    let status = match level {
+                        NoticeLevel::Warning => "allowed_warning",
+                        NoticeLevel::Error => "rejected",
+                        NoticeLevel::Info => return None,
+                    };
+                    Some((window.to_owned(), status.to_owned()))
+                })
+                .collect(),
             retry_item: None,
             totals: Totals::default(),
             models: Vec::new(),

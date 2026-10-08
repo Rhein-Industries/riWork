@@ -1937,6 +1937,7 @@ fn bare_config() -> DriverConfig {
         effort: None,
         fast: false,
         resume: None,
+        outstanding_notices: Default::default(),
         extra_args: Vec::new(),
         env: Vec::new(),
         env_remove: Vec::new(),
@@ -1966,6 +1967,7 @@ fn live_claude_answers_a_trivial_prompt() {
         effort: None,
         fast: false,
         resume: None,
+        outstanding_notices: Default::default(),
         extra_args: Vec::new(),
         env: Vec::new(),
         env_remove: Vec::new(),
@@ -2262,4 +2264,54 @@ fn repeated_failed_results_emit_one_turn_failed_notice() {
     let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
     assert_eq!(items.len(), 1);
     assert_notice(&items[0], notice_kind::TURN_FAILED, false);
+}
+
+#[test]
+fn restored_auth_notice_resolves_on_the_first_successful_turn() {
+    let (sender, events) = mpsc::channel();
+    let mut config = bare_config();
+    let mut previous = Core::new(&config, sender.clone(), "session".into());
+    previous.notice(
+        NoticeLevel::Error,
+        notice_kind::AUTH_REQUIRED,
+        "Please log in.",
+    );
+    config.outstanding_notices = previous.open_notices.clone();
+    let original = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    let mut core = Core::new(&config, sender, "session".into());
+    core.ensure_turn();
+    core.on_result(&json!({"subtype":"success","result":"done"}));
+    let resolved = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].id, original[0].id);
+    assert_notice(&resolved[0], notice_kind::AUTH_REQUIRED, true);
+}
+
+#[test]
+fn restored_rate_limits_remember_the_status_and_allowed_resolves_the_saved_item() {
+    for (level, status) in [
+        (NoticeLevel::Warning, "allowed_warning"),
+        (NoticeLevel::Error, "rejected"),
+    ] {
+        let (sender, events) = mpsc::channel();
+        let mut config = bare_config();
+        let mut previous = Core::new(&config, sender.clone(), "session".into());
+        previous.notice(level, "rate_limit:seven_day", "Weekly usage limit.");
+        config.outstanding_notices = previous.open_notices.clone();
+        let original = completed_notices(&events.try_iter().collect::<Vec<_>>());
+        let mut core = Core::new(&config, sender, "session".into());
+        core.ready = true;
+        assert_eq!(core.rate_status["seven_day"], status);
+        core.on_frame(&json!({"type":"rate_limit_event","rate_limit_info":{
+            "status":status,"rateLimitType":"seven_day"
+        }}));
+        assert!(events.try_iter().next().is_none());
+        core.on_frame(&json!({"type":"rate_limit_event","rate_limit_info":{
+            "status":"allowed","rateLimitType":"seven_day"
+        }}));
+        let resolved = completed_notices(&events.try_iter().collect::<Vec<_>>());
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].id, original[0].id);
+        assert_notice(&resolved[0], "rate_limit:seven_day", true);
+    }
 }

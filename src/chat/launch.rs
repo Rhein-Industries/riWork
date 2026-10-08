@@ -130,6 +130,7 @@ fn assemble(
         effort: info.effort.clone(),
         fast: info.fast,
         resume,
+        outstanding_notices: Default::default(),
         extra_args,
         env,
         env_remove,

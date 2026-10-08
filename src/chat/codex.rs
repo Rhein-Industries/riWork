@@ -410,7 +410,7 @@ impl Session {
             streamed: HashMap::new(),
             file_changes: HashMap::new(),
             notices: 0,
-            open_notices: HashMap::new(),
+            open_notices: config.outstanding_notices.clone(),
             reconnecting: HashMap::new(),
             notice_prefix: Uuid::new_v4().simple().to_string()[..8].to_owned(),
             stopping: false,
@@ -725,11 +725,11 @@ impl Session {
         self.last_finished_turn = Some(turn_id.to_owned());
         self.resolve_reconnecting(turn_id);
         // A completion can precede the turn/start receipt. It still proves recovery.
-        if self.turn.as_deref() == Some(turn_id) || (self.turn.is_none() && !repeated) {
+        if matches!(outcome, TurnOutcome::Completed)
+            && (self.turn.as_deref() == Some(turn_id) || (self.turn.is_none() && !repeated))
+        {
             self.resolve_notice("rate_limit:codex", "Codex can answer again.");
-            if matches!(outcome, TurnOutcome::Completed) {
-                self.resolve_notice(notice_kind::AUTH_REQUIRED, "Codex is signed in again.");
-            }
+            self.resolve_notice(notice_kind::AUTH_REQUIRED, "Codex is signed in again.");
         }
         if self.turn.as_deref() != Some(turn_id) {
             return Vec::new();

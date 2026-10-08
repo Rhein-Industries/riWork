@@ -1342,6 +1342,7 @@ fn live_codex_answers_a_trivial_prompt() {
         effort: None,
         fast: false,
         resume: None,
+        outstanding_notices: Default::default(),
         extra_args: Vec::new(),
         env: Vec::new(),
         env_remove: Vec::new(),
@@ -1512,19 +1513,13 @@ fn codex_authentication_and_usage_errors_accept_string_and_object_variants() {
         );
         let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
         assert_notice(&items[0], kind, false);
-        if kind == notice_kind::AUTH_REQUIRED {
-            assert_eq!(items.len(), 1);
-            session.begin_turn("success");
-            session.finish_turn("success", TurnOutcome::Completed);
-            let resolved = completed_notices(&events.try_iter().collect::<Vec<_>>());
-            assert_eq!(resolved.len(), 1);
-            assert_eq!(items[0].id, resolved[0].id);
-            assert_notice(&resolved[0], kind, true);
-        } else {
-            assert_eq!(items.len(), 2);
-            assert_eq!(items[0].id, items[1].id);
-            assert_notice(&items[1], kind, true);
-        }
+        assert_eq!(items.len(), 1);
+        session.begin_turn("success");
+        session.finish_turn("success", TurnOutcome::Completed);
+        let resolved = completed_notices(&events.try_iter().collect::<Vec<_>>());
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(items[0].id, resolved[0].id);
+        assert_notice(&resolved[0], kind, true);
     }
 }
 
@@ -1740,4 +1735,66 @@ fn a_success_before_the_start_receipt_resolves_auth_and_usage_notices() {
     assert_eq!(items[0].id, items[3].id);
     assert_notice(&items[2], "rate_limit:codex", true);
     assert_notice(&items[3], notice_kind::AUTH_REQUIRED, true);
+}
+
+#[test]
+fn usage_exhaustion_stays_open_after_failed_completion_until_a_successful_turn() {
+    let fake = Fake::new(&[]);
+    let (sender, events) = mpsc::channel();
+    let mut session = Session::new(&fake.config(Provider::Codex), sender);
+    session.begin_turn("exhausted");
+    session.notification(
+        "error",
+        &json!({"turnId":"exhausted","willRetry":false,
+            "error":{"message":"usage exhausted","codexErrorInfo":"usageLimitExceeded"}}),
+    );
+    session.notification(
+        "turn/completed",
+        &json!({"turn":{"id":"exhausted","status":"failed",
+            "error":{"message":"usage exhausted"}}}),
+    );
+    let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(items.len(), 1);
+    assert_notice(&items[0], "rate_limit:codex", false);
+    assert_eq!(session.open_notices["rate_limit:codex"], items[0]);
+    session.begin_turn("success");
+    session.notification(
+        "turn/completed",
+        &json!({"turn":{"id":"success","status":"completed"}}),
+    );
+    let resolved = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].id, items[0].id);
+    assert_notice(&resolved[0], "rate_limit:codex", true);
+}
+
+#[test]
+fn restored_auth_and_usage_notices_resolve_on_the_first_successful_turn() {
+    let fake = Fake::new(&[]);
+    let (sender, events) = mpsc::channel();
+    let mut config = fake.config(Provider::Codex);
+    let mut previous = Session::new(&config, sender.clone());
+    previous.notification("account/updated", &json!({"authMode":null}));
+    previous.notification(
+        "error",
+        &json!({"error":{"message":"usage exhausted","codexErrorInfo":"usageLimitExceeded"}}),
+    );
+    config.outstanding_notices = previous.open_notices.clone();
+    let original = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    let mut session = Session::new(&config, sender);
+    session.begin_turn("success");
+    session.finish_turn("success", TurnOutcome::Completed);
+    let resolved = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(resolved.len(), 2);
+    for item in &original {
+        let ItemBody::Notice {
+            kind: Some(kind), ..
+        } = &item.body
+        else {
+            panic!("{item:?}")
+        };
+        let update = resolved.iter().find(|update| update.id == item.id).unwrap();
+        assert_notice(update, kind, true);
+    }
+    assert!(session.open_notices.is_empty());
 }
