@@ -1394,12 +1394,10 @@ fn ensure_running(shared: &Shared, chat: &Arc<Chat>) -> Result<(), String> {
         Ok(config) => config,
         Err(error) => return fail_start(chat, generation, error),
     };
-    // A log that cannot be read leaves nothing to resolve; the chat still starts.
-    let mut transcript = Transcript::default();
-    for envelope in log::read_envelopes(&chat.dir).unwrap_or_default() {
-        transcript.apply(&envelope.event);
-    }
-    config.outstanding_notices = outstanding_sticky_notices(&transcript);
+    // Only the log's tail, and only its notices: a long chat does not hold up the start,
+    // and one that cannot be read leaves nothing to resolve.
+    config.outstanding_notices =
+        outstanding_sticky_notices(&log::notice_tail(&chat.dir, log::NOTICE_TAIL));
     let (events, receiver) = mpsc::channel();
     let reader = {
         let chat = chat.clone();
