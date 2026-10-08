@@ -4342,6 +4342,7 @@ impl Workspace {
             remote_service::select(None, cx);
         }
         self.project_id = project.id;
+        self.strip_scrolls.borrow_mut().clear();
         self.project_settings_panel = None;
         self.schedule_panel = None;
         self.pending_automation_chat = None;
@@ -4379,6 +4380,7 @@ impl Workspace {
         }
         self.restore_layout = None;
         self.project_id = key.to_owned();
+        self.strip_scrolls.borrow_mut().clear();
         self.project_settings_panel = None;
         self.schedule_panel = None;
         self.pending_automation_chat = None;
@@ -8956,10 +8958,13 @@ impl Workspace {
         let account_numbers = codex_account_numbers(&self.shells);
         let tab_can_close = user_close_refusal(pane_locked, UserClose::Tab).is_none();
         // A panel's tab says its name as the theme writes labels; a saved layout keeps
-        // whatever title the tab was created with.
+        // whatever title the tab was created with. The tab strip draws its own tabs, so a
+        // local project builds no titles and, zipped with them below, no pane-bar tabs.
+        let strip = self.uses_tab_strip();
         let titles: Vec<String> = pane
             .tabs
             .iter()
+            .filter(|_| !strip)
             .map(|tab| match tab.panel() {
                 Some(kind) if native => Self::panel_label(kind).to_owned(),
                 _ => match tab.chat().map(|view| view.read(cx).summary()) {
@@ -11277,6 +11282,10 @@ impl Render for Workspace {
         if !cx.has_active_drag() {
             self.drop_target = None;
             self.settle_strip_menu(window, cx);
+            // Closed panes give their strip's scroll state back.
+            self.strip_scrolls
+                .borrow_mut()
+                .retain(|pane, _| self.panes.contains_key(pane));
             if self.tab_dragging
                 && self.panel_menu.is_none()
                 && self.strip_menu.is_none()
@@ -14306,6 +14315,182 @@ mod main_pane_tests {
                 &|id| locked.contains(&id),
             )
         }
+    }
+
+    /// A local project's workspace in a Kit Root window, as the app opens it, with `count`
+    /// chats adopted into one pane after a Files panel.
+    fn strip_workspace(
+        cx: &mut gpui::TestAppContext,
+        count: usize,
+    ) -> (gpui::AnyWindowHandle, Entity<Workspace>, Vec<ChatInfo>, PathBuf, String) {
+        cx.update(|cx| {
+            cx.set_global(Settings::default());
+            cx.set_global(Appearance::resolve(theme::ThemeChoice::Native, false));
+            cx.set_global(settings::CodexAccountsState::default());
+            cx.set_global(RemoteState::default());
+            cx.set_global(AccountUsage::default());
+            cx.set_global(CuaSetupState::default());
+            ui_text::init(cx);
+            tooltip::init(cx);
+        });
+        let home = std::env::temp_dir().join(format!("rw-strip-{}", uuid::Uuid::new_v4()));
+        let project: Project = serde_json::from_value(serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"name":"Fixture","root":home,"created_at":1})).unwrap();
+        let project_id = project.id.clone();
+        let startup = WorkspaceStartup {
+            store: Store::open(&home).unwrap(),
+            layouts: LayoutStore::open(&home).unwrap(),
+            settings_store: SettingsStore::open(&home).unwrap(),
+            sessions: SessionManager::at(home.clone()).unwrap(),
+            state: State {
+                projects: vec![project.clone()],
+                ..Default::default()
+            },
+            project,
+            remote: None,
+        };
+        let chats = (0..count).map(|i| serde_json::from_value::<ChatInfo>(serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"provider":"codex","project_id":project_id,"cwd":"/tmp","title":format!("Chat {i}"),"created_at_unix":i,"state":{"state":"waiting"}})).unwrap()).collect::<Vec<_>>();
+        project_tabs::TabStore::at(&home, &project_id)
+            .unwrap()
+            .reconcile(&chats.iter().map(project_tabs::Session::chat).collect::<Vec<_>>())
+            .unwrap();
+        let (handle, workspace) = crate::form_input::test_window(cx, move |window, cx| {
+            Workspace::build(startup, None, window, cx, false)
+        });
+        let entries_home = home.clone();
+        let entries_project = project_id.clone();
+        let adopted = chats.clone();
+        crate::form_input::test_turn(cx, handle, |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                let entries = project_tabs::TabStore::at(&entries_home, &entries_project)
+                    .unwrap()
+                    .list()
+                    .unwrap();
+                workspace.panes = BTreeMap::from([(1, pane(vec![panel(1, PanelKind::Files)], 0))]);
+                workspace.layout = Layout::Pane(1);
+                workspace.active_pane = 1;
+                workspace.main_pane = Some(1);
+                workspace.locked_panes = Some(HashSet::new());
+                workspace.next_tab_id = 2;
+                workspace.shared_chats = Some(adopted);
+                workspace.shared_tab_keys = entries.iter().map(|e| e.key.clone()).collect();
+                workspace.shared_tabs = Some(entries);
+                // Adoption opens at most sixteen tabs a pass.
+                for _ in 0..(count / 16 + 1) {
+                    workspace.apply_shared_tabs(window, cx);
+                }
+                assert_eq!(workspace.panes[&1].tabs.len(), count + 1);
+            });
+        });
+        (handle, workspace, chats, home, project_id)
+    }
+
+    fn strip_tab_id(workspace: &Entity<Workspace>, key: &str, cx: &mut gpui::TestAppContext) -> TabId {
+        workspace.read_with(cx, |workspace, _| {
+            workspace.panes[&1]
+                .tabs
+                .iter()
+                .find(|tab| session_tab_key(tab).as_deref() == Some(key))
+                .unwrap()
+                .id
+        })
+    }
+
+    /// Whether the tab is drawn wholly inside its strip's visible scrolling area.
+    fn strip_shows(handle: gpui::AnyWindowHandle, tab: TabId, cx: &mut gpui::TestAppContext) -> bool {
+        use gpui_kit::test::TestWindowExt;
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            // The scrolling tabs show between the panel segment and ＋.
+            let panels = window.find(("tab", 1u64)).bounds();
+            let plus = window.find(("strip-new", 1u64)).bounds();
+            let tab = window.find(("tab", tab)).bounds();
+            tab.left() >= panels.right() && tab.right() <= plus.left()
+        })
+        .unwrap()
+    }
+
+    #[gpui::test]
+    fn arrows_stay_inside_an_open_strip_menu_so_escape_closes_it_and_thaws(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui_kit::test::TestWindowExt;
+        let (handle, workspace, _, _, _) = strip_workspace(cx, 2);
+        crate::form_input::test_turn(cx, handle, |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.toggle_strip_menu(1, tab_strip::StripMenuKind::New, window, cx);
+            });
+        });
+        // Four items: Down well past the last one wraps rather than leaving the menu.
+        for _ in 0..7 {
+            crate::form_input::test_turn(cx, handle, |window, cx| window.press("down", cx));
+            cx.update_window(handle, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    assert!(workspace.strip_menu.is_some());
+                    assert!(workspace.menu_focus.contains_focused(window, cx));
+                });
+            })
+            .unwrap();
+        }
+        crate::form_input::test_turn(cx, handle, |window, cx| window.press("up", cx));
+        crate::form_input::test_turn(cx, handle, |window, cx| window.press("escape", cx));
+        workspace.read_with(cx, |workspace, _| {
+            assert!(workspace.strip_menu.is_none());
+            assert!(!workspace.tab_dragging, "the terminals thaw with the menu");
+        });
+    }
+
+    #[gpui::test]
+    fn the_selected_strip_tab_comes_back_into_view_after_a_shared_move_or_rename(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (handle, workspace, chats, home, project_id) = strip_workspace(cx, 24);
+        let key = format!("chat:{}", chats[0].id);
+        let selected = strip_tab_id(&workspace, &key, cx);
+        crate::form_input::test_turn(cx, handle, |window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.select_tab(1, selected, window, cx));
+        });
+        for _ in 0..4 {
+            crate::form_input::test_turn(cx, handle, |_, _| {});
+        }
+        assert!(strip_shows(handle, selected, cx));
+        let last = format!("chat:{}", chats[23].id);
+        assert!(!strip_shows(handle, strip_tab_id(&workspace, &last, cx), cx), "the strip overflows");
+        // A Move from another device takes the selected tab to the end of the strip.
+        project_tabs::TabStore::at(&home, &project_id)
+            .unwrap()
+            .update(&project_tabs::Update::Move { key: key.clone(), before: None })
+            .unwrap();
+        let entries = project_tabs::TabStore::at(&home, &project_id).unwrap().list().unwrap();
+        crate::form_input::test_turn(cx, handle, |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.shared_tabs = Some(entries);
+                workspace.apply_shared_tabs(window, cx);
+            });
+        });
+        for _ in 0..4 {
+            crate::form_input::test_turn(cx, handle, |_, _| {});
+        }
+        assert!(strip_shows(handle, selected, cx), "revealed after the Move");
+        // Renaming a tab before it pushes it further right.
+        let first = format!("chat:{}", chats[1].id);
+        crate::form_input::test_turn(cx, handle, |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace
+                    .change_shared_tab(
+                        &project_tabs::Update::Rename {
+                            key: first.clone(),
+                            title: "A much longer title for the first tab in the strip".into(),
+                        },
+                        window,
+                        cx,
+                    )
+                    .unwrap();
+            });
+        });
+        for _ in 0..4 {
+            crate::form_input::test_turn(cx, handle, |_, _| {});
+        }
+        assert!(strip_shows(handle, selected, cx), "revealed after the rename");
     }
 
     #[gpui::test]

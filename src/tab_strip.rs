@@ -30,8 +30,19 @@ pub(crate) struct StripShape {
     width: i32,
     tabs: usize,
     selected: Option<TabId>,
+    /// Where the selected tab sits among the scrolling tabs, and the width before it: a
+    /// shared Move, a rename or a peer's update can shift it without changing the rest.
+    position: Option<usize>,
+    lead: i32,
     /// Frames left to keep the selected tab in view after a change.
     settling: u8,
+}
+
+impl StripShape {
+    fn same_place(&self, other: &Self) -> bool {
+        (self.width, self.tabs, self.selected, self.position, self.lead)
+            == (other.width, other.tabs, other.selected, other.position, other.lead)
+    }
 }
 
 /// Height of a strip tab: the chat header's capsule (10 pt text, 3 pt padding, hairline).
@@ -491,18 +502,20 @@ impl Workspace {
             entry.1 = pins_scroll;
             // The selected tab comes into view when the strip changes width or contents,
             // or another tab is selected; otherwise the strip stays where it was scrolled.
+            let position = sessions.iter().position(|index| *index == pane.active);
             let shape = StripShape {
                 width: room.round() as i32,
                 tabs: sessions.len(),
                 selected: pane.tabs.get(pane.active).map(|tab| tab.id),
+                position,
+                lead: position.map_or(0, |at| {
+                    sessions[..at].iter().map(|i| width(*i)).sum::<f32>().round() as i32
+                }),
                 settling: 0,
             };
             // GPUI measures against the previous frame, so the request is repeated for the
             // frames that settle the strip's layout after a change.
-            if entry.2.width != shape.width
-                || entry.2.tabs != shape.tabs
-                || entry.2.selected != shape.selected
-            {
+            if !entry.2.same_place(&shape) {
                 entry.2 = StripShape {
                     settling: 3,
                     ..shape
@@ -1165,12 +1178,14 @@ impl Workspace {
                             workspace.close_strip_menu(window, cx);
                             cx.stop_propagation();
                         }
-                        "down" => {
-                            window.focus_next(cx);
-                            cx.stop_propagation();
-                        }
-                        "up" => {
-                            window.focus_prev(cx);
+                        // The Kit Root's trapped traversal: focus wraps inside the menu, so
+                        // Escape always reaches it.
+                        "down" | "up" => {
+                            crate::project_settings::modal_tab(
+                                event.keystroke.key == "up",
+                                window,
+                                cx,
+                            );
                             cx.stop_propagation();
                         }
                         _ => {}
