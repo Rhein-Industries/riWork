@@ -4,7 +4,8 @@
 //! contract the phone shares.
 //!
 //! One banner per key: a notice's `kind`, else its text (a log written before `kind`
-//! existed repeats the same notice under new ids); a tab error's `LocalKey`. A newer
+//! existed repeats the same notice under new ids), or the kind a newer notice with that
+//! text has; a tab error's `LocalKey`. A newer
 //! notice of a kind replaces the older one's banner, a resolved one takes it away, and a
 //! dismissed one stays away until the kind comes again as a new item.
 
@@ -212,11 +213,27 @@ fn ranked_provider_banners(
         .iter()
         .rposition(|item| matches!(item.body, ItemBody::UserMessage { .. }))
         .unwrap_or(0);
+    // A kind-less notice whose text a kinded one also has is that kind's older entry.
+    let kinds: HashMap<&str, &str> = transcript
+        .items
+        .iter()
+        .filter_map(|item| match &item.body {
+            ItemBody::Notice {
+                kind: Some(kind),
+                text,
+                ..
+            } => Some((text.as_str(), kind.as_str())),
+            _ => None,
+        })
+        .collect();
     // The newest notice of each key.
     let mut newest: HashMap<String, usize> = HashMap::new();
     for (at, item) in transcript.items.iter().enumerate() {
         if let ItemBody::Notice { kind, text, .. } = &item.body {
-            let key = match kind {
+            let key = match kind
+                .as_deref()
+                .or_else(|| kinds.get(text.as_str()).copied())
+            {
                 Some(kind) => format!("kind:{kind}"),
                 None => format!("text:{text}"),
             };
@@ -381,7 +398,8 @@ mod tests {
         ]);
         let shown = provider_banners(&t, &HashSet::new(), 0);
         let ids: Vec<&str> = shown.iter().map(|b| b.id.as_str()).collect();
-        assert_eq!(ids, ["old3", "r2", "l2", "x2"]);
+        // `close` is also the text of a `rate_limit:seven_day` notice: one banner, the newest.
+        assert_eq!(ids, ["old3", "r2", "x2"]);
     }
 
     #[test]
