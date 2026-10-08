@@ -232,6 +232,52 @@ pub fn read_transcript(home: &Path, id: &str) -> Result<super::model::Transcript
     Ok(transcript)
 }
 
+/// How far back a starting driver looks for notices it must be able to resolve.
+pub const NOTICE_TAIL: u64 = 2 << 20;
+
+/// The notices in the last `max` bytes of the log in `dir`, folded oldest first, so a
+/// starting driver finds what is still outstanding without reading a long chat whole.
+/// A log that cannot be read has none.
+pub fn notice_tail(dir: &Path, max: u64) -> super::model::Transcript {
+    let mut transcript = super::model::Transcript::default();
+    let Ok(mut file) = File::open(dir.join(EVENTS)) else {
+        return transcript;
+    };
+    let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+        return transcript;
+    };
+    let start = length.saturating_sub(max);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return transcript;
+    }
+    let mut reader = BufReader::new(file.take(max));
+    let mut line = Vec::new();
+    if start > 0 && reader.skip_until(b'\n').is_err() {
+        return transcript;
+    }
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        // Only notice lines are parsed; the rest of a long chat is skipped as bytes.
+        if line.last() != Some(&b'\n') || !contains(&line, br#""type":"notice""#) {
+            continue;
+        }
+        if let Ok(envelope) = serde_json::from_slice::<Envelope>(&line) {
+            transcript.apply(&envelope.event);
+        }
+    }
+    transcript
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
 // Snapshot v1 reads one immutable prefix without contacting or upgrading the host.
 // Explicit limits fail closed: never return a partial item or advance past omitted state.
 const SNAPSHOT_FILE_MAX: u64 = 128 << 20;
@@ -775,6 +821,7 @@ mod tests {
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
+    use crate::chat::model::{ItemBody, NoticeLevel};
     use serde_json::json;
     struct Fixture {
         home: PathBuf,
@@ -820,6 +867,77 @@ mod snapshot_tests {
             let _ = fs::remove_dir_all(&self.home);
         }
     }
+    #[test]
+    fn a_starting_driver_reads_only_the_notices_in_the_tail_of_a_large_log() {
+        let mut f = Fixture::new();
+        let notice = |id: &str, text: &str| {
+            json!({"event":"item_completed","item":{"id":id,"status":"completed","body":{
+                "type":"notice","level":"error","text":text,"kind":"auth_required"}}})
+        };
+        f.event(notice("early", "beyond the tail"));
+        // About 8 MB of ordinary rows, four times the tail.
+        let filler = "x".repeat(4000);
+        for n in 0..2000 {
+            f.row(&format!("row-{n}"), &filler);
+        }
+        f.event(notice("late", "in the tail"));
+        f.row("after", "the last row");
+        assert!(fs::metadata(f.dir.join(EVENTS)).unwrap().len() > 3 * NOTICE_TAIL);
+        let tail = notice_tail(&f.dir, NOTICE_TAIL);
+        let ids: Vec<_> = tail.items.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, ["late"], "only notices, only from the tail");
+        // A missing log has none.
+        assert!(
+            notice_tail(&f.dir.join("missing"), NOTICE_TAIL)
+                .items
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn notice_kinds_survive_the_log_the_transcript_and_the_snapshot() {
+        let mut f = Fixture::new();
+        // As a driver writes it, and as a log from before `kind` has it.
+        f.event(
+            json!({"event":"item_completed","item":{"id":"n1","status":"completed","body":{
+            "type":"notice","level":"warning","text":"close","kind":"rate_limit:seven_day",
+            "resolved":true,"resets_at":1767225600}}}),
+        );
+        f.event(
+            json!({"event":"item_completed","item":{"id":"n0","status":"completed","body":{
+            "type":"notice","level":"error","text":"old"}}}),
+        );
+        let transcript = read_transcript(&f.home, &f.id).unwrap();
+        assert_eq!(
+            transcript.items[0].body,
+            ItemBody::Notice {
+                level: NoticeLevel::Warning,
+                text: "close".into(),
+                kind: Some("rate_limit:seven_day".into()),
+                resolved: true,
+                resets_at: Some(1767225600),
+            }
+        );
+        assert_eq!(
+            transcript.items[1].body,
+            ItemBody::notice(NoticeLevel::Error, "old", None)
+        );
+        // The phone gets what `riwork chat snapshot` prints; the relay passes it on as is.
+        let snapshot = serde_json::to_value(f.read(None, u64::MAX, 10)).unwrap();
+        let bodies: Vec<_> = snapshot["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["item"]["body"].clone())
+            .collect();
+        assert!(
+            bodies.contains(&json!({"type":"notice","level":"warning","text":"close",
+            "kind":"rate_limit:seven_day","resolved":true,"resets_at":1767225600}))
+        );
+        // Nothing new is written for a notice without them.
+        assert!(bodies.contains(&json!({"type":"notice","level":"error","text":"old"})));
+    }
+
     #[test]
     fn recent_full_items_controls_and_fixed_history_survive_live_writes() {
         let mut f = Fixture::new();

@@ -258,6 +258,7 @@ fn fake_config(
         effort: info.effort.clone(),
         fast: info.fast,
         resume,
+        outstanding_notices: Default::default(),
         extra_args: Vec::new(),
         env: Vec::new(),
         env_remove: Vec::new(),

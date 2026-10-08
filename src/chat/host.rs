@@ -42,8 +42,8 @@ use super::client;
 use super::driver::{Driver, DriverConfig, StartDriver};
 use super::log::{self, ChatLog};
 use super::model::{
-    ChatCommand, ChatEvent, ChatInfo, ChatState, Decision, NewChat, ORCHESTRATOR_EXISTS,
-    OrchestratorScope, Provider, TurnOutcome,
+    ChatCommand, ChatEvent, ChatInfo, ChatState, Decision, Item, ItemBody, NewChat,
+    ORCHESTRATOR_EXISTS, OrchestratorScope, Provider, Transcript, TurnOutcome, notice_kind,
 };
 use super::wire::{Envelope, Request, Response};
 use fs2::FileExt;
@@ -1335,6 +1335,29 @@ fn delete(shared: &Shared, chat_id: &str) -> Result<(), String> {
 
 // ---- Driving a chat -----------------------------------------------------------------------------
 
+fn outstanding_sticky_notices(transcript: &Transcript) -> HashMap<String, Item> {
+    let mut newest = HashMap::new();
+    for item in &transcript.items {
+        if let ItemBody::Notice {
+            kind: Some(kind), ..
+        } = &item.body
+            && (kind == notice_kind::AUTH_REQUIRED || kind.starts_with("rate_limit:"))
+        {
+            newest.insert(kind.clone(), item.clone());
+        }
+    }
+    newest.retain(|_, item| {
+        matches!(
+            item.body,
+            ItemBody::Notice {
+                resolved: false,
+                ..
+            }
+        )
+    });
+    newest
+}
+
 /// Starts the chat's provider process unless one is running.
 fn ensure_running(shared: &Shared, chat: &Arc<Chat>) -> Result<(), String> {
     let _turn = lock(&chat.lifecycle);
@@ -1367,10 +1390,14 @@ fn ensure_running(shared: &Shared, chat: &Arc<Chat>) -> Result<(), String> {
         over.reap();
     }
     let config = (shared.providers.config)(&shared.home, &info, info.provider_thread_id.clone());
-    let config = match config {
+    let mut config = match config {
         Ok(config) => config,
         Err(error) => return fail_start(chat, generation, error),
     };
+    // Only the log's tail, and only its notices: a long chat does not hold up the start,
+    // and one that cannot be read leaves nothing to resolve.
+    config.outstanding_notices =
+        outstanding_sticky_notices(&log::notice_tail(&chat.dir, log::NOTICE_TAIL));
     let (events, receiver) = mpsc::channel();
     let reader = {
         let chat = chat.clone();

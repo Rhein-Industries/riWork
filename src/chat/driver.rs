@@ -5,7 +5,8 @@
 //! into provider requests. It owns the child process and its reader threads; the
 //! chat host owns the driver, stores the events and fans them out.
 
-use super::model::{ApprovalMode, ChatCommand, ChatEvent, Provider};
+use super::model::{ApprovalMode, ChatCommand, ChatEvent, Item, Provider};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
@@ -24,6 +25,8 @@ pub struct DriverConfig {
     pub fast: bool,
     /// Resume this Codex thread or Claude session instead of starting one.
     pub resume: Option<String>,
+    /// Outstanding sticky notices from earlier driver sessions.
+    pub outstanding_notices: HashMap<String, Item>,
     /// Extra arguments before the driver's own, e.g. Cua MCP configuration.
     pub extra_args: Vec<String>,
     /// Environment to set and to remove (e.g. `CODEX_HOME`; `ANTHROPIC_API_KEY`

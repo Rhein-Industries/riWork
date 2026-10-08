@@ -852,6 +852,17 @@ impl ChatView {
             }
             Menu::More => vec![
                 row(
+                    "chat-notice-history".into(),
+                    format!(
+                        "Notices ({})",
+                        super::notices::count(&self.model.transcript)
+                    ),
+                    Some("Every notice of this chat, dismissed and resolved ones too"),
+                    self.notices.history,
+                )
+                .on_click(cx.listener(|view, _, _, cx| view.toggle_notice_history(cx)))
+                .into_any_element(),
+                row(
                     "hand-off-chat".into(),
                     "Hand off…".into(),
                     Some("Continues this conversation in a new shell or chat"),
@@ -957,8 +968,8 @@ impl ChatView {
     // Above the message box
     // -----------------------------------------------------------------------------------
 
-    /// What the user should know before typing: the chat is stopped or failed, or the last
-    /// command did not get through.
+    /// What the user should know before typing: the chat is stopped or failed, or dictation
+    /// stopped. Notices and the tab's errors are in `notice_stack`, inside the message box's bar.
     fn banner(&self, look: Look, cx: &mut Context<Self>) -> Option<AnyElement> {
         let colors = look.colors;
         // Native leads the line with a symbol of what it says, in the line's color.
@@ -1020,20 +1031,6 @@ impl ChatView {
                         button("chat-dictation-dismiss", "Dismiss", None, look).on_click(
                             cx.listener(|view, _, window, cx| view.dismiss_dictation(window, cx)),
                         ),
-                    )
-                    .into_any_element(),
-            );
-        }
-        if let Some(notice) = &self.notice {
-            return Some(
-                line(notice.clone(), colors.gold)
-                    .child(
-                        button("chat-dismiss", "Dismiss", None, look).on_click(cx.listener(
-                            |view, _, _, cx| {
-                                view.notice = None;
-                                cx.notify();
-                            },
-                        )),
                     )
                     .into_any_element(),
             );
@@ -1561,6 +1558,8 @@ impl ChatView {
                     view.dropped_attachments(paths, window, cx)
                 }),
             )
+            // The notices, inside the bar's inset at the box's width, right above it.
+            .children(self.notice_stack(look, cx))
             // The draft's attachments above the box, a staged image as its thumbnail, inside
             // the bar's inset.
             .children((!self.attachments.is_empty()).then(|| {

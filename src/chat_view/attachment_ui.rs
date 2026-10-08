@@ -212,7 +212,11 @@ impl ChatView {
                 Ok(Ok(None)) => {}
                 other => {
                     let _ = this.update(cx, |view, cx| {
-                        view.notice = Some(format!("Attachment picker: {other:?}"));
+                        view.notices.set(
+                            super::notices::LocalKey::Attachment,
+                            crate::chat::model::NoticeLevel::Error,
+                            format!("Attachment picker: {other:?}"),
+                        );
                         cx.notify();
                     });
                 }
@@ -237,7 +241,11 @@ impl ChatView {
             .any(|e| matches!(e, ClipboardEntry::String(text) if !text.text().is_empty()));
         self.stage_sources(sources, window, cx);
         if mixed {
-            self.notice = Some("Pasted attachments; clipboard text was not inserted.".into());
+            self.notices.set(
+                super::notices::LocalKey::Attachment,
+                crate::chat::model::NoticeLevel::Info,
+                "Pasted attachments; clipboard text was not inserted.",
+            );
         }
         true
     }
@@ -260,6 +268,8 @@ impl ChatView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A picker that failed before has worked now.
+        self.notices.clear(super::notices::LocalKey::Attachment);
         if !self.accepts_input() {
             return;
         }

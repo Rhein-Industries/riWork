@@ -284,10 +284,65 @@ pub enum ItemBody {
     },
     /// The context was compacted here.
     Compaction,
+    /// Something the provider or the driver wants the user to know. Clients show these
+    /// in a banner above the composer, not in the transcript (see docs/chat-notices.md).
     Notice {
         level: NoticeLevel,
         text: String,
+        /// What the notice is about (`notice_kind`): a newer notice of the same kind
+        /// replaces the older one's banner. None for an older log or a one-off.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        /// Its cause has gone (the retry worked, the limit reset): the banner goes,
+        /// the history keeps it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        resolved: bool,
+        /// When the limit the notice is about resets, in Unix seconds, if it says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resets_at: Option<u64>,
     },
+}
+
+impl ItemBody {
+    /// A notice of `kind`, unresolved, with no reset time.
+    pub fn notice(level: NoticeLevel, text: impl Into<String>, kind: Option<&str>) -> Self {
+        Self::Notice {
+            level,
+            text: text.into(),
+            kind: kind.map(str::to_owned),
+            resolved: false,
+            resets_at: None,
+        }
+    }
+}
+
+/// The stable `kind` values of `ItemBody::Notice`; docs/chat-notices.md lists them for
+/// the phone. A kind with a `:` suffix (`rate_limit:seven_day`) is one per suffix.
+pub mod notice_kind {
+    /// `rate_limit:<window>`, the window as the provider names it.
+    pub const RATE_LIMIT: &str = "rate_limit";
+    pub const API_RETRY: &str = "api_retry";
+    pub const RECONNECTING: &str = "reconnecting";
+    pub const SILENCE: &str = "silence";
+    pub const TURN_FAILED: &str = "turn_failed";
+    pub const AUTH_REQUIRED: &str = "auth_required";
+    pub const MODEL_FALLBACK: &str = "model_fallback";
+    pub const EFFORT_REFUSED: &str = "effort_refused";
+    pub const OVERSIZED_LINE: &str = "oversized_line";
+    pub const FAST_MODE: &str = "fast_mode";
+    pub const SETTING_REFUSED: &str = "setting_refused";
+    pub const RESUMED_FRESH: &str = "resumed_fresh";
+    pub const UNDELIVERED: &str = "undelivered";
+    pub const PROVIDER_ERROR: &str = "provider_error";
+    pub const PROVIDER_WARNING: &str = "provider_warning";
+    pub const CONFIG_WARNING: &str = "config_warning";
+    pub const MCP_ELICITATION: &str = "mcp_elicitation";
+    pub const DEPRECATION: &str = "deprecation";
+
+    /// `rate_limit:<window>`.
+    pub fn rate_limit(window: &str) -> String {
+        format!("{RATE_LIMIT}:{window}")
+    }
 }
 
 /// Provider intent, distinct from an item's completion (commentary also completes).

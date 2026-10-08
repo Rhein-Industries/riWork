@@ -1414,3 +1414,42 @@ fn ensure_starts_another_host_when_the_one_it_found_was_shutting_down() {
     drop(helper.join().unwrap());
     let _ = fs::remove_dir_all(&home);
 }
+
+#[test]
+fn outstanding_sticky_notices_exclude_resolved_and_superseded_items() {
+    let mut transcript = Transcript::default();
+    for (id, kind, resolved) in [
+        ("auth-old", Some("auth_required"), false),
+        ("auth-new", Some("auth_required"), false),
+        ("weekly-old", Some("rate_limit:seven_day"), false),
+        ("weekly-new", Some("rate_limit:seven_day"), true),
+        ("codex", Some("rate_limit:codex"), false),
+        ("future-window", Some("rate_limit:future_window"), false),
+        ("retry", Some("api_retry"), false),
+        ("one-off", None, false),
+        ("five-hour", Some("rate_limit:five_hour"), false),
+        ("five-hour", Some("rate_limit:five_hour"), true),
+    ] {
+        let mut body = ItemBody::notice(super::super::model::NoticeLevel::Error, "notice", kind);
+        if let ItemBody::Notice {
+            resolved: value, ..
+        } = &mut body
+        {
+            *value = resolved;
+        }
+        transcript.apply(&ChatEvent::ItemCompleted {
+            item: Item {
+                presentation: Default::default(),
+                id: id.into(),
+                turn_id: None,
+                status: ItemStatus::Completed,
+                body,
+            },
+        });
+    }
+    let outstanding = outstanding_sticky_notices(&transcript);
+    assert_eq!(outstanding.len(), 3);
+    assert_eq!(outstanding["auth_required"].id, "auth-new");
+    assert_eq!(outstanding["rate_limit:codex"].id, "codex");
+    assert_eq!(outstanding["rate_limit:future_window"].id, "future-window");
+}

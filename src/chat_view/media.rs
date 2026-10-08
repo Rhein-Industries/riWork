@@ -576,10 +576,8 @@ impl ChatView {
         for slot in self.media.fold_images(keys, &mut self.open) {
             release(slot, cx);
         }
-        if self.notice.as_deref() == Some(OPEN_LIMIT)
-            && self.open.iter().filter(|id| id.contains("image")).count() < OPEN
-        {
-            self.notice = None;
+        if self.open.iter().filter(|id| id.contains("image")).count() < OPEN {
+            self.notices.clear(super::notices::LocalKey::Media);
         }
     }
 
@@ -714,7 +712,11 @@ impl ChatView {
         self.list.pause_following_tail();
         if !self.open.remove(&key) {
             if self.open.iter().filter(|id| id.contains("image")).count() >= OPEN {
-                self.notice = Some(OPEN_LIMIT.into());
+                self.notices.set(
+                    super::notices::LocalKey::Media,
+                    crate::chat::model::NoticeLevel::Info,
+                    OPEN_LIMIT,
+                );
             } else {
                 self.open.insert(key.clone());
                 self.media.queue.push_back((key, image));

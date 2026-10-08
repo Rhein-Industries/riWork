@@ -317,7 +317,7 @@ impl ChatView {
                 ))
                 .child(div().flex_1().h(px(1.0)).bg(rgb(colors.divider)))
                 .into_any_element(),
-            ItemBody::Notice { level, text } if look.native => {
+            ItemBody::Notice { level, text, .. } if look.native => {
                 let color = look.tone(cards::notice_tone(*level));
                 div()
                     .w_full()
@@ -342,7 +342,7 @@ impl ChatView {
                     )))
                     .into_any_element()
             }
-            ItemBody::Notice { level, text } => div()
+            ItemBody::Notice { level, text, .. } => div()
                 .w_full()
                 .text_size(ui_text::text(11.0))
                 .text_color(rgb(look.tone(cards::notice_tone(*level))))

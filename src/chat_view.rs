@@ -29,7 +29,8 @@ use crate::{
     chat::{
         client::Client,
         model::{
-            ApprovalMode, ChatCommand, ChatInfo, Decision, ItemBody, NewChat, Provider, Question,
+            ApprovalMode, ChatCommand, ChatInfo, Decision, ItemBody, NewChat, NoticeLevel,
+            Provider, Question,
         },
     },
     text_input::{self, EnterBehavior, InputEvent, InputState, TextareaState},
@@ -45,6 +46,8 @@ mod dictate;
 mod diff;
 mod display;
 #[cfg(test)]
+mod draft_tests;
+#[cfg(test)]
 mod editor_tests;
 mod editors;
 mod feed;
@@ -52,6 +55,10 @@ mod host;
 mod links;
 mod markdown;
 mod media;
+#[cfg(test)]
+mod notice_tests;
+mod notice_ui;
+mod notices;
 mod panels;
 mod prose;
 mod rows;
@@ -90,6 +97,8 @@ pub enum ChatViewEvent {
     OpenFile {
         target: String,
     },
+    /// A usage-limit notice's **Show usage** was pressed.
+    ShowUsage,
 }
 
 impl EventEmitter<ChatViewEvent> for ChatView {}
@@ -189,8 +198,10 @@ pub struct ChatView {
     /// Requests this tab already answered, until the host says they are resolved.
     answered: HashSet<String>,
     drafts: HashMap<String, Draft>,
-    /// A line about something that went wrong, until it is dismissed.
-    notice: Option<String>,
+    /// The banners above the message box: the provider's notices and this tab's errors.
+    notices: notices::Notices,
+    /// The redraw due when a shown limit resets (`schedule_notice_expiry`), and when.
+    notice_expiry: Option<(u64, Task<()>)>,
     /// The copy button that was just pressed, until it is forgotten.
     copied: Option<String>,
     forget_copy: Option<Task<()>>,
@@ -227,6 +238,7 @@ impl ChatView {
     ) -> Self {
         let mut view = Self::blank(config, window, cx);
         view.chat_id = Some(chat_id.clone());
+        view.restore_draft(window, cx);
         view.follow_display_setting(cx);
         view.start_feed(chat_id, 0, window, cx);
         view
@@ -317,7 +329,8 @@ impl ChatView {
             open: HashSet::new(),
             answered: HashSet::new(),
             drafts: HashMap::new(),
-            notice: None,
+            notices: notices::Notices::default(),
+            notice_expiry: None,
             copied: None,
             forget_copy: None,
             caches: RefCell::new(Caches::default()),
@@ -404,6 +417,8 @@ impl ChatView {
         match result {
             Ok(info) => {
                 self.chat_id = Some(info.id.clone());
+                // What was typed while the host made the chat is its first draft.
+                self.remember_draft(cx);
                 if let Some(mode) = self.pending_display.take() {
                     self.choose_display(mode, cx);
                 } else {
@@ -463,10 +478,22 @@ impl ChatView {
         let mut events = Vec::new();
         for message in batch {
             match message {
-                FeedMsg::Events(mut more) => events.append(&mut more),
+                FeedMsg::Events(mut more) => {
+                    if !more.is_empty() {
+                        self.notices.clear(notices::LocalKey::Link);
+                    }
+                    events.append(&mut more)
+                }
                 FeedMsg::Link(link) => {
                     self.model.link = link;
+                    // The host answers again: an error about reaching it is over.
+                    if link == Link::Live {
+                        self.notices.clear(notices::LocalKey::Link);
+                    }
                     if link == Link::Deleted {
+                        if let Some(id) = &self.chat_id {
+                            crate::chat_drafts::forget(id, cx);
+                        }
                         self.transcript_selection.retire(self.window_handle, cx);
                         self.feed = None;
                     }
@@ -480,7 +507,11 @@ impl ChatView {
                 }
                 FeedMsg::AttachmentSubmission { result, .. } => {
                     if let Err(error) = result {
-                        self.notice = Some(error.to_string());
+                        self.notices.set(
+                            notices::LocalKey::Send,
+                            NoticeLevel::Error,
+                            error.to_string(),
+                        );
                     }
                 }
                 FeedMsg::CommandFailed { command, error } => {
@@ -489,6 +520,8 @@ impl ChatView {
             }
         }
         let applied = self.model.apply(&events);
+        self.notices.observe(self.model.transcript.items.len());
+        self.schedule_notice_expiry(cx);
         self.sync_list(&applied, cx);
         self.forget_settled();
         self.ready_inputs(window, cx);
@@ -619,11 +652,13 @@ impl ChatView {
             })
         }) {
             Ok(settings) => {
+                self.notices.clear(notices::LocalKey::Settings);
                 cx.set_global(settings);
                 self.follow_display_setting(cx);
             }
             Err(error) => {
-                self.notice = Some(error);
+                self.notices
+                    .set(notices::LocalKey::Settings, NoticeLevel::Error, error);
                 cx.notify();
             }
         }
@@ -665,7 +700,11 @@ impl ChatView {
     fn command(&mut self, command: ChatCommand) {
         match &self.feed {
             Some(feed) => feed.send(command),
-            None => self.notice = Some("Not connected to the chat yet.".to_owned()),
+            None => self.notices.set(
+                notices::LocalKey::Link,
+                NoticeLevel::Warning,
+                "Not connected to the chat yet.",
+            ),
         }
     }
 
@@ -676,7 +715,11 @@ impl ChatView {
             }
             _ => {}
         }
-        self.notice = Some(format!("Could not reach the chat: {error}"));
+        self.notices.set(
+            notices::LocalKey::Link,
+            NoticeLevel::Error,
+            format!("Could not reach the chat: {error}"),
+        );
     }
 
     fn interrupt(&mut self, cx: &mut Context<Self>) {
@@ -774,6 +817,7 @@ impl ChatView {
             return;
         };
         self.menu = None;
+        self.notices.clear(notices::LocalKey::Delete);
         let ensure = self.config.ensure.clone();
         let work = cx.background_executor().spawn(async move {
             let socket = ensure()?;
@@ -781,15 +825,28 @@ impl ChatView {
         });
         self.working = Some(cx.spawn(async move |this, cx| {
             let result = work.await;
-            let _ = this.update(cx, |view, cx| match result {
-                Ok(()) => cx.emit(ChatViewEvent::Close),
-                Err(error) => {
-                    view.notice = Some(format!("Could not delete the chat: {error}"));
-                    cx.notify();
-                }
-            });
+            let _ = this.update(cx, |view, cx| view.delete_result(result, cx));
         }));
         cx.notify();
+    }
+
+    fn delete_result(&mut self, result: Result<(), String>, cx: &mut Context<Self>) {
+        match result {
+            Ok(()) => {
+                if let Some(id) = &self.chat_id {
+                    crate::chat_drafts::forget(id, cx);
+                }
+                cx.emit(ChatViewEvent::Close);
+            }
+            Err(error) => {
+                self.notices.set(
+                    notices::LocalKey::Delete,
+                    NoticeLevel::Error,
+                    format!("Could not delete the chat: {error}"),
+                );
+                cx.notify();
+            }
+        }
     }
 
     /// Copy what an item holds: a message's text, or a command's output as it shows on screen.

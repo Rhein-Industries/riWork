@@ -2,12 +2,12 @@
 use super::{
     ChatView,
     attachment_draft::{Draft, Status, Submission},
-    panels,
+    notices, panels,
 };
 use crate::{
     chat::{
         client::CallError,
-        model::{ChatCommand, Question},
+        model::{ChatCommand, NoticeLevel, Question},
     },
     text_input::{self, EnterBehavior, InputEvent, InputState, TextareaState},
 };
@@ -92,6 +92,30 @@ impl ChatView {
                 .collect(),
         }
     }
+    /// Bring back what the chat's message box held when its tab closed or the app quit
+    /// (`chat_drafts`), unless something was typed meanwhile.
+    pub(super) fn restore_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = self
+            .chat_id
+            .as_deref()
+            .and_then(|id| crate::chat_drafts::draft(id, cx))
+        else {
+            return;
+        };
+        if self.composer_text(cx).is_empty() {
+            self.composer
+                .update(cx, |state, cx| state.set_value(text, window, cx));
+            self.bump_generation();
+        }
+    }
+    /// Keep the message box's text as the chat's draft. `set_value` sends no Change, so
+    /// the code that sets the composer calls this too.
+    pub(super) fn remember_draft(&self, cx: &mut Context<Self>) {
+        if let Some(id) = self.chat_id.clone() {
+            let text = self.composer_text(cx);
+            crate::chat_drafts::remember(&id, &text, cx);
+        }
+    }
     pub(super) fn bump_generation(&mut self) {
         self.editor_generation = self
             .editor_generation
@@ -114,6 +138,7 @@ impl ChatView {
                 } else {
                     self.dictation.user_edited();
                 }
+                self.remember_draft(cx);
                 cx.notify();
             }
             InputEvent::Focus => {
@@ -252,7 +277,11 @@ impl ChatView {
             return;
         }
         if self.dictation.phase().is_active() {
-            self.notice = Some("Finish dictation before sending the draft.".into());
+            self.notices.set(
+                notices::LocalKey::Send,
+                NoticeLevel::Warning,
+                "Finish dictation before sending the draft.",
+            );
             cx.notify();
             return;
         }
@@ -261,8 +290,10 @@ impl ChatView {
             .iter()
             .any(|chip| chip.attachment().is_none())
         {
-            self.notice = Some(
-                "Wait for staging, or remove the attachment with an error before sending.".into(),
+            self.notices.set(
+                notices::LocalKey::Send,
+                NoticeLevel::Warning,
+                "Wait for staging, or remove the attachment with an error before sending.",
             );
             cx.notify();
             return;
@@ -272,7 +303,7 @@ impl ChatView {
                 && s.generation == self.editor_generation
                 && matches!(s.status, Status::Refused(_) | Status::Uncertain(_))
         }) {
-            self.notice = Some("Review the saved submission below. Inspect the transcript before explicitly resending.".into());
+            self.notices.set(notices::LocalKey::Send, NoticeLevel::Warning, "Review the saved submission below. Inspect the transcript before explicitly resending.");
             cx.notify();
             return;
         }
@@ -306,11 +337,20 @@ impl ChatView {
         let command = submission
             .command()
             .expect("a new snapshot is undispatched");
+        let sent = submission.snapshot.text.clone();
         self.submissions.push(submission);
         self.pending_submission = Some(id);
         self.sent_at = Some(Instant::now());
-        self.notice = None;
+        // What went wrong with the last draft is over once a new one goes out.
+        self.notices.clear(notices::LocalKey::Send);
+        self.notices.clear(notices::LocalKey::Attachment);
         self.list.set_follow_mode(gpui::FollowMode::Tail);
+        // Another window of the chat may have saved newer text: only what is sent goes.
+        if editor == self.composer.entity_id().as_u64() && generation == self.editor_generation {
+            if let Some(id) = &self.chat_id {
+                crate::chat_drafts::clear_sent(id, &sent, cx);
+            }
+        }
         let result = self
             .feed
             .as_ref()
@@ -349,6 +389,7 @@ impl ChatView {
         self.composer.update(cx, |state, cx| {
             state.set_value(saved.snapshot.text, window, cx)
         });
+        self.remember_draft(cx);
         self.release_attachment_previews(cx);
         self.attachments = saved
             .snapshot
@@ -396,7 +437,11 @@ impl ChatView {
                         error: error.clone(),
                     },
                 );
-                self.notice = Some(format!("Answer submission: {error}"));
+                self.notices.set(
+                    notices::LocalKey::Answer,
+                    NoticeLevel::Error,
+                    format!("Answer submission: {error}"),
+                );
             }
             // Answers and choices are retained until RequestResolved, even on success.
             cx.notify();
@@ -408,6 +453,7 @@ impl ChatView {
         if submission.status != Status::Pending || command != submission.expected_command() {
             return;
         }
+        let sent = submission.snapshot.text.clone();
         let clear = submission.settle(
             self.composer.entity_id().as_u64(),
             self.editor_generation,
@@ -419,11 +465,15 @@ impl ChatView {
         if clear {
             self.composer
                 .update(cx, |state, cx| state.set_value("", window, cx));
+            if let Some(id) = &self.chat_id {
+                crate::chat_drafts::clear_sent(id, &sent, cx);
+            }
             self.attachments.clear();
             self.bump_generation();
         }
         if let Err(error) = result {
-            self.notice = Some(match error {
+            self.remember_draft(cx);
+            self.notices.set(notices::LocalKey::Send, NoticeLevel::Error, match error {
                 CallError::Refused(error) => {
                     format!("Submission refused: {error}. Your draft is retained.")
                 }
@@ -541,7 +591,11 @@ impl ChatView {
             &self.typed_answers(question, cx),
         );
         if answers.iter().any(Vec::is_empty) {
-            self.notice = Some("Answer every question first.".into());
+            self.notices.set(
+                notices::LocalKey::Answer,
+                NoticeLevel::Warning,
+                "Answer every question first.",
+            );
             cx.notify();
             return;
         }
@@ -556,8 +610,10 @@ impl ChatView {
                 failure.snapshot.command == command && matches!(failure.error, CallError::Broken(_))
             })
         {
-            self.notice = Some(
-                "Inspect the transcript before explicitly resending the saved answers.".into(),
+            self.notices.set(
+                notices::LocalKey::Answer,
+                NoticeLevel::Warning,
+                "Inspect the transcript before explicitly resending the saved answers.",
             );
             cx.notify();
             return;
@@ -588,12 +644,17 @@ impl ChatView {
             .and_then(|feed| feed.submit(id, command.clone()));
         match result {
             Ok(()) => {
+                self.notices.clear(notices::LocalKey::Answer);
                 self.answered.insert(request.clone());
                 self.answer_submissions.insert(id, snapshot);
                 self.answer_failures.remove(&request);
             }
             Err(error) => {
-                self.notice = Some(error.to_string());
+                self.notices.set(
+                    notices::LocalKey::Answer,
+                    NoticeLevel::Error,
+                    error.to_string(),
+                );
                 self.answer_failures
                     .insert(request, AnswerFailure { snapshot, error });
             }

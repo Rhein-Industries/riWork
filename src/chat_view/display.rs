@@ -1,7 +1,5 @@
 //! A projection of the complete transcript. Item completion alone never means final.
-use crate::chat::model::{
-    ItemBody, ItemStatus, MessagePhase, NoticeLevel, Transcript, TurnOutcome,
-};
+use crate::chat::model::{ItemBody, ItemStatus, MessagePhase, Transcript, TurnOutcome};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -108,6 +106,18 @@ pub(super) fn remap_anchor(
             _ => None,
         })
         .collect::<Vec<_>>();
+    // A hidden item of a turn that shows no outcome (a notice after the answer) stays on
+    // the last row of its own turn before it, not the next turn's user message.
+    if let Some(at) = completed.iter().position(|(_, _, end)| *end > index) {
+        let start = at.checked_sub(1).map_or(0, |before| completed[before].2);
+        if let Some((row, _)) = positions
+            .iter()
+            .rev()
+            .find(|(_, item)| (start..=index).contains(item))
+        {
+            return Some(*row);
+        }
+    }
     positions
         .iter()
         .find(|(_, at)| *at >= index)
@@ -175,6 +185,11 @@ pub(super) fn rows(
         .chain(usable_explicit)
         .collect();
     let visible = |at: usize, item: &crate::chat::model::Item| {
+        // Notices are the banners above the message box (docs/chat-notices.md); Verbose
+        // keeps them in place as the whole record.
+        if matches!(item.body, ItemBody::Notice { .. }) {
+            return false;
+        }
         let recovered = technical(item)
             && item
                 .turn_id
@@ -182,13 +197,6 @@ pub(super) fn rows(
                 .is_some_and(|turn| done.contains(turn) && final_turns.contains(turn));
         waiting_message == Some(at)
             || matches!(item.body, ItemBody::UserMessage { .. })
-            || matches!(
-                item.body,
-                ItemBody::Notice {
-                    level: NoticeLevel::Warning | NoticeLevel::Error,
-                    ..
-                }
-            )
             || (!recovered
                 && matches!(
                     item.status,
@@ -251,7 +259,9 @@ pub(super) fn rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::model::{ChatEvent, ChatImage, ChatState, ImageSource, Item, Presentation};
+    use crate::chat::model::{
+        ChatEvent, ChatImage, ChatState, ImageSource, Item, NoticeLevel, Presentation,
+    };
     use crate::chat::wire::Envelope;
     use crate::chat_view::state::ChatModel;
     fn item(id: &str, phase: Option<MessagePhase>, body: ItemBody) -> Item {
@@ -465,18 +475,12 @@ mod tests {
             item(
                 "warning",
                 None,
-                ItemBody::Notice {
-                    level: NoticeLevel::Warning,
-                    text: "Review permissions".into(),
-                },
+                ItemBody::notice(NoticeLevel::Warning, "Review permissions", None),
             ),
             item(
                 "error",
                 None,
-                ItemBody::Notice {
-                    level: NoticeLevel::Error,
-                    text: "Action required".into(),
-                },
+                ItemBody::notice(NoticeLevel::Error, "Action required", None),
             ),
         ];
         t.items[2].status = ItemStatus::Failed;
@@ -486,7 +490,8 @@ mod tests {
                 &[("turn".into(), TurnOutcome::Completed, 4)],
                 DisplayMode::Normal
             ),
-            vec![Row::Item(1), Row::Item(2), Row::Item(3)]
+            // The notices are banners, failed or not.
+            vec![Row::Item(1)]
         );
         // A final whose only image is unavailable is not a usable answer.
         t.items[1] = with_image(text("", Some(MessagePhase::Final)));
@@ -500,6 +505,34 @@ mod tests {
                 DisplayMode::Normal
             )
             .contains(&Row::Item(0))
+        );
+    }
+
+    #[test]
+    fn a_notice_after_the_answer_keeps_its_turn_when_it_is_hidden() {
+        let mut t = Transcript::default();
+        t.items = vec![
+            text("ask", None),
+            text("Answer", Some(MessagePhase::Final)),
+            item(
+                "warning",
+                None,
+                ItemBody::notice(NoticeLevel::Warning, "close to a limit", None),
+            ),
+            text("next", None),
+        ];
+        t.items[0].body = ItemBody::UserMessage { text: "ask".into() };
+        t.items[3].body = ItemBody::UserMessage {
+            text: "next".into(),
+        };
+        t.items[3].turn_id = Some("turn-2".into());
+        let completed = vec![("turn".into(), TurnOutcome::Completed, 3)];
+        let normal = rows(&t, &completed, DisplayMode::Normal);
+        assert_eq!(normal, vec![Row::Item(0), Row::Item(1), Row::Item(3)]);
+        assert_eq!(
+            remap_anchor(&Row::Item(2), &normal, &completed),
+            Some(1),
+            "the answer above it, not the next message"
         );
     }
 

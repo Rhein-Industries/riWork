@@ -4,6 +4,7 @@ mod appearance_file;
 mod appearance_sync;
 mod behavior_controls;
 mod chat;
+mod chat_drafts;
 mod chat_view;
 mod cli;
 mod cli_agents;
@@ -6689,6 +6690,9 @@ impl Workspace {
             ChatViewEvent::OpenFile { target } => {
                 self.open_chat_file(view.clone(), target.clone(), window, cx)
             }
+            ChatViewEvent::ShowUsage => {
+                self.open_panel(PanelKind::Usage, self.active_pane, window, cx)
+            }
         }
     }
 
@@ -10466,7 +10470,36 @@ impl Render for Workspace {
                                 .shadow_md()
                         })
                     })
-                    .child(notice.clone())
+                    .flex()
+                    .items_start()
+                    .gap(ui_text::space(6.0))
+                    .child(div().flex_1().min_w_0().child(notice.clone()))
+                    // Every notice closes: × or, while × has the focus, Esc.
+                    .child(
+                        behavior_controls::toolbar_button(
+                            "workspace-notice-close",
+                            "xmark",
+                            "Dismiss",
+                            true,
+                            colors,
+                        )
+                        // The keys go back to the active tab, not to the gone ×.
+                        .on_click(cx.listener(|workspace, _, window, cx| {
+                            workspace.notice = None;
+                            workspace.focus_active(window, cx);
+                            cx.notify();
+                        }))
+                        .on_key_down(cx.listener(
+                            |workspace, event: &KeyDownEvent, window, cx| {
+                                if event.keystroke.key == "escape" {
+                                    cx.stop_propagation();
+                                    workspace.notice = None;
+                                    workspace.focus_active(window, cx);
+                                    cx.notify();
+                                }
+                            },
+                        )),
+                    )
             }))
             .children(
                 cx.has_active_drag()
@@ -11408,6 +11441,7 @@ fn main() {
         ui_text::init(cx);
         text_input::init(cx);
         behavior_controls::init(cx);
+        chat_drafts::init(&state_home, cx);
         // After both globals exist: publishes now and again on every change.
         appearance_sync::start(state_home, cx);
         settings::refresh_codex_accounts(cx);

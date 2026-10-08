@@ -92,7 +92,7 @@ impl Run {
             .items
             .into_iter()
             .filter_map(|item| match item.body {
-                ItemBody::Notice { level, text } => Some((level, text)),
+                ItemBody::Notice { level, text, .. } => Some((level, text)),
                 _ => None,
             })
             .collect()
@@ -543,6 +543,12 @@ fn resuming_a_thread_codex_never_saved_opens_a_new_one_and_says_so() {
     assert_eq!(notices.len(), 1);
     assert_eq!(notices[0].0, NoticeLevel::Info);
     assert!(notices[0].1.contains("thread-9"), "{notices:?}");
+
+    assert_notice(
+        &completed_notices(&run.seen)[0],
+        notice_kind::RESUMED_FRESH,
+        false,
+    );
     run.end();
 }
 
@@ -806,8 +812,11 @@ fn plans_tools_searches_and_file_changes_map_to_items() {
     assert_eq!(
         run.item("retry-turn-1").body,
         ItemBody::Notice {
-            level: NoticeLevel::Warning,
-            text: "Reconnecting 1/5".into()
+            level: NoticeLevel::Info,
+            text: "Reconnected.".into(),
+            kind: Some(notice_kind::RECONNECTING.into()),
+            resolved: true,
+            resets_at: None
         }
     );
     run.end();
@@ -836,10 +845,11 @@ fn a_failed_turn_says_why_once() {
         .collect();
     assert_eq!(
         notices,
-        vec![ItemBody::Notice {
-            level: NoticeLevel::Error,
-            text: "usage limit reached\ntry later".into()
-        }]
+        vec![ItemBody::notice(
+            NoticeLevel::Error,
+            "usage limit reached\ntry later",
+            Some(notice_kind::PROVIDER_ERROR.into())
+        )]
     );
     run.end();
 }
@@ -854,7 +864,7 @@ fn an_oversized_line_is_skipped_with_a_notice_and_the_turn_goes_on() {
         .items
         .iter()
         .find_map(|item| match &item.body {
-            ItemBody::Notice { level, text } => Some((*level, text.clone())),
+            ItemBody::Notice { level, text, .. } => Some((*level, text.clone())),
             _ => None,
         })
         .expect("a notice");
@@ -870,6 +880,12 @@ fn an_oversized_line_is_skipped_with_a_notice_and_the_turn_goes_on() {
         }
     );
     assert_eq!(run.item("msg-1").status, ItemStatus::Completed);
+
+    assert_notice(
+        &completed_notices(&run.seen)[0],
+        notice_kind::OVERSIZED_LINE,
+        false,
+    );
     run.end();
 }
 
@@ -1269,6 +1285,12 @@ fn the_listed_models_come_as_an_event_from_every_page_and_fast_and_efforts_follo
         notices[1].contains("plain-model") && notices[1].contains("max"),
         "{notices:?}"
     );
+
+    assert_notice(
+        &completed_notices(&run.seen)[0],
+        notice_kind::EFFORT_REFUSED,
+        false,
+    );
     run.end();
 }
 
@@ -1320,6 +1342,7 @@ fn live_codex_answers_a_trivial_prompt() {
         effort: None,
         fast: false,
         resume: None,
+        outstanding_notices: Default::default(),
         extra_args: Vec::new(),
         env: Vec::new(),
         env_remove: Vec::new(),
@@ -1375,4 +1398,403 @@ fn provider_phase_and_real_image_payload_reach_the_log_without_raw_bitmap_text()
     assert!(
         matches!(&transcript.items[1].body, ItemBody::ToolCall { output: Some(output), .. } if !output.contains("aGVsbG8="))
     );
+}
+
+fn completed_notices(events: &[ChatEvent]) -> Vec<Item> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            ChatEvent::ItemCompleted { item } if matches!(item.body, ItemBody::Notice { .. }) => {
+                Some(item.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn assert_notice(item: &Item, expected: &str, resolved: bool) {
+    assert!(
+        matches!(&item.body, ItemBody::Notice {kind: Some(kind), resolved: actual, ..}
+        if kind == expected && *actual == resolved),
+        "{item:?}"
+    );
+}
+
+#[test]
+fn reconnecting_updates_and_resolves_on_items_or_completion_for_its_turn() {
+    let fake = Fake::new(&[]);
+    let (sender, events) = mpsc::channel();
+    let mut session = Session::new(&fake.config(Provider::Codex), sender);
+    session.begin_turn("turn-1");
+    for attempt in [1, 2] {
+        session.notification(
+            "error",
+            &json!({"turnId":"turn-1","willRetry":true,
+            "error":{"message":format!("Reconnecting {attempt}/5")}}),
+        );
+    }
+    session.notification(
+        "item/agentMessage/delta",
+        &json!({"turnId":"other","itemId":"other","delta":"x"}),
+    );
+    session.notification(
+        "item/agentMessage/delta",
+        &json!({"turnId":"turn-1","itemId":"answer","delta":"ok"}),
+    );
+    let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(items.len(), 3);
+    assert!(items.iter().all(|item| item.id == "retry-turn-1"));
+    assert_notice(&items[0], notice_kind::RECONNECTING, false);
+    assert_notice(&items[2], notice_kind::RECONNECTING, true);
+    session.notification(
+        "error",
+        &json!({"turnId":"turn-1","willRetry":true,"error":{"message":"retry"}}),
+    );
+    session.finish_turn("turn-1", TurnOutcome::Completed);
+    let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].id, items[1].id);
+    assert_notice(&items[1], notice_kind::RECONNECTING, true);
+    // A completion received before turn/start's receipt still resolves that turn's retry.
+    session.notification(
+        "error",
+        &json!({"turnId":"unreceived","willRetry":true,"error":{"message":"retry"}}),
+    );
+    session.finish_turn("unreceived", TurnOutcome::Completed);
+    let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].id, items[1].id);
+    assert_notice(&items[1], notice_kind::RECONNECTING, true);
+    // Missing ids with no active turn are unique, rather than the shared "retry-".
+    for _ in 0..2 {
+        session.notification(
+            "error",
+            &json!({"turnId":"","willRetry":true,"error":{"message":"retry"}}),
+        );
+    }
+    let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(items.len(), 2);
+    assert_ne!(items[0].id, items[1].id);
+    assert!(items.iter().all(|item| item.id != "retry-"));
+    session.begin_turn("turn-2");
+    session.notification(
+        "error",
+        &json!({"turnId":"","willRetry":true,"error":{"message":"retry"}}),
+    );
+    session.finish_turn("turn-2", TurnOutcome::Completed);
+    let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].id, "retry-turn-2");
+    assert_notice(&items[1], notice_kind::RECONNECTING, true);
+}
+
+#[test]
+fn codex_authentication_and_usage_errors_accept_string_and_object_variants() {
+    for (info, kind) in [
+        (json!("unauthorized"), notice_kind::AUTH_REQUIRED),
+        (json!({"unauthorized":{}}), notice_kind::AUTH_REQUIRED),
+        (json!("usageLimitExceeded"), "rate_limit:codex"),
+        (json!({"usageLimitExceeded":{}}), "rate_limit:codex"),
+    ] {
+        let fake = Fake::new(&[]);
+        let (sender, events) = mpsc::channel();
+        let mut session = Session::new(&fake.config(Provider::Codex), sender);
+        session.begin_turn("failed");
+        session.notification(
+            "error",
+            &json!({"turnId":"failed","willRetry":false,
+            "error":{"message":"sign in or wait","codexErrorInfo":info}}),
+        );
+        session.finish_turn(
+            "failed",
+            TurnOutcome::Failed {
+                message: "sign in or wait".into(),
+            },
+        );
+        let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
+        assert_notice(&items[0], kind, false);
+        assert_eq!(items.len(), 1);
+        session.begin_turn("success");
+        session.finish_turn("success", TurnOutcome::Completed);
+        let resolved = completed_notices(&events.try_iter().collect::<Vec<_>>());
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(items[0].id, resolved[0].id);
+        assert_notice(&resolved[0], kind, true);
+    }
+}
+
+#[test]
+fn account_notifications_require_auth_and_success_resolves_the_latest_notice() {
+    for (method, params, expected) in [
+        (
+            "account/updated",
+            json!({"authMode":null}),
+            "Codex is signed out. Run `codex login` to sign in again.",
+        ),
+        (
+            "account/updated",
+            json!({}),
+            "Codex is signed out. Run `codex login` to sign in again.",
+        ),
+        (
+            "account/login/completed",
+            json!({"success":false,"error":"login failed"}),
+            "login failed",
+        ),
+    ] {
+        let fake = Fake::new(&[]);
+        let (sender, events) = mpsc::channel();
+        let mut session = Session::new(&fake.config(Provider::Codex), sender);
+        session.notification(method, &params);
+        session.notification("account/updated", &json!({"authMode":"chatgpt"}));
+        session.notification("account/login/completed", &json!({"success":true}));
+        session.begin_turn("success");
+        session.finish_turn("success", TurnOutcome::Completed);
+        let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].id, items[1].id);
+        assert_notice(&items[0], notice_kind::AUTH_REQUIRED, false);
+        assert_notice(&items[1], notice_kind::AUTH_REQUIRED, true);
+        assert!(matches!(&items[0].body, ItemBody::Notice {text, ..} if text == expected));
+    }
+}
+
+#[test]
+fn model_fallback_deprecation_and_provider_warnings_have_their_contract_kinds() {
+    let fake = Fake::new(&[]);
+    let (sender, events) = mpsc::channel();
+    let mut session = Session::new(&fake.config(Provider::Codex), sender);
+    for (method, params, kind, level, expected) in [
+        (
+            "model/rerouted",
+            json!({"fromModel":"large","toModel":"small","reason":"capacity"}),
+            notice_kind::MODEL_FALLBACK,
+            NoticeLevel::Warning,
+            "Codex answered with small instead of large (capacity).",
+        ),
+        (
+            "deprecationNotice",
+            json!({"summary":"old setting","details":"use the new one"}),
+            notice_kind::DEPRECATION,
+            NoticeLevel::Info,
+            "old setting\nuse the new one",
+        ),
+        (
+            "warning",
+            json!({"message":"heads up"}),
+            notice_kind::PROVIDER_WARNING,
+            NoticeLevel::Warning,
+            "heads up",
+        ),
+        (
+            "configWarning",
+            json!({"summary":"config","details":"details"}),
+            notice_kind::CONFIG_WARNING,
+            NoticeLevel::Warning,
+            "config\ndetails",
+        ),
+    ] {
+        session.notification(method, &params);
+        let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
+        assert_eq!(items.len(), 1);
+        assert_notice(&items[0], kind, false);
+        assert!(
+            matches!(&items[0].body, ItemBody::Notice {level: actual, text, ..} if *actual == level && text == expected)
+        );
+    }
+}
+
+#[test]
+fn token_refresh_requests_emit_auth_required_once_and_are_answered_with_an_error() {
+    let mut text = fixture("codex/idle.ndjson");
+    text.push_str("\n");
+    text.push_str(
+        &json!({"type":"expect","frame":{"method":"turn/start"},"reply":[
+            {"id":801,"method":"account/chatgptAuthTokens/refresh","params":{}},
+            {"id":802,"method":"account/chatgptAuthTokens/refresh","params":{}}
+        ]})
+        .to_string(),
+    );
+    for id in [801, 802] {
+        text.push_str("\n");
+        text.push_str(
+            &json!({"type":"expect","frame":{"id":id,"error":{"code":-32601,
+            "message":"riwork does not handle account/chatgptAuthTokens/refresh"}}})
+            .to_string(),
+        );
+    }
+    let fake = Fake::new(&[&text]);
+    let (sender, events) = mpsc::channel();
+    let mut driver = start(fake.config(Provider::Codex), sender).unwrap();
+    until(&events, is_state(ChatState::Idle));
+    driver
+        .command(ChatCommand::Send { text: "go".into() })
+        .unwrap();
+    let seen = until(
+        &events,
+        |event| matches!(event, ChatEvent::ItemCompleted {item} if matches!(item.body, ItemBody::Notice {..})),
+    );
+    for _ in 0..100 {
+        if fake
+            .received()
+            .iter()
+            .filter(|frame| frame["id"] == 801 || frame["id"] == 802)
+            .count()
+            == 2
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        fake.received()
+            .iter()
+            .filter(|frame| frame["id"] == 801 || frame["id"] == 802)
+            .count(),
+        2
+    );
+    let mut seen = seen;
+    seen.extend(events.try_iter());
+    let notices = completed_notices(&seen);
+    assert_eq!(notices.len(), 1);
+    assert_notice(&notices[0], notice_kind::AUTH_REQUIRED, false);
+    assert!(!fake.saw("mismatch"));
+}
+
+#[test]
+fn refused_start_compact_and_mcp_elicitations_use_the_contract_kinds() {
+    for (method, command) in [
+        ("turn/start", ChatCommand::Send { text: "go".into() }),
+        ("thread/compact/start", ChatCommand::Compact),
+    ] {
+        let text = format!(
+            "{}\n{}",
+            fixture("codex/idle.ndjson"),
+            json!({
+                "type":"expect","frame":{"method":method},
+                "reply":[{"id":"$id","error":{"code":-32602,"message":"refused"}}]
+            })
+        );
+        let fake = Fake::new(&[&text]);
+        let (sender, events) = mpsc::channel();
+        let mut driver = start(fake.config(Provider::Codex), sender).unwrap();
+        until(&events, is_state(ChatState::Idle));
+        driver.command(command).unwrap();
+        let seen = until(
+            &events,
+            |event| matches!(event, ChatEvent::ItemCompleted {item} if matches!(item.body, ItemBody::Notice {..})),
+        );
+        let notices = completed_notices(&seen);
+        assert_eq!(notices.len(), 1);
+        assert_notice(&notices[0], notice_kind::SETTING_REFUSED, false);
+        assert!(!fake.saw("mismatch"));
+    }
+    let text = format!(
+        "{}\n{}\n{}",
+        fixture("codex/idle.ndjson"),
+        json!({"type":"expect","frame":{"method":"turn/start"},"reply":[{
+            "id":803,"method":"mcpServer/elicitation/request","params":{}
+        }]}),
+        json!({"type":"expect","frame":{"id":803,"result":{"action":"decline"}}})
+    );
+    let fake = Fake::new(&[&text]);
+    let (sender, events) = mpsc::channel();
+    let mut driver = start(fake.config(Provider::Codex), sender).unwrap();
+    until(&events, is_state(ChatState::Idle));
+    driver
+        .command(ChatCommand::Send { text: "go".into() })
+        .unwrap();
+    let seen = until(
+        &events,
+        |event| matches!(event, ChatEvent::ItemCompleted {item} if matches!(item.body, ItemBody::Notice {..})),
+    );
+    assert_notice(
+        &completed_notices(&seen)[0],
+        notice_kind::MCP_ELICITATION,
+        false,
+    );
+}
+
+#[test]
+fn a_success_before_the_start_receipt_resolves_auth_and_usage_notices() {
+    let fake = Fake::new(&[]);
+    let (sender, events) = mpsc::channel();
+    let mut session = Session::new(&fake.config(Provider::Codex), sender);
+    session.notification("account/updated", &json!({"authMode":null}));
+    session.notification(
+        "error",
+        &json!({"error":{"message":"usage exhausted","codexErrorInfo":"usageLimitExceeded"}}),
+    );
+    session.notification(
+        "turn/completed",
+        &json!({"turn":{"id":"completed-before-receipt","status":"completed"}}),
+    );
+    let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(items.len(), 4);
+    assert_eq!(items[1].id, items[2].id);
+    assert_eq!(items[0].id, items[3].id);
+    assert_notice(&items[2], "rate_limit:codex", true);
+    assert_notice(&items[3], notice_kind::AUTH_REQUIRED, true);
+}
+
+#[test]
+fn usage_exhaustion_stays_open_after_failed_completion_until_a_successful_turn() {
+    let fake = Fake::new(&[]);
+    let (sender, events) = mpsc::channel();
+    let mut session = Session::new(&fake.config(Provider::Codex), sender);
+    session.begin_turn("exhausted");
+    session.notification(
+        "error",
+        &json!({"turnId":"exhausted","willRetry":false,
+            "error":{"message":"usage exhausted","codexErrorInfo":"usageLimitExceeded"}}),
+    );
+    session.notification(
+        "turn/completed",
+        &json!({"turn":{"id":"exhausted","status":"failed",
+            "error":{"message":"usage exhausted"}}}),
+    );
+    let items = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(items.len(), 1);
+    assert_notice(&items[0], "rate_limit:codex", false);
+    assert_eq!(session.open_notices["rate_limit:codex"], items[0]);
+    session.begin_turn("success");
+    session.notification(
+        "turn/completed",
+        &json!({"turn":{"id":"success","status":"completed"}}),
+    );
+    let resolved = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].id, items[0].id);
+    assert_notice(&resolved[0], "rate_limit:codex", true);
+}
+
+#[test]
+fn restored_auth_and_usage_notices_resolve_on_the_first_successful_turn() {
+    let fake = Fake::new(&[]);
+    let (sender, events) = mpsc::channel();
+    let mut config = fake.config(Provider::Codex);
+    let mut previous = Session::new(&config, sender.clone());
+    previous.notification("account/updated", &json!({"authMode":null}));
+    previous.notification(
+        "error",
+        &json!({"error":{"message":"usage exhausted","codexErrorInfo":"usageLimitExceeded"}}),
+    );
+    config.outstanding_notices = previous.open_notices.clone();
+    let original = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    let mut session = Session::new(&config, sender);
+    session.begin_turn("success");
+    session.finish_turn("success", TurnOutcome::Completed);
+    let resolved = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(resolved.len(), 2);
+    for item in &original {
+        let ItemBody::Notice {
+            kind: Some(kind), ..
+        } = &item.body
+        else {
+            panic!("{item:?}")
+        };
+        let update = resolved.iter().find(|update| update.id == item.id).unwrap();
+        assert_notice(update, kind, true);
+    }
+    assert!(session.open_notices.is_empty());
 }

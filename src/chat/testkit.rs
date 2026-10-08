@@ -72,6 +72,7 @@ impl Fake {
             effort: None,
             fast: false,
             resume: None,
+            outstanding_notices: Default::default(),
             extra_args: Vec::new(),
             // Child-only homes; never change this test process's inherited RIWORK_HOME.
             env: [
