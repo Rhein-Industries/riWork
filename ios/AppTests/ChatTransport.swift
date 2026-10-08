@@ -56,6 +56,15 @@ actor ChatTransport: RemoteTransport {
     var tabsFeature = false
     var sharedTabs: [Tab] = []
     var tabsRevision = 0
+    var tabsEpoch = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    /// The next `tabs.update` fails with this (the list is left as it was).
+    var tabUpdateError: RemoteError?
+    func failNextTabUpdate(_ error: RemoteError?) { tabUpdateError = error }
+    /// The desktop's store was reset: a new epoch, counting from 1 again.
+    func resetTabStore(_ tabs: [Tab]) {
+        tabsEpoch = UUID().uuidString.lowercased(); tabsRevision = 1
+        sharedTabs = tabs.enumerated().map { var tab = $0.element; tab.order = $0.offset; return tab }
+    }
 
     init(chats: [ChatInfo] = [], appearance: JSONValue? = nil) { self.chats = chats; self.appearance = appearance }
 
@@ -79,7 +88,7 @@ actor ChatTransport: RemoteTransport {
                             "parent": tab.parent.map(JSONValue.string) ?? .null, "children": .array(children.map(node)), "child_count": .number(Double(children.count))])
         }
         let keys = Set(sharedTabs.map(\.key))
-        return .object(["revision": .number(Double(tabsRevision)), "entries": .array(sharedTabs.filter { $0.parent == nil || !keys.contains($0.parent!) }.map(node))])
+        return .object(["epoch": .string(tabsEpoch), "revision": .number(Double(tabsRevision)), "entries": .array(sharedTabs.filter { $0.parent == nil || !keys.contains($0.parent!) }.map(node))])
     }
     private func applyTabUpdate(_ update: [String: JSONValue]) throws {
         guard let key = update["key"]?.string, let index = sharedTabs.firstIndex(where: { $0.key == key }) else { throw RemoteError.rpc(code: "not_found", message: "no such tab") }
@@ -207,6 +216,7 @@ actor ChatTransport: RemoteTransport {
             return tabsReply()
         case "tabs.update":
             guard tabsFeature, case .object(let update)? = params["update"] else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            if let tabUpdateError { self.tabUpdateError = nil; throw tabUpdateError }
             try applyTabUpdate(update)
             return tabsReply()
         case "chat.events":

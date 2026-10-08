@@ -1263,6 +1263,32 @@ import RiWorkCore
         await finish(rig)
     }
 
+    /// A Hide that fails ends the whole close: the tab stays, nothing is stopped, and the failure is said.
+    func testAFailedHideAbortsTheCloseAndStopsNothing() async throws {
+        let rig = try await sharedRig()
+        rig.model.selectChat(userChatID)
+        await eventually("on screen") { rig.model.selectedChatID == self.userChatID }
+        await rig.transport.failNextTabUpdate(.rpc(code: "cli_error", message: "The tab list could not be saved"))
+        do { _ = try await rig.model.closeTab("chat:\(userChatID)", choice: .exit); XCTFail("the close fails") } catch {}
+        let stops = await rig.transport.commands().compactMap { $0["command"].string }.filter { $0 == "stop" }
+        XCTAssertTrue(stops.isEmpty, "no Exit after a failed Hide")
+        XCTAssertTrue(rig.model.tabs.contains { $0.id == self.userChatID }, "the tab stays")
+        XCTAssertEqual(rig.model.selectedChatID, userChatID)
+        await finish(rig)
+    }
+    /// A desktop whose tab store was reset (a new epoch) is believed even at a lower revision.
+    func testAResetTabStoreIsAcceptedAtALowerRevision() async throws {
+        let rig = try await sharedRig()
+        for _ in 0..<3 { try await rig.model.moveTab("shell:\(ChatTransport.shell)", before: "chat:\(userChatID)"); try await rig.model.moveTab("shell:\(ChatTransport.shell)", before: nil) }
+        let before = try XCTUnwrap(rig.model.sharedTabs?.revision)
+        XCTAssertGreaterThan(before, 1)
+        await rig.transport.resetTabStore([.init(key: "chat:\(userChatID)", kind: "chat", title: "After reset"), .init(key: "shell:\(ChatTransport.shell)", kind: "shell", title: "zsh")])
+        try await rig.model.listTabs()
+        XCTAssertEqual(rig.model.sharedTabs?.revision, 1)
+        XCTAssertEqual(rig.model.tabs.map(\.id), [userChatID, ChatTransport.shell])
+        await finish(rig)
+    }
+
     func testTheSettingIsThisDevicesAndKeptUnderItsKey() async throws {
         let rig = try await makeRig()
         XCTAssertEqual(rig.model.tabCloseBehavior, .ask, "Ask until chosen")

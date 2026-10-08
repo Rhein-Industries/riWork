@@ -63,6 +63,19 @@ final class SharedTabStripTests: XCTestCase {
         let unknown = try reply([tab("chat", 1, "A", order: 0), tab("future", 4, "Future", order: 1)])
         XCTAssertEqual(SharedTabStrip.groups(unknown).flatMap(\.tabs).map(\.title), ["A"], "an unknown kind is not reordered from here")
     }
+    func testMoveLeftAndRightStepAmongVisibleSiblingsAndStopAtTheGroupsEdge() throws {
+        // [A, B, hidden H, C] in one group, and a pinned P.
+        let reply = try JSONValue.object(["revision": .number(1), "entries": .array([
+            tab("chat", 9, "P", order: 0, pinned: true), tab("chat", 1, "A", order: 1), tab("chat", 2, "B", order: 2),
+            tab("chat", 3, "H", order: 3, hidden: true), tab("chat", 4, "C", order: 4)])]).decode(SharedTabsReply.self)
+        let all = Dictionary(reply.allEntries.map { ($0.title, $0) }, uniquingKeysWith: { a, _ in a })
+        XCTAssertNil(SharedTabStrip.moveLeft(all["A"]!, in: reply), "the group's left edge (not into the pinned group)")
+        XCTAssertEqual(SharedTabStrip.moveLeft(all["B"]!, in: reply), .move(all["B"]!.key, before: all["A"]!.key))
+        XCTAssertEqual(SharedTabStrip.moveRight(all["B"]!, in: reply), .move(all["B"]!.key, before: nil), "past C: to the end")
+        XCTAssertEqual(SharedTabStrip.moveRight(all["A"]!, in: reply), .move(all["A"]!.key, before: all["H"]!.key), "past B, before what follows it")
+        XCTAssertNil(SharedTabStrip.moveRight(all["C"]!, in: reply), "the right edge")
+        XCTAssertNil(SharedTabStrip.moveLeft(all["P"]!, in: reply)); XCTAssertNil(SharedTabStrip.moveRight(all["P"]!, in: reply), "alone in its group")
+    }
     func testTheEditSheetGroupsAndItsListMoves() throws {
         let reply = try reply()
         let groups = SharedTabStrip.groups(reply)

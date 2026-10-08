@@ -470,6 +470,14 @@ struct TerminalTabsView: View {
         if actions.pin { Button("Pin", systemImage: "pin") { tabAction { try await model.pinTab(entry.key) } } }
         if actions.unpin { Button("Unpin", systemImage: "pin.slash") { tabAction { try await model.unpinTab(entry.key) } } }
         if actions.rename { Button("Rename…", systemImage: "pencil") { renameText = entry.title; renamingTab = entry } }
+        // One place at a time within its group, as the Mac's tab menu has it (and a reorder without dragging).
+        if let shared = model.sharedTabs {
+            let left = SharedTabStrip.moveLeft(entry, in: shared), right = SharedTabStrip.moveRight(entry, in: shared)
+            if left != nil || right != nil {
+                Button("Move left", systemImage: "arrow.left") { if let left { tabAction { try await model.updateTabs(left) } } }.disabled(left == nil)
+                Button("Move right", systemImage: "arrow.right") { if let right { tabAction { try await model.updateTabs(right) } } }.disabled(right == nil)
+            }
+        }
         Button("Edit tabs…", systemImage: "arrow.up.arrow.down") { showingEditTabs = true }
         if actions.close {
             Button(entry.isWorker ? "Close (detach)" : "Close tab…", systemImage: "xmark") { requestClose(entry) }

@@ -31,6 +31,23 @@ public enum SharedTabStrip {
         return .move(dragged.key, before: target.key)
     }
 
+    /// Move left / Move right, as the Mac's tab menu has them: one place among the visible tabs of its sibling and pin group; nil at the
+    /// group's boundary. Right goes before the tab after the next one in shared order (hidden members included), or to the group's end.
+    public static func moveLeft(_ tab: SharedTab, in reply: SharedTabsReply) -> TabUpdate? {
+        let visible = reply.visible.filter { sameGroup($0, tab) }
+        guard let index = visible.firstIndex(where: { $0.key == tab.key }), index > 0 else { return nil }
+        return .move(tab.key, before: visible[index - 1].key)
+    }
+    public static func moveRight(_ tab: SharedTab, in reply: SharedTabsReply) -> TabUpdate? {
+        let visible = reply.visible.filter { sameGroup($0, tab) }
+        guard let index = visible.firstIndex(where: { $0.key == tab.key }), index + 1 < visible.count else { return nil }
+        let next = visible[index + 1]
+        let group = reply.allEntries.filter { sameGroup($0, tab) }.sorted { $0.order < $1.order }
+        guard let at = group.firstIndex(where: { $0.key == next.key }) else { return nil }
+        let after = group[(at + 1)...].first { $0.key != tab.key }
+        return .move(tab.key, before: after?.key)
+    }
+
     /// The move for a list reorder of one group (the Edit tabs sheet's `onMove`): `group` in shown order, the row at `source` dropped at
     /// `destination` (SwiftUI's offset, past the moved row's old place).
     public static func move(in group: [SharedTab], from source: Int, to destination: Int) -> TabUpdate? {

@@ -116,10 +116,11 @@ own list for the project, in its order, with its titles, pins and states, the sa
 session started) are hidden until opened. ＋ holds New terminal…, **Open shell/worker…** (the hidden chats and live shells, workers
 first, each with its kind, state and the tab it belongs to; opening one shows it here and on the Mac and starts nothing) and Edit
 tabs…. A tab's long-press menu (and ⋯ → Tab for the tab on screen) has Pin or Unpin (top-level tabs only; the project orchestrator
-starts pinned), Rename… (empty uses the session's name), Edit tabs… and Close: a worker's tab detaches at once; a chat or shell you
+starts pinned), Rename… (empty uses the session's name), Move left / Move right (one place among the visible tabs of its group, as
+the Mac's tab menu has them), Edit tabs… and Close: a worker's tab detaches at once; a chat or shell you
 opened follows Settings → Tabs, **When closing a tab: Ask / Detach / Exit** (this iPhone's own, `tab_close_behavior`, Ask until
 chosen): Ask shows Detach (hide it, it keeps running on the Mac) and Exit (hide it and stop the chat, whose history stays, or close
-the shell); a pinned tab is unpinned first. **Reorder** by long-pressing a tab and dragging it onto another (it goes before that one;
+the shell); a pinned tab is unpinned first. A Hide that fails ends the close there (nothing is stopped) and is said. **Reorder** by long-pressing a tab and dragging it onto another (it goes before that one;
 past the last tab, to the end of its group), or in **Edit tabs** with drag handles; a move stays within its group (pinned, the
 others, a parent's opened children), and the desktop's reply is the row. A quick drag still scrolls the row, and the edge swipe still
 goes back. Changes made on the Mac arrive with the four-second refresh without moving the tab on screen. An older desktop keeps the
