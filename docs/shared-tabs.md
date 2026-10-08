@@ -1,6 +1,6 @@
 # Shared project tabs: desktop and iPhone contract
 
-The desktop owns one project list in `RIWORK_HOME/project-tabs/PROJECT_UUID.json`, protected by a sibling file lock and atomic replacement. Shared state is membership, order, pin, canonical title and visibility. Selection, pane placement and the close preference are device-local. Layout snapshots never overwrite an existing shared list. Metadata-only status refreshes do not increment the durable revision. A reply with the same revision may have fresher status.
+The desktop owns one project list in `RIWORK_HOME/project-tabs/PROJECT_UUID.json`, protected by a sibling file lock and atomic replacement. Shared state is membership, order, pin, canonical title and visibility. Selection, pane placement and the close preference are device-local. Layout snapshots never overwrite an existing shared list. Metadata-only status refreshes do not increment the durable revision. A reply with the same revision may have fresher status. Each store has a persistent UUID `epoch`; resetting/deleting its file creates a new epoch so clients can accept a lower revision. Older stores acquire an epoch on their next successful transaction.
 
 ## Relay requests
 
@@ -24,6 +24,7 @@ All three operations return the same authoritative shape:
 
 ```json
 {
+  "epoch": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   "revision": 12,
   "entries": [{
     "key": "chat:11111111-1111-4111-8111-111111111111",
@@ -57,9 +58,13 @@ The wire nests each child once under its parent, with at most eight parent edges
 
 ## What is a worker?
 
-A session with a same-project parent is a worker. `riwork chat new` and `riwork shell create` inherit `RIWORK_CHAT_ID`, otherwise `RIWORK_SHELL_ID`; `--no-parent` opts out. Plain-terminal commands without a parent and sessions created by the user's + action are roots and visible. A harness shell from older/background inventory with no explicit `user_opened` provenance is also a worker. Project orchestrators are roots, not workers. Provider-internal subagents without a RiWork session identity are not fabricated as tabs.
+A chat with a same-project parent is a worker. A shell with a parent, or without explicit `user_opened` provenance, is a worker; this includes unsolicited harness shells. Project orchestrators are roots, not workers. Provider-internal subagents without a RiWork session identity are not fabricated as tabs.
 
-Workers are registered in membership **hidden by default**. `worker` persists the close policy even if the parent exits and the entry becomes a root. `parent` is a qualified key or null. Missing/deleted parents and dead shell parents promote children to roots, retaining worker policy and their existing visibility. Hiding a parent does not promote its children. Opening any hidden entry deliberately unhides it on both devices. New metadata polling does not re-hide an opened worker or resurrect a hidden tab. Hidden stopped leaf chat history is bounded at 200 with retirement records preventing resurrection; visible history and hidden parents are retained.
+`riwork chat new` and `riwork shell create` inherit `RIWORK_CHAT_ID`, otherwise `RIWORK_SHELL_ID`; `--no-parent` opts out of the parent relationship. GUI shell +/new-terminal/new-harness and explicit user handoff use `SessionManager.for_user()`: no inherited parent and `user_opened=true`. Plain-terminal `shell create` is user-opened only when none of `RIWORK_CHAT_ID`, `RIWORK_SHELL_ID`, `RIWORK_ORCHESTRATOR_SCOPE`, or `RIWORK_AUTOMATION_ID` is nonempty. Caller context still makes a shell a worker with `--no-parent`. Automation can use `shell create --background` or `SessionManager.for_automation()` even without a parent. Phone user shell creation removes these caller markers before invoking the CLI. All non-user shell creation records `user_opened=false`.
+
+On first migration, tabs in saved `layouts.json` panes start visible; other existing chats/shells start hidden, except the project orchestrator, which starts visible and pinned unless it was explicitly detached in the saved layout. A parentless legacy shell in a saved pane counts as user-opened, even if its old registry lacks `user_opened`. A parent-bearing session remains a worker and starts hidden regardless of saved placement. This migration provenance survives later inventory polls. Subsequent user-created sessions start visible normally.
+
+Workers are registered in membership **hidden by default**. `worker` persists the close policy even if the parent exits and the entry becomes a root. `parent` is a qualified key or null. Missing/deleted parents and dead shell parents promote children to roots, retaining worker policy and their existing visibility. Hiding a parent does not promote its children. Opening any hidden entry deliberately unhides it on both devices. New metadata polling does not re-hide an opened worker or resurrect a hidden tab. Hidden stopped leaf chat history is bounded at 200 with retirement records preventing resurrection; visible history and hidden parents are retained. Explicit deletion tombstones are bounded at 1,024 and evict the oldest insertion first. A missing/unreadable per-chat `info.json` is skipped with a warning; it does not invalidate other entries or prune an existing entry while its directory remains. A failure to read the whole inventory/store is surfaced without treating it as an empty list.
 
 ## iOS model API for ios-chat-chrome
 
@@ -74,7 +79,7 @@ Workers are registered in membership **hidden by default**. `worker` persists th
 - `pinTab`, `unpinTab`, `hideTab`, `unhideTab`, `moveTab(_:before:)`, `renameTab(_:title:)` wrappers.
 - Legacy `openChildTab`/`closeChildView` wrappers remain; new chrome should use `openTab`/`closeTab`.
 
-Use `sharedTabs.visible` for chrome and `hiddenTabs` for “Open a worker/shell”. After a mutation install its reply, without an optimistic hide or automatic retry of an uncertain result. Connection/project generations discard stale replies, and smaller revisions are ignored. Same-revision status is accepted. Creation fetches shared membership after inventory. Connected foreground session refreshes run every four seconds, including focus mode. Mac refreshes every two seconds. Phone connection does not independently seed membership.
+Use `sharedTabs.visible` for chrome and `hiddenTabs` for “Open a worker/shell”. After a mutation install its reply, without an optimistic hide or automatic retry of an uncertain result. Connection/project generations discard stale replies. `SharedTabsReply.supersedes(_:)` accepts a changed `epoch` even at a lower revision; within the same epoch smaller revisions are ignored and same-revision status is accepted. `epoch` is optional for older hosts, which retain the revision-only comparison when both replies omit it. Creation fetches shared membership after inventory. Connected foreground session refreshes run every four seconds, including focus mode. Mac refreshes every two seconds. Phone connection does not independently seed membership.
 
 ## Close setting and presentation
 
@@ -82,10 +87,15 @@ The wording on both platforms is **When closing a tab: Ask / Detach / Exit**. Th
 
 - Worker: Hide immediately, no prompt, process continues.
 - User-opened chat/shell: Ask shows Detach and Exit plus Cancel. Detach hides and keeps the process; Exit hides, then sends `chat.stop` or destructive `shell.close`. Chat history stays. A stop failure is surfaced after the hide, and must not be silently retried.
+- A failed shared Hide aborts the entire close, displays an error, and sends no Stop/Exit. Mac keeps its last good shared list. If an entry is missing, Mac checks registry/log parent and user-open provenance; unknown provenance defaults to Detach.
 - Mac uses a Kit/Base dialog with focus trap and Escape. iOS uses a confirmation sheet. Non-Ask preferences skip the prompt.
 
 The existing destructive **Close terminal** action and Stop agent action remain separate session controls. `shell.close` keeps its destructive semantics and is never used for Detach. Remote Mac tabs (⇄ HOST) keep their existing behavior. Global orchestrators remain device-local views outside project membership and remain openable through their existing action.
 
+## Desktop strip controls
+
+Right-click a strip tab, or focus it and press Shift+F10/the Menu key, to open its action menu. Pin/Unpin, Rename, Close, and Move left/right are available; Close uses the same Ask/Detach/Exit policy above. Move stays within visible siblings in the same pin group and is disabled at the group boundary. Arrow keys move menu focus, Tab/Shift+Tab stay in the focus scope, Enter/Space activate controls, and Escape cancels. Rename uses a persistent single-line input and server title validation. The strip uses the standard macOS window-controls content inset only while window controls are visible; fullscreen has no inset.
+
 ## CLI
 
-`riwork tabs list --project UUID`, `riwork tabs update --project UUID --update-json JSON`, `riwork tabs open --project UUID --key KIND:UUID` return the authoritative wire reply. `riwork chat open UUID` unhides an existing chat and queues a local desktop open request without starting the host. Storage/policy failures are surfaced as `not_found`, `invalid_request`, or `cli_error` over the relay.
+`riwork tabs list --project UUID`, `riwork tabs update --project UUID --update-json JSON`, `riwork tabs open --project UUID --key KIND:UUID` return the authoritative wire reply. `riwork chat open UUID` unhides an existing chat and queues a local desktop open request without starting the host. CLI and relay report malformed requests/keys/titles/policy violations as `invalid_request`, unknown projects/sessions as `not_found`, and storage/execution failures as `cli_error`.
