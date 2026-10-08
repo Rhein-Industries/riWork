@@ -208,12 +208,9 @@ impl Dismissals {
             .filter(|(p, _)| *p == provider)
             .map(|(_, id)| id.clone())
             .collect::<Vec<_>>();
-        let identity = known
-            .iter()
-            .find(|id| id.scope == scope)
-            .cloned()
-            .unwrap_or_else(|| scope.to_owned().into());
-        super::account_identity::scope(&identity, &known)
+        super::account_identity::scope_map(&known)
+            .remove(scope)
+            .unwrap_or_else(|| scope.to_owned())
     }
 
     fn scopes(&self, provider: Provider) -> Vec<String> {
@@ -255,6 +252,80 @@ impl Dismissals {
     }
 
     fn rewrite(&mut self, managed_alias: Option<(Provider, &str, &str)>) -> Result<(), String> {
+        let home = self
+            .path
+            .parent()
+            .and_then(Path::parent)
+            .expect("dismissals home");
+        let mut claims = super::account_identity::managed_aliases(home);
+        // Reload committed identity metadata, including metadata written just before
+        // a previously interrupted dismissal rewrite.
+        for provider in [Provider::Claude, Provider::Codex] {
+            for identity in super::account_identity::known(home, provider) {
+                if !self.identities.contains(&(provider, identity.clone())) {
+                    self.identities.push((provider, identity));
+                }
+            }
+        }
+        for (_, identity) in &claims {
+            if let Some(identity) = identity {
+                if !self
+                    .identities
+                    .contains(&(Provider::Codex, identity.clone()))
+                {
+                    self.identities.push((Provider::Codex, identity.clone()));
+                }
+            }
+        }
+        // Compute final targets for every alias first. No intermediate scope is written.
+        let maps: Vec<_> = [Provider::Claude, Provider::Codex]
+            .into_iter()
+            .map(|provider| {
+                let known: Vec<_> = self
+                    .identities
+                    .iter()
+                    .filter(|(p, _)| *p == provider)
+                    .map(|(_, identity)| identity.clone())
+                    .collect();
+                let map = super::account_identity::scope_map(&known);
+                let mut scopes: Vec<_> = known
+                    .iter()
+                    .filter(|identity| identity.rank() > 0)
+                    .map(|identity| {
+                        map.get(&identity.scope)
+                            .cloned()
+                            .unwrap_or_else(|| identity.scope.clone())
+                    })
+                    .collect();
+                scopes.sort();
+                scopes.dedup();
+                (provider, map, scopes)
+            })
+            .collect();
+        if let Some((Provider::Codex, alias, target)) = managed_alias {
+            claims.push((alias.to_owned(), Some(target.to_owned().into())));
+        }
+        let codex_map = &maps
+            .iter()
+            .find(|(p, _, _)| *p == Provider::Codex)
+            .expect("codex map")
+            .1;
+        let mut managed =
+            std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
+        let mut unresolved = std::collections::BTreeSet::new();
+        for (alias, identity) in claims {
+            let targets = managed.entry(alias.clone()).or_default();
+            if let Some(identity) = identity {
+                let final_scope = codex_map
+                    .get(&identity.scope)
+                    .cloned()
+                    .unwrap_or(identity.scope);
+                targets.insert(final_scope);
+            } else {
+                unresolved.insert(alias);
+            }
+        }
+        let mut warned = std::collections::BTreeSet::new();
         let mut entries: Vec<Entry> = Vec::new();
         for old in &self.entries {
             let mut entry = old.clone();
@@ -266,8 +337,11 @@ impl Dismissals {
                 let Some((old_scope, occurrence)) = rest.split_once('|') else {
                     continue;
                 };
+                let (_, map, scopes) = maps
+                    .iter()
+                    .find(|(p, _, _)| *p == provider)
+                    .expect("provider map");
                 let scope = if old_scope == "default" {
-                    let scopes = self.scopes(provider);
                     if scopes.len() > 1 {
                         entry.key.clear();
                         break;
@@ -276,12 +350,25 @@ impl Dismissals {
                         .first()
                         .cloned()
                         .unwrap_or_else(|| old_scope.to_owned())
-                } else if let Some((_, _, target)) =
-                    managed_alias.filter(|(p, alias, _)| *p == provider && *alias == old_scope)
+                } else if let Some(targets) = managed
+                    .get(old_scope)
+                    .filter(|_| provider == Provider::Codex)
                 {
-                    target.to_owned()
+                    if targets.len() != 1 || unresolved.contains(old_scope) {
+                        if warned.insert(old_scope.to_owned()) {
+                            eprintln!(
+                                "riwork chat: warning: dropping notice dismissals for ambiguous managed Codex account scope ({})",
+                                targets.len()
+                            );
+                        }
+                        entry.key.clear();
+                        break;
+                    }
+                    targets.first().expect("one managed target").clone()
                 } else {
-                    self.canonical_scope(provider, old_scope)
+                    map.get(old_scope)
+                        .cloned()
+                        .unwrap_or_else(|| old_scope.to_owned())
                 };
                 entry.key = format!("{}{occurrence}", prefix(provider, Some(&scope)));
                 break;
@@ -646,6 +733,162 @@ mod migration_tests {
             store.prune(now()).unwrap();
             assert!(store.entries.is_empty());
             fs::remove_dir_all(home).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod alias_graph_migration_tests {
+    use super::super::account_identity::{Identity, hash};
+    use super::*;
+    use serde_json::json;
+
+    fn saved_chat(
+        home: &Path,
+        number: u128,
+        provider: Provider,
+        alias: Option<&str>,
+        identity: &Identity,
+    ) {
+        let id = Uuid::from_u128(number).to_string();
+        let info: super::super::model::ChatInfo = serde_json::from_value(json!({
+            "id":id,"provider":provider,"cwd":home,"title":"test","created_at_unix":0,
+            "state":{"state":"stopped"},"codex_account_id":alias
+        }))
+        .unwrap();
+        let dir = super::super::log::chat_dir(home, &id).unwrap();
+        let log = super::super::log::ChatLog::create(&dir, &info).unwrap();
+        log.save_account_identity(Some(identity)).unwrap();
+    }
+
+    #[test]
+    fn chained_keys_migrate_in_one_write_and_restart_before_commit_converges() {
+        let home = crate::chat::testing::short_home();
+        fs::create_dir_all(home.join("chats")).unwrap();
+        let token = hash("Claude:credential:old-token");
+        let email_scope = hash("Claude:a@example.test");
+        let email = Identity {
+            scope: email_scope.clone(),
+            account_id: None,
+            email: Some(email_scope.clone()),
+            aliases: vec![token.clone()],
+        };
+        let mut id = Identity::fixture(hash("Claude:account-a"));
+        id.aliases = vec![email_scope.clone()];
+        saved_chat(&home, 1, Provider::Claude, None, &email);
+        saved_chat(&home, 2, Provider::Claude, None, &id);
+        let reset = now() + 3600;
+        let original = serde_json::to_vec(&json!([
+            {"key":format!("claude:{token}|rate_limit:seven_day@{reset}"),"resets_at":reset,"level":"warning"},
+            {"key":format!("claude:{email_scope}|rate_limit:seven_day@{reset}"),"resets_at":reset,"level":"error"}
+        ])).unwrap();
+        let path = home.join("chats/notice-dismissals.json");
+        fs::write(&path, &original).unwrap();
+        let mut store = Dismissals::open(&home).unwrap();
+        // Identity discovery has committed, but no dismissal replacement has occurred.
+        assert_eq!(fs::read(&path).unwrap(), original);
+        store.migrate(Provider::Claude, &id, None).unwrap();
+        assert_eq!(store.entries.len(), 1);
+        assert_eq!(
+            store.entries[0].key,
+            format!("claude:{}|rate_limit:seven_day@{reset}", id.scope)
+        );
+        assert_eq!(
+            store.entries[0].level,
+            super::super::model::NoticeLevel::Error
+        );
+        let final_bytes = fs::read(&path).unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        store.migrate(Provider::Claude, &id, None).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), final_bytes);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+        // Simulate interruption immediately before the atomic key replacement.
+        fs::write(&path, &original).unwrap();
+        let mut restarted = Dismissals::open(&home).unwrap();
+        restarted.migrate(Provider::Claude, &id, None).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), final_bytes);
+        assert!(
+            super::super::notice_dismissals::snapshot_keys(&home, log_info(&home, 1).as_ref())
+                .unwrap()
+                .iter()
+                .all(|key| key.contains(&id.scope))
+        );
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    fn log_info(home: &Path, number: u128) -> Option<super::super::model::ChatInfo> {
+        let dir = super::super::log::chat_dir(home, &Uuid::from_u128(number).to_string())?;
+        serde_json::from_slice(&fs::read(dir.join("info.json")).ok()?).ok()
+    }
+
+    #[test]
+    fn managed_claims_are_dropped_on_conflict_or_migrated_on_consensus_in_any_order() {
+        for agrees in [false, true] {
+            let mut results = Vec::new();
+            for reverse in [false, true] {
+                let home = crate::chat::testing::short_home();
+                fs::create_dir_all(home.join("chats")).unwrap();
+                let email_scope = hash("Codex:a@example.test");
+                let mut account = Identity::fixture(hash("Codex:account-a"));
+                account.aliases = vec![email_scope.clone()];
+                let other = if agrees {
+                    Identity {
+                        scope: email_scope.clone(),
+                        account_id: None,
+                        email: Some(email_scope),
+                        aliases: vec![],
+                    }
+                } else {
+                    Identity::fixture(hash("Codex:account-b"))
+                };
+                let mut chats = vec![(1, account.clone()), (2, other.clone())];
+                if reverse {
+                    chats.reverse();
+                }
+                for (number, identity) in &chats {
+                    saved_chat(
+                        &home,
+                        *number,
+                        Provider::Codex,
+                        Some("managed-shared"),
+                        identity,
+                    );
+                }
+                let path = home.join("chats/notice-dismissals.json");
+                let reset = now() + 3600;
+                fs::write(&path, serde_json::to_vec(&json!([{"key":format!("codex:managed-shared|rate_limit:codex@{reset}"),"resets_at":reset,"level":"error"}])).unwrap()).unwrap();
+                let mut store = Dismissals::open(&home).unwrap();
+                if reverse {
+                    store.identities.reverse();
+                }
+                store
+                    .migrate(Provider::Codex, &chats[0].1, Some("managed-shared"))
+                    .unwrap();
+                if agrees {
+                    assert_eq!(store.entries.len(), 1);
+                    assert_eq!(
+                        store.entries[0].key,
+                        format!("codex:{}|rate_limit:codex@{reset}", account.scope)
+                    );
+                } else {
+                    assert!(store.entries.is_empty());
+                }
+                let bytes = fs::read(&path).unwrap();
+                store
+                    .migrate(Provider::Codex, &chats[1].1, Some("managed-shared"))
+                    .unwrap();
+                assert_eq!(fs::read(&path).unwrap(), bytes);
+                // Compare scopes/severity independently of the clock used for each home.
+                results.push(
+                    store
+                        .entries
+                        .iter()
+                        .map(|entry| (entry.key.split('@').next().unwrap().to_owned(), entry.level))
+                        .collect::<Vec<_>>(),
+                );
+                fs::remove_dir_all(home).unwrap();
+            }
+            assert_eq!(results[0], results[1]);
         }
     }
 }

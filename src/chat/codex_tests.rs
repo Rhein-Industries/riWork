@@ -2023,3 +2023,114 @@ fn a_login_change_rereads_identity_and_drops_the_previous_logins_delayed_reply()
     assert!(identities[1].is_none());
     assert_ne!(identities[0], identities[2]);
 }
+
+#[test]
+fn live_email_before_credentials_id_upgrades_the_dismissal_directly_to_one_scope() {
+    let fake = Fake::new(&[]);
+    let config = fake.config(Provider::Codex);
+    let home = std::path::PathBuf::from(
+        config
+            .env
+            .iter()
+            .find(|(name, _)| name == "RIWORK_HOME")
+            .unwrap()
+            .1
+            .clone(),
+    );
+    fs::create_dir_all(home.join("chats")).unwrap();
+    let auth = std::path::PathBuf::from(
+        config
+            .env
+            .iter()
+            .find(|(name, _)| name == "CODEX_HOME")
+            .unwrap()
+            .1
+            .clone(),
+    )
+    .join("auth.json");
+    let (sender, events) = mpsc::channel();
+    let mut session = Session::new(&config, sender);
+    let live = json!({"account":{"email":"a@example.test"}});
+    session.apply_account_read(0, &live);
+    let email = session.identity.clone().unwrap();
+    assert!(email.account_id.is_none());
+    let reset = super::super::notice_dismissals::now() + 3600;
+    session.update_rate_limits(
+        &json!({"rateLimits":{"primary":{"usedPercent":100,"resetsAt":reset}}}),
+    );
+    session.notification(
+        "error",
+        &json!({"error":{"message":"blocked","codexErrorInfo":"usageLimitExceeded"}}),
+    );
+    let mut item = completed_notices(&events.try_iter().collect::<Vec<_>>())
+        .pop()
+        .unwrap();
+    let mut store = super::super::notice_dismissals::Dismissals::open(&home).unwrap();
+    store
+        .dismiss(
+            Provider::Codex,
+            Some(&email.scope),
+            &item,
+            super::super::notice_dismissals::now(),
+        )
+        .unwrap();
+    fs::write(&auth, br#"{"tokens":{"account_id":"account-a"}}"#).unwrap();
+    // The same live email now combines with the newly available credential id.
+    session.apply_account_read(0, &live);
+    let account = session.identity.clone().unwrap();
+    assert_eq!(
+        account.scope,
+        super::super::account_identity::hash("Codex:account-a")
+    );
+    store.migrate(Provider::Codex, &account, None).unwrap();
+    assert!(store.mark(
+        Provider::Codex,
+        Some(&account.scope),
+        &mut item,
+        super::super::notice_dismissals::now()
+    ));
+    let path = home.join("chats/notice-dismissals.json");
+    let first = fs::read(&path).unwrap();
+    let entries: Value = serde_json::from_slice(&first).unwrap();
+    assert_eq!(entries.as_array().unwrap().len(), 1);
+    assert_eq!(
+        entries[0]["key"],
+        format!("codex:{}|rate_limit:codex@{reset}", account.scope)
+    );
+    store.migrate(Provider::Codex, &account, None).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), first);
+}
+
+#[test]
+fn live_id_and_credentials_email_resolve_the_same_as_credentials_id_and_live_email() {
+    let fake = Fake::new(&[]);
+    let config = fake.config(Provider::Codex);
+    let auth = std::path::PathBuf::from(
+        config
+            .env
+            .iter()
+            .find(|(name, _)| name == "CODEX_HOME")
+            .unwrap()
+            .1
+            .clone(),
+    )
+    .join("auth.json");
+    let email = json!({"account":{"email":"a@example.test"}});
+    fs::write(&auth, serde_json::to_vec(&email).unwrap()).unwrap();
+    let (sender, _) = mpsc::channel();
+    let mut live_id_first = Session::new(&config, sender);
+    live_id_first.apply_account_read(0, &json!({"account":{"id":"account-a"}}));
+    let account = live_id_first.identity.clone().unwrap();
+    assert_eq!(
+        account.scope,
+        super::super::account_identity::hash("Codex:account-a")
+    );
+    fs::write(&auth, br#"{"tokens":{"account_id":"account-a"}}"#).unwrap();
+    let (sender, _) = mpsc::channel();
+    let mut file_id_first = Session::new(&config, sender);
+    file_id_first.apply_account_read(0, &email);
+    let reverse = file_id_first.identity.unwrap();
+    assert_eq!(account.scope, reverse.scope);
+    assert_eq!(account.account_id, reverse.account_id);
+    assert_eq!(account.email, reverse.email);
+}
