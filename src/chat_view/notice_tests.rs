@@ -405,3 +405,80 @@ fn host_dismissed_notice_has_no_banner_and_close_sends_the_host_command(cx: &mut
         matches!(recording.try_recv().unwrap(), feed::Delivery::Command(ChatCommand::DismissNotice { item_id }) if item_id == "auth")
     );
 }
+
+#[gpui::test]
+fn the_usage_chip_shows_the_most_used_window_past_its_warning_and_opens_usage(
+    cx: &mut TestAppContext,
+) {
+    let start = 1_800_000_000;
+    notices::TEST_NOW.with(|now| now.set(Some(start)));
+    let (handle, view, _recording) = mount(cx);
+    let window = |id: &str, label: &str, used: f64| crate::chat::model::RateWindow {
+        id: id.into(),
+        label: label.into(),
+        used_percent: used,
+        resets_at: Some(start + 30),
+        warn_at: 70.0,
+    };
+    let set = |view: &Entity<ChatView>, cx: &mut TestAppContext, windows| {
+        view.update(cx, |view, cx| {
+            view.model.link = state::Link::Live;
+            view.model
+                .transcript
+                .apply(&ChatEvent::RateLimits { windows });
+            view.schedule_notice_expiry(cx);
+            cx.notify();
+        })
+    };
+    set(&view, cx, vec![window("five_hour", "5h", 40.0)]);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("chat-usage-chip").is_none(), "under 70%");
+    })
+    .unwrap();
+    set(
+        &view,
+        cx,
+        vec![
+            window("five_hour", "5h", 40.0),
+            window("seven_day", "weekly", 91.0),
+        ],
+    );
+    let opened = std::rc::Rc::new(std::cell::Cell::new(false));
+    let seen = opened.clone();
+    cx.update(|cx| {
+        cx.subscribe(&view, move |_, event: &ChatViewEvent, _| {
+            if matches!(event, ChatViewEvent::ShowUsage) {
+                seen.set(true);
+            }
+        })
+        .detach()
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let chip = window.find("chat-usage-chip");
+        assert!(chip.visible());
+        assert!(
+            chip.label()
+                .is_some_and(|label| label.starts_with("⚠ weekly 91% · resets")),
+            "{:?}",
+            chip.label()
+        );
+        // No banner: nearing a limit is the chip's.
+        assert!(window.try_find("chat-notices").is_none());
+        window.click("chat-usage-chip", cx);
+    })
+    .unwrap();
+    assert!(opened.get(), "the chip opens the Usage panel");
+    // The reset passes with nothing else happening: the chip goes.
+    notices::TEST_NOW.with(|now| now.set(Some(start + 31)));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(31));
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("chat-usage-chip").is_none());
+    })
+    .unwrap();
+    notices::TEST_NOW.with(|now| now.set(None));
+}

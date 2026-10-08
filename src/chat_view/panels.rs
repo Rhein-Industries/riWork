@@ -548,6 +548,7 @@ impl ChatView {
                 dimmed("chat-compact", "Compact", look).into_any_element()
             })
             .child(div().flex_1())
+            .children(self.usage_chip(look, cx))
             .children(self.model.transcript.usage.as_ref().map(|usage| {
                 let fraction = toolbar::context_fraction(usage);
                 div()

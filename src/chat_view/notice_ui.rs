@@ -72,11 +72,15 @@ impl ChatView {
         cx.notify();
     }
 
-    /// A limit's banner goes at its reset time, also in a chat where nothing else happens:
-    /// redraw then, and look for the next one.
+    /// A limit's banner and the usage chip go at their reset time, also in a chat where
+    /// nothing else happens: redraw then, and look for the next one.
     pub(super) fn schedule_notice_expiry(&mut self, cx: &mut Context<Self>) {
         let now = notices::now_unix();
-        let Some(at) = self.notices.next_expiry(&self.model.transcript, now) else {
+        // The usage chip goes at its window's reset too.
+        let chip = super::usage_chip::warned(&self.model.transcript.rate_limits, now)
+            .and_then(|window| window.resets_at);
+        let banner = self.notices.next_expiry(&self.model.transcript, now);
+        let Some(at) = banner.into_iter().chain(chip).min() else {
             self.notice_expiry = None;
             return;
         };

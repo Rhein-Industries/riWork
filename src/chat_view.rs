@@ -70,6 +70,7 @@ mod state;
 #[cfg(test)]
 mod testing;
 mod toolbar;
+mod usage_chip;
 mod widgets;
 
 pub use display::DisplayMode;
