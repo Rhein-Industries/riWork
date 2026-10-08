@@ -56,6 +56,7 @@ mod store;
 mod symbols;
 mod tab_close_dialog;
 mod tab_menu;
+mod tab_strip;
 mod terminal_drop;
 mod terminal_lifecycle;
 mod terminal_links;
@@ -129,6 +130,15 @@ actions!(
         ClosePane,
         NextTab,
         PreviousTab,
+        SelectTab1,
+        SelectTab2,
+        SelectTab3,
+        SelectTab4,
+        SelectTab5,
+        SelectTab6,
+        SelectTab7,
+        SelectTab8,
+        SelectTab9,
         ToggleSidebar,
         FocusSearch,
         OpenOrchestrator,
@@ -1389,7 +1399,12 @@ struct Workspace {
     pending_chat_dismissals: Vec<String>,
     chat_tabs: chat_tabs::Coordinator,
     shared_tabs: Option<Vec<project_tabs::Entry>>,
-    shared_worker_picker: bool,
+    /// The strip's ＋, worker picker or All tabs menu, open under its pane's strip.
+    strip_menu: Option<tab_strip::StripMenu>,
+    /// Which tab hosts `shared_tab_menu`.
+    shared_tab_menu_key: String,
+    /// Each pane strip's scrolling tabs, so a selected tab can be revealed.
+    strip_scrolls: std::cell::RefCell<HashMap<PaneId, gpui::ScrollHandle>>,
     shared_tab_menu: Option<Entity<tab_menu::TabMenu>>,
     foreign_tabs: HashMap<String, Option<project_tabs::Entry>>,
     shared_tab_error: Option<String>,
@@ -2038,7 +2053,9 @@ impl Workspace {
             chat_dismissal_revision: 0,
             chat_tabs: chat_tabs::Coordinator::new(),
             shared_tabs: None,
-            shared_worker_picker: false,
+            strip_menu: None,
+            shared_tab_menu_key: String::new(),
+            strip_scrolls: Default::default(),
             shared_tab_menu: None,
             foreign_tabs: HashMap::new(),
             shared_tab_error: None,
@@ -3327,7 +3344,8 @@ impl Workspace {
         let index = target_index.min(dest.tabs.len());
         dest.tabs.insert(index, tab);
         dest.active = index;
-        if self.main_pane == Some(target) {
+        // The strip publishes its own reorders (`strip_drop`).
+        if self.main_pane == Some(target) && !self.uses_tab_strip() {
             let keys = self.panes[&target]
                 .tabs
                 .iter()
@@ -5666,171 +5684,6 @@ impl Workspace {
     /// user emptied has no current tab, so the new one is shown there, still
     /// without focus.)
 
-    /// Membership strip always comes from the desktop store, even before a local view is adopted.
-    fn render_shared_strip(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme::palette(cx);
-        let visible = self.shared_tab_entries().iter().filter(|e| {
-            !e.hidden
-                && !(e.kind == project_tabs::Kind::Shell
-                    && e.status == project_tabs::Status::Stopped)
-        });
-        let selected = self
-            .panes
-            .get(&self.active_pane)
-            .and_then(|p| p.tabs.get(p.active))
-            .and_then(session_tab_key);
-        div()
-            .flex()
-            .flex_col()
-            .bg(rgb(colors.panel))
-            .border_b_1()
-            .border_color(rgb(colors.divider))
-            .child(
-                div()
-                    .id("shared-project-tabs")
-                    .flex()
-                    .items_center()
-                    .pl(px(if window_controls_visible(window) {
-                        WINDOW_CONTROLS_CONTENT_INSET
-                    } else {
-                        0.0
-                    }))
-                    .min_h(ui_text::space(32.0))
-                    .overflow_x_scroll()
-                    .children(visible.map(|entry| {
-                        let key = entry.key.clone();
-                        let close_key = key.clone();
-                        let menu_key = key.clone();
-                        let keyboard_key = key.clone();
-                        let active = selected.as_deref() == Some(key.as_str());
-                        let label =
-                            format!("{}{}", if entry.pinned { "◆ " } else { "" }, entry.title);
-                        div()
-                            .flex()
-                            .items_center()
-                            .bg(rgb(if active {
-                                colors.panel_active
-                            } else {
-                                colors.panel
-                            }))
-                            .child(
-                                behavior_controls::button_content(
-                                    gpui::SharedString::from(format!("shared-tab-{key}")),
-                                    label.clone(),
-                                    div().child(label),
-                                )
-                                .p(ui_text::space(8.0))
-                                .on_click(cx.listener(move |workspace, _, window, cx| {
-                                    if let Err(error) = workspace.open_child_tab(&key, window, cx) {
-                                        workspace.notice = Some(error);
-                                        cx.notify();
-                                    }
-                                }))
-                                .on_mouse_down(
-                                    MouseButton::Right,
-                                    cx.listener(move |workspace, _, window, cx| {
-                                        workspace.open_shared_tab_menu(&menu_key, window, cx);
-                                    }),
-                                )
-                                .on_key_down(cx.listener(
-                                    move |workspace, event: &KeyDownEvent, window, cx| {
-                                        if event.keystroke.key == "menu"
-                                            || (event.keystroke.key == "f10"
-                                                && event.keystroke.modifiers.shift)
-                                        {
-                                            workspace.open_shared_tab_menu(
-                                                &keyboard_key,
-                                                window,
-                                                cx,
-                                            );
-                                            cx.stop_propagation();
-                                        }
-                                    },
-                                )),
-                            )
-                            .children((!entry.pinned).then(|| {
-                                behavior_controls::button_content(
-                                    gpui::SharedString::from(format!(
-                                        "shared-tab-close-{close_key}"
-                                    )),
-                                    "Close tab",
-                                    div().child("×"),
-                                )
-                                .p(ui_text::space(6.0))
-                                .on_click(cx.listener(
-                                    move |workspace, _, window, cx| {
-                                        let local = workspace.panes.iter().find_map(|(pane, p)| {
-                                            p.tabs
-                                                .iter()
-                                                .find(|t| {
-                                                    session_tab_key(t).as_deref()
-                                                        == Some(&close_key)
-                                                })
-                                                .map(|t| (*pane, t.id))
-                                        });
-                                        workspace.request_close_session(
-                                            close_key.clone(),
-                                            local,
-                                            window,
-                                            cx,
-                                        );
-                                    },
-                                ))
-                            }))
-                    }))
-                    .child(
-                        behavior_controls::button_content(
-                            "shared-workers",
-                            "Open a worker/shell",
-                            div().child("Open a worker/shell"),
-                        )
-                        .p(ui_text::space(8.0))
-                        .on_click(cx.listener(|workspace, _, _, cx| {
-                            workspace.shared_worker_picker = !workspace.shared_worker_picker;
-                            cx.notify();
-                        })),
-                    ),
-            )
-            .children(self.shared_worker_picker.then(|| {
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(ui_text::space(8.0))
-                    .p(ui_text::space(8.0))
-                    .children(
-                        self.shared_tab_entries()
-                            .iter()
-                            .filter(|e| {
-                                e.hidden
-                                    && !(e.kind == project_tabs::Kind::Shell
-                                        && e.status == project_tabs::Status::Stopped)
-                            })
-                            .map(|entry| {
-                                let key = entry.key.clone();
-                                let label = format!("{} · {:?}", entry.title, entry.status);
-                                behavior_controls::button_content(
-                                    gpui::SharedString::from(format!("open-worker-{key}")),
-                                    label.clone(),
-                                    div().child(label),
-                                )
-                                .p(ui_text::space(6.0))
-                                .on_click(cx.listener(
-                                    move |workspace, _, window, cx| {
-                                        workspace.shared_worker_picker = false;
-                                        if let Err(error) =
-                                            workspace.open_child_tab(&key, window, cx)
-                                        {
-                                            workspace.notice = Some(error);
-                                        }
-                                        cx.notify();
-                                    },
-                                ))
-                            }),
-                    )
-            }))
-            .into_any_element()
-    }
-
     fn open_shared_tab_menu(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.modal_open() {
             return;
@@ -5845,6 +5698,9 @@ impl Workspace {
         };
         let (left, right) = shared_tab_moves(self.shared_tab_entries(), key);
         self.begin_tab_drag(cx);
+        self.strip_menu = None;
+        self.panel_menu = None;
+        self.shared_tab_menu_key = key.to_owned();
         let menu = cx.new(|cx| tab_menu::TabMenu::new(&entry, left, right, window, cx));
         menu.update(cx, |menu, cx| menu.focus(window, cx));
         let key = key.to_owned();
@@ -6678,6 +6534,7 @@ impl Workspace {
         }
         self.active_pane = pane_id;
         self.search_focused = false;
+        self.reveal_strip_tab(pane_id, tab_id);
 
         self.focus_active(window, cx);
         self.save_layout();
@@ -6691,8 +6548,9 @@ impl Workspace {
         if pane.tabs.is_empty() {
             return;
         }
-        let len = pane.tabs.len() as isize;
-        let index = (pane.active as isize + delta).rem_euclid(len) as usize;
+        let order = self.tab_cycle_order(pane);
+        let at = order.iter().position(|i| *i == pane.active).unwrap_or(0) as isize;
+        let index = order[(at + delta).rem_euclid(order.len() as isize) as usize];
         let pane_id = self.active_pane;
         let tab_id = pane.tabs[index].id;
         self.select_tab(pane_id, tab_id, window, cx);
@@ -7240,11 +7098,16 @@ impl Workspace {
             return;
         }
         let title = entry.map(|e| e.title).unwrap_or_else(|| "session".into());
+        // Native terminals draw above the window's content; freeze them as the other
+        // modals do, or the dialog is hidden under the terminal of the selected tab.
+        self.strip_menu = None;
+        self.begin_tab_drag(cx);
         let dialog = cx.new(|cx| tab_close_dialog::TabCloseDialog::new(title, cx));
         dialog.update(cx, |dialog, cx| dialog.focus(window, cx));
         self.tab_close_target = Some((key, local));
         cx.subscribe_in(&dialog, window, |workspace, _, choice, window, cx| {
             workspace.tab_close_dialog = None;
+            workspace.finish_tab_drag(cx);
             if let Some((key, local)) = workspace.tab_close_target.take()
                 && let Some(choice) = choice
             {
@@ -9440,125 +9303,139 @@ impl Workspace {
                     .into_any_element()
             })
             .collect::<Vec<_>>();
-        let header = div()
-            .id(("pane-header", pane_id))
-            .overflow_hidden()
-            .h(ui_text::space(PANE_HEADER_HEIGHT))
-            .flex_none()
+        let bar_buttons = div()
             .flex()
-            .min_w_0()
-            .items_center()
-            .bg(rgb(colors.panel))
-            .border_b_1()
-            // Native marks the selected pane by its brighter tab, not by a line.
-            .border_color(rgb(if selected && !colors.plain_tabs {
-                colors.cyan
-            } else {
-                colors.divider
+            .h_full()
+            .flex_none()
+            // Native leaves the pane's buttons bare on the bar, like a toolbar.
+            .map(|group| {
+                controls::native(group, |group| {
+                    group
+                        .items_center()
+                        .gap(ui_text::space(NATIVE_BAR_BUTTON_GAP))
+                        .mx(ui_text::space(NATIVE_BAR_BUTTON_INSET))
+                })
+            })
+            .children(show_main.then(|| self.main_marker(pane_id, cx)))
+            .children(show_lock.then(|| {
+                self.pane_button(
+                    pane_id,
+                    "lock",
+                    if pane_locked {
+                        Icon::Lock
+                    } else {
+                        Icon::Unlock
+                    },
+                    if pane_locked {
+                        colors.cyan
+                    } else {
+                        colors.muted
+                    },
+                    |workspace, id, _, cx| workspace.toggle_pane_lock(id, cx),
+                    cx,
+                )
             }))
-            .pl(px(control_inset))
-            .child(
-                div()
-                    .id(("tab-strip", pane_id))
-                    .role(gpui::Role::TabList)
-                    .aria_label("Pane tabs")
-                    .flex()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .overflow_x_scroll()
-                    .children(tabs)
-                    .child(
-                        div()
-                            .id(("window-drag-space", pane_id))
-                            .flex_1()
-                            .min_w(ui_text::space(if drag_room { 18.0 } else { 0.0 }))
-                            .h_full()
-                            .when(window_drag_enabled, |space| {
-                                space.on_mouse_down(MouseButton::Left, start_window_drag)
-                            }),
-                    )
-                    .on_drop(
-                        cx.listener(move |workspace, drag: &DraggedTab, window, cx| {
-                            let len = workspace
-                                .panes
-                                .get(&pane_id)
-                                .map(|pane| pane.tabs.len())
-                                .unwrap_or(0);
-                            workspace.move_tab(drag, pane_id, len, window, cx);
-                            cx.stop_propagation();
-                        }),
-                    ),
+            .children(show_focus.then(|| {
+                self.pane_button(
+                    pane_id,
+                    "focus",
+                    Icon::Focus,
+                    colors.muted,
+                    |workspace, id, window, cx| {
+                        workspace.active_pane = id;
+                        workspace.set_focus_mode(true, window, cx);
+                    },
+                    cx,
+                )
+            }))
+            .child(self.pane_button(
+                pane_id,
+                "menu",
+                Icon::More,
+                if self.panel_menu == Some(pane_id) {
+                    colors.cyan
+                } else {
+                    colors.muted
+                },
+                |workspace, id, window, cx| {
+                    workspace.toggle_panel_menu(id, window, cx);
+                },
+                cx,
+            ));
+        let header = if self.uses_tab_strip() {
+            self.render_tab_strip(
+                pane_id,
+                header_width - bar_reserved(show_lock, show_focus),
+                control_inset,
+                window_drag_enabled,
+                drag_handle.then_some(handle_width),
+                drag_room,
+                tab_can_close,
+                bar_buttons.into_any_element(),
+                cx,
             )
-            .children(drag_handle.then(|| {
-                div()
-                    .id(("window-drag-handle", pane_id))
-                    .flex_none()
-                    .w(px(handle_width))
-                    .h_full()
-                    .on_mouse_down(MouseButton::Left, start_window_drag)
-            }))
-            .child(
-                div()
-                    .flex()
-                    .h_full()
-                    .flex_none()
-                    // Native leaves the pane's buttons bare on the bar, like a toolbar.
-                    .map(|group| {
-                        controls::native(group, |group| {
-                            group
-                                .items_center()
-                                .gap(ui_text::space(NATIVE_BAR_BUTTON_GAP))
-                                .mx(ui_text::space(NATIVE_BAR_BUTTON_INSET))
-                        })
-                    })
-                    .children(show_main.then(|| self.main_marker(pane_id, cx)))
-                    .children(show_lock.then(|| {
-                        self.pane_button(
-                            pane_id,
-                            "lock",
-                            if pane_locked {
-                                Icon::Lock
-                            } else {
-                                Icon::Unlock
-                            },
-                            if pane_locked {
-                                colors.cyan
-                            } else {
-                                colors.muted
-                            },
-                            |workspace, id, _, cx| workspace.toggle_pane_lock(id, cx),
-                            cx,
+        } else {
+            div()
+                .id(("pane-header", pane_id))
+                .overflow_hidden()
+                .h(ui_text::space(PANE_HEADER_HEIGHT))
+                .flex_none()
+                .flex()
+                .min_w_0()
+                .items_center()
+                .bg(rgb(colors.panel))
+                .border_b_1()
+                // Native marks the selected pane by its brighter tab, not by a line.
+                .border_color(rgb(if selected && !colors.plain_tabs {
+                    colors.cyan
+                } else {
+                    colors.divider
+                }))
+                .pl(px(control_inset))
+                .child(
+                    div()
+                        .id(("tab-strip", pane_id))
+                        .role(gpui::Role::TabList)
+                        .aria_label("Pane tabs")
+                        .flex()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .overflow_x_scroll()
+                        .children(tabs)
+                        .child(
+                            div()
+                                .id(("window-drag-space", pane_id))
+                                .flex_1()
+                                .min_w(ui_text::space(if drag_room { 18.0 } else { 0.0 }))
+                                .h_full()
+                                .when(window_drag_enabled, |space| {
+                                    space.on_mouse_down(MouseButton::Left, start_window_drag)
+                                }),
                         )
-                    }))
-                    .children(show_focus.then(|| {
-                        self.pane_button(
-                            pane_id,
-                            "focus",
-                            Icon::Focus,
-                            colors.muted,
-                            |workspace, id, window, cx| {
-                                workspace.active_pane = id;
-                                workspace.set_focus_mode(true, window, cx);
-                            },
-                            cx,
-                        )
-                    }))
-                    .child(self.pane_button(
-                        pane_id,
-                        "menu",
-                        Icon::More,
-                        if self.panel_menu == Some(pane_id) {
-                            colors.cyan
-                        } else {
-                            colors.muted
-                        },
-                        |workspace, id, window, cx| {
-                            workspace.toggle_panel_menu(id, window, cx);
-                        },
-                        cx,
-                    )),
-            );
+                        .on_drop(
+                            cx.listener(move |workspace, drag: &DraggedTab, window, cx| {
+                                let len = workspace
+                                    .panes
+                                    .get(&pane_id)
+                                    .map(|pane| pane.tabs.len())
+                                    .unwrap_or(0);
+                                workspace.move_tab(drag, pane_id, len, window, cx);
+                                cx.stop_propagation();
+                            }),
+                        ),
+                )
+                .children(drag_handle.then(|| {
+                    div()
+                        .id(("window-drag-handle", pane_id))
+                        .flex_none()
+                        .w(px(handle_width))
+                        .h_full()
+                        .on_mouse_down(MouseButton::Left, start_window_drag)
+                }))
+                .child(bar_buttons)
+                .into_any_element()
+        };
         let active_tab = pane.tabs.get(pane.active);
         let skill_upgrade = active_tab
             .and_then(Tab::shell_id)
@@ -11389,6 +11266,7 @@ impl Render for Workspace {
             self.drop_target = None;
             if self.tab_dragging
                 && self.panel_menu.is_none()
+                && self.strip_menu.is_none()
                 && !self.layout_menu_open
                 && !self.modal_open()
             {
@@ -11423,6 +11301,15 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::close_pane_action))
             .on_action(cx.listener(Self::next_tab_action))
             .on_action(cx.listener(Self::previous_tab_action))
+            .on_action(cx.listener(|w, _: &SelectTab1, window, cx| w.select_numbered_tab(1, window, cx)))
+            .on_action(cx.listener(|w, _: &SelectTab2, window, cx| w.select_numbered_tab(2, window, cx)))
+            .on_action(cx.listener(|w, _: &SelectTab3, window, cx| w.select_numbered_tab(3, window, cx)))
+            .on_action(cx.listener(|w, _: &SelectTab4, window, cx| w.select_numbered_tab(4, window, cx)))
+            .on_action(cx.listener(|w, _: &SelectTab5, window, cx| w.select_numbered_tab(5, window, cx)))
+            .on_action(cx.listener(|w, _: &SelectTab6, window, cx| w.select_numbered_tab(6, window, cx)))
+            .on_action(cx.listener(|w, _: &SelectTab7, window, cx| w.select_numbered_tab(7, window, cx)))
+            .on_action(cx.listener(|w, _: &SelectTab8, window, cx| w.select_numbered_tab(8, window, cx)))
+            .on_action(cx.listener(|w, _: &SelectTab9, window, cx| w.select_numbered_tab(9, window, cx)))
             .on_action(cx.listener(Self::toggle_sidebar_action))
             .on_action(cx.listener(Self::open_settings_action))
             .on_action(cx.listener(Self::open_project_settings_action))
@@ -11488,10 +11375,6 @@ impl Render for Workspace {
             .text_color(rgb(colors.text))
             .font_family(ui_text::ui_family())
             .text_size(ui_text::text(10.0))
-            .children(
-                (!self.is_remote() && !self.focus_mode && self.shared_tabs.is_some())
-                    .then(|| self.render_shared_strip(window, cx)),
-            )
             .child(
                 div()
                     .flex()
@@ -11581,14 +11464,6 @@ impl Render for Workspace {
                         .child(prompt.clone()),
                     self.modal_selection_scope,
                 )
-            }))
-            .children(self.shared_tab_menu.as_ref().map(|menu| {
-                div()
-                    .absolute()
-                    .top(ui_text::space(34.0))
-                    .left(px(WINDOW_CONTROLS_CONTENT_INSET))
-                    .occlude()
-                    .child(menu.clone())
             }))
             .children(self.tab_close_dialog.as_ref().map(|dialog| {
                 div()
@@ -12693,6 +12568,19 @@ fn main() {
             KeyBinding::new("cmd-shift-w", ClosePane, None),
             KeyBinding::new("ctrl-tab", NextTab, None),
             KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
+            KeyBinding::new("cmd-}", NextTab, None),
+            KeyBinding::new("cmd-{", PreviousTab, None),
+            KeyBinding::new("cmd-shift-]", NextTab, None),
+            KeyBinding::new("cmd-shift-[", PreviousTab, None),
+            KeyBinding::new("cmd-1", SelectTab1, None),
+            KeyBinding::new("cmd-2", SelectTab2, None),
+            KeyBinding::new("cmd-3", SelectTab3, None),
+            KeyBinding::new("cmd-4", SelectTab4, None),
+            KeyBinding::new("cmd-5", SelectTab5, None),
+            KeyBinding::new("cmd-6", SelectTab6, None),
+            KeyBinding::new("cmd-7", SelectTab7, None),
+            KeyBinding::new("cmd-8", SelectTab8, None),
+            KeyBinding::new("cmd-9", SelectTab9, None),
             KeyBinding::new("cmd-b", ToggleSidebar, None),
             KeyBinding::new("cmd-f", FocusSearch, None),
             KeyBinding::new("cmd-shift-f", ToggleFocusMode, None),

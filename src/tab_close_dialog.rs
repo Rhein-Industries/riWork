@@ -1,5 +1,11 @@
 //! Small Kit modal. Base owns the focus trap and Escape dismissal.
-use crate::{behavior_controls as behavior, settings::TabCloseBehavior, theme::palette, ui_text};
+use crate::{
+    behavior_controls as behavior,
+    controls::{self, Button},
+    settings::TabCloseBehavior,
+    theme::{diff_colors, palette},
+    ui_text,
+};
 use gpui::{Context, EventEmitter, FocusHandle, Render, Window, div, prelude::*, rgb};
 pub struct TabCloseDialog {
     focus: FocusHandle,
@@ -24,39 +30,70 @@ impl TabCloseDialog {
 impl Render for TabCloseDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = palette(cx);
+        let error = diff_colors(cx).removed;
         let panel = div()
-            .w(ui_text::space(360.0))
-            .p(ui_text::space(20.0))
-            .bg(rgb(colors.panel))
-            .border_1()
-            .border_color(rgb(colors.divider))
+            .id("tab-close-dialog")
+            // Pinned Base Dialog's focus-trap host omits its AX role.
+            .role(gpui::Role::Dialog)
+            .aria_label(format!("Close {}", self.title))
+            .occlude()
+            .w(ui_text::space(380.0))
+            .max_w_full()
+            .p(ui_text::space(18.0))
             .flex()
             .flex_col()
-            .gap(ui_text::space(12.0))
-            .child(format!("Close {}?", self.title))
-            .child("Detach keeps the session running. Exit stops it and keeps chat history.")
+            .gap(ui_text::space(10.0))
+            .font_family(ui_text::ui_family())
+            .text_size(ui_text::text(10.0))
+            .text_color(rgb(colors.text))
+            .bg(rgb(colors.panel))
+            .border_1()
+            .border_color(rgb(colors.magenta))
+            // Native: a sheet with rounded corners, a hairline and a shadow, as Hand off is.
+            .map(|dialog| {
+                controls::native(dialog, |dialog| {
+                    dialog
+                        .rounded(controls::radius(12.0))
+                        .border_color(rgb(colors.divider))
+                        .shadow_lg()
+                })
+            })
             .child(
                 div()
+                    .text_size(ui_text::text(13.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(format!("Close {}?", self.title)),
+            )
+            .child(
+                div()
+                    .text_color(rgb(colors.muted))
+                    .child("Detach hides the tab and keeps the session running; reopen it from ＋ › Open a worker or shell. Exit stops it; chat history is kept."),
+            )
+            .child(
+                div()
+                    .pt(ui_text::space(6.0))
                     .flex()
                     .justify_end()
                     .gap(ui_text::space(8.0))
                     .children(
                         [
-                            ("Cancel", None),
-                            ("Detach", Some(TabCloseBehavior::Detach)),
-                            ("Exit", Some(TabCloseBehavior::Exit)),
+                            ("Cancel", None, Button::Secondary),
+                            ("Exit", Some(TabCloseBehavior::Exit), Button::Secondary),
+                            ("Detach", Some(TabCloseBehavior::Detach), Button::Primary),
                         ]
                         .into_iter()
-                        .enumerate()
-                        .map(|(index, (label, choice))| {
-                            behavior::button_content(
-                                ("tab-close-action", index),
-                                label,
-                                div().child(label),
-                            )
-                            .track_focus(&self.buttons[index])
-                            .p(ui_text::space(6.0))
-                            .on_click(cx.listener(move |_, _, _, cx| cx.emit(choice)))
+                        .map(|(label, choice, kind)| {
+                            let index = match choice {
+                                None => 0,
+                                Some(TabCloseBehavior::Detach) => 1,
+                                Some(_) => 2,
+                            };
+                            behavior::button(("tab-close-action", index), label, kind, colors)
+                                .track_focus(&self.buttons[index])
+                                .when(choice == Some(TabCloseBehavior::Exit), |button| {
+                                    button.text_color(rgb(error))
+                                })
+                                .on_click(cx.listener(move |_, _, _, cx| cx.emit(choice)))
                         }),
                     ),
             );

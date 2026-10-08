@@ -171,16 +171,6 @@ pub enum TabCloseBehavior {
     Detach,
     Exit,
 }
-impl TabCloseBehavior {
-    pub const ALL: [Self; 3] = [Self::Ask, Self::Detach, Self::Exit];
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Ask => "Ask",
-            Self::Detach => "Detach",
-            Self::Exit => "Exit",
-        }
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Settings {
@@ -645,7 +635,7 @@ pub struct SettingsPanel {
     account_refresh_focus: FocusHandle,
     account_focus: BTreeMap<String, FocusHandle>,
     theme_focus: Vec<FocusHandle>,
-    close_focus: Vec<FocusHandle>,
+    close_focus: FocusHandle,
     terminal_focus: FocusHandle,
     font_focus: FocusHandle,
     tab_icons_focus: FocusHandle,
@@ -1133,10 +1123,7 @@ impl SettingsPanel {
                 .into_iter()
                 .map(|id| (id, cx.focus_handle()))
                 .collect(),
-            close_focus: TabCloseBehavior::ALL
-                .iter()
-                .map(|_| cx.focus_handle())
-                .collect(),
+            close_focus: cx.focus_handle(),
             theme_focus: ThemeChoice::ALL.iter().map(|_| cx.focus_handle()).collect(),
             terminal_focus: cx.focus_handle(),
             font_focus: cx.focus_handle(),
@@ -2497,14 +2484,14 @@ impl SettingsPanel {
     /// Base radios select a value; the owner keeps the selected tab stop stable.
     /// Arrow navigation changes selection without replacing the focus handle.
     #[allow(clippy::too_many_arguments)]
-    fn choice_row<T: Copy + PartialEq + 'static>(
+    fn choice_row<T: Copy + PartialEq + 'static, const N: usize>(
         &self,
         id: &'static str,
         focus: &FocusHandle,
         title: &'static str,
         description: &'static str,
         selected: T,
-        choices: [(T, &'static str, &'static str); 2],
+        choices: [(T, &'static str, &'static str); N],
         apply: fn(&mut Settings, T),
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -2592,11 +2579,16 @@ impl SettingsPanel {
                             "left" | "right" | "up" | "down"
                         ) && !event.keystroke.modifiers.modified()
                         {
-                            let next = choices
+                            let at = choices
                                 .iter()
-                                .find(|(value, _, _)| *value != selected)
-                                .unwrap()
-                                .0;
+                                .position(|(value, _, _)| *value == selected)
+                                .unwrap_or(0);
+                            let step = if matches!(event.keystroke.key.as_str(), "left" | "up") {
+                                N - 1
+                            } else {
+                                1
+                            };
+                            let next = choices[(at + step) % N].0;
                             view.change(|settings| apply(settings, next), cx);
                             cx.stop_propagation();
                             window.prevent_default();
@@ -2645,15 +2637,20 @@ impl SettingsPanel {
                 settings.panel_tab_icons,
                 cx,
             ))
-            .child(div().flex().flex_col().gap(ui_text::space(8.0))
-                .child("When closing a tab")
-                .child(gpui_kit::base::RadioGroup::new("tab-close-behavior").aria_label("When closing a tab")
-                    .children(TabCloseBehavior::ALL.into_iter().enumerate().map(|(index, choice)| {
-                        behavior::radio_content(("tab-close-choice", index), choice.label(), div().child(choice.label()), settings.tab_close_behavior == choice)
-                            .track_focus(&self.close_focus[index])
-                            .p(ui_text::space(6.0))
-                            .on_click(cx.listener(move |view, _, _, cx| { view.change(|settings| settings.tab_close_behavior = choice, cx); }))
-                    }))))
+            .child(self.choice_row(
+                "tab-close-behavior",
+                &self.close_focus,
+                "When closing a tab",
+                "Ask offers Detach, which hides the tab and keeps the session running, or Exit, which stops it. Workers always detach. This Mac only.",
+                settings.tab_close_behavior,
+                [
+                    (TabCloseBehavior::Ask, "Ask", "tab-close-ask"),
+                    (TabCloseBehavior::Detach, "Detach", "tab-close-detach"),
+                    (TabCloseBehavior::Exit, "Exit", "tab-close-exit"),
+                ],
+                |settings, choice| settings.tab_close_behavior = choice,
+                cx,
+            ))
             .child(self.text_size_row(settings, cx))
             .into_any_element()
     }
