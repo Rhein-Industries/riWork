@@ -92,7 +92,7 @@ pub fn start_shell(
     let project_id = origin.project_id.clone().ok_or(
         "The source belongs to no project, and a terminal needs one to start in. Hand off to a chat instead.",
     )?;
-    manager.without_parent().create_harness_with(
+    manager.for_user().create_harness_with(
         project_id,
         origin.worktree_id.clone(),
         origin.cwd.clone(),

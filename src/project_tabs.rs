@@ -7,7 +7,7 @@ use crate::{
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -42,6 +42,8 @@ pub struct Entry {
     pub hidden: bool,
     #[serde(default)]
     pub worker: bool,
+    #[serde(default)]
+    pub legacy_user_opened: bool,
     pub order: usize,
     pub parent: Option<String>,
     pub children: Vec<Entry>,
@@ -212,6 +214,10 @@ impl Session {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct State {
     #[serde(default)]
+    epoch: String,
+    #[serde(default)]
+    deletion_order: VecDeque<String>,
+    #[serde(default)]
     revision: u64,
     entries: Vec<Entry>,
     #[serde(default)]
@@ -261,6 +267,19 @@ impl TabStore {
             }
         }
         let before = durable_bytes(&state)?;
+        if state.epoch.is_empty() {
+            state.epoch = uuid::Uuid::new_v4().to_string();
+        }
+        // Old stores had no ordering metadata. Preserve their keys deterministically;
+        // every deletion recorded by this version is ordered by insertion.
+        let queued = state.deletion_order.iter().cloned().collect::<HashSet<_>>();
+        let mut legacy = state
+            .deleted
+            .difference(&queued)
+            .cloned()
+            .collect::<Vec<_>>();
+        legacy.sort();
+        state.deletion_order.extend(legacy);
         let answer = f(&mut state)?;
         if exists && before == durable_bytes(&state)? {
             return Ok(answer);
@@ -339,16 +358,36 @@ impl TabStore {
                 }
             }
         }
+        // History outside the saved panes starts hidden on the first migration.
+        let mut remaining = known.into_iter().collect::<Vec<_>>();
+        remaining.sort();
+        for key in remaining {
+            if !state.entries.iter().any(|entry| entry.key == key) {
+                seed(&mut state, key, true);
+            }
+        }
         Ok(state)
     }
     /// Merge metadata without replacing membership or user operations. A partial or
     /// stale snapshot cannot delete entries; explicit deletion calls `forget`.
     /// Complete host/registry inventory: prune vanished sessions and bound stopped history.
     pub fn reconcile_inventory(&self, sessions: &[Session]) -> Result<Vec<Entry>, String> {
+        self.reconcile(sessions)?;
         self.transact(|state| {
             // An unreadable metadata directory is unknown, not an empty inventory.
             if let Ok(mut known) = self.metadata_keys() {
                 known.extend(sessions.iter().map(|s| s.key.clone()));
+                // A mid-create/unreadable info file is not evidence of deletion.
+                if let Ok(dirs) = fs::read_dir(crate::chat::log::chats_dir(&self.home)) {
+                    known.extend(
+                        dirs.filter_map(Result::ok)
+                            .filter(|d| d.path().is_dir())
+                            .filter_map(|d| {
+                                let key = format!("chat:{}", d.file_name().to_string_lossy());
+                                valid_key(&key).ok().map(|_| key)
+                            }),
+                    );
+                }
                 state.entries.retain(|e| known.contains(&e.key));
                 state.retired.retain(|key| known.contains(key));
             }
@@ -389,7 +428,20 @@ impl TabStore {
         })?;
         self.reconcile(sessions)
     }
+    /// Creation is explicit user intent, including when the first registration
+    /// itself initializes a store and migration seeds the new metadata as hidden.
+    pub fn register_created(&self, session: &Session) -> Result<(), String> {
+        self.reconcile_with_creation(std::slice::from_ref(session), true)
+            .map(|_| ())
+    }
     pub fn reconcile(&self, sessions: &[Session]) -> Result<Vec<Entry>, String> {
+        self.reconcile_with_creation(sessions, false)
+    }
+    fn reconcile_with_creation(
+        &self,
+        sessions: &[Session],
+        created: bool,
+    ) -> Result<Vec<Entry>, String> {
         self.transact(|state| {
             let dead_shells = sessions
                 .iter()
@@ -429,7 +481,7 @@ impl TabStore {
                     })
                     .cloned();
                 if let Some(entry) = state.entries.iter_mut().find(|e| e.key == session.key) {
-                    if session.orchestrator && entry.title.is_empty() && !entry.hidden {
+                    if session.orchestrator && (created || (entry.title.is_empty() && !entry.hidden)) {
                         entry.pinned = true;
                         entry.hidden = false;
                     }
@@ -441,13 +493,17 @@ impl TabStore {
                         .rename
                         .clone()
                         .unwrap_or_else(|| entry.base_title.clone());
-                    if entry.created == 0 && session.worker {
+                    if created && !session.worker {
+                        entry.hidden = false;
+                    }
+                    if entry.created == 0 && session.parent_id.is_some() {
                         entry.hidden = true;
                     }
                     entry.created = session.created;
                     entry.status = session.status.clone();
                     entry.parent = parent;
-                    entry.worker = session.worker;
+                    entry.worker |= session.worker
+                        && !(entry.legacy_user_opened && session.parent_id.is_none());
                 } else {
                     state.entries.push(Entry {
                         key: session.key.clone(),
@@ -460,6 +516,7 @@ impl TabStore {
                         hidden: session.worker
                             || (session.kind == Kind::Shell && session.status == Status::Stopped),
                         worker: session.worker,
+                        legacy_user_opened: false,
                         order: 0,
                         parent,
                         children: vec![],
@@ -498,6 +555,7 @@ impl TabStore {
         self.list()?;
         self.transact(|state| {
             Ok(Snapshot {
+                epoch: state.epoch.clone(),
                 revision: state.revision,
                 entries: tree(state),
                 known_keys: state
@@ -515,20 +573,18 @@ impl TabStore {
         self.transact(|state| {
             state.entries.retain(|e| e.key != key);
             state.deleted.insert(key.into());
+            state.deletion_order.retain(|old| old != key);
+            state.deletion_order.push_back(key.into());
             for child in &mut state.entries {
                 if child.parent.as_deref() == Some(key) {
                     child.parent = None;
                 }
             }
-            if state.deleted.len() > 1024 {
-                let mut keys = state.deleted.iter().cloned().collect::<Vec<_>>();
-                keys.sort();
-                for old in keys
-                    .into_iter()
-                    .filter(|old| old != key)
-                    .take(state.deleted.len() - 1024)
-                {
+            while state.deleted.len() > 1024 {
+                if let Some(old) = state.deletion_order.pop_front() {
                     state.deleted.remove(&old);
+                } else {
+                    break;
                 }
             }
             Ok(())
@@ -618,6 +674,7 @@ fn seed(state: &mut State, key: String, hidden: bool) {
     } else {
         Kind::Shell
     };
+    let legacy_user_opened = !hidden && kind == Kind::Shell;
     state.entries.push(Entry {
         key,
         kind,
@@ -628,6 +685,7 @@ fn seed(state: &mut State, key: String, hidden: bool) {
         pinned: false,
         hidden,
         worker: false,
+        legacy_user_opened,
         order: state.entries.len(),
         parent: None,
         children: vec![],
@@ -813,10 +871,7 @@ pub fn inventory(home: &Path, project: &str) -> Result<Vec<Session>, String> {
             kind: Kind::Shell,
             title: name,
             parent_id: shell.parent_id.clone(),
-            worker: shell.parent_id.is_some()
-                || (shell.harness.is_some()
-                    && !shell.user_opened
-                    && shell.kind != crate::sessions::ShellKind::Orchestrator),
+            worker: shell.is_worker(),
             status,
             orchestrator: shell.kind == crate::sessions::ShellKind::Orchestrator,
             created: shell.created_at_unix,
@@ -866,7 +921,7 @@ pub fn register_shell(
             .unwrap_or_else(|| "Shell".into());
         branch.map_or(name.clone(), |b| format!("{name} · {b}"))
     };
-    TabStore::at(home, project)?.reconcile(&[Session {
+    TabStore::at(home, project)?.register_created(&Session {
         title_priority: if shell.editor_path.is_some() {
             2
         } else {
@@ -876,18 +931,16 @@ pub fn register_shell(
         kind: Kind::Shell,
         title: name,
         parent_id: shell.parent_id.clone(),
-        worker: shell.parent_id.is_some()
-            || (shell.harness.is_some()
-                && !shell.user_opened
-                && shell.kind != crate::sessions::ShellKind::Orchestrator),
+        worker: shell.is_worker(),
         status: Status::Done,
         orchestrator: shell.kind == crate::sessions::ShellKind::Orchestrator,
         created: shell.created_at_unix,
-    }])?;
+    })?;
     Ok(())
 }
 #[derive(Clone, Debug)]
 pub struct Snapshot {
+    pub epoch: String,
     /// Internal ownership includes tombstones; unrelated local views are outside this project.
     pub known_keys: HashSet<String>,
     pub revision: u64,
@@ -924,7 +977,7 @@ pub fn wire(entries: &[Entry]) -> serde_json::Value {
             .iter()
             .filter_map(|k| take(k, nodes, children))
             .collect::<Vec<_>>();
-        let mut value = serde_json::json!({"key":e.key,"kind":e.kind,"title":e.title,"status":e.status,"pinned":e.pinned,"hidden":e.hidden,"order":e.order,"parent":e.parent,"child_count":e.child_count});
+        let mut value = serde_json::json!({"key":e.key,"kind":e.kind,"title":e.title,"status":e.status,"pinned":e.pinned,"hidden":e.hidden,"worker":e.worker,"order":e.order,"parent":e.parent,"child_count":e.child_count});
         value
             .as_object_mut()
             .unwrap()
@@ -981,6 +1034,155 @@ mod tests {
             worker: false,
             created: n.into(),
         }
+    }
+    #[test]
+    fn worker_flag_is_present_on_roots_children_and_orphans() {
+        let f = Fixture::new();
+        let root = session(2);
+        let mut child = session(3);
+        child.parent_id = Some(id(2));
+        child.worker = true;
+        let mut harness = session(4);
+        harness.worker = true;
+        let wire = wire(
+            &f.store
+                .reconcile(&[root.clone(), child.clone(), harness])
+                .unwrap(),
+        );
+        assert_eq!(wire["entries"][0]["worker"], false);
+        assert_eq!(wire["entries"][0]["children"][0]["worker"], true);
+        assert_eq!(wire["entries"][1]["worker"], true);
+        f.store.forget(&root.key).unwrap();
+        let mut orphan = child;
+        orphan.parent_id = None;
+        orphan.worker = false;
+        assert!(
+            f.store
+                .reconcile(&[orphan])
+                .unwrap()
+                .iter()
+                .find(|e| e.key == session(3).key)
+                .unwrap()
+                .worker
+        );
+    }
+    #[test]
+    fn epoch_is_stable_until_the_store_is_reset_and_deletions_evict_oldest() {
+        let f = Fixture::new();
+        let old = f.store.snapshot().unwrap();
+        assert_eq!(old.epoch, f.store.snapshot().unwrap().epoch);
+        fs::remove_file(f.home.join("project-tabs").join(format!("{}.json", id(1)))).unwrap();
+        let reset = f.store.snapshot().unwrap();
+        assert_ne!(reset.epoch, old.epoch);
+        assert_eq!(wire_snapshot(&reset)["epoch"], reset.epoch);
+        f.store
+            .transact(|state| {
+                // Lexicographically largest key is deliberately the oldest.
+                let keys = (0..1024)
+                    .rev()
+                    .map(|n| format!("chat:{}", uuid::Uuid::from_u128(n)))
+                    .collect::<Vec<_>>();
+                state.deleted.extend(keys.iter().cloned());
+                state.deletion_order.extend(keys);
+                Ok(())
+            })
+            .unwrap();
+        f.store
+            .forget(&format!("chat:{}", uuid::Uuid::from_u128(1024)))
+            .unwrap();
+        f.store
+            .transact(|state| {
+                assert!(
+                    !state
+                        .deleted
+                        .contains(&format!("chat:{}", uuid::Uuid::from_u128(1023)))
+                );
+                assert!(
+                    state
+                        .deleted
+                        .contains(&format!("chat:{}", uuid::Uuid::from_u128(0)))
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+    #[test]
+    fn update_rejects_unknown_fields_on_every_variant() {
+        for action in ["pin", "unpin", "hide", "unhide", "move", "rename"] {
+            let mut value = serde_json::json!({"action":action,"key":session(2).key});
+            if action == "rename" {
+                value["title"] = serde_json::json!("title");
+            }
+            if action == "move" {
+                value["before"] = serde_json::Value::Null;
+            }
+            assert!(serde_json::from_value::<Update>(value.clone()).is_ok());
+            value["unexpected"] = serde_json::json!(true);
+            assert!(serde_json::from_value::<Update>(value).is_err());
+        }
+    }
+    #[test]
+    fn migration_hides_old_history_preserves_legacy_harness_and_skips_bad_chats() {
+        use crate::layouts::{Layout, ProjectLayout, SavedPane};
+        let f = Fixture::new();
+        for n in [2, 3] {
+            let dir = f.home.join("chats").join(id(n));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("info.json"), serde_json::to_vec(&serde_json::json!({"id":id(n),"provider":"codex","project_id":id(1),"cwd":"/tmp","title":"history","created_at_unix":n})).unwrap()).unwrap();
+        }
+        // Mid-create directory plus malformed metadata must not poison the list.
+        fs::create_dir_all(f.home.join("chats").join(id(8))).unwrap();
+        let bad = f.home.join("chats").join(id(9));
+        fs::create_dir_all(&bad).unwrap();
+        fs::write(bad.join("info.json"), "bad").unwrap();
+        assert_eq!(
+            crate::chat::log::read_infos_checked(&f.home).unwrap().len(),
+            2
+        );
+        fs::write(f.home.join("sessions.json"), serde_json::to_vec(&serde_json::json!({"sessions":[{"id":id(4),"project_id":id(1),"kind":"project","cwd":"/tmp","harness":"codex","created_at_unix":1}]})).unwrap()).unwrap();
+        let mut layout: ProjectLayout =
+            serde_json::from_value(serde_json::json!({"layout":Layout::Pane(1),"active_pane":1}))
+                .unwrap();
+        layout.panes.insert(
+            1,
+            SavedPane {
+                tabs: vec![
+                    SavedTab::Chat { chat_id: id(2) },
+                    SavedTab::Shell { shell_id: id(4) },
+                ],
+                ..Default::default()
+            },
+        );
+        LayoutStore::open(&f.home)
+            .unwrap()
+            .save(&id(1), &layout)
+            .unwrap();
+        let mut harness = session(4);
+        harness.kind = Kind::Shell;
+        harness.key = format!("shell:{}", id(4));
+        harness.worker = true;
+        let sessions = vec![session(2), session(3), harness];
+        let list = f.store.reconcile(&sessions).unwrap();
+        assert!(
+            !list
+                .iter()
+                .find(|e| e.key == session(2).key)
+                .unwrap()
+                .hidden
+        );
+        assert!(
+            list.iter()
+                .find(|e| e.key == session(3).key)
+                .unwrap()
+                .hidden
+        );
+        let legacy = list
+            .iter()
+            .find(|e| e.key == format!("shell:{}", id(4)))
+            .unwrap();
+        assert!(!legacy.hidden && !legacy.worker);
+        let list = f.store.reconcile(&sessions).unwrap();
+        assert!(!list.iter().find(|e| e.key == legacy.key).unwrap().worker);
     }
     #[test]
     fn workers_start_hidden_open_on_both_devices_and_never_resurrect_after_detach() {
@@ -1601,6 +1803,7 @@ mod tests {
 
 pub fn wire_snapshot(snapshot: &Snapshot) -> serde_json::Value {
     let mut reply = wire(&snapshot.entries);
+    reply["epoch"] = serde_json::json!(snapshot.epoch);
     reply["revision"] = serde_json::json!(snapshot.revision);
     reply
 }

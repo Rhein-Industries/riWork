@@ -204,26 +204,38 @@ pub fn read_infos_checked(home: &Path) -> Result<Vec<ChatInfo>, String> {
     };
     let mut infos = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let Some(dir) = chat_dir(home, &name) else {
-            continue;
-        };
-        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
-            continue;
+        let read = (|| -> Result<Option<ChatInfo>, String> {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(dir) = chat_dir(home, &name) else {
+                return Ok(None);
+            };
+            if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                return Ok(None);
+            }
+            let text = fs::read_to_string(dir.join(INFO))
+                .map_err(|e| format!("{}: {e}", dir.display()))?;
+            let mut info: ChatInfo =
+                serde_json::from_str(&text).map_err(|e| format!("{}: {e}", dir.display()))?;
+            if info.id != name {
+                return Err(format!(
+                    "{}: chat metadata identity mismatch",
+                    dir.display()
+                ));
+            }
+            if !matches!(
+                info.state,
+                super::model::ChatState::Stopped | super::model::ChatState::Failed { .. }
+            ) {
+                info.state = super::model::ChatState::Stopped;
+            }
+            Ok(Some(info))
+        })();
+        match read {
+            Ok(Some(info)) => infos.push(info),
+            Ok(None) => {}
+            Err(error) => eprintln!("riwork tabs: skipping unreadable chat metadata: {error}"),
         }
-        let text = fs::read_to_string(dir.join(INFO)).map_err(|e| e.to_string())?;
-        let mut info: ChatInfo = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        if info.id != name {
-            return Err("chat metadata identity mismatch".into());
-        }
-        if !matches!(
-            info.state,
-            super::model::ChatState::Stopped | super::model::ChatState::Failed { .. }
-        ) {
-            info.state = super::model::ChatState::Stopped;
-        }
-        infos.push(info);
     }
     infos.sort_by(|a, b| (a.created_at_unix, &a.id).cmp(&(b.created_at_unix, &b.id)));
     Ok(infos)

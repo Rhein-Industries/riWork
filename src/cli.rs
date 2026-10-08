@@ -1641,6 +1641,11 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 manager
             };
 
+            let manager = if take_flag(&mut args, "--background") {
+                manager.for_automation()
+            } else {
+                manager
+            };
             let project = take_option(&mut args, "--project")?;
             let worktree = take_option(&mut args, "--worktree")?;
             let command = take_option(&mut args, "--command")?;
@@ -4250,47 +4255,57 @@ mod open_tests {
     }
 }
 
-fn tabs_command(mut args: Vec<String>, _json: bool) -> Result<(), String> {
+fn tabs_command(args: Vec<String>, _json: bool) -> Result<(), String> {
+    let home = crate::paths::riwork_home()?;
+    match tabs_result(args, &home) {
+        Ok(value) => print_json(&value),
+        Err((code, message)) => {
+            print_json(&serde_json::json!({"error":{"code":code,"message":message}}))
+        }
+    }
+}
+
+fn tabs_result(
+    mut args: Vec<String>,
+    home: &Path,
+) -> Result<serde_json::Value, (&'static str, String)> {
+    let invalid = |error: String| ("invalid_request", error);
+    let internal = |error: String| ("cli_error", error);
     let operation = pop_command(&mut args, "list");
-    let project = take_option(&mut args, "--project")?.ok_or("--project is required")?;
-    let raw_update = take_verbatim_option(&mut args, "--update-json")?;
-    let open_key = take_option(&mut args, "--key")?;
-    ensure_empty(&args)?;
+    let project = take_option(&mut args, "--project")
+        .map_err(invalid)?
+        .ok_or_else(|| invalid("--project is required".into()))?;
+    let raw_update = take_verbatim_option(&mut args, "--update-json").map_err(invalid)?;
+    let open_key = take_option(&mut args, "--key").map_err(invalid)?;
+    ensure_empty(&args).map_err(invalid)?;
     let update = match operation.as_str() {
         "list" if raw_update.is_none() && open_key.is_none() => None,
         "open" if raw_update.is_none() => {
-            let key = open_key.ok_or("--key is required")?;
-            crate::project_tabs::valid_key(&key)?;
+            let key = open_key.ok_or_else(|| invalid("--key is required".into()))?;
+            crate::project_tabs::valid_key(&key).map_err(invalid)?;
             Some(crate::project_tabs::Update::Unhide { key })
         }
-        "update" => {
-            let update: crate::project_tabs::Update =
-                serde_json::from_str(&raw_update.ok_or("--update-json is required")?)
-                    .map_err(|e| e.to_string())?;
-            update.validate()?;
+        "update" if open_key.is_none() => {
+            let update: crate::project_tabs::Update = serde_json::from_str(
+                &raw_update.ok_or_else(|| invalid("--update-json is required".into()))?)
+                .map_err(|e| invalid(e.to_string()))?;
+            update.validate().map_err(invalid)?;
             Some(update)
         }
-        _ => {
-            return Err(
-                "Usage: riwork tabs (list|update|open) --project UUID [--update-json JSON | --key KIND:UUID]".into(),
-            );
-        }
+        _ => return Err(invalid("Usage: riwork tabs (list|update|open) --project UUID [--update-json JSON | --key KIND:UUID]".into())),
     };
-    let home = crate::paths::riwork_home()?;
-    let store = crate::project_tabs::TabStore::at(&home, &project)?;
-    let result = (|| {
-        let inventory = crate::project_tabs::inventory(&home, &project)?;
-        store.reconcile_inventory(&inventory)?;
-        if let Some(update) = update {
-            store.update(&update)?;
-        }
-        Ok::<_, String>(crate::project_tabs::wire_snapshot(
-            &crate::project_tabs::snapshot_for(&store, &inventory)?,
-        ))
-    })();
-    match result {
-        Ok(value) => print_json(&value),
-        Err(error) => {
+    let store = crate::project_tabs::TabStore::at(home, &project).map_err(invalid)?;
+    let projects = Store::open(home)
+        .map_err(internal)?
+        .snapshot()
+        .map_err(internal)?;
+    if !projects.projects.iter().any(|p| p.id == project) {
+        return Err(("not_found", format!("unknown project {project}")));
+    }
+    let inventory = crate::project_tabs::inventory(home, &project).map_err(internal)?;
+    store.reconcile_inventory(&inventory).map_err(internal)?;
+    if let Some(update) = update {
+        store.update(&update).map_err(|error| {
             let code = match error.as_str() {
                 "session tab not found" | "move target not found" => "not_found",
                 "unpin the tab before hiding it"
@@ -4298,7 +4313,30 @@ fn tabs_command(mut args: Vec<String>, _json: bool) -> Result<(), String> {
                 | "move target must be a sibling in the same pin group" => "invalid_request",
                 _ => "cli_error",
             };
-            print_json(&serde_json::json!({"error":{"code":code,"message":error}}))
+            (code, error)
+        })?;
+    }
+    Ok(crate::project_tabs::wire_snapshot(
+        &crate::project_tabs::snapshot_for(&store, &inventory).map_err(internal)?,
+    ))
+}
+
+#[cfg(test)]
+mod tab_error_tests {
+    use super::*;
+    #[test]
+    fn tab_cli_classifies_bad_keys_titles_and_unknown_projects() {
+        let home = env::temp_dir().join(format!("tabs-errors-{}", uuid::Uuid::new_v4()));
+        let project = uuid::Uuid::new_v4().to_string();
+        for (operation, option, value) in [
+            ("open", "--key", "bad".to_owned()),
+            ("update", "--update-json", serde_json::json!({"action":"rename","key":format!("chat:{project}"),"title":"bad\u{202e}"}).to_string()),
+        ] {
+            let args = vec![operation.into(), "--project".into(), project.clone(), option.into(), value];
+            assert_eq!(tabs_result(args, &home).unwrap_err().0, "invalid_request");
         }
+        let args = vec!["list".into(), "--project".into(), project];
+        assert_eq!(tabs_result(args, &home).unwrap_err().0, "not_found");
+        let _ = std::fs::remove_dir_all(home);
     }
 }

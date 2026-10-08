@@ -111,6 +111,23 @@ pub struct ShellSession {
     pub alive: bool,
 }
 
+impl ShellSession {
+    pub fn is_worker(&self) -> bool {
+        self.kind != ShellKind::Orchestrator && (self.parent_id.is_some() || !self.user_opened)
+    }
+}
+
+fn user_shell_caller() -> bool {
+    ![
+        "RIWORK_CHAT_ID",
+        "RIWORK_SHELL_ID",
+        "RIWORK_ORCHESTRATOR_SCOPE",
+        "RIWORK_AUTOMATION_ID",
+    ]
+    .iter()
+    .any(|key| std::env::var_os(key).is_some_and(|value| !value.is_empty()))
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionMetrics {
     pub cpu_percent: f32,
@@ -146,6 +163,7 @@ pub struct SessionManager {
     tmux: PathBuf,
     socket_name: String,
     inherit_parent: bool,
+    user_creation: bool,
 }
 
 impl SessionManager {
@@ -172,6 +190,7 @@ impl SessionManager {
             tmux,
             socket_name,
             inherit_parent: true,
+            user_creation: user_shell_caller(),
         })
     }
 
@@ -738,6 +757,18 @@ impl SessionManager {
     pub fn without_parent(&self) -> Self {
         let mut manager = self.clone();
         manager.inherit_parent = false;
+        manager
+    }
+    /// Explicit desktop/phone user action, independent of the app's environment.
+    pub fn for_user(&self) -> Self {
+        let mut manager = self.without_parent();
+        manager.user_creation = true;
+        manager
+    }
+    /// Automation that has no session parent still creates hidden workers.
+    pub fn for_automation(&self) -> Self {
+        let mut manager = self.clone();
+        manager.user_creation = false;
         manager
     }
     pub fn registered_sessions(&self) -> Result<Vec<ShellSession>, String> {
@@ -2294,7 +2325,8 @@ impl SessionManager {
             .unwrap_or_default()
             .as_secs();
         Ok(ShellSession {
-            user_opened: true,
+            user_opened: self.user_creation
+                && (!self.inherit_parent || crate::project_tabs::caller_parent().is_none()),
             parent_id: (kind == ShellKind::Project && self.inherit_parent)
                 .then(|| {
                     crate::project_tabs::same_project_parent(
@@ -2692,6 +2724,7 @@ mod compat_tests {
                 tmux: PathBuf::from("/unused/tmux"),
                 socket_name: "unused".into(),
                 inherit_parent: true,
+                user_creation: user_shell_caller(),
             }
         }
 
@@ -6044,6 +6077,7 @@ mod tests {
             tmux: PathBuf::from("/unused/tmux"),
             socket_name: "unused".into(),
             inherit_parent: true,
+            user_creation: user_shell_caller(),
         };
         manager
             .write_registry(&Registry {
@@ -6130,6 +6164,7 @@ mod tests {
             tmux,
             socket_name: "isolated-plain".into(),
             inherit_parent: true,
+            user_creation: user_shell_caller(),
         };
         let shell = manager
             .new_tmux_session(
@@ -6185,6 +6220,7 @@ mod tests {
             tmux,
             socket_name: "isolated-launch".into(),
             inherit_parent: true,
+            user_creation: user_shell_caller(),
         };
         (manager, capture)
     }
@@ -6500,6 +6536,7 @@ mod tests {
             tmux,
             socket_name: "isolated-fake".into(),
             inherit_parent: true,
+            user_creation: user_shell_caller(),
         };
         let session = manager
             .new_tmux_session(
@@ -6551,6 +6588,7 @@ mod tests {
             tmux: PathBuf::from("/unused/tmux"),
             socket_name: "unused".into(),
             inherit_parent: true,
+            user_creation: user_shell_caller(),
         };
         let legacy = scope_session(ShellKind::Project, None);
         manager
@@ -6581,6 +6619,7 @@ mod tests {
             tmux: PathBuf::from("/unused/tmux"),
             socket_name: "unused".into(),
             inherit_parent: true,
+            user_creation: user_shell_caller(),
         };
         let session = scope_session(ShellKind::Project, None);
         manager
