@@ -44,6 +44,8 @@ pub struct Entry {
     pub worker: bool,
     #[serde(default)]
     pub legacy_user_opened: bool,
+    #[serde(default)]
+    pub legacy_dismissed: bool,
     pub order: usize,
     pub parent: Option<String>,
     pub children: Vec<Entry>,
@@ -354,7 +356,11 @@ impl TabStore {
             hidden.sort();
             for key in hidden {
                 if known.contains(&key) {
-                    seed(&mut state, key, true);
+                    seed(&mut state, key.clone(), true);
+                    if let Some(entry) = state.entries.iter_mut().find(|entry| entry.key == key && entry.hidden)
+                    {
+                        entry.legacy_dismissed = true;
+                    }
                 }
             }
         }
@@ -481,7 +487,11 @@ impl TabStore {
                     })
                     .cloned();
                 if let Some(entry) = state.entries.iter_mut().find(|e| e.key == session.key) {
-                    if session.orchestrator && (created || (entry.title.is_empty() && !entry.hidden)) {
+                    if session.orchestrator
+                        && (created
+                            || (entry.created == 0 && !entry.legacy_dismissed)
+                            || (entry.title.is_empty() && !entry.hidden))
+                    {
                         entry.pinned = true;
                         entry.hidden = false;
                     }
@@ -517,6 +527,7 @@ impl TabStore {
                             || (session.kind == Kind::Shell && session.status == Status::Stopped),
                         worker: session.worker,
                         legacy_user_opened: false,
+                        legacy_dismissed: false,
                         order: 0,
                         parent,
                         children: vec![],
@@ -686,6 +697,7 @@ fn seed(state: &mut State, key: String, hidden: bool) {
         hidden,
         worker: false,
         legacy_user_opened,
+        legacy_dismissed: false,
         order: state.entries.len(),
         parent: None,
         children: vec![],
@@ -1125,7 +1137,7 @@ mod tests {
     fn migration_hides_old_history_preserves_legacy_harness_and_skips_bad_chats() {
         use crate::layouts::{Layout, ProjectLayout, SavedPane};
         let f = Fixture::new();
-        for n in [2, 3] {
+        for n in [2, 3, 5] {
             let dir = f.home.join("chats").join(id(n));
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("info.json"), serde_json::to_vec(&serde_json::json!({"id":id(n),"provider":"codex","project_id":id(1),"cwd":"/tmp","title":"history","created_at_unix":n})).unwrap()).unwrap();
@@ -1137,7 +1149,7 @@ mod tests {
         fs::write(bad.join("info.json"), "bad").unwrap();
         assert_eq!(
             crate::chat::log::read_infos_checked(&f.home).unwrap().len(),
-            2
+            3
         );
         fs::write(f.home.join("sessions.json"), serde_json::to_vec(&serde_json::json!({"sessions":[{"id":id(4),"project_id":id(1),"kind":"project","cwd":"/tmp","harness":"codex","created_at_unix":1}]})).unwrap()).unwrap();
         let mut layout: ProjectLayout =
@@ -1161,8 +1173,12 @@ mod tests {
         harness.kind = Kind::Shell;
         harness.key = format!("shell:{}", id(4));
         harness.worker = true;
-        let sessions = vec![session(2), session(3), harness];
+        let mut orch = session(5);
+        orch.orchestrator = true;
+        let sessions = vec![session(2), session(3), harness, orch];
         let list = f.store.reconcile(&sessions).unwrap();
+        let orch = list.iter().find(|entry| entry.key == session(5).key).unwrap();
+        assert!(orch.pinned && !orch.hidden && !orch.worker);
         assert!(
             !list
                 .iter()
