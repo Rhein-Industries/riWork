@@ -14473,6 +14473,52 @@ mod main_pane_tests {
     }
 
     #[gpui::test]
+    fn the_selected_strip_tab_stays_in_view_when_it_or_a_pinned_tab_is_renamed(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (handle, workspace, chats, _, _) = strip_workspace(cx, 24);
+        let settle = |cx: &mut gpui::TestAppContext| {
+            for _ in 0..4 {
+                crate::form_input::test_turn(cx, handle, |_, _| {});
+            }
+        };
+        let rename = |key: String, title: &str, cx: &mut gpui::TestAppContext| {
+            let title = title.to_owned();
+            crate::form_input::test_turn(cx, handle, |window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace
+                        .change_shared_tab(&project_tabs::Update::Rename { key, title }, window, cx)
+                        .unwrap();
+                });
+            });
+        };
+        let pinned = format!("chat:{}", chats[0].id);
+        crate::form_input::test_turn(cx, handle, |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace
+                    .change_shared_tab(&project_tabs::Update::Pin { key: pinned.clone() }, window, cx)
+                    .unwrap();
+            });
+        });
+        // The last tab, selected: the strip scrolls to its end.
+        let key = format!("chat:{}", chats[23].id);
+        let selected = strip_tab_id(&workspace, &key, cx);
+        crate::form_input::test_turn(cx, handle, |window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.select_tab(1, selected, window, cx));
+        });
+        settle(cx);
+        assert!(strip_shows(handle, selected, cx));
+        // Its own title grows past ＋.
+        rename(key, "A much longer title for the selected tab at the strip's end", cx);
+        settle(cx);
+        assert!(strip_shows(handle, selected, cx), "revealed after renaming itself");
+        // The pinned tab grows, narrowing the scrolling area from the left.
+        rename(pinned, "A much longer title for the pinned tab before the rest", cx);
+        settle(cx);
+        assert!(strip_shows(handle, selected, cx), "revealed after a pinned tab grew");
+    }
+
+    #[gpui::test]
     fn the_strip_draws_panels_then_pinned_then_shared_order_as_named_tabs(
         cx: &mut gpui::TestAppContext,
     ) {

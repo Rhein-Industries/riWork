@@ -34,14 +34,26 @@ pub(crate) struct StripShape {
     /// shared Move, a rename or a peer's update can shift it without changing the rest.
     position: Option<usize>,
     lead: i32,
+    /// The selected tab's own width, and what sits fixed before the scrolling tabs (panels
+    /// and pinned tabs): renaming either moves the selected tab's edges.
+    own: i32,
+    fixed: i32,
     /// Frames left to keep the selected tab in view after a change.
     settling: u8,
 }
 
 impl StripShape {
     fn same_place(&self, other: &Self) -> bool {
-        (self.width, self.tabs, self.selected, self.position, self.lead)
-            == (other.width, other.tabs, other.selected, other.position, other.lead)
+        (self.width, self.tabs, self.selected, self.position, self.lead, self.own, self.fixed)
+            == (
+                other.width,
+                other.tabs,
+                other.selected,
+                other.position,
+                other.lead,
+                other.own,
+                other.fixed,
+            )
     }
 }
 
@@ -511,6 +523,8 @@ impl Workspace {
                 lead: position.map_or(0, |at| {
                     sessions[..at].iter().map(|i| width(*i)).sum::<f32>().round() as i32
                 }),
+                own: position.map_or(0, |at| width(sessions[at]).round() as i32),
+                fixed: fixed.round() as i32,
                 settling: 0,
             };
             // GPUI measures against the previous frame, so the request is repeated for the
