@@ -50,6 +50,7 @@ pub fn chat_info(model: Option<&str>) -> ChatInfo {
         parent_id: None,
         user_title: None,
         first_user_message: None,
+        provider_title: None,
         id: Uuid::new_v4().to_string(),
         provider: Provider::Codex,
         project_id: None,

@@ -2315,3 +2315,39 @@ fn restored_rate_limits_remember_the_status_and_allowed_resolves_the_saved_item(
         assert_notice(&resolved[0], "rate_limit:seven_day", true);
     }
 }
+
+#[test]
+fn the_sessions_title_comes_from_claudes_transcript_custom_over_ai_and_once() {
+    let home = std::env::temp_dir().join(format!("rw-claude-home-{}", Uuid::new_v4()));
+    let folder = home.join("projects").join("-tmp-project");
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("sess-1.jsonl");
+    let append = |line: &str| {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(line.as_bytes()).unwrap();
+    };
+    let mut titles = TranscriptTitles::new(Some(home.clone()));
+    // No transcript yet, then one without a title.
+    assert_eq!(titles.check("sess-1"), None);
+    append("{\"type\":\"user\",\"message\":{\"content\":\"ai-title is just words here\"}}\n");
+    assert_eq!(titles.check("sess-1"), None);
+    append("{\"type\":\"ai-title\",\"aiTitle\":\"Fix flaky build\",\"sessionId\":\"sess-1\"}\n");
+    assert_eq!(titles.check("sess-1").as_deref(), Some("Fix flaky build"));
+    // Told once; a half-written line waits for its end.
+    assert_eq!(titles.check("sess-1"), None);
+    append("{\"type\":\"custom-title\",\"customTitle\":\"Release");
+    assert_eq!(titles.check("sess-1"), None);
+    append(" prep\",\"sessionId\":\"sess-1\"}\n");
+    assert_eq!(titles.check("sess-1").as_deref(), Some("Release prep"));
+    // A later AI title does not replace Claude's custom one.
+    append("{\"type\":\"ai-title\",\"aiTitle\":\"Something else\",\"sessionId\":\"sess-1\"}\n");
+    assert_eq!(titles.check("sess-1"), None);
+    // Another session starts over.
+    assert_eq!(titles.check("sess-2"), None);
+    let _ = std::fs::remove_dir_all(home);
+}

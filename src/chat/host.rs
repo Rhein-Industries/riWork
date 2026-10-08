@@ -530,6 +530,18 @@ impl Inner {
                 self.learn(info.provider_thread_id, info.model, info.effort);
                 false
             }
+            ChatEvent::ProviderTitle { title } => {
+                let title = title
+                    .trim()
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .collect::<String>();
+                if !title.is_empty() && self.info.provider_title.as_ref() != Some(&title) {
+                    self.info.provider_title = Some(title);
+                    self.publish_info();
+                }
+                false
+            }
             ChatEvent::State {
                 state: ChatState::Stopped,
             } => {
@@ -655,6 +667,19 @@ pub struct Host {
 }
 
 /// Lets another thread end `Host::run`.
+/// Whether a message may name the chat: only a chat with no title of its own yet, never an
+/// orchestrator (whose name is fixed), and only once. A resume, a host restart or a log
+/// read keeps `first_user_message`, so nothing here derives it again.
+fn needs_auto_title(info: &ChatInfo) -> bool {
+    info.first_user_message.is_none()
+        && info.orchestrator.is_none()
+        && info.provider_title.is_none()
+        && info
+            .user_title
+            .as_deref()
+            .is_none_or(|title| title.trim().is_empty())
+}
+
 #[cfg(test)]
 #[derive(Clone)]
 pub struct Stopper(Arc<Shared>);
@@ -1230,6 +1255,7 @@ fn create_identified(
             .filter(|t| !t.trim().is_empty())
             .map(|_| title.clone()),
         first_user_message: None,
+        provider_title: None,
         id: id.clone(),
         provider: new.provider,
         project_id: new.project_id,
@@ -1692,9 +1718,12 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
     lock(&driver).command(command.clone())?;
     if let ChatCommand::Send { text } = &command {
         let mut inner = lock(&chat.inner);
-        if inner.info.first_user_message.is_none() {
-            inner.info.first_user_message = Some(crate::project_tabs::message_title(text));
-            inner.publish_info();
+        if needs_auto_title(&inner.info) {
+            let title = crate::project_tabs::message_title(text);
+            if !title.is_empty() {
+                inner.info.first_user_message = Some(title);
+                inner.publish_info();
+            }
         }
     }
     if let ChatCommand::Configure {

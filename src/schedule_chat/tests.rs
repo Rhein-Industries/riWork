@@ -392,6 +392,7 @@ fn standin_rig(on_send: OnSend, wait: Duration) -> (PathBuf, ScheduleStore, Chat
         parent_id: None,
         user_title: None,
         first_user_message: None,
+        provider_title: None,
 
         id: Uuid::new_v4().to_string(),
         provider: Provider::Codex,

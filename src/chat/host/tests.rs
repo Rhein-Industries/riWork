@@ -853,6 +853,7 @@ fn a_chat_that_died_in_the_middle_of_a_turn_is_made_tidy_when_the_next_host_load
         parent_id: None,
         user_title: None,
         first_user_message: None,
+        provider_title: None,
 
         id: id.clone(),
         provider: Provider::Claude,
@@ -1458,4 +1459,29 @@ fn outstanding_sticky_notices_exclude_resolved_and_superseded_items() {
     assert_eq!(outstanding["auth_required"].id, "auth-new");
     assert_eq!(outstanding["rate_limit:codex"].id, "codex");
     assert_eq!(outstanding["rate_limit:future_window"].id, "future-window");
+}
+
+#[test]
+fn only_an_untitled_ordinary_chat_takes_its_first_message_as_title_and_only_once() {
+    let info = |extra: serde_json::Value| {
+        let mut v = serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"provider":"codex","cwd":"/tmp","title":"Codex chat","created_at_unix":1});
+        v.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value::<ChatInfo>(v).unwrap()
+    };
+    assert!(needs_auto_title(&info(serde_json::json!({}))));
+    // Once named, a resume, restart or reread keeps it: the next message names nothing.
+    assert!(!needs_auto_title(&info(
+        serde_json::json!({"first_user_message":"First"})
+    )));
+    assert!(!needs_auto_title(&info(
+        serde_json::json!({"user_title":"Mine"})
+    )));
+    assert!(!needs_auto_title(&info(
+        serde_json::json!({"provider_title":"Thread"})
+    )));
+    assert!(!needs_auto_title(&info(
+        serde_json::json!({"orchestrator":{"scope":"global"}})
+    )));
 }

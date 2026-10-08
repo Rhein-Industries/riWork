@@ -121,6 +121,7 @@ pub(crate) fn status_word(status: &project_tabs::Status) -> &'static str {
         project_tabs::Status::Waiting => "waiting",
         project_tabs::Status::Error => "error",
         project_tabs::Status::Done => "done",
+        project_tabs::Status::Idle => "idle",
         project_tabs::Status::Stopped => "stopped",
     }
 }
@@ -138,8 +139,8 @@ fn activity_status(activity: AgentActivity) -> Option<project_tabs::Status> {
 }
 
 /// The phone's colours: working in the theme's working accent, waiting in gold, an error
-/// in the terminal's red, done muted; a stopped session is an empty ring, so the state is
-/// never told by colour alone.
+/// in the terminal's red, done muted; an idle shell a small muted point and a stopped
+/// session an empty ring, so the state is never told by colour alone.
 pub(crate) fn status_dot(status: &project_tabs::Status, colors: Palette, error: u32) -> AnyElement {
     let dot = div().flex_none().size(ui_text::space(DOT)).rounded_full();
     match status {
@@ -147,6 +148,12 @@ pub(crate) fn status_dot(status: &project_tabs::Status, colors: Palette, error: 
         project_tabs::Status::Waiting => dot.bg(rgb(colors.gold)),
         project_tabs::Status::Error => dot.bg(rgb(error)),
         project_tabs::Status::Done => dot.bg(rgb(theme::mix(colors.muted, colors.panel, 0.25))),
+        project_tabs::Status::Idle => dot.flex().items_center().justify_center().child(
+            div()
+                .size(ui_text::space(3.0))
+                .rounded_full()
+                .bg(rgb(colors.muted)),
+        ),
         project_tabs::Status::Stopped => dot.border_1().border_color(rgb(colors.muted)),
     }
     .into_any_element()
@@ -334,9 +341,14 @@ impl Workspace {
         if let Some(entry) = session_tab_key(tab).and_then(|key| self.strip_entry(&key)) {
             return entry.title.clone();
         }
-        match tab.chat() {
-            Some(view) => orchestrators::shown_tab_title(&view.read(cx).summary().title),
-            None => orchestrators::shown_tab_title(&tab.title),
+        // The global orchestrator has no shared entry; it wears its fixed name too.
+        let title = match tab.chat() {
+            Some(view) => view.read(cx).summary().title,
+            None => tab.title.clone(),
+        };
+        match orchestrators::fixed_title(&title) {
+            Some(fixed) if tab.chat().is_some() => fixed.to_owned(),
+            _ => orchestrators::shown_tab_title(&title),
         }
     }
 

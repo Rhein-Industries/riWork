@@ -112,6 +112,29 @@ pub fn tab_title(scope: &OrchestratorScope) -> &'static str {
     }
 }
 
+/// An orchestrator chat's name: fixed, so that no message renames it; only an explicit
+/// rename does.
+pub fn chat_title(scope: &OrchestratorScope) -> &'static str {
+    match scope {
+        OrchestratorScope::Global => "Global orchestrator",
+        OrchestratorScope::Project { .. } => "Project orchestrator",
+    }
+}
+
+/// The fixed name behind any title an orchestrator chat was given by RiWork rather than
+/// by the user: its tab label or its name.
+pub fn fixed_title(title: &str) -> Option<&'static str> {
+    [
+        OrchestratorScope::Global,
+        OrchestratorScope::Project {
+            project_id: String::new(),
+        },
+    ]
+    .iter()
+    .find(|scope| title == tab_title(scope) || title == chat_title(scope))
+    .map(chat_title)
+}
+
 /// A tab's title as the tab strip shows it: an orchestrator's in sentence case under Native
 /// ("G·Orch · Global", as Native's status bar says G·Orch), any other title as it is.
 pub fn shown_tab_title(title: &str) -> String {
@@ -271,7 +294,7 @@ fn create_chat(
         project_id: project_id.map(str::to_owned),
         worktree_id: None,
         cwd: orchestrator_context(host.home, project_id),
-        title: Some(tab_title(scope).to_owned()),
+        title: Some(chat_title(scope).to_owned()),
         approval_mode: approval_mode(scope),
         model: None,
         effort: None,

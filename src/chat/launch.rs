@@ -147,6 +147,7 @@ mod tests {
             parent_id: None,
             user_title: None,
             first_user_message: None,
+            provider_title: None,
             id: "id".into(),
             provider,
             project_id: None,

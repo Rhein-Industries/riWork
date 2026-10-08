@@ -229,6 +229,7 @@ pub fn placeholder_info(config: &DriverConfig, thread_id: &str) -> ChatInfo {
         parent_id: None,
         user_title: None,
         first_user_message: None,
+        provider_title: None,
 
         id: String::new(),
         provider: config.provider,

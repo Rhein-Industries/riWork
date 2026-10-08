@@ -220,6 +220,7 @@ mod tests {
             parent_id: None,
             user_title: None,
             first_user_message: None,
+            provider_title: None,
 
             id: "chat".into(),
             provider: Provider::Claude,
