@@ -1254,6 +1254,13 @@ impl Core {
     }
 
     fn on_system(&mut self, frame: &Value) {
+        if let Some(identity) =
+            super::account_identity::reported(super::model::Provider::Claude, frame)
+        {
+            self.emit(ChatEvent::ProviderAccountIdentity {
+                identity: Some(identity),
+            });
+        }
         match frame.get("subtype").and_then(Value::as_str) {
             Some("init") => {
                 if let Some(id) = str_of(frame, "session_id")

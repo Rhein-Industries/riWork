@@ -365,6 +365,7 @@ impl Subscriber {
 }
 
 struct Inner {
+    provider_account_identity: Option<String>,
     info: ChatInfo,
     log: ChatLog,
     next_seq: u64,
@@ -388,6 +389,7 @@ impl Inner {
         dismissals: Arc<Mutex<super::notice_dismissals::Dismissals>>,
     ) -> Self {
         Self {
+            provider_account_identity: super::account_identity::read(log.dir()),
             info,
             log,
             next_seq: last_seq + 1,
@@ -399,6 +401,38 @@ impl Inner {
             broken: false,
             stop_wanted: false,
             dismissals,
+        }
+    }
+
+    fn account_scope(&self) -> Option<&str> {
+        self.info
+            .codex_account_id
+            .as_deref()
+            .or(self.provider_account_identity.as_deref())
+    }
+
+    fn set_account_identity(&mut self, identity: Option<String>) {
+        let identity = identity.filter(|s| super::account_identity::valid(s));
+        if identity == self.provider_account_identity {
+            return;
+        }
+        // Persist before matching notices; a failure must not reuse another login's scope.
+        if let Err(error) = self.log.save_account_identity(identity.as_deref()) {
+            eprintln!("riwork chat: {error}");
+        }
+        self.provider_account_identity = identity;
+        if let Ok(transcript) = log::read_notice_transcript(self.log.dir()) {
+            for mut item in transcript.items {
+                let changed = lock(&self.dismissals).mark(
+                    self.info.provider,
+                    self.account_scope(),
+                    &mut item,
+                    super::notice_dismissals::now(),
+                );
+                if changed {
+                    self.append(ChatEvent::ItemCompleted { item });
+                }
+            }
         }
     }
 
@@ -424,16 +458,14 @@ impl Inner {
             if let Err(error) = dismissals.prune(super::notice_dismissals::now()) {
                 eprintln!("riwork chat: {error}");
             }
-            if let Err(error) = dismissals.forget_worsened(
-                self.info.provider,
-                self.info.codex_account_id.as_deref(),
-                item,
-            ) {
+            if let Err(error) =
+                dismissals.forget_worsened(self.info.provider, self.account_scope(), item)
+            {
                 eprintln!("riwork chat: {error}");
             }
             dismissals.mark(
                 self.info.provider,
-                self.info.codex_account_id.as_deref(),
+                self.account_scope(),
                 item,
                 super::notice_dismissals::now(),
             );
@@ -552,6 +584,10 @@ impl Inner {
     /// provider process is over.
     fn take_driver_event(&mut self, event: ChatEvent) -> bool {
         match event {
+            ChatEvent::ProviderAccountIdentity { identity } => {
+                self.set_account_identity(identity);
+                false
+            }
             ChatEvent::Info { info } => {
                 self.learn(info.provider_thread_id, info.model, info.effort);
                 false
@@ -1469,6 +1505,7 @@ fn ensure_running(shared: &Shared, chat: &Arc<Chat>) -> Result<(), String> {
         Ok(config) => config,
         Err(error) => return fail_start(chat, generation, error),
     };
+    lock(&chat.inner).set_account_identity(super::account_identity::from_config(&config));
     // Only the log's tail, and only its notices: a long chat does not hold up the start,
     // and one that cannot be read leaves nothing to resolve.
     config.outstanding_notices =
@@ -1964,7 +2001,7 @@ fn refresh_notice_dismissals(home: &Path, id: &str, inner: &mut Inner) -> Result
     for mut item in transcript.items {
         let changed = lock(&inner.dismissals).mark(
             inner.info.provider,
-            inner.info.codex_account_id.as_deref(),
+            inner.account_scope(),
             &mut item,
             super::notice_dismissals::now(),
         );
@@ -1989,7 +2026,7 @@ fn dismiss_notice(shared: &Shared, chat: &Chat, item_id: &str) -> Result<(), Str
             .ok_or("unknown notice item")?;
         lock(&shared.dismissals).dismiss(
             inner.info.provider,
-            inner.info.codex_account_id.as_deref(),
+            inner.account_scope(),
             item,
             super::notice_dismissals::now(),
         )?;

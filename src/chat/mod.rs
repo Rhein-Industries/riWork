@@ -20,6 +20,7 @@
 // The contract lands before the host and the tabs that use it.
 #![allow(dead_code)]
 
+mod account_identity;
 #[cfg(test)]
 mod attachment_driver_tests;
 pub mod attachments;

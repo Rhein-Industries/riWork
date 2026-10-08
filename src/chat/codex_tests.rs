@@ -1810,15 +1810,15 @@ fn a_usage_stop_follows_the_exhausted_windows_reset_when_a_later_update_brings_i
         "error",
         &json!({"error":{"message":"usage exhausted","codexErrorInfo":"usageLimitExceeded"}}),
     );
-    // First quota data: nothing at 100% yet, so the soonest reset stands in.
+    // First quota data supplies the exhausted short window.
     session.notification(
         "account/rateLimits/updated",
-        &json!({"rateLimits":{"primary":{"usedPercent":60,"windowDurationMins":300,"resetsAt":200}}}),
+        &json!({"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":200}}}),
     );
     // Then the exhausted weekly window, which resets later.
     session.notification(
         "account/rateLimits/updated",
-        &json!({"rateLimits":{"secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":900}}}),
+        &json!({"rateLimits":{"primary":{"usedPercent":0},"secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":900}}}),
     );
     let resets: Vec<Option<u64>> = completed_notices(&events.try_iter().collect::<Vec<_>>())
         .iter()
@@ -1834,6 +1834,8 @@ fn a_usage_stop_follows_the_exhausted_windows_reset_when_a_later_update_brings_i
 fn rate_limits_are_read_once_after_initialize_and_sparse_notifications_merge() {
     let mut run = Run::start("rate_limits");
     run.until(|e| matches!(e, ChatEvent::RateLimits { windows } if windows.iter().any(|w| w.id == "primary" && w.used_percent == 55.0)));
+    run.until(|e| matches!(e, ChatEvent::ProviderAccountIdentity { identity: Some(_) }));
+    assert_eq!(run.fake.received_method("account/read").len(), 1);
     let windows = run.transcript().rate_limits;
     assert_eq!(windows.len(), 2);
     assert_eq!(
@@ -1901,7 +1903,7 @@ fn rate_limit_exceeded_gets_the_exhausted_window_reset_or_the_soonest_known_rese
     );
     let notices = completed_notices(&events.try_iter().collect::<Vec<_>>());
     assert!(matches!(
-        notices[0].body,
+        notices.last().unwrap().body,
         ItemBody::Notice {
             resets_at: Some(1767225600),
             ..
@@ -1939,4 +1941,85 @@ fn a_blocking_notice_that_precedes_the_background_quota_reply_gains_its_reset() 
             ..
         }
     ));
+}
+
+#[test]
+fn recovered_quota_resolves_same_occurrence_without_moving_its_reset() {
+    let fake = Fake::new(&[]);
+    let (sender, events) = mpsc::channel();
+    let mut session = Session::new(&fake.config(Provider::Codex), sender);
+    session.update_rate_limits(
+        &json!({"rateLimits":{"primary":{"usedPercent":100,"resetsAt":1900000000}}}),
+    );
+    session.notification(
+        "error",
+        &json!({"error":{"message":"blocked","codexErrorInfo":"usageLimitExceeded"}}),
+    );
+    let first = completed_notices(&events.try_iter().collect::<Vec<_>>())
+        .pop()
+        .unwrap();
+    session.update_rate_limits(
+        &json!({"rateLimits":{"primary":{"usedPercent":0,"resetsAt":1900010000}}}),
+    );
+    let recovered = completed_notices(&events.try_iter().collect::<Vec<_>>())
+        .pop()
+        .unwrap();
+    assert_eq!(recovered.id, first.id);
+    assert!(matches!(
+        recovered.body,
+        ItemBody::Notice {
+            resolved: true,
+            resets_at: Some(1900000000),
+            ..
+        }
+    ));
+    assert!(!session.open_notices.contains_key("rate_limit:codex"));
+}
+
+#[test]
+fn read_and_notification_are_ordered_in_both_arrival_orders() {
+    let fake = Fake::new(&[]);
+    for read_first in [true, false] {
+        let (sender, _) = mpsc::channel();
+        let mut session = Session::new(&fake.config(Provider::Codex), sender);
+        let issued = session.rate_notification_generation;
+        let read = json!({"rateLimits":{"primary":{"usedPercent":100,"resetsAt":1900000000}}});
+        let updated = json!({"rateLimits":{"primary":{"usedPercent":0,"resetsAt":1900010000}}});
+        if read_first {
+            session.apply_rate_read(issued, &read);
+        }
+        session.notification("account/rateLimits/updated", &updated);
+        if !read_first {
+            session.apply_rate_read(issued, &read);
+        }
+        assert_eq!(session.rate_limits.windows[0].used_percent, 0.0);
+        assert_eq!(session.rate_limits.windows[0].resets_at, Some(1900010000));
+    }
+}
+
+#[test]
+fn a_login_change_rereads_identity_and_drops_the_previous_logins_delayed_reply() {
+    let fake = Fake::new(&[]);
+    let (sender, events) = mpsc::channel();
+    let mut session = Session::new(&fake.config(Provider::Codex), sender);
+    let first = json!({"account":{"email":"a@example.test"}});
+    session.apply_account_read(0, &first);
+    let request = session.notification(
+        "account/updated",
+        &json!({"authMode":"chatgpt","planType":"plus"}),
+    );
+    assert_eq!(request.len(), 1);
+    assert_eq!(request[0]["method"], "account/read");
+    session.apply_account_read(0, &first);
+    session.apply_account_read(1, &json!({"account":{"email":"b@example.test"}}));
+    let identities: Vec<_> = events
+        .try_iter()
+        .filter_map(|event| match event {
+            ChatEvent::ProviderAccountIdentity { identity } => Some(identity),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(identities.len(), 3);
+    assert!(identities[1].is_none());
+    assert_ne!(identities[0], identities[2]);
 }

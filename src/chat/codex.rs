@@ -335,6 +335,8 @@ struct Session {
     /// that has no such method).
     models: Vec<ModelOption>,
     rate_limits: super::rate_limits::CodexRates,
+    rate_notification_generation: u64,
+    account_notification_generation: u64,
     /// The Fast tier has been sent on this thread. The tier sticks, so a model
     /// that is not known to have tiers still gets the standard one back.
     tier_sent: bool,
@@ -393,6 +395,8 @@ impl Session {
             },
             models: Vec::new(),
             rate_limits: Default::default(),
+            rate_notification_generation: 0,
+            account_notification_generation: 0,
             tier_sent: false,
             effort_dropped: None,
             plan_sent: false,
@@ -974,18 +978,25 @@ impl Codex {
         // The chat does not wait for the list: it arrives as an event.
         self.list_models(None, Vec::new(), 1);
         self.read_rate_limits();
+        self.read_account_identity();
         Ok(())
+    }
+
+    fn read_account_identity(&self) {
+        let frame = self.with(Session::account_request);
+        let _ = self.proc.send(&frame);
     }
 
     /// Background quota read: unsupported methods never hold up starting a chat.
     fn read_rate_limits(&self) {
         let frame = self.with(|session| {
+            let generation = session.rate_notification_generation;
             session.request(
                 "account/rateLimits/read",
                 Value::Null,
-                Box::new(|codex, outcome| {
+                Box::new(move |codex, outcome| {
                     if let Ok(result) = outcome {
-                        codex.with(|session| session.update_rate_limits(&result));
+                        codex.with(|session| session.apply_rate_read(generation, &result));
                     }
                 }),
             )
@@ -1601,15 +1612,49 @@ impl Codex {
 }
 
 impl Session {
+    fn account_request(&mut self) -> Value {
+        let generation = self.account_notification_generation;
+        self.request(
+            "account/read",
+            json!({"refreshToken": false}),
+            Box::new(move |codex, outcome| {
+                if let Ok(value) = outcome {
+                    codex.with(|session| session.apply_account_read(generation, &value));
+                }
+            }),
+        )
+    }
+
+    fn apply_account_read(&mut self, generation: u64, value: &Value) {
+        if generation != self.account_notification_generation {
+            return;
+        }
+        if let Some(identity) =
+            super::account_identity::reported(super::model::Provider::Codex, value)
+        {
+            self.emit(ChatEvent::ProviderAccountIdentity {
+                identity: Some(identity),
+            });
+        }
+    }
+
+    fn apply_rate_read(&mut self, generation: u64, value: &Value) {
+        if self.rate_notification_generation == generation {
+            self.update_rate_limits(value);
+        }
+    }
+
     fn update_rate_limits(&mut self, value: &Value) {
-        if self.rate_limits.update(value) {
+        let changed = self.rate_limits.update(value);
+        if changed {
             self.emit(ChatEvent::RateLimits {
                 windows: self.rate_limits.windows.clone(),
             });
-            // A hard stop can race the background read. Fill in its reset once
-            // quota data arrives, and follow it when a later update moves it (the
-            // exhausted window's reset replaces a fallback), keeping the notice's identity.
-            if let Some(reset) = self.rate_limits.blocking_reset() {
+        }
+        if changed || self.rate_limits.observed_usage {
+            if !self.rate_limits.windows.is_empty() && !self.rate_limits.has_exhausted_window() {
+                self.resolve_notice("rate_limit:codex", "Codex can answer again.");
+            } else if let Some(reset) = self.rate_limits.exhausted_reset() {
                 let mut update = None;
                 if let Some(item) = self.open_notices.get_mut("rate_limit:codex") {
                     if let ItemBody::Notice { resets_at, .. } = &mut item.body {
@@ -1628,6 +1673,28 @@ impl Session {
 
     /// Apply one notification; returns frames to send afterwards.
     fn notification(&mut self, method: &str, params: &Value) -> Vec<Value> {
+        if method == "account/updated"
+            || (method == "account/login/completed" && params["success"].as_bool() == Some(true))
+        {
+            self.account_notification_generation += 1;
+            if let Some(identity) =
+                super::account_identity::reported(super::model::Provider::Codex, params)
+            {
+                self.emit(ChatEvent::ProviderAccountIdentity {
+                    identity: Some(identity),
+                });
+            } else {
+                // account/updated normally reports authMode and planType, not identity.
+                // Do not retain the previous login's scope while the new read is pending.
+                self.emit(ChatEvent::ProviderAccountIdentity { identity: None });
+                if method == "account/login/completed"
+                    || !params["authMode"].is_null()
+                    || !params["planType"].is_null()
+                {
+                    return vec![self.account_request()];
+                }
+            }
+        }
         // Sub-agents report on the same connection under their own thread ids.
         if method != "serverRequest/resolved"
             && let (Some(theirs), Some(ours)) = (params["threadId"].as_str(), &self.thread_id)
@@ -1645,7 +1712,10 @@ impl Session {
             }
         }
         match method {
-            "account/rateLimits/updated" => self.update_rate_limits(params),
+            "account/rateLimits/updated" => {
+                self.rate_notification_generation += 1;
+                self.update_rate_limits(params);
+            }
             "turn/started" => {
                 if let Some(id) = params["turn"]["id"].as_str() {
                     return self.begin_turn(id);

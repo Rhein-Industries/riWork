@@ -83,23 +83,50 @@ fn merge_non_null(target: &mut Value, patch: &Value) {
 pub(super) struct CodexRates {
     bucket: Value,
     pub windows: Vec<RateWindow>,
+    pub observed_usage: bool,
 }
 
 impl CodexRates {
     /// Prefer the account-wide codex bucket, then the existing bucket, then legacy
     /// rateLimits, or the first named bucket. IDs stay primary/secondary on the wire.
     pub fn update(&mut self, value: &Value) -> bool {
+        self.observed_usage = false;
         let buckets = value["rateLimitsByLimitId"].as_object();
         let previous_id = self.bucket["limitId"].as_str();
         let named = buckets.and_then(|b| {
-            b.get_key_value("codex")
-                .filter(|(_, v)| v.is_object())
+            previous_id
+                .and_then(|id| b.get_key_value(id))
                 .or_else(|| {
-                    previous_id
-                        .and_then(|id| b.get_key_value(id))
-                        .filter(|(_, v)| v.is_object())
+                    if previous_id.is_none() {
+                        b.get_key_value("codex")
+                    } else {
+                        None
+                    }
                 })
+                .filter(|(_, v)| v.is_object())
         });
+        // A notification about another bucket is not a replacement snapshot.
+        // Once selected, keep that bucket unless this payload actually supplies it.
+        if let Some(previous) = previous_id {
+            if buckets.is_some()
+                && named.is_none()
+                && !value.get("rateLimits").is_some_and(|b| {
+                    b.is_object() && b["limitId"].as_str().is_none_or(|id| id == previous)
+                })
+            {
+                return false;
+            }
+            if let Some(other) = value
+                .get("rateLimits")
+                .filter(|b| b.is_object())
+                .and_then(|b| b["limitId"].as_str())
+                .or_else(|| value["limitId"].as_str())
+            {
+                if other != previous && named.is_none() {
+                    return false;
+                }
+            }
+        }
         let (id, bucket) = named
             .map(|(id, v)| (Some(id.as_str()), v))
             .or_else(|| {
@@ -117,6 +144,9 @@ impl CodexRates {
         if id.is_some() && previous_id.is_some() && id != previous_id {
             self.bucket = serde_json::json!({});
         }
+        self.observed_usage = ["primary", "secondary"]
+            .iter()
+            .any(|id| percent(&bucket[*id]["usedPercent"], 1.0).is_some());
         merge_non_null(&mut self.bucket, bucket);
         if let Some(id) = id {
             self.bucket["limitId"] = Value::String(id.to_owned());
@@ -161,12 +191,20 @@ impl CodexRates {
         true
     }
 
-    pub fn blocking_reset(&self) -> Option<u64> {
+    pub fn exhausted_reset(&self) -> Option<u64> {
         self.windows
             .iter()
             .filter(|w| w.used_percent >= 100.0)
             .filter_map(|w| w.resets_at)
             .min()
+    }
+    pub fn has_exhausted_window(&self) -> bool {
+        self.windows.iter().any(|w| w.used_percent >= 100.0)
+    }
+
+    /// Fallback is suitable only for a newly reported hard stop, never for moving one.
+    pub fn blocking_reset(&self) -> Option<u64> {
+        self.exhausted_reset()
             .or_else(|| self.windows.iter().filter_map(|w| w.resets_at).min())
     }
 }
@@ -219,5 +257,27 @@ mod tests {
             ),
             ("2h", 0.0)
         );
+    }
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn unrelated_sparse_named_buckets_never_replace_selected_windows() {
+        for selected in ["codex", "other"] {
+            let mut rates = CodexRates::default();
+            rates.update(&json!({"rateLimitsByLimitId": {selected: {"primary":{"usedPercent":100,"resetsAt":1900000000},"secondary":{"usedPercent":30}}}}));
+            let before = rates.windows.clone();
+            for update in [
+                json!({"rateLimitsByLimitId":{"different":{"primary":{"usedPercent":0}}}}),
+                json!({"rateLimits":{"limitId":"different","primary":{"usedPercent":0}}}),
+            ] {
+                assert!(!rates.update(&update));
+                assert_eq!(rates.windows, before);
+                assert!(!rates.observed_usage);
+            }
+        }
     }
 }

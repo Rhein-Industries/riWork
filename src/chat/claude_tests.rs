@@ -2373,3 +2373,30 @@ fn rate_windows_include_low_utilization_and_unified_windows_without_warning_noti
     assert_eq!(later.len(), 1);
     assert_ne!(later[0].id, notices[0].id);
 }
+
+#[test]
+fn system_frames_report_only_hashed_login_identity_to_the_host() {
+    let (sender, events) = mpsc::channel();
+    let mut core = Core::new(&bare_config(), sender, "session".into());
+    core.on_system(&json!({"type":"system","subtype":"init","apiKeySource":"none","oauthAccount":{"accountUuid":"account-a","emailAddress":"private@example.test"}}));
+    let first = events
+        .try_iter()
+        .find_map(|event| match event {
+            ChatEvent::ProviderAccountIdentity { identity } => identity,
+            _ => None,
+        })
+        .unwrap();
+    core.on_system(
+        &json!({"type":"system","subtype":"status","account":{"email":"another@example.test"}}),
+    );
+    let second = events
+        .try_iter()
+        .find_map(|event| match event {
+            ChatEvent::ProviderAccountIdentity { identity } => identity,
+            _ => None,
+        })
+        .unwrap();
+    assert_ne!(first, second);
+    assert!(first.starts_with("sha256:"));
+    assert!(!first.contains("private"));
+}

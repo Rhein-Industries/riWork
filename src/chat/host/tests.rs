@@ -1527,6 +1527,7 @@ impl NoticeHost {
         let dir = log::chat_dir(&self.home, &info.id).unwrap();
         let chat_log = ChatLog::create(&dir, &info).unwrap();
         let mut inner = Inner::new(info.clone(), chat_log, 0, self.shared.dismissals.clone());
+        inner.set_account_identity(Some(super::super::account_identity::hash("test-login")));
         inner.append(ChatEvent::Info { info: info.clone() });
         let chat = Arc::new(Chat {
             dir,
@@ -1700,7 +1701,16 @@ fn rate_limits_control_replays_to_a_late_joiner_and_survives_restart_in_snapshot
     assert_eq!(transcript.rate_limits, windows);
     drop(chat);
     host.restart();
-    let snapshot = log::read_snapshot(&host.home, &id, None, u64::MAX, 50, 1 << 20, &[]).unwrap();
+    let legacy = log::read_snapshot(&host.home, &id, None, u64::MAX, 50, 1 << 20, &[]).unwrap();
+    assert!(
+        !legacy
+            .controls
+            .iter()
+            .any(|e| matches!(e, ChatEvent::RateLimits { .. }))
+    );
+    let snapshot =
+        log::read_snapshot_with_features(&host.home, &id, None, u64::MAX, 50, 1 << 20, &[], true)
+            .unwrap();
     assert!(
         snapshot
             .controls
@@ -1784,4 +1794,92 @@ fn account_notice_keys_persist_but_a_worsened_limit_and_another_account_show() {
         dismissal_notice("later-reset", "rate_limit:seven_day", Some(reset + 3600)),
     );
     assert!(!host.dismissed(&first, "later-reset"));
+}
+
+#[test]
+fn system_login_scopes_isolate_dismissals_and_survive_host_restart() {
+    for provider in [Provider::Claude, Provider::Codex] {
+        let mut host = NoticeHost::new();
+        let chat = host.create(provider);
+        let id = chat.info().id;
+        let account = |email| super::super::account_identity::hash(email);
+        lock(&chat.inner).set_account_identity(Some(account("private-a@example.com")));
+        let reset = super::super::notice_dismissals::now() + 3600;
+        host.emit(
+            &chat,
+            dismissal_notice("blocking", "rate_limit:seven_day", Some(reset)),
+        );
+        host.dismiss(&chat, "blocking");
+        assert!(host.dismissed(&chat, "blocking"));
+        let serialized =
+            fs::read_to_string(host.home.join("chats/notice-dismissals.json")).unwrap();
+        assert!(!serialized.contains("private-a"));
+        assert!(serialized.contains("sha256:"));
+        drop(chat);
+        host.restart();
+        let chat = host.shared.find(&id).unwrap();
+        assert!(host.dismissed(&chat, "blocking"));
+        lock(&chat.inner).take_driver_event(ChatEvent::ProviderAccountIdentity {
+            identity: Some(account("private-b@example.com")),
+        });
+        assert!(!host.dismissed(&chat, "blocking"));
+        lock(&chat.inner).take_driver_event(ChatEvent::ProviderAccountIdentity { identity: None });
+        assert!(!host.dismissed(&chat, "blocking"));
+        lock(&chat.inner).take_driver_event(ChatEvent::ProviderAccountIdentity {
+            identity: Some(account("private-a@example.com")),
+        });
+        assert!(host.dismissed(&chat, "blocking"));
+        // Identity updates never become protocol events or leak raw account identifiers.
+        let log = fs::read_to_string(chat.dir.join("events.jsonl")).unwrap();
+        assert!(!log.contains("provider_account_identity"));
+        assert!(!log.contains("private-a"));
+    }
+}
+
+#[test]
+fn an_empty_opted_in_snapshot_has_no_rate_limits_control() {
+    let host = NoticeHost::new();
+    let chat = host.create(Provider::Claude);
+    let snapshot = log::read_snapshot_with_features(
+        &host.home,
+        &chat.info().id,
+        None,
+        u64::MAX,
+        50,
+        1 << 20,
+        &[],
+        true,
+    )
+    .unwrap();
+    assert!(
+        !snapshot
+            .controls
+            .iter()
+            .any(|e| matches!(e, ChatEvent::RateLimits { .. }))
+    );
+}
+
+#[test]
+fn resolving_a_dismissed_limit_preserves_its_occurrence_key() {
+    let host = NoticeHost::new();
+    let chat = host.create(Provider::Codex);
+    let reset = super::super::notice_dismissals::now() + 3600;
+    let mut item = dismissal_notice("blocking", "rate_limit:codex", Some(reset));
+    if let ItemBody::Notice { level, .. } = &mut item.body {
+        *level = super::super::model::NoticeLevel::Error;
+    }
+    host.emit(&chat, item.clone());
+    host.dismiss(&chat, "blocking");
+    let path = host.home.join("chats/notice-dismissals.json");
+    let keys = fs::read(&path).unwrap();
+    if let ItemBody::Notice {
+        level, resolved, ..
+    } = &mut item.body
+    {
+        *level = super::super::model::NoticeLevel::Info;
+        *resolved = true;
+    }
+    host.emit(&chat, item);
+    assert!(host.dismissed(&chat, "blocking"));
+    assert_eq!(fs::read(path).unwrap(), keys);
 }

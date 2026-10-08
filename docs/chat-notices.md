@@ -139,21 +139,39 @@ The single host atomically replaces the owner-only
 `$RIWORK_HOME/chats/notice-dismissals.json` file. Each entry has a string `key`,
 `level` (the dismissed severity) and optional `resets_at`. A key is:
 
-- With a reset: `<provider>:<account or default>|<kind>@<Unix seconds>`, for example
-  `claude:default|rate_limit:seven_day@1760000000` or
+- With a reset: `<provider>:<account scope>|<kind>@<Unix seconds>`, for example
+  `claude:sha256:0123456789abcdef0123456789abcdef|rate_limit:seven_day@1760000000` or
   `codex:account-a|rate_limit:codex@1760000000`.
-- Without a reset: `<provider>:<account or default>|<kind>#<item id>`.
+- Without a reset: `<provider>:<account scope>|<kind>#<item id>`.
 
-Codex uses the chat's `codex_account_id` when known; Claude currently has no chat
-account id and uses `default`. Keys cover all chats of that provider **and account**
+Managed Codex uses the chat's `codex_account_id`. System-login Codex and Claude
+use `sha256:<32 hex characters>`, a SHA-256 fingerprint of the reported account
+UUID/id/email (the first 128 bits, namespaced by provider). Claude learns account
+identity from system init/status frames when supplied; Codex requests `account/read`
+once after initialization and rechecks it on account updates/login completion.
+Pending reads from a previous login are ignored; until the new identity is known,
+the host stops matching the previous scope. The
+host stores only this fingerprint in each chat's owner-only `account-identity.json`,
+so stopped-chat snapshots and host restarts retain the account scope. Raw emails,
+account identifiers and tokens are never stored in dismissal files.
+
+Before starting a driver, the host rechecks its configured credential directory.
+Claude prefers an `oauthAccount` identity from its configuration, falling back to a
+hash of the refresh token (access token if necessary) in `.credentials.json`.
+Codex prefers `tokens.account_id` in `auth.json`, falling back to an API-key hash.
+Credential hashes are stable across restarts while credentials stay unchanged;
+when no stable account id exists, token rotation also ends the previous scope.
+No keychain access is required. Unidentifiable logins have no persistent dismissal
+scope and cannot match another login's keys; persistent dismissal returns an
+identity-unavailable error. Keys cover all chats of that provider **and account**
 with the same reset, including new notices with different ids. A changed reset is
 a new occurrence; `auth_required` with a new id shows again. A dismissal suppresses
 only its recorded severity or lower. A new higher-level notice ends the lower-level
 dismissal and removes its key, so an old warning close never hides a blocking error.
 Project changes, tab close/reopen, window reloads and host/app restarts preserve it.
 The first implementation's provider-only entries remain readable: they migrate to
-the default account scope and conservatively count as warning dismissals, because
-they recorded neither account nor severity.
+the legacy `default` account scope and conservatively count as warning dismissals.
+`default` is never selected by current clients/hosts, so these keys stop matching.
 
 `chat.snapshot` additionally includes optional `dismissed_notices: [key, ...]` for
 active dismissals in that chat's account scope (omitted when empty; default empty
@@ -172,8 +190,29 @@ notices remain view-local on the Mac. The iOS rendering change is separate work.
 
 ## Rate windows (usage data, not notice banners)
 
-Drivers emit this control event, stored/replayed in `chat.events` and included in
-`chat.snapshot.controls` on the initial snapshot page:
+Drivers store and replay this control event to native host subscribers (including
+the Mac). Remote clients must opt in independently on **both** `chat.snapshot` and
+`chat.events` requests by adding `"features": ["rate_limits"]`. Without that feature,
+snapshots omit the control. Ordinary remote event pages filter it while retaining
+`next`/`more`, so cursors advance over omitted events. Legacy Swift validates
+consecutive sequence numbers in complete/bounded replay: in those modes the relay
+replaces unsupported quota events with the already-supported no-op
+`{"event":"question_resolved","request_id":""}` at the same sequence number.
+No actionable host question has an empty request id. Feature names are
+case-sensitive; the optional array accepts at most 16 nonempty strings of at most
+64 bytes. Other feature names are ignored. An initial snapshot includes the
+control only when opted in and at least one window is known. Later empty live
+controls are delivered to opted-in clients to clear their quota state.
+
+The disk-reading CLI opt-in is `riwork chat snapshot UUID --rate-limits --json`;
+the native host subscription and native CLI event reader retain all events. The
+Mac reads that native subscription directly and needs no UI change. Old phones'
+strict event enums therefore never see the new variant. Swift's keyed notice and
+snapshot decoders ignore unknown fields: the additive `dismissed` and
+`dismissed_notices` fields require no event capability or simultaneous phone
+release (older phones do not yet honor dismissal).
+
+Opted-in initial snapshot controls and live event pages use this shape:
 
 ```json
 {
@@ -210,9 +249,16 @@ for log compatibility, but must not banner.
 Codex reads `account/rateLimits/read` once after session initialization and merges
 non-null fields from `account/rateLimits/updated`, including nested window fields,
 planType and rateLimitReachedType. A `rateLimitsByLimitId` response prefers the
-account-wide `codex` bucket, then the previously selected bucket, legacy `rateLimits`,
+previously selected bucket, then the account-wide `codex` bucket, legacy `rateLimits`,
 or the first named bucket. The event contains primary/secondary once, with no legacy
 mirror duplicates. `usageLimitExceeded` remains `rate_limit:codex`, at error level;
 its notice uses the earliest reset among exhausted (100%) windows, or the earliest
 known reset when none is exhausted. The provider read is background work: older
 servers can refuse it without preventing chat startup.
+
+Once selected, sparse updates for other named Codex buckets do not change that
+bucket's windows. A background quota read is ignored if any quota notification
+arrived after the read was issued. For an existing blocking notice, only exhausted
+windows can move its reset; recovery resolves the same item while retaining the
+original reset and dismissal. The soonest-known-reset fallback applies only when
+creating a new `usageLimitExceeded` notice.

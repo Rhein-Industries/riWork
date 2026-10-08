@@ -1321,7 +1321,18 @@ chat is the one asked for (provider, project or worktree, mode, and model, effor
 mode when sent) and answers `cli_error` if not, after stopping that stray chat's agent.
 
 **`chat.snapshot`** (additive, v1). Params `{"chat_id":"UUID","limit":50}`;
-optional `limit` is 1–100. Returns `{v:1, chat_id, cursor, next, before, more,
+optional `limit` is 1–100. Both `chat.snapshot` and `chat.events` accept an optional
+`features:["rate_limits"]` array (at most 16 nonempty strings, each at most 64 bytes;
+unknown feature names are ignored). Only requests advertising that feature receive
+`rate_limits` controls/events. Initial snapshots omit empty quota controls even
+when opted in. The relay omits unsupported live quota events but retains `next`
+and `more`; ordinary pages may have sequence gaps or be empty while advancing.
+For complete/bounded replay, the unsupported event is replaced with a supported
+no-op `question_resolved` with empty `request_id` at the same sequence number,
+preserving older Swift's consecutive-sequence validation. The native Mac host subscription retains quota
+events. See [Chat notices](chat-notices.md#rate-windows-usage-data-not-notice-banners)
+for quota fields. Optional notice `dismissed` and snapshot `dismissed_notices` keys
+are additive keyed fields, which existing Swift decoders ignore. Returns `{v:1, chat_id, cursor, next, before, more,
 items:[{order,item}], controls:[ChatEvent]}`. Items are **full reconstructed current
 items**, in first-appearance order, with the newest at the bottom. Controls carry
 current Info/State, turn, unresolved approvals/questions (including ones older than

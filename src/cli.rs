@@ -2061,6 +2061,7 @@ fn chat_client_command(
             }
         }
         "snapshot" => {
+            let rate_limits = take_flag(&mut args, "--rate-limits");
             let item_ids: Vec<String> = match take_verbatim_option(&mut args, "--items-json")? {
                 Some(text) if text.len() <= 60_000 => {
                     serde_json::from_str(&text).map_err(|_| "invalid snapshot item ids")?
@@ -2074,9 +2075,9 @@ fn chat_client_command(
             let max_bytes = chat_remote::number(&mut args, "--max-bytes", 120_000, 4096..=8 << 20)?;
             let id = take_single(
                 args,
-                "chat snapshot UUID [--cursor TOKEN --before ORDER] [--max N --max-bytes N]",
+                "chat snapshot UUID [--cursor TOKEN --before ORDER] [--max N --max-bytes N] [--rate-limits]",
             )?;
-            let snapshot = crate::chat::log::read_snapshot(
+            let snapshot = crate::chat::log::read_snapshot_with_features(
                 home,
                 &id,
                 cursor.as_deref(),
@@ -2084,6 +2085,7 @@ fn chat_client_command(
                 limit as usize,
                 max_bytes as usize,
                 &item_ids,
+                rate_limits,
             )?;
             json_text(&snapshot)
         }

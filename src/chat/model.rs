@@ -530,6 +530,11 @@ pub enum TurnOutcome {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum ChatEvent {
+    /// Driver-to-host only: never logged or sent to clients.
+    #[serde(skip)]
+    ProviderAccountIdentity {
+        identity: Option<String>,
+    },
     /// The chat's metadata changed (thread id learned, model or mode changed).
     Info {
         info: ChatInfo,
@@ -719,6 +724,7 @@ impl Transcript {
             ChatEvent::Usage { usage } => self.usage = Some(usage.clone()),
             ChatEvent::Models { models } => self.models = models.clone(),
             ChatEvent::RateLimits { windows } => self.rate_limits = windows.clone(),
+            ChatEvent::ProviderAccountIdentity { .. } => {}
         }
     }
 }

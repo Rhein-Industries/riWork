@@ -169,9 +169,9 @@ for step in steps:
                 sys.exit(98)
             frame = json.loads(line)
             record({"recv": frame})
-            if frame.get("method") in ("model/list", "account/rateLimits/read") and step["frame"].get("method") != frame.get("method"):
+            if frame.get("method") in ("model/list", "account/rateLimits/read", "account/read") and step["frame"].get("method") != frame.get("method"):
                 last = frame
-                emit({"id": "$id", "result": {"data": [], "nextCursor": None} if frame.get("method") == "model/list" else {"rateLimits": None}})
+                emit({"id": "$id", "result": {"data": [], "nextCursor": None} if frame.get("method") == "model/list" else ({"account": None} if frame.get("method") == "account/read" else {"rateLimits": None})})
                 continue
             break
         if not matches(step["frame"], frame):

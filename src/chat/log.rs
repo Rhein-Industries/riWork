@@ -41,6 +41,27 @@ pub struct ChatLog {
 }
 
 impl ChatLog {
+    pub(super) fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    pub(super) fn save_account_identity(&self, identity: Option<&str>) -> Result<(), String> {
+        let temporary = self
+            .dir
+            .join(format!(".account-identity-{}.tmp", Uuid::new_v4()));
+        let result = (|| -> io::Result<()> {
+            let mut file = private_options().create_new(true).open(&temporary)?;
+            file.write_all(&serde_json::to_vec(&identity)?)?;
+            file.sync_all()?;
+            fs::rename(&temporary, self.dir.join("account-identity.json"))
+        })();
+        if let Err(error) = result {
+            let _ = fs::remove_file(&temporary);
+            return Err(error.to_string());
+        }
+        Ok(())
+    }
+
     /// A new chat: its directory (owner-only), `info.json`, and an empty log.
     pub fn create(dir: &Path, info: &ChatInfo) -> Result<Self, String> {
         crate::paths::create_private_dir(dir)
@@ -358,6 +379,19 @@ pub fn read_snapshot(
     max_bytes: usize,
     item_ids: &[String],
 ) -> Result<Snapshot, String> {
+    read_snapshot_with_features(home, id, cursor, before, limit, max_bytes, item_ids, false)
+}
+
+pub fn read_snapshot_with_features(
+    home: &Path,
+    id: &str,
+    cursor: Option<&str>,
+    before: u64,
+    limit: usize,
+    max_bytes: usize,
+    item_ids: &[String],
+    rate_limits: bool,
+) -> Result<Snapshot, String> {
     use super::model::ChatEvent;
     use std::collections::HashMap;
     if cursor.is_some_and(|c| c.len() > 80 || c.is_empty())
@@ -455,9 +489,11 @@ pub fn read_snapshot(
         if let Some(usage) = transcript.usage.clone() {
             controls.push(ChatEvent::Usage { usage });
         }
-        controls.push(ChatEvent::RateLimits {
-            windows: transcript.rate_limits.clone(),
-        });
+        if rate_limits && !transcript.rate_limits.is_empty() {
+            controls.push(ChatEvent::RateLimits {
+                windows: transcript.rate_limits.clone(),
+            });
+        }
         controls.push(ChatEvent::Models {
             models: transcript.models.clone(),
         });

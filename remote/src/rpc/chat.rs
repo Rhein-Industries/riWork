@@ -240,6 +240,35 @@ fn new_args(spec: &NewSpec) -> Vec<String> {
     args
 }
 
+/// Additive event variants require an explicit decoder capability from the phone.
+fn supports_rate_limits(object: &Map<String, Value>) -> std::result::Result<bool, Fault> {
+    let Some(features) = object.get("features") else {
+        return Ok(false);
+    };
+    let features = features
+        .as_array()
+        .filter(|v| v.len() <= 16)
+        .ok_or_else(|| invalid("features must be an array of at most 16 strings"))?;
+    let mut supported = false;
+    for feature in features {
+        let feature = feature
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 64)
+            .ok_or_else(|| invalid("features must contain nonempty strings of at most 64 bytes"))?;
+        supported |= feature == "rate_limits";
+    }
+    Ok(supported)
+}
+
+fn negotiate_snapshot_rate_limits(snapshot: &mut Value, supported: bool) {
+    if let Some(controls) = snapshot["controls"].as_array_mut() {
+        controls.retain(|event| {
+            event["event"] != "rate_limits"
+                || (supported && event["windows"].as_array().is_some_and(|w| !w.is_empty()))
+        });
+    }
+}
+
 /// Read-only snapshot/history. Opaque cursor pins the prefix, before is an item order.
 pub(super) struct SnapshotSpec {
     chat: String,
@@ -247,11 +276,14 @@ pub(super) struct SnapshotSpec {
     before: u64,
     limit: u64,
     items: Vec<String>,
+    rate_limits: bool,
 }
 pub(super) fn snapshot_spec(params: &Value) -> std::result::Result<SnapshotSpec, Fault> {
     let object = fields(
         params,
-        &["chat_id", "cursor", "before", "limit", "item_ids"],
+        &[
+            "chat_id", "cursor", "before", "limit", "item_ids", "features",
+        ],
     )?;
     let cursor = text(object, "cursor")?.map(str::to_owned);
     if cursor.as_ref().is_some_and(|c| {
@@ -282,6 +314,7 @@ pub(super) fn snapshot_spec(params: &Value) -> std::result::Result<SnapshotSpec,
         before,
         limit,
         items,
+        rate_limits: supports_rate_limits(object)?,
     })
 }
 
@@ -294,6 +327,7 @@ pub(super) struct EventsSpec {
     max_events: u64,
     complete: bool,
     bounded: bool,
+    rate_limits: bool,
 }
 pub(super) fn events_spec(params: &Value) -> std::result::Result<EventsSpec, Fault> {
     let object = fields(
@@ -305,6 +339,7 @@ pub(super) fn events_spec(params: &Value) -> std::result::Result<EventsSpec, Fau
             "max_events",
             "complete",
             "bounded",
+            "features",
         ],
     )?;
     let chat = chat_id(object)?;
@@ -327,6 +362,7 @@ pub(super) fn events_spec(params: &Value) -> std::result::Result<EventsSpec, Fau
         max_events,
         complete: flag(object, "complete")?.unwrap_or(false),
         bounded: flag(object, "bounded")?.unwrap_or(false),
+        rate_limits: supports_rate_limits(object)?,
     })
 }
 /// How long the CLI may take for a `chat.events` that waits up to `wait_ms`: the wait plus
@@ -395,7 +431,9 @@ fn command_json(command: &Value) -> std::result::Result<Value, Fault> {
         "dismiss_notice" => {
             let item_id = required(object, "item_id")?;
             if item_id.is_empty() || item_id.len() > 512 || has_control(item_id) {
-                return Err(invalid("item_id must be 1..=512 bytes without control characters"));
+                return Err(invalid(
+                    "item_id must be 1..=512 bytes without control characters",
+                ));
             }
             json!({"command":"dismiss_notice","item_id":item_id})
         }
@@ -661,6 +699,25 @@ impl Page {
             more,
         })
     }
+    /// Negotiate after validating the full CLI page. Legacy Swift checks contiguous
+    /// seqs in complete/bounded mode: keep those slots using a supported no-op.
+    /// An empty request id cannot identify an actionable host question.
+    fn negotiate_rate_limits(&mut self, supported: bool, contiguous: bool) {
+        if supported {
+            return;
+        }
+        if contiguous {
+            for entry in &mut self.events {
+                if entry["event"]["event"] == "rate_limits" {
+                    entry["event"] = json!({"event":"question_resolved", "request_id":""});
+                }
+            }
+        } else {
+            self.events
+                .retain(|entry| entry["event"]["event"] != "rate_limits");
+        }
+    }
+
     /// The seq of the last event held, `None` for none.
     fn last_seq(&self) -> Option<u64> {
         self.events
@@ -1029,6 +1086,9 @@ impl Rpc {
             "--max-bytes".into(),
             budget.to_string(),
         ];
+        if spec.rate_limits {
+            args.push("--rate-limits".into());
+        }
         if let Some(cursor) = &spec.cursor {
             args.extend([
                 "--cursor".into(),
@@ -1043,7 +1103,7 @@ impl Rpc {
                 serde_json::to_string(&spec.items).map_err(cli_fault)?
             ));
         }
-        let result = self
+        let mut result = self
             .read_capped(args, CLI_TIMEOUT, budget + REPLY_SLACK)
             .await
             .map_err(|fault| {
@@ -1102,6 +1162,8 @@ impl Rpc {
         if !valid {
             return Err(cli_fault("invalid snapshot reply"));
         }
+        // Also guard replies from an older CLI that emitted quota controls by default.
+        negotiate_snapshot_rate_limits(&mut result, spec.rate_limits);
         link::encode_reply(
             &success(request, result.clone()),
             std::time::Instant::now(),
@@ -1157,12 +1219,13 @@ impl Rpc {
                     chat_fault(fault)
                 }
             })?;
-        let page = Page::parse(&spec, &cli).ok_or_else(|| {
+        let mut page = Page::parse(&spec, &cli).ok_or_else(|| {
             Fault::new(
                 "invalid_reply",
                 "CLI returned a page of events that does not fit the request",
             )
         })?;
+        page.negotiate_rate_limits(spec.rate_limits, spec.complete || spec.bounded);
         // Deflating a page of megabytes, more than once, is not for a thread that serves others.
         let (request, compress) = (request.to_owned(), reply_limit > MAX_PLAINTEXT);
         tokio::task::spawn_blocking(move || {
@@ -1234,6 +1297,55 @@ impl Rpc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_limits_require_opt_in_and_filtered_pages_still_advance() {
+        let id = "11111111-2222-4333-8444-555555555555";
+        for mode in ["complete", "bounded"] {
+            let mut request = json!({"chat_id":id,"since":0,"wait_ms":0,mode:true});
+            let legacy = events_spec(&request).unwrap();
+            assert!(!legacy.rate_limits);
+            let raw = json!({"chat_id":id,"events":[{"seq":1,"event":{"event":"rate_limits","windows":[]}}],"next":1,"more":true});
+            let mut page = Page::parse(&legacy, &raw).unwrap();
+            page.negotiate_rate_limits(false, true);
+            assert_eq!(page.events.len(), 1);
+            assert_eq!(
+                page.events[0],
+                json!({"seq":1,"event":{"event":"question_resolved","request_id":""}})
+            );
+            assert_eq!(page.next, 1);
+            assert!(page.more);
+            request["features"] = json!(["rate_limits"]);
+            let opted = events_spec(&request).unwrap();
+            assert!(opted.rate_limits);
+            let mut page = Page::parse(&opted, &raw).unwrap();
+            page.negotiate_rate_limits(true, true);
+            assert_eq!(page.events.len(), 1);
+        }
+        let raw_page = json!({"chat_id":id,"events":[{"seq":1,"event":{"event":"rate_limits","windows":[]}},event(2,"hello")],"next":2,"more":false});
+        let legacy = events_spec(&json!({"chat_id":id,"since":0,"wait_ms":0})).unwrap();
+        let mut page = Page::parse(&legacy, &raw_page).unwrap();
+        page.negotiate_rate_limits(false, false);
+        assert_eq!(page.events, vec![event(2, "hello")]);
+        assert_eq!(page.next, 2);
+        let raw = json!({"controls":[{"event":"state","state":{"state":"idle"}},{"event":"rate_limits","windows":[{"id":"primary"}]}]});
+        let mut old_phone = raw.clone();
+        negotiate_snapshot_rate_limits(&mut old_phone, false);
+        assert_eq!(old_phone["controls"].as_array().unwrap().len(), 1);
+        let mut opted = raw;
+        negotiate_snapshot_rate_limits(&mut opted, true);
+        assert_eq!(opted["controls"].as_array().unwrap().len(), 2);
+        opted["controls"][1]["windows"] = json!([]);
+        negotiate_snapshot_rate_limits(&mut opted, true);
+        assert_eq!(opted["controls"].as_array().unwrap().len(), 1);
+        assert!(!snapshot_spec(&json!({"chat_id":id})).unwrap().rate_limits);
+        assert!(
+            snapshot_spec(&json!({"chat_id":id,"features":["rate_limits"]}))
+                .unwrap()
+                .rate_limits
+        );
+        assert!(snapshot_spec(&json!({"chat_id":id,"features":"rate_limits"})).is_err());
+    }
 
     fn event(seq: u64, text: &str) -> Value {
         json!({"seq": seq, "event": {"event": "item_completed", "item": {
