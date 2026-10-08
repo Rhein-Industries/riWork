@@ -82,7 +82,7 @@ pub enum Update {
     Unhide {
         key: String,
     },
-    /// Move before a sibling of the same pin group, or to its end (before=null).
+    /// Move before a tab of the same pin group, or to its end (before=null).
     Move {
         key: String,
         before: Option<String>,
@@ -644,18 +644,18 @@ impl TabStore {
                     if before.as_deref() == Some(update.key()) {
                         return Ok(tree(state));
                     }
-                    let (parent, pinned) =
-                        (state.entries[at].parent.clone(), state.entries[at].pinned);
+                    // Any tab of the same pin group is a place to go: a worker sits beside
+                    // tabs that are not its siblings in the one order every strip draws, and
+                    // keeps its parent wherever it goes.
+                    let pinned = state.entries[at].pinned;
                     if let Some(before) = before {
                         let target = state
                             .entries
                             .iter()
                             .find(|e| &e.key == before)
                             .ok_or("move target not found")?;
-                        if target.parent != parent || target.pinned != pinned {
-                            return Err(
-                                "move target must be a sibling in the same pin group".into()
-                            );
+                        if target.pinned != pinned {
+                            return Err("move target must be in the same pin group".into());
                         }
                     }
                     let entry = state.entries.remove(at);
@@ -1328,7 +1328,7 @@ mod tests {
         assert!(!entries[0].hidden);
     }
     #[test]
-    fn moves_are_durable_and_do_not_cross_pin_or_parent_groups() {
+    fn moves_are_durable_and_do_not_cross_pin_groups() {
         let f = Fixture::new();
         f.store
             .reconcile(&[session(2), session(3), session(4)])
@@ -1355,6 +1355,35 @@ mod tests {
                 .is_err()
         );
         assert_eq!(f.store.list().unwrap()[1].key, session(4).key);
+    }
+    #[test]
+    fn a_root_moves_beside_another_tabs_worker_and_the_worker_keeps_its_parent() {
+        // A strip draws one order of roots and workers: dropping a root on a worker of
+        // another tab, or a worker among roots, is a move like any other.
+        let f = Fixture::new();
+        let mut worker = session(3);
+        worker.parent_id = Some(id(2));
+        f.store
+            .reconcile(&[session(2), worker.clone(), session(4)])
+            .unwrap();
+        let list = f
+            .store
+            .update(&Update::Move {
+                key: session(4).key,
+                before: Some(worker.key.clone()),
+            })
+            .unwrap();
+        let keys = list.iter().map(|e| e.key.clone()).collect::<Vec<_>>();
+        assert_eq!(keys, [session(2).key, session(4).key, worker.key.clone()]);
+        let list = f
+            .store
+            .update(&Update::Move {
+                key: worker.key.clone(),
+                before: None,
+            })
+            .unwrap();
+        assert_eq!(list[2].key, worker.key);
+        assert_eq!(list[2].parent, Some(session(2).key));
     }
     #[test]
     fn parents_cross_kinds_and_children_carry_status() {

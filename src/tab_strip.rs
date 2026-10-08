@@ -3,7 +3,8 @@
 //! the pinned session tabs, then the rest in shared order, scrolling sideways when they do
 //! not fit, then ＋ and, when tabs are out of sight, All tabs. Each session tab is a Kit
 //! button with the tab role, a status dot, its canonical title and a close mark revealed on
-//! hover. Remote projects keep their own pane bar.
+//! hover. Tabs are the pane bar's flat cells (`flat_cell`). Remote projects keep their own
+//! pane bar.
 
 use super::*;
 
@@ -57,11 +58,8 @@ impl StripShape {
     }
 }
 
-/// Height of a strip tab: the chat header's capsule (10 pt text, 3 pt padding, hairline).
-const STRIP_TAB_HEIGHT: f32 = 22.0;
-const STRIP_GAP: f32 = 3.0;
-const STRIP_BUTTON: f32 = 22.0;
-const PANEL_SEGMENT: f32 = 24.0;
+/// Width of the strip's ＋ and All tabs cells.
+const STRIP_BUTTON: f32 = 28.0;
 const TITLE_MAX_WIDTH: f32 = 220.0;
 const DOT: f32 = 7.0;
 
@@ -162,9 +160,42 @@ pub(crate) fn status_dot(status: &project_tabs::Status, colors: Palette, error: 
     .into_any_element()
 }
 
+/// A tab cell as the pane bar draws it: full height, square, a hairline after it; the
+/// selected cell filled, in the content's background in the selected pane.
+pub(crate) fn flat_cell<E: Styled>(
+    cell: E,
+    active: bool,
+    pane_selected: bool,
+    colors: Palette,
+) -> E {
+    if !colors.plain_tabs {
+        return cell
+            .border_r_1()
+            .border_b_1()
+            .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+            .bg(rgb(if active {
+                colors.panel_active
+            } else {
+                colors.panel
+            }));
+    }
+    let cell = cell.border_r_1().border_color(rgb(colors.divider));
+    if active {
+        cell.bg(rgb(if pane_selected {
+            colors.bg
+        } else {
+            colors.panel_active
+        }))
+        .font_weight(gpui::FontWeight::MEDIUM)
+    } else {
+        cell
+    }
+}
+
 /// The `before` of a Move that takes the tab drawn at `from` to where the tab at `to` is:
-/// the next tab of its group after that spot, or `None` for the group's end. `None` overall
-/// when the spot is outside the dragged tab's sibling and pin group, or nothing moves.
+/// the next tab of its pin group after that spot, or `None` for the group's end. `None`
+/// overall when the spot is in the other pin group, or nothing moves. Parents do not part
+/// the strip: a tab goes beside another tab's workers as beside any other tab.
 pub(crate) fn strip_move(
     entries: &[project_tabs::Entry],
     drawn: &[(TabId, String)],
@@ -176,9 +207,7 @@ pub(crate) fn strip_move(
     }
     let entry = |key: &str| entries.iter().find(|e| e.key == key);
     let moved = entry(&drawn[from].1)?;
-    let same = |key: &str| {
-        entry(key).is_some_and(|e| e.parent == moved.parent && e.pinned == moved.pinned)
-    };
+    let same = |key: &str| entry(key).is_some_and(|e| e.pinned == moved.pinned);
     if !same(&drawn[to].1) {
         return None;
     }
@@ -268,7 +297,7 @@ impl Workspace {
     }
 
     /// A tab dropped on a strip: placement is local (`move_tab`); a reorder within the same
-    /// strip also publishes Move, kept to the dragged tab's sibling and pin group, so the
+    /// strip also publishes Move, kept to the dragged tab's pin group, so the
     /// phone sees the new order. Dropped on `target` it lands where that tab was, before it
     /// when dragged leftward and after it when dragged rightward; `None` is the strip's end.
     pub(crate) fn strip_drop(
@@ -461,28 +490,23 @@ impl Workspace {
             in_group(StripSlot::Pinned),
             in_group(StripSlot::Session),
         );
-        let gap = ui_text::space_f32(STRIP_GAP);
+        // Cells sit edge to edge, each with its hairlines.
+        let gap = 2.0;
         let width = |index: usize| {
             let tab = &pane.tabs[index];
             let closable = tab_can_close && slots[index].0 != StripSlot::Pinned;
-            ui_text::space_f32(9.0 + DOT + 5.0)
+            ui_text::space_f32(8.0 + DOT + 6.0)
                 + native_label_width(&self.strip_title(tab, cx), cx)
                     .min(ui_text::space_f32(TITLE_MAX_WIDTH))
-                + ui_text::space_f32(if closable { 4.0 + 16.0 + 4.0 } else { 10.0 })
+                + ui_text::space_f32(if closable { 6.0 + 16.0 + 4.0 } else { 8.0 })
                 + if slots[index].0 == StripSlot::Pinned {
-                    ui_text::space_f32(12.0)
+                    ui_text::space_f32(8.0 + 6.0)
                 } else {
                     0.0
                 }
         };
-        let base = panels.len() as f32 * ui_text::space_f32(PANEL_SEGMENT)
-            + if panels.is_empty() {
-                0.0
-            } else {
-                ui_text::space_f32(14.0)
-            }
-            + 2.0 * (ui_text::space_f32(STRIP_BUTTON) + gap)
-            + ui_text::space_f32(8.0);
+        let base = panels.len() as f32 * (ui_text::space_f32(NATIVE_ICON_TAB_FULL) + gap)
+            + 2.0 * (ui_text::space_f32(STRIP_BUTTON) + gap);
         let pinned_width = pinned.iter().map(|i| width(*i) + gap).sum::<f32>();
         // Pinned tabs stay put while they leave the others at least half the room; in a
         // pane too narrow for that they scroll too, still first, so ＋ and All tabs stay.
@@ -559,10 +583,12 @@ impl Workspace {
         let panel_segment = (!panels.is_empty()).then(|| {
             behavior_controls::segments(("strip-panels", pane_id), "Panels", colors)
                 .flex_none()
+                .h_full()
                 .items_center()
                 .gap(px(0.0))
-                .p(px(1.0))
-                .map(|track| controls::native(track, |track| track.rounded_full()))
+                .p(px(0.0))
+                .rounded(px(0.0))
+                .bg(gpui::transparent_black())
                 .children(
                     panels
                         .iter()
@@ -570,15 +596,6 @@ impl Workspace {
                 )
                 .into_any_element()
         });
-        let divider = || {
-            div()
-                .flex_none()
-                .w(px(1.0))
-                .h(ui_text::space(14.0))
-                .mx(ui_text::space(4.0))
-                .bg(rgb(colors.divider))
-                .into_any_element()
-        };
         let new_open = self.strip_menu
             == Some(StripMenu {
                 pane: pane_id,
@@ -667,15 +684,8 @@ impl Workspace {
                     .min_w_0()
                     .h_full()
                     .items_center()
-                    .gap(ui_text::space(STRIP_GAP))
-                    .pl(ui_text::space(if control_inset > 0.0 { 0.0 } else { 6.0 }))
                     .children(panel_segment)
-                    .children(
-                        (!panels.is_empty() && (!pinned.is_empty() || !sessions.is_empty()))
-                            .then(divider),
-                    )
                     .children(pinned.iter().map(|index| tab(*index, cx)))
-                    .children((!pinned.is_empty() && !sessions.is_empty()).then(divider))
                     .child(
                         div()
                             .id(("tab-strip-scroll", pane_id))
@@ -684,7 +694,6 @@ impl Workspace {
                             .min_w_0()
                             .h_full()
                             .items_center()
-                            .gap(ui_text::space(STRIP_GAP))
                             .overflow_x_scroll()
                             .track_scroll(&scroll)
                             .children(sessions.iter().map(|index| tab(*index, cx)))
@@ -716,7 +725,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// A round symbol button of the strip, as the pane's own toolbar buttons are.
+    /// A symbol cell of the strip, flat like its tabs.
     fn strip_button(
         &self,
         id: impl Into<gpui::ElementId>,
@@ -732,12 +741,15 @@ impl Workspace {
             .flex()
             .items_center()
             .justify_center()
-            .size(ui_text::space(STRIP_BUTTON))
-            .rounded(px(3.0))
-            .map(|button| controls::native(button, |button| button.rounded_full()))
+            .h_full()
+            .w(ui_text::space(STRIP_BUTTON))
             .text_color(rgb(colors.muted))
-            .when(open, |button| button.bg(rgb(colors.divider)))
-            .hover(move |style| style.bg(rgb(colors.divider)).text_color(rgb(colors.text)))
+            .when(open, |button| button.bg(rgb(colors.panel_active)))
+            .hover(move |style| {
+                style
+                    .bg(rgb(colors.panel_active))
+                    .text_color(rgb(colors.text))
+            })
             .child(icon)
             .child(tooltip::anchor(name, Look::Pane))
     }
@@ -751,7 +763,12 @@ impl Workspace {
         let tab_id = tab.id;
         let active = index == pane.active;
         let label = Self::panel_label(kind);
-        let ink = if active { colors.text } else { colors.muted };
+        let ink = match active {
+            true if !colors.plain_tabs => colors.magenta,
+            true => colors.text,
+            false => colors.muted,
+        };
+        let pane_selected = self.active_pane == pane_id;
         let workspace = cx.entity();
         behavior_controls::toggle_content(
             ("tab", tab_id),
@@ -763,17 +780,22 @@ impl Workspace {
         .flex_none()
         .items_center()
         .justify_center()
-        .h(ui_text::space(STRIP_TAB_HEIGHT - 2.0))
-        .w(ui_text::space(PANEL_SEGMENT))
-        .rounded(px(2.0))
+        .h_full()
+        .w(ui_text::space(NATIVE_ICON_TAB_FULL))
         .border_1()
         .border_color(gpui::transparent_black())
         .focus_visible(move |style| style.border_color(rgb(colors.focus)))
-        .map(|segment| controls::native(segment, |segment| segment.rounded_full()))
+        .map(|cell| flat_cell(cell, active, pane_selected, colors))
         .text_color(rgb(ink))
-        .when(active, |segment| segment.bg(rgb(controls::raised(colors))))
-        .when(!active, |segment| {
-            segment.hover(move |style| style.bg(rgb(colors.divider)).text_color(rgb(colors.text)))
+        .when(!active || !colors.plain_tabs, |cell| {
+            cell.hover(move |style| {
+                style
+                    .bg(rgb(colors.panel_active))
+                    .text_color(rgb(colors.text))
+            })
+        })
+        .drag_over::<DraggedTab>(move |style, _, _, _| {
+            style.border_l_2().border_color(rgb(colors.cyan))
         })
         .child(tooltip::anchor(panel_tooltip(kind), Look::Pane))
         .on_change({
@@ -870,40 +892,23 @@ impl Workspace {
             .flex()
             .flex_none()
             .items_center()
-            .h(ui_text::space(STRIP_TAB_HEIGHT))
-            .gap(ui_text::space(5.0))
-            .pl(ui_text::space(9.0))
-            .pr(ui_text::space(if closable { 4.0 } else { 10.0 }))
+            .h_full()
+            .gap(ui_text::space(6.0))
+            .pl(ui_text::space(8.0))
+            .pr(ui_text::space(if closable { 4.0 } else { 8.0 }))
             .text_size(ui_text::text(10.0))
             .text_color(rgb(ink))
-            .rounded(px(3.0))
-            .map(|tab| controls::native(tab, |tab| tab.rounded_full()))
-            .map(|tab| {
-                if !active {
-                    return tab;
-                }
-                if native {
-                    tab.bg(rgb(controls::raised(colors)))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .shadow_xs()
-                } else {
-                    tab.bg(rgb(colors.panel_active)).border_color(rgb(
-                        if pane_selected && !colors.plain_tabs {
-                            colors.cyan
-                        } else {
-                            colors.divider
-                        },
-                    ))
-                }
-            })
-            .when(!active, |tab| {
+            .map(|tab| flat_cell(tab, active, pane_selected, colors))
+            .when(!(active && colors.plain_tabs), |tab| {
                 tab.hover(move |style| {
                     style
                         .bg(rgb(colors.panel_active))
                         .text_color(rgb(colors.text))
                 })
             })
-            .drag_over::<DraggedTab>(move |style, _, _, _| style.border_color(rgb(colors.cyan)))
+            .drag_over::<DraggedTab>(move |style, _, _, _| {
+                style.border_l_2().border_color(rgb(colors.cyan))
+            })
             .children(pinned.then(|| {
                 if native {
                     icons::symbol("pin.fill", 8.0, Some(ink))
@@ -1333,7 +1338,7 @@ mod tests {
     }
 
     #[test]
-    fn a_strip_drag_moves_within_its_pin_and_sibling_group_only() {
+    fn a_strip_drag_moves_within_its_pin_group_across_parents() {
         let entries = [
             entry("p", true, None),
             entry("a", false, None),
@@ -1349,11 +1354,15 @@ mod tests {
         // Leftward lands before the target, rightward after it.
         assert_eq!(strip_move(&entries, &drawn, 3, 1), Some(Some("a".into())));
         assert_eq!(strip_move(&entries, &drawn, 1, 2), Some(Some("c".into())));
-        assert_eq!(strip_move(&entries, &drawn, 1, 3), Some(None));
-        // No move onto itself, into the pinned group, or among another parent's children.
+        assert_eq!(strip_move(&entries, &drawn, 1, 3), Some(Some("w".into())));
+        // A root dropped on another tab's worker lands beside it, and a worker among roots:
+        // the drop the strip used to refuse, so the dragged tab sprang back.
+        assert_eq!(strip_move(&entries, &drawn, 2, 4), Some(None));
+        assert_eq!(strip_move(&entries, &drawn, 4, 2), Some(Some("b".into())));
+        // No move onto itself or into the pinned group.
         assert_eq!(strip_move(&entries, &drawn, 2, 2), None);
         assert_eq!(strip_move(&entries, &drawn, 2, 0), None);
-        assert_eq!(strip_move(&entries, &drawn, 2, 4), None);
+        assert_eq!(strip_move(&entries, &drawn, 0, 2), None);
     }
 
     #[test]
