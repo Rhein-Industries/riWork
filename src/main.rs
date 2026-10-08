@@ -1404,8 +1404,9 @@ struct Workspace {
     /// Which tab hosts `shared_tab_menu`.
     shared_tab_menu_key: String,
     /// Each pane strip's scrolling tabs, so a selected tab can be revealed.
-    /// and whether its pinned tabs scroll with the rest (a narrow pane).
-    strip_scrolls: std::cell::RefCell<HashMap<PaneId, (gpui::ScrollHandle, bool)>>,
+    /// whether its pinned tabs scroll with the rest (a narrow pane), and what it last showed.
+    strip_scrolls:
+        std::cell::RefCell<HashMap<PaneId, (gpui::ScrollHandle, bool, tab_strip::StripShape)>>,
     shared_tab_menu: Option<Entity<tab_menu::TabMenu>>,
     foreign_tabs: HashMap<String, Option<project_tabs::Entry>>,
     shared_tab_error: Option<String>,
@@ -5702,7 +5703,11 @@ impl Workspace {
         self.panel_menu = None;
         self.shared_tab_menu_key = key.to_owned();
         let menu = cx.new(|cx| tab_menu::TabMenu::new(&entry, left, right, window, cx));
-        menu.update(cx, |menu, cx| menu.focus(window, cx));
+        // After the press that opened it: the tab's own mouse-down focus runs later.
+        let focus = menu.clone();
+        window.defer(cx, move |window, cx| {
+            focus.update(cx, |menu, cx| menu.focus(window, cx));
+        });
         let key = key.to_owned();
         cx.subscribe_in(&menu, window, move |workspace, _, event, window, cx| {
             workspace.shared_tab_menu = None;

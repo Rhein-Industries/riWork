@@ -24,6 +24,16 @@ pub(crate) struct StripMenu {
     pub kind: StripMenuKind,
 }
 
+/// What a strip last showed, to tell when its selected tab needs revealing.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct StripShape {
+    width: i32,
+    tabs: usize,
+    selected: Option<TabId>,
+    /// Frames left to keep the selected tab in view after a change.
+    settling: u8,
+}
+
 /// Height of a strip tab: the chat header's capsule (10 pt text, 3 pt padding, hairline).
 const STRIP_TAB_HEIGHT: f32 = 22.0;
 const STRIP_GAP: f32 = 3.0;
@@ -288,7 +298,7 @@ impl Workspace {
         };
         let slots = self.strip_slots(pane);
         let scrolls = self.strip_scrolls.borrow();
-        let Some((handle, pins_scroll)) = scrolls.get(&pane_id) else {
+        let Some((handle, pins_scroll, _)) = scrolls.get(&pane_id) else {
             return;
         };
         let scrolled = strip_order(&slots)
@@ -446,6 +456,32 @@ impl Workspace {
             let mut scrolls = self.strip_scrolls.borrow_mut();
             let entry = scrolls.entry(pane_id).or_default();
             entry.1 = pins_scroll;
+            // The selected tab comes into view when the strip changes width or contents,
+            // or another tab is selected; otherwise the strip stays where it was scrolled.
+            let shape = StripShape {
+                width: room.round() as i32,
+                tabs: sessions.len(),
+                selected: pane.tabs.get(pane.active).map(|tab| tab.id),
+                settling: 0,
+            };
+            // GPUI measures against the previous frame, so the request is repeated for the
+            // frames that settle the strip's layout after a change.
+            if entry.2.width != shape.width
+                || entry.2.tabs != shape.tabs
+                || entry.2.selected != shape.selected
+            {
+                entry.2 = StripShape {
+                    settling: 3,
+                    ..shape
+                };
+            }
+            if entry.2.settling > 0 {
+                entry.2.settling -= 1;
+                if let Some(at) = sessions.iter().position(|index| *index == pane.active) {
+                    entry.0.scroll_to_item(at);
+                }
+                cx.notify();
+            }
             entry.0.clone()
         };
         let error = theme::diff_colors(cx).removed;
@@ -856,6 +892,8 @@ impl Workspace {
                 MouseButton::Right,
                 cx.listener(move |workspace, _, window, cx| {
                     if let Some(key) = &menu_key {
+                        // Keep the press from focusing the tab: the menu holds focus.
+                        window.prevent_default();
                         workspace.open_shared_tab_menu(key, window, cx);
                     }
                 }),
