@@ -328,7 +328,8 @@ import RiWorkCore
         let made = try XCTUnwrap(created.first)
         XCTAssertEqual(model.selectedChatID, made.id)
         XCTAssertEqual(model.chats.map(\.id), [made.id])
-        XCTAssertEqual(model.lastTerminalKind, .claudeChat)
+        XCTAssertEqual(model.lastTerminalKind, .chat)
+        XCTAssertEqual(model.lastChatProvider, .claude, "the next sheet starts on the provider of the last chat")
         XCTAssertFalse(model.creatingChat)
         XCTAssertEqual(model.chatSupport, .supported)
         let listed = await rig.transport.count("chats.list")
@@ -339,10 +340,10 @@ import RiWorkCore
         let rig = try await connected(chats: [])
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
         XCTAssertEqual(sheet.form.kinds, NewTerminalKind.allCases, "this desktop has chats")
-        sheet.select(kind: .codexChat)
+        sheet.selectChat(.codex)
         sheet.create()
         await sheet.pending?.value
-        sheet.select(kind: .claudeChat)
+        sheet.selectChat(.claude)
         sheet.setUnrestricted(true)
         sheet.create()
         await sheet.pending?.value
@@ -370,7 +371,7 @@ import RiWorkCore
     func testTheSheetSendsOneChatRequestForAHeldReturnOrADoubleTap() async throws {
         let rig = try await connected(chats: [])
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
-        sheet.select(kind: .claudeChat)
+        sheet.selectChat(.claude)
         var dismissed = 0
         sheet.dismiss = { dismissed += 1 }
         await rig.transport.setCreateMode(.gated)
@@ -389,14 +390,14 @@ import RiWorkCore
         let rig = try await connected(chats: [])
         await rig.transport.setCreateMode(.timeout)
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
-        sheet.select(kind: .codexChat)
+        sheet.selectChat(.codex)
         sheet.create()
         await sheet.pending?.value
         XCTAssertEqual(sheet.chatError, .outcomeUnknown(.create(.codex)))
         XCTAssertEqual(sheet.problem?.outcomeIsUncertain, true)
         XCTAssertTrue(sheet.problem?.message.contains("may or may not have been created") == true)
         XCTAssertNil(rig.model.selectedChatID)
-        XCTAssertNotEqual(rig.model.lastTerminalKind, .codexChat, "only a success is remembered")
+        XCTAssertNotEqual(rig.model.lastTerminalKind, .chat, "only a success is remembered")
         // Nothing sends it again by itself: not time, not a reconnect.
         try? await Task.sleep(for: .milliseconds(300))
         await rig.model.disconnect()
@@ -411,7 +412,7 @@ import RiWorkCore
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
         var dismissed = 0
         sheet.dismiss = { dismissed += 1 }
-        sheet.select(kind: .claudeChat)
+        sheet.selectChat(.claude)
         func attempt(_ mode: ChatTransport.CreateMode) async -> String? {
             await rig.transport.setCreateMode(mode)
             sheet.create()

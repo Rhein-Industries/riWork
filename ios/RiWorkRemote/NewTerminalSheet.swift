@@ -46,7 +46,7 @@ struct NewTerminalSheet: View {
                     .font(style.system(.caption)).foregroundStyle(style.muted).padding(.horizontal, 12)
             }
             if sheet.form.kind.isChat { NewChatModelSection(sheet: sheet) }
-            if sheet.form.kind.isAgent { unrestrictedRow }
+            if sheet.form.offersUnrestricted { unrestrictedRow }
             if let problem = sheet.problem { messageRow(problem) }
         }
     }
@@ -110,15 +110,14 @@ struct NewTerminalSheet: View {
         case .codex: "chevron.left.forwardslash.chevron.right"
         case .claude: "sparkles"
         case .grok: "bolt"
-        case .codexChat: ChatProvider.codex.glyph
-        case .claudeChat: ChatProvider.claude.glyph
+        case .chat: "bubble.left.and.bubble.right"
         case .projectOrchestrator: "point.3.connected.trianglepath.dotted"
         case .globalOrchestrator: "globe"
         }
     }
     private func detail(_ kind: NewTerminalKind) -> String {
         if kind.isOrchestrator { return "Orchestrator" }
-        return kind == .shell ? "The Mac’s login shell" : (kind.isChat ? "Native chat" : "Agent")
+        return kind == .shell ? "The Mac’s login shell" : (kind.isChat ? "Codex or Claude" : "Agent")
     }
     private func kindRow(_ kind: NewTerminalKind) -> some View {
         let selected = sheet.form.kind == kind

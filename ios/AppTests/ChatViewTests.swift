@@ -1342,7 +1342,7 @@ import RiWorkCore
         window.rootViewController = host
         window.makeKeyAndVisible()
         windows.append(window)
-        sheet.select(kind: .claudeChat)
+        sheet.selectChat(.claude)
         try await Task.sleep(for: .milliseconds(300))
         window.layoutIfNeeded()
         let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
@@ -1350,7 +1350,7 @@ import RiWorkCore
             try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
             try? data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("new-chat-sheet.png"))
         }
-        XCTAssertEqual(sheet.form.kinds.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Codex chat", "Claude chat"])
+        XCTAssertEqual(sheet.form.kinds.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Chat"], "one chat for both providers")
         await finish(rig)
     }
 
@@ -1412,7 +1412,7 @@ import RiWorkCore
             try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
             try? data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("new-orchestrator-sheet.png"))
         }
-        XCTAssertEqual(sheet.form.kinds.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Codex chat", "Claude chat", "Project orchestrator", "Global orchestrator"])
+        XCTAssertEqual(sheet.form.kinds.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Chat", "Project orchestrator", "Global orchestrator"])
         XCTAssertFalse(sheet.form.fields.contains(.target))
         // The keyboard reaches both rows from the kind list, and Return opens.
         sheet.press(.down)

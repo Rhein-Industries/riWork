@@ -1,47 +1,24 @@
 import SwiftUI
 import RiWorkCore
 
-/// New chats use the same provider Models events as the in-chat picker, read from an existing chat in this project.
-/// Default remains available when a provider has not published its catalogue yet. Effort and Fast use the shared controls.
+/// The model of a new chat: one list for both providers, Codex and Claude each under its own heading with its default first. The model
+/// chosen decides which provider the chat runs (`NewTerminalForm.chatRows`). The lists are the providers' own Models events, read from saved
+/// chats (`chat.models`, or the chats of this project on an older Mac); each provider's default stays on offer while its list is not known.
+/// Effort and Fast use the shared controls.
 struct NewChatModelSection: View {
     @Environment(\.desktopStyle) private var style
     @Bindable var sheet: NewTerminalSheetModel
 
     var body: some View {
         let choice = sheet.form.chatChoice ?? NewChatChoice()
+        let chosen = sheet.form.chosenChatRow
         VStack(alignment: .leading, spacing: 0) {
             Text(style.cased("Model")).font(style.system(.caption, weight: .bold)).foregroundStyle(style.muted)
                 .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).accessibilityAddTraits(.isHeader)
-            VStack(spacing: 0) {
-                row(title: "Default", detail: "The Mac’s choice", selected: !choice.usesModel, last: false)
-                let models = sheet.form.kind.chatProvider.flatMap { sheet.form.chatModels[$0] } ?? []
-                ForEach(models) { option in
-                    Button { sheet.chooseChatModel(option) } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: choice.chosen?.id == option.id ? "largecircle.fill.circle" : "circle")
-                            Text(option.name).font(style.face(14, relativeTo: .body))
-                            Spacer(minLength: 4)
-                            if option.isDefault { Text("Default").font(style.system(.caption)).foregroundStyle(style.muted) }
-                        }.padding(12).frame(minHeight: style.pt(48)).contentShape(Rectangle())
-                    }.buttonStyle(.plain).disabled(sheet.busy)
-                        .overlay { if choice.chosen?.id == option.id { ring(.chatModel) } }
-                        .accessibilityIdentifier("new-chat-model-\(option.id)")
-                        .accessibilityAddTraits(choice.chosen?.id == option.id ? .isSelected : [])
-                }
-                if models.isEmpty, let model = choice.model { row(title: model.name, detail: "Last used", selected: choice.usesModel, last: true) }
-            }
-            .accessibilityElement(children: .contain).accessibilityLabel("Model")
-            if let provider = sheet.form.kind.chatProvider, let label = sheet.chatModelsSources[provider]?.label {
-                Text(label).font(style.system(.caption)).foregroundStyle(style.warning).padding(12)
+            ForEach(ChatProvider.allCases, id: \.self) { provider in
+                providerSection(provider, rows: sheet.form.chatRows.filter { $0.provider == provider }, chosen: chosen)
             }
             if sheet.loadingChatModels { ProgressView("Loading models…").padding(12) }
-            if let error = sheet.chatModelsError {
-                Text(error).font(style.system(.caption)).foregroundStyle(style.warning).padding(12)
-            }
-            if let provider = sheet.form.kind.chatProvider, sheet.chatModelsSources[provider] != .live || sheet.chatModelsError != nil {
-                Button("Retry live models") { Task { await sheet.loadChatModels() } }.padding(.horizontal, 12)
-                    .disabled(sheet.loadingChatModels || sheet.busy)
-            }
             if !choice.efforts.isEmpty {
                 ChatEffortSegments(efforts: choice.efforts, selected: choice.selectedEffort, ringed: ringed(.chatEffort) ? choice.selectedEffort.flatMap { choice.efforts.firstIndex(of: $0) } : nil) { _, effort in
                     sheet.chooseChatEffort(effort)
@@ -55,24 +32,51 @@ struct NewChatModelSection: View {
                     .padding(.top, 4)
             }
         }
-        .task(id: sheet.form.kind.chatProvider) { await sheet.loadChatModels() }
+        .task(id: sheet.form.kind.isChat) { if sheet.form.kind.isChat { await sheet.loadChatModels() } }
     }
 
-    private func row(title: String, detail: String, selected: Bool, last: Bool) -> some View {
-        Button { sheet.chooseChatModel(last: last) } label: {
+    @ViewBuilder private func providerSection(_ provider: ChatProvider, rows: [NewChatRow], chosen: NewChatRow?) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: provider.glyph).foregroundStyle(style.muted).accessibilityHidden(true)
+            Text(provider.title).font(style.system(.caption, weight: .semibold)).foregroundStyle(style.muted)
+        }
+        .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 2).accessibilityAddTraits(.isHeader)
+        VStack(spacing: 0) {
+            ForEach(rows) { row in rowView(row, selected: chosen?.id == row.id) }
+        }
+        .accessibilityElement(children: .contain).accessibilityLabel("\(provider.title) models")
+        if let label = sheet.chatModelsSources[provider]?.label {
+            Text(label).font(style.system(.caption)).foregroundStyle(style.warning).padding(.horizontal, 12).padding(.vertical, 4)
+        }
+        if let error = sheet.chatModelsErrors[provider] {
+            Text(error).font(style.system(.caption)).foregroundStyle(style.warning).padding(.horizontal, 12).padding(.vertical, 4)
+        }
+        if sheet.chatModelsSources[provider] != .live || sheet.chatModelsErrors[provider] != nil {
+            Button("Retry live \(provider.title) models") { Task { await sheet.loadChatModels(provider) } }.padding(.horizontal, 12).padding(.vertical, 4)
+                .disabled(sheet.loadingProviders.contains(provider) || sheet.busy)
+        }
+    }
+
+    private func rowView(_ row: NewChatRow, selected: Bool) -> some View {
+        let (title, detail, identifier): (String, String, String) = switch row {
+        case .providerDefault(let provider): ("Default", "The Mac’s choice", "new-chat-model-\(provider.rawValue)-default")
+        case .last(let provider, let option): (option.name, "Last used", "new-chat-model-\(provider.rawValue)-last")
+        case .model(let provider, let option): (option.name, option.isDefault ? "Default" : "", "new-chat-model-\(provider.rawValue)-\(option.id)")
+        }
+        return Button { sheet.chooseChatRow(row) } label: {
             HStack(spacing: 10) {
                 Image(systemName: selected ? "largecircle.fill.circle" : "circle").frame(width: style.pt(22)).foregroundStyle(selected ? style.accent : style.muted)
                 Text(title).font(style.face(14, bold: selected, relativeTo: .body)).lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 4)
-                Text(detail).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
+                if !detail.isEmpty { Text(detail).font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted) }
             }
             .padding(.horizontal, 12).frame(maxWidth: .infinity, minHeight: style.pt(48), alignment: .leading)
             .overlay { if selected { ring(.chatModel) } }
             .desktopRowFill(style, selected: selected)
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier(last ? "new-chat-model-last" : "new-chat-model-default")
-        .accessibilityLabel(title).accessibilityHint(detail)
+        .buttonStyle(.plain).disabled(sheet.busy)
+        .accessibilityIdentifier(identifier)
+        .accessibilityLabel("\(row.provider.title), \(title)").accessibilityHint(detail)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 

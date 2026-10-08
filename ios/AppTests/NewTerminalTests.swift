@@ -18,9 +18,16 @@ actor SpawnTransport: RemoteTransport {
     var sessions: [RemoteSession]
     var worktrees: [RemoteWorktree] = []
     var created: [String] = []
+    /// `ready.features.shell_create_as_settings`: the desktop's Settings decide an agent terminal left without `unrestricted`.
+    var asSettings = false
     private var counter = 0
 
     init(sessions: [RemoteSession] = []) { self.sessions = sessions }
+
+    func setAsSettings(_ on: Bool) { asSettings = on }
+    func desktopFeatures() async -> DesktopFeatures {
+        asSettings ? DesktopFeatures(ready: .object(["features": .object(["shell_create_as_settings": .bool(true)])])) : DesktopFeatures()
+    }
 
     func setCreateMode(_ mode: CreateMode) { createMode = mode }
     func setCloseMode(_ mode: CloseMode) { closeMode = mode }
@@ -585,5 +592,38 @@ actor SpawnTransport: RemoteTransport {
         let found = (host.keyCommands ?? []).contains { $0.input?.lowercased() == "n" && $0.modifierFlags == .command }
         XCTAssertTrue(found, "keyCommands: \((host.keyCommands ?? []).map { "\($0.input ?? "") \($0.modifierFlags.rawValue)" })")
         XCTAssertEqual(fired, 0)
+    }
+
+    // MARK: The Mac's Settings decide
+
+    func testWhereTheMacDecidesTheSheetHasNoUnrestrictedSwitchForAnAgentTerminalAndAsksForNothing() async throws {
+        let transport = SpawnTransport(sessions: [try session(first, at: 1)])
+        await transport.setAsSettings(true)
+        let keychain = try makeStore(selected: first)
+        let model = RemoteModel(client: transport, keychain: keychain, defaults: defaults())
+        await model.connect()
+        let sheet = try XCTUnwrap(NewTerminalSheetModel(model: model))
+        XCTAssertTrue(sheet.form.agentsFollowDesktop)
+        sheet.select(kind: .claude)
+        XCTAssertFalse(sheet.form.offersUnrestricted)
+        XCTAssertFalse(sheet.form.fields.contains(.unrestricted), "no switch, and nothing that says unrestricted")
+        sheet.setUnrestricted(true)
+        XCTAssertFalse(sheet.form.unrestricted)
+        sheet.create()
+        await sheet.pending?.value
+        let sent = await transport.params(of: "shell.create")
+        XCTAssertEqual(sent, [["kind": .string("claude"), "project_id": .string(project)]], "the Mac's Agent terminals run unrestricted decides")
+        await model.disconnect()
+        // A desktop from before it: the switch is there, and on it is asked for.
+        let older = try await connected()
+        let again = try XCTUnwrap(NewTerminalSheetModel(model: older.model))
+        again.select(kind: .codex)
+        XCTAssertTrue(again.form.fields.contains(.unrestricted))
+        again.setUnrestricted(true)
+        again.create()
+        await again.pending?.value
+        let explicit = await older.transport.params(of: "shell.create")
+        XCTAssertEqual(explicit.first?["unrestricted"], .bool(true))
+        await older.model.disconnect()
     }
 }

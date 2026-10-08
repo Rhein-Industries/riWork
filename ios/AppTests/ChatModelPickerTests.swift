@@ -248,7 +248,7 @@ import RiWorkCore
         let rig = try await connected()
         await rig.transport.append(chatID, [.info(chat()), .models(list)])
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
-        sheet.select(kind: .codexChat)
+        sheet.selectChat(.codex)
         await sheet.loadChatModels()
         XCTAssertEqual(sheet.form.chatModels[.codex], list)
         XCTAssertNil(sheet.chatModelsError)
@@ -277,12 +277,12 @@ import RiWorkCore
         let rig = try await connected()
         await rig.transport.append(chatID, [.models(list)])
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
-        sheet.select(kind: .claudeChat)
+        sheet.selectChat(.claude)
         await sheet.loadChatModels()
         XCTAssertNotNil(sheet.chatModelsError)
         XCTAssertEqual(sheet.chatModelsSources[.claude], .bundled)
         XCTAssertFalse(sheet.form.chatModels[.claude]?.isEmpty ?? true)
-        sheet.select(kind: .codexChat)
+        sheet.selectChat(.codex)
         await rig.transport.failEvents(1)
         await sheet.loadChatModels()
         XCTAssertNotNil(sheet.chatModelsError)
@@ -367,7 +367,7 @@ import RiWorkCore
     func testFirstRunNetworkFailureKeepsBundledChoicesAndRecoveryReplacesThem() async throws {
         let rig = try await connected()
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
-        sheet.select(kind: .codexChat)
+        sheet.selectChat(.codex)
         await rig.transport.failEvents(1)
         await sheet.loadChatModels()
         XCTAssertEqual(sheet.chatModelsSources[.codex], .bundled)
@@ -400,7 +400,7 @@ import RiWorkCore
         let rig = try await connected()
         await rig.transport.gateEvents(true)
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
-        sheet.select(kind: .codexChat)
+        sheet.selectChat(.codex)
         let request = Task { await sheet.loadChatModels() }
         await eventually("fallback is available during loading") { sheet.loadingChatModels && sheet.form.chatModels[.codex]?.isEmpty == false }
         await eventually("spinner stops within the bounded period", timeout: 5) { !sheet.loadingChatModels }
@@ -424,7 +424,7 @@ import RiWorkCore
         await rig.transport.setChats([old])
         await rig.transport.gateEvents(true)
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
-        sheet.select(kind: .codexChat)
+        sheet.selectChat(.codex)
         let request = Task { await sheet.loadChatModels() }
         await eventually("loading") { sheet.loadingChatModels }
         rig.model.generation = UUID()
@@ -444,7 +444,7 @@ import RiWorkCore
     func testANewChatWithNothingChosenAsksForNoModelEffortOrFast() async throws {
         let rig = try await connected(chats: [])
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
-        sheet.select(kind: .claudeChat)
+        sheet.selectChat(.claude)
         XCTAssertNil(sheet.form.chatChoice?.chosen)
         sheet.create()
         let params = await createdParams(rig)
@@ -457,7 +457,7 @@ import RiWorkCore
         rig.model.rememberChatChoice(NewChatChoice(model: opus, usesModel: true, effort: "high", fast: true), for: .claude)
         rig.model.rememberChatChoice(NewChatChoice(model: gpt, usesModel: true), for: .codex)
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
-        sheet.select(kind: .claudeChat)
+        sheet.selectChat(.claude)
         XCTAssertEqual(sheet.form.chatChoice?.chosen, opus, "the last model is the one chosen")
         XCTAssertEqual(sheet.form.chatChoice?.summary, "Opus 4.1 · High · Fast")
         sheet.create()
@@ -470,7 +470,7 @@ import RiWorkCore
         let rig = try await connected(chats: [], defaults: suite)
         rig.model.rememberChatChoice(NewChatChoice(model: gpt), for: .codex)
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
-        sheet.select(kind: .codexChat)
+        sheet.selectChat(.codex)
         XCTAssertNil(sheet.form.chatChoice?.chosen, "offered, not chosen")
         sheet.chooseChatModel(last: true)
         sheet.chooseChatEffort("xhigh")
@@ -485,7 +485,7 @@ import RiWorkCore
         // The next sheet starts as the last chat did.
         let next = try await connected(chats: [], defaults: suite)
         let again = try XCTUnwrap(NewTerminalSheetModel(model: next.model))
-        again.select(kind: .codexChat)
+        again.selectChat(.codex)
         XCTAssertEqual(again.form.chatChoice?.summary, "GPT-5.5 · X-High · Fast")
         // Going back to the default is remembered too, and the model stays on offer.
         again.chooseChatModel(last: false)
@@ -500,12 +500,12 @@ import RiWorkCore
         let rig = try await connected(chats: [])
         rig.model.rememberChatChoice(NewChatChoice(model: gpt), for: .codex)
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
-        sheet.select(kind: .codexChat)
+        sheet.selectChat(.codex)
         sheet.press(.tab)
         XCTAssertEqual(sheet.form.focus, .chatModel)
         sheet.press(.down)
         XCTAssertEqual(sheet.form.chatChoice?.usesModel, true, "↓ chooses the last model")
-        XCTAssertEqual(sheet.form.kind, .codexChat)
+        XCTAssertEqual(sheet.form.kind, .chat)
         sheet.press(.tab); XCTAssertEqual(sheet.form.focus, .chatEffort)
         sheet.press(.down); sheet.press(.down)
         XCTAssertEqual(sheet.form.chatChoice?.selectedEffort, "xhigh")
@@ -743,13 +743,107 @@ import RiWorkCore
         rig.model.rememberChatChoice(NewChatChoice(model: opus, usesModel: true, effort: "high", fast: true), for: .claude)
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
         let (window, _) = try host(NewTerminalSheet(sheet: sheet).desktopThemed(rig.model.theme.style).frame(width: 402, height: 720), height: 720)
-        sheet.select(kind: .claudeChat)
+        sheet.selectChat(.claude)
         try await Task.sleep(for: .milliseconds(300))
         picture(window, "new-chat-model")
         sheet.chooseChatModel(last: false)
-        sheet.select(kind: .codexChat)
+        sheet.selectChat(.codex)
         try await Task.sleep(for: .milliseconds(300))
         picture(window, "new-chat-model-first-time")
+        await finish(rig)
+    }
+
+    // MARK: One chat for both providers
+
+    private var opus: ChatModelOption { ChatModelOption(id: "opus", name: "Opus", description: "Opus 5.5", efforts: ["low", "high"], supportsFast: true) }
+    /// A desktop that lets a chat go on with the other provider and lists a provider's models (`chat.models`).
+    private func switchable(chats: [ChatInfo]? = nil) async throws -> Rig {
+        let rig = try await connected(chats: chats)
+        await rig.transport.setSwitchFeatures(true)
+        await rig.model.disconnect(); await rig.model.connect()
+        XCTAssertTrue(rig.model.desktopFeatures.chatProviderSwitch)
+        return rig
+    }
+
+    func testANewChatListsBothProvidersFromTheMacAndTheModelDecidesTheProvider() async throws {
+        let rig = try await switchable(chats: [])
+        await rig.transport.setProviderModels(.codex, list)
+        await rig.transport.setProviderModels(.claude, [opus])
+        let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
+        sheet.select(kind: .chat)
+        XCTAssertEqual(sheet.form.chatProvider, .codex, "nothing remembered: Codex")
+        await sheet.loadChatModels()
+        XCTAssertEqual(sheet.form.chatModels[.codex], list); XCTAssertEqual(sheet.form.chatModels[.claude], [opus])
+        XCTAssertEqual(sheet.chatModelsSources[.codex], .live); XCTAssertEqual(sheet.chatModelsSources[.claude], .live)
+        let listed = await rig.transport.params(of: "chat.models")
+        XCTAssertEqual(Set(listed.compactMap { $0["provider"]?.string }), ["codex", "claude"], "read from the Mac, not by replaying chats")
+        let replays = await rig.transport.count("chat.events")
+        XCTAssertEqual(replays, 0)
+        XCTAssertEqual(sheet.form.chatRows.count, 6, "each provider's default and its models")
+        sheet.chooseChatRow(.model(.claude, opus))
+        XCTAssertEqual(sheet.form.chatProvider, .claude)
+        sheet.create()
+        let params = await createdParams(rig)
+        XCTAssertEqual(params?["provider"], .string("claude")); XCTAssertEqual(params?["model"], .string("opus"))
+        XCTAssertEqual(rig.model.lastChatProvider, .claude)
+        XCTAssertEqual(rig.model.newTerminalForm()?.chatProvider, .claude, "the next sheet starts on Claude")
+        await finish(rig)
+    }
+    func testAProviderTheMacCannotOfferSaysWhyUnderItsOwnRows() async throws {
+        let rig = try await switchable(chats: [])
+        await rig.transport.setProviderModels(.claude, [opus])
+        await rig.transport.setProviderModels(.codex, [], error: "The Codex account Work cannot be used.")
+        let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
+        sheet.selectChat(.claude)
+        await sheet.loadChatModels()
+        XCTAssertEqual(sheet.chatModelsErrors[.codex], "The Codex account Work cannot be used.")
+        XCTAssertNil(sheet.chatModelsErrors[.claude]); XCTAssertNil(sheet.chatModelsError, "the chosen provider's is what the sheet says")
+        XCTAssertEqual(sheet.chatModelsSources[.codex], .bundled, "its fallback stays on offer")
+        await finish(rig)
+    }
+    func testTheChatGoesOnWithTheOtherProviderInPlace() async throws {
+        let rig = try await switchable()
+        await rig.transport.setProviderModels(.claude, [opus])
+        // The desktop does what a switch says: the chat's info names Claude, and a notice reads as the divider.
+        let moved = ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Claude chat", createdAtUnix: 10, model: "opus", state: .idle,
+                             carriedOver: ChatCarriedOver(document: "/chats/c/context.md", from: "Codex chat"))
+        await rig.transport.handleCommands { _, command in
+            guard case .switchProvider = command else { return [] }
+            return [.info(moved), .itemCompleted(ChatItem(id: "switch-3", status: .completed, body: .notice(level: .info, text: "Continued with Claude (opus), which has the conversation so far.")))]
+        }
+        await withModels(rig)
+        await rig.model.loadSwitchCatalogue(chat())
+        let conversation = rig.model.conversation(chatID)
+        XCTAssertEqual(conversation.switchCatalogue, [opus]); XCTAssertEqual(conversation.switchCatalogueSource, .live)
+        let offered = conversation.modelChoices(fallback: chat(), switchable: true)
+        XCTAssertEqual(offered.switching?.provider, .claude)
+        XCTAssertEqual(offered.switching?.rows.map(\.id), ["default", "opus"])
+        XCTAssertNil(offered.switching?.blocked)
+        XCTAssertNil(conversation.modelChoices(fallback: chat()).switching, "nothing to switch to without the desktop's word")
+        let failure = await rig.model.switchChatProvider(chat(), model: "opus")
+        XCTAssertNil(failure)
+        let sent = await rig.transport.commands()
+        XCTAssertEqual(sent.last, .object(["command": .string("switch"), "provider": .string("claude"), "model": .string("opus")]))
+        await eventually("the chat says it runs Claude") { conversation.transcript.info?.provider == .claude }
+        XCTAssertEqual(conversation.transcript.item("switch-3")?.body, .notice(level: .info, text: "Continued with Claude (opus), which has the conversation so far."))
+        XCTAssertTrue(conversation.transcript.models.isEmpty, "Codex's list is not Claude's")
+        XCTAssertFalse(conversation.modelCatalogue.contains(gpt), "the picker shows Claude's models, not Codex's")
+        XCTAssertNil(conversation.pendingModel)
+        XCTAssertEqual(rig.model.chats.first { $0.id == chatID }?.provider, .claude, "the tab shows Claude at once")
+        XCTAssertEqual(conversation.modelChoices(fallback: chat(), switchable: true).switching?.provider, .codex, "and the way back is Codex")
+        await finish(rig)
+    }
+    func testASwitchIsRefusedWhileATurnRunsAndNothingIsSent() async throws {
+        let rig = try await switchable()
+        await withModels(rig, info: chat(state: .running))
+        await eventually("running") { rig.model.conversation(self.chatID).transcript.state == .running }
+        let offered = rig.model.conversation(chatID).modelChoices(fallback: chat(), switchable: true)
+        XCTAssertEqual(offered.switching?.blocked, ChatProviderSwitch.busyReason)
+        let failure = await rig.model.switchChatProvider(chat(), model: nil)
+        XCTAssertEqual(failure, .failed(ChatProviderSwitch.busyReason))
+        XCTAssertEqual(rig.model.conversation(chatID).notice, ChatProviderSwitch.busyReason)
+        let sent = await rig.transport.commands()
+        XCTAssertTrue(sent.isEmpty)
         await finish(rig)
     }
 }

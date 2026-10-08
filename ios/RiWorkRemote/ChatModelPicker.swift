@@ -124,7 +124,8 @@ struct ChatFastToggle: View {
 
 /// The picker: the provider's models (name, a line about each, the default marked), the efforts of the one chosen as a row of segments,
 /// and Fast when the model has it. Every choice is sent at once as one `Configure`; the sheet stays up so a model and then its effort can
-/// be chosen, and goes with Done, a swipe down, ⎋, ⌘. or ⌘M.
+/// be chosen, and goes with Done, a swipe down, ⎋, ⌘. or ⌘M. On a desktop that lets a chat go on with the other provider, that provider's
+/// default and models follow: choosing one sends `switch`, which keeps this chat, its tab and its conversation, and the sheet goes.
 ///
 /// Keyboard (a Clicks or any hardware keyboard): ↑ ↓ (⇥ ⇧⇥, ^P ^N) move the ring down the models, then the efforts, then Fast; ← → move
 /// along the efforts; ⏎ or space chooses what the ring is on (⏎ on what already is chosen closes the sheet); ⎋, ⌘. and ⌘M close it.
@@ -141,13 +142,15 @@ struct ChatModelSheet: View {
 
     init(model: RemoteModel, chat: ChatInfo, close: @escaping () -> Void) {
         self.model = model; self.chat = chat; self.close = close
-        let choices = (model.chatConversations[chat.id] ?? ChatConversation(id: chat.id)).modelChoices(fallback: chat)
+        let choices = (model.chatConversations[chat.id] ?? ChatConversation(id: chat.id)).modelChoices(fallback: chat, switchable: model.desktopFeatures.chatProviderSwitch)
         _cursor = State(initialValue: ChatModelCursor(for: choices))
         _keyboardInUse = State(initialValue: model.keyboard.hardware.isAttached)
     }
 
     private var conversation: ChatConversation { model.chatConversations[chat.id] ?? ChatConversation(id: chat.id) }
-    private var choices: ChatModelChoices { conversation.modelChoices(fallback: chat) }
+    /// The chat as it says it is now: after a switch, the other provider's.
+    private var info: ChatInfo { conversation.transcript.info ?? chat }
+    private var choices: ChatModelChoices { conversation.modelChoices(fallback: chat, switchable: model.desktopFeatures.chatProviderSwitch) }
     private var connected: Bool { model.state == .connected }
 
     var body: some View {
@@ -161,7 +164,10 @@ struct ChatModelSheet: View {
         .background { KeyCommandHost(active: true, actions: keyActions).frame(width: 1, height: 1).accessibilityHidden(true) }
         .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         .onChange(of: choices) { _, fresh in cursor.reconcile(with: fresh) }
-        .task { await loadModels() }
+        .task {
+            await loadModels()
+            if model.desktopFeatures.chatProviderSwitch { await model.loadSwitchCatalogue(info) }
+        }
         .onChange(of: conversation.modelCatalogueRevision) { _, _ in
             modelsError = nil; loadingModels = false; catalogueRequest = UUID()
         }
@@ -201,12 +207,47 @@ struct ChatModelSheet: View {
                 ChatFastToggle(isOn: Binding(get: { choices.fastIsOn }, set: { on in place(.fast); send(.fast(on)) }), enabled: connected)
                     .padding(.horizontal, 12).padding(.vertical, 6).frame(minHeight: max(style.target, style.pt(52))).overlay { ring(.fast) }
             }
+            if let switching = choices.switching { switchSection(switching) }
         }
         .padding(.bottom, 8)
     }
 
+    /// The other provider: its default and its models. Choosing one goes on with it in this chat.
+    @ViewBuilder private func switchSection(_ switching: ChatProviderSwitch) -> some View {
+        sectionLabel("Continue with \(switching.provider.title)")
+        Text("Keeps this chat and its tab. \(switching.provider.title) gets the conversation so far.")
+            .font(style.system(.caption)).foregroundStyle(style.muted).padding(.horizontal, 12).padding(.bottom, 4)
+            .fixedSize(horizontal: false, vertical: true)
+        if let blocked = switching.blocked { messageRow(blocked, icon: "hourglass") }
+        if let label = conversation.switchCatalogueSource.label { messageRow(label, icon: "clock.arrow.circlepath") }
+        ForEach(Array(switching.rows.enumerated()), id: \.element.id) { index, row in
+            Button { place(.other(index)); switchTo(row.model?.id) } label: {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: switching.provider.glyph).frame(width: style.pt(22), height: style.pt(22)).foregroundStyle(style.muted)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.title).font(style.face(14, relativeTo: .body)).lineLimit(1).truncationMode(.tail)
+                        if let description = row.model?.description, !description.isEmpty {
+                            Text(description).font(style.system(.caption)).foregroundStyle(style.muted).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        } else if row.model == nil {
+                            Text("\(switching.provider.title)’s own choice").font(style.system(.caption)).foregroundStyle(style.muted)
+                        }
+                    }
+                    Spacer(minLength: 4)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8).frame(maxWidth: .infinity, minHeight: max(style.target, style.pt(52)), alignment: .leading)
+                .overlay { ring(.other(index)) }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).disabled(!connected || switching.blocked != nil)
+            .accessibilityIdentifier("chat-switch-\(switching.provider.rawValue)-\(row.id)")
+            .accessibilityLabel("\(switching.provider.title) \(row.title)")
+            .accessibilityHint(switching.blocked ?? "Continues this conversation with \(switching.provider.title)")
+        }
+    }
+
     private func loadModels() async {
         guard !loadingModels else { return }
+        let chat = info
         model.prepareChatCatalogue(chat)
         let token = UUID()
         catalogueRequest = token
@@ -317,7 +358,12 @@ struct ChatModelSheet: View {
         cursor.place(stop, effort: effort, in: choices)
     }
     private func send(_ change: ChatModelChoices.Change) {
-        Task { await model.chooseChatModel(chat, change) }
+        if case .provider(let id) = change { switchTo(id); return }
+        Task { await model.chooseChatModel(info, change) }
+    }
+    /// Goes on with the other provider; the sheet goes once the Mac took it, and the chat says the rest.
+    private func switchTo(_ id: String?) {
+        Task { if await model.switchChatProvider(info, model: id) == nil { close() } }
     }
     private func press(_ key: ChatModelCursor.Key) {
         keyboardInUse = true
@@ -326,6 +372,7 @@ struct ChatModelSheet: View {
         let change = next.handle(key, in: current)
         cursor = next
         guard let change else { return }
+        if case .provider = change { send(change); return }
         // Return on what is chosen already is "that's it": the sheet goes. Fast always flips.
         if current.configuration(for: change) != nil { send(change) } else if key == .return { close() }
     }
