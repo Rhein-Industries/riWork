@@ -103,6 +103,11 @@ final class SharedTabStripTests: XCTestCase {
         XCTAssertEqual(SharedTabStrip.closePlan(all["User chat"]!, setting: .detach), .detach)
         XCTAssertEqual(SharedTabStrip.closePlan(all["zsh"]!, setting: .exit), .exit)
         for title in ["Project orchestrator", "zsh", "Worker chat"] { XCTAssertEqual(SharedTabStrip.actions(all[title]!), .init(rename: true, close: true)) }
+        // A tab the phone cannot end (an orchestrator in a terminal): Ask and Exit are the sheet with Detach only; Detach is Detach.
+        XCTAssertEqual(SharedTabStrip.closePlan(all["zsh"]!, setting: .ask, exitable: false), .detachOnly)
+        XCTAssertEqual(SharedTabStrip.closePlan(all["zsh"]!, setting: .exit, exitable: false), .detachOnly)
+        XCTAssertEqual(SharedTabStrip.closePlan(all["zsh"]!, setting: .detach, exitable: false), .detach)
+        XCTAssertEqual(SharedTabStrip.closePlan(all["Worker chat"]!, setting: .exit, exitable: false), .detach, "a worker still just detaches")
     }
     func testEnteringAProjectRestoresItsLastTabWhileTheListStillHasIt() throws {
         let reply = try reply()

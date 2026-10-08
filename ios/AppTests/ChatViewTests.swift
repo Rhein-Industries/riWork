@@ -1375,6 +1375,67 @@ import RiWorkCore
         await finish(rig)
     }
 
+    /// An orchestrator that runs in a terminal cannot be ended from the phone (the relay's `shell.close` takes only project terminals):
+    /// Exit is refused before anything is hidden, the sheet offers Detach only, and Detach hides it without closing anything.
+    func testAnOrchestratorInATerminalOnlyDetaches() async throws {
+        let orchestratorID = "99999999-9999-4999-8999-999999999999"
+        let orchestrator = "{\"id\":\"\(orchestratorID)\",\"project_id\":\"\(project)\",\"worktree_id\":null,\"kind\":\"orchestrator\",\"cwd\":\"/fixture\",\"harness\":null,\"alive\":true,\"created_at_unix\":3}"
+        let rig = try await makeRig(chats: sharedChats(), orchestrators: [orchestrator])
+        await rig.transport.setSharedTabs([.init(key: "shell:\(orchestratorID)", kind: "shell", title: "Project orchestrator"),
+                                           .init(key: "shell:\(ChatTransport.shell)", kind: "shell", title: "zsh")])
+        await rig.model.disconnect(); await rig.model.connect()
+        await eventually("the shared list is in") { rig.model.sharedTabs?.allEntries.count == 2 && rig.model.sessions.contains { $0.id == orchestratorID } }
+        let entry = try XCTUnwrap(rig.model.sharedTabs?.allEntries.first { $0.key == "shell:\(orchestratorID)" })
+        let zsh = try XCTUnwrap(rig.model.sharedTabs?.allEntries.first { $0.key == "shell:\(ChatTransport.shell)" })
+        XCTAssertFalse(rig.model.canExitTab(entry)); XCTAssertTrue(rig.model.canExitTab(zsh))
+        XCTAssertEqual(SharedTabStrip.closePlan(entry, setting: .exit, exitable: rig.model.canExitTab(entry)), .detachOnly)
+        let updatesBefore = await rig.transport.count("tabs.update")
+        do { _ = try await rig.model.closeTab(entry.key, choice: .exit); XCTFail("refused") } catch { XCTAssertEqual(error as? TabCloseError, .cannotExit) }
+        let updatesAfter = await rig.transport.count("tabs.update")
+        XCTAssertEqual(updatesAfter, updatesBefore, "nothing hidden")
+        _ = try await rig.model.closeTab(entry.key, choice: .detach)
+        XCTAssertEqual(rig.model.sharedTabs?.allEntries.first { $0.key == entry.key }?.hidden, true)
+        let closes = await rig.transport.count("shell.close")
+        XCTAssertEqual(closes, 0, "never a shell.close for it")
+        await finish(rig)
+    }
+
+    /// A first shared listing that fails keeps the remembered tab pending: the next listing that succeeds puts it back. A tab the
+    /// person chooses meanwhile wins.
+    func testAFailedFirstListingStillRestoresTheRememberedTabLater() async throws {
+        let rig = try await sharedRig()
+        rig.model.selectChat(userChatID)
+        await rig.model.disconnect(); rig.model.deselectChat()
+        await rig.transport.failTabsList(1)
+        await rig.model.connect()
+        await eventually("connected without the shared list") { rig.model.state == .connected && rig.model.loadedProjectID == self.project }
+        XCTAssertNil(rig.model.selectedChatID, "nothing to restore from yet")
+        await rig.model.refreshSessionsQuietly()
+        await eventually("restored by the next listing") { rig.model.selectedChatID == self.userChatID }
+        // Once more, and this time the person picks the terminal before the list comes: it stays.
+        await rig.model.disconnect(); rig.model.deselectChat()
+        await rig.transport.failTabsList(1)
+        await rig.model.connect()
+        await eventually("connected") { rig.model.state == .connected && rig.model.loadedProjectID == self.project }
+        let shell = try XCTUnwrap(rig.model.openSessions.first { $0.id == ChatTransport.shell } ?? rig.model.sessions.first { $0.id == ChatTransport.shell })
+        await rig.model.chooseSession(shell)
+        try await rig.model.listTabs()
+        XCTAssertNil(rig.model.selectedChatID, "the person's choice stands")
+        await finish(rig)
+    }
+
+    /// A terminal tab draws the Mac's status for it: an idle shell has the idle point, and it follows the shared list.
+    func testATerminalTabDrawsTheSharedStatus() async throws {
+        let rig = try await sharedRig()
+        let key = "shell:\(ChatTransport.shell)"
+        await eventually("working") { rig.layout.frames["status-\(key)=working"] != nil }
+        await rig.transport.peerChange { tabs in if let i = tabs.firstIndex(where: { $0.key == key }) { tabs[i].status = "idle" } }
+        try await rig.model.listTabs()
+        await eventually("idle") { rig.layout.frames["status-\(key)=idle"] != nil }
+        XCTAssertNil(rig.layout.frames["status-\(key)=working"])
+        await finish(rig)
+    }
+
     /// The project orchestrator is an ordinary tab: Ask asks with Detach and Exit, and Exit hides it and stops its chat.
     func testAnOrchestratorClosesLikeAnyTab() async throws {
         let rig = try await sharedRig()
@@ -1626,6 +1687,11 @@ import RiWorkCore
         XCTAssertEqual(ChatUsageLimits.chip(conversation.transcript.rateLimits)?.text, "5h 100%")
         XCTAssertEqual(ChatUsageLimits.chip(conversation.transcript.rateLimits)?.bold, true)
         XCTAssertTrue(try renderedText(rig, in: rig.layout.frames["banner-notice-kind:rate_limit:five_hour"]!).contains("resets"), "says when it resets")
+        // Live windows come by `chat.events` too, which opts in as the snapshot did (the fixture withholds them otherwise).
+        await rig.transport.append(chatID, [.rateLimits([ChatRateWindow(id: "seven_day", label: "weekly", usedPercent: 91, resetsAt: resets + 86400)])])
+        await eventually("the live windows") { conversation.transcript.rateLimits.map(\.id) == ["seven_day"] }
+        let eventReads = await rig.transport.params(of: "chat.events")
+        XCTAssertTrue(eventReads.allSatisfy { ChatTransport.optsIn($0) }, "every events read opts in")
         // ×: hidden at once, and dismissed on the host; the host's re-emitted item keeps it closed.
         let reemitted = limit(true)
         await rig.transport.handleCommands { _, command in

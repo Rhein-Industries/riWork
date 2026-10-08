@@ -118,13 +118,17 @@ public enum SharedTabStrip {
         case detach
         /// Hide it, then stop the chat or close the shell; a chat's history stays.
         case exit
+        /// Ask or Exit for a tab the phone cannot end (`exitable` false): the sheet with Detach and Cancel only.
+        case detachOnly
     }
-    /// The project orchestrator is an ordinary tab here: it closes like any chat the person opened.
-    public static func closePlan(_ tab: SharedTab, setting: TabCloseBehavior) -> ClosePlan {
+    /// The project orchestrator is an ordinary tab here: in a chat it closes like any chat the person opened. One that runs in a
+    /// terminal cannot be ended from the phone (the relay closes only project terminals and has no orchestrator stop), so it is
+    /// `exitable: false`: Detach only, never a Hide that is followed by a failed close.
+    public static func closePlan(_ tab: SharedTab, setting: TabCloseBehavior, exitable: Bool = true) -> ClosePlan {
         switch setting.effectiveChoice(for: tab) {
-        case .ask: return .ask
+        case .ask: return exitable ? .ask : .detachOnly
         case .detach: return .detach
-        case .exit: return .exit
+        case .exit: return exitable ? .exit : .detachOnly
         }
     }
 

@@ -28,8 +28,8 @@ public enum RequestValidation {
         case "orchestrator.create": required = []; optional = ["project_id"]
         case "chats.list": required = []; optional = ["project_id"]
         case "chat.create": required = ["provider"]; optional = ["project_id", "worktree_id", "approval_mode", "model", "effort", "fast", "title"]
-        case "chat.snapshot": required = ["chat_id"]; optional = ["cursor", "before", "limit", "item_ids"]
-        case "chat.events": required = ["chat_id", "since", "wait_ms"]; optional = ["max_events", "complete", "bounded"]
+        case "chat.snapshot": required = ["chat_id"]; optional = ["cursor", "before", "limit", "item_ids", "features"]
+        case "chat.events": required = ["chat_id", "since", "wait_ms"]; optional = ["max_events", "complete", "bounded", "features"]
         case "chat.command": required = ["chat_id", "command"]; optional = []
         case "chat.stop": required = ["chat_id"]; optional = []
         case "upload.begin", "upload.chunk", "upload.finish", "upload.cancel", "shell.paste":
@@ -80,6 +80,7 @@ public enum RequestValidation {
                     if let raw = params[key] { guard case .number(let n) = raw, n.isFinite, range.contains(n), n.rounded() == n else { throw ChatValidationError.malformed } }
                 }
                 if params["before"] != nil, params["cursor"] == nil { throw ChatValidationError.malformed }
+                try ChatFeatures.validate(params["features"])
                 if let raw = params["item_ids"] {
                     guard params["cursor"] != nil, case .array(let ids) = raw, ids.count <= 100,
                           ids.allSatisfy({ if case .string(let id) = $0 { !id.isEmpty && id.utf8.count <= 512 } else { false } }) else { throw ChatValidationError.malformed }

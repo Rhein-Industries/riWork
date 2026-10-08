@@ -70,6 +70,9 @@ actor ChatTransport: RemoteTransport {
         while !heldReleased { try await Task.sleep(for: .milliseconds(3)) }
         return reply
     }
+    /// The next this many `tabs.list` fail (a transient error).
+    var tabsListFailures = 0
+    func failTabsList(_ times: Int) { tabsListFailures = times }
     /// The next `tabs.update` fails with this (the list is left as it was).
     var tabUpdateError: RemoteError?
     func failNextTabUpdate(_ error: RemoteError?) { tabUpdateError = error }
@@ -224,6 +227,7 @@ actor ChatTransport: RemoteTransport {
         case "chat.snapshot": return try await snapshot(params)
         case "tabs.list":
             guard tabsFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            if tabsListFailures > 0 { tabsListFailures -= 1; throw RemoteError.rpc(code: "cli_error", message: "the tab store is busy") }
             return try await held(method, tabsReply())
         case "tabs.open":
             guard tabsFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
@@ -304,6 +308,10 @@ actor ChatTransport: RemoteTransport {
     func truncate(_ id: String, to count: Int) { log[id] = Array((log[id] ?? []).prefix(count)) }
     func enableSnapshots(_ on: Bool = true) { snapshotsEnabled = on }
     func gateSnapshots(_ on: Bool) { snapshotGated = on }
+    static func optsIn(_ params: [String: JSONValue]) -> Bool {
+        if case .array(let names)? = params["features"] { return names.contains(.string("rate_limits")) }
+        return false
+    }
     private func snapshot(_ params: [String: JSONValue]) async throws -> JSONValue {
         guard snapshotsEnabled else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
         while snapshotGated || (historyGated && params["before"] != nil) { try await Task.sleep(for: .milliseconds(5)) }
@@ -331,7 +339,8 @@ actor ChatTransport: RemoteTransport {
             if let info = transcript.info { controls.append(.info(info)) }
             controls.append(.state(transcript.state)); controls.append(.models(transcript.models))
             if let usage = transcript.usage { controls.append(.usage(usage)) }
-            if !transcript.rateLimits.isEmpty { controls.append(.rateLimits(transcript.rateLimits)) }
+            // As the relay does: usage windows only for a request that opts in (`features: ["rate_limits"]`).
+            if !transcript.rateLimits.isEmpty, Self.optsIn(params) { controls.append(.rateLimits(transcript.rateLimits)) }
             if let turn = transcript.turnID { controls.append(.turnStarted(turnID: turn)) }
             controls += transcript.approvals.map { .approvalRequested($0) }
             controls += transcript.questions.map { .questionRequested($0) }
@@ -376,9 +385,15 @@ actor ChatTransport: RemoteTransport {
             guard connected else { throw RemoteError.disconnected }
             let all = log[chat] ?? []
             if all.count > since {
-                var values: [JSONValue] = [], bytes = 0
-                for value in all[since..<min(all.count, since + limit)] {
+                var values: [(seq: Int, value: JSONValue)] = [], bytes = 0, consumed = 0
+                let replay = params["complete"] == .bool(true) || params["bounded"] == .bool(true)
+                for (offset, value) in all[since..<min(all.count, since + limit)].enumerated() {
                     var represented = value
+                    // As the relay does: a usage-windows event is withheld from a request that does not opt in; a replay that counts
+                    // sequence numbers gets a no-op in its place, an ordinary page skips it and still advances.
+                    if value["event"].string == "rate_limits", !Self.optsIn(params) {
+                        if replay { represented = .object(["event": .string("question_resolved"), "request_id": .string("")]) } else { consumed = offset + 1; continue }
+                    }
                     if resourceLimits, try JSONEncoder().encode(value).count > 120_000 {
                         if !values.isEmpty { break }
                         if params["bounded"] == .bool(true), value["event"].string == "item_completed" || value["event"].string == "item_started" {
@@ -392,12 +407,11 @@ actor ChatTransport: RemoteTransport {
                     }
                     let size = try JSONEncoder().encode(represented).count
                     if resourceLimits, bytes + size > 120_000, !values.isEmpty { break }
-                    values.append(represented); bytes += size
+                    values.append((since + offset + 1, represented)); bytes += size; consumed = offset + 1
                 }
-                let page = Array(values.enumerated())
-                let more = since + page.count < all.count
-                return .object(["chat_id": .string(chat), "events": .array(page.map { .object(["seq": .number(Double(since + $0.offset + 1)), "event": $0.element]) }),
-                                "next": .number(Double(since + page.count)), "more": .bool(more)])
+                let more = since + consumed < all.count
+                return .object(["chat_id": .string(chat), "events": .array(values.map { .object(["seq": .number(Double($0.seq)), "event": $0.value]) }),
+                                "next": .number(Double(since + consumed)), "more": .bool(more)])
             }
             if ContinuousClock.now >= deadline {
                 return .object(["chat_id": .string(chat), "events": .array([]), "next": .number(Double(since)), "more": .bool(false)])

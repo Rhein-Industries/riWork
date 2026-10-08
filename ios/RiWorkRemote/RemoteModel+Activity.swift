@@ -77,6 +77,8 @@ extension RemoteModel {
         if let listedChats { installChats(listedChats, project: project) }
         if let listedShells, listedShells != shells { shells = listedShells }
         if let listedManagers, listedManagers != orchestrators { orchestrators = listedManagers }
+        // The project's first shared list arrives late (its first read failed): the remembered tab comes back now.
+        if listedTabs != nil { restorePendingTab(project: project) }
         // An orchestrator that runs as a chat comes and goes with this list, and so does the chat it opened.
         reconcileChatSelection()
         if listedTabs != nil { try? reconcileSelectedSession() }

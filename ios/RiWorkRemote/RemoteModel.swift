@@ -719,7 +719,8 @@ enum ConnectionState: Equatable {
         worktrees = listing.worktrees; shells = listing.shells; loadedProjectID = id
         lastListRead[.sessions] = .now
         if let talks = listing.chats { installChats(talks, project: id) }
-        if restoreTabPending { restoreTabPending = false; if listing.tabs != nil { restoreRememberedTab(project: id) } }
+        // A shared list that could not be read keeps the restore pending for the next listing that succeeds.
+        if listing.tabs != nil || !desktopFeatures.tabs { restorePendingTab(project: id) }
         reconcileChatSelection()
         try reconcileSelectedSession()
         if sessionID == nil { try await synchronizeViewport(token: token) }
@@ -745,6 +746,8 @@ enum ConnectionState: Equatable {
     }
     func chooseSession(_ session: RemoteSession) async {
         guard openSessions.contains(where: { $0.id == session.id }) else { return }
+        // A tab the person chose, even the one already on screen: a restore still waiting for the shared list is not wanted now.
+        restoreTabPending = false
         // Already the terminal on screen (a tap on its own tab, opening it from the picker): nothing to change, and the line being
         // typed into it is kept.
         if sessionID == session.id, selectedChatID == nil, selectedBlockedID == nil, !terminalCovered, outputSessionID == session.id { return }
@@ -1082,11 +1085,29 @@ extension RemoteModel {
         everSharedWorkers.formUnion(reply.allEntries.filter { $0.kind == .shell && $0.isWorker }.map(\.sessionID))
         return true
     }
+    /// Whether closing the tab may end it: a chat (an orchestrator's too: `chat.stop`) and a project terminal may; a terminal that is
+    /// an orchestrator (or anything but a project terminal) may not, since the relay's `shell.close` refuses it and there is no other way.
+    func canExitTab(_ entry: SharedTab) -> Bool {
+        switch entry.kind {
+        case .chat: return true
+        case .shell: return sessions.first { $0.id == entry.sessionID }.map { $0.kind == "project" } ?? false
+        case .unknown: return false
+        }
+    }
     /// Remembers the shared tab on screen as the project's last one (only a tab the shared list has; a device-local one is not).
     func rememberTab(_ key: String) {
+        // A tab chosen by the person (or put back) settles the screen: a restore still waiting for the shared list is not wanted now.
+        restoreTabPending = false
         guard desktopFeatures.tabs, let project = projectID, desktop?.projectTabKeys?[project] != key,
               sharedTabs?.allEntries.contains(where: { $0.key == key }) == true else { return }
         try? updateDesktop { var keys = $0.projectTabKeys ?? [:]; keys[project] = key; $0.projectTabKeys = keys }
+    }
+    /// The restore asked for on entering the project or connecting, once a listing of the project is in (with its shared list, or
+    /// from a desktop without one).
+    func restorePendingTab(project: String) {
+        guard restoreTabPending, projectID == project, loadedProjectID == project else { return }
+        restoreTabPending = false
+        if sharedTabs != nil { restoreRememberedTab(project: project) }
     }
     /// Puts the project's remembered tab back on screen, or its first tab when that one is gone (`SharedTabStrip.restoredTab`).
     func restoreRememberedTab(project: String) {
@@ -1126,6 +1147,7 @@ extension RemoteModel {
         let reply = try await rpc("tabs.list", ["project_id": .string(project)]).decode(SharedTabsReply.self)
         guard generation == token, projectID == project else { return }
         acceptSharedTabs(reply)
+        restorePendingTab(project: project)
         reconcileChatSelection()
         try reconcileSelectedSession()
     }
@@ -1164,6 +1186,8 @@ extension RemoteModel {
     @discardableResult func closeTab(_ key: String, choice: TabCloseBehavior? = nil) async throws -> Bool {
         guard desktopFeatures.tabs, let entry = sharedTabs?.allEntries.first(where: { $0.key == key }) else { throw ChatValidationError.invalidID }
         let effective = (choice ?? tabCloseBehavior).effectiveChoice(for: entry)
+        // A tab the phone cannot end: Exit is refused before anything is hidden (Ask still waits for the sheet, Detach only).
+        if effective == .exit, !canExitTab(entry) { throw TabCloseError.cannotExit }
         guard effective != .ask else { return false }
         let token = generation, project = projectID
         try await hideTab(key)
@@ -1184,6 +1208,11 @@ extension RemoteModel {
 
 /// Why closing a shared tab stopped short.
 enum TabCloseError: LocalizedError, Equatable {
-    case connectionChanged
-    var errorDescription: String? { "The connection changed while the tab was closing. Nothing was stopped." }
+    case connectionChanged, cannotExit
+    var errorDescription: String? {
+        switch self {
+        case .connectionChanged: "The connection changed while the tab was closing. Nothing was stopped."
+        case .cannotExit: "This orchestrator runs in a terminal and can only be detached from the phone. Stop it on the Mac."
+        }
+    }
 }

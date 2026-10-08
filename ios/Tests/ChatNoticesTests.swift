@@ -182,3 +182,38 @@ final class SnapshotToleranceTests: XCTestCase {
         XCTAssertNil(envelope.event)
     }
 }
+
+private actor SnapshotTransport: RemoteTransport {
+    let reply: JSONValue
+    var sent: [[String: JSONValue]] = []
+    init(_ reply: JSONValue) { self.reply = reply }
+    func connect(pairing: Pairing, allowLocalDevelopment: Bool) async throws -> Pairing { pairing }
+    func request(method: String, params: [String: JSONValue], id: String) async throws -> JSONValue {
+        try RequestValidation.validate(method: method, params: params, id: id)
+        sent.append(params); return reply
+    }
+    func disconnect() async {}
+    func isConnected() async -> Bool { true }
+}
+extension SnapshotToleranceTests {
+    /// A history page of only newer item types passes the transport's checks and moves on to the host's `before`; both reads opt in to
+    /// the usage windows.
+    func testAnAllUnknownPageAdvancesThroughTheTransportAndBothReadsOptInToRateLimits() async throws {
+        let chat = "11111111-1111-4111-8111-111111111111"
+        let page = try JSONDecoder().decode(JSONValue.self, from: Data(#"""
+        {"v":1,"chat_id":"\#(chat)","cursor":"c0ffee","next":90,"before":40,"more":true,"controls":[],
+         "items":[{"order":40,"item":{"id":"x1","status":"completed","body":{"type":"hologram"}}},{"order":41,"item":{"id":"x2","status":"completed","body":{"type":"hologram"}}}]}
+        """#.utf8))
+        let transport = SnapshotTransport(page)
+        let reply = try await transport.chatSnapshot(chatID: chat, cursor: "c0ffee", before: 60)
+        XCTAssertTrue(reply.items.isEmpty); XCTAssertEqual(reply.skipped, 2); XCTAssertEqual(reply.before, 40); XCTAssertTrue(reply.more)
+        var feed = ChatFeed()
+        feed.install(ChatSnapshotReply(chatID: chat, cursor: "c0ffee", next: 90, before: 60, more: true, items: [], controls: []))
+        feed.prepend(reply, requestedBefore: 60)
+        XCTAssertEqual(feed.before, 40, "the next page is asked for before 40")
+        XCTAssertTrue(feed.hasOlder)
+        let sent = await transport.sent
+        XCTAssertEqual(sent.first?["features"], .array([.string("rate_limits")]))
+        XCTAssertEqual(try ChatEventsRequest(chatID: chat, since: 0, waitMilliseconds: 0).params["features"], .array([.string("rate_limits")]))
+    }
+}

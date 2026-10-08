@@ -106,7 +106,10 @@ final class ChatRequestsTests: XCTestCase {
 
     func testAnEventsRequestNamesTheCursorAndTheWait() throws {
         let request = try ChatEventsRequest(chatID: chat, since: 42, waitMilliseconds: 20_000)
-        XCTAssertEqual(request.params, ["chat_id": .string(chat), "since": .number(42), "wait_ms": .number(20_000)])
+        XCTAssertEqual(request.params, ["chat_id": .string(chat), "since": .number(42), "wait_ms": .number(20_000), "features": .array([.string("rate_limits")])])
+        XCTAssertEqual(try ChatEventsRequest(params: request.params), request)
+        var bad = request.params; bad["features"] = .array([.string("")])
+        XCTAssertThrowsError(try ChatEventsRequest(params: bad))
         XCTAssertTrue(request.isLongPoll)
         XCTAssertEqual(try ChatEventsRequest(chatID: chat, since: 0, waitMilliseconds: 0, maxEvents: 50).params["max_events"], .number(50))
         XCTAssertFalse(try ChatEventsRequest(chatID: chat, since: 0, waitMilliseconds: 0).isLongPoll)

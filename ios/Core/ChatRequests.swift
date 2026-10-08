@@ -256,14 +256,16 @@ public struct ChatEventsRequest: Sendable, Equatable {
     public var isLongPoll: Bool { waitMilliseconds > 0 }
 
     public var params: [String: JSONValue] {
-        var params: [String: JSONValue] = ["chat_id": .string(chatID), "since": .number(Double(since)), "wait_ms": .number(Double(waitMilliseconds))]
+        var params: [String: JSONValue] = ["chat_id": .string(chatID), "since": .number(Double(since)), "wait_ms": .number(Double(waitMilliseconds)),
+                                           "features": ChatFeatures.requested]
         if complete { params["complete"] = .bool(true) }
         if bounded { params["bounded"] = .bool(true) }
         if let maxEvents { params["max_events"] = .number(Double(maxEvents)) }
         return params
     }
     public init(params: [String: JSONValue]) throws {
-        guard Set(params.keys).isSubset(of: ["chat_id", "since", "wait_ms", "max_events", "complete", "bounded"]) else { throw ChatValidationError.malformed }
+        guard Set(params.keys).isSubset(of: ["chat_id", "since", "wait_ms", "max_events", "complete", "bounded", "features"]) else { throw ChatValidationError.malformed }
+        try ChatFeatures.validate(params["features"])
         func whole(_ key: String, in range: ClosedRange<Double>) throws -> Int? {
             guard let value = params[key] else { return nil }
             guard case .number(let number) = value, number.isFinite, number.rounded() == number, range.contains(number) else { throw ChatValidationError.malformed }
@@ -287,6 +289,19 @@ public struct ChatEventsRequest: Sendable, Equatable {
             guard reply.next == last else { throw ChatControlError.unreadableReply }
         }
         return reply
+    }
+}
+
+/// What the phone asks of `chat.snapshot` and `chat.events` beyond the base protocol: the host withholds a newer event from a client
+/// that does not name it. `rate_limits`: the provider's usage windows (docs/chat-notices.md).
+public enum ChatFeatures {
+    public static let names = ["rate_limits"]
+    public static var requested: JSONValue { .array(names.map(JSONValue.string)) }
+    /// At most 16 non-empty strings of at most 64 bytes (the host's limits).
+    public static func validate(_ value: JSONValue?) throws {
+        guard let value else { return }
+        guard case .array(let items) = value, items.count <= 16,
+              items.allSatisfy({ if case .string(let name) = $0 { !name.isEmpty && name.utf8.count <= 64 } else { false } }) else { throw ChatValidationError.malformed }
     }
 }
 
@@ -412,7 +427,7 @@ public struct ChatSnapshotReply: Sendable, Equatable, Codable {
 extension RemoteTransport {
     public func chatSnapshot(chatID: String, cursor: String? = nil, before: UInt64? = nil, itemIDs: [String] = []) async throws -> ChatSnapshotReply {
         guard NewTerminalRequest.isCanonicalUUID(chatID) else { throw ChatValidationError.invalidID }
-        var params: [String: JSONValue] = ["chat_id": .string(chatID), "limit": .number(50)]
+        var params: [String: JSONValue] = ["chat_id": .string(chatID), "limit": .number(50), "features": ChatFeatures.requested]
         if let cursor { params["cursor"] = .string(cursor) }
         if !itemIDs.isEmpty { params["item_ids"] = .array(itemIDs.map { .string($0) }) }
         if let before { params["before"] = .number(Double(before)) }
@@ -423,7 +438,9 @@ extension RemoteTransport {
               cursor == nil || reply.controls.isEmpty,
               // A first row left out (unreadable) moves the first order on; `before` is the host's.
               reply.before == reply.items.first?.order ?? 0 || reply.skipped > 0,
-              !reply.more || !reply.items.isEmpty else { throw ChatControlError.unreadableReply }
+              // A page of only unreadable rows is still a page: history goes on from the host's `before`.
+              !reply.more || !reply.items.isEmpty || reply.skipped > 0,
+              before.map { reply.before < $0 } ?? true || !reply.more else { throw ChatControlError.unreadableReply }
         var last: UInt64 = 0
         var ids = Set<String>()
         for row in reply.items {

@@ -373,11 +373,14 @@ struct TerminalTabsView: View {
         .confirmationDialog(closingTab.map { "Close \($0.title)?" } ?? "", isPresented: Binding(get: { closingTab != nil }, set: { if !$0 { closingTab = nil } }),
                             titleVisibility: .visible, presenting: closingTab) { entry in
             Button("Detach") { close(entry, .detach) }
-            Button("Exit", role: .destructive) { close(entry, .exit) }
+            if model.canExitTab(entry) { Button("Exit", role: .destructive) { close(entry, .exit) } }
             Button("Cancel", role: .cancel) { closingTab = nil }
         } message: { entry in
-            Text(entry.kind == .chat ? "Detach keeps the chat running on your Mac. Exit stops it; its history stays."
-                                     : "Detach keeps the shell running on your Mac. Exit closes it and ends its process.")
+            if !model.canExitTab(entry) { Text("Detach keeps the orchestrator running on your Mac. Stop it on the Mac.") }
+            else {
+                Text(entry.kind == .chat ? "Detach keeps the chat running on your Mac. Exit stops it; its history stays."
+                                         : "Detach keeps the shell running on your Mac. Exit closes it and ends its process.")
+            }
         }
         .alert("Rename tab", isPresented: Binding(get: { renamingTab != nil }, set: { if !$0 { renamingTab = nil } }), presenting: renamingTab) { entry in
             TextField("Title", text: $renameText)
@@ -488,8 +491,8 @@ struct TerminalTabsView: View {
     }
     /// Closing by the setting: Ask shows the sheet; Detach and Exit go at once; a worker always detaches.
     private func requestClose(_ entry: SharedTab) {
-        switch SharedTabStrip.closePlan(entry, setting: model.tabCloseBehavior) {
-        case .ask: closingTab = entry
+        switch SharedTabStrip.closePlan(entry, setting: model.tabCloseBehavior, exitable: model.canExitTab(entry)) {
+        case .ask, .detachOnly: closingTab = entry
         case .detach: close(entry, .detach)
         case .exit: close(entry, .exit)
         }
@@ -658,14 +661,21 @@ struct TerminalTabsView: View {
                         Image(systemName: session.kind == "orchestrator" ? "point.3.connected.trianglepath.dotted" : "terminal")
                             .foregroundStyle(session.kind == "orchestrator" ? style.magenta : style.text)
                     }.font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
-                    ActivityIndicator(activity: session.shownActivity, subagents: session.subagents_working)
+                    // With the shared list, the Mac's own status for the tab (idle, working, waiting, error, done, stopped), as its
+                    // strip draws it; without it, the shell's activity as before.
+                    if let entry, entry.status != .unknown {
+                        SharedTabStatusDot(status: entry.status).chatLayoutProbe("status-\(entry.key)=\(entry.status.rawValue)").id(entry.status)
+                    } else {
+                        ActivityIndicator(activity: session.shownActivity, subagents: session.subagents_working)
+                    }
                 }
             }
             .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
-            .tabChrome(selected: selected, waiting: session.shownActivity == .waiting)
+            .tabChrome(selected: selected, waiting: entry.map { $0.status == .waiting } ?? (session.shownActivity == .waiting))
         }
         .buttonStyle(.plain).id(session.id)
-        .accessibilityLabel(["\(session.title), \(tabDetail(session))", session.activitySummary].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityLabel(["\(session.title), \(tabDetail(session))", entry.flatMap { $0.status == .unknown ? nil : OpenTabSheet.status($0.status) } ?? session.activitySummary]
+            .compactMap { $0 }.joined(separator: ", "))
         .accessibilityAddTraits(selected ? .isSelected : [])
         .contextMenu {
             Text(tabDetail(session))
