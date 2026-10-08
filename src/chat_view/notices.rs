@@ -3,7 +3,8 @@
 //! tab itself (the host could not be reached, a delete failed). docs/chat-notices.md is the
 //! contract the phone shares.
 //!
-//! One banner per key: a notice's `kind`, else its item id; a tab error's `LocalKey`. A newer
+//! One banner per key: a notice's `kind`, else its text (a log written before `kind`
+//! existed repeats the same notice under new ids); a tab error's `LocalKey`. A newer
 //! notice of a kind replaces the older one's banner, a resolved one takes it away, and a
 //! dismissed one stays away until the kind comes again as a new item.
 
@@ -214,8 +215,12 @@ fn ranked_provider_banners(
     // The newest notice of each key.
     let mut newest: HashMap<String, usize> = HashMap::new();
     for (at, item) in transcript.items.iter().enumerate() {
-        if let ItemBody::Notice { kind, .. } = &item.body {
-            newest.insert(kind.clone().unwrap_or_else(|| item.id.clone()), at);
+        if let ItemBody::Notice { kind, text, .. } = &item.body {
+            let key = match kind {
+                Some(kind) => format!("kind:{kind}"),
+                None => format!("text:{text}"),
+            };
+            newest.insert(key, at);
         }
     }
     let mut shown: Vec<usize> = newest
@@ -346,6 +351,37 @@ mod tests {
         ]);
         let shown = provider_banners(&t, &HashSet::new(), 0);
         assert_eq!(texts(&shown), ["reached", "one-off"]);
+    }
+
+    #[test]
+    fn repeated_notices_show_once_per_kind_and_older_kindless_ones_once_per_text() {
+        let close = "This account is close to the weekly usage limit.";
+        let t = transcript(vec![
+            user("u"),
+            // A log written before `kind`: the same notice under new ids.
+            notice("old1", NoticeLevel::Warning, close, None),
+            notice("old2", NoticeLevel::Warning, close, None),
+            notice("x1", NoticeLevel::Error, "Overloaded", None),
+            notice(
+                "l1",
+                NoticeLevel::Warning,
+                close,
+                Some("rate_limit:seven_day"),
+            ),
+            notice("r1", NoticeLevel::Warning, "retry 1", Some("api_retry")),
+            notice("x2", NoticeLevel::Error, "Overloaded", None),
+            notice(
+                "l2",
+                NoticeLevel::Error,
+                "reached",
+                Some("rate_limit:seven_day"),
+            ),
+            notice("r2", NoticeLevel::Warning, "retry 2", Some("api_retry")),
+            notice("old3", NoticeLevel::Warning, close, None),
+        ]);
+        let shown = provider_banners(&t, &HashSet::new(), 0);
+        let ids: Vec<&str> = shown.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, ["old3", "r2", "l2", "x2"]);
     }
 
     #[test]

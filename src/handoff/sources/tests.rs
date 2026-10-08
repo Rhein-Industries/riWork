@@ -176,12 +176,20 @@ fn a_chats_log_becomes_its_messages_and_short_accounts_of_its_tools() {
             completed(item(
                 "info",
                 ItemStatus::Completed,
-                ItemBody::notice(crate::chat::model::NoticeLevel::Info, "not worth a line", None),
+                ItemBody::notice(
+                    crate::chat::model::NoticeLevel::Info,
+                    "not worth a line",
+                    None,
+                ),
             )),
             completed(item(
                 "warn",
                 ItemStatus::Completed,
-                ItemBody::notice(crate::chat::model::NoticeLevel::Warning, "rate limited", None),
+                ItemBody::notice(
+                    crate::chat::model::NoticeLevel::Warning,
+                    "rate limited",
+                    None,
+                ),
             )),
             completed(item(
                 "a2",

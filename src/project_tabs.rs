@@ -357,7 +357,10 @@ impl TabStore {
             for key in hidden {
                 if known.contains(&key) {
                     seed(&mut state, key.clone(), true);
-                    if let Some(entry) = state.entries.iter_mut().find(|entry| entry.key == key && entry.hidden)
+                    if let Some(entry) = state
+                        .entries
+                        .iter_mut()
+                        .find(|entry| entry.key == key && entry.hidden)
                     {
                         entry.legacy_dismissed = true;
                     }
@@ -1177,7 +1180,10 @@ mod tests {
         orch.orchestrator = true;
         let sessions = vec![session(2), session(3), harness, orch];
         let list = f.store.reconcile(&sessions).unwrap();
-        let orch = list.iter().find(|entry| entry.key == session(5).key).unwrap();
+        let orch = list
+            .iter()
+            .find(|entry| entry.key == session(5).key)
+            .unwrap();
         assert!(orch.pinned && !orch.hidden && !orch.worker);
         assert!(
             !list

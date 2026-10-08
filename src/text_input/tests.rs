@@ -1,10 +1,10 @@
 //! Headless macOS-linked smoke: real Base states, layout, and event dispatch.
 use super::*;
 use gpui::{
-    Bounds, ClipboardEntry, Context, ElementInputHandler, ExternalPaths, FocusHandle, InputHandler,
-    InputEvent as _, IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, Subscription,
-    TestAppContext, WindowBounds, WindowHandle, WindowOptions,
-    div, point, px, size,
+    Bounds, ClipboardEntry, Context, ElementInputHandler, ExternalPaths, FocusHandle,
+    InputEvent as _, InputHandler, IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Render, Subscription, TestAppContext, WindowBounds, WindowHandle, WindowOptions, div, point,
+    px, size,
 };
 use gpui_kit::test::TestWindowExt;
 use std::{cell::RefCell, rc::Rc};
@@ -279,7 +279,10 @@ fn composing_escape_cancels_only_composition_in_forms_and_chat(cx: &mut TestAppC
                     assert_marked(&state, false, window, cx);
                 }
                 let owner = fields.read(cx);
-                assert_eq!((owner.escape_actions, owner.raw_escapes, owner.cancels), (0, 0, 0));
+                assert_eq!(
+                    (owner.escape_actions, owner.raw_escapes, owner.cancels),
+                    (0, 0, 0)
+                );
                 assert_eq!((owner.submissions, owner.first_submissions), (0, 0));
                 assert_eq!(owner.changes, changes);
             })
@@ -350,22 +353,32 @@ fn composing_escape_defers_base_clean_on_escape_until_plain_escape(cx: &mut Test
         let owner = fields.read(cx);
         assert_eq!(owner.first.read(cx).value(), "");
         assert_eq!(owner.changes, changes + 1);
-        assert_eq!((owner.escape_actions, owner.raw_escapes, owner.cancels), (0, 0, 0));
+        assert_eq!(
+            (owner.escape_actions, owner.raw_escapes, owner.cancels),
+            (0, 0, 0)
+        );
     })
     .unwrap();
 }
 
 #[gpui::test]
-fn raw_escape_fallback_retains_owner_composition_guard_and_key_configuration(cx: &mut TestAppContext) {
+fn raw_escape_fallback_retains_owner_composition_guard_and_key_configuration(
+    cx: &mut TestAppContext,
+) {
     let (handle, fields) = mount(cx);
     cx.update(|cx| cx.bind_keys([KeyBinding::new("escape", gpui::NoAction, Some("Input"))]));
-    action_turn(cx, handle, |window, cx| mark_field("first", &fields, window, cx));
+    action_turn(cx, handle, |window, cx| {
+        mark_field("first", &fields, window, cx)
+    });
     action_turn(cx, handle, |window, cx| window.press("escape", cx));
     cx.update_window(handle.into(), |_, window, cx| {
         let state = fields.read(cx).first.clone();
         assert_marked(&state, true, window, cx);
         let owner = fields.read(cx);
-        assert_eq!((owner.escape_actions, owner.raw_escapes, owner.cancels), (0, 1, 0));
+        assert_eq!(
+            (owner.escape_actions, owner.raw_escapes, owner.cancels),
+            (0, 1, 0)
+        );
     })
     .unwrap();
     action_turn(cx, handle, |window, cx| {
@@ -375,16 +388,23 @@ fn raw_escape_fallback_retains_owner_composition_guard_and_key_configuration(cx:
     action_turn(cx, handle, |window, cx| window.press("escape", cx));
     cx.update_window(handle.into(), |_, _, cx| {
         let owner = fields.read(cx);
-        assert_eq!((owner.escape_actions, owner.raw_escapes, owner.cancels), (0, 2, 1));
+        assert_eq!(
+            (owner.escape_actions, owner.raw_escapes, owner.cancels),
+            (0, 2, 1)
+        );
         assert_eq!(owner.first.read(cx).value(), "d日本");
     })
     .unwrap();
 }
 
 #[gpui::test]
-fn marked_tab_and_shift_tab_keep_child_focus_until_owner_navigation_is_safe(cx: &mut TestAppContext) {
+fn marked_tab_and_shift_tab_keep_child_focus_until_owner_navigation_is_safe(
+    cx: &mut TestAppContext,
+) {
     let (handle, fields) = mount(cx);
-    action_turn(cx, handle, |window, cx| mark_field("first", &fields, window, cx));
+    action_turn(cx, handle, |window, cx| {
+        mark_field("first", &fields, window, cx)
+    });
     for key in ["tab", "shift-tab"] {
         let before = fields.read_with(cx, |owner, _| owner.raw_tabs);
         action_turn(cx, handle, |window, cx| window.press(key, cx));
@@ -430,7 +450,9 @@ fn marked_tab_and_shift_tab_keep_child_focus_until_owner_navigation_is_safe(cx: 
 #[gpui::test]
 fn focused_child_and_parent_ignore_an_unfocused_siblings_marked_range(cx: &mut TestAppContext) {
     let (handle, fields) = mount(cx);
-    action_turn(cx, handle, |window, cx| mark_field("composer", &fields, window, cx));
+    action_turn(cx, handle, |window, cx| {
+        mark_field("composer", &fields, window, cx)
+    });
     action_turn(cx, handle, |window, cx| {
         window.click("first", cx);
         window.input("name", cx);
@@ -637,8 +659,7 @@ fn composition_return_cannot_submit_edit_or_bubble(cx: &mut TestAppContext) {
     action_turn(cx, handle, |window, cx| {
         window.click("composer", cx);
         let state = fields.read(cx).composer.clone();
-        let mut handler =
-            ElementInputHandler::new(window.find("composer").bounds(), state.clone());
+        let mut handler = ElementInputHandler::new(window.find("composer").bounds(), state.clone());
         handler.replace_and_mark_text_in_range(None, "日本", Some(2..2), window, cx);
         window.render_frame(cx);
     });
@@ -658,18 +679,20 @@ fn composition_return_cannot_submit_edit_or_bubble(cx: &mut TestAppContext) {
     }
     action_turn(cx, handle, |window, cx| {
         let state = fields.read(cx).composer.clone();
-        let mut handler =
-            ElementInputHandler::new(window.find("composer").bounds(), state.clone());
+        let mut handler = ElementInputHandler::new(window.find("composer").bounds(), state.clone());
         // Native IME commits through its input handler, not an app submit path.
         handler.replace_text_in_range(None, "日本語", window, cx);
         window.render_frame(cx);
     });
     cx.update_window(handle.into(), |_, window, cx| {
         let state = fields.read(cx).composer.clone();
-        let mut handler =
-            ElementInputHandler::new(window.find("composer").bounds(), state.clone());
+        let mut handler = ElementInputHandler::new(window.find("composer").bounds(), state.clone());
         assert_eq!(handler.marked_text_range(window, cx), None);
-        assert_eq!(fields.read(cx).submissions, 0, "commit alone does not submit");
+        assert_eq!(
+            fields.read(cx).submissions,
+            0,
+            "commit alone does not submit"
+        );
     })
     .unwrap();
     action_turn(cx, handle, |window, cx| window.press("enter", cx));
@@ -709,8 +732,7 @@ fn released_base_enter_emits_and_propagates_without_composition_guard(cx: &mut T
         window.press("shift-enter", cx);
         assert_eq!(fields.read(cx).composer.read(cx).value(), "send\n");
         let state = fields.read(cx).composer.clone();
-        let mut handler =
-            ElementInputHandler::new(window.find("composer").bounds(), state.clone());
+        let mut handler = ElementInputHandler::new(window.find("composer").bounds(), state.clone());
         handler.replace_and_mark_text_in_range(None, "中", Some(1..1), window, cx);
         window.render_frame(cx);
         window.press("enter", cx);
