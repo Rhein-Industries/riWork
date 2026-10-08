@@ -216,6 +216,11 @@ pub struct Settings {
     /// `mic`. Off, the Mac's chats show no mic, ⌃⌥D does nothing in them, and no speech
     /// helper runs or asks for a permission.
     pub dictation_mic: bool,
+    /// Claude chats start without `ANTHROPIC_API_KEY`, so a key exported in the shell
+    /// cannot switch them from the user's Claude subscription to API billing. Off, the
+    /// default, runs `claude` as published, with every sign-in method it has; Anthropic's
+    /// terms for products that run Claude Code ask that none be removed.
+    pub claude_chat_ignores_api_key: bool,
 }
 
 impl Settings {
@@ -259,6 +264,7 @@ impl Default for Settings {
             native_terminal_colors: true,
             interface_font: InterfaceFont::default(),
             dictation_mic: false,
+            claude_chat_ignores_api_key: false,
         }
     }
 }
@@ -347,6 +353,11 @@ impl<'de> Deserialize<'de> for Settings {
             ),
             interface_font: lenient_field(&object, "interface_font", defaults.interface_font),
             dictation_mic: lenient_field(&object, "dictation_mic", defaults.dictation_mic),
+            claude_chat_ignores_api_key: lenient_field(
+                &object,
+                "claude_chat_ignores_api_key",
+                defaults.claude_chat_ignores_api_key,
+            ),
         })
     }
 }
@@ -394,6 +405,19 @@ pub fn agent_terminals_unrestricted(home: &Path) -> bool {
         .map_or(
             Settings::default().agent_terminals_unrestricted,
             |settings| settings.agent_terminals_unrestricted,
+        )
+}
+
+/// Whether a Claude chat started from the state directory `home` loses
+/// `ANTHROPIC_API_KEY`, read from the file each time, like `agent_inline_mode`:
+/// the chat host outlives the window that changed it. A missing or unreadable
+/// file means the default, which leaves the key to `claude`.
+pub fn claude_chat_ignores_api_key(home: &Path) -> bool {
+    SettingsStore::open(home)
+        .and_then(|store| store.load())
+        .map_or(
+            Settings::default().claude_chat_ignores_api_key,
+            |settings| settings.claude_chat_ignores_api_key,
         )
 }
 
@@ -573,6 +597,7 @@ enum Toggle {
     AgentInline,
     AgentsUnrestricted,
     DictationMic,
+    ClaudeChatApiKey,
     WindowSize,
 }
 
@@ -585,6 +610,7 @@ impl Toggle {
             Self::AgentInline => "agent-inline-mode",
             Self::AgentsUnrestricted => "agent-terminals-unrestricted",
             Self::DictationMic => "dictation-mic",
+            Self::ClaudeChatApiKey => "claude-chat-ignores-api-key",
             Self::WindowSize => "remember-window-size",
         }
     }
@@ -600,6 +626,7 @@ impl Toggle {
             Self::AgentInline => &mut settings.agent_inline_mode,
             Self::AgentsUnrestricted => &mut settings.agent_terminals_unrestricted,
             Self::DictationMic => &mut settings.dictation_mic,
+            Self::ClaudeChatApiKey => &mut settings.claude_chat_ignores_api_key,
             Self::WindowSize => &mut settings.remember_window_size,
         };
         *value = !*value;
@@ -615,6 +642,7 @@ impl Toggle {
             Self::AgentInline => &mut settings.agent_inline_mode,
             Self::AgentsUnrestricted => &mut settings.agent_terminals_unrestricted,
             Self::DictationMic => &mut settings.dictation_mic,
+            Self::ClaudeChatApiKey => &mut settings.claude_chat_ignores_api_key,
             Self::WindowSize => &mut settings.remember_window_size,
         };
         *value = checked;
@@ -655,6 +683,7 @@ pub struct SettingsPanel {
     inline_focus: FocusHandle,
     unrestricted_focus: FocusHandle,
     mic_focus: FocusHandle,
+    api_key_focus: FocusHandle,
     orchestrator_mode_focus: FocusHandle,
     orchestrator_provider_focus: FocusHandle,
     size_focus: FocusHandle,
@@ -1166,6 +1195,7 @@ impl SettingsPanel {
             inline_focus: cx.focus_handle(),
             unrestricted_focus: cx.focus_handle(),
             mic_focus: cx.focus_handle(),
+            api_key_focus: cx.focus_handle(),
             orchestrator_mode_focus: cx.focus_handle(),
             orchestrator_provider_focus: cx.focus_handle(),
             size_focus: cx.focus_handle(),
@@ -1238,6 +1268,7 @@ impl SettingsPanel {
         handles.push(self.inline_focus.clone());
         handles.push(self.unrestricted_focus.clone());
         handles.push(self.mic_focus.clone());
+        handles.push(self.api_key_focus.clone());
         handles.push(self.orchestrator_mode_focus.clone());
         if settings.orchestrator_mode == OrchestratorMode::Chat {
             handles.push(self.orchestrator_provider_focus.clone());
@@ -2386,6 +2417,7 @@ impl SettingsPanel {
             Toggle::AgentInline => &self.inline_focus,
             Toggle::AgentsUnrestricted => &self.unrestricted_focus,
             Toggle::DictationMic => &self.mic_focus,
+            Toggle::ClaudeChatApiKey => &self.api_key_focus,
             Toggle::WindowSize => &self.size_focus,
         };
         behavior::switch_content(
@@ -2472,6 +2504,13 @@ impl SettingsPanel {
                 "Show microphone buttons for dictation",
                 "Covers the mic in chat message boxes on this Mac (or ⌃⌥D) and the mic buttons on a paired iPhone, in its chats and terminals. Speech is recognized on the device you speak to and stays there. Off hides them all.",
                 settings.dictation_mic,
+                cx,
+            ))
+            .child(self.toggle_row(
+                Toggle::ClaudeChatApiKey,
+                "Claude chats ignore ANTHROPIC_API_KEY",
+                "Starts Claude chats without ANTHROPIC_API_KEY, so a key exported in your shell cannot switch them from your Claude subscription to API billing. Off runs Claude as installed, with every sign-in method it has. Applies to new chats, and to an open chat after Stop chat. Claude terminal tabs are not affected.",
+                settings.claude_chat_ignores_api_key,
                 cx,
             ))
             .child(self.choice_row(
@@ -3412,6 +3451,42 @@ mod tests {
     }
 
     #[test]
+    fn claude_chats_keep_their_api_key_unless_settings_say_to_ignore_it() {
+        let dir = env::temp_dir().join(format!("riwork-settings-api-key-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        assert!(!Settings::default().claude_chat_ignores_api_key);
+        // No file, or one from a build without the setting: Claude runs as published.
+        assert!(!claude_chat_ignores_api_key(&dir));
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"theme":"native"}"#,
+        )
+        .unwrap();
+        assert!(!claude_chat_ignores_api_key(&dir));
+
+        // Turning it on is seen by the next launch, and off again too.
+        store
+            .update(|settings| Toggle::ClaudeChatApiKey.flip(settings))
+            .unwrap();
+        assert!(claude_chat_ignores_api_key(&dir));
+        store
+            .update(|settings| Toggle::ClaudeChatApiKey.flip(settings))
+            .unwrap();
+        assert!(!claude_chat_ignores_api_key(&dir));
+
+        // A value of another shape, or an unreadable file, reads as off.
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"claude_chat_ignores_api_key":"yes"}"#,
+        )
+        .unwrap();
+        assert!(!claude_chat_ignores_api_key(&dir));
+        fs::write(dir.join("settings.json"), "{not json").unwrap();
+        assert!(!claude_chat_ignores_api_key(&dir));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn agent_terminals_unrestricted_defaults_on_and_survives_older_odd_and_unreadable_files() {
         let dir = env::temp_dir().join(format!("riwork-settings-unrestricted-{}", Uuid::new_v4()));
         let store = SettingsStore::open(&dir).unwrap();
@@ -3621,6 +3696,7 @@ mod tests {
             (Toggle::AgentInline, "agent_inline_mode"),
             (Toggle::AgentsUnrestricted, "agent_terminals_unrestricted"),
             (Toggle::DictationMic, "dictation_mic"),
+            (Toggle::ClaudeChatApiKey, "claude_chat_ignores_api_key"),
             (Toggle::WindowSize, "remember_window_size"),
         ] {
             let mut flipped = base.clone();
@@ -3647,6 +3723,7 @@ mod tests {
             Toggle::AgentInline,
             Toggle::AgentsUnrestricted,
             Toggle::DictationMic,
+            Toggle::ClaudeChatApiKey,
             Toggle::WindowSize,
         ]
         .map(Toggle::id)

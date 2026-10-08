@@ -801,6 +801,47 @@ fn the_models_in_the_initialize_answer_become_a_models_event() {
     assert!(models_events(&rig.seen).is_empty());
 }
 
+fn account_events(events: &[ChatEvent]) -> Vec<Account> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            ChatEvent::Account { account } => Some(account.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_account_in_the_initialize_answer_says_whether_an_api_key_is_billed() {
+    let rig = Rig::new(&["account_api_key"]);
+    assert_eq!(
+        account_events(&rig.seen),
+        [Account {
+            api_key_source: Some("ANTHROPIC_API_KEY".into()),
+            plan: None,
+        }],
+        "{:?}",
+        rig.seen
+    );
+    let rig = Rig::new(&["account_subscription"]);
+    assert_eq!(
+        account_events(&rig.seen),
+        [Account {
+            api_key_source: None,
+            plan: Some("Claude Max".into()),
+        }]
+    );
+    // The email and organization never leave the driver.
+    let said = serde_json::to_string(&rig.seen).unwrap();
+    assert!(
+        !said.contains("example.com") && !said.contains("Example Org"),
+        "{said}"
+    );
+    // A CLI that does not say how it signed in says nothing.
+    let rig = Rig::new(&["idle_only"]);
+    assert!(account_events(&rig.seen).is_empty());
+}
+
 #[test]
 fn fast_mode_is_changed_in_the_running_process_and_a_state_that_is_not_on_is_said_once() {
     let mut rig = Rig::with(&["models_fast"], fast(), |config| config.fast = true);
@@ -888,13 +929,32 @@ fn a_model_without_fast_mode_does_not_make_the_chat_complain_about_it() {
 }
 
 #[test]
-fn a_session_starts_with_its_own_id_or_resumes_one_and_never_sees_an_api_key() {
-    // A new chat.
+fn the_driver_leaves_an_api_key_to_its_configuration() {
+    // Claude runs as published: the driver removes no sign-in method of its own.
+    let text = fixture("claude/idle_only.ndjson");
+    let fake = Fake::new(&[text.as_str()]);
+    let (sender, _events) = mpsc::channel();
+    let mut config = fake.config(Provider::Claude);
+    config
+        .env
+        .push(("ANTHROPIC_API_KEY".into(), "sk-ant-test".into()));
+    config.env_remove.retain(|name| name != "ANTHROPIC_API_KEY");
+    let mut driver = start_with(config, sender, fast()).unwrap();
+    let start = fake.starts().remove(0);
+    // The fake records that a secret is set, never its value.
+    assert_eq!(start["env"]["ANTHROPIC_API_KEY"], "<set>", "{start}");
+    driver.shutdown();
+}
+
+#[test]
+fn a_session_starts_with_its_own_id_or_resumes_one_and_loses_an_api_key_its_config_removes() {
+    // A new chat, whose configuration removes the key (Settings asked for that).
     let text = fixture("claude/idle_only.ndjson");
     let fake = Fake::new(&[text.as_str()]);
     let (sender, _events) = mpsc::channel();
     let mut config = fake.config(Provider::Claude);
     config.env = vec![("ANTHROPIC_API_KEY".into(), "sk-ant-test".into())];
+    assert!(config.env_remove.contains(&"ANTHROPIC_API_KEY".into()));
     let mut driver = start_with(config, sender, fast()).unwrap();
     let id = driver.provider_thread_id().unwrap();
     assert!(Uuid::parse_str(&id).is_ok(), "{id}");

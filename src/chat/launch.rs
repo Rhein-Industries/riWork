@@ -53,6 +53,7 @@ pub fn driver_config(
         Provider::Claude => (HarnessKind::Claude, None),
     };
     let launch = sessions::chat_launch(harness, &home, codex_home.as_deref())?;
+    let ignore_api_key = crate::settings::claude_chat_ignores_api_key(&home);
     Ok(assemble(
         info,
         resume,
@@ -61,9 +62,11 @@ pub fn driver_config(
         launch.path,
         &home,
         codex_home,
+        ignore_api_key,
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn assemble(
     info: &ChatInfo,
     resume: Option<String>,
@@ -72,6 +75,7 @@ fn assemble(
     path: OsString,
     home: &Path,
     codex_home: Option<PathBuf>,
+    ignore_api_key: bool,
 ) -> DriverConfig {
     let mut env = vec![
         (OsString::from("PATH"), path),
@@ -104,8 +108,9 @@ fn assemble(
             codex_home.into_os_string(),
         ));
     }
-    if info.provider == Provider::Claude {
-        // A stray key would silently switch the chat to API billing.
+    if info.provider == Provider::Claude && ignore_api_key {
+        // Settings asked that a stray key not switch the chat to API billing.
+        // Otherwise `claude` keeps every sign-in method it has, as published.
         env_remove.push("ANTHROPIC_API_KEY".into());
     }
     // What a terminal orchestrator's session exports, for the skill that reads it.
@@ -208,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_chat_runs_under_its_account_home_and_a_claude_chat_never_sees_an_api_key() {
+    fn a_codex_chat_runs_under_its_account_home_and_a_claude_chat_keeps_its_api_key() {
         let codex = assemble(
             &info(Provider::Codex),
             Some("thread".into()),
@@ -217,6 +222,7 @@ mod tests {
             "/shims:/bin".into(),
             Path::new("/riwork"),
             Some("/accounts/a".into()),
+            true,
         );
         assert_eq!(codex.resume.as_deref(), Some("thread"));
         assert_eq!(
@@ -252,8 +258,21 @@ mod tests {
             "/shims".into(),
             Path::new("/riwork"),
             None,
+            false,
         );
-        assert!(claude.env_remove.contains(&"ANTHROPIC_API_KEY".into()));
+        // Claude runs as published unless Settings asks it to ignore the key.
+        assert!(!claude.env_remove.contains(&"ANTHROPIC_API_KEY".into()));
+        let ignoring = assemble(
+            &info(Provider::Claude),
+            None,
+            "/bin/claude".into(),
+            Vec::new(),
+            "/shims".into(),
+            Path::new("/riwork"),
+            None,
+            true,
+        );
+        assert!(ignoring.env_remove.contains(&"ANTHROPIC_API_KEY".into()));
         assert_eq!(value(&claude, "RIWORK_CHAT_ID").unwrap(), "id");
         assert!(
             claude.extra_args.is_empty(),
@@ -281,6 +300,7 @@ mod tests {
                 "/shims".into(),
                 Path::new("/riwork"),
                 None,
+                false,
             )
         };
         let project = configure(OrchestratorScope::Project {
