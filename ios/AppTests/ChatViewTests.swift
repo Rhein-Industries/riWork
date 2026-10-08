@@ -966,7 +966,11 @@ import RiWorkCore
         await eventually("the row is up") { rig.layout.frames["attachments"] != nil }
         let row = try XCTUnwrap(rig.layout.frames["attachments"]), field = try XCTUnwrap(rig.layout.frames["composer-field"])
         XCTAssertLessThanOrEqual(row.maxY, field.minY + 1, "above the field")
-        XCTAssertGreaterThanOrEqual(row.minX, 0); XCTAssertLessThanOrEqual(row.maxX, rig.window.bounds.width, "within the composer's insets")
+        let surface = try XCTUnwrap(rig.layout.frames["composer"])
+        XCTAssertEqual(surface.minX, 0, accuracy: 0.5, "the field has no gutter")
+        XCTAssertEqual(surface.maxX, rig.window.bounds.width, accuracy: 0.5, "the field spans the width")
+        XCTAssertEqual(row.minX, surface.minX, accuracy: 0.5, "the cards start at the field's edge")
+        XCTAssertGreaterThan(field.minX, surface.minX, "the paperclip sits inside the field, before the text")
         rig.model.removeStagedAttachment(staged(2, "notes.pdf").id, from: chatID)
         XCTAssertEqual(conversation.attachments.map(\.name), ["photo.jpg", "build.log"])
         conversation.attachments = []

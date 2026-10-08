@@ -226,7 +226,6 @@ struct ChatComposer: View {
             let actions = actions
             if let attachmentImages, !conversation.attachments.isEmpty {
                 ChatAttachmentStrip(attachments: conversation.attachments, images: attachmentImages, remove: { removeAttachment?($0) })
-                    .padding(.horizontal, BottomBarGeometry.composerInnerInset)
                     .chatLayoutProbe("attachments")
             }
             HStack(alignment: .composerLine, spacing: 0) {
@@ -245,12 +244,11 @@ struct ChatComposer: View {
             .padding(.leading, attach == nil ? 6 : 0).padding(.trailing, 0)
             .modifier(ComposerFieldSurface(focused: focused))
             .animation(.easeInOut(duration: 0.12), value: actions)
-            .padding(.horizontal, BottomBarGeometry.composerInnerInset)
             .chatLayoutProbe("composer")
         }
         .animation(.easeInOut(duration: 0.15), value: conversation.attachments)
-        // Lined up with the terminal's key bar: the field's ends sit where the key bar's capsule does, and the row stands as close above
-        // the keyboard as the key bar's capsule (`BottomBarGeometry.composerInsets`).
+        // Edge to edge between the horizontal safe-area edges, as the terminal's key bar's capsule is, and as close above the keyboard
+        // (`BottomBarGeometry.composerInsets`). The card row above the field keeps the same edges.
         .padding(.horizontal, BottomBarGeometry.composerInsets(glass: style.glass).horizontal).padding(.top, 6)
         .padding(.bottom, BottomBarGeometry.composerInsets(glass: style.glass).bottom)
         .background(style.glass ? style.surface : style.background)

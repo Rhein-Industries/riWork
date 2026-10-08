@@ -487,6 +487,75 @@ import RiWorkCore
             try? keychain.delete()
         }
     }
+    /// `RIWORK_TAB_SCREENSHOTS_ONLY=testComposerEdges scripts/tab-chrome-screenshots.sh <dir> <udid>`: where the bottom bars meet the
+    /// screen's sides: a shell's key bar over the software keyboard, and a chat's composer empty, with text and the keyboard up, and with
+    /// cards; in Native light and dark and the terminal look.
+    func testComposerEdges() async throws {
+        guard ProcessInfo.processInfo.environment["RIWORK_TAB_SCREENSHOTS_ONLY"] == "testComposerEdges" else { throw XCTSkip("Set RIWORK_TAB_SCREENSHOTS_ONLY=testComposerEdges") }
+        for look in [Look.nativeLight, .nativeDark, .terminal] {
+            guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene") }
+            let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
+            let pairing = try Pairing.parse("""
+            {"v":1,"relay_url":"wss://example.com/v1/ws","desktop_id":"11111111-1111-4111-8111-111111111111","device_id":"22222222-2222-4222-8222-222222222222","route_id":"33333333-3333-4333-8333-333333333333","device_name":"Test","pairing_secret":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","relay_token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}
+            """)
+            var desktop = SavedDesktop(name: "Fixture", pairing: pairing, allowLocalDevelopment: false)
+            desktop.selectedProjectID = project; desktop.selectedSessionID = ChatTransport.shell
+            try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
+            let suite = "com.riwork.tests.tabchrome.\(UUID().uuidString)"
+            defaultsNames.append(suite)
+            let images = ChatAttachmentImages(directory: FileManager.default.temporaryDirectory.appendingPathComponent("shots-\(UUID().uuidString)"))
+            defer { try? FileManager.default.removeItem(at: images.directory) }
+            let info = ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Fix the build", createdAtUnix: 10, approvalMode: .supervised, state: .idle)
+            let transport = ChatTransport(chats: [info], appearance: appearance(look, mic: true))
+            await transport.setShellOutput((0..<40).map { "\u{1b}[32m~/fixture\u{1b}[0m $ make test  # line \($0)" }.joined(separator: "\r\n"))
+            await transport.append(chatID, [.info(info)] + (0..<10).map { index in
+                .itemCompleted(ChatItem(id: "m\(index)", status: .completed, body: .agentMessage("Message \(index). A readable paragraph in this fixture conversation, long enough to wrap.")))
+            })
+            let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: suite)!, chatWaitMilliseconds: 300,
+                                    chatIdleInterval: .milliseconds(20), hardwareKeyboard: HardwareKeyboardMonitor(probe: { false }), attachmentImages: images)
+            await model.connect()
+            if look != .terminal { await eventually("Native look") { model.theme.style.native } }
+            let projectValue = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}".utf8))
+            let host = UIHostingController(rootView: AnyView(ThemedTabs(model: model, project: projectValue)))
+            let window = UIWindow(windowScene: scene)
+            window.frame = scene.coordinateSpace.bounds
+            window.windowLevel = .alert + 1
+            window.rootViewController = host
+            window.overrideUserInterfaceStyle = look == .nativeDark ? .dark : .light
+            window.makeKeyAndVisible()
+            windows.forEach { $0.isHidden = true }
+            windows.append(window)
+            await eventually("terminal up") { model.terminalArea != nil && model.hasOutput }
+            let prefix = look.rawValue
+            try await Task.sleep(for: .milliseconds(900))
+            if let keys = views(KeyCaptureView.self, in: window).first {
+                keys.becomeFirstResponder()
+                try await Task.sleep(for: .milliseconds(1200))
+            }
+            try await shot(window, prefix + "-1-shell-keybar")
+            window.endEditing(true)
+            try await Task.sleep(for: .milliseconds(500))
+            model.selectChat(chatID)
+            let conversation = model.conversation(chatID)
+            await eventually("chat up") { conversation.following && conversation.transcript.items.count > 5 }
+            window.endEditing(true)
+            try await shot(window, prefix + "-2-chat-empty")
+            guard let field = views(ChatComposerTextView.self, in: window).first else { XCTFail("no composer"); continue }
+            field.becomeFirstResponder()
+            conversation.draft = "Text starts right after the paperclip"
+            try await Task.sleep(for: .milliseconds(900))
+            try await shot(window, prefix + "-3-kb-text")
+            let photo = StagedAttachment(id: "aaaaaaaa-0000-4000-8000-000000000001", kind: .image, name: "IMG_0412.jpg", size: 842_311, path: "/Users/me/uploads/1/IMG_0412.jpg")
+            let pdf = StagedAttachment(id: "aaaaaaaa-0000-4000-8000-000000000003", kind: .file, name: "quarterly-infrastructure-review-final.pdf", size: 2_431_000, path: "/Users/me/uploads/3/q.pdf")
+            images.save(photo.id, data: fixturePhoto(0.58))
+            conversation.attachments = [photo, pdf]
+            try await shot(window, prefix + "-4-kb-cards")
+            window.endEditing(true)
+            await model.disconnect()
+            window.isHidden = true
+            try? keychain.delete()
+        }
+    }
     /// `RIWORK_TAB_SCREENSHOTS_ONLY=testSharedTabs scripts/tab-chrome-screenshots.sh <dir> <udid>`: the row on the desktop's shared tab
     /// list (the project orchestrator, sent as pinned by an older desktop, and a user chat), the open-worker picker, the close sheet, a
     /// reorder in progress (the drop bar and the Edit tabs sheet), the setting row, the orchestrator's close sheet (Detach and Exit, as

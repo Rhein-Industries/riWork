@@ -403,7 +403,8 @@ private final class KeyScrollView: UIScrollView {
         insertSubview(glass, at: 0)
         let side = CGFloat(BottomBarGeometry.capsuleSideInset), end = CGFloat(BottomBarGeometry.capsuleEndInset)
         NSLayoutConstraint.activate([
-            glass.leadingAnchor.constraint(equalTo: leadingAnchor, constant: side), trailingAnchor.constraint(equalTo: glass.trailingAnchor, constant: side),
+            glass.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: side),
+            safeAreaLayoutGuide.trailingAnchor.constraint(equalTo: glass.trailingAnchor, constant: side),
             glass.topAnchor.constraint(equalTo: topAnchor, constant: end), bottomAnchor.constraint(equalTo: glass.bottomAnchor, constant: end)
         ])
         glassView = glass
