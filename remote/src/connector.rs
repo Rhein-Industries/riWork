@@ -637,25 +637,25 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                     // Only a device that may open streams is told they exist.
                     features["pty"] = pty::features();
                 }
-                // Chats, creating an orchestrator, and agents that follow the desktop's
-                // Settings when `shell.create` leaves `unrestricted` out exist when the
-                // installed CLI has them; an older phone ignores all three. One question to
-                // the CLI answers them.
-                let (chat, orchestrator_create, as_settings) = tokio::join!(
+                // Chats, a chat going on with the other provider (`switch`), the models of a
+                // provider a chat does not run yet (`chat.models`), creating an orchestrator,
+                // and agents that follow the desktop's Settings when `shell.create` leaves
+                // `unrestricted` out exist when the installed CLI has them; an older phone
+                // ignores them all. Asked together, one question to the CLI answers them all,
+                // a no as much as a yes.
+                let (chat, provider_switch, chat_models, orchestrator_create, as_settings) = tokio::join!(
                     rpc.chat_supported(),
+                    rpc.chat_provider_switch_supported(),
+                    rpc.chat_models_supported(),
                     rpc.orchestrator_create_supported(),
                     rpc.shell_create_as_settings_supported()
                 );
                 if chat {
                     features["chat"] = json!(true);
-                    // A chat can go on with the other provider (`switch`), and the models of a
-                    // provider it does not run yet can be asked for (`chat.models`). The answer
-                    // above has set both when the CLI has them, so these ask again only an
-                    // older CLI.
-                    if rpc.chat_provider_switch_supported().await {
+                    if provider_switch {
                         features["chat_provider_switch"] = json!(true);
                     }
-                    if rpc.chat_models_supported().await {
+                    if chat_models {
                         features["chat_models"] = json!(true);
                     }
                 }
