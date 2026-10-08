@@ -26,7 +26,7 @@ public struct StagedAttachment: Codable, Sendable, Equatable, Identifiable, Hash
     public var size: Int
     /// Where it is on the desktop: what goes into the message.
     public var path: String
-    /// When the desktop finished taking it.
+    /// When its upload began (just before `upload.begin`): the desktop's day for the file starts there, however long the sending took.
     public var stagedAt: Date
     public init(id: String, kind: Kind, name: String, size: Int, path: String, stagedAt: Date = .now) {
         self.id = id; self.kind = kind; self.name = name; self.size = size; self.path = path; self.stagedAt = stagedAt
@@ -39,8 +39,8 @@ public struct StagedAttachment: Codable, Sendable, Equatable, Identifiable, Hash
         // A card saved without its time is of unknown age: taken for expired rather than sent as a path that may be gone.
         stagedAt = try c.decodeIfPresent(Date.self, forKey: .stagedAt) ?? .distantPast
     }
-    /// How long a card's file is taken to be on the desktop: its day (`KEEP_SECONDS`, counted from `upload.begin`, a little before the
-    /// card was made), less an hour.
+    /// How long a card's file is taken to be on the desktop: its day (`KEEP_SECONDS`, counted from `upload.begin`, as `stagedAt` is),
+    /// less an hour.
     public static let retention: TimeInterval = 23 * 3600
     /// The desktop has most likely removed the file: the card says so and its path is not sent.
     public func isExpired(at now: Date = .now) -> Bool { now.timeIntervalSince(stagedAt) >= Self.retention }
@@ -116,14 +116,16 @@ public struct ChatAttachmentImages: Sendable {
         try? FileManager.default.removeItem(at: thumbnailURL(id))
         try? FileManager.default.removeItem(at: previewURL(id))
     }
-    /// Removes the pictures of every id not in `kept` (cards sent or removed while the app was not there to tidy up).
-    public func prune(keeping kept: Set<String>) {
+    /// Removes the pictures of every id not in `kept` (cards sent or removed while the app was not there to tidy up). Only pictures
+    /// written before `before` go: one written since belongs to a card staged after `kept` was read.
+    public func prune(keeping kept: Set<String>, writtenBefore before: Date = .distantFuture) {
         let names = Set(kept.map(Self.safe))
-        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
         for file in files {
             let stem = file.deletingPathExtension().lastPathComponent
             let id = stem.hasSuffix("-thumb") ? String(stem.dropLast(6)) : stem
-            if !names.contains(id) { try? FileManager.default.removeItem(at: file) }
+            let written = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            if !names.contains(id), written < before { try? FileManager.default.removeItem(at: file) }
         }
     }
 

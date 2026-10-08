@@ -117,6 +117,16 @@ import UniformTypeIdentifiers
         XCTAssertTrue(FileManager.default.fileExists(atPath: store.previewURL(card(2).id).path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.previewURL(card(3).id).path))
     }
+    /// A prune that started before a card was staged leaves that card's pictures alone, however late it runs.
+    func testAPruneNeverRemovesPicturesWrittenAfterItStarted() {
+        let store = images()
+        store.save(card(1).id, data: png(width: 10, height: 10))
+        let started = Date.now.addingTimeInterval(-60)
+        store.prune(keeping: [], writtenBefore: started)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.thumbnailURL(card(1).id).path), "written after the prune began")
+        store.prune(keeping: [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.thumbnailURL(card(1).id).path))
+    }
 
     // MARK: Kept with the draft
 

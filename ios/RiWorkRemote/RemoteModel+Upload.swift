@@ -92,6 +92,8 @@ extension RemoteModel {
                         $0.name = file.name; $0.kind = StagedAttachment.kind(mediaType: file.mediaType, name: file.name); $0.size = file.data.count
                     }
                     let total = Double(max(1, file.data.count))
+                    // The desktop's day for the file starts at `upload.begin`, the first thing `send` does: the card's clock starts here.
+                    let began = Date.now
                     let sent = try await FileTransfer.send(file, to: target, feature: feature, over: client) { received in
                         Task { @MainActor in
                             if attachments.job == job, attachments.activity?.index == offset + 1 { attachments.activity?.sent = received }
@@ -106,7 +108,7 @@ extension RemoteModel {
                         let images = self.chatAttachmentImages, data = file.data, id = sent.upload
                         let pictured = kind == .image ? await Task.detached(priority: .userInitiated) { images.save(id, data: data) }.value : false
                         guard self.selectedDesktopID == desktopID, attachments.job == job else { throw CancellationError() }
-                        self.stageInChat(chat, [StagedAttachment(id: id, kind: pictured ? .image : .file, name: file.name, size: file.data.count, path: sent.path)])
+                        self.stageInChat(chat, [StagedAttachment(id: id, kind: pictured ? .image : .file, name: file.name, size: file.data.count, path: sent.path, stagedAt: began)])
                         attachments.pending.removeAll { $0.id == Attachments.pendingID(job, offset) }
                     }
                 }

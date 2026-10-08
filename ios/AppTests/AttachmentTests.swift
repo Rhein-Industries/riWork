@@ -231,6 +231,27 @@ actor UploadTransport: RemoteTransport {
         XCTAssertTrue(exists(images.thumbnailURL(card.id)), "now with its thumbnail")
         await model.disconnect()
     }
+    /// The card's retention clock starts when the upload begins, as the desktop's does, not when a slow upload ends.
+    func testASlowUploadsCardIsAgedFromItsBeginning() async throws {
+        let (model, transport) = try await connected()
+        let conversation = model.conversation(chat)
+        let before = Date.now
+        await transport.hold(chunk: 1)
+        model.attach([.camera(photo())], to: .chat(chat))
+        await settleAsync { await transport.isHolding() }
+        let begun = await transport.methods()
+        XCTAssertEqual(begun, ["upload.begin", "upload.chunk"], "begun, and held mid-send")
+        try await Task.sleep(for: .milliseconds(600))
+        let released = Date.now
+        await transport.release()
+        await settle { model.attachments.task == nil }
+        let card = try XCTUnwrap(conversation.attachments.first)
+        XCTAssertGreaterThanOrEqual(card.stagedAt, before)
+        XCTAssertLessThan(card.stagedAt, released.addingTimeInterval(-0.5), "aged from upload.begin, not from the end of the sending")
+        XCTAssertTrue(StagedAttachment(id: card.id, kind: card.kind, name: card.name, size: card.size, path: card.path,
+                                       stagedAt: card.stagedAt).isExpired(at: card.stagedAt.addingTimeInterval(StagedAttachment.retention)))
+        await model.disconnect()
+    }
     /// Of several files, each becomes its card as soon as the Mac has it; × on one still on its way cancels the rest, and what was sent
     /// stays a card.
     func testEachFileIsACardOnceSentAndCancellingDropsOnlyThoseOnTheirWay() async throws {
