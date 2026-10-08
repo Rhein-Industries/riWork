@@ -4,6 +4,11 @@
 #![allow(dead_code)]
 #[path = "../../src/chat/model.rs"]
 mod model;
+/// `model.rs` names the attachment type of `SendAttachments`, which reads files; no fixture has one, so a stand-in will do.
+mod attachments {
+    #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+    pub struct Attachment {}
+}
 use model::*;
 use serde_json::{json, to_value, Value};
 
@@ -24,6 +29,7 @@ fn main() {
         codex_account_id: Some("acct".into()),
         orchestrator: None,
         state: ChatState::Failed { message: "gone".into() },
+        carried_over: None,
     };
     let minimal = ChatInfo {
         id: "33333333-3333-4333-8333-333333333333".into(),
@@ -41,6 +47,22 @@ fn main() {
         codex_account_id: None,
         orchestrator: None,
         state: ChatState::default(),
+        carried_over: None,
+    };
+    // A chat that went on with the other provider (`switch`): the same id, the new provider, and what it was given.
+    let switched = ChatInfo {
+        provider: Provider::Claude,
+        provider_thread_id: None,
+        model: Some("opus".into()),
+        effort: None,
+        fast: false,
+        title: "Claude chat".into(),
+        state: ChatState::Idle,
+        carried_over: Some(CarriedOver {
+            document: "/Users/me/.riwork/chats/11111111-1111-4111-8111-111111111111/context.md".into(),
+            from: "Codex chat \"Codex chat\" (11111111)".into(),
+        }),
+        ..info.clone()
     };
     // What a driver sends once after its handshake: a model with efforts and Fast, one with efforts only, and one with nothing to choose
     // (only the id and the name are required, so the last is the shortest a model can be).
@@ -65,7 +87,7 @@ fn main() {
         },
         ModelOption { id: "bare".into(), name: "Bare".into(), ..ModelOption::default() },
     ];
-    let item = |id: &str, body: ItemBody, status: ItemStatus| Item { id: id.into(), turn_id: Some("t1".into()), status, body };
+    let item = |id: &str, body: ItemBody, status: ItemStatus| Item { presentation: Default::default(), id: id.into(), turn_id: Some("t1".into()), status, body };
     let step = |text: &str, status: StepStatus| Step { text: text.into(), status };
     let events: Vec<ChatEvent> = vec![
         ChatEvent::Info { info: info.clone() },
@@ -118,6 +140,8 @@ fn main() {
         ChatEvent::Models { models: model_options.clone() },
         ChatEvent::Models { models: vec![model_options[2].clone()] },
         ChatEvent::Models { models: Vec::new() },
+        ChatEvent::Info { info: switched.clone() },
+        ChatEvent::ItemCompleted { item: Item { presentation: Default::default(), id: "switch-58".into(), turn_id: None, status: ItemStatus::Completed, body: ItemBody::Notice { level: NoticeLevel::Info, text: "Continued with Claude (opus), which has the conversation so far.".into() } } },
     ];
     let commands: Vec<ChatCommand> = vec![
         ChatCommand::Send { text: "go".into() },
@@ -133,6 +157,8 @@ fn main() {
         ChatCommand::Configure { model: Some("gpt-5.5".into()), effort: Some("xhigh".into()), approval_mode: Some(ApprovalMode::Full), fast: Some(true) },
         ChatCommand::Compact,
         ChatCommand::Stop,
+        ChatCommand::Switch { provider: Provider::Claude, model: None, effort: None, fast: None },
+        ChatCommand::Switch { provider: Provider::Codex, model: Some("gpt-5.5".into()), effort: Some("high".into()), fast: Some(false) },
     ];
     let events: Vec<Value> = events.iter().map(|e| to_value(e).unwrap()).collect();
     let commands: Vec<Value> = commands.iter().map(|c| to_value(c).unwrap()).collect();
@@ -142,7 +168,7 @@ fn main() {
         "generated_by": "ios/scripts/gen-chat-fixtures.sh from src/chat/model.rs; do not edit by hand",
         "events": events,
         "commands": commands,
-        "chats": [to_value(&info).unwrap(), to_value(&minimal).unwrap()],
+        "chats": [to_value(&info).unwrap(), to_value(&minimal).unwrap(), to_value(&switched).unwrap()],
         "modes": modes,
         "providers": providers,
         "model_options": model_options.iter().map(|m| to_value(m).unwrap()).collect::<Vec<Value>>(),

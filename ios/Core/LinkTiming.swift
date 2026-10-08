@@ -55,6 +55,14 @@ public struct DesktopFeatures: Sendable, Equatable {
     /// The desktop answers `orchestrator.create` (`features.orchestrator_create`), which opens the project's orchestrator or the global
     /// one, starting it if it is not there. Without it the phone does not offer to.
     public var orchestratorCreate = false
+    /// An agent `shell.create` that leaves `unrestricted` out starts as the Mac's **Agent terminals run unrestricted** setting says
+    /// (`features.shell_create_as_settings`). With it the phone offers no switch of its own for a terminal; without it, leaving the field
+    /// out means restricted, as before.
+    public var shellCreateAsSettings = false
+    /// A chat can go on with the other provider in place (`switch`, `features.chat_provider_switch`).
+    public var chatProviderSwitch = false
+    /// The desktop answers `chat.models` (`features.chat_models`): a provider's models, read from saved chats.
+    public var chatModels = false
     public init() {}
     public init(ready: JSONValue) {
         let features = ready["features"]
@@ -70,6 +78,9 @@ public struct DesktopFeatures: Sendable, Equatable {
         if case .bool(true) = features["chat"] { chat = true }
         upload = UploadFeature(features["upload"])
         if case .bool(true) = features["orchestrator_create"] { orchestratorCreate = true }
+        if case .bool(true) = features["shell_create_as_settings"] { shellCreateAsSettings = true }
+        if case .bool(true) = features["chat_provider_switch"] { chatProviderSwitch = true }
+        if case .bool(true) = features["chat_models"] { chatModels = true }
         if let lines = count(features["history_max_lines"]), lines >= 1 {
             historyMaximumLines = max(HistoryLimits.legacyMaximumPageLines, min(HistoryLimits.maximumPageLines, lines))
         }

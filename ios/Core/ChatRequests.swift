@@ -1,6 +1,6 @@
 import Foundation
 
-// Talking to the desktop's chats: `chats.list`, `chat.create`, `chat.events`, `chat.command` and `chat.stop`.
+// Talking to the desktop's chats: `chats.list`, `chat.create`, `chat.events`, `chat.command`, `chat.stop` and `chat.models`.
 //
 // The request builders validate what the desktop validates, so a request that leaves the phone is one the desktop will not reject as
 // malformed (it denies unknown fields and checks every id and length before any command runs). The reply parsers check that an answer is
@@ -305,13 +305,18 @@ public struct ChatCommandRequest: Sendable, Equatable {
         }
         if case .configure(let model, let effort, let mode, let fast) = command {
             guard model != nil || effort != nil || mode != nil || fast != nil else { throw ChatValidationError.emptyConfigure }
-            for (field, value, limit) in [("model", model, ChatLimits.modelBytes), ("effort", effort, ChatLimits.effortBytes)] {
-                guard let value else { continue }
-                guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ChatValidationError.blankSetting(field: field) }
-                guard value.utf8.count <= limit else { throw ChatValidationError.textTooLong(field: field, limit: limit) }
-            }
+            try Self.validate(model: model, effort: effort)
         }
+        // A switch needs only its provider; a model or an effort it names is one the desktop would take.
+        if case .switchProvider(_, let model, let effort, _) = command { try Self.validate(model: model, effort: effort) }
         self.chatID = chatID; self.command = command
+    }
+    private static func validate(model: String?, effort: String?) throws {
+        for (field, value, limit) in [("model", model, ChatLimits.modelBytes), ("effort", effort, ChatLimits.effortBytes)] {
+            guard let value else { continue }
+            guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ChatValidationError.blankSetting(field: field) }
+            guard value.utf8.count <= limit else { throw ChatValidationError.textTooLong(field: field, limit: limit) }
+        }
     }
     public var params: [String: JSONValue] {
         let command = (try? JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(command))) ?? .null
@@ -337,6 +342,58 @@ public struct ChatStopRequest: Sendable, Equatable {
     public var params: [String: JSONValue] { ["chat_id": .string(chatID)] }
     public func parse(_ result: JSONValue) throws {
         guard result["status"].string == "stopped" else { throw ChatControlError.unreadableReply }
+    }
+}
+
+// MARK: - chat.models
+
+/// `chat.models` (`features.chat_models`): the models a chat of a provider can be set to, as saved chats of it reported, for a provider no chat
+/// on screen runs yet. Reading it starts nothing on the Mac.
+public struct ChatModelsRequest: Sendable, Equatable {
+    public let provider: ChatProvider
+    /// The project whose Codex account the list is for; nil is the desktop's own choice.
+    public let projectID: String?
+    public init(provider: ChatProvider, projectID: String? = nil) throws {
+        if let projectID { guard NewTerminalRequest.isCanonicalUUID(projectID) else { throw ChatValidationError.invalidID } }
+        self.provider = provider; self.projectID = projectID
+    }
+    public var params: [String: JSONValue] {
+        var params: [String: JSONValue] = ["provider": .string(provider.rawValue)]
+        if let projectID { params["project_id"] = .string(projectID) }
+        return params
+    }
+    public init(params: [String: JSONValue]) throws {
+        guard Set(params.keys).isSubset(of: ["provider", "project_id"]), case .string(let word)? = params["provider"],
+              let provider = ChatProvider(rawValue: word) else { throw ChatValidationError.malformed }
+        switch params["project_id"] {
+        case nil: try self.init(provider: provider)
+        case .string(let id)?: try self.init(provider: provider, projectID: id)
+        default: throw ChatValidationError.invalidID
+        }
+    }
+    /// The answer for this provider. A model the phone cannot read is left out; `models` empty means no chat of the provider has said yet.
+    public func parse(_ result: JSONValue) throws -> ChatModelsReply {
+        guard case .object = result, result["provider"].string == provider.rawValue, case .array = result["models"] else { throw ChatControlError.unreadableReply }
+        let data = try JSONEncoder().encode(result["models"])
+        let models = ((try? JSONDecoder().decode([Lenient<ChatModelOption>].self, from: data)) ?? []).compactMap(\.value)
+        var configured: [String] = []
+        if case .array(let ids) = result["configured"] { configured = ids.compactMap(\.string) }
+        return ChatModelsReply(provider: provider, models: models, configured: configured, accountLabel: result["account_label"].string, error: result["error"].string)
+    }
+}
+
+/// What `chat.models` answered.
+public struct ChatModelsReply: Sendable, Equatable {
+    public let provider: ChatProvider
+    public let models: [ChatModelOption]
+    /// Other ids chats were set to; never claimed to be supported.
+    public let configured: [String]
+    /// The Codex account's name, for a Codex list.
+    public let accountLabel: String?
+    /// Why the provider cannot be offered now (a Codex account that cannot be used), in the Mac's words.
+    public let error: String?
+    public init(provider: ChatProvider, models: [ChatModelOption], configured: [String] = [], accountLabel: String? = nil, error: String? = nil) {
+        self.provider = provider; self.models = models; self.configured = configured; self.accountLabel = accountLabel; self.error = error
     }
 }
 
@@ -366,6 +423,11 @@ extension RemoteTransport {
     public func stopChat(_ request: ChatStopRequest, id: String = UUID().uuidString.lowercased()) async throws {
         do { try request.parse(try await self.request(method: "chat.stop", params: request.params, id: id)) }
         catch { throw ChatControlError.from(error, operation: .stop) }
+    }
+    /// Reading the list is harmless to repeat, so a failure is just reported.
+    public func chatModels(_ request: ChatModelsRequest, id: String = UUID().uuidString.lowercased()) async throws -> ChatModelsReply {
+        do { return try request.parse(try await self.request(method: "chat.models", params: request.params, id: id)) }
+        catch { throw ChatControlError.from(error, operation: .list) }
     }
 }
 
