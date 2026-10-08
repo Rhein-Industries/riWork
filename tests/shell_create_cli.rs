@@ -537,3 +537,124 @@ fn the_look_ups_the_connector_makes_before_creating_say_which_id_they_found() {
     }
     assert!(!home.runtime().exists(), "a GUI instance was registered");
 }
+
+#[test]
+fn handoff_shell_respects_chat_shell_and_orchestrator_callers() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new();
+    let (project, _, root) = home.project("handoff-provenance");
+    let chat_id = Uuid::new_v4().to_string();
+    let chat_dir = home.0.join("chats").join(&chat_id);
+    fs::create_dir_all(&chat_dir).unwrap();
+    fs::write(
+        chat_dir.join("info.json"),
+        json!({
+            "id":chat_id, "provider":"codex", "project_id":project,
+            "cwd":root, "title":"Source", "created_at_unix":1, "state":{"state":"stopped"}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(chat_dir.join("events.jsonl"), "").unwrap();
+    let bin = home.0.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    for (name, body) in [("claude", "exec sleep 300"), ("cua-driver", "exit 0")] {
+        let path = bin.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let clean = |args: &[&str]| {
+        let mut command = home.command(args);
+        command
+            .env_remove("RIWORK_CHAT_ID")
+            .env_remove("RIWORK_SHELL_ID")
+            .env_remove("RIWORK_ORCHESTRATOR_SCOPE")
+            .env("PATH", &path)
+            .env("RIWORK_CUA_DRIVER", bin.join("cua-driver"));
+        command
+    };
+    let args = [
+        "shell",
+        "create",
+        "--project",
+        &project,
+        "--command",
+        "exec sleep 300",
+        "--json",
+    ];
+    let output = finish(clean(&args).spawn().unwrap(), &args);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parent: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let shell_id = parent["id"].as_str().unwrap();
+    for (marker, parent_id) in [
+        (None, None),
+        (
+            Some(("RIWORK_CHAT_ID", chat_id.as_str())),
+            Some(chat_id.as_str()),
+        ),
+        (Some(("RIWORK_SHELL_ID", shell_id)), Some(shell_id)),
+        (Some(("RIWORK_ORCHESTRATOR_SCOPE", "project")), None),
+    ] {
+        let args = [
+            "handoff",
+            "--from",
+            &chat_id,
+            "--to",
+            "shell",
+            "--provider",
+            "claude",
+            "--json",
+        ];
+        let mut command = clean(&args);
+        if let Some((key, value)) = marker {
+            command.env(key, value);
+        }
+        let output = finish(command.spawn().unwrap(), &args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let target_id = reply["target"]["id"].as_str().unwrap();
+        let registry: Value =
+            serde_json::from_slice(&fs::read(home.0.join("sessions.json")).unwrap()).unwrap();
+        let target = registry["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == target_id)
+            .unwrap();
+        assert_eq!(target["parent_id"].as_str(), parent_id);
+        assert_eq!(target["user_opened"], marker.is_none());
+        let args = ["tabs", "list", "--project", &project, "--json"];
+        let output = finish(clean(&args).spawn().unwrap(), &args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let tabs: Value = serde_json::from_slice(&output.stdout).unwrap();
+        fn find<'a>(entries: &'a Value, key: &str) -> Option<&'a Value> {
+            entries.as_array()?.iter().find_map(|entry| {
+                if entry["key"] == key {
+                    Some(entry)
+                } else {
+                    find(&entry["children"], key)
+                }
+            })
+        }
+        let tab = find(&tabs["entries"], &format!("shell:{target_id}")).unwrap();
+        assert_eq!(tab["worker"], marker.is_some());
+        assert_eq!(tab["hidden"], marker.is_some());
+    }
+}
