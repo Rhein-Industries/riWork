@@ -206,10 +206,11 @@ also in focus mode. The sheet is a medium-height sheet with big rows and Create 
   four are always offered and a missing agent is reported after Create.
 - **Unrestricted.** A desktop that says `ready.features.shell_create_as_settings` decides itself whether a Codex, Claude or Grok
   terminal runs unrestricted, from its **Agent terminals run unrestricted** setting (on by default): the sheet then has no switch for
-  them and `shell.create` leaves `unrestricted` out, as the Mac's own New Tab menu does (one entry per agent, nothing that says
+  them and `shell.create` carries `"as_settings": true`, as the Mac's own New Tab menu does (one entry per agent, nothing that says
   unrestricted). With an older desktop the sheet keeps its toggle "Unrestricted: no approval prompts" for agents, **off every time** the
-  sheet opens and never remembered, and the phone sends `unrestricted` only when it is on (left out, that desktop starts the agent
-  restricted). A chat keeps its own toggle either way: it is the chat's Full mode, not the terminals' setting.
+  sheet opens and never remembered, and the phone sends `unrestricted` only when it is on and never `as_settings`. A request with
+  neither field is restricted on every desktop, so a phone from before this is unaffected. A chat keeps its own toggle either way: it is
+  the chat's Full mode, not the terminals' setting.
 - **Create** sends one `shell.create`, shows progress, and on success the sheet goes away and the new terminal is selected and opened
   like any tab. The app never sends it twice: a second tap or a held Return while it is on its way is
   ignored, and a lost answer (timeout, dropped link) is **not retried**: the sheet stays and says "the terminal may or may not have

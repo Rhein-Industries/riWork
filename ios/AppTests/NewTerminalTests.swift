@@ -612,7 +612,7 @@ actor SpawnTransport: RemoteTransport {
         sheet.create()
         await sheet.pending?.value
         let sent = await transport.params(of: "shell.create")
-        XCTAssertEqual(sent, [["kind": .string("claude"), "project_id": .string(project)]], "the Mac's Agent terminals run unrestricted decides")
+        XCTAssertEqual(sent, [["kind": .string("claude"), "project_id": .string(project), "as_settings": .bool(true)]], "the Mac's Agent terminals run unrestricted decides")
         await model.disconnect()
         // A desktop from before it: the switch is there, and on it is asked for.
         let older = try await connected()
@@ -624,6 +624,7 @@ actor SpawnTransport: RemoteTransport {
         await again.pending?.value
         let explicit = await older.transport.params(of: "shell.create")
         XCTAssertEqual(explicit.first?["unrestricted"], .bool(true))
+        XCTAssertNil(explicit.first?["as_settings"], "an older Mac is never sent the field")
         await older.model.disconnect()
     }
 }

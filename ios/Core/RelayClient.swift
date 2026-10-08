@@ -19,7 +19,7 @@ public enum RequestValidation {
         case "shell.keys": required = ["shell_id", "batch", "items"]; optional = []
         case "shell.resize": required = ["shell_id", "columns", "rows"]; optional = []
         case "shell.resize.clear": required = ["shell_id"]; optional = []
-        case "shell.create": required = ["kind"]; optional = ["project_id", "worktree_id", "unrestricted", "command"]
+        case "shell.create": required = ["kind"]; optional = ["project_id", "worktree_id", "unrestricted", "as_settings", "command"]
         case "shell.close": required = ["shell_id"]; optional = []
         case "project.create": required = ["name"]; optional = ["git"]
         case "orchestrator.create": required = []; optional = ["project_id"]

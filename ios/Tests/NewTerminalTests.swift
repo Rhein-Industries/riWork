@@ -466,7 +466,8 @@ final class NewTerminalTests: XCTestCase {
             XCTAssertEqual(form.fields, [.target, .kind, .create], "no switch: the Mac's Agent terminals run unrestricted decides")
             form.setUnrestricted(true)
             XCTAssertFalse(form.unrestricted)
-            XCTAssertEqual(try form.request().params, ["kind": .string(kind.rawValue), "project_id": .string(project)], "unrestricted is left out")
+            XCTAssertEqual(try form.request().params, ["kind": .string(kind.rawValue), "project_id": .string(project), "as_settings": .bool(true)],
+                           "the desktop is asked to decide; a request without either field stays restricted")
         }
         // A chat keeps its own: its Full mode is a choice of the chat, not the terminals' setting.
         form.select(kind: .chat)
@@ -477,7 +478,28 @@ final class NewTerminalTests: XCTestCase {
         // A desktop from before it: the switch is there, as it always was.
         var older = NewTerminalForm(targets: targets, kind: .claude, kinds: NewTerminalKind.allCases)
         XCTAssertTrue(older.offersUnrestricted)
+        XCTAssertEqual(try older.request().params, ["kind": .string("claude"), "project_id": .string(project)], "off: neither field, restricted")
         older.setUnrestricted(true)
         XCTAssertEqual(try older.request().params["unrestricted"], .bool(true))
+        XCTAssertNil(try older.request().params["as_settings"])
+        // A plain shell is never left to the Settings.
+        form.select(kind: .shell)
+        XCTAssertEqual(try form.request().params, ["kind": .string("shell"), "project_id": .string(project)])
+    }
+    func testAsSettingsIsForAnAgentAloneAndReadsBackThroughTheSameRules() throws {
+        let agent = try NewTerminalRequest(target: .project(project), kind: .grok, asSettings: true)
+        XCTAssertEqual(agent.params, ["kind": .string("grok"), "project_id": .string(project), "as_settings": .bool(true)])
+        XCTAssertEqual(try NewTerminalRequest(params: agent.params), agent)
+        XCTAssertNoThrow(try RequestValidation.validate(method: "shell.create", params: agent.params, id: "55555555-5555-4555-8555-555555555555"))
+        XCTAssertThrowsError(try NewTerminalRequest(target: .project(project), kind: .shell, asSettings: true)) { XCTAssertEqual($0 as? NewTerminalValidationError, .unrestrictedNeedsAgent) }
+        XCTAssertThrowsError(try NewTerminalRequest(target: .project(project), kind: .codex, unrestricted: true, asSettings: true)) {
+            XCTAssertEqual($0 as? NewTerminalValidationError, .unrestrictedOrAsSettings)
+        }
+        // As the desktop: either field, never both, even when one is false; and only a boolean.
+        let base: [String: JSONValue] = ["kind": .string("codex"), "project_id": .string(project)]
+        var both = base; both["unrestricted"] = .bool(false); both["as_settings"] = .bool(true)
+        XCTAssertThrowsError(try NewTerminalRequest(params: both)) { XCTAssertEqual($0 as? NewTerminalValidationError, .unrestrictedOrAsSettings) }
+        var odd = base; odd["as_settings"] = .string("yes")
+        XCTAssertThrowsError(try NewTerminalRequest(params: odd)) { XCTAssertEqual($0 as? NewTerminalValidationError, .malformed) }
     }
 }

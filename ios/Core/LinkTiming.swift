@@ -55,9 +55,9 @@ public struct DesktopFeatures: Sendable, Equatable {
     /// The desktop answers `orchestrator.create` (`features.orchestrator_create`), which opens the project's orchestrator or the global
     /// one, starting it if it is not there. Without it the phone does not offer to.
     public var orchestratorCreate = false
-    /// An agent `shell.create` that leaves `unrestricted` out starts as the Mac's **Agent terminals run unrestricted** setting says
-    /// (`features.shell_create_as_settings`). With it the phone offers no switch of its own for a terminal; without it, leaving the field
-    /// out means restricted, as before.
+    /// An agent `shell.create` with `"as_settings": true` starts as the Mac's **Agent terminals run unrestricted** setting says
+    /// (`features.shell_create_as_settings`). With it the phone offers no switch of its own for a terminal and sends that; without it, the
+    /// phone keeps its switch and sends `unrestricted` only when it is on.
     public var shellCreateAsSettings = false
     /// A chat can go on with the other provider in place (`switch`, `features.chat_provider_switch`).
     public var chatProviderSwitch = false

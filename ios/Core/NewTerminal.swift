@@ -135,7 +135,7 @@ public enum NewTerminalTargets {
 
 /// Why a request cannot be sent. Nothing has left the phone when one of these is thrown.
 public enum NewTerminalValidationError: Error, Equatable, Sendable, LocalizedError {
-    case needsOneTarget, invalidID, unknownKind, unrestrictedNeedsAgent, commandNeedsShell
+    case needsOneTarget, invalidID, unknownKind, unrestrictedNeedsAgent, unrestrictedOrAsSettings, commandNeedsShell
     case commandBlank, commandTooLong, commandHasControlCharacters, commandStartsWithDash, malformed
     public var errorDescription: String? {
         switch self {
@@ -143,6 +143,7 @@ public enum NewTerminalValidationError: Error, Equatable, Sendable, LocalizedErr
         case .invalidID: "The project or worktree is not a full UUID."
         case .unknownKind: "Choose Shell, Codex, Claude or Grok."
         case .unrestrictedNeedsAgent: "Only an agent can run unrestricted."
+        case .unrestrictedOrAsSettings: "Ask for unrestricted, or leave it to the Mac’s Settings, not both."
         case .commandNeedsShell: "A command can only start a plain shell."
         case .commandBlank: "Enter a command, or leave it empty."
         case .commandTooLong: "A command is at most \(NewTerminalRequest.commandByteLimit) bytes."
@@ -164,24 +165,27 @@ public struct NewTerminalRequest: Sendable, Equatable {
     public let target: Target
     public let kind: NewTerminalKind
     public let unrestricted: Bool
+    /// The desktop's **Agent terminals run unrestricted** decides (`as_settings`, with `features.shell_create_as_settings`); only for an
+    /// agent, and never together with `unrestricted`.
+    public let asSettings: Bool
     public let command: String?
 
-    public init(target: Target, kind: NewTerminalKind, unrestricted: Bool = false, command: String? = nil) throws {
+    public init(target: Target, kind: NewTerminalKind, unrestricted: Bool = false, asSettings: Bool = false, command: String? = nil) throws {
         switch target {
         case .project(let id), .worktree(let id): guard Self.isCanonicalUUID(id) else { throw NewTerminalValidationError.invalidID }
         }
         // A chat is made by `chat.create` and an orchestrator opened by `orchestrator.create`: `shell.create` has no such kind.
         if kind.isChat || kind.isOrchestrator { throw NewTerminalValidationError.unknownKind }
-        if unrestricted, !kind.isAgent { throw NewTerminalValidationError.unrestrictedNeedsAgent }
+        if unrestricted || asSettings, !kind.isAgent { throw NewTerminalValidationError.unrestrictedNeedsAgent }
+        if unrestricted, asSettings { throw NewTerminalValidationError.unrestrictedOrAsSettings }
         if let command {
             guard kind == .shell else { throw NewTerminalValidationError.commandNeedsShell }
             try Self.validate(command: command)
         }
-        self.target = target; self.kind = kind; self.unrestricted = unrestricted; self.command = command
+        self.target = target; self.kind = kind; self.unrestricted = unrestricted; self.asSettings = asSettings; self.command = command
     }
 
-    /// The wire parameters. `unrestricted` is sent only when it is on, so the default stays the desktop's: restricted on a desktop from before
-    /// `features.shell_create_as_settings`, its **Agent terminals run unrestricted** setting on one after.
+    /// The wire parameters. `unrestricted` is sent only when it is on (left out, restricted) and `as_settings` only when the desktop decides.
     public var params: [String: JSONValue] {
         var params: [String: JSONValue] = ["kind": .string(kind.rawValue)]
         switch target {
@@ -189,13 +193,16 @@ public struct NewTerminalRequest: Sendable, Equatable {
         case .worktree(let id): params["worktree_id"] = .string(id)
         }
         if unrestricted { params["unrestricted"] = .bool(true) }
+        if asSettings { params["as_settings"] = .bool(true) }
         if let command { params["command"] = .string(command) }
         return params
     }
 
     /// Reads wire parameters back through the same rules (the transport checks every request this way).
     public init(params: [String: JSONValue]) throws {
-        guard Set(params.keys).isSubset(of: ["project_id", "worktree_id", "kind", "unrestricted", "command"]) else { throw NewTerminalValidationError.malformed }
+        guard Set(params.keys).isSubset(of: ["project_id", "worktree_id", "kind", "unrestricted", "as_settings", "command"]) else { throw NewTerminalValidationError.malformed }
+        // As the desktop: one or the other, even when one of them is false.
+        if params["unrestricted"] != nil, params["as_settings"] != nil { throw NewTerminalValidationError.unrestrictedOrAsSettings }
         let target: Target
         switch (params["project_id"], params["worktree_id"]) {
         case (.string(let id)?, nil): target = .project(id)
@@ -204,17 +211,21 @@ public struct NewTerminalRequest: Sendable, Equatable {
         default: throw NewTerminalValidationError.invalidID
         }
         guard case .string(let name)? = params["kind"], let kind = NewTerminalKind(rawValue: name) else { throw NewTerminalValidationError.unknownKind }
-        var unrestricted = false
+        var unrestricted = false, asSettings = false
         if let value = params["unrestricted"] {
             guard case .bool(let flag) = value else { throw NewTerminalValidationError.malformed }
             unrestricted = flag
+        }
+        if let value = params["as_settings"] {
+            guard case .bool(let flag) = value else { throw NewTerminalValidationError.malformed }
+            asSettings = flag
         }
         var command: String?
         if let value = params["command"] {
             guard case .string(let text) = value else { throw NewTerminalValidationError.malformed }
             command = text
         }
-        try self.init(target: target, kind: kind, unrestricted: unrestricted, command: command)
+        try self.init(target: target, kind: kind, unrestricted: unrestricted, asSettings: asSettings, command: command)
     }
 
     static func isCanonicalUUID(_ value: String) -> Bool { value.utf8.count == 36 && UUID(uuidString: value)?.uuidString.lowercased() == value }
@@ -381,8 +392,8 @@ public struct NewTerminalForm: Equatable, Sendable {
     public var chatChoices: [ChatProvider: NewChatChoice] = [:]
     /// The provider of a new chat: the one whose model row is chosen (`NewChatChoice.swift`).
     public private(set) var chatProvider: ChatProvider
-    /// The desktop starts an agent terminal unrestricted or not as its own Settings say when the request leaves it out
-    /// (`features.shell_create_as_settings`): Codex, Claude and Grok then have no switch here. A chat keeps its own (Full mode).
+    /// The desktop starts an agent terminal unrestricted or not as its own Settings say when asked to (`as_settings`, with
+    /// `features.shell_create_as_settings`): Codex, Claude and Grok then have no switch here. A chat keeps its own (Full mode).
     public var agentsFollowDesktop = false
 
     public init(targets: [NewTerminalTarget], targetIndex: Int = 0, kind: NewTerminalKind = .standard, kinds: [NewTerminalKind] = NewTerminalKind.terminalKinds,
@@ -457,10 +468,11 @@ public struct NewTerminalForm: Equatable, Sendable {
     }
 
     /// The terminal request for what is chosen. Throws while there is no target, and for a chat kind (see `submission()`). Where the desktop
-    /// decides, `unrestricted` is left out of the request.
+    /// decides, an agent is asked for with `as_settings` (a request without either field stays restricted, as an older phone's always was).
     public func request() throws -> NewTerminalRequest {
         guard let target else { throw NewTerminalValidationError.needsOneTarget }
-        return try NewTerminalRequest(target: target.requestTarget, kind: kind, unrestricted: unrestricted && offersUnrestricted)
+        let byDesktop = agentsFollowDesktop && kind.isAgent && !kind.isChat
+        return try NewTerminalRequest(target: target.requestTarget, kind: kind, unrestricted: unrestricted && offersUnrestricted, asSettings: byDesktop)
     }
 
     /// What Create sends: `shell.create` for a terminal, `chat.create` for a chat, `orchestrator.create` for an orchestrator (the
