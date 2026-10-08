@@ -27,6 +27,7 @@ use tokio::{
 
 mod chat;
 mod orchestrator;
+mod tabs;
 mod upload;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -296,7 +297,7 @@ fn additive_shape_ok(field: &str, value: &Value) -> bool {
         // How a session runs. Only these two words are the phone's to act on.
         "mode" => matches!(value.as_str(), Some("terminal" | "chat")),
         "provider" => matches!(value.as_str(), Some("codex" | "claude")),
-        "chat_id" => value.as_str().is_some_and(|chat| uuid(chat).is_ok()),
+        "parent_id" | "chat_id" => value.as_str().is_some_and(|chat| uuid(chat).is_ok()),
         "subagent_kinds" => value.as_array().is_some_and(|kinds| {
             kinds.len() <= 8
                 && kinds.iter().all(|kind| {
@@ -334,6 +335,7 @@ const SESSION_FIELDS: &[&str] = &[
     "id",
     "project_id",
     "worktree_id",
+    "parent_id",
     "kind",
     "cwd",
     "harness",
@@ -1082,6 +1084,7 @@ pub struct Rpc {
     chat: AtomicBool,
     /// Whether the CLI said it can create orchestrators (see `orchestrator_create_supported`).
     orchestrator_create: AtomicBool,
+    tabs: AtomicBool,
     /// Held while the CLI is asked what it can do (`capability_known`), so that two askers at
     /// once run it once.
     asking_chat: tokio::sync::Mutex<()>,
@@ -1090,6 +1093,40 @@ pub struct Rpc {
     /// Files the phones sent (see `crate::upload`).
     uploads: Arc<crate::upload::Uploads>,
 }
+/// The store caps child depth at eight; tolerate older CLI trees beyond serde's
+/// default limit, while bounding recursion before parsing untrusted bytes.
+fn parse_tab_reply(data: &[u8]) -> std::result::Result<Value, Fault> {
+    let (mut depth, mut quoted, mut escaped) = (0u16, false, false);
+    for &byte in data {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+        } else {
+            match byte {
+                b'"' => quoted = true,
+                b'[' | b'{' => {
+                    depth += 1;
+                    if depth > 256 {
+                        return Err(Fault::new("cli_error", "tab reply exceeds nesting limit"));
+                    }
+                }
+                b']' | b'}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    let mut decoder = serde_json::Deserializer::from_slice(data);
+    decoder.disable_recursion_limit();
+    let value = Value::deserialize(&mut decoder).map_err(cli_fault)?;
+    decoder.end().map_err(cli_fault)?;
+    Ok(value)
+}
+
 impl Rpc {
     pub fn new(cli: PathBuf, storage: Storage) -> Self {
         Self {
@@ -1100,6 +1137,7 @@ impl Rpc {
             attach_exec: AtomicBool::new(false),
             chat: AtomicBool::new(false),
             orchestrator_create: AtomicBool::new(false),
+            tabs: AtomicBool::new(false),
             asking_chat: tokio::sync::Mutex::new(()),
             shell_paste: AtomicBool::new(false),
             uploads: Arc::new(crate::upload::Uploads::new(storage.dir.clone())),
@@ -1131,6 +1169,8 @@ impl Rpc {
     /// one encrypted frame holds; the reply itself is checked after.
     async fn raw_capped(&self, args: Vec<String>, limit: Duration, cap: usize) -> Result<Vec<u8>> {
         let mut child = Command::new(&self.cli)
+            .env_remove("RIWORK_CHAT_ID")
+            .env_remove("RIWORK_SHELL_ID")
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1191,6 +1231,7 @@ impl Rpc {
         limit: Duration,
         cap: usize,
     ) -> std::result::Result<Value, Fault> {
+        let tabs = a.first().is_some_and(|arg| arg == "tabs");
         a.push("--json".into());
         let data = self.raw_capped(a, limit, cap).await.map_err(|e| {
             if e.is::<OutputTooLarge>() {
@@ -1202,7 +1243,11 @@ impl Rpc {
                 cli_fault(e)
             }
         })?;
-        serde_json::from_slice(&data).map_err(cli_fault)
+        if tabs {
+            parse_tab_reply(&data)
+        } else {
+            serde_json::from_slice(&data).map_err(cli_fault)
+        }
     }
     /// The session `shell` among the project shells, and if it is not one of
     /// them, among the orchestrators. Ids are unique across both, so asking the
@@ -1793,6 +1838,7 @@ impl Rpc {
                 self.orchestrator_create(device, project).await
             }
             // Chats; see `chat`.
+            "tabs.list" | "tabs.update" | "tabs.open" => self.project_tabs(device, r).await,
             "chats.list" => {
                 let spec = chat::list_spec(&r.params)?;
                 self.chats_list(spec, reply_limit).await

@@ -38,6 +38,11 @@ extension RemoteModel {
         // A reconnect or another desktop in the meantime: the orchestrator exists, but this screen is no longer its.
         guard generation == token, state == .connected else { return nil }
         let entry = reply.session
+        if desktopFeatures.tabs, let project = projectID, entry.project_id == project {
+            let key = entry.mode == .chat ? "chat:\(entry.chat_id ?? entry.id)" : "shell:\(entry.id)"
+            do { try await unhideTab(key) } catch { return .failed(error.localizedDescription) }
+            guard generation == token, projectID == project, state == .connected else { return nil }
+        }
         if let index = orchestrators.firstIndex(where: { $0.id == entry.id }) { orchestrators[index] = entry } else { orchestrators.append(entry) }
         onOpened(entry)
         await openOrchestratorTab(entry)

@@ -794,6 +794,10 @@ impl HandoffDialog {
 /// before, with this in its place.
 fn placeholder_source() -> handoff::Source {
     handoff::Source::Chat(crate::chat::model::ChatInfo {
+        parent_id: None,
+        user_title: None,
+        first_user_message: None,
+
         id: String::new(),
         provider: crate::chat::model::Provider::Codex,
         project_id: None,

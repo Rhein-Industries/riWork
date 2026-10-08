@@ -48,6 +48,8 @@ public struct RemoteTask: Codable, Sendable, Identifiable, Hashable {
     public var statusLabel: String { switch status { case "in_progress": "In progress"; case "done": "Done"; default: "To do" } }
 }
 public struct RemoteSession: Codable, Sendable, Identifiable, Hashable {
+    public var parent_id: String? = nil
+    public var sharedTitle: String? = nil
     public let id: String
     public let project_id: String?
     public let worktree_id: String?
@@ -70,9 +72,10 @@ public struct RemoteSession: Codable, Sendable, Identifiable, Hashable {
     public let provider: ChatProvider?
     private enum CodingKeys: String, CodingKey {
         case id, project_id, worktree_id, kind, cwd, harness, alive, created_at_unix, activity, activity_since_unix, subagents_working
-        case mode, chat_id, provider
+        case mode, chat_id, provider, parent_id
     }
     public var title: String {
+        if let sharedTitle { return sharedTitle }
         if kind == "orchestrator" { return project_id == nil ? "Global orchestrator" : "Project orchestrator" }
         if mode == .chat { return provider?.chatTitle ?? "Chat" }
         return harness.map { $0.capitalized + " worker" } ?? "Terminal"
@@ -87,6 +90,7 @@ extension RemoteSession {
     /// As for `RemoteProject`: the entry's own fields are required as before, the activity fields are read leniently.
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        parent_id = try c.decodeIfPresent(String.self, forKey: .parent_id)
         id = try c.decode(String.self, forKey: .id)
         project_id = try c.decodeIfPresent(String.self, forKey: .project_id)
         worktree_id = try c.decodeIfPresent(String.self, forKey: .worktree_id)

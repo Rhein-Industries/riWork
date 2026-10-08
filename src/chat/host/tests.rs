@@ -850,6 +850,10 @@ fn a_chat_that_died_in_the_middle_of_a_turn_is_made_tidy_when_the_next_host_load
     fs::create_dir_all(&work).unwrap();
     let id = Uuid::new_v4().to_string();
     let info = ChatInfo {
+        parent_id: None,
+        user_title: None,
+        first_user_message: None,
+
         id: id.clone(),
         provider: Provider::Claude,
         project_id: None,
@@ -1219,6 +1223,8 @@ fn an_idle_host_exits_but_not_while_a_client_is_connected_or_a_chat_is_at_work()
     let mut busy = Client::connect(&socket).unwrap();
     let chat = busy
         .create(NewChat {
+            parent_id: None,
+
             provider: Provider::Codex,
             project_id: None,
             worktree_id: None,

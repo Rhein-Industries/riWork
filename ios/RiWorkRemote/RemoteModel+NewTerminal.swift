@@ -60,6 +60,8 @@ extension RemoteModel {
         if session.project_id == projectID {
             if let index = shells.firstIndex(where: { $0.id == session.id }) { shells[index] = session } else { shells.append(session) }
         }
+        if let project = projectID, let list = await sharedTabsOfProject(project), generation == token, projectID == project { acceptSharedTabs(list) }
+        guard generation == token, state == .connected else { return nil }
         onCreated(session)
         // Opened like any tab: selected, resized to the phone, then read.
         await chooseSession(session)

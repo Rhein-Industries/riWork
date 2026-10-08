@@ -12,6 +12,9 @@ public enum RequestValidation {
         case "projects.list", "orchestrators.list", "appearance.get": required = []; optional = []
         case "link.configure": required = []; optional = ["compression"]
         case "worktrees.list", "shells.list": required = ["project_id"]; optional = []
+        case "tabs.open": required = ["project_id", "key"]; optional = []
+        case "tabs.list": required = ["project_id"]; optional = []
+        case "tabs.update": required = ["project_id", "update"]; optional = []
         case "tasks.list": required = ["project_id"]; optional = ["worktree_id"]
         case "shell.output": required = ["shell_id"]; optional = ["lines", "styled", "if_changed", "wait_ms"]
         case "shell.history": required = ["shell_id", "end", "lines"]; optional = ["styled"]
@@ -36,6 +39,7 @@ public enum RequestValidation {
         let keys = Set(params.keys)
         guard required.isSubset(of: keys), keys.isSubset(of: required.union(optional)) else { throw RemoteError.protocolViolation("Invalid request parameters.") }
         for key in ["project_id", "worktree_id", "shell_id", "batch", "chat_id", "upload"] where params[key] != nil { try uuid(params[key]?.string) }
+        if method == "tabs.list" || method == "tabs.update" || method == "tabs.open" { try SharedTabsRequests.validate(method: method, params: params) }
         try UploadRequests.validate(method: method, params: params, uuid: uuid)
         if method == "shell.keys" {
             guard case .array(let raw)? = params["items"] else { throw RemoteError.protocolViolation("Missing key items.") }

@@ -163,8 +163,28 @@ pub enum OrchestratorRuns {
     Chat(Provider),
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TabCloseBehavior {
+    #[default]
+    Ask,
+    Detach,
+    Exit,
+}
+impl TabCloseBehavior {
+    pub const ALL: [Self; 3] = [Self::Ask, Self::Detach, Self::Exit];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ask => "Ask",
+            Self::Detach => "Detach",
+            Self::Exit => "Exit",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Settings {
+    pub tab_close_behavior: TabCloseBehavior,
     pub chat_display: crate::chat_view::DisplayMode,
     /// Conversation overrides; chat_display remains the default for untouched chats.
     pub chat_display_modes: BTreeMap<String, crate::chat_view::DisplayMode>,
@@ -234,6 +254,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             schema_version: 1,
+            tab_close_behavior: TabCloseBehavior::Ask,
             chat_display: Default::default(),
             chat_display_modes: BTreeMap::new(),
             theme: ThemeChoice::Ghostty,
@@ -266,6 +287,11 @@ impl<'de> Deserialize<'de> for Settings {
         let object = Map::<String, Value>::deserialize(deserializer)?;
         let defaults = Self::default();
         Ok(Self {
+            tab_close_behavior: lenient_field(
+                &object,
+                "tab_close_behavior",
+                defaults.tab_close_behavior,
+            ),
             chat_display: lenient_field(&object, "chat_display", defaults.chat_display),
             chat_display_modes: object
                 .get("chat_display_modes")
@@ -619,6 +645,7 @@ pub struct SettingsPanel {
     account_refresh_focus: FocusHandle,
     account_focus: BTreeMap<String, FocusHandle>,
     theme_focus: Vec<FocusHandle>,
+    close_focus: Vec<FocusHandle>,
     terminal_focus: FocusHandle,
     font_focus: FocusHandle,
     tab_icons_focus: FocusHandle,
@@ -1105,6 +1132,10 @@ impl SettingsPanel {
             account_focus: account_ids
                 .into_iter()
                 .map(|id| (id, cx.focus_handle()))
+                .collect(),
+            close_focus: TabCloseBehavior::ALL
+                .iter()
+                .map(|_| cx.focus_handle())
                 .collect(),
             theme_focus: ThemeChoice::ALL.iter().map(|_| cx.focus_handle()).collect(),
             terminal_focus: cx.focus_handle(),
@@ -2614,6 +2645,15 @@ impl SettingsPanel {
                 settings.panel_tab_icons,
                 cx,
             ))
+            .child(div().flex().flex_col().gap(ui_text::space(8.0))
+                .child("When closing a tab")
+                .child(gpui_kit::base::RadioGroup::new("tab-close-behavior").aria_label("When closing a tab")
+                    .children(TabCloseBehavior::ALL.into_iter().enumerate().map(|(index, choice)| {
+                        behavior::radio_content(("tab-close-choice", index), choice.label(), div().child(choice.label()), settings.tab_close_behavior == choice)
+                            .track_focus(&self.close_focus[index])
+                            .p(ui_text::space(6.0))
+                            .on_click(cx.listener(move |view, _, _, cx| { view.change(|settings| settings.tab_close_behavior = choice, cx); }))
+                    }))))
             .child(self.text_size_row(settings, cx))
             .into_any_element()
     }

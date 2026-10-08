@@ -85,6 +85,7 @@ fi
         fs::set_permissions(&tmux, fs::Permissions::from_mode(0o700)).unwrap();
         let fixture = Self {
             manager: SessionManager {
+                inherit_parent: false,
                 home,
                 tmux,
                 socket_name: "synthetic-only".into(),
@@ -137,10 +138,9 @@ fi
         for call in calls {
             let args: Vec<_> = call.split_whitespace().collect();
             assert!(
-                !args.iter().any(|arg| matches!(
-                    *arg,
-                    "-C" | "-CC" | "attach" | "attach-session"
-                )),
+                !args
+                    .iter()
+                    .any(|arg| matches!(*arg, "-C" | "-CC" | "attach" | "attach-session")),
                 "{call}"
             );
             assert!(
@@ -180,7 +180,8 @@ fn unchanged_long_read_polls_until_timeout_without_control_attempts() {
     let OutputRead::Unchanged {
         hash: returned,
         screen,
-    } = read else {
+    } = read
+    else {
         panic!("expected unchanged timeout");
     };
     assert_eq!(returned, hash);
@@ -218,7 +219,8 @@ fn changed_output_between_polls_ends_a_long_wait_without_control() {
     let OutputRead::Changed {
         capture,
         hash: later,
-    } = fixture.read(Some(&hash), MAX_OUTPUT_WAIT).unwrap() else {
+    } = fixture.read(Some(&hash), MAX_OUTPUT_WAIT).unwrap()
+    else {
         panic!("expected changed output");
     };
     assert_eq!(capture.output, "later\n\n");
@@ -251,7 +253,9 @@ fn concurrent_long_reads_and_cancelled_desktop_replacements_never_attach() {
             .map(|_| {
                 scope.spawn(|| {
                     assert!(matches!(
-                        fixture.read(Some(&hash), Duration::from_millis(300)).unwrap(),
+                        fixture
+                            .read(Some(&hash), Duration::from_millis(300))
+                            .unwrap(),
                         OutputRead::Unchanged { .. }
                     ));
                 })

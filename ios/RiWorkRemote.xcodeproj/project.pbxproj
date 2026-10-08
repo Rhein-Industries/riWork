@@ -141,6 +141,7 @@
 		AA031D1DBC995EBAB2332047 /* ChatComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F696D8F730D857189EAD5524 /* ChatComposer.swift */; };
 		AA7253DC3BF137E20AAB98C9 /* KeyboardFocus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B3E62D72202E3C603496113 /* KeyboardFocus.swift */; };
 		AAB78C11B324E9030255F435 /* RemoteModel+Keys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 107B39ECD7D0CFD8E3DD67D9 /* RemoteModel+Keys.swift */; };
+		AAD20D05256D983A7138C8ED /* SharedTabs.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8D908B81111C5AD8EF54523 /* SharedTabs.swift */; };
 		AB0C28B81511D5659102FDA5 /* ChatMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079625B2E2AB06E136218BBC /* ChatMarkdown.swift */; };
 		AD381640313766BCF28A4F03 /* TerminalDictation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00682FCE98709284A8147D26 /* TerminalDictation.swift */; };
 		AD4F608209AD4373B3F0EEEE /* counter-vectors.json in Resources */ = {isa = PBXBuildFile; fileRef = 0162C45E1C9E0E2E28D31FAF /* counter-vectors.json */; };
@@ -182,6 +183,7 @@
 		DC0D02BDAA0B813A5E81A425 /* ChatPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38133DE714F1BD5D89FD533F /* ChatPresentationTests.swift */; };
 		DC7D065240C442E41DEE5D3F /* HotkeyHelp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 987374D3F44B863275BDED01 /* HotkeyHelp.swift */; };
 		DE25162258E3F02C16084946 /* BackgroundGrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7231EC8A895FA1AB9C00B311 /* BackgroundGrace.swift */; };
+		DE40A3D1882E9F868EB777EF /* SharedTabsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79C8AEF6CA3476651243F203 /* SharedTabsTests.swift */; };
 		E041ABADFE1008753BBEB59C /* LinkSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41AFB702A8C15DAD98DBA71F /* LinkSettingsTests.swift */; };
 		E325D688981981A4EDC0EA4C /* NewOrchestrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BBCAD205DF587C0A3C68737 /* NewOrchestrator.swift */; };
 		E4746E70B45A51F157E8AB6F /* PrefetchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 098FBB085AB890EF187A398B /* PrefetchTests.swift */; };
@@ -386,6 +388,7 @@
 		7903F3C83C441EB1F6C2D2EC /* TabScreenChromeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabScreenChromeTests.swift; sourceTree = "<group>"; };
 		7911984A4E02BC0DB5363306 /* v1.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = v1.json; sourceTree = "<group>"; };
 		79A39F6778B08AB31AB8F4EB /* ChatStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStyle.swift; sourceTree = "<group>"; };
+		79C8AEF6CA3476651243F203 /* SharedTabsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedTabsTests.swift; sourceTree = "<group>"; };
 		7C08746383D30373A5163B50 /* TerminalCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalCache.swift; sourceTree = "<group>"; };
 		82C1D38C56FB48A3C3606317 /* KeyChordTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyChordTests.swift; sourceTree = "<group>"; };
 		8402BDD32DF243548C356628 /* ScrollBehaviorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollBehaviorTests.swift; sourceTree = "<group>"; };
@@ -415,6 +418,7 @@
 		A725B354FC3D45E2AF8FE8CD /* KeyboardFocusFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardFocusFlowTests.swift; sourceTree = "<group>"; };
 		A81A095D55516FEF25B74FE7 /* TerminalRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalRenderer.swift; sourceTree = "<group>"; };
 		A8955D7CEEB5ED7B59073518 /* TerminalText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalText.swift; sourceTree = "<group>"; };
+		A8D908B81111C5AD8EF54523 /* SharedTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedTabs.swift; sourceTree = "<group>"; };
 		AA1A81205CCE16E25ED3F501 /* HotkeyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyTests.swift; sourceTree = "<group>"; };
 		ACF98E9767A6CEA4494B73C1 /* HistoryPrefetch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryPrefetch.swift; sourceTree = "<group>"; };
 		ADCCA49C767C5985A947FCD0 /* LinkFrame.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkFrame.swift; sourceTree = "<group>"; };
@@ -606,6 +610,7 @@
 				4BF5AAB0E69708DB37D89E5A /* RelayClient.swift */,
 				B4D6C4FF97DAA3EE2C187D78 /* ScrollBehavior.swift */,
 				DBB58DE07D23757B5555005A /* SessionCrypto.swift */,
+				A8D908B81111C5AD8EF54523 /* SharedTabs.swift */,
 				014FE893E22A3438F7464EC0 /* SpeechVocabulary.swift */,
 				F50A3A2530BF4ED68C336A29 /* StyledScreen.swift */,
 				E0916469295AFF6DC8D82DAB /* TabScreenChrome.swift */,
@@ -674,6 +679,7 @@
 				6B8603308BE4E27381F99D23 /* RelayClientTests.swift */,
 				8402BDD32DF243548C356628 /* ScrollBehaviorTests.swift */,
 				001FA247070A682651C0F5E0 /* SGRTests.swift */,
+				79C8AEF6CA3476651243F203 /* SharedTabsTests.swift */,
 				D26A762F58B2703531A1E8CB /* SpeechVocabularyTests.swift */,
 				5AEC28965130AE2D7102BC19 /* StyledLineCacheTests.swift */,
 				D728F2D7B80D93B6A9D85DF5 /* StyledScreenTests.swift */,
@@ -1058,6 +1064,7 @@
 				3484AAEA162169159A022549 /* RelayClientTests.swift in Sources */,
 				78F7B6F691DEA3904E8F6EE0 /* SGRTests.swift in Sources */,
 				0D1018FCDAB06046FDF5E61A /* ScrollBehaviorTests.swift in Sources */,
+				DE40A3D1882E9F868EB777EF /* SharedTabsTests.swift in Sources */,
 				FF4360CDECBBD7F89ECBAA0E /* SpeechVocabularyTests.swift in Sources */,
 				223797DF5188B365B0635E31 /* StyledLineCacheTests.swift in Sources */,
 				98290989CA09F9AD3CE34C38 /* StyledScreenTests.swift in Sources */,
@@ -1117,6 +1124,7 @@
 				5E96AD9651A7BF0B4B2FDCBC /* RelayClient.swift in Sources */,
 				4DEC39A53302BC30D927E6FD /* ScrollBehavior.swift in Sources */,
 				36B32F622E0F89F229918BDA /* SessionCrypto.swift in Sources */,
+				AAD20D05256D983A7138C8ED /* SharedTabs.swift in Sources */,
 				258B6DD599D66E8ADCF25582 /* SpeechVocabulary.swift in Sources */,
 				F55E794DBA2716548B168D57 /* StyledScreen.swift in Sources */,
 				959AA965B913F6BCF401B549 /* TabScreenChrome.swift in Sources */,

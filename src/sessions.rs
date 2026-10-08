@@ -71,6 +71,11 @@ impl HarnessKind {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShellSession {
+    /// True for an explicit create; absent on older harness inventory.
+    #[serde(default)]
+    pub user_opened: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     pub id: String,
     pub project_id: Option<String>,
     pub worktree_id: Option<String>,
@@ -140,6 +145,7 @@ pub struct SessionManager {
     home: PathBuf,
     tmux: PathBuf,
     socket_name: String,
+    inherit_parent: bool,
 }
 
 impl SessionManager {
@@ -165,6 +171,7 @@ impl SessionManager {
             home,
             tmux,
             socket_name,
+            inherit_parent: true,
         })
     }
 
@@ -288,6 +295,11 @@ impl SessionManager {
         if let Err(error) = self.write_registry(&registry) {
             let _ = self.kill_tmux_session(&session.id);
             return Err(error);
+        }
+        if let Some(project) = &session.project_id {
+            if let Err(error) = crate::project_tabs::register_shell(&self.home, &session, project) {
+                eprintln!("riwork tabs: {error}");
+            }
         }
         Ok(session)
     }
@@ -426,6 +438,11 @@ impl SessionManager {
             return Err(error);
         }
         drop(lock);
+        if let Some(project) = &session.project_id {
+            if let Err(error) = crate::project_tabs::register_shell(&self.home, &session, project) {
+                eprintln!("riwork tabs: {error}");
+            }
+        }
         Ok(session)
     }
 
@@ -445,10 +462,16 @@ impl SessionManager {
         if self.is_alive(&existing.id)? {
             return Ok(());
         }
+        let id = existing.id.clone();
         registry
             .sessions
             .retain(|session| !matches_orchestrator_scope(session, project_id));
-        self.write_registry(&registry)
+        self.write_registry(&registry)?;
+        if let Some(project) = project_id {
+            crate::project_tabs::TabStore::at(&self.home, project)?
+                .forget(&format!("shell:{id}"))?;
+        }
+        Ok(())
     }
 
     pub fn orchestrator_get(&self) -> Result<Option<ShellSession>, String> {
@@ -712,6 +735,14 @@ impl SessionManager {
         pruned
     }
 
+    pub fn without_parent(&self) -> Self {
+        let mut manager = self.clone();
+        manager.inherit_parent = false;
+        manager
+    }
+    pub fn registered_sessions(&self) -> Result<Vec<ShellSession>, String> {
+        Ok(self.read_registry()?.sessions)
+    }
     pub fn get(&self, id: &str) -> Result<ShellSession, String> {
         validate_uuid(id)?;
         self.list_saved()?
@@ -1908,8 +1939,20 @@ impl SessionManager {
         if self.live_session_names()?.contains(id) {
             self.kill_tmux_session(id)?;
         }
+        let project = registry
+            .sessions
+            .iter()
+            .find(|session| session.id == id)
+            .and_then(|s| s.project_id.clone());
         registry.sessions.retain(|session| session.id != id);
         self.write_registry(&registry)?;
+        if let Some(project) = project {
+            if let Err(error) = crate::project_tabs::TabStore::at(&self.home, &project)
+                .and_then(|store| store.forget(&format!("shell:{id}")))
+            {
+                eprintln!("riwork tabs: {error}");
+            }
+        }
         // Files a phone sent to this shell (see `upload_inbox`) go with it.
         crate::upload_inbox::remove(&self.home, id);
         Ok(())
@@ -1944,6 +1987,11 @@ impl SessionManager {
         if let Err(error) = self.write_registry(&registry) {
             let _ = self.kill_tmux_session(&session.id);
             return Err(error);
+        }
+        if let Some(project) = &session.project_id {
+            if let Err(error) = crate::project_tabs::register_shell(&self.home, &session, project) {
+                eprintln!("riwork tabs: {error}");
+            }
         }
         Ok(session)
     }
@@ -2246,6 +2294,16 @@ impl SessionManager {
             .unwrap_or_default()
             .as_secs();
         Ok(ShellSession {
+            user_opened: true,
+            parent_id: (kind == ShellKind::Project && self.inherit_parent)
+                .then(|| {
+                    crate::project_tabs::same_project_parent(
+                        &self.home,
+                        project_id.as_deref(),
+                        crate::project_tabs::caller_parent(),
+                    )
+                })
+                .flatten(),
             id,
             project_id,
             worktree_id,
@@ -2633,6 +2691,7 @@ mod compat_tests {
                 home: self.0.clone(),
                 tmux: PathBuf::from("/unused/tmux"),
                 socket_name: "unused".into(),
+                inherit_parent: true,
             }
         }
 
@@ -5984,6 +6043,7 @@ mod tests {
             home: state.clone(),
             tmux: PathBuf::from("/unused/tmux"),
             socket_name: "unused".into(),
+            inherit_parent: true,
         };
         manager
             .write_registry(&Registry {
@@ -6069,6 +6129,7 @@ mod tests {
             home: state,
             tmux,
             socket_name: "isolated-plain".into(),
+            inherit_parent: true,
         };
         let shell = manager
             .new_tmux_session(
@@ -6123,6 +6184,7 @@ mod tests {
             home: state.to_owned(),
             tmux,
             socket_name: "isolated-launch".into(),
+            inherit_parent: true,
         };
         (manager, capture)
     }
@@ -6437,6 +6499,7 @@ mod tests {
             home: state,
             tmux,
             socket_name: "isolated-fake".into(),
+            inherit_parent: true,
         };
         let session = manager
             .new_tmux_session(
@@ -6487,6 +6550,7 @@ mod tests {
             home: state,
             tmux: PathBuf::from("/unused/tmux"),
             socket_name: "unused".into(),
+            inherit_parent: true,
         };
         let legacy = scope_session(ShellKind::Project, None);
         manager
@@ -6516,6 +6580,7 @@ mod tests {
             home: fixture.0.clone(),
             tmux: PathBuf::from("/unused/tmux"),
             socket_name: "unused".into(),
+            inherit_parent: true,
         };
         let session = scope_session(ShellKind::Project, None);
         manager

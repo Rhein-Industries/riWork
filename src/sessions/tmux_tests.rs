@@ -16,6 +16,7 @@ impl Fixture {
         let root = root.canonicalize().unwrap();
         Self {
             manager: SessionManager {
+                inherit_parent: false,
                 home: root.clone(),
                 tmux: tmux(&root),
                 socket_name: format!("riwork-test-{}", &Uuid::new_v4().simple().to_string()[..12]),
@@ -1476,6 +1477,7 @@ fn unknown_and_exited_shells_are_not_found_and_bad_ids_are_invalid() {
     let broken = fixture.root.join("broken-tmux");
     Fixture::script(&broken, "echo 'protocol error' >&2; exit 1");
     let manager = SessionManager {
+        inherit_parent: false,
         home: fixture.root.clone(),
         tmux: broken,
         socket_name: fixture.manager.socket_name.clone(),
@@ -1523,6 +1525,7 @@ fn a_wedged_tmux_fails_a_batch_within_the_bound() {
         ),
     );
     let manager = SessionManager {
+        inherit_parent: false,
         home: fixture.root.clone(),
         tmux: wedged,
         socket_name: fixture.manager.socket_name.clone(),
@@ -1650,6 +1653,7 @@ fn capture_screen_falls_back_to_a_plain_capture_when_the_report_fails() {
         ),
     );
     let manager = SessionManager {
+        inherit_parent: false,
         home: fixture.root.clone(),
         tmux: picky,
         socket_name: fixture.manager.socket_name.clone(),
@@ -1972,6 +1976,7 @@ fn styled_capture_falls_back_to_a_filtered_plain_capture_when_the_report_fails()
         ),
     );
     let manager = SessionManager {
+        inherit_parent: false,
         home: fixture.root.clone(),
         tmux: picky,
         socket_name: fixture.manager.socket_name.clone(),

@@ -15,6 +15,12 @@ struct DisplaySettingsSheet: View {
         VStack(spacing: 0) {
             WorkspaceBar(title: style.cased("Display")) { Button("Done") { dismiss() } }
             List {
+                Section("Tabs") {
+                    Picker("When closing a tab", selection: $model.tabCloseBehavior) {
+                        ForEach(TabCloseBehavior.allCases) { Text($0.title).tag($0) }
+                    }
+                }
+
                 Section {
                     row(title: "Interface size", value: "\(InterfaceScale.percent(draftScale))%") {
                         stepButton("Smaller interface", "minus", disabled: draftScale <= InterfaceScale.range.lowerBound) { commit(InterfaceScale.stepped(draftScale, by: -1)) }

@@ -245,6 +245,8 @@ pub fn deliver_new(
     let chat = match client.create_identified(
         &chat_id,
         chat::model::NewChat {
+            parent_id: None,
+
             provider: fresh.provider,
             project_id: Some(project_id.clone()),
             worktree_id: None,

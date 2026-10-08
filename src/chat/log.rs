@@ -195,6 +195,40 @@ pub fn read_infos(home: &Path) -> Vec<ChatInfo> {
     infos
 }
 
+/// Missing history is empty; unreadable history is unknown, never authoritative.
+pub fn read_infos_checked(home: &Path) -> Result<Vec<ChatInfo>, String> {
+    let entries = match fs::read_dir(chats_dir(home)) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut infos = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(dir) = chat_dir(home, &name) else {
+            continue;
+        };
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            continue;
+        }
+        let text = fs::read_to_string(dir.join(INFO)).map_err(|e| e.to_string())?;
+        let mut info: ChatInfo = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        if info.id != name {
+            return Err("chat metadata identity mismatch".into());
+        }
+        if !matches!(
+            info.state,
+            super::model::ChatState::Stopped | super::model::ChatState::Failed { .. }
+        ) {
+            info.state = super::model::ChatState::Stopped;
+        }
+        infos.push(info);
+    }
+    infos.sort_by(|a, b| (a.created_at_unix, &a.id).cmp(&(b.created_at_unix, &b.id)));
+    Ok(infos)
+}
+
 /// The transcript the log of chat `id` builds, read from the end of the file.
 pub fn read_transcript(home: &Path, id: &str) -> Result<super::model::Transcript, String> {
     let dir = chat_dir(home, id).ok_or("invalid chat id")?;
@@ -559,6 +593,9 @@ mod tests {
 
     fn info(dir: &Path) -> ChatInfo {
         ChatInfo {
+            parent_id: None,
+            user_title: None,
+            first_user_message: None,
             id: Uuid::new_v4().to_string(),
             provider: Provider::Codex,
             project_id: None,

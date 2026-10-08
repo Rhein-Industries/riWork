@@ -1,3 +1,4 @@
+import OSLog
 import Foundation
 import Observation
 import UIKit
@@ -26,6 +27,13 @@ enum ConnectionState: Equatable {
     /// desktop has a figure of its own, so a new project is not sorted behind the ones with activity (see `ProjectSorting.sorted`).
     var touchedProjects: [String: UInt64] = [:]
     var worktrees: [RemoteWorktree] = []
+    var openedChildViews: Set<String> = []
+    var sharedTabs: SharedTabsReply?
+    var tabCloseBehavior = TabCloseBehavior(rawValue: UserDefaults.standard.string(forKey: TabCloseBehavior.settingKey) ?? "ask") ?? .ask {
+        didSet { UserDefaults.standard.set(tabCloseBehavior.rawValue, forKey: TabCloseBehavior.settingKey) }
+    }
+    var hiddenTabs: [SharedTab] { sharedTabs?.allEntries.filter { $0.hidden && !($0.kind == .shell && $0.status == .stopped) } ?? [] }
+
     var shells: [RemoteSession] = []
     var orchestrators: [RemoteSession] = []
     var output = "" { didSet { hasOutput = !output.isEmpty } }
@@ -374,7 +382,12 @@ enum ConnectionState: Equatable {
         }
     }
     /// The terminal tabs: what runs in a terminal and is alive. An entry the desktop runs as a chat is never one, whatever it says it is.
-    var openSessions: [RemoteSession] { sessions.filter { $0.mode != .chat && $0.alive && !missingSessionIDs.contains($0.id) } }
+    var openSessions: [RemoteSession] {
+        if let sharedTabs {
+            return sharedTabs.allEntries.filter { $0.kind == .shell && !$0.hidden }.compactMap { entry in sessions.first { $0.id == entry.sessionID && $0.mode != .chat && $0.alive && !missingSessionIDs.contains($0.id) } } + sessions.filter { $0.kind == "orchestrator" && $0.project_id == nil && $0.mode != .chat && $0.alive && !missingSessionIDs.contains($0.id) }
+        }
+        return sessions.filter { $0.mode != .chat && $0.alive && !missingSessionIDs.contains($0.id) }
+    }
     var viewportReady: Bool { !terminalVisible || (viewportSessionID == sessionID && appliedViewport == terminalViewport && terminalViewport != nil) }
     // Keep focus/keyboard stable while fitting the terminal. Submission still waits for its grid.
     var canEditDraft: Bool { state == .connected && session?.alive == true && !missingSessionIDs.contains(sessionID ?? "") && !sending && pendingInput == nil }
@@ -525,6 +538,7 @@ enum ConnectionState: Equatable {
         // The new connection may leave on another link: its speed and round trip are measured again (what the desktop and its history
         // are like is not about the link, and is kept).
         linkMeter.pathChanged(); settleUntil = nil
+        sharedTabs = nil
         desktopFeatures = DesktopFeatures(); compressionAgreed = false; historyLineLimit = HistoryLimits.legacyMaximumPageLines
         linkWatcher?.start()
         // The same for its colors, and the last palette for this desktop is on screen while the first fetch is on its way.
@@ -592,6 +606,7 @@ enum ConnectionState: Equatable {
         if wantsConnection, state == .suspended { await connect() }
     }
     private func clearSnapshot() {
+        sharedTabs = nil; openedChildViews = []
         projects = []; touchedProjects = [:]; worktrees = []; shells = []; orchestrators = []; loadedProjectID = nil; resetOutput(); snapshotStale = true
         chats = []; selectedChatID = nil; selectedBlockedID = nil; chatConversations = [:]
         clearOrchestratorNotice()
@@ -646,6 +661,7 @@ enum ConnectionState: Equatable {
         do {
             if state == .connected { try? await synchronizeViewport(token: generation, forceRelease: true) }
             if projectID != id {
+                openedChildViews = []
                 try updateDesktop {
                     if let previousProject = $0.selectedProjectID, let previousSession = $0.selectedSessionID {
                         var selections = $0.projectSessionIDs ?? [:]; selections[previousProject] = previousSession; $0.projectSessionIDs = selections
@@ -655,7 +671,7 @@ enum ConnectionState: Equatable {
                 }
             }
             resetOutput(); draft = ""; deliveryNotice = nil
-            worktrees = []; shells = []; loadedProjectID = nil; snapshotStale = true
+            sharedTabs = nil; worktrees = []; shells = []; loadedProjectID = nil; snapshotStale = true
             chats = []; selectedChatID = nil; selectedBlockedID = nil
             clearOrchestratorNotice()
             if state == .connected {
@@ -667,7 +683,7 @@ enum ConnectionState: Equatable {
     private func loadProject(_ id: String, token: UUID) async throws {
         try await install(try await fetchProject(id), project: id, token: token)
     }
-    private typealias ProjectListing = (worktrees: [RemoteWorktree], shells: [RemoteSession], chats: [ChatInfo]?)
+    private typealias ProjectListing = (worktrees: [RemoteWorktree], shells: [RemoteSession], chats: [ChatInfo]?, tabs: SharedTabsReply?)
     private func fetchProject(ifChosen id: String?) async throws -> ProjectListing? {
         guard let id else { return nil }
         return try await fetchProject(id)
@@ -678,11 +694,13 @@ enum ConnectionState: Equatable {
         async let trees = rpc("worktrees.list", params)
         async let workers = rpc("shells.list", params)
         // The desktop's chats come with them, when it has any; a chat list that cannot be read never fails the project.
+        async let tabs = sharedTabsOfProject(id)
         async let talks = chatsOfProject(id)
-        return (try await trees["worktrees"].decode([RemoteWorktree].self), try await workers["shells"].decode([RemoteSession].self), await talks)
+        return (try await trees["worktrees"].decode([RemoteWorktree].self), try await workers["shells"].decode([RemoteSession].self), await talks, await tabs)
     }
     private func install(_ listing: ProjectListing, project id: String, token: UUID) async throws {
         guard generation == token, projectID == id else { return }
+        if let tabs = listing.tabs { acceptSharedTabs(tabs) }
         worktrees = listing.worktrees; shells = listing.shells; loadedProjectID = id
         lastListRead[.sessions] = .now
         if let talks = listing.chats { installChats(talks, project: id) }
@@ -1032,4 +1050,85 @@ enum ConnectionState: Equatable {
 
 extension Duration {
     var timeInterval: TimeInterval { Double(components.seconds) + Double(components.attoseconds) / 1e18 }
+}
+
+// Shared tab plumbing for the phone strip. Every method returns the authoritative
+// list; there is no optimistic hiding and no session stop/delete side effect.
+extension RemoteModel {
+    func acceptSharedTabs(_ reply: SharedTabsReply) {
+        if let current = sharedTabs?.revision, (reply.revision ?? 0) < current { return }
+        sharedTabs = reply
+        let available = Set(reply.allEntries.filter { !$0.hidden && $0.parent != nil }.map(\.key))
+        openedChildViews.formIntersection(available)
+    }
+    func sharedTabsOfProject(_ project: String) async -> SharedTabsReply? {
+        guard desktopFeatures.tabs else { return nil }
+        do { return try await rpc("tabs.list", ["project_id": .string(project)]).decode(SharedTabsReply.self) }
+        catch { Logger(subsystem: "com.riwork.remote", category: "tabs").error("Shared tabs read failed: \(error.localizedDescription, privacy: .public)"); return nil }
+    }
+    func listTabs() async throws {
+        guard desktopFeatures.tabs else { throw ChatValidationError.malformed }
+        guard let project = projectID else { return }
+        let token = generation
+        let reply = try await rpc("tabs.list", ["project_id": .string(project)]).decode(SharedTabsReply.self)
+        guard generation == token, projectID == project else { return }
+        acceptSharedTabs(reply)
+        reconcileChatSelection()
+        try reconcileSelectedSession()
+    }
+    func updateTabs(_ update: TabUpdate) async throws {
+        guard desktopFeatures.tabs else { throw ChatValidationError.malformed }
+        guard let project = projectID else { return }
+        let token = generation
+        let reply = try await rpc("tabs.update", ["project_id": .string(project), "update": update.json]).decode(SharedTabsReply.self)
+        guard generation == token, projectID == project else { return }
+        acceptSharedTabs(reply)
+        reconcileChatSelection()
+        try reconcileSelectedSession()
+    }
+    /// Opens a child view locally, without promoting it into the shared strip.
+    func openChildTab(_ key: String) async throws {
+        guard let entry = sharedTabs?.allEntries.first(where: { $0.key == key }) else { throw ChatValidationError.invalidID }
+        let token = generation, project = projectID
+        if entry.hidden { try await unhideTab(key) }
+        guard generation == token, projectID == project else { return }
+        openedChildViews.insert(key)
+        switch entry.kind {
+        case .chat: selectChat(entry.sessionID)
+        case .shell: if let shell = sessions.first(where: { $0.id == entry.sessionID && $0.alive }) { await chooseSession(shell) }
+        case .unknown: break
+        }
+    }
+    /// Explicit open changes shared visibility, then selects only on this device.
+    func openTab(_ key: String) async throws {
+        guard desktopFeatures.tabs, let project = projectID else { throw ChatValidationError.malformed }
+        let token = generation
+        let reply = try await rpc("tabs.open", ["project_id": .string(project), "key": .string(key)]).decode(SharedTabsReply.self)
+        guard generation == token, projectID == project else { return }
+        acceptSharedTabs(reply)
+        guard let entry = reply.allEntries.first(where: { $0.key == key }) else { throw ChatValidationError.invalidID }
+        if entry.kind == .chat { selectChat(entry.sessionID) }
+        else if let shell = sessions.first(where: { $0.id == entry.sessionID && $0.alive }) { await chooseSession(shell) }
+    }
+    /// Ask is returned to the UI without a mutation. The sheet supplies an explicit choice.
+    @discardableResult func closeTab(_ key: String, choice: TabCloseBehavior? = nil) async throws -> Bool {
+        guard desktopFeatures.tabs, let entry = sharedTabs?.allEntries.first(where: { $0.key == key }) else { throw ChatValidationError.invalidID }
+        let effective = (choice ?? tabCloseBehavior).effectiveChoice(for: entry)
+        guard effective != .ask else { return false }
+        try await hideTab(key)
+        if effective == .exit {
+            if entry.kind == .chat { if let failure = await sendChatCommand(entry.sessionID, .stop) { throw NSError(domain: "RiWorkTabs", code: 1, userInfo: [NSLocalizedDescriptionKey: failure.message]) } }
+            else if entry.kind == .shell, let shell = sessions.first(where: { $0.id == entry.sessionID }) {
+                if let failure = await closeTerminal(shell) { throw NSError(domain: "RiWorkTabs", code: 1, userInfo: [NSLocalizedDescriptionKey: failure.message]) }
+            }
+        }
+        return true
+    }
+    func closeChildView(_ key: String) async throws { try await hideTab(key); openedChildViews.remove(key); reconcileChatSelection(); try reconcileSelectedSession() }
+    func pinTab(_ key: String) async throws { try await updateTabs(.pin(key)) }
+    func unpinTab(_ key: String) async throws { try await updateTabs(.unpin(key)) }
+    func hideTab(_ key: String) async throws { try await updateTabs(.hide(key)) }
+    func unhideTab(_ key: String) async throws { try await updateTabs(.unhide(key)) }
+    func moveTab(_ key: String, before: String?) async throws { try await updateTabs(.move(key, before: before)) }
+    func renameTab(_ key: String, title: String) async throws { try await updateTabs(.rename(key, title: title)) }
 }

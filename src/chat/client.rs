@@ -363,6 +363,9 @@ mod tests {
         let socket = dir.join("c.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let info = ChatInfo {
+            parent_id: None,
+            user_title: None,
+            first_user_message: None,
             id: "chat-1".into(),
             provider: Provider::Codex,
             project_id: None,
@@ -413,6 +416,7 @@ mod tests {
         let mut client = Client::connect(&socket).unwrap();
         let created = client
             .create(NewChat {
+                parent_id: None,
                 provider: Provider::Codex,
                 project_id: None,
                 worktree_id: None,
