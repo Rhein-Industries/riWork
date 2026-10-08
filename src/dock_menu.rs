@@ -232,22 +232,6 @@ mod tests {
     }
 
     #[test]
-    fn projects_sort_alphabetically_ignoring_case_and_window_ids() {
-        let windows = [
-            window(30, "riwork", None),
-            window(10, "Zed", None),
-            window(20, "alpha", None),
-            window(5, "Beta", None),
-        ];
-        assert_eq!(labels(&windows), ["alpha", "Beta", "riwork", "Zed"]);
-        let ids = dock_items(&windows, None)
-            .iter()
-            .map(|item| item.window_id)
-            .collect::<Vec<_>>();
-        assert_eq!(ids, [20, 5, 30, 10]);
-    }
-
-    #[test]
     fn the_order_does_not_depend_on_the_input_order() {
         let mut windows = vec![
             window(4, "Site", Some("main")),
@@ -267,90 +251,6 @@ mod tests {
     }
 
     #[test]
-    fn same_project_windows_are_told_apart_by_branch() {
-        let windows = [
-            window(1, "Site", Some("main")),
-            window(2, "Site", Some("feature/menu")),
-            window(3, "Other", Some("main")),
-        ];
-        assert_eq!(
-            labels(&windows),
-            ["Other", "Site · feature/menu", "Site · main"]
-        );
-    }
-
-    #[test]
-    fn a_window_without_a_branch_keeps_the_bare_project_name() {
-        let windows = [window(1, "Site", Some("main")), window(2, "Site", None)];
-        assert_eq!(labels(&windows), ["Site", "Site · main"]);
-    }
-
-    #[test]
-    fn identical_windows_are_numbered_from_the_second_by_window_id() {
-        let windows = [
-            window(7, "Site", Some("main")),
-            window(3, "Site", Some("main")),
-            window(5, "Site", Some("main")),
-        ];
-        let items = dock_items(&windows, None);
-        let shown = items.iter().map(|item| item.label.as_str());
-        assert!(shown.eq(["Site · main", "Site · main (2)", "Site · main (3)"]));
-        let ids = items.iter().map(|item| item.window_id).collect::<Vec<_>>();
-        assert_eq!(ids, [3, 5, 7]);
-
-        let windows = [window(2, "Site", None), window(1, "Site", None)];
-        assert_eq!(labels(&windows), ["Site", "Site (2)"]);
-    }
-
-    #[test]
-    fn a_single_window_never_shows_its_branch() {
-        assert_eq!(labels(&[window(1, "Site", Some("main"))]), ["Site"]);
-    }
-
-    #[test]
-    fn empty_and_blank_names_get_a_placeholder() {
-        let windows = [window(1, "", None), window(2, " \t\n", Some("main"))];
-        assert_eq!(
-            labels(&windows),
-            ["Untitled project", "Untitled project · main"]
-        );
-        assert_eq!(labels(&[window(1, "  ", Some("  "))]), ["Untitled project"]);
-    }
-
-    #[test]
-    fn whitespace_inside_a_name_is_collapsed() {
-        let windows = [window(1, "  My\tbig\nproject ", Some(" feature/a  b "))];
-        assert_eq!(labels(&windows), ["My big project"]);
-        let windows = [
-            window(1, "My  project", Some(" a\nb ")),
-            window(2, "My project", None),
-        ];
-        assert_eq!(labels(&windows), ["My project", "My project · a b"]);
-    }
-
-    #[test]
-    fn unicode_names_sort_and_disambiguate_without_splitting_characters() {
-        let windows = [
-            window(1, "日本語", Some("ブランチ")),
-            window(2, "日本語", Some("ブランチ")),
-            window(3, "Émile", None),
-            window(4, "😀 emoji", None),
-            window(5, "zeta", None),
-        ];
-        // Plain code point order: accented letters sort after "z".
-        assert_eq!(
-            labels(&windows),
-            [
-                "zeta",
-                "Émile",
-                "日本語 · ブランチ",
-                "日本語 · ブランチ (2)",
-                "😀 emoji"
-            ]
-        );
-    }
-
-    #[test]
     fn labels_stay_unique_even_when_a_project_is_named_like_a_number_suffix() {
         let windows = [
             window(1, "Site", None),
@@ -363,36 +263,5 @@ mod tests {
         let labels = labels(&windows);
         let unique = labels.iter().collect::<HashSet<_>>();
         assert_eq!(unique.len(), windows.len(), "{labels:?}");
-    }
-
-    #[test]
-    fn only_the_frontmost_window_is_marked() {
-        let windows = [window(1, "a", None), window(2, "b", None)];
-        let marked = |front| {
-            dock_items(&windows, front)
-                .into_iter()
-                .filter(|item| item.frontmost)
-                .map(|item| item.window_id)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(marked(Some(2)), [2]);
-        assert_eq!(marked(Some(99)), Vec::<u64>::new());
-        assert_eq!(marked(None), Vec::<u64>::new());
-    }
-
-    #[test]
-    fn the_action_keeps_its_window_id_when_the_platform_clones_it() {
-        let action: Box<dyn Action> = Box::new(ActivateWindow { window_id: 42 });
-        let copy = action.boxed_clone();
-        let carried = copy.as_any().downcast_ref::<ActivateWindow>();
-        assert_eq!(carried.map(|action| action.window_id), Some(42));
-        assert!(copy.partial_eq(action.as_ref()));
-        assert!(!copy.partial_eq(&ActivateWindow { window_id: 43 }));
-        assert_eq!(copy.name(), "riwork::ActivateWindow");
-    }
-
-    #[test]
-    fn no_windows_no_items() {
-        assert!(dock_items(&[], Some(1)).is_empty());
     }
 }

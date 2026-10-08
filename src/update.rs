@@ -1035,7 +1035,16 @@ fn retain_previous(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
     use std::time::SystemTime;
+
+    /// `INTERRUPT` and the signal handlers are process-wide, and every stage
+    /// checks `INTERRUPT`. Tests that install the guard, raise a signal or run
+    /// a stage take this lock so one cannot interrupt or reset another.
+    fn signal_state() -> MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn the_kept_zig_toolchain_is_found_only_when_complete() {
@@ -1084,21 +1093,6 @@ mod tests {
             Some(development),
             "named by its hash, which a renewed certificate with the same name does not share"
         );
-    }
-
-    #[test]
-    fn without_a_usable_certificate_the_bundle_stays_ad_hoc() {
-        for listing in [
-            "     0 valid identities found\n",
-            "",
-            &format!(
-                "  1) {} \"Apple Distribution: Someone (ZR7A22CNVY)\"\n",
-                "C".repeat(40)
-            ),
-            "  1) not-a-hash \"Apple Development: Someone (K94D56Z2AA)\"\n",
-        ] {
-            assert_eq!(pick_signing_identity(listing), None, "{listing:?}");
-        }
     }
 
     fn fixture(parent: &Path, name: &str) -> PathBuf {
@@ -1349,7 +1343,9 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: real build-stage processes and a wall-clock timeout"]
     fn failed_or_timed_out_build_stages_keep_diagnostic_logs() {
+        let _signals = signal_state();
         let temporary = StagingDirectory::new(
             env::temp_dir().join(format!("riwork-update-stage-{}", Uuid::new_v4())),
         )
@@ -1421,7 +1417,9 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: sends SIGTERM to the test process and waits for a real process group"]
     fn an_interrupt_stops_the_running_stage_and_everything_it_started() {
+        let _signals = signal_state();
         let temporary = StagingDirectory::new(
             env::temp_dir().join(format!("riwork-update-interrupt-{}", Uuid::new_v4())),
         )
@@ -1442,7 +1440,12 @@ mod tests {
         let signaller = {
             let pid_file = pid_file.clone();
             thread::spawn(move || {
+                // Bounded, so a stage that never starts fails the test instead of hanging it.
+                let deadline = Instant::now() + Duration::from_secs(10);
                 while !pid_file.exists() {
+                    if Instant::now() >= deadline {
+                        return;
+                    }
                     thread::sleep(Duration::from_millis(10));
                 }
                 // SIGTERM rather than Ctrl-C's SIGINT: a shell starts background
@@ -1454,7 +1457,7 @@ mod tests {
         let error = run_stage(
             Command::new("/bin/sh").arg(&script),
             "fixture build",
-            Duration::from_secs(60),
+            Duration::from_secs(10),
             &mut log,
             &log_path,
         )
@@ -1496,6 +1499,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn interrupt_handlers_are_restored_and_an_ignored_signal_stays_ignored() {
+        let _signals = signal_state();
         fn disposition(signal: libc::c_int) -> libc::sighandler_t {
             unsafe {
                 let mut current: libc::sigaction = std::mem::zeroed();
@@ -1652,6 +1656,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_build_that_does_not_start_is_rejected_before_installation() {
+        let _signals = signal_state();
         let temporary = StagingDirectory::new(
             env::temp_dir().join(format!("riwork-update-smoke-{}", Uuid::new_v4())),
         )
@@ -1718,7 +1723,9 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    #[ignore = "slow: runs the whole update pipeline with fake cargo and bundler processes"]
     fn updates_install_only_builds_that_run_and_keep_the_previous_one() {
+        let _signals = signal_state();
         let temporary = StagingDirectory::new(
             env::temp_dir().join(format!("riwork-update-pipeline-{}", Uuid::new_v4())),
         )

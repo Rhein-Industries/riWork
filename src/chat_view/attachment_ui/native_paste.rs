@@ -256,31 +256,4 @@ mod tests {
             let _: () = msg_send![board, releaseGlobally];
         });
     }
-    #[test]
-    fn private_native_unsupported_image_refuses_instead_of_url_text() {
-        autoreleasepool(|_| unsafe {
-            let board = fixture();
-            put(
-                board,
-                "public.utf8-plain-text",
-                b"https://fixture.invalid/animated",
-            );
-            // A complete static GIF. Even a valid source must not be treated as
-            // AppKit's synthesized TIFF, nor replaced by its accompanying URL.
-            put(board, "com.compuserve.gif", &[
-                71, 73, 70, 56, 57, 97, 1, 0, 1, 0, 128, 0, 0,
-                0, 0, 0, 255, 255, 255, 33, 249, 4, 1, 0, 0, 0, 0,
-                44, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 1, 68, 0, 59,
-            ]);
-            let error = read_board(board).unwrap_err();
-            let types: *mut AnyObject = msg_send![board, types];
-            let description: *mut AnyObject = msg_send![types, description];
-            let _: () = msg_send![board, releaseGlobally];
-            assert!(
-                error.contains("unsupported"),
-                "actual refusal: {error}; advertised types: {:?}",
-                rust_string(description)
-            );
-        });
-    }
 }

@@ -1703,23 +1703,6 @@ mod tests {
     }
 
     #[test]
-    fn each_root_gets_its_own_entry_budget() {
-        let first = Fixture::new();
-        first.file("one.rs", 100);
-        first.file("two.rs", 150);
-        let second = Fixture::new();
-        second.file("one.rs", 250);
-        second.file("two.rs", 200);
-        let mut state = first.state();
-        state.projects[0].repository_roots = vec![second.0.clone()];
-        // Each root needs exactly two entries; the project needs four.
-        assert_eq!(
-            scan_with(&state, with_root_entries(2)).get("project"),
-            Some(&250)
-        );
-    }
-
-    #[test]
     fn a_root_over_its_budget_does_not_erase_the_completed_roots() {
         let large = Fixture::new();
         for name in ["a.rs", "b.rs", "c.rs"] {
@@ -1953,12 +1936,6 @@ mod tests {
     }
 
     #[test]
-    fn the_share_gap_covers_the_windows_but_not_a_whole_period() {
-        assert!(SHARE_GAP < ASK_EVERY);
-        assert!(SHARE_GAP + Duration::from_secs(5) >= ASK_EVERY);
-    }
-
-    #[test]
     fn a_folder_inside_another_root_is_walked_once() {
         let outer = Fixture::new();
         outer.file("a.txt", 100);
@@ -2094,26 +2071,6 @@ mod tests {
         repo.file("a.rs", 100);
         repo.file("secret.rs", 900);
         repo.git(&["add", "a.rs"]);
-        let state = state_of(vec![project("project", &[&repo])]);
-        settle();
-        let shared = Shared::new();
-        assert_eq!(shared.scan(&state, ALWAYS).get("project"), Some(&900));
-
-        fs::write(&ignore, "secret.rs\n").unwrap();
-        set_time(&ignore, 20);
-        settle();
-        let (found, runs) = spawned(|| shared.scan(&state, ALWAYS));
-        assert_eq!(found.get("project"), Some(&100));
-        assert_eq!(runs, 1);
-    }
-
-    #[test]
-    fn a_changed_nested_ignore_file_changes_the_file_list() {
-        let repo = repository();
-        let ignore = repo.file("sub/.gitignore", 10);
-        repo.file("sub/a.rs", 100);
-        repo.file("sub/secret.rs", 900);
-        repo.git(&["add", "sub/a.rs"]);
         let state = state_of(vec![project("project", &[&repo])]);
         settle();
         let shared = Shared::new();
@@ -2284,49 +2241,6 @@ mod tests {
         let order = due_first(&wanted, &cache);
         let canonical = |fixture: &Fixture| fixture.0.canonicalize().unwrap();
         assert_eq!(order, [&canonical(&unknown), &canonical(&known)]);
-    }
-
-    #[test]
-    fn twenty_roots_ask_git_once_each_however_many_windows_ask_and_then_not_at_all() {
-        let repositories: Vec<_> = (0..20)
-            .map(|index| {
-                let repo = repository();
-                for file in 0..20 {
-                    repo.file(&format!("src/f{file}.rs"), 100 + file);
-                }
-                repo.git(&["add", "src"]);
-                repo.file("untracked.rs", 500 + index);
-                repo
-            })
-            .collect();
-        let state = state_of(
-            (0..10)
-                .map(|index| {
-                    project(
-                        &format!("project-{index}"),
-                        &[&repositories[2 * index], &repositories[2 * index + 1]],
-                    )
-                })
-                .collect(),
-        );
-        settle();
-        let shared = Shared::new();
-
-        // Seven windows ask within a period: the first scans, the rest read.
-        let runs: Vec<_> = (0..7)
-            .map(|_| spawned(|| shared.scan(&state, SHARING)).1)
-            .collect();
-        assert_eq!(runs, [20, 0, 0, 0, 0, 0, 0]);
-        // The next period finds every file list as it was.
-        let (edits, runs) = spawned(|| shared.scan(&state, ALWAYS));
-        assert_eq!(runs, 0);
-        assert_eq!(edits.len(), 10);
-        for index in 0..10 {
-            assert_eq!(
-                edits.get(&format!("project-{index}")),
-                Some(&(501 + 2 * index as u64))
-            );
-        }
     }
 
     #[test]

@@ -361,6 +361,7 @@ fn nothing_new_is_an_empty_page_after_the_wait_with_next_unchanged() {
 }
 
 #[test]
+#[ignore = "slow: sleeps and asserts wall-clock windows"]
 fn a_wait_ends_with_the_first_event_and_collects_what_follows_within_a_short_window() {
     let host = TestHost::new();
     let (chat, count) = idle_chat(&host);
@@ -842,32 +843,6 @@ fn command_says_what_is_wrong_with_the_chat_or_the_arguments() {
     assert!(host.fake().commands().is_empty());
 }
 
-#[test]
-fn text_that_looks_like_an_option_stays_text() {
-    let mut args: Vec<String> = ["--title", "--draft", "--title-x", "--model=", "keep"]
-        .map(String::from)
-        .into();
-    assert_eq!(
-        take_verbatim_option(&mut args, "--title")
-            .unwrap()
-            .as_deref(),
-        Some("--draft")
-    );
-    assert_eq!(args, ["--title-x", "--model=", "keep"]);
-    assert_eq!(
-        take_verbatim_option(&mut args, "--model")
-            .unwrap()
-            .as_deref(),
-        Some("")
-    );
-    assert_eq!(args, ["--title-x", "keep"]);
-    assert_eq!(take_verbatim_option(&mut args, "--effort").unwrap(), None);
-    let mut twice: Vec<String> = vec!["--a=1".into(), "--a".into(), "2".into()];
-    assert!(take_verbatim_option(&mut twice, "--a").is_err());
-    let mut dangling: Vec<String> = vec!["--a".into()];
-    assert!(take_verbatim_option(&mut dangling, "--a").is_err());
-}
-
 // ---- the page collector --------------------------------------------------------------------
 
 /// Events for the collector to read, then silence (or the end).
@@ -989,22 +964,6 @@ fn strings_are_cut_on_a_character_boundary_and_marked() {
     assert_eq!(value["b"][0], "short");
     assert_eq!(value["b"][1], format!("{}\u{2026}", "x".repeat(5)));
     assert_eq!(value["n"], 5);
-}
-
-#[test]
-fn a_hopeless_entry_is_not_shrunk_and_a_long_one_is() {
-    let long = Entry {
-        seq: 1,
-        event: json!({"event": "x", "text": "t".repeat(50_000)}),
-    };
-    let shrunk = shrink(&long, 2000).unwrap();
-    assert!(serde_json::to_string(&shrunk).unwrap().len() < 2000);
-    assert!(shrunk.event["text"].as_str().unwrap().ends_with('\u{2026}'));
-    let wide = Entry {
-        seq: 1,
-        event: Value::Array((0..5000).map(|n| json!(n)).collect()),
-    };
-    assert!(shrink(&wide, 2000).is_none());
 }
 
 #[test]

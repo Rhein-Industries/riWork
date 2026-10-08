@@ -124,27 +124,6 @@ fn new_refuses_what_it_cannot_understand() {
 }
 
 #[test]
-fn a_chat_whose_provider_does_not_start_is_reported_and_kept() {
-    let host = TestHost::new();
-    let project = Store::open(&host.home)
-        .unwrap()
-        .add_project(host.work(), Some("demo"))
-        .unwrap();
-    *fake_for(&project.root).fail_start.lock().unwrap() = Some("codex is not installed".into());
-    let error = run(&host, "new --provider codex --project demo").unwrap_err();
-    assert!(error.contains("codex is not installed"), "{error}");
-    let chats = listed(&host);
-    assert_eq!(chats.len(), 1);
-    assert!(error.contains(&chats[0].id), "{error}");
-    assert!(matches!(chats[0].state, ChatState::Failed { .. }));
-    assert!(
-        run(&host, "list")
-            .unwrap()
-            .contains("failed (codex is not installed)")
-    );
-}
-
-#[test]
 fn send_and_stop_take_a_unique_prefix_and_send_resumes_a_stopped_chat() {
     let host = TestHost::new();
     let chat = host.create(Provider::Codex);

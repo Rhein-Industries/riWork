@@ -582,13 +582,6 @@ impl PaneView {
         })
     }
 
-    /// The text of the logical line under a cell, for tests of how rows are joined.
-    #[cfg(test)]
-    pub fn logical_text(&self, row: u32, col: u32) -> Option<String> {
-        self.locate(row, col)
-            .map(|located| located.chars.iter().collect())
-    }
-
     /// What a cell of the visible screen links to.
     #[cfg(test)]
     pub fn link_at(&self, row: u32, col: u32, bases: &Bases) -> Option<Link> {

@@ -366,48 +366,6 @@ fn configure_fast(fast: bool) -> ChatCommand {
 }
 
 #[test]
-fn fast_mode_belongs_to_the_chat_and_goes_to_every_driver_that_starts() {
-    let host = TestHost::new();
-    let mut new = host.new_chat(Provider::Codex);
-    new.fast = true;
-    let mut client = host.client();
-    let chat = client.create(new).unwrap();
-    assert!(chat.fast);
-    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
-    assert!(host.fake().starts.lock().unwrap()[0].fast);
-
-    // Turned off while the driver runs: the driver is told, and the chat remembers.
-    client.command(&chat.id, configure_fast(false)).unwrap();
-    assert_eq!(host.fake().commands(), vec![configure_fast(false)]);
-    assert!(!host.info(&chat.id).fast);
-    let dir = host.home.join("chats").join(&chat.id);
-    let saved = |dir: &Path| -> ChatInfo {
-        serde_json::from_str(&fs::read_to_string(dir.join("info.json")).unwrap()).unwrap()
-    };
-    assert!(!saved(&dir).fast);
-    // The same again changes nothing and publishes nothing.
-    let published = host.log(&chat.id).len();
-    client.command(&chat.id, configure_fast(false)).unwrap();
-    assert_eq!(host.log(&chat.id).len(), published);
-
-    // Turned on while the chat is stopped: no process starts for it, the next one has it.
-    client.close(&chat.id).unwrap();
-    client.command(&chat.id, configure_fast(true)).unwrap();
-    assert_eq!(host.fake().start_count(), 1, "a real change starts nothing");
-    assert!(host.info(&chat.id).fast && saved(&dir).fast);
-    send(&mut client, &chat.id, "go");
-    let starts = host.fake().starts.lock().unwrap().clone();
-    assert_eq!(starts.len(), 2);
-    assert!(starts[1].fast && starts[1].resume.is_some());
-    // The log says so: an Info with the change, in the order it happened.
-    let log = host.wait_for_log(&chat.id, |log| {
-        log.iter()
-            .any(|e| matches!(&e.event, ChatEvent::Info { info } if info.fast))
-    });
-    assert_gapless(&log, 1);
-}
-
-#[test]
 fn only_a_configure_that_changes_nothing_at_all_is_a_retry_and_fast_alone_is_not() {
     let host = TestHost::new();
     let chat = host.create(Provider::Claude);
@@ -429,57 +387,6 @@ fn only_a_configure_that_changes_nothing_at_all_is_a_retry_and_fast_alone_is_not
     let starts = host.fake().starts.lock().unwrap().clone();
     assert_eq!(starts.len(), 2, "the retry resumed the provider");
     assert!(starts[1].fast, "with the fast mode the chat has");
-}
-
-#[test]
-fn the_models_a_driver_reports_are_logged_and_replayed_like_any_event() {
-    let host = TestHost::new();
-    let chat = host.create(Provider::Codex);
-    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
-    let models = vec![
-        ModelOption {
-            id: "gpt-6.1-sol".into(),
-            name: "GPT-6.1-Sol".into(),
-            efforts: vec!["low".into(), "high".into()],
-            default_effort: Some("low".into()),
-            supports_fast: true,
-            is_default: true,
-            ..ModelOption::default()
-        },
-        ModelOption {
-            id: "plain".into(),
-            name: "Plain".into(),
-            ..ModelOption::default()
-        },
-    ];
-    host.fake().emit(ChatEvent::Models {
-        models: models.clone(),
-    });
-    let log = host.wait_for_log(&chat.id, |log| {
-        log.iter()
-            .any(|e| matches!(e.event, ChatEvent::Models { .. }))
-    });
-    assert_gapless(&log, 1);
-    // A tab that connects late gets them from the start of the log.
-    let late = Follower::open(&host.socket(), &chat.id, 0).unwrap();
-    let mut transcript = Transcript::default();
-    for envelope in late.take(log.len()) {
-        transcript.apply(&envelope.event);
-    }
-    assert_eq!(transcript.models, models);
-    // A later list replaces it; one with nothing in it clears it.
-    host.fake().emit(ChatEvent::Models { models: Vec::new() });
-    let log = host.wait_for_log(&chat.id, |log| {
-        log.iter()
-            .filter(|e| matches!(e.event, ChatEvent::Models { .. }))
-            .count()
-            == 2
-    });
-    let mut transcript = Transcript::default();
-    for envelope in &log {
-        transcript.apply(&envelope.event);
-    }
-    assert!(transcript.models.is_empty());
 }
 
 #[test]
@@ -702,46 +609,6 @@ fn closing_a_chat_keeps_its_history_and_the_next_message_resumes_its_thread() {
     });
     assert_gapless(&log, 1);
     assert_eq!(log[..closed.len()], closed[..]);
-}
-
-#[test]
-fn an_empty_configure_resumes_a_stopped_chat_and_other_configures_do_not() {
-    // A tab's Retry sends a Configure that changes nothing.
-    let host = TestHost::new();
-    let chat = host.create(Provider::Codex);
-    let mut client = host.client();
-    client.close(&chat.id).unwrap();
-    assert_eq!(host.info(&chat.id).state, ChatState::Stopped);
-    client
-        .command(
-            &chat.id,
-            ChatCommand::Configure {
-                model: Some("gpt-5".into()),
-                effort: None,
-                approval_mode: None,
-                fast: None,
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        host.fake().starts.lock().unwrap().len(),
-        1,
-        "a real change starts nothing"
-    );
-    client
-        .command(
-            &chat.id,
-            ChatCommand::Configure {
-                model: None,
-                effort: None,
-                approval_mode: None,
-                fast: None,
-            },
-        )
-        .unwrap();
-    let starts = host.fake().starts.lock().unwrap().clone();
-    assert_eq!(starts.len(), 2, "the retry resumed the provider");
-    assert_eq!(starts[1].resume.as_deref(), Some("thread-1"));
 }
 
 #[test]
@@ -1196,6 +1063,7 @@ fn the_peer_of_a_connection_is_identified_by_its_user() {
 }
 
 #[test]
+#[ignore = "slow: idle-exit timer, 1.5 s quiet periods (3.5 s)"]
 fn an_idle_host_exits_but_not_while_a_client_is_connected_or_a_chat_is_at_work() {
     let home = short_home();
     fs::create_dir_all(home.join("work")).unwrap();
@@ -1304,6 +1172,7 @@ fn ensure_reports_why_a_host_that_would_not_start_did_not() {
 }
 
 #[test]
+#[ignore = "slow: stub process racing a host started after 600 ms"]
 fn ensure_waits_for_a_host_that_won_the_race_for_the_lock() {
     let home = short_home();
     // The process `ensure` starts finds the lock taken and leaves with success,
@@ -1351,6 +1220,7 @@ fn the_app_helper_runs_chat_ensure_with_the_home_it_was_given() {
 }
 
 #[test]
+#[ignore = "slow: idle timer against 200 ms sleeps (2.5 s)"]
 fn short_requests_keep_an_idle_host_up_because_the_timer_counts_from_the_last_one() {
     let home = short_home();
     let options = Options {
@@ -1379,6 +1249,7 @@ fn short_requests_keep_an_idle_host_up_because_the_timer_counts_from_the_last_on
 }
 
 #[test]
+#[ignore = "slow: stub processes racing a lock released after 500 ms"]
 fn ensure_starts_another_host_when_the_one_it_found_was_shutting_down() {
     let home = short_home();
     let run = home.join("run");

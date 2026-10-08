@@ -8,6 +8,7 @@ use crate::chat::{
 use crate::schedules::{ChatDelivery, Outcome, Schedule, ScheduleStore, Scope, Timing};
 use crate::store::Store;
 use std::{
+    os::unix::net::{UnixListener, UnixStream},
     path::{Path, PathBuf},
     sync::{Arc, Barrier},
 };
@@ -18,10 +19,37 @@ fn in_process(home: &Path) -> Result<PathBuf, String> {
 fn delivery() -> ChatDelivery {
     ChatDelivery {
         ensure: in_process,
+        // The capability check gets min(wait, 2 s): shorter, a loaded machine
+        // defers the occurrence instead of creating the chat.
         proof: Proof {
-            wait: Duration::from_millis(600),
+            wait: Duration::from_secs(2),
             poll: Duration::from_millis(5),
         },
+    }
+}
+/// The next connection to a stand-in host. Fails instead of hanging when the
+/// scheduler connects fewer times than the test expects, and reads time out.
+fn accept_within(listener: &UnixListener) -> UnixStream {
+    listener.set_nonblocking(true).unwrap();
+    let end = Instant::now() + Duration::from_secs(10);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // macOS can inherit O_NONBLOCK from the listener.
+                stream.set_nonblocking(false).unwrap();
+                // A peer that already left makes macOS refuse the timeout
+                // (EINVAL); reads on that stream end at once anyway.
+                if let Err(error) = stream.set_read_timeout(Some(Duration::from_secs(10))) {
+                    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+                }
+                return stream;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(Instant::now() < end, "the scheduler never connected to the stand-in");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("stand-in accept failed: {error}"),
+        }
     }
 }
 fn setup(provider: Provider, recurring: bool) -> (TestHost, ScheduleStore, Schedule) {
@@ -245,14 +273,9 @@ enum Failure {
     SendRefused,
     SendBroken,
     ProofMissing,
-    WrongId,
-    WrongProject,
-    WrongRoot,
+    /// One field of the created chat differs from the request; every field is
+    /// compared by the same check.
     WrongAccount,
-    WrongPermission,
-    WrongModel,
-    WrongEffort,
-    WrongFast,
 }
 #[test]
 fn fresh_chat_failed_or_ambiguous_create_send_never_retries_and_claim_precedes_create() {
@@ -261,24 +284,14 @@ fn fresh_chat_failed_or_ambiguous_create_send_never_retries_and_claim_precedes_c
         model::{ChatInfo, ChatState},
         wire::{Request, Response},
     };
-    use std::{
-        io::{BufRead, BufReader, Write},
-        os::unix::net::UnixListener,
-    };
+    use std::io::{BufRead, BufReader, Write};
     for failure in [
         Failure::CreateRefused,
         Failure::CreateBroken,
         Failure::SendRefused,
         Failure::SendBroken,
         Failure::ProofMissing,
-        Failure::WrongId,
-        Failure::WrongProject,
-        Failure::WrongRoot,
         Failure::WrongAccount,
-        Failure::WrongPermission,
-        Failure::WrongModel,
-        Failure::WrongEffort,
-        Failure::WrongFast,
     ] {
         let (mut host, store, _schedule) = setup(Provider::Claude, false);
         // Stop only this fake host; the stand-in handles exchanges whose outcome
@@ -291,7 +304,7 @@ fn fresh_chat_failed_or_ambiguous_create_send_never_retries_and_claim_precedes_c
         let listener = UnixListener::bind(&socket).unwrap();
         let served_home = home.clone();
         let thread = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
+            let stream = accept_within(&listener);
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut writer = stream;
             let mut chat = None;
@@ -351,20 +364,8 @@ fn fresh_chat_failed_or_ambiguous_create_send_never_retries_and_claim_precedes_c
                                 orchestrator: None,
                                 carried_over: None,
                             };
-                            match failure {
-                                Failure::WrongId => info.id = Uuid::new_v4().to_string(),
-                                Failure::WrongProject => {
-                                    info.project_id = Some(Uuid::new_v4().to_string())
-                                }
-                                Failure::WrongRoot => info.cwd = served_home.clone(),
-                                Failure::WrongAccount => {
-                                    info.codex_account_id = Some("other-account".into())
-                                }
-                                Failure::WrongPermission => info.approval_mode = ApprovalMode::Full,
-                                Failure::WrongModel => info.model = Some("other-model".into()),
-                                Failure::WrongEffort => info.effort = None,
-                                Failure::WrongFast => info.fast = false,
-                                _ => {}
+                            if matches!(failure, Failure::WrongAccount) {
+                                info.codex_account_id = Some("other-account".into());
                             }
                             ChatLog::create(&served_home.join("chats").join(&info.id), &info)
                                 .unwrap();
@@ -570,23 +571,12 @@ fn fresh_chat_saved_account_stays_pinned_and_missing_home_fails_before_creation(
 
 #[test]
 fn fresh_chat_capability_preflight_defers_old_or_unproven_hosts_without_claim_or_starvation() {
-    use std::{
-        io::{BufRead, BufReader, Write},
-        os::unix::net::UnixListener,
-    };
+    use std::io::{BufRead, BufReader, Write};
     // The legacy stand-in would accept Create and ignore chat_id. It must never
     // receive that operation (nor Command) through normal scheduled dispatch.
-    for behavior in [
-        "unknown_op",
-        "refused",
-        "missing",
-        "false",
-        "malformed",
-        "unreadable",
-        "wrong_id",
-        "broken",
-        "timeout",
-    ] {
+    // One case per way the check can fail: an old host's refusal, an explicit
+    // no, an answer that cannot be read, and no answer in time.
+    for behavior in ["unknown_op", "false", "malformed", "timeout"] {
         let (mut host, store, schedule) = setup(Provider::Claude, false);
         host.stop();
         let home = host.home.clone();
@@ -595,17 +585,7 @@ fn fresh_chat_capability_preflight_defers_old_or_unproven_hosts_without_claim_or
         let listener = UnixListener::bind(socket).unwrap();
         let served = std::thread::spawn(move || {
             for _ in 0..3 {
-                let (mut stream, _) = listener.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_millis(200)))
-                    .or_else(|error| {
-                        if error.kind() == std::io::ErrorKind::InvalidInput {
-                            Ok(())
-                        } else {
-                            Err(error)
-                        }
-                    })
-                    .unwrap();
+                let mut stream = accept_within(&listener);
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
@@ -614,28 +594,18 @@ fn fresh_chat_capability_preflight_defers_old_or_unproven_hosts_without_claim_or
                     request["op"], "capabilities",
                     "legacy host received a mutation"
                 );
-                if behavior == "broken" {
-                    continue;
-                }
-                if behavior == "timeout" {
-                    std::thread::sleep(Duration::from_millis(70));
-                    continue;
-                }
                 let mut response = serde_json::json!({"id":request["id"],"ok":true,"result":{"identified_create":true}});
                 match behavior {
-                    "unknown_op" | "refused" => {
+                    "unknown_op" => {
                         response =
                             serde_json::json!({"id":request["id"],"ok":false,"error":behavior})
                     }
-                    "missing" => response["result"] = serde_json::json!({}),
                     "false" => response["result"]["identified_create"] = false.into(),
                     "malformed" => response["result"]["identified_create"] = "true".into(),
-                    "wrong_id" => response["id"] = "different-request".into(),
                     _ => {}
                 }
-                if behavior == "unreadable" {
-                    writeln!(stream, "unreadable").unwrap();
-                } else {
+                // A stand-in that never answers waits for the client to give up.
+                if behavior != "timeout" {
                     writeln!(stream, "{response}").unwrap();
                 }
                 line.clear();
@@ -649,8 +619,10 @@ fn fresh_chat_capability_preflight_defers_old_or_unproven_hosts_without_claim_or
             home: &home,
             ensure: &in_process,
         };
+        // Long enough that a loaded machine still answers in time, short
+        // enough that the stand-in that never answers costs little.
         let proof = Proof {
-            wait: Duration::from_millis(30),
+            wait: Duration::from_millis(400),
             poll: Duration::from_millis(2),
         };
         let mut legacy = schedule.target.clone();

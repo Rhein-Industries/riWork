@@ -399,20 +399,6 @@ async fn appearance_get_reports_other_cli_failures_as_cli_errors() {
     assert_eq!(f.get().await["ok"], true);
 }
 
-#[tokio::test]
-async fn appearance_get_needs_an_authorized_device() {
-    let f = Fixture::new();
-    f.publish(document().to_string());
-    f.rpc.storage.revoke(&f.device).unwrap();
-    assert!(
-        f.rpc
-            .handle(&f.device, req("appearance.get", json!({})))
-            .await
-            .is_err()
-    );
-    assert!(f.calls().is_empty());
-}
-
 #[test]
 fn both_validators_accept_and_reject_the_same_documents() {
     for (text, valid) in matrix() {

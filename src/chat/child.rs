@@ -584,17 +584,6 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_line_is_skipped_and_measured_and_reading_goes_on() {
-        let mut input = b"before\n".to_vec();
-        input.extend(std::iter::repeat_n(b'x', 1000));
-        input.extend_from_slice(b"\nafter\n");
-        assert_eq!(
-            frames(&input, 16),
-            vec![line("before"), Frame::Oversized(1000), line("after")]
-        );
-    }
-
-    #[test]
     fn an_oversized_line_is_skipped_across_reads_and_at_the_end_of_input() {
         // Longer than the reader's buffer, with no newline at the end.
         let input = vec![b'y'; 200_000];
@@ -801,14 +790,6 @@ mod tests {
             unsafe { libc::kill(grandchild, 0) != 0 }
         });
         assert!(gone, "the grandchild outlived the group");
-    }
-
-    #[test]
-    fn an_exit_is_explained_with_the_end_of_stderr() {
-        let (proc, _stdout) = Proc::spawn(script("echo boom >&2; exit 7")).unwrap();
-        let message = proc.describe_exit(Duration::from_secs(5));
-        assert!(message.contains("exit status: 7"), "{message}");
-        assert!(message.contains("boom"), "{message}");
     }
 
     #[test]

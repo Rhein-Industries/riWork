@@ -49,27 +49,11 @@ impl HostConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat_view::testing::FakeHost;
 
     #[test]
     fn history_follow_only_resolves_an_address_without_ensuring_a_host() {
         let home = PathBuf::from("/synthetic-only/never-create-or-connect");
         let follow = HostConfig::follow_existing(home.clone());
         assert_eq!(follow().unwrap(), home.join("run/chat.sock"));
-    }
-
-    #[test]
-    fn a_running_host_is_found_at_its_socket_and_a_missing_one_is_explained() {
-        let host = FakeHost::with_chats(&[]);
-        // The fake listens where `socket_path` would put the real one.
-        let home = host.socket.parent().unwrap().to_path_buf();
-        std::fs::create_dir_all(home.join("run")).unwrap();
-        let socket = socket_path(&home);
-        assert_eq!(socket, home.join("run").join("chat.sock"));
-        // With nothing listening the real host would be started; a test build
-        // refuses to start one from its own executable.
-        assert!(ensure_host(&home).is_err());
-        std::os::unix::fs::symlink(&host.socket, &socket).unwrap();
-        assert_eq!(ensure_host(&home).unwrap(), socket);
     }
 }

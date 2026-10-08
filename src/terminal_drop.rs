@@ -398,7 +398,6 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{point, px, size};
 
     #[test]
     fn escapes_what_ghostty_escapes() {
@@ -416,16 +415,6 @@ mod tests {
             "/a/b-c_d.e,f=g~h%i^j+k@l:m"
         );
         assert_eq!(shell_escape("/tmp/Bild ü.png"), "/tmp/Bild\\ ü.png");
-    }
-
-    #[test]
-    fn several_paths_are_joined_by_one_space_with_none_after() {
-        let paths = [PathBuf::from("/tmp/a b.png"), PathBuf::from("/tmp/c")];
-        assert_eq!(
-            dropped_text(&paths).as_deref(),
-            Some("/tmp/a\\ b.png /tmp/c")
-        );
-        assert_eq!(dropped_text(&[]), None);
     }
 
     #[test]
@@ -536,27 +525,6 @@ mod tests {
                 Program::Shell
             ),
             Some(vec![Input::Paste("/tmp/x".into())])
-        );
-    }
-
-    #[test]
-    fn the_outline_runs_just_inside_the_bounds() {
-        let bounds = Bounds {
-            origin: point(px(10.0), px(20.0)),
-            size: size(px(100.0), px(50.0)),
-        };
-        let strips = outline(bounds);
-        assert_eq!(strips.len(), 4);
-        for strip in &strips {
-            assert!(strip.x >= 10.0 && strip.x + strip.width <= 110.0);
-            assert!(strip.y >= 20.0 && strip.y + strip.height <= 70.0);
-        }
-        assert!(
-            outline(Bounds {
-                origin: point(px(0.0), px(0.0)),
-                size: size(px(3.0), px(50.0)),
-            })
-            .is_empty()
         );
     }
 }

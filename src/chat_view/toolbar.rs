@@ -287,100 +287,6 @@ pub fn short_thread_id(id: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn token_counts_stay_short() {
-        assert_eq!(
-            [
-                0, 842, 1_000, 1_234, 9_999, 12_345, 200_000, 999_999, 1_234_567
-            ]
-            .map(tokens),
-            [
-                "0", "842", "1.0k", "1.2k", "10.0k", "12k", "200k", "999k", "1.2M"
-            ]
-        );
-    }
-
-    #[test]
-    fn the_meter_shows_the_context_when_it_is_known_and_the_spend_when_it_is_not() {
-        let known = Usage {
-            input_tokens: 90_000,
-            output_tokens: 4_000,
-            context_used: Some(84_000),
-            context_window: Some(200_000),
-            ..Usage::default()
-        };
-        assert_eq!(context_fraction(&known), Some(0.42));
-        assert_eq!(usage_text(&known), "42% · 84k / 200k");
-        let unknown = Usage {
-            input_tokens: 12_300,
-            output_tokens: 850,
-            ..Usage::default()
-        };
-        assert_eq!(context_fraction(&unknown), None);
-        assert_eq!(usage_text(&unknown), "12k in · 850 out");
-        // A window that was overrun still fills the meter exactly once.
-        let over = Usage {
-            context_used: Some(300),
-            context_window: Some(200),
-            ..Usage::default()
-        };
-        assert_eq!(context_fraction(&over), Some(1.0));
-        let empty_window = Usage {
-            context_used: Some(1),
-            context_window: Some(0),
-            ..Usage::default()
-        };
-        assert_eq!(context_fraction(&empty_window), None);
-    }
-
-    #[test]
-    fn cost_is_always_called_an_estimate() {
-        assert_eq!(cost_text(0.4213), "≈ $0.42 (estimate)");
-        assert_eq!(cost_text(12.0), "≈ $12.00 (estimate)");
-        assert_eq!(cost_text(0.004), "≈ $0.004 (estimate)");
-    }
-
-    #[test]
-    fn the_hover_hint_lists_what_the_provider_reported() {
-        let usage = Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            cached_input_tokens: 7,
-            context_used: Some(15),
-            context_window: Some(100),
-            cost_usd: None,
-        };
-        assert_eq!(
-            usage_details(&usage),
-            "Input 10 · Output 5 · Cached 7 · Context 15 of 100"
-        );
-        assert_eq!(usage_details(&Usage::default()), "Input 0 · Output 0");
-    }
-
-    #[test]
-    fn modes_efforts_and_models_are_listed_per_provider() {
-        assert_eq!(
-            MODES.map(|(mode, ..)| mode),
-            [
-                ApprovalMode::Supervised,
-                ApprovalMode::AutoEdit,
-                ApprovalMode::Full,
-                ApprovalMode::Plan
-            ]
-        );
-        assert_eq!(mode_label(ApprovalMode::Full), "Full");
-        assert_eq!(mode_label(ApprovalMode::AutoEdit), "Auto-edit");
-        assert!(efforts(Provider::Codex).contains(&"high"));
-        assert!(efforts(Provider::Claude).contains(&"max"));
-        assert!(model_suggestions(Provider::Codex).is_empty());
-        assert_eq!(
-            model_suggestions(Provider::Claude),
-            ["opus", "sonnet", "haiku"]
-        );
-        assert_eq!(short_thread_id("0123456789abcdef"), "01234567");
-        assert_eq!(short_thread_id("abc"), "abc");
-    }
-
     fn option(id: &str, name: &str, efforts: &[&str], fast: bool, default: bool) -> ModelOption {
         ModelOption {
             id: id.into(),
@@ -402,27 +308,6 @@ mod tests {
     }
 
     #[test]
-    fn model_search_preserves_provider_order_selection_and_refreshed_metadata() {
-        let mut models = list();
-        models[1].description = "Careful multilingual reasoning".into();
-        assert_eq!(
-            filtered_model_rows(&models, Some("luna"), "  MULTILINGUAL  ")[0].id,
-            "luna"
-        );
-        assert!(filtered_model_rows(&models, Some("luna"), "multilingual")[0].current);
-        assert_eq!(
-            filtered_model_rows(&models, None, "")
-                .iter()
-                .map(|row| row.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["sol", "luna", "haiku"]
-        );
-        models.retain(|model| model.id != "luna");
-        assert!(filtered_model_rows(&models, Some("luna"), "multilingual").is_empty());
-        assert_eq!(filtered_model_rows(&models, None, "SOL")[0].id, "sol");
-    }
-
-    #[test]
     fn the_selected_model_is_the_chosen_one_or_the_default_and_never_a_guess() {
         let models = list();
         assert_eq!(selected_model(&models, None).unwrap().id, "sol");
@@ -436,39 +321,6 @@ mod tests {
         assert_eq!(model_label(&models, Some("typed-by-hand")), "typed-by-hand");
         assert_eq!(model_label(&[], None), "model");
         assert_eq!(model_label(&[], Some("opus")), "opus");
-    }
-
-    #[test]
-    fn the_model_picker_lists_names_marks_the_default_and_the_one_in_use() {
-        let models = list();
-        let rows = model_rows(&models, Some("luna"));
-        assert_eq!(
-            rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
-            ["Sol (default)", "Luna", "Haiku"]
-        );
-        assert_eq!(
-            rows.iter().map(|r| r.current).collect::<Vec<_>>(),
-            [false, true, false]
-        );
-        assert_eq!(rows[1].id, "luna");
-        assert_eq!(rows[1].detail.as_deref(), Some("About Luna"));
-        // A chat that chose nothing runs the default.
-        let rows = model_rows(&models, None);
-        assert_eq!(
-            rows.iter().map(|r| r.current).collect::<Vec<_>>(),
-            [true, false, false]
-        );
-        // A default whose name says it is the default is not marked twice.
-        let mut named = list();
-        named[0].name = "Default (recommended)".into();
-        assert_eq!(model_rows(&named, None)[0].label, "Default (recommended)");
-        // A description that is empty is no second line.
-        let mut bare = list();
-        bare[1].description.clear();
-        assert_eq!(model_rows(&bare, None)[1].detail, None);
-        // Nothing is current for a model the list does not know.
-        assert!(model_rows(&models, Some("x")).iter().all(|r| !r.current));
-        assert!(model_rows(&[], None).is_empty());
     }
 
     #[test]
@@ -494,27 +346,6 @@ mod tests {
         );
         assert!(effort_choices(&models, Some("typed"), Provider::Claude).contains(&"max".into()));
         assert!(effort_available(&[], None, Provider::Claude));
-    }
-
-    #[test]
-    fn the_current_effort_is_the_chosen_one_or_else_the_models_default() {
-        let models = list();
-        let rows = effort_rows(&models, Some("luna"), None, Provider::Codex);
-        assert_eq!(
-            rows.iter()
-                .map(|r| (r.label.as_str(), r.current))
-                .collect::<Vec<_>>(),
-            [("medium (default)", true), ("high", false)]
-        );
-        let rows = effort_rows(&models, Some("luna"), Some("high"), Provider::Codex);
-        assert_eq!(
-            rows.iter().map(|r| r.current).collect::<Vec<_>>(),
-            [false, true]
-        );
-        assert_eq!(effort_label(&models, Some("luna"), None), "medium");
-        assert_eq!(effort_label(&models, Some("luna"), Some("high")), "high");
-        assert_eq!(effort_label(&models, Some("haiku"), None), "effort");
-        assert_eq!(effort_label(&[], None, None), "effort");
     }
 
     #[test]

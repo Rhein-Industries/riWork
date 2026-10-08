@@ -288,6 +288,7 @@ fn session_meta(thread: &str, source: Value) -> Value {
 }
 
 #[test]
+#[ignore = "slow: real tmux sessions and wall-clock activity times"]
 fn lists_report_what_each_agent_is_doing_and_the_projects_count_them() {
     let Some(tmux) = real_tmux() else {
         eprintln!("skipped: tmux is not installed");
@@ -489,6 +490,7 @@ fn lists_report_what_each_agent_is_doing_and_the_projects_count_them() {
 }
 
 #[test]
+#[ignore = "slow: real tmux sessions and wall-clock activity times"]
 fn orchestrators_report_activity_too() {
     let Some(tmux) = real_tmux() else {
         eprintln!("skipped: tmux is not installed");
@@ -522,6 +524,7 @@ fn orchestrators_report_activity_too() {
 /// The shell figure is tmux's own `window_activity`, so the text a phone sends moves it (the
 /// pane echoes what it is sent); the project figure is the newest of its shells.
 #[test]
+#[ignore = "slow: real tmux sessions and wall-clock activity times"]
 fn a_project_was_last_active_when_its_newest_shell_last_printed() {
     let Some(tmux) = real_tmux() else {
         eprintln!("skipped: tmux is not installed");
@@ -610,6 +613,7 @@ fn a_project_was_last_active_when_its_newest_shell_last_printed() {
 /// A project's own orchestrator counts for its project; the global orchestrator belongs to no
 /// project, however newly it printed.
 #[test]
+#[ignore = "slow: real tmux sessions and wall-clock activity times"]
 fn the_projects_orchestrator_counts_and_the_global_one_does_not() {
     let Some(tmux) = real_tmux() else {
         eprintln!("skipped: tmux is not installed");

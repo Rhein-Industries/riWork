@@ -130,8 +130,8 @@ impl Fixture {
 /// Logs each call (arguments separated by U+001F). `capabilities --json` prints
 /// `capabilities.json`, or nothing, like a CLI from before the question. `project show` and
 /// `worktree show` print the id they were asked for, or the one in `show.id`,
-/// or fail with the line in `show.error`. `shell create` waits `create.delay`
-/// seconds if that exists, marks `create.ran`, then prints
+/// or fail with the line in `show.error`. `shell create` waits for `create.gate` (20 s at
+/// most) if `create.hold` exists, marks `create.ran`, then prints
 /// `create.json`, or fails with the line in `create.error`. `shell list` and
 /// `orchestrator list` print `shells.json` and `orchestrators.json` (default
 /// `[]`). `shell close` fails like a CLI that does not know the shell if
@@ -152,7 +152,7 @@ fn stub_cli(dir: &Path) -> PathBuf {
                if [ -e \"$d/show.error\" ]; then printf 'riwork: %s\\n' \"$(cat \"$d/show.error\")\" >&2; exit 2; fi\n\
                if [ -e \"$d/show.id\" ]; then printf '{{\"id\":\"%s\"}}' \"$(cat \"$d/show.id\")\"; else printf '{{\"id\":\"%s\"}}' \"$3\"; fi;;\n\
              'shell create')\n\
-               if [ -e \"$d/create.delay\" ]; then sleep \"$(cat \"$d/create.delay\")\"; fi\n\
+               if [ -e \"$d/create.hold\" ]; then i=0; while [ ! -e \"$d/create.gate\" ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done; fi\n\
                touch \"$d/create.ran\"\n\
                if [ -e \"$d/create.error\" ]; then printf 'riwork: %s\\n' \"$(cat \"$d/create.error\")\" >&2; exit 2; fi\n\
                cat \"$d/create.json\";;\n\
@@ -733,7 +733,7 @@ async fn a_terminal_being_made_is_finished_when_the_request_is_dropped() {
     let f = std::sync::Arc::new(Fixture::new());
     let shell = new_uuid();
     f.cli_says(f.session(&shell, Value::Null));
-    f.set("create.delay", "0.6");
+    f.set("create.hold", "");
     let task = {
         let f = f.clone();
         tokio::spawn(async move {
@@ -742,7 +742,7 @@ async fn a_terminal_being_made_is_finished_when_the_request_is_dropped() {
         })
     };
     // Wait until the CLI is running, then drop the request.
-    for _ in 0..100 {
+    for _ in 0..500 {
         if !f.calls_of("shell", "create").is_empty() {
             break;
         }
@@ -751,7 +751,9 @@ async fn a_terminal_being_made_is_finished_when_the_request_is_dropped() {
     assert_eq!(f.calls_of("shell", "create").len(), 1);
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
-    for _ in 0..100 {
+    // Only now may the CLI finish: the request is gone, the CLI must not be.
+    f.set("create.gate", "");
+    for _ in 0..200 {
         if f.stub.path().join("create.ran").exists() {
             break;
         }

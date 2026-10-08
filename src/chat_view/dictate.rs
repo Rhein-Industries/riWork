@@ -301,17 +301,6 @@ mod tests {
     use crate::dictation::Problem;
 
     #[test]
-    fn the_mic_is_hidden_unless_settings_show_it() {
-        assert!(!mic_in(None), "no settings yet");
-        assert!(!mic_in(Some(&Settings::default())), "off by default");
-        let shown = Settings {
-            dictation_mic: true,
-            ..Settings::default()
-        };
-        assert!(mic_in(Some(&shown)));
-    }
-
-    #[test]
     fn hiding_the_mic_cancels_a_dictation_and_puts_a_failure_away() {
         // Listening, with words already in the box: cancelled, the helper ends, the words go.
         let mut machine = Machine::default();

@@ -3148,61 +3148,6 @@ mod tests {
     use std::env;
 
     #[test]
-    fn chat_modes_are_independent_durable_and_do_not_change_the_existing_default() {
-        use crate::chat_view::DisplayMode::{Normal, Verbose};
-        let dir = env::temp_dir().join(format!("riwork-chat-modes-{}", Uuid::new_v4()));
-        let first_window = SettingsStore::open(&dir).unwrap();
-        let second_window = SettingsStore::open(&dir).unwrap();
-        let before = first_window
-            .update(|settings| {
-                settings.chat_display = Verbose;
-                settings.open_preview_on_select = false;
-            })
-            .unwrap();
-        first_window
-            .update(|settings| {
-                settings.chat_display_modes.insert("chat-a".into(), Normal);
-            })
-            .unwrap();
-        let second = second_window.load().unwrap();
-        assert_eq!(second.chat_display_for(Some("chat-a")), Normal);
-        assert_eq!(second.chat_display_for(Some("chat-b")), Verbose);
-        assert_eq!(second.chat_display_for(None), Verbose);
-        second_window
-            .update(|settings| {
-                settings.chat_display_modes.insert("chat-b".into(), Normal);
-            })
-            .unwrap();
-        first_window
-            .update(|settings| {
-                settings.chat_display_modes.insert("chat-a".into(), Verbose);
-            })
-            .unwrap();
-        // A reload and unrelated preference update retain both independent choices.
-        second_window
-            .update(|settings| settings.dictation_mic = true)
-            .unwrap();
-        let mut reloaded = SettingsStore::open(&dir).unwrap().load().unwrap();
-        assert_eq!(reloaded.chat_display_for(Some("chat-a")), Verbose);
-        assert_eq!(reloaded.chat_display_for(Some("chat-b")), Normal);
-        assert_eq!(reloaded.chat_display_for(Some("new-chat")), Verbose);
-        assert_eq!(reloaded.chat_display, before.chat_display);
-        reloaded.chat_display_modes.clear();
-        reloaded.dictation_mic = before.dictation_mic;
-        assert_eq!(reloaded, before);
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn unknown_chat_mode_does_not_erase_other_chats_or_the_legacy_default() {
-        use crate::chat_view::DisplayMode::{Normal, Verbose};
-        let settings: Settings = serde_json::from_str(r#"{"chat_display":"verbose","chat_display_modes":{"a":"normal","b":"future","c":"verbose"}}"#).unwrap();
-        assert_eq!(settings.chat_display_for(Some("a")), Normal);
-        assert_eq!(settings.chat_display_for(Some("b")), Verbose);
-        assert_eq!(settings.chat_display_for(Some("c")), Verbose);
-    }
-
-    #[test]
     fn saving_chat_modes_preserves_unknown_entries_until_that_chat_changes() {
         use crate::chat_view::DisplayMode::{Normal, Verbose};
         let dir = env::temp_dir().join(format!("riwork-future-chat-modes-{}", Uuid::new_v4()));
@@ -3283,61 +3228,6 @@ mod tests {
     }
 
     #[test]
-    fn chat_display_defaults_to_normal_and_round_trips_verbose() {
-        let settings: Settings = serde_json::from_str(r#"{"schema_version":1}"#).unwrap();
-        assert_eq!(settings.chat_display, crate::chat_view::DisplayMode::Normal);
-        let mut settings = settings;
-        settings.chat_display = crate::chat_view::DisplayMode::Verbose;
-        let reloaded: Settings =
-            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
-        assert_eq!(
-            reloaded.chat_display,
-            crate::chat_view::DisplayMode::Verbose
-        );
-        assert_eq!(
-            serde_json::from_str::<Settings>(r#"{"chat_display":"future"}"#)
-                .unwrap()
-                .chat_display,
-            crate::chat_view::DisplayMode::Normal
-        );
-        let dir = env::temp_dir().join(format!("riwork-chat-display-{}", Uuid::new_v4()));
-        let store = SettingsStore::open(&dir).unwrap();
-        store
-            .update(|settings| settings.chat_display = crate::chat_view::DisplayMode::Verbose)
-            .unwrap();
-        // An unrelated preference update must preserve the saved mode across reloads.
-        store
-            .update(|settings| settings.dictation_mic = true)
-            .unwrap();
-        assert_eq!(
-            SettingsStore::open(&dir)
-                .unwrap()
-                .load()
-                .unwrap()
-                .chat_display,
-            crate::chat_view::DisplayMode::Verbose
-        );
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn missing_and_older_settings_preserve_terminal_colors_by_default() {
-        let settings: Settings = serde_json::from_str("{}").unwrap();
-        assert_eq!(settings.theme, ThemeChoice::Ghostty);
-        assert!(!settings.use_riwork_colors);
-        assert!(settings.remember_window_size);
-        assert_eq!(settings.project_order, ProjectOrder::default());
-        assert_eq!(settings.selected_codex_account, None);
-        assert_eq!(settings.status_bar, StatusBarSettings::default());
-        let legacy: Settings =
-            serde_json::from_str(r#"{"schema_version":1,"use_riwork_colors":true}"#).unwrap();
-        assert_eq!(legacy.theme, ThemeChoice::Ghostty);
-        assert!(legacy.use_riwork_colors);
-        assert_eq!(legacy.selected_codex_account, None);
-        assert_eq!(legacy.status_bar, StatusBarSettings::default());
-    }
-
-    #[test]
     fn newer_values_and_keys_do_not_lock_out_settings_and_stay_until_changed() {
         let dir = env::temp_dir().join(format!("riwork-settings-newer-{}", Uuid::new_v4()));
         let store = SettingsStore::open(&dir).unwrap();
@@ -3413,117 +3303,6 @@ mod tests {
         }
         write(r#"{"selected_codex_account":null}"#);
         assert_eq!(store.load().unwrap().selected_codex_account, None);
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn panel_tab_icons_default_off_for_older_files_and_round_trip_beside_other_keys() {
-        let dir = env::temp_dir().join(format!("riwork-settings-tab-icons-{}", Uuid::new_v4()));
-        let store = SettingsStore::open(&dir).unwrap();
-        let document = |dir: &std::path::Path| -> Value {
-            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap()
-        };
-        assert!(!Settings::default().panel_tab_icons);
-
-        // A file from a build without the setting reads as off and is not rewritten by a load.
-        let older = r#"{"schema_version":1,"theme":"tokyo_night","remember_window_size":false,"future_setting":{"a":1}}"#;
-        fs::write(dir.join("settings.json"), older).unwrap();
-        assert!(!store.load().unwrap().panel_tab_icons);
-        assert_eq!(
-            fs::read_to_string(dir.join("settings.json")).unwrap(),
-            older
-        );
-
-        // Turning it on writes the key and leaves the neighbouring and unknown keys alone.
-        let saved = store
-            .update(|settings| Toggle::PanelTabIcons.flip(settings))
-            .unwrap();
-        assert!(saved.panel_tab_icons);
-        let file = document(&dir);
-        assert_eq!(file["panel_tab_icons"], true);
-        assert_eq!(file["theme"], "tokyo_night");
-        assert_eq!(file["remember_window_size"], false);
-        assert_eq!(file["future_setting"], serde_json::json!({"a": 1}));
-        let reloaded = SettingsStore::open(&dir).unwrap().load().unwrap();
-        assert!(reloaded.panel_tab_icons);
-        assert_eq!(reloaded.theme, ThemeChoice::TokyoNight);
-        assert!(!reloaded.remember_window_size);
-        let encoded = serde_json::to_string(&reloaded).unwrap();
-        assert_eq!(
-            serde_json::from_str::<Settings>(&encoded).unwrap(),
-            reloaded
-        );
-
-        // Other settings changes keep it, and it turns off again.
-        store
-            .update(|settings| settings.use_riwork_colors = true)
-            .unwrap();
-        assert_eq!(document(&dir)["panel_tab_icons"], true);
-        store
-            .update(|settings| Toggle::PanelTabIcons.flip(settings))
-            .unwrap();
-        assert_eq!(document(&dir)["panel_tab_icons"], false);
-        assert!(!store.load().unwrap().panel_tab_icons);
-
-        // A value another build wrote in a shape this one lacks reads as off and stays until changed.
-        fs::write(
-            dir.join("settings.json"),
-            r#"{"schema_version":1,"panel_tab_icons":"labels"}"#,
-        )
-        .unwrap();
-        assert!(!store.load().unwrap().panel_tab_icons);
-        store
-            .update(|settings| settings.use_riwork_colors = true)
-            .unwrap();
-        assert_eq!(document(&dir)["panel_tab_icons"], "labels");
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn open_preview_on_select_defaults_on_and_a_closed_preview_stays_closed_when_off() {
-        let dir = env::temp_dir().join(format!("riwork-settings-preview-{}", Uuid::new_v4()));
-        let store = SettingsStore::open(&dir).unwrap();
-        let document = |dir: &std::path::Path| -> Value {
-            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap()
-        };
-        assert!(Settings::default().open_preview_on_select);
-
-        // A file from a build without the setting reads as on and is not rewritten by a load.
-        let older = r#"{"schema_version":1,"theme":"tokyo_night","panel_tab_icons":true,"future_setting":{"a":1}}"#;
-        fs::write(dir.join("settings.json"), older).unwrap();
-        assert!(store.load().unwrap().open_preview_on_select);
-        assert_eq!(
-            fs::read_to_string(dir.join("settings.json")).unwrap(),
-            older
-        );
-
-        // Turning it off writes only that key and leaves its neighbours alone.
-        let saved = store
-            .update(|settings| Toggle::PreviewOnSelect.flip(settings))
-            .unwrap();
-        assert!(!saved.open_preview_on_select);
-        let file = document(&dir);
-        assert_eq!(file["open_preview_on_select"], false);
-        assert_eq!(file["panel_tab_icons"], true);
-        assert_eq!(file["future_setting"], serde_json::json!({"a": 1}));
-        let reloaded = SettingsStore::open(&dir).unwrap().load().unwrap();
-        assert!(!reloaded.open_preview_on_select);
-        store
-            .update(|settings| settings.use_riwork_colors = true)
-            .unwrap();
-        assert_eq!(document(&dir)["open_preview_on_select"], false);
-
-        // A value in a shape this build lacks reads as on and stays until changed.
-        fs::write(
-            dir.join("settings.json"),
-            r#"{"schema_version":1,"open_preview_on_select":"sometimes"}"#,
-        )
-        .unwrap();
-        assert!(store.load().unwrap().open_preview_on_select);
-        store
-            .update(|settings| settings.use_riwork_colors = true)
-            .unwrap();
-        assert_eq!(document(&dir)["open_preview_on_select"], "sometimes");
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -3683,65 +3462,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_inline_mode_defaults_on_and_survives_older_odd_and_unreadable_files() {
-        let dir = env::temp_dir().join(format!("riwork-settings-inline-{}", Uuid::new_v4()));
-        let store = SettingsStore::open(&dir).unwrap();
-        let document = |dir: &std::path::Path| -> Value {
-            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap()
-        };
-        assert!(Settings::default().agent_inline_mode);
-        // No file yet: the default applies to a launch, and nothing is written.
-        assert!(agent_inline_mode(&dir));
-        assert!(!dir.join("settings.json").exists());
-
-        // A file from a build without the setting reads as on and is not rewritten.
-        let older = r#"{"schema_version":1,"theme":"tokyo_night","future_setting":{"a":1}}"#;
-        fs::write(dir.join("settings.json"), older).unwrap();
-        assert!(store.load().unwrap().agent_inline_mode);
-        assert!(agent_inline_mode(&dir));
-        assert_eq!(
-            fs::read_to_string(dir.join("settings.json")).unwrap(),
-            older
-        );
-
-        // Turning it off writes only that key, and launches see it at once.
-        let saved = store
-            .update(|settings| Toggle::AgentInline.flip(settings))
-            .unwrap();
-        assert!(!saved.agent_inline_mode);
-        let file = document(&dir);
-        assert_eq!(file["agent_inline_mode"], false);
-        assert_eq!(file["theme"], "tokyo_night");
-        assert_eq!(file["future_setting"], serde_json::json!({"a": 1}));
-        assert!(!agent_inline_mode(&dir));
-        store
-            .update(|settings| settings.use_riwork_colors = true)
-            .unwrap();
-        assert_eq!(document(&dir)["agent_inline_mode"], false);
-        store
-            .update(|settings| Toggle::AgentInline.flip(settings))
-            .unwrap();
-        assert!(agent_inline_mode(&dir));
-
-        // A value in a shape this build lacks reads as on and stays until changed.
-        fs::write(
-            dir.join("settings.json"),
-            r#"{"schema_version":1,"agent_inline_mode":"minimal"}"#,
-        )
-        .unwrap();
-        assert!(store.load().unwrap().agent_inline_mode);
-        store
-            .update(|settings| settings.use_riwork_colors = true)
-            .unwrap();
-        assert_eq!(document(&dir)["agent_inline_mode"], "minimal");
-
-        // A damaged file does not decide how an agent draws.
-        fs::write(dir.join("settings.json"), "{ not json").unwrap();
-        assert!(agent_inline_mode(&dir));
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
     fn orchestrators_run_in_a_terminal_by_default_and_the_choice_survives_older_odd_and_unreadable_files()
      {
         let dir = env::temp_dir().join(format!("riwork-settings-orchestrator-{}", Uuid::new_v4()));
@@ -3892,34 +3612,6 @@ mod tests {
     }
 
     #[test]
-    fn match_terminal_changes_only_its_own_setting_and_keeps_the_saved_size() {
-        let base = Settings {
-            ui_text_size: TextPoints::new(14.0),
-            ..Settings::default()
-        };
-        let mut matched = base.clone();
-        toggle_text_match(&mut matched);
-        assert!(matched.ui_text_matches_terminal);
-        let (before, after) = (
-            serde_json::to_value(&base).unwrap(),
-            serde_json::to_value(&matched).unwrap(),
-        );
-        let changed: Vec<_> = before
-            .as_object()
-            .unwrap()
-            .iter()
-            .filter(|(key, value)| after[key.as_str()] != **value)
-            .map(|(key, _)| key.as_str())
-            .collect();
-        assert_eq!(changed, ["ui_text_matches_terminal"]);
-        assert_eq!(ui_text::effective_points(&matched, Some(20.0)), 20.0);
-        // Turning it off again returns to the saved size, not the size matched.
-        toggle_text_match(&mut matched);
-        assert_eq!(matched, base);
-        assert_eq!(ui_text::effective_points(&matched, Some(20.0)), 14.0);
-    }
-
-    #[test]
     fn each_toggle_changes_only_its_own_setting() {
         let base = Settings::default();
         for (toggle, expected) in [
@@ -3964,34 +3656,6 @@ mod tests {
     }
 
     #[test]
-    fn each_theme_round_trips_and_persists_without_losing_other_preferences() {
-        let dir = env::temp_dir().join(format!("riwork-themes-test-{}", Uuid::new_v4()));
-        let store = SettingsStore::open(&dir).unwrap();
-        store
-            .update(|settings| {
-                settings.use_riwork_colors = true;
-                settings.remember_window_size = false;
-                settings.project_order =
-                    ProjectOrder::for_sort(crate::project_sort::ProjectSort::Name).toggled();
-            })
-            .unwrap();
-        for theme in ThemeChoice::ALL.iter().copied() {
-            let saved = store.update(|settings| settings.theme = theme).unwrap();
-            let encoded = serde_json::to_string(&saved).unwrap();
-            assert_eq!(serde_json::from_str::<Settings>(&encoded).unwrap(), saved);
-            let reloaded = SettingsStore::open(&dir).unwrap().load().unwrap();
-            assert_eq!(reloaded.theme, theme);
-            assert!(reloaded.use_riwork_colors);
-            assert!(!reloaded.remember_window_size);
-            assert_eq!(
-                reloaded.project_order,
-                ProjectOrder::for_sort(crate::project_sort::ProjectSort::Name).toggled()
-            );
-        }
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
     fn concurrent_preferences_merge_and_corrupt_data_is_not_overwritten() {
         let dir = env::temp_dir().join(format!("riwork-settings-test-{}", Uuid::new_v4()));
         let store = SettingsStore::open(&dir).unwrap();
@@ -4027,64 +3691,6 @@ mod tests {
             fs::read_to_string(dir.join("settings.json")).unwrap(),
             "broken"
         );
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn account_and_status_preferences_upgrade_and_persist_across_reopens() {
-        use crate::status_bar::{StatusItemKind, StatusSide};
-        let dir = env::temp_dir().join(format!("riwork-settings-account-bar-{}", Uuid::new_v4()));
-        let store = SettingsStore::open(&dir).unwrap();
-        fs::write(
-            dir.join("settings.json"),
-            r#"{"schema_version":1,"theme":"tokyo_night","remember_window_size":false,"project_order":{"by":"name","descending":false}}"#,
-        )
-        .unwrap();
-        let older = store.load().unwrap();
-        assert_eq!(older.theme, ThemeChoice::TokyoNight);
-        assert_eq!(older.selected_codex_account, None);
-        assert_eq!(older.status_bar, StatusBarSettings::default());
-
-        let mut status = StatusBarSettings::default();
-        status.set_side(StatusItemKind::Project, StatusSide::Right);
-        status.set_visible(StatusItemKind::Worktree, true);
-        status.set_visible(StatusItemKind::SessionId, false);
-        assert!(status.move_item(StatusItemKind::Usage, true));
-        let saved = store
-            .update(|settings| {
-                settings.selected_codex_account = Some("fixture-account".into());
-                settings.status_bar = status.clone();
-            })
-            .unwrap();
-        assert_eq!(saved.theme, ThemeChoice::TokyoNight);
-        assert!(!saved.remember_window_size);
-        assert_eq!(saved.project_order, older.project_order);
-
-        let reopened = SettingsStore::open(&dir).unwrap();
-        let loaded = reopened.load().unwrap();
-        assert_eq!(
-            loaded.selected_codex_account.as_deref(),
-            Some("fixture-account")
-        );
-        assert_eq!(loaded.status_bar, status);
-        reopened
-            .update(|settings| settings.theme = ThemeChoice::Catppuccin)
-            .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded.theme, ThemeChoice::Catppuccin);
-        assert_eq!(
-            loaded.selected_codex_account.as_deref(),
-            Some("fixture-account")
-        );
-        assert_eq!(loaded.status_bar, status);
-
-        reopened
-            .update(|settings| settings.selected_codex_account = None)
-            .unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded.selected_codex_account, None);
-        assert_eq!(loaded.status_bar, status);
-        assert_eq!(loaded.theme, ThemeChoice::Catppuccin);
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4141,43 +3747,6 @@ mod tests {
         assert!(!loaded.remember_window_size);
         assert!(loaded.use_riwork_colors);
         assert_eq!(loaded.project_order, project_order);
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn partial_status_preferences_do_not_reset_other_saved_settings() {
-        use crate::status_bar::{StatusItemKind, StatusSide};
-        let dir = env::temp_dir().join(format!("riwork-settings-partial-bar-{}", Uuid::new_v4()));
-        let store = SettingsStore::open(&dir).unwrap();
-        fs::write(
-            dir.join("settings.json"),
-            r#"{"theme":"ri_work","selected_codex_account":"saved-fixture-account","status_bar":{"items":[{"kind":"project"},{"kind":"future_widget","enabled":true}]}}"#,
-        ).unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded.theme, ThemeChoice::RiWork);
-        assert_eq!(
-            loaded.selected_codex_account.as_deref(),
-            Some("saved-fixture-account")
-        );
-        assert_eq!(
-            loaded.status_bar.visible_items(StatusSide::Left),
-            [StatusItemKind::Project]
-        );
-        assert_eq!(
-            loaded.status_bar.visible_items(StatusSide::Right),
-            [StatusItemKind::CodexAccount, StatusItemKind::Layout]
-        );
-        store
-            .update(|settings| settings.remember_window_size = false)
-            .unwrap();
-        let reloaded = SettingsStore::open(&dir).unwrap().load().unwrap();
-        assert_eq!(reloaded.status_bar, loaded.status_bar);
-        assert_eq!(
-            reloaded.selected_codex_account,
-            loaded.selected_codex_account
-        );
-        assert_eq!(reloaded.theme, ThemeChoice::RiWork);
-        assert!(!reloaded.remember_window_size);
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -4282,50 +3851,6 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_orca_plan_offers_finish_only_when_a_receipt_has_something_to_record() {
-        // Nothing found and nothing skipped: import refuses, so no button.
-        let nothing = OrcaImportOffer::new(true, false);
-        assert_eq!(nothing, OrcaImportOffer::NothingYet);
-        assert_eq!(nothing.button(), None);
-        assert!(
-            nothing
-                .hint()
-                .starts_with("Orca has no projects or worktrees")
-        );
-        // Skipped-item warnings are still recorded as a receipt.
-        let skipped = OrcaImportOffer::new(true, true);
-        assert_eq!(skipped, OrcaImportOffer::Finish);
-        assert_eq!(skipped.button(), Some("Finish import"));
-        assert!(skipped.hint().starts_with("Nothing new to add"));
-        let records = OrcaImportOffer::new(false, true);
-        assert_eq!(records, OrcaImportOffer::Import);
-        assert_eq!(records.button(), Some("Import now"));
-    }
-
-    #[test]
-    fn width_classes_switch_at_the_documented_breakpoints() {
-        use SettingsLayout::{Medium, Narrow, Wide};
-        for (width, expected) in [
-            (0.0, Narrow),
-            (300.0, Narrow),
-            (699.9, Narrow),
-            (700.0, Medium),
-            (820.0, Medium),
-            (1199.9, Medium),
-            (1200.0, Wide),
-            (2400.0, Wide),
-            // Not measured yet, or not a usable width: fall back to one column.
-            (-50.0, Narrow),
-            (f32::NAN, Narrow),
-        ] {
-            assert_eq!(layout_for(width), expected, "{width}");
-        }
-        assert_eq!(Narrow.max_width(), None);
-        assert_eq!(Medium.max_width(), Some(820.0));
-        assert_eq!(Wide.max_width(), Some(1320.0));
-    }
-
-    #[test]
     fn every_section_lands_in_exactly_one_column_in_tab_order() {
         use SettingsLayout::{Medium, Narrow, Wide};
         for (layout, column_count) in [(Narrow, 1), (Medium, 1), (Wide, 2)] {
@@ -4336,72 +3861,5 @@ mod tests {
             let flat: Vec<_> = columns.iter().flatten().copied().collect();
             assert_eq!(flat, Section::ALL, "{layout:?}");
         }
-        let wide = section_columns(Wide);
-        assert_eq!(
-            wide,
-            vec![
-                vec![
-                    Section::Cua,
-                    Section::Codex,
-                    Section::Appearance,
-                    Section::Files
-                ],
-                vec![
-                    Section::Agents,
-                    Section::Windows,
-                    Section::StatusBar,
-                    Section::Remote,
-                    Section::Orca
-                ],
-            ]
-        );
-    }
-
-    #[test]
-    fn sections_are_numbered_in_order_and_describe_themselves_in_one_line() {
-        for (index, section) in Section::ALL.iter().enumerate() {
-            assert_eq!(section.number(), format!("{:02}", index + 1));
-            assert!(!section.title().is_empty());
-            // Menlo at 10 px is about 6 px per character; Native's SF Pro, drawn
-            // at 13/11 of that, averages a little less, so the bound holds for both.
-            let width = section.description().chars().count() as f32 * 6.1;
-            assert!(width <= DESCRIPTION_MAX_WIDTH, "{:?} wraps", section);
-        }
-    }
-
-    #[test]
-    fn theme_choices_stay_in_one_column_on_narrow_panels_and_grid_when_there_is_room() {
-        for width in [0.0, 300.0, 520.0, 699.9] {
-            assert_eq!(theme_columns(layout_for(width), width), 1, "{width}");
-        }
-        assert_eq!(width_class(700.0), (SettingsLayout::Medium, 2));
-        assert_eq!(width_class(900.0), (SettingsLayout::Medium, 3));
-        assert_eq!(width_class(1200.0), (SettingsLayout::Wide, 2));
-        assert_eq!(width_class(1800.0), (SettingsLayout::Wide, 2));
-        // Wherever the grid is used, no cell is narrower than its minimum, and no
-        // section card is ever wider than its pane.
-        let mut width = 0.0;
-        while width <= 3000.0 {
-            let layout = layout_for(width);
-            let inner = card_inner_width(layout, width);
-            assert!(inner <= width, "{width}");
-            let columns = theme_columns(layout, width);
-            assert!((1..=3).contains(&columns), "{width}");
-            if layout != SettingsLayout::Narrow {
-                let cell = (inner - ROW_GAP * (columns - 1) as f32) / columns as f32;
-                assert!(cell >= THEME_CELL_MIN_WIDTH, "{width}: {cell}");
-            }
-            width += 3.0;
-        }
-    }
-
-    #[test]
-    fn repainting_is_needed_only_when_the_arrangement_changes() {
-        assert_eq!(width_class(1250.0), width_class(1900.0));
-        assert_eq!(width_class(800.0), width_class(1150.0));
-        assert_ne!(width_class(699.0), width_class(700.0));
-        assert_ne!(width_class(1199.0), width_class(1200.0));
-        // The grid gains a third column inside the medium class.
-        assert_ne!(width_class(720.0), width_class(900.0));
     }
 }

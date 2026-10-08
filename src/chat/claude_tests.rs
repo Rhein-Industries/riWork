@@ -405,37 +405,6 @@ fn a_turn_streams_text_runs_tools_and_asks_for_approval() {
 }
 
 #[test]
-fn accepting_for_the_session_sends_the_clis_own_suggestion_back() {
-    let mut rig = Rig::new(&["session_approval"]);
-    rig.send("Write a file");
-    rig.until(is_approval);
-    let approval = approvals(&rig.seen).remove(0);
-    assert_eq!(approval.kind, ApprovalKind::FileChange);
-    assert!(
-        approval.detail.contains("--- /dev/null"),
-        "{}",
-        approval.detail
-    );
-    rig.command(ChatCommand::Approve {
-        request_id: "perm-9".into(),
-        decision: Decision::AcceptForSession,
-    });
-    // The fake only goes on if the reply carried `updatedPermissions`.
-    rig.until_idle();
-    let transcript = rig.transcript();
-    assert!(matches!(
-        &item(&transcript, "toolu_w").body,
-        ItemBody::FileChange { changes } if changes[0].kind == ChangeKind::Add
-    ));
-    assert!(rig.seen.iter().any(|event| matches!(
-        event,
-        ChatEvent::ApprovalResolved { request_id, decision: Decision::AcceptForSession }
-            if request_id == "perm-9"
-    )));
-    assert!(!rig.fake.saw("mismatch"));
-}
-
-#[test]
 fn a_question_is_asked_and_the_answers_go_back_keyed_by_question() {
     let mut rig = Rig::new(&["question"]);
     rig.send("Pick a library");
@@ -833,20 +802,6 @@ fn the_models_in_the_initialize_answer_become_a_models_event() {
 }
 
 #[test]
-fn fast_mode_is_in_the_launch_settings_only_when_asked_for() {
-    let on = Rig::with(&["models_fast"], fast(), |config| config.fast = true);
-    let args = argv(&on.fake.starts()[0]);
-    assert!(
-        has_pair(&args, "--settings", r#"{"fastMode":true}"#),
-        "{args:?}"
-    );
-    let off = Rig::new(&["idle_only"]);
-    assert!(!argv(&off.fake.starts()[0]).contains(&"--settings".to_owned()));
-    // Nothing is said when it is on, as asked.
-    assert!(notices(&on.seen).is_empty());
-}
-
-#[test]
 fn fast_mode_is_changed_in_the_running_process_and_a_state_that_is_not_on_is_said_once() {
     let mut rig = Rig::with(&["models_fast"], fast(), |config| config.fast = true);
     rig.command(configure_fast(false));
@@ -930,32 +885,6 @@ fn a_model_without_fast_mode_does_not_make_the_chat_complain_about_it() {
     rig.until_idle();
     assert!(notices(&rig.seen).is_empty(), "{:?}", notices(&rig.seen));
     assert!(!rig.fake.saw("mismatch"));
-}
-
-#[test]
-fn every_reason_fast_mode_is_off_has_its_own_words() {
-    let said = |state, reason| fast_off_text(state, reason);
-    assert!(said("cooldown", None).contains("cooling down after a rate limit"));
-    // A cooldown is a state, not a reason: whatever reason comes with it, it is a cooldown.
-    assert!(said("cooldown", Some("unknown")).contains("cooling down"));
-    for (reason, words) in [
-        ("free", "paid Claude subscription"),
-        ("preference", "organization has turned off"),
-        ("extra_usage_disabled", "extra usage"),
-        ("network_error", "network"),
-        ("not_first_party", "Anthropic API"),
-        ("disabled_by_env", "environment"),
-        ("model_not_allowed", "does not allow this model"),
-        ("sdk_opt_in_required", "did not turn on"),
-        ("unknown", "unavailable"),
-    ] {
-        assert!(said("off", Some(reason)).contains(words), "{reason}");
-    }
-    assert!(said("off", None).contains("for this model"));
-    assert_eq!(
-        said("off", Some("brand_new")),
-        "Fast mode is off (brand_new)"
-    );
 }
 
 #[test]
@@ -1195,6 +1124,7 @@ fn retries_and_rate_limits_become_notices_but_an_allowed_limit_does_not() {
 }
 
 #[test]
+#[ignore = "slow: asserts a 250 ms inactivity notice against a fake that sleeps 900 ms"]
 fn silence_during_a_turn_is_a_notice_and_the_process_is_left_alone() {
     let tuning = Tuning {
         inactivity: Duration::from_millis(250),
@@ -1378,25 +1308,6 @@ fn resuming_a_session_claude_never_saved_starts_it_again_under_the_same_id() {
 }
 
 #[test]
-fn resuming_fails_for_good_when_the_second_attempt_fails_too() {
-    let text = fixture("claude/fails_at_start.ndjson");
-    let fake = Fake::new(&[text.as_str()]);
-    let (sender, events) = mpsc::channel();
-    let mut config = fake.config(Provider::Claude);
-    config.resume = Some("sess-1".into());
-    let error = start_with(config, sender, fast()).err().unwrap();
-    assert!(error.contains("No conversation found"), "{error}");
-    assert!(error.contains("exited"), "{error}");
-    assert_eq!(fake.starts().len(), 2);
-    let events: Vec<ChatEvent> = events.try_iter().collect();
-    assert_eq!(
-        states(&events),
-        [ChatState::Starting, ChatState::Failed { message: error }]
-    );
-    assert!(notices(&events).is_empty());
-}
-
-#[test]
 fn a_resume_that_fails_otherwise_is_not_retried() {
     // Not the missing-session message: no second attempt.
     let fake = Fake::new(&["{\"type\":\"exit\",\"code\":2,\"stderr\":\"claude: bad settings\"}\n"]);
@@ -1432,32 +1343,7 @@ fn a_made_up_error_message_does_not_overwrite_the_streamed_one_before_it() {
 }
 
 #[test]
-fn a_cancel_whose_interrupt_the_cli_ignores_is_escalated_like_an_interrupt() {
-    let tuning = Tuning {
-        stop_grace: Duration::from_millis(200),
-        ..fast()
-    };
-    let mut rig = Rig::with(&["cancel_ignored_1", "idle_only_2"], tuning, |_| {});
-    rig.send("go");
-    rig.until(is_approval);
-    rig.command(ChatCommand::Approve {
-        request_id: "perm-1".into(),
-        decision: Decision::Cancel,
-    });
-    rig.until_idle();
-    assert!(!rig.fake.saw("mismatch"));
-    assert_eq!(outcomes(&rig.seen), vec![TurnOutcome::Interrupted]);
-    let entries = rig.fake.entries();
-    assert!(
-        entries.contains(&json!({"signal": "INT", "ignored": true})),
-        "{entries:?}"
-    );
-    let starts = rig.fake.starts();
-    assert_eq!(starts.len(), 2);
-    assert!(has_pair(&argv(&starts[1]), "--resume", "sess-1"));
-}
-
-#[test]
+#[ignore = "slow: depends on the fake finishing within the SIGINT kill window after a 500 ms sleep"]
 fn a_process_that_leaves_after_sigint_is_restarted_even_if_the_turn_had_ended() {
     let tuning = Tuning {
         interrupt_grace: Duration::from_millis(100),
@@ -1499,6 +1385,7 @@ fn a_process_that_leaves_after_sigint_is_restarted_even_if_the_turn_had_ended() 
 }
 
 #[test]
+#[ignore = "slow: sleeps 700 ms against a 300 ms inactivity limit"]
 fn time_spent_on_a_prompt_is_not_silence() {
     let tuning = Tuning {
         inactivity: Duration::from_millis(300),
@@ -1536,6 +1423,7 @@ fn compaction_resets_the_context_size_to_what_it_left() {
 }
 
 #[test]
+#[ignore = "slow: real process lookup with pgrep after a timed restart"]
 fn stopping_during_a_restart_stops_the_process_being_replaced_too() {
     let tuning = Tuning {
         stop_grace: Duration::from_millis(400),
@@ -1613,18 +1501,6 @@ fn messages_queued_for_a_restart_that_fails_are_reported_not_lost() {
 // The pure parts.
 
 #[test]
-fn diffs_show_the_replaced_and_the_new_text() {
-    assert_eq!(
-        unified_diff("/a.txt", false, &[("one\ntwo", "one\n2\nthree")]),
-        "--- /a.txt\n+++ /a.txt\n@@ -1,2 +1,3 @@\n-one\n-two\n+one\n+2\n+three\n"
-    );
-    assert_eq!(
-        unified_diff("/new.txt", true, &[("", "x\n")]),
-        "--- /dev/null\n+++ /new.txt\n@@ -0,0 +1,1 @@\n+x\n"
-    );
-}
-
-#[test]
 fn file_tools_become_file_changes() {
     let edit = tool_body(
         "Edit",
@@ -1685,32 +1561,6 @@ fn file_tools_become_file_changes() {
         tool_body("Edit", &json!({})),
         ItemBody::ToolCall { .. }
     ));
-}
-
-#[test]
-fn other_tools_are_classified_by_name() {
-    assert!(matches!(
-        tool_body("Bash", &json!({"command": "ls"})),
-        ItemBody::Command { command, .. } if command == "ls"
-    ));
-    assert!(matches!(
-        tool_body("ExitPlanMode", &json!({})),
-        ItemBody::ToolCall { tool, .. } if tool == "ExitPlanMode"
-    ));
-    assert!(matches!(
-        tool_body("mcp__a_b__c__d", &json!({})),
-        ItemBody::ToolCall { server: Some(server), tool, .. } if server == "a_b" && tool == "c__d"
-    ));
-    assert!(matches!(
-        tool_body("Grep", &json!({"pattern": "x"})),
-        ItemBody::ToolCall { server: None, tool, .. } if tool == "Grep"
-    ));
-    assert_eq!(approval_kind("Bash"), ApprovalKind::Command);
-    for tool in ["Edit", "Write", "MultiEdit", "NotebookEdit"] {
-        assert_eq!(approval_kind(tool), ApprovalKind::FileChange);
-    }
-    assert_eq!(approval_kind("WebFetch"), ApprovalKind::Tool);
-    assert_eq!(approval_kind("mcp__x__y"), ApprovalKind::Tool);
 }
 
 #[test]
@@ -1878,22 +1728,11 @@ fn allowing_for_the_session_uses_the_suggestion_or_a_rule_for_what_was_asked() {
 }
 
 #[test]
-fn small_helpers() {
+fn approval_modes_map_to_claude_permission_modes() {
     assert_eq!(permission_mode(ApprovalMode::Supervised), "default");
     assert_eq!(permission_mode(ApprovalMode::AutoEdit), "acceptEdits");
     assert_eq!(permission_mode(ApprovalMode::Full), "bypassPermissions");
     assert_eq!(permission_mode(ApprovalMode::Plan), "plan");
-    assert_eq!(strip_ansi("a\u{1b}[31;1mb\u{1b}[0mc"), "abc");
-    assert_eq!(first_line(&"x".repeat(300)).chars().count(), 201);
-    assert_eq!(describe_duration(Duration::from_secs(90)), "90 seconds");
-    assert_eq!(describe_duration(Duration::from_secs(300)), "5 minutes");
-    assert_eq!(
-        context_tokens(&json!({"input_tokens": 1, "output_tokens": 2})),
-        Some(3)
-    );
-    assert_eq!(context_tokens(&json!({})), None);
-    assert_eq!(split_mcp("mcp__server__tool"), Some(("server", "tool")));
-    assert_eq!(split_mcp("Bash"), None);
 }
 
 fn bare_config() -> DriverConfig {

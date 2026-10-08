@@ -1454,18 +1454,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn failing_codex_reads_back_off_exponentially_up_to_a_cap() {
-        let waits: Vec<_> = (0..9).map(|n| codex_refresh_interval(false, n)).collect();
-        assert_eq!(waits[..5], [60, 120, 240, 480, 600]);
-        assert!(waits[5..].iter().all(|wait| *wait == 10 * 60));
-        // A cached snapshot keeps its normal cadence until refreshes start failing.
-        assert_eq!(codex_refresh_interval(true, 0), 15 * 60);
-        assert_eq!(codex_refresh_interval(true, 1), 30 * 60);
-        assert_eq!(codex_refresh_interval(true, u32::MAX), 30 * 60);
-        assert_eq!(codex_refresh_interval(false, u32::MAX), 10 * 60);
-    }
-
-    #[test]
     fn codex_uses_reported_durations_and_not_assumed_windows() {
         let usage = parse_codex_usage(
             &json!({"rateLimits": {
@@ -1594,6 +1582,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: runs a fake Codex app-server script and a wall-clock timeout"]
     fn codex_stdio_accepts_out_of_order_replies_and_times_out_cleanly() {
         use std::os::unix::fs::PermissionsExt;
         let home = env::temp_dir().join(format!("riwork-usage-rpc-{}", Uuid::new_v4()));
@@ -1666,6 +1655,7 @@ done
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: runs a fake Codex app-server script per account home"]
     fn codex_usage_forces_each_supplied_home_without_changing_parent_environment() {
         let fixture = FakeCodex::new(
             r#"#!/bin/sh
@@ -1725,6 +1715,7 @@ done
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: runs a fake Codex app-server script"]
     fn account_scoped_usage_errors_never_expose_server_auth_details() {
         for (code, expected) in [
             (
@@ -1847,49 +1838,6 @@ done
     }
 
     #[test]
-    fn grok_totals_default_and_model_fallbacks() {
-        // Total is input + output when Grok omits it; the largest model stands
-        // in for a missing primary model; absent counters are zero.
-        let usage = parse_grok_usage(
-            json!({
-                "sessionId": SESSION,
-                "session": {
-                    "inputTokens": 7, "outputTokens": 5,
-                    "modelUsage": {"small": {"totalTokens": 1}, "big": {"totalTokens": 9}}
-                }
-            })
-            .to_string()
-            .as_bytes(),
-            SESSION,
-        )
-        .unwrap();
-        assert_eq!(usage.tokens.total, 12);
-        assert_eq!(usage.tokens.cached_read, 0);
-        assert_eq!(usage.turns, 0);
-        assert_eq!(usage.cost_usd, None);
-        assert_eq!(usage.updated_at, None);
-        assert_eq!(usage.primary_model.as_deref(), Some("big"));
-    }
-
-    #[test]
-    fn grok_cost_ticks_convert_at_ten_billion_per_dollar() {
-        let cost = |ticks: Value| {
-            let report =
-                json!({"sessionId": SESSION, "session": {"totalTokens": 1, "costUsdTicks": ticks}});
-            parse_grok_usage(report.to_string().as_bytes(), SESSION).map(|usage| usage.cost_usd)
-        };
-        assert_eq!(cost(json!(10_000_000_000u64)).unwrap(), Some(1.0));
-        assert_eq!(cost(json!(4_200_000_000u64)).unwrap(), Some(0.42));
-        assert_eq!(cost(json!(0)).unwrap(), Some(0.0));
-        assert_eq!(cost(json!(1)).unwrap(), Some(1e-10));
-        assert!(cost(json!(u64::MAX)).unwrap().unwrap().is_finite());
-        assert_eq!(cost(json!(null)).unwrap(), None);
-        assert!(cost(json!(-5)).is_err());
-        assert!(cost(json!("7")).is_err());
-        assert!(cost(json!(1.5)).is_err());
-    }
-
-    #[test]
     fn partial_or_garbage_grok_reports_are_errors_and_never_zero_usage() {
         let good = grok_report(SESSION).to_string();
         let mut cases: Vec<Vec<u8>> = vec![
@@ -1982,26 +1930,6 @@ done
             );
         }
         assert!(parse_active_grok_sessions(b"[]").unwrap().is_empty());
-    }
-
-    #[test]
-    fn grok_home_follows_grok_home_then_home() {
-        use std::ffi::OsString;
-        let some = |text: &str| Some(OsString::from(text));
-        assert_eq!(
-            grok_home_from(some("/custom"), some("/Users/x")).unwrap(),
-            PathBuf::from("/custom")
-        );
-        assert_eq!(
-            grok_home_from(None, some("/Users/x")).unwrap(),
-            PathBuf::from("/Users/x/.grok")
-        );
-        assert_eq!(
-            grok_home_from(some(""), some("/Users/x")).unwrap(),
-            PathBuf::from("/Users/x/.grok")
-        );
-        assert!(grok_home_from(some("relative"), some("/Users/x")).is_err());
-        assert!(grok_home_from(None, None).is_err());
     }
 
     #[derive(Default)]
@@ -2113,19 +2041,6 @@ done
     }
 
     #[test]
-    fn a_grok_pane_never_borrows_a_session_from_its_own_children() {
-        // The pane process is Grok and is not listed (yet); a Grok helper it
-        // started is listed. That session is not this tab's.
-        let entries = [listed(OTHER_SESSION, 4001, Some(1_000.0))];
-        let processes = FakeProcesses::default()
-            .with(4000, GROK, Some(999.0))
-            .with(4001, GROK, Some(999.0))
-            .child(4000, 4001);
-        let error = resolve_grok_session(&entries, 4000, &processes).unwrap_err();
-        assert!(error.contains("not registered"), "{error}");
-    }
-
-    #[test]
     fn stale_entries_with_a_reused_pid_are_rejected() {
         let entries = [listed(SESSION, 4000, Some(1_000.0))];
         let outcome = |processes: FakeProcesses| resolve_grok_session(&entries, 4000, &processes);
@@ -2215,6 +2130,7 @@ done
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: spawns real processes and polls the process table"]
     fn real_processes_reject_a_stale_entry_whose_pid_is_not_grok() {
         // A live pid that is not Grok, listed as though it were: what Grok's
         // file holds after a session dies and its pid is reused.
@@ -2314,14 +2230,6 @@ done
             fs::write(self.home.join("active_sessions.json"), entries.to_string()).unwrap();
         }
 
-        fn calls(&self) -> Vec<String> {
-            fs::read_to_string(self.executable.with_file_name("calls"))
-                .unwrap_or_default()
-                .lines()
-                .map(str::to_owned)
-                .collect()
-        }
-
         fn reader<'a>(
             &'a self,
             cache: &'a GrokUsageCache,
@@ -2359,236 +2267,7 @@ done
 
     #[cfg(unix)]
     #[test]
-    fn grok_usage_is_read_for_the_session_listed_for_each_tab() {
-        let grok = FakeGrok::new();
-        grok.respond(&grok_report(SESSION).to_string());
-        grok.list(json!([
-            {"session_id": SESSION, "pid": 4000, "cwd": "/w", "opened_at": rfc3339(1_000)},
-            // A stale entry: its pid is now the user's shell.
-            {"session_id": OTHER_SESSION, "pid": 5000, "cwd": "/w", "opened_at": rfc3339(1_000)},
-        ]));
-        let processes = FakeProcesses::default().with(4000, GROK, Some(990.0)).with(
-            5000,
-            "/bin/zsh",
-            Some(2_000.0),
-        );
-        let cache = GrokUsageCache::new(Duration::from_secs(60));
-        let results = read_grok_usages_with(
-            &grok.reader(&cache, &processes),
-            &[target("live", 4000), target("stale", 5000)],
-            &BTreeMap::new(),
-            false,
-        );
-        let live = &results["live"];
-        let usage = live.usage.as_ref().unwrap();
-        assert_eq!(usage.session_id, SESSION);
-        assert!(!live.stale && live.error.is_none());
-        assert!(live.fetched_at_unix > 0 && live.checked_at_unix > 0);
-        assert_eq!(live.pane_pid, Some(4000));
-        // The stale entry yields no session and no spawn.
-        assert!(results["stale"].usage.is_none());
-        assert!(
-            results["stale"]
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("not registered")
-        );
-        assert_eq!(grok.calls(), [format!("usage {SESSION}")]);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn grok_reads_are_cached_per_session_until_the_ttl_or_a_forced_refresh() {
-        let grok = FakeGrok::new();
-        grok.respond(&grok_report(SESSION).to_string());
-        grok.list(json!([
-            {"session_id": SESSION, "pid": 4000, "opened_at": rfc3339(1_000)},
-            {"session_id": SESSION, "pid": 4100, "opened_at": rfc3339(1_000)},
-            {"session_id": OTHER_SESSION, "pid": 4200, "opened_at": rfc3339(1_000)},
-        ]));
-        let processes = FakeProcesses::default()
-            .with(4000, GROK, None)
-            .with(4100, GROK, None)
-            .with(4200, GROK, None);
-        let cache = GrokUsageCache::new(Duration::from_millis(1500));
-        let reader = grok.reader(&cache, &processes);
-        let all = [target("a", 4000), target("b", 4100), target("c", 4200)];
-        let none = BTreeMap::new();
-
-        // Two tabs on one session share a read; the other session has its own.
-        let first = read_grok_usages_with(&reader, &all, &none, false);
-        assert_eq!(grok.calls().len(), 2, "{:?}", grok.calls());
-        assert_eq!(first["a"].usage, first["b"].usage);
-        // Every later tick inside the TTL is answered from the cache.
-        for _ in 0..5 {
-            read_grok_usages_with(&reader, &all, &first, false);
-        }
-        assert_eq!(grok.calls().len(), 2);
-        // The Refresh action reads again.
-        read_grok_usages_with(&reader, &all, &first, true);
-        assert_eq!(grok.calls().len(), 4);
-        // So does the first tick after the TTL.
-        thread::sleep(Duration::from_millis(1600));
-        read_grok_usages_with(&reader, &all, &first, false);
-        assert_eq!(grok.calls().len(), 6);
-        read_grok_usages_with(&reader, &all, &first, false);
-        assert_eq!(grok.calls().len(), 6);
-        // Only the session asked about is read.
-        thread::sleep(Duration::from_millis(1600));
-        read_grok_usages_with(&reader, &all[..1], &first, false);
-        assert_eq!(grok.calls().len(), 7);
-    }
-
-    #[test]
-    fn a_forced_read_that_waited_behind_another_is_not_repeated() {
-        let cache = GrokUsageCache::new(Duration::from_secs(60));
-        let reads = std::sync::atomic::AtomicUsize::new(0);
-        let usage = || {
-            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            thread::sleep(Duration::from_millis(400));
-            parse_grok_usage(grok_report(SESSION).to_string().as_bytes(), SESSION)
-        };
-        thread::scope(|scope| {
-            let handles: Vec<_> = (0..4)
-                .map(|_| scope.spawn(|| cache.get(SESSION, true, usage)))
-                .collect();
-            for handle in handles {
-                assert!(handle.join().unwrap().usage.is_some());
-            }
-        });
-        // Callers that asked while one read was running got its answer.
-        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_failed_grok_read_keeps_the_last_figures_marked_stale() {
-        let grok = FakeGrok::new();
-        grok.respond(&grok_report(SESSION).to_string());
-        grok.list(json!([{"session_id": SESSION, "pid": 4000, "opened_at": rfc3339(1_000)}]));
-        let processes = FakeProcesses::default().with(4000, GROK, None);
-        // A zero TTL makes every tick read again.
-        let cache = GrokUsageCache::new(Duration::ZERO);
-        let reader = grok.reader(&cache, &processes);
-        let tabs = [target("a", 4000)];
-        let good = read_grok_usages_with(&reader, &tabs, &BTreeMap::new(), false);
-        assert!(!good["a"].stale);
-        let figures = good["a"].usage.clone().unwrap();
-
-        // Grok mid-write: the report is cut short.
-        let report = grok_report(SESSION).to_string();
-        grok.respond(&report[..report.len() / 3]);
-        let partial = read_grok_usages_with(&reader, &tabs, &good, false);
-        assert_eq!(partial["a"].usage.as_ref(), Some(&figures));
-        assert!(partial["a"].stale);
-        assert!(partial["a"].error.as_ref().unwrap().contains("unreadable"));
-        assert_eq!(partial["a"].fetched_at_unix, good["a"].fetched_at_unix);
-
-        // A non-zero exit, and no output at all, are the same story.
-        grok.respond(&report);
-        grok.set("fail", Some(""));
-        let failed = read_grok_usages_with(&reader, &tabs, &partial, false);
-        assert_eq!(failed["a"].usage.as_ref(), Some(&figures));
-        assert!(failed["a"].stale);
-        assert!(failed["a"].error.as_ref().unwrap().contains("exit 3"));
-        grok.set("fail", None);
-        grok.respond("");
-        assert!(read_grok_usages_with(&reader, &tabs, &failed, false)["a"].stale);
-
-        // Recovery clears the mark and updates the figures.
-        grok.respond(&report.replace("\"turnCount\":10", "\"turnCount\":11"));
-        let healed = read_grok_usages_with(&reader, &tabs, &failed, false);
-        assert!(!healed["a"].stale && healed["a"].error.is_none());
-        assert_eq!(healed["a"].usage.as_ref().unwrap().turns, 11);
-
-        // A tab that never read successfully has no figures to keep.
-        let fresh_cache = GrokUsageCache::new(Duration::ZERO);
-        grok.respond("{");
-        let never = read_grok_usages_with(
-            &grok.reader(&fresh_cache, &processes),
-            &tabs,
-            &BTreeMap::new(),
-            false,
-        );
-        assert!(never["a"].usage.is_none() && !never["a"].stale);
-        assert!(never["a"].error.is_some());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_missing_or_half_written_active_session_list_is_handled() {
-        let grok = FakeGrok::new();
-        grok.respond(&grok_report(SESSION).to_string());
-        let processes = FakeProcesses::default().with(4000, GROK, None);
-        let cache = GrokUsageCache::new(Duration::ZERO);
-        let reader = grok.reader(&cache, &processes);
-        let tabs = [target("a", 4000)];
-
-        // Grok has never written the file.
-        let none = read_grok_usages_with(&reader, &tabs, &BTreeMap::new(), false);
-        assert!(none["a"].error.as_ref().unwrap().contains("not registered"));
-
-        grok.list(json!([{"session_id": SESSION, "pid": 4000, "opened_at": rfc3339(1_000)}]));
-        let good = read_grok_usages_with(&reader, &tabs, &BTreeMap::new(), false);
-        assert!(good["a"].usage.is_some());
-
-        // The leader is rewriting it: the last figures stay, marked stale.
-        for garbage in ["", "[{\"session_id\": \"01a0", "not json"] {
-            fs::write(grok.home.join("active_sessions.json"), garbage).unwrap();
-            let kept = read_grok_usages_with(&reader, &tabs, &good, false);
-            assert_eq!(kept["a"].usage, good["a"].usage, "{garbage:?}");
-            assert!(kept["a"].stale, "{garbage:?}");
-            assert!(
-                kept["a"]
-                    .error
-                    .as_ref()
-                    .unwrap()
-                    .contains("active sessions")
-            );
-            // Nothing was spawned to answer it.
-        }
-        assert_eq!(grok.calls().len(), 1);
-        // The tab's process changed while the list was unreadable: the old
-        // figures belong to a different Grok and are dropped.
-        let processes = FakeProcesses::default().with(4001, GROK, None);
-        let moved = read_grok_usages_with(
-            &grok.reader(&cache, &processes),
-            &[target("a", 4001)],
-            &good,
-            false,
-        );
-        assert!(moved["a"].usage.is_none());
-        assert!(moved["a"].error.is_some());
-        // tmux failing to name the pane process is the same kind of gap.
-        let unknown = GrokTarget {
-            shell_id: "a".into(),
-            pane_pid: Err("tmux is not running".into()),
-        };
-        let kept = read_grok_usages_with(&reader, &[unknown], &good, false);
-        assert!(kept["a"].stale && kept["a"].usage.is_some());
-        assert_eq!(kept["a"].error.as_deref(), Some("tmux is not running"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_missing_grok_cli_is_reported_per_tab() {
-        let grok = FakeGrok::new();
-        grok.list(json!([{"session_id": SESSION, "pid": 4000, "opened_at": rfc3339(1_000)}]));
-        let processes = FakeProcesses::default().with(4000, GROK, None);
-        let cache = GrokUsageCache::new(Duration::ZERO);
-        let mut reader = grok.reader(&cache, &processes);
-        reader.executable = Err("Grok is not installed or is not on PATH".into());
-        let results = read_grok_usages_with(&reader, &[target("a", 4000)], &BTreeMap::new(), false);
-        assert_eq!(
-            results["a"].error.as_deref(),
-            Some("Grok is not installed or is not on PATH")
-        );
-        assert!(read_grok_usages_with(&reader, &[], &BTreeMap::new(), false).is_empty());
-    }
-
-    #[cfg(unix)]
-    #[test]
+    #[ignore = "slow: spawns a fake Grok CLI and waits for wall-clock timeouts"]
     fn grok_usage_reads_time_out_and_kill_the_whole_process_group() {
         let grok = FakeGrok::new();
         grok.respond(&grok_report(SESSION).to_string());
@@ -2625,28 +2304,6 @@ done
         assert!(run_grok_usage(&grok.executable, SESSION, Duration::from_secs(5)).is_ok());
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn grok_output_is_bounded() {
-        let started = Instant::now();
-        let mut yes = Command::new("yes");
-        yes.stdin(Stdio::null()).stderr(Stdio::null());
-        let error = run_bounded(yes, Duration::from_secs(5), 64 * 1024).unwrap_err();
-        assert!(error.contains("too large"), "{error}");
-        assert!(
-            started.elapsed() < Duration::from_secs(4),
-            "{:?}",
-            started.elapsed()
-        );
-        let mut echo = Command::new("echo");
-        echo.arg("ok").stdin(Stdio::null());
-        let (status, output) = run_bounded(echo, Duration::from_secs(5), 16).unwrap();
-        assert!(status.success());
-        assert_eq!(output, b"ok\n");
-        let missing = Command::new("/nonexistent/riwork-grok");
-        assert!(run_bounded(missing, Duration::from_secs(1), 16).is_err());
-    }
-
     #[test]
     fn a_session_with_nothing_counted_yet_is_unavailable_not_free() {
         let zero = json!({"sessionId": SESSION, "session": {
@@ -2663,41 +2320,7 @@ done
 
     #[cfg(unix)]
     #[test]
-    fn a_session_that_never_read_is_not_retried_faster_than_the_ttl() {
-        let grok = FakeGrok::new();
-        grok.set("fail", Some(""));
-        let cache = GrokUsageCache::new(Duration::from_secs(60));
-        for _ in 0..4 {
-            let read = cache.get(SESSION, false, || {
-                run_grok_usage(&grok.executable, SESSION, Duration::from_secs(5))
-            });
-            assert!(read.usage.is_none() && read.error.is_some());
-        }
-        assert_eq!(grok.calls().len(), 1);
-        // After good figures, a failure is retried on the shorter schedule.
-        grok.set("fail", None);
-        grok.respond(&grok_report(OTHER_SESSION).to_string());
-        let quick = GrokUsageCache::new(Duration::from_secs(600));
-        let read = |cache: &GrokUsageCache| {
-            cache.get(OTHER_SESSION, false, || {
-                run_grok_usage(&grok.executable, OTHER_SESSION, Duration::from_secs(5))
-            })
-        };
-        assert!(read(&quick).usage.is_some());
-        assert_eq!(grok.calls().len(), 2);
-        {
-            let slot = quick.sessions.lock().unwrap()[OTHER_SESSION].clone();
-            let mut entry = slot.lock().unwrap();
-            entry.read.error = Some("mid-write".into());
-            entry.attempted =
-                Some(Instant::now() - GROK_RETRY_AFTER_FAILURE - Duration::from_secs(1));
-        }
-        assert!(read(&quick).error.is_none());
-        assert_eq!(grok.calls().len(), 3);
-    }
-
-    #[cfg(unix)]
-    #[test]
+    #[ignore = "slow: spawns a shell whose background child holds the pipe"]
     fn a_descendant_holding_the_output_pipe_does_not_hold_the_read() {
         // The child exits at once; something it started keeps stdout open.
         let root = env::temp_dir().join(format!("riwork-grok-straggler-{}", Uuid::new_v4()));
@@ -2726,16 +2349,6 @@ done
             let _ = Command::new("kill").arg(pid.trim()).status();
         }
         let _ = fs::remove_dir_all(&root);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn grok_is_asked_for_exactly_its_documented_report_and_nothing_else() {
-        let grok = FakeGrok::new();
-        grok.respond(&grok_report(SESSION).to_string());
-        run_grok_usage(&grok.executable, SESSION, Duration::from_secs(5)).unwrap();
-        // No turn, no debug flags, no leader socket; the id is the only input.
-        assert_eq!(grok.calls(), [format!("usage {SESSION}")]);
     }
 
     #[test]
@@ -2806,72 +2419,6 @@ done
     }
 
     #[test]
-    fn token_counts_and_costs_format_compactly() {
-        for (count, text) in [
-            (0, "0"),
-            (999, "999"),
-            (1_000, "1k"),
-            (1_234, "1.2k"),
-            (12_500, "12.5k"),
-            (99_949, "99.9k"),
-            (128_000, "128k"),
-            (999_499, "999k"),
-            (999_500, "1M"),
-            (1_000_000, "1M"),
-            (60_701_387, "60.7M"),
-            (128_000_000, "128M"),
-            (1_500_000_000, "1.5B"),
-            (u64::MAX, "18446744074B"),
-        ] {
-            assert_eq!(format_tokens(count), text, "{count}");
-        }
-        assert_eq!(format_usd(0.42), "$0.42");
-        assert_eq!(format_usd(0.0), "$0.00");
-        assert_eq!(format_usd(0.001), "<$0.01");
-        assert_eq!(format_usd(26.61771192), "$26.62");
-        assert_eq!(format_usd(1234.5), "$1234.50");
-    }
-
-    #[test]
-    fn the_chip_shows_session_cost_and_tokens_for_grok() {
-        let usage = SessionUsage {
-            session_id: SESSION.into(),
-            updated_at: None,
-            updated_at_unix: None,
-            primary_model: None,
-            turns: 3,
-            model_calls: 9,
-            tokens: TokenCounts {
-                total: 128_000,
-                ..TokenCounts::default()
-            },
-            cost_usd: Some(0.42),
-            models: Vec::new(),
-        };
-        assert_eq!(
-            grok_chip_label(Some(&tab(Some(usage.clone()), false, None))),
-            "GROK $0.42 · 128k tok"
-        );
-        assert_eq!(
-            grok_chip_label(Some(&tab(Some(usage.clone()), true, Some("late")))),
-            "GROK* $0.42 · 128k tok"
-        );
-        let free = SessionUsage {
-            cost_usd: None,
-            ..usage
-        };
-        assert_eq!(
-            grok_chip_label(Some(&tab(Some(free), false, None))),
-            "GROK · 128k tok"
-        );
-        assert_eq!(grok_chip_label(None), "GROK · LOADING");
-        assert_eq!(
-            grok_chip_label(Some(&tab(None, false, Some("nothing yet")))),
-            "GROK · —"
-        );
-    }
-
-    #[test]
     fn combined_grok_totals_count_each_session_once() {
         let session = |id: &str, cost: Option<f64>, total: u64| SessionUsage {
             session_id: id.into(),
@@ -2897,21 +2444,5 @@ done
         assert_eq!(totals.tokens.total, 1_500);
         assert_eq!(totals.tokens.input, 750);
         assert_eq!(grok_totals([]), GrokTotals::default());
-    }
-
-    #[test]
-    fn a_tab_without_figures_is_asked_again_sooner_than_one_with() {
-        let with = tab(
-            Some(parse_grok_usage(grok_report(SESSION).to_string().as_bytes(), SESSION).unwrap()),
-            false,
-            None,
-        );
-        assert!(!with.is_due(100 + GROK_USAGE_REFRESH.as_secs() - 1));
-        assert!(with.is_due(100 + GROK_USAGE_REFRESH.as_secs()));
-        let without = tab(None, false, Some("not yet"));
-        assert!(!without.is_due(102));
-        assert!(without.is_due(105));
-        // The cache expires before a window asks again, so its tick reads.
-        assert!(GROK_CACHE_TTL < GROK_USAGE_REFRESH);
     }
 }

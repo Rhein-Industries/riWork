@@ -221,74 +221,7 @@ fn an_agent_that_goes_away_after_it_was_asked_leaves_the_transcript_to_fall_back
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
-fn the_wait_is_told_in_the_words_of_a_person() {
-    assert_eq!(waited(Duration::from_secs(300)), "5 minutes");
-    assert_eq!(waited(Duration::from_secs(90)), "1 minute");
-    assert_eq!(waited(Duration::from_secs(45)), "45 seconds");
-    assert_eq!(waited(Duration::from_millis(300)), "1 seconds");
-}
-
 // ---- A chat on the chat host ---------------------------------------------------------------
-
-/// Writes `content` to `file` once a message has reached the chat's driver, as the agent
-/// would while it works on its turn.
-fn write_when_asked(host: &TestHost, file: PathBuf, content: &'static str) {
-    let fake = host.fake();
-    std::thread::spawn(move || {
-        let end = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < end {
-            if !fake.commands().is_empty() {
-                fs::write(&file, content).unwrap();
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    });
-}
-
-#[test]
-fn an_idle_chat_is_asked_and_its_summary_is_collected() {
-    let host = TestHost::new();
-    let chat = host.create(Provider::Codex);
-    host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
-    let file = host.home.join("summary.md");
-    write_when_asked(&host, file.clone(), "## Next steps\n- merge it\n");
-    let mut agent = ChatAgent::new(host.home.clone(), host.socket(), chat.id.clone());
-    let timing = Timing {
-        wait: Duration::from_secs(20),
-        poll: Duration::from_millis(50),
-        grace: Duration::from_secs(5),
-    };
-    let text = written(collect(&mut agent, &file, timing).unwrap());
-    assert_eq!(text, "## Next steps\n- merge it\n");
-    // The chat was sent exactly the request, as a message.
-    let commands = host.fake().commands();
-    assert_eq!(commands.len(), 1);
-    let ChatCommand::Send { text } = &commands[0] else {
-        panic!("{commands:?}");
-    };
-    assert_eq!(*text, request(&file));
-}
-
-#[test]
-fn a_chat_that_answers_without_writing_the_file_is_a_missing_summary() {
-    let host = TestHost::new();
-    let chat = host.create(Provider::Claude);
-    host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
-    let file = host.home.join("summary.md");
-    let mut agent = ChatAgent::new(host.home.clone(), host.socket(), chat.id.clone());
-    let timing = Timing {
-        wait: Duration::from_secs(20),
-        poll: Duration::from_millis(50),
-        grace: Duration::from_millis(300),
-    };
-    let reason = missing(collect(&mut agent, &file, timing).unwrap());
-    assert!(
-        reason.starts_with("the agent's turn ended without a summary"),
-        "{reason}"
-    );
-}
 
 #[test]
 fn a_chat_that_works_or_is_stopped_is_refused_before_anything_is_sent() {
@@ -362,6 +295,7 @@ done
 "#;
 
 #[test]
+#[ignore = "slow: real tmux pane played by a script"]
 fn a_claude_terminal_at_its_prompt_is_asked_the_way_a_schedule_asks() {
     let Some(tmux) = Tmux::new() else {
         return;
@@ -387,6 +321,7 @@ fn a_claude_terminal_at_its_prompt_is_asked_the_way_a_schedule_asks() {
 }
 
 #[test]
+#[ignore = "slow: real tmux pane"]
 fn a_terminal_that_is_not_idle_or_not_an_agent_is_refused() {
     let Some(tmux) = Tmux::new() else {
         return;

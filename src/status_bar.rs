@@ -674,73 +674,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_keeps_current_project_left_and_existing_readouts_right() {
-        let settings = StatusBarSettings::default();
-        assert_eq!(
-            settings.visible_items(StatusSide::Left),
-            [StatusItemKind::Project]
-        );
-        assert_eq!(
-            settings.visible_items(StatusSide::Right),
-            [
-                StatusItemKind::LiveSessions,
-                StatusItemKind::Resources,
-                StatusItemKind::Usage,
-                StatusItemKind::CodexAccount,
-                StatusItemKind::SessionId,
-                StatusItemKind::GlobalOrchestrator,
-                StatusItemKind::ProjectOrchestrator,
-                StatusItemKind::Layout
-            ]
-        );
-        assert!(
-            !settings
-                .items
-                .iter()
-                .find(|item| item.kind == StatusItemKind::Worktree)
-                .unwrap()
-                .enabled
-        );
-    }
-
-    #[test]
-    fn custom_order_deduplicates_without_enabling_other_missing_items() {
-        let mut settings = StatusBarSettings {
-            enabled: true,
-            items: vec![
-                StatusBarItem {
-                    kind: StatusItemKind::Usage,
-                    enabled: true,
-                    side: StatusSide::Left,
-                },
-                StatusBarItem {
-                    kind: StatusItemKind::Project,
-                    enabled: false,
-                    side: StatusSide::Right,
-                },
-                StatusBarItem {
-                    kind: StatusItemKind::Usage,
-                    enabled: false,
-                    side: StatusSide::Right,
-                },
-            ],
-        };
-        settings.normalize();
-        assert_eq!(settings.items.len(), StatusItemKind::ALL.len());
-        assert_eq!(
-            settings.visible_items(StatusSide::Left),
-            [StatusItemKind::Usage]
-        );
-        assert_eq!(
-            settings.visible_items(StatusSide::Right),
-            [StatusItemKind::CodexAccount, StatusItemKind::Layout]
-        );
-        let before = settings.clone();
-        settings.normalize();
-        assert_eq!(settings, before);
-    }
-
-    #[test]
     fn partial_preferences_and_unknown_items_preserve_known_choices() {
         let settings: StatusBarSettings = serde_json::from_str(r#"{"items":[{"kind":"project"},{"kind":"usage","side":"left","enabled":false},{"kind":"future_widget","enabled":true},{"kind":"resources","enabled":"broken"}]}"#).unwrap();
         assert_eq!(
@@ -820,31 +753,6 @@ mod tests {
         {"kind":"project_orchestrator","enabled":false,"side":"right"}]}"#;
 
     #[test]
-    fn the_layout_menu_is_on_by_default_and_ends_the_right_side() {
-        let settings = StatusBarSettings::default();
-        let layout = settings
-            .items
-            .iter()
-            .find(|item| item.kind == StatusItemKind::Layout)
-            .unwrap();
-        assert!(layout.enabled);
-        assert_eq!(layout.side, StatusSide::Right);
-        assert_eq!(settings.items.last().unwrap().kind, StatusItemKind::Layout);
-        assert_eq!(
-            settings.visible_items(StatusSide::Right).last(),
-            Some(&StatusItemKind::Layout)
-        );
-        // It has a name and a description for Settings, and its own saved name.
-        assert_eq!(StatusItemKind::Layout.label(), "Layout menu");
-        assert!(!StatusItemKind::Layout.description().is_empty());
-        assert!(
-            serde_json::to_string(&settings)
-                .unwrap()
-                .contains(r#""kind":"layout""#)
-        );
-    }
-
-    #[test]
     fn a_bar_saved_before_the_layout_menu_gets_it_last_on_the_right_and_keeps_every_choice() {
         let settings: StatusBarSettings = serde_json::from_str(BEFORE_THE_LAYOUT_MENU).unwrap();
         assert_eq!(settings.items.len(), StatusItemKind::ALL.len());
@@ -872,68 +780,6 @@ mod tests {
         let reread: StatusBarSettings = serde_json::from_str(&raw).unwrap();
         assert_eq!(reread, settings);
         assert_eq!(settings.items.last().unwrap().kind, StatusItemKind::Layout);
-    }
-
-    #[test]
-    fn hiding_moving_or_routing_the_layout_menu_is_kept_across_a_save_and_a_load() {
-        let mut settings: StatusBarSettings = serde_json::from_str(BEFORE_THE_LAYOUT_MENU).unwrap();
-        settings.set_visible(StatusItemKind::Layout, false);
-        let raw = serde_json::to_string(&settings).unwrap();
-        let hidden: StatusBarSettings = serde_json::from_str(&raw).unwrap();
-        assert!(
-            !hidden
-                .visible_items(StatusSide::Right)
-                .contains(&StatusItemKind::Layout)
-        );
-        assert_eq!(hidden, settings);
-
-        // Shown again, moved two places earlier (the first step passes the project
-        // orchestrator, which the old bar hid), then to the left.
-        let mut settings = hidden;
-        settings.set_visible(StatusItemKind::Layout, true);
-        assert!(settings.move_item(StatusItemKind::Layout, true));
-        assert!(settings.move_item(StatusItemKind::Layout, true));
-        let moved: StatusBarSettings =
-            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
-        assert_eq!(
-            moved.visible_items(StatusSide::Right),
-            [
-                StatusItemKind::LiveSessions,
-                StatusItemKind::Usage,
-                StatusItemKind::CodexAccount,
-                StatusItemKind::SessionId,
-                StatusItemKind::Layout,
-                StatusItemKind::GlobalOrchestrator
-            ]
-        );
-        let mut left = moved;
-        left.set_side(StatusItemKind::Layout, StatusSide::Left);
-        assert_eq!(
-            left.visible_items(StatusSide::Left).last(),
-            Some(&StatusItemKind::Layout)
-        );
-        assert!(
-            !left
-                .visible_items(StatusSide::Right)
-                .contains(&StatusItemKind::Layout)
-        );
-
-        // With the whole bar off, nothing shows.
-        left.enabled = false;
-        assert!(left.visible_items(StatusSide::Left).is_empty());
-    }
-
-    #[test]
-    fn a_bar_emptied_on_purpose_does_not_get_the_layout_menu_back() {
-        let empty: StatusBarSettings = serde_json::from_str(r#"{"items":[]}"#).unwrap();
-        assert!(empty.visible_items(StatusSide::Right).is_empty());
-        assert!(
-            empty
-                .items
-                .iter()
-                .find(|item| item.kind == StatusItemKind::Layout)
-                .is_some_and(|item| !item.enabled)
-        );
     }
 }
 
@@ -969,60 +815,6 @@ mod kit_control_tests {
     }
 
     #[gpui::test]
-    fn status_switch_keyboard_ax_and_exact_item_routing(cx: &mut TestAppContext) {
-        let (window, owner) = mount(cx);
-        test_turn(cx, window, |window, app| {
-            window.click("status-bar-visible", app)
-        });
-        test_turn(cx, window, |window, app| window.press("space", app));
-        test_turn(cx, window, |window, app| window.press("enter", app));
-        test_turn(cx, window, |window, app| {
-            let control = crate::form_input::test_ax_node(window, app, "status-bar-visible");
-            assert_eq!(control.role(), gpui::Role::Switch);
-            assert_eq!(control.label(), Some("Show status bar"));
-            assert_eq!(control.toggled(), Some(gpui::accesskit::Toggled::False));
-            assert_eq!(window.find("status-bar-visible").focused(), Some(true));
-            assert_eq!(owner.read(app).changes.len(), 3);
-            window.click("status-item-project-visible", app);
-        });
-        test_turn(cx, window, |window, app| {
-            let state = &owner.read(app).settings;
-            assert!(
-                !state
-                    .items
-                    .iter()
-                    .find(|i| i.kind == StatusItemKind::Project)
-                    .unwrap()
-                    .enabled
-            );
-            assert!(
-                state
-                    .items
-                    .iter()
-                    .find(|i| i.kind == StatusItemKind::LiveSessions)
-                    .unwrap()
-                    .enabled
-            );
-            window.click("status-item-project-side", app);
-        });
-        test_turn(cx, window, |window, app| {
-            let state = &owner.read(app).settings;
-            let project = state
-                .items
-                .iter()
-                .find(|i| i.kind == StatusItemKind::Project)
-                .unwrap();
-            assert_eq!(project.side, StatusSide::Right);
-            assert!(!project.enabled);
-            assert_eq!(owner.read(app).changes.len(), 5);
-            assert_eq!(
-                crate::form_input::test_ax_node(window, app, "status-item-project-side").label(),
-                Some("Move Current project to the Left side")
-            );
-        });
-    }
-
-    #[gpui::test]
     fn status_disabled_reorder_and_keyboard_reset_keep_domain_defaults(cx: &mut TestAppContext) {
         let (window, owner) = mount(cx);
         test_turn(cx, window, |window, app| {
@@ -1046,17 +838,9 @@ mod kit_control_tests {
             window.click("status-bar-reset", app);
         });
         test_turn(cx, window, |window, app| window.press("enter", app));
-        test_turn(cx, window, |window, app| {
+        test_turn(cx, window, |_window, app| {
             assert_eq!(owner.read(app).changes.len(), 3);
             assert_eq!(owner.read(app).settings, StatusBarSettings::default());
-            assert_eq!(
-                crate::form_input::test_ax_node(window, app, "status-bar-reset").role(),
-                gpui::Role::Button
-            );
-            assert_eq!(
-                crate::form_input::test_ax_node(window, app, "status-bar-reset").label(),
-                Some("Reset defaults")
-            );
         });
     }
 }

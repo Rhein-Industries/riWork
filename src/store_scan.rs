@@ -180,11 +180,6 @@ impl Fingerprint {
                 .all(|((path, kind), recorded)| stamp(path, *kind) == *recorded)
     }
 
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.stamps.len()
-    }
-
     /// Pretend the stamps were read `by` ago.
     #[cfg(test)]
     pub(crate) fn backdate(&mut self, by: Duration) {

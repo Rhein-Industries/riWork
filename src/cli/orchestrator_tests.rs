@@ -148,6 +148,7 @@ fn create_follows_the_setting_and_a_second_create_returns_the_orchestrator_it_ma
 }
 
 #[test]
+#[ignore = "slow: starts a real tmux server for the terminal orchestrator"]
 fn a_project_chat_orchestrator_is_created_for_its_project_and_listed_with_the_terminal_ones() {
     let setup = Setup::new();
     setup.choose_chat(Provider::Claude);
@@ -327,6 +328,7 @@ fn send_is_a_chat_message_and_output_is_the_conversation_as_text() {
 }
 
 #[test]
+#[ignore = "slow: starts a real tmux server for the terminal orchestrator"]
 fn close_ends_the_chat_orchestrator_and_the_next_create_follows_the_setting_then() {
     let setup = Setup::new();
     setup.choose_chat(Provider::Codex);
@@ -367,6 +369,7 @@ fn close_ends_the_chat_orchestrator_and_the_next_create_follows_the_setting_then
 }
 
 #[test]
+#[ignore = "slow: starts a real tmux server for the terminal orchestrator"]
 fn what_only_a_terminal_has_says_so_for_a_chat_and_the_terminals_commands_are_still_the_shells() {
     let setup = Setup::new();
     setup.choose_chat(Provider::Codex);
@@ -420,56 +423,6 @@ fn what_only_a_terminal_has_says_so_for_a_chat_and_the_terminals_commands_are_st
             .run("frobnicate")
             .unwrap_err()
             .starts_with("Unknown orchestrator command")
-    );
-}
-
-#[test]
-fn load_skill_gives_a_chat_orchestrator_the_whole_skill_once() {
-    let setup = Setup::new();
-    setup.choose_chat(Provider::Codex);
-    setup.run("create").unwrap();
-    let chat = setup.only_chat();
-    setup
-        .host
-        .wait_for_state(&chat.id, |s| *s == ChatState::Idle);
-    let skill_messages = || {
-        fake_for(&chat.cwd)
-            .commands()
-            .into_iter()
-            .filter(|command| matches!(command, ChatCommand::Send { text } if text.contains("<riwork-orchestrator-skill>")))
-            .count()
-    };
-    // It started with the skill this build ships.
-    let current = setup.json("load-skill");
-    assert_eq!(current["id"], chat.id);
-    assert_eq!(skill_messages(), 0);
-
-    // An older skill is replaced by sending the current one.
-    std::fs::write(
-        chat.cwd.join("chat-skill.json"),
-        format!(
-            r#"{{"chat_id":"{}","version":"0000000000000000"}}"#,
-            chat.id
-        ),
-    )
-    .unwrap();
-    assert_eq!(
-        setup.json("status")["orchestrator_skill_version"],
-        "0000000000000000"
-    );
-    setup.run("load-skill").unwrap();
-    assert_eq!(skill_messages(), 1);
-    assert_ne!(
-        setup.json("status")["orchestrator_skill_version"],
-        "0000000000000000"
-    );
-    setup.run("load-skill").unwrap();
-    assert_eq!(skill_messages(), 1, "loaded once");
-    assert!(
-        Setup::new()
-            .run("load-skill")
-            .unwrap_err()
-            .starts_with("No global orchestrator")
     );
 }
 

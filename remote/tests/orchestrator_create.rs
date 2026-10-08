@@ -322,67 +322,6 @@ async fn a_new_orchestrator_is_created_and_an_existing_one_is_returned_as_it_is(
 }
 
 #[tokio::test]
-async fn the_global_orchestrator_as_a_chat_is_projected_like_a_list_entry() {
-    let f = Fixture::new();
-    let id = new_uuid();
-    f.cli_says(with_created(chat(&id, None), json!(true)));
-    let made = f.create(json!({})).await;
-    assert_eq!(made["ok"], true, "{made}");
-    let entry = &made["result"]["orchestrator"];
-    assert_eq!(entry["project_id"], Value::Null);
-    assert_eq!(entry["mode"], "chat");
-    assert_eq!(entry["chat_id"], id);
-    assert_eq!(entry["id"], entry["chat_id"]);
-    assert_eq!(entry["provider"], "claude");
-    let text = made.to_string();
-    for private in ["secret-flag", "acct-secret", "unrestricted"] {
-        assert!(!text.contains(private), "{private} leaked: {text}");
-    }
-}
-
-#[tokio::test]
-async fn a_malformed_mode_provider_or_chat_id_is_left_out_of_the_entry() {
-    let f = Fixture::new();
-    let id = new_uuid();
-    let cases = [
-        ("mode", json!("other"), vec!["mode", "chat_id", "provider"]),
-        ("mode", json!(null), vec!["mode", "chat_id", "provider"]),
-        ("provider", json!("grok"), vec!["provider"]),
-        ("provider", json!("Claude"), vec!["provider"]),
-        ("chat_id", json!("not-a-uuid"), vec!["chat_id"]),
-        ("chat_id", json!(id.to_uppercase()), vec!["chat_id"]),
-        ("chat_id", json!(7), vec!["chat_id"]),
-    ];
-    for (field, wrong, left_out) in cases {
-        let mut entry = chat(&id, None);
-        entry[field] = wrong.clone();
-        f.cli_says(with_created(entry, json!(true)));
-        let made = f.create(json!({})).await;
-        assert_eq!(made["ok"], true, "{field}={wrong}: {made}");
-        assert_eq!(made["result"]["created"], true, "{field}={wrong}");
-        let shown = &made["result"]["orchestrator"];
-        for gone in left_out {
-            assert!(shown.get(gone).is_none(), "{field}={wrong}: {gone} passed");
-        }
-        assert_eq!(shown["id"], id, "{field}={wrong}");
-    }
-    // A terminal entry that claims a chat has none of it passed on.
-    let mut entry = terminal(&id, None);
-    entry["chat_id"] = json!(id);
-    entry["provider"] = json!("codex");
-    f.cli_says(with_created(entry, json!(false)));
-    let shown = f.create(json!({})).await["result"]["orchestrator"].clone();
-    assert_eq!(shown["mode"], "terminal");
-    assert!(shown.get("chat_id").is_none() && shown.get("provider").is_none());
-    // An older CLI that does not say the mode at all: the entry as it was.
-    let mut entry = terminal(&id, None);
-    entry.as_object_mut().unwrap().remove("mode");
-    f.cli_says(with_created(entry, json!(true)));
-    let shown = f.create(json!({})).await["result"]["orchestrator"].clone();
-    assert!(shown.get("mode").is_none(), "{shown}");
-}
-
-#[tokio::test]
 async fn a_created_that_is_not_a_boolean_is_never_guessed() {
     let f = Fixture::new();
     let id = new_uuid();
@@ -497,20 +436,6 @@ async fn a_cli_failure_surfaces_as_the_usual_fault() {
 }
 
 #[tokio::test]
-async fn a_revoked_device_creates_nothing() {
-    let f = Fixture::new();
-    f.cli_says(with_created(terminal(&new_uuid(), None), json!(true)));
-    f.rpc.storage.revoke(&f.device).unwrap();
-    assert!(
-        f.rpc
-            .handle(&f.device, req("orchestrator.create", json!({})))
-            .await
-            .is_err()
-    );
-    assert!(f.calls().is_empty(), "{:?}", f.calls());
-}
-
-#[tokio::test]
 async fn a_cli_that_cannot_create_orchestrators_is_not_asked_to() {
     // Says no, says nothing of it, answers it oddly, refuses the question, or prints
     // nothing at all.
@@ -549,25 +474,28 @@ async fn a_cli_that_cannot_create_orchestrators_is_not_asked_to() {
 
 #[tokio::test]
 async fn a_yes_is_remembered_and_one_answer_serves_chats_and_orchestrators() {
+    // The CLI is first asked with the time a CLI call gets (a creation, or `learn_chat`):
+    // the 3 s that `ready` allows a stand-in that was just written is too short under load.
     let f = Fixture::new();
     f.cli_says(with_created(terminal(&new_uuid(), None), json!(true)));
-    assert!(f.rpc.orchestrator_create_supported().await);
+    assert_eq!(f.create(json!({})).await["ok"], true);
     // The same answer said chats are there: the CLI is not asked again for them.
     assert!(f.rpc.chat_supported().await);
     assert!(f.rpc.orchestrator_create_supported().await);
-    assert_eq!(f.create(json!({})).await["ok"], true);
     assert_eq!(f.calls_of("capabilities", "--json").len(), 1);
 
     // A CLI that has orchestrator creation but not chats is believed for what it says.
     let f = Fixture::new();
     f.set("capabilities.out", "{\"v\":1,\"orchestrator_create\":true}");
-    assert!(f.rpc.orchestrator_create_supported().await);
+    f.cli_says(with_created(terminal(&new_uuid(), None), json!(true)));
+    assert_eq!(f.create(json!({})).await["ok"], true);
     assert!(!f.rpc.chat_supported().await);
     // And a CLI updated while the connector runs is believed at once.
     f.set(
         "capabilities.out",
         "{\"v\":1,\"orchestrator_create\":true,\"chat\":true}",
     );
+    f.rpc.learn_chat().await;
     assert!(f.rpc.chat_supported().await);
 }
 

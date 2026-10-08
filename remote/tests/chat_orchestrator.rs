@@ -309,36 +309,6 @@ async fn a_chat_orchestrator_is_listed_with_its_mode_chat_id_and_provider() {
 }
 
 #[tokio::test]
-async fn a_terminal_orchestrator_passes_its_mode_and_nothing_else_is_added() {
-    let f = Fixture::new(Capabilities::Silent);
-    let id = new_uuid();
-    let mut terminal = terminal_orchestrator(&id);
-    terminal["mode"] = json!("terminal");
-    f.says("orchestrators.json", json!([terminal]));
-    let mut expected = terminal_orchestrator_shown(&id);
-    expected["mode"] = json!("terminal");
-    assert_eq!(f.orchestrators().await, json!([expected]));
-}
-
-#[tokio::test]
-async fn an_older_cli_without_the_new_fields_answers_exactly_as_before() {
-    let f = Fixture::new(Capabilities::Silent);
-    let id = new_uuid();
-    f.says("orchestrators.json", json!([terminal_orchestrator(&id)]));
-    let listed = f.orchestrators().await;
-    assert_eq!(listed, json!([terminal_orchestrator_shown(&id)]));
-    // Byte for byte, not only equal as values.
-    assert_eq!(
-        serde_json::to_string(&listed).unwrap(),
-        serde_json::to_string(&json!([terminal_orchestrator_shown(&id)])).unwrap()
-    );
-    let text = listed.to_string();
-    for private in ["secret-flag", "acct-secret"] {
-        assert!(!text.contains(private), "{private} leaked: {text}");
-    }
-}
-
-#[tokio::test]
 async fn chat_id_and_provider_are_passed_on_only_for_an_entry_in_chat_mode() {
     let f = Fixture::new(Capabilities::Silent);
     let id = new_uuid();

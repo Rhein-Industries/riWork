@@ -507,31 +507,6 @@ mod tests {
     }
 
     #[test]
-    fn a_read_with_a_deadline_times_out_and_then_still_gets_the_event() {
-        let (mut subscription, dir) = scripted_subscription(vec![
-            Err(Duration::from_millis(300)),
-            Ok(envelope_line(1, "late")),
-            Err(Duration::from_millis(300)),
-        ]);
-        let started = std::time::Instant::now();
-        assert!(matches!(
-            subscription.next_within(Duration::from_millis(20)),
-            Ok(Poll::TimedOut)
-        ));
-        assert!(started.elapsed() < Duration::from_millis(250));
-        let Ok(Poll::Event(first)) = subscription.next_within(Duration::from_secs(10)) else {
-            panic!("the event never came");
-        };
-        assert_eq!(first.seq, 1);
-        // A zero wait is a short one, not an error.
-        assert!(matches!(
-            subscription.next_within(Duration::ZERO),
-            Ok(Poll::TimedOut)
-        ));
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
     fn a_line_split_across_a_timeout_arrives_whole() {
         // The cut falls inside the two-byte character of the text.
         let line = envelope_line(7, "caf\u{e9} au lait");

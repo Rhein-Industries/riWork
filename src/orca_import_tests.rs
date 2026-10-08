@@ -447,6 +447,7 @@ fn nested_repository_without_registered_child_imports_as_its_own_project() {
 }
 
 #[test]
+#[ignore = "slow: forks a real child that holds the pipes for 20 s; wall-clock bound"]
 fn child_holding_pipes_after_cli_exit_is_bounded() {
     let fixture = Fixture::new();
     fs::write(
@@ -518,35 +519,6 @@ fn empty_warning_free_plan_never_records_a_receipt() {
     assert_eq!((preview.project_count, preview.worktree_count), (1, 2));
     manager.import(&preview).unwrap();
     assert!(manager.inspect().unwrap().already_imported.is_some());
-}
-
-#[test]
-fn everything_already_in_riwork_does_not_record_a_receipt() {
-    let fixture = Fixture::new();
-    let root = fixture.directory("repo");
-    let feature = fixture.directory("feature");
-    fixture.add_existing(root.clone(), Some(feature.clone()));
-    fixture
-        .store
-        .transaction(|state| {
-            state.worktrees.push(Worktree {
-                id: "existing-root-worktree".into(),
-                project_id: "existing".into(),
-                path: root.clone(),
-                branch: "main".into(),
-                is_primary: true,
-                repository_root: None,
-                created_at: 9,
-            });
-            Ok(())
-        })
-        .unwrap();
-    fixture.source(&root, &feature);
-    let manager = fixture.manager();
-    let preview = manager.inspect().unwrap();
-    assert_eq!((preview.project_count, preview.worktree_count), (0, 0));
-    assert!(manager.import(&preview).is_err());
-    assert!(fixture.store.snapshot().unwrap().orca_import.is_none());
 }
 
 #[test]

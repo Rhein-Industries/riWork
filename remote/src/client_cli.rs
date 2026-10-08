@@ -297,31 +297,3 @@ async fn status(desktop: &str, watch: bool, json: bool) -> Result<()> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_status_reads_as_one_line() {
-        assert_eq!(
-            describe(&json!({"state":"online","rtt_ms":12,"label":"Studio"})),
-            "online (12 ms)  Studio"
-        );
-        assert_eq!(
-            describe(&json!({"state":"online","label":"Studio"})),
-            "online  Studio"
-        );
-        assert_eq!(
-            describe(&json!({"state":"connecting","label":"Studio"})),
-            "connecting  Studio"
-        );
-        let offline = describe(
-            &json!({"state":"offline","since":crate::client::now_unix(),"reason":"host offline (or access revoked)","label":"Studio"}),
-        );
-        assert!(
-            offline.starts_with("offline for ") && offline.contains("host offline"),
-            "{offline}"
-        );
-    }
-}

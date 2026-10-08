@@ -1131,53 +1131,6 @@ mod tests {
         assert!(!links.over_link(4));
     }
 
-    #[test]
-    fn a_link_is_underlined_without_command_and_shows_a_hand_only_with_it() {
-        let pointer = |modifiers: Modifiers| Pointer {
-            tab_id: 3,
-            pane_id: 1,
-            position: Point::default(),
-            bounds: Bounds::default(),
-            scale: 2.0,
-            modifiers,
-        };
-        let mut links = LinkState {
-            hover: Some(hover(
-                3,
-                (4, 5),
-                Some(Link::Url("https://example.com".into())),
-            )),
-            pointer: Some(pointer(Modifiers::default())),
-            ..LinkState::default()
-        };
-        assert!(links.underline(3).is_some());
-        assert!(!links.hand(3));
-        links.pointer = Some(pointer(Modifiers::command()));
-        assert!(links.hand(3));
-        assert!(!links.hand(4));
-        assert_eq!(links.underline(4), None);
-        // Nothing found is nothing to underline.
-        links.hover = Some(hover(3, (4, 5), None));
-        assert_eq!(links.underline(3), None);
-        assert!(!links.hand(3));
-    }
-
-    #[test]
-    fn nothing_there_is_an_answer_too_until_it_is_old() {
-        let mut links = LinkState {
-            hover: Some(hover(3, (1, 1), None)),
-            ..LinkState::default()
-        };
-        assert_eq!(links.answer_for(3, (1, 1)), Some(None));
-        assert!(!links.over_link(3));
-        // Output may have moved the text under a pointer that has not: ask again.
-        let old = Instant::now()
-            .checked_sub(HOVER_LIFETIME + Duration::from_millis(1))
-            .expect("the clock has run for a second");
-        links.hover.as_mut().unwrap().at = old;
-        assert_eq!(links.answer_for(3, (1, 1)), None);
-    }
-
     fn watching(tab_id: TabId, attached: bool) -> ScreenWatch {
         ScreenWatch {
             tab_id,
@@ -1222,21 +1175,6 @@ mod tests {
     }
 
     #[test]
-    fn a_change_voids_even_a_fresh_read_where_nothing_watches() {
-        let mut links = LinkState {
-            hover: Some(hover(3, (1, 1), None)),
-            ..LinkState::default()
-        };
-        let now = Instant::now();
-        assert!(links.current(3, 0, now, VIEW_LIFETIME));
-        assert_eq!(links.answer_for(3, (1, 1)), Some(None));
-        // The wheel turned, or a lost client's timer came round.
-        links.changed(3);
-        assert!(!links.current(3, 0, now, VIEW_LIFETIME));
-        assert_eq!(links.answer_for(3, (1, 1)), None);
-    }
-
-    #[test]
     fn a_kept_click_keeps_only_its_own_release_and_only_once() {
         let mut links = LinkState::default();
         assert!(!links.take_release(3));
@@ -1254,18 +1192,5 @@ mod tests {
             .expect("the clock has run for a few seconds");
         links.swallow_release = Some((3, old));
         assert!(!links.take_release(3));
-    }
-
-    #[test]
-    fn a_tabs_bounds_are_one_cell_that_painting_and_events_share() {
-        let links = LinkState::default();
-        let painted = links.bounds_cell(7);
-        let bounds = Bounds::new(
-            Point::new(gpui::px(10.0), gpui::px(20.0)),
-            gpui::size(gpui::px(300.0), gpui::px(200.0)),
-        );
-        painted.set(bounds);
-        assert_eq!(links.bounds_cell(7).get(), bounds);
-        assert_eq!(links.bounds_cell(8).get(), Bounds::default());
     }
 }

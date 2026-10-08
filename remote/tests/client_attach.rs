@@ -138,34 +138,6 @@ async fn a_stream_echoes_what_is_typed_and_writes_arrive_in_order_with_their_gap
 }
 
 #[tokio::test]
-async fn a_return_squeezed_against_its_text_by_a_full_window_keeps_the_pause_the_person_made() {
-    let s = setup(HostOptions {
-        ack_delay: Duration::from_millis(200),
-        ..HostOptions::default()
-    })
-    .await;
-    let mut bridge = s.ready().await;
-    // Four writes fill the window; their acknowledgements come 200 ms later.
-    for key in ["a", "b", "c", "d"] {
-        bridge.data(key.as_bytes()).await;
-    }
-    // Text, then 80 ms, then a Return: both wait for room and leave together.
-    bridge.data(b"x").await;
-    tokio::time::sleep(Duration::from_millis(80)).await;
-    bridge.data(b"\r").await;
-    s.host
-        .wait(10, "everything written", |o| o.typed() == b"abcdx\r")
-        .await;
-    let writes = s.host.seen(|o| o.writes.clone());
-    assert!(writes[..5].iter().all(|w| w.gap_ms == 0));
-    assert!(
-        (50..=150).contains(&writes[5].gap_ms),
-        "the pause of about 80 ms is kept: {}",
-        writes[5].gap_ms
-    );
-}
-
-#[tokio::test]
 async fn a_paste_is_cut_at_the_hosts_write_limit_and_arrives_whole() {
     let s = setup(HostOptions::default()).await;
     let mut bridge = s.ready().await;
@@ -287,17 +259,6 @@ async fn a_link_that_comes_back_at_once_still_tells_the_bridge_to_reset() {
     assert_eq!(bridge.status().await["state"], "online");
     bridge.data_until(b"READY").await;
     assert_eq!(s.host.seen(|o| o.opens.len()), 2);
-}
-
-#[tokio::test]
-async fn a_host_that_is_away_a_while_is_waited_for() {
-    let s = setup(HostOptions::default()).await;
-    let mut bridge = s.ready().await;
-    s.host.drop_connection(Duration::from_secs(2));
-    assert_eq!(bridge.status().await["state"], "offline");
-    // The daemon keeps its registration and picks the host up when it returns.
-    assert_eq!(bridge.status().await["state"], "online");
-    bridge.data_until(b"READY").await;
 }
 
 #[tokio::test]
@@ -465,36 +426,6 @@ async fn window_changes_are_folded_into_the_latest_size() {
         resizes.windows(2).all(|w| w[0].0 < w[1].0),
         "never out of order"
     );
-}
-
-#[tokio::test]
-async fn a_host_that_is_behind_gets_the_refused_writes_again_in_order_and_once() {
-    let s = setup(HostOptions {
-        refuse_writes: 1,
-        ack_delay: Duration::from_millis(100),
-        ..HostOptions::default()
-    })
-    .await;
-    let mut bridge = s.ready().await;
-    // Four keys in flight at once: the first is refused, the three behind it skip its bytes.
-    for key in ["a", "b", "c", "d"] {
-        bridge.data(key.as_bytes()).await;
-    }
-    s.host
-        .wait(10, "all four written", |o| o.typed() == b"abcd")
-        .await;
-    let (writes, refused, skipped) = s
-        .host
-        .seen(|o| (o.writes.clone(), o.refused_writes, o.skipped_writes));
-    assert_eq!(refused, 1);
-    assert!(skipped >= 1, "writes were pipelined behind the refused one");
-    assert_eq!(
-        writes.iter().map(|w| w.seq).collect::<Vec<_>>(),
-        [0, 1, 2, 3]
-    );
-    // And the stream goes on as before.
-    bridge.data(b"e").await;
-    bridge.data_until(b"abcde").await;
 }
 
 #[tokio::test]

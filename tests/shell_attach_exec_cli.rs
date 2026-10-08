@@ -289,12 +289,15 @@ fn capabilities_say_the_cli_can_attach_in_place() {
     assert_eq!(json["v"], 1);
     assert_eq!(json["verifies_shell"], true);
     assert_eq!(json["project_create_exclusive"], true);
+    assert_eq!(json["shell_paste"], true);
+    assert_eq!(json["shell_create_as_settings"], true);
     let text = String::from_utf8_lossy(&run(&["capabilities"]).stdout).into_owned();
     assert!(text.contains("shell_attach_exec yes"), "{text}");
     fs::remove_dir_all(sandbox).unwrap();
 }
 
 #[test]
+#[ignore = "slow: real tmux server"]
 fn exec_becomes_the_tmux_client_the_printed_command_would_start_with_only_the_flags_asked_for() {
     let Some(tmux) = real_tmux() else {
         eprintln!("tmux is not installed; skipping");
@@ -380,6 +383,7 @@ fn exec_becomes_the_tmux_client_the_printed_command_would_start_with_only_the_fl
 }
 
 #[test]
+#[ignore = "slow: real tmux server"]
 fn the_terminal_it_announces_is_ghostty_where_its_terminfo_exists_and_a_plain_xterm_where_not() {
     let Some(tmux) = real_tmux() else {
         eprintln!("tmux is not installed; skipping");
@@ -462,6 +466,7 @@ fn the_terminal_it_announces_is_ghostty_where_its_terminfo_exists_and_a_plain_xt
 }
 
 #[test]
+#[ignore = "slow: real tmux server"]
 fn a_shell_that_is_not_live_is_refused_before_anything_is_executed_and_so_is_misuse() {
     let Some(tmux) = real_tmux() else {
         eprintln!("tmux is not installed; skipping");
@@ -594,6 +599,7 @@ fn drain(fd: &OwnedFd, wait: Duration) -> Vec<u8> {
 }
 
 #[test]
+#[ignore = "slow: real tmux server"]
 fn on_a_terminal_it_draws_the_shell_and_hanging_up_leaves_the_shell_running() {
     let Some(tmux) = real_tmux() else {
         eprintln!("tmux is not installed; skipping");

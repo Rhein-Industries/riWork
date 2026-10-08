@@ -31,6 +31,8 @@ To make the CLI available everywhere, link the built executable into a directory
 ln -sfn "$PWD/target/release/riwork" "$HOME/.local/bin/riwork"
 ```
 
+**Tests.** `ZIG=/path/to/zig-0.16/zig cargo test` runs the fast, deterministic tests: formats and protocols, data safety, permissions and the chat, session and schedule state machines, with no real tmux server, agent process or timing. Tests that drive real tmux, real child processes or wall-clock timing are marked `#[ignore = "slow: …"]`; run them before a release, on an otherwise idle machine, with `cargo test -- --include-ignored`. The phone connector has its own: `cargo test --manifest-path remote/Cargo.toml` (its ignored end-to-end tests need the setup in `remote/README.md`).
+
 Run `riwork help` for the full command list and `riwork --version` for the installed version. Data defaults to `~/.local/share/riwork`; set `RIWORK_HOME` to use a separate store and tmux server. An empty `RIWORK_HOME` or `HOME` counts as unset. A newly created data directory is owner-only, and `state.json` and `sessions.json` are written with owner-only permissions.
 
 ## Encrypted iOS access

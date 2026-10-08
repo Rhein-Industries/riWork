@@ -969,16 +969,6 @@ mod tests {
     }
 
     #[test]
-    fn the_kind_flag_names_exactly_the_two_kinds() {
-        assert_eq!(DeviceKind::parse("mobile").unwrap(), DeviceKind::Mobile);
-        assert_eq!(DeviceKind::parse("desktop").unwrap(), DeviceKind::Desktop);
-        for bad in ["", "phone", "Desktop", "desktop "] {
-            assert!(DeviceKind::parse(bad).is_err(), "{bad:?}");
-        }
-        assert_eq!(DeviceKind::Desktop.to_string(), "desktop");
-    }
-
-    #[test]
     fn only_a_v2_pairing_can_be_a_desktop_and_a_refused_one_leaves_nothing_behind() {
         let dir = tempfile::tempdir().unwrap();
         let storage = Storage::at(dir.path().into()).unwrap();

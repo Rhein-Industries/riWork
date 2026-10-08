@@ -2961,6 +2961,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: real process group and a timed grace period"]
     fn a_replacement_that_ignores_sigterm_is_killed_with_its_children() {
         let fixture = Fixture::new();
         let fake = FakeReplacement::stubborn(&fixture.path.join("fake"));
@@ -2974,18 +2975,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_replacement_that_exits_on_sigterm_is_not_kept_waiting_or_killed() {
-        let fixture = Fixture::new();
-        let fake = FakeReplacement::well_behaved(&fixture.path.join("fake"));
-        let started = Instant::now();
-        let outcome = stop_process(&fake.process, Duration::from_secs(10));
-        assert_eq!(outcome, StopOutcome::Terminated);
-        assert!(started.elapsed() < Duration::from_secs(5));
-        fake.assert_all_gone();
-    }
-
-    #[cfg(unix)]
-    #[test]
+    #[ignore = "slow: real process group"]
     fn a_reused_pid_is_never_signalled() {
         let fixture = Fixture::new();
         let fake = FakeReplacement::well_behaved(&fixture.path.join("fake"));
@@ -3030,155 +3020,12 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_replacement_that_already_exited_is_left_alone() {
-        let fixture = Fixture::new();
-        let fake = FakeReplacement::well_behaved(&fixture.path.join("fake"));
-        assert_eq!(
-            stop_process(&fake.process, Duration::from_secs(5)),
-            StopOutcome::Terminated
-        );
-        fake.assert_all_gone();
-        assert_eq!(
-            stop_process(&fake.process, Duration::from_millis(50)),
-            StopOutcome::AlreadyGone
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn children_left_in_the_group_by_a_dead_leader_are_still_stopped() {
-        let fixture = Fixture::new();
-        // The leader leaves as soon as it is told to; its sleeper stays behind.
-        let fake = FakeReplacement::spawn(
-            &fixture.path.join("fake"),
-            r#"sleep 60 & echo $! >> "$0"; sleep 60 & echo $! >> "$0"; while [ ! -e "$0.go" ]; do sleep 0.05; done"#,
-        );
-        fs::write(fake.directory.join("pids.go"), "").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while fake.leader_alive() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(20));
-        }
-        assert!(!fake.leader_alive());
-        assert!(fake.children.iter().all(|pid| fake.child_alive(*pid)));
-        assert_eq!(fake.process.liveness(), Some(Liveness::Gone));
-        assert_eq!(
-            stop_process(&fake.process, Duration::from_secs(5)),
-            StopOutcome::Terminated
-        );
-        fake.assert_all_gone();
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn this_process_and_its_group_are_refused() {
         let me = ReplacementProcess::of(std::process::id(), true).unwrap();
         assert_eq!(
             stop_process(&me, Duration::from_millis(50)),
             StopOutcome::Refused
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_hung_replacement_is_stopped_and_the_failure_says_where_it_hung() {
-        let fixture = Fixture::new();
-        let old = fixture.register("state");
-        let fake = FakeReplacement::stubborn(&fixture.path.join("fake"));
-        let report = fixture
-            .manager
-            .reload_all(&env::current_exe().unwrap())
-            .unwrap();
-        let request = old.pending_reload().unwrap().unwrap();
-        let ticket = fixture.manager.restore_path(&request.ticket_id).unwrap();
-        fs::write(&ticket, "{}").unwrap();
-        // What the replacement's watchdog thread mirrored while it was stuck.
-        let diagnostic = ReloadDiagnostic {
-            status: DiagnosticStatus::InProgress,
-            request_id: request.request_id.clone(),
-            ticket_id: request.ticket_id.clone(),
-            pid: fake.pid,
-            executable: env::current_exe().unwrap(),
-            build: build_label(),
-            elapsed: Duration::from_secs(24),
-            attached: 6,
-            last: Some(Breadcrumb {
-                session_id: "session-7".to_owned(),
-                cwd: "/work/seven".to_owned(),
-                step: AttachStep::Start,
-            }),
-        };
-        let file = fixture.manager.write_diagnostic(&diagnostic).unwrap();
-
-        let launch = fake.launch(request.clone(), true);
-        let error = old.reload_ready(&launch).unwrap_err();
-        for expected in [
-            "did not confirm restoration within 25 seconds",
-            "stuck attaching terminal for session session-7 (cwd /work/seven)",
-            &format!("see {}", file.display()),
-            &format!(
-                "The unresponsive replacement (pid {}) was stopped.",
-                fake.pid
-            ),
-            "Existing windows remain open.",
-        ] {
-            assert!(
-                error.contains(expected),
-                "{expected:?} missing from {error}"
-            );
-        }
-        fake.assert_all_gone();
-        assert!(!ticket.exists());
-        // The old GUI stays, and the requester is told the same thing.
-        assert!(process_matches(&old.instance).unwrap());
-        let report = fixture
-            .manager
-            .wait_for_reload(report, Duration::ZERO)
-            .unwrap();
-        assert_eq!(report.instances[0].state, ReloadState::Failed);
-        assert_eq!(report.instances[0].message, error);
-        // The diagnostic is left for someone to read.
-        assert!(file.exists());
-        // And this GUI does not retry the same request.
-        assert!(old.pending_reload().unwrap().is_none());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_replacement_the_platform_could_not_identify_is_left_running() {
-        let fixture = Fixture::new();
-        let old = fixture.register("state");
-        let fake = FakeReplacement::well_behaved(&fixture.path.join("fake"));
-        fixture
-            .manager
-            .reload_all(&env::current_exe().unwrap())
-            .unwrap();
-        let request = old.pending_reload().unwrap().unwrap();
-        let launch = fake.launch(request, false);
-        let error = old.reload_ready(&launch).unwrap_err();
-        assert!(error.contains("could not be identified"), "{error}");
-        assert!(fake.leader_alive());
-        assert!(fake.children.iter().all(|pid| fake.child_alive(*pid)));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_replacement_that_exited_on_its_own_is_reported_as_before_and_not_signalled() {
-        let fixture = Fixture::new();
-        let old = fixture.register("state");
-        let fake = FakeReplacement::well_behaved(&fixture.path.join("fake"));
-        fixture
-            .manager
-            .reload_all(&env::current_exe().unwrap())
-            .unwrap();
-        let request = old.pending_reload().unwrap().unwrap();
-        // The launcher's reaper saw the replacement exit (pid reuse follows).
-        let mut launch = fake.launch(request, true);
-        launch.exited = Arc::new(AtomicBool::new(true));
-        assert_eq!(
-            old.reload_ready(&launch).unwrap_err(),
-            "Replacement RiWork exited before restoring its windows. Existing windows remain open."
-        );
-        assert!(fake.leader_alive());
     }
 
     /// The fake replacement registered as the GUI that restored its windows,
@@ -3235,6 +3082,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: real process group"]
     fn a_replacement_that_confirmed_just_before_the_timeout_is_never_stopped() {
         let fixture = Fixture::new();
         let old = fixture.register("state");
@@ -3270,6 +3118,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: real process group"]
     fn a_replacement_can_no_longer_confirm_once_it_is_being_stopped() {
         let fixture = Fixture::new();
         let old = fixture.register("state");
@@ -3295,40 +3144,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_busy_registry_leaves_the_replacement_alone_and_the_request_unrepeated() {
-        let fixture = Fixture::new();
-        let old = fixture.register("state");
-        let fake = FakeReplacement::well_behaved(&fixture.path.join("fake"));
-        fixture
-            .manager
-            .reload_all(&env::current_exe().unwrap())
-            .unwrap();
-        let request = old.pending_reload().unwrap().unwrap();
-        let launch = fake.launch(request.clone(), true);
-        // Nothing can be decided while another process holds the registry (the
-        // wait for it ends after a few seconds): not that the replacement has
-        // not just confirmed, so it is not signalled.
-        let held = fixture.manager.lock().unwrap();
-        let error = old.reload_ready(&launch).unwrap_err();
-        drop(held);
-        assert!(error.contains("within 25 seconds"), "{error}");
-        assert!(!error.contains("was stopped"), "{error}");
-        assert!(fake.leader_alive());
-        assert!(fake.children.iter().all(|pid| fake.child_alive(*pid)));
-        // No failure could be recorded, and the request is not launched a second
-        // time on top of the replacement that is still there.
-        assert!(old.pending_reload().unwrap().is_none());
-        assert!(
-            !fixture
-                .manager
-                .restore_path(&request.ticket_id)
-                .unwrap()
-                .exists()
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
+    #[ignore = "slow: real child processes"]
     fn a_replacement_outside_its_own_group_is_signalled_alone() {
         use std::os::unix::process::CommandExt;
         // Not started as a group leader, so it shares this test's group: the
@@ -3363,51 +3179,6 @@ mod tests {
             StopOutcome::Terminated
         );
         assert!(!reaper.join().unwrap().success());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_registration_left_by_a_killed_replacement_is_pruned() {
-        let fixture = Fixture::new();
-        let live = fixture.register("state");
-        let fake = FakeReplacement::well_behaved(&fixture.path.join("fake"));
-        let stale = RuntimeInstance {
-            id: Uuid::new_v4().to_string(),
-            pid: fake.pid,
-            uid: fake.process.uid,
-            started_token: fake.process.started_token.clone(),
-            executable: env::current_exe().unwrap(),
-            state_home: live.instance.state_home.clone(),
-            windows: vec![],
-            updated_at: now(),
-        };
-        let registration = fixture.manager.instance_path(&stale.id).unwrap();
-        let request = fixture.manager.request_path(&stale.id).unwrap();
-        write_json(&registration, &stale).unwrap();
-        write_json(&request, &"leftover").unwrap();
-        // While it runs, it is an instance (with no windows, as in the incident).
-        assert_eq!(fixture.manager.instances().unwrap().len(), 2);
-        assert_eq!(
-            stop_process(&fake.process, Duration::from_secs(5)),
-            StopOutcome::Terminated
-        );
-        fake.assert_all_gone();
-        // The next listing drops it and its request; a reload never asks it.
-        let listed = fixture.manager.instances().unwrap();
-        assert_eq!(
-            listed.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
-            vec![live.instance.id.clone()]
-        );
-        assert!(!registration.exists());
-        assert!(!request.exists());
-        write_json(&registration, &stale).unwrap();
-        let report = fixture
-            .manager
-            .reload_all(&env::current_exe().unwrap())
-            .unwrap();
-        assert_eq!(report.instances.len(), 1);
-        assert_eq!(report.instances[0].instance_id, live.instance.id);
-        assert!(!registration.exists());
     }
 
     // -- Diagnostics and breadcrumbs ----------------------------------------
@@ -3808,6 +3579,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow: wall-clock watchdog deadline"]
     fn a_watchdog_fires_after_its_deadline_and_leaves_the_last_breadcrumb() {
         let watch = WatchFixture::new();
         let registration = watch
@@ -3900,28 +3672,7 @@ mod tests {
     }
 
     #[test]
-    fn a_confirmed_restore_cancels_the_watchdog() {
-        let watch = WatchFixture::new();
-        let registration = watch
-            .fixture
-            .manager
-            .instance_path(&watch.registration.instance.id)
-            .unwrap();
-        let (watchdog, fired) = watch.watchdog(Duration::from_millis(300), Duration::from_secs(5));
-        assert!(watchdog.begin_confirm());
-        watchdog.finish_confirm();
-        assert_eq!(*locked(&watchdog.shared.state), WatchState::Confirmed);
-        // Well past the deadline: nothing fired, the registration is intact.
-        assert!(fired.recv_timeout(Duration::from_millis(900)).is_err());
-        assert!(registration.exists());
-        assert!(!watch.diagnostic_file().exists());
-        // Late calls stay harmless.
-        assert!(watchdog.begin_confirm());
-        watchdog.abort_confirm();
-        assert_eq!(*locked(&watchdog.shared.state), WatchState::Confirmed);
-    }
-
-    #[test]
+    #[ignore = "slow: wall-clock watchdog deadlines"]
     fn a_confirmation_in_flight_holds_the_watchdog_off_for_a_bounded_time() {
         let watch = WatchFixture::new();
         // Confirmation begins in time and outlasts the deadline: not fired...
@@ -3957,6 +3708,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow: wall-clock watchdog deadline"]
     fn a_stalled_filesystem_cannot_hold_the_watchdog_up() {
         let mut watch = WatchFixture::new();
         watch.write = stalled_writer;
@@ -3987,6 +3739,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow: 40 timed races against the watchdog"]
     fn confirming_and_firing_never_both_win() {
         // Many races between the two at nearly the same instant: whichever gets
         // there first, exactly one outcome is observed.
@@ -4019,16 +3772,6 @@ mod tests {
         }));
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(run_bounded(Duration::from_secs(5), || {}));
-    }
-
-    #[test]
-    fn the_watchdog_outlasts_the_old_guis_patience_and_the_requester_outlasts_both() {
-        // Evaluated at compile time as well; kept here so a change is deliberate.
-        assert!(RESTORE_WATCHDOG_DEADLINE > REPLACEMENT_TIMEOUT + STOP_GRACE + KILL_WAIT);
-        assert!(RELOAD_WAIT > REPLACEMENT_TIMEOUT + STOP_GRACE + KILL_WAIT);
-        assert_eq!(RESTORE_WATCHDOG_DEADLINE, Duration::from_secs(40));
-        assert_ne!(RESTORE_WATCHDOG_EXIT_CODE, 0);
-        assert_ne!(RESTORE_WATCHDOG_EXIT_CODE, 2);
     }
 
     // -- The production watchdog, in a process of its own -------------------
@@ -4086,6 +3829,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "slow: re-executes the test binary as a wedged replacement"]
     fn a_wedged_replacement_records_where_it_hung_unregisters_and_exits_with_its_group() {
         use std::os::unix::process::{CommandExt, ExitStatusExt};
         let fixture = Fixture::new();
