@@ -1799,3 +1799,114 @@ fn restored_auth_and_usage_notices_resolve_on_the_first_successful_turn() {
     }
     assert!(session.open_notices.is_empty());
 }
+
+#[test]
+fn rate_limits_are_read_once_after_initialize_and_sparse_notifications_merge() {
+    let mut run = Run::start("rate_limits");
+    run.until(|e| matches!(e, ChatEvent::RateLimits { windows } if windows.iter().any(|w| w.id == "primary" && w.used_percent == 55.0)));
+    let windows = run.transcript().rate_limits;
+    assert_eq!(windows.len(), 2);
+    assert_eq!(
+        (
+            windows[0].id.as_str(),
+            windows[0].label.as_str(),
+            windows[0].used_percent,
+            windows[0].warn_at,
+            windows[0].resets_at
+        ),
+        ("primary", "5h", 55.0, 50.0, Some(1767225600))
+    );
+    assert_eq!(
+        (
+            windows[1].label.as_str(),
+            windows[1].used_percent,
+            windows[1].warn_at
+        ),
+        ("weekly", 88.0, 75.0)
+    );
+    assert!(run.notices().is_empty());
+    assert_eq!(run.fake.received_method("account/rateLimits/read").len(), 1);
+    let received = run.fake.received();
+    assert!(
+        received
+            .iter()
+            .position(|v| v["method"] == "initialized")
+            .unwrap()
+            < received
+                .iter()
+                .position(|v| v["method"] == "account/rateLimits/read")
+                .unwrap()
+    );
+    run.end();
+}
+
+#[test]
+fn rate_limit_exceeded_gets_the_exhausted_window_reset_or_the_soonest_known_reset() {
+    let fake = Fake::new(&[]);
+    let (sender, events) = mpsc::channel();
+    let mut session = Session::new(&fake.config(Provider::Codex), sender);
+    session.notification(
+        "account/rateLimits/updated",
+        &json!({"rateLimitsByLimitId":{"codex":{
+            "primary":{"usedPercent":30,"windowDurationMins":300,"resetsAt":1767225600},
+            "secondary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":1767300000000u64},
+            "planType":"team"
+        }}}),
+    );
+    session.notification(
+        "error",
+        &json!({"error":{"message":"Limit reached", "codexErrorInfo":"usageLimitExceeded"}}),
+    );
+    let notices = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert!(
+        matches!(&notices[0].body, ItemBody::Notice { kind: Some(kind), level: NoticeLevel::Error, resets_at: Some(1767300000), .. } if kind == "rate_limit:codex")
+    );
+    session.notification(
+        "account/rateLimits/updated",
+        &json!({"rateLimits":{"secondary":{"usedPercent":90}}}),
+    );
+    session.notification(
+        "error",
+        &json!({"error":{"message":"Limit reached", "codexErrorInfo":"usageLimitExceeded"}}),
+    );
+    let notices = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert!(matches!(
+        notices[0].body,
+        ItemBody::Notice {
+            resets_at: Some(1767225600),
+            ..
+        }
+    ));
+    assert_eq!(session.rate_limits.windows[0].warn_at, 50.0);
+    session.notification("account/rateLimits/updated", &json!({"planType":"pro"}));
+    assert_eq!(session.rate_limits.windows[0].warn_at, 75.0);
+}
+
+#[test]
+fn a_blocking_notice_that_precedes_the_background_quota_reply_gains_its_reset() {
+    let fake = Fake::new(&[]);
+    let (sender, events) = mpsc::channel();
+    let mut session = Session::new(&fake.config(Provider::Codex), sender);
+    session.notification(
+        "error",
+        &json!({"error":{"message":"blocked", "codexErrorInfo":"usageLimitExceeded"}}),
+    );
+    let first = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert!(matches!(
+        first[0].body,
+        ItemBody::Notice {
+            resets_at: None,
+            ..
+        }
+    ));
+    session.update_rate_limits(&json!({"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1767225600}}}));
+    let updated = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(updated[0].id, first[0].id);
+    assert!(matches!(
+        updated[0].body,
+        ItemBody::Notice {
+            resets_at: Some(1767225600),
+            ..
+        }
+    ));
+}

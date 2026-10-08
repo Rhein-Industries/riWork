@@ -1178,19 +1178,15 @@ fn compact_sends_the_slash_command_and_the_boundary_becomes_a_compaction() {
 }
 
 #[test]
-fn retries_and_rate_limits_become_notices_but_an_allowed_limit_does_not() {
+fn retries_become_notices_but_rate_warnings_are_structured_windows() {
     let mut rig = Rig::new(&["notices"]);
     rig.send("go");
     rig.until_idle();
     let notices = notices(&rig.seen);
-    assert_eq!(notices.len(), 3, "{notices:?}");
+    assert_eq!(notices.len(), 2, "{notices:?}");
     assert_eq!(notices[0].0, NoticeLevel::Warning);
     assert!(notices[0].1.contains("status 529"), "{notices:?}");
     assert!(notices[0].1.contains("attempt 1 of 5"), "{notices:?}");
-    assert!(
-        notices[1].1.contains("close to the five-hour"),
-        "{notices:?}"
-    );
     let transcript = rig.transcript();
     let ids: Vec<&str> = transcript
         .items
@@ -1198,14 +1194,13 @@ fn retries_and_rate_limits_become_notices_but_an_allowed_limit_does_not() {
         .filter(|item| matches!(item.body, ItemBody::Notice { .. }))
         .map(|item| item.id.as_str())
         .collect();
+    assert_eq!(transcript.rate_limits[0].id, "five_hour");
+    assert_eq!(transcript.rate_limits[0].used_percent, 90.0);
     // Unique to this driver, so that the ids of a resumed chat's notices do not
     // replace the earlier ones' in the host's log.
     let prefix = &ids[0]["notice-".len()..ids[0].len() - 2];
     assert_eq!(prefix.len(), 8);
-    assert_eq!(
-        ids,
-        [format!("notice-{prefix}-1"), format!("notice-{prefix}-2")]
-    );
+    assert_eq!(ids, [format!("notice-{prefix}-1")]);
     let other = {
         let (sender, _events) = mpsc::channel();
         let mut core = Core::new(&bare_config(), sender, "s".into());
@@ -2061,12 +2056,7 @@ fn rate_limit_status_is_remembered_across_turns_and_allowed_resolves_the_last_it
     core.ensure_turn();
     core.on_frame(&warning);
     let first = completed_notices(&events.try_iter().collect::<Vec<_>>());
-    assert_eq!(first.len(), 1);
-    assert_notice(&first[0], "rate_limit:seven_day", false);
-    assert!(
-        matches!(&first[0].body, ItemBody::Notice { text, resets_at: Some(1767225600), .. }
-        if text == "This account is close to the weekly usage limit.")
-    );
+    assert!(first.is_empty(), "allowed_warning never creates a notice");
     core.on_frame(&json!({"type":"rate_limit_event","rate_limit_info":{
         "status":"rejected","rateLimitType":"seven_day","resetsAt":1767225700
     }}));
@@ -2078,7 +2068,6 @@ fn rate_limit_status_is_remembered_across_turns_and_allowed_resolves_the_last_it
     }}));
     let updates = completed_notices(&events.try_iter().collect::<Vec<_>>());
     assert_eq!(updates.len(), 2);
-    assert_ne!(first[0].id, updates[0].id);
     assert_eq!(updates[0].id, updates[1].id);
     assert_notice(&updates[1], "rate_limit:seven_day", true);
     assert!(
@@ -2314,4 +2303,73 @@ fn restored_rate_limits_remember_the_status_and_allowed_resolves_the_saved_item(
         assert_eq!(resolved[0].id, original[0].id);
         assert_notice(&resolved[0], "rate_limit:seven_day", true);
     }
+}
+
+#[test]
+fn rate_windows_include_low_utilization_and_unified_windows_without_warning_notices() {
+    let (sender, events) = mpsc::channel();
+    let mut core = Core::new(&bare_config(), sender, "session".into());
+    core.ready = true;
+    let warning = json!({"type":"rate_limit_event", "rate_limit_info":{
+        "status":"allowed_warning", "rateLimitType":"five_hour", "utilization":0.3, "resetsAt":1767225600000u64,
+        "unifiedWindows":{
+            "five_hour":{"utilization":0.3,"resetsAt":1767225600},
+            "seven_day":{"utilization":0.87,"resetsAt":1767300000},
+            "seven_day_opus":{"utilization":0.7}, "seven_day_sonnet":{"utilization":0.69},
+            "overage":{"utilization":0.1}
+        }
+    }});
+    core.on_frame(&warning);
+    let seen = events.try_iter().collect::<Vec<_>>();
+    assert!(completed_notices(&seen).is_empty());
+    let t = fold(&seen);
+    assert_eq!(t.rate_limits.len(), 5);
+    let five = t.rate_limits.iter().find(|w| w.id == "five_hour").unwrap();
+    assert_eq!(
+        (
+            five.label.as_str(),
+            five.used_percent,
+            five.resets_at,
+            five.warn_at
+        ),
+        ("5h", 30.0, Some(1767225600), 70.0)
+    );
+    assert!(t.rate_limits.iter().all(|w| w.warn_at == 70.0));
+    assert_eq!(
+        t.rate_limits
+            .iter()
+            .find(|w| w.id == "seven_day_opus")
+            .unwrap()
+            .label,
+        "weekly Opus"
+    );
+    core.on_frame(&warning);
+    assert!(
+        events.try_iter().next().is_none(),
+        "unchanged windows do not repeat"
+    );
+    core.on_frame(&json!({"type":"rate_limit_event","rate_limit_info":{
+        "status":"allowed_warning","rateLimitType":"five_hour","utilization":0.7
+    }}));
+    let seen = events.try_iter().collect::<Vec<_>>();
+    assert!(completed_notices(&seen).is_empty());
+    assert!(
+        matches!(&seen[0], ChatEvent::RateLimits { windows } if windows.iter().any(|w| w.id == "five_hour" && w.used_percent == w.warn_at))
+    );
+    core.on_frame(&json!({"type":"rate_limit_event","rate_limit_info":{
+        "status":"rejected","rateLimitType":"overage","utilization":1.0,"resetsAt":1767300000000u64
+    }}));
+    let seen = events.try_iter().collect::<Vec<_>>();
+    let notices = completed_notices(&seen);
+    assert_eq!(notices.len(), 1);
+    assert!(
+        matches!(&notices[0].body, ItemBody::Notice { level: NoticeLevel::Error, kind: Some(kind), resets_at: Some(1767300000), .. } if kind == "rate_limit:overage")
+    );
+    // A repeated rejection with a later reset is a new occurrence, even if status is unchanged.
+    core.on_frame(&json!({"type":"rate_limit_event","rate_limit_info":{
+        "status":"rejected","rateLimitType":"overage","resetsAt":1767400000
+    }}));
+    let later = completed_notices(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(later.len(), 1);
+    assert_ne!(later[0].id, notices[0].id);
 }

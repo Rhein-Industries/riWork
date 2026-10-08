@@ -424,7 +424,19 @@ impl Inner {
             if let Err(error) = dismissals.prune(super::notice_dismissals::now()) {
                 eprintln!("riwork chat: {error}");
             }
-            dismissals.mark(self.info.provider, item, super::notice_dismissals::now());
+            if let Err(error) = dismissals.forget_worsened(
+                self.info.provider,
+                self.info.codex_account_id.as_deref(),
+                item,
+            ) {
+                eprintln!("riwork chat: {error}");
+            }
+            dismissals.mark(
+                self.info.provider,
+                self.info.codex_account_id.as_deref(),
+                item,
+                super::notice_dismissals::now(),
+            );
         }
         self.open.apply(&event);
         // Boundaries are worth surviving a power loss; the stream in between is
@@ -1952,6 +1964,7 @@ fn refresh_notice_dismissals(home: &Path, id: &str, inner: &mut Inner) -> Result
     for mut item in transcript.items {
         let changed = lock(&inner.dismissals).mark(
             inner.info.provider,
+            inner.info.codex_account_id.as_deref(),
             &mut item,
             super::notice_dismissals::now(),
         );
@@ -1976,6 +1989,7 @@ fn dismiss_notice(shared: &Shared, chat: &Chat, item_id: &str) -> Result<(), Str
             .ok_or("unknown notice item")?;
         lock(&shared.dismissals).dismiss(
             inner.info.provider,
+            inner.info.codex_account_id.as_deref(),
             item,
             super::notice_dismissals::now(),
         )?;

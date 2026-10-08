@@ -51,7 +51,7 @@ appended to the second table**; existing values are never renamed or repurposed.
 
 | kind | provider | level | transient | emitted when | resolved when |
 |---|---|---|---|---|---|
-| `rate_limit:five_hour` | Claude | warning (close to) / error (reached) | yes | `rate_limit_event` whose status changed for that window | a later event says the window is `allowed` again, or `resets_at` has passed |
+| `rate_limit:five_hour` | Claude | error (blocking) | yes | `rate_limit_event` with `status: rejected` (new status or reset) for that window | a later event says the window is `allowed` again, or `resets_at` has passed |
 | `rate_limit:seven_day` | Claude | as above | yes | as above | as above |
 | `rate_limit:seven_day_opus` | Claude | as above | yes | as above | as above |
 | `rate_limit:seven_day_sonnet` | Claude | as above | yes | as above | as above |
@@ -99,7 +99,8 @@ Notices without `kind` are one-offs: each is its own banner.
    its `resets_at` (if any) is in the future, the user has not dismissed it, and it is
    live: it belongs to the current exchange (at or after the last user message), or
    its kind is sticky — `rate_limit:*` and `auth_required` stay until resolved or
-   dismissed, whatever turn they came in.
+   dismissed, whatever turn they came in. **Warning-level `rate_limit:*` items from
+   old logs never show banners**; current drivers emit usage data for warnings.
 4. **Stack.** Newest on top. At most two banners are visible; the rest collapse into a
    "n more" control that expands the stack in place.
 5. **Dismissal.** Each banner has a close (×) button. Sticky notices use the host
@@ -135,14 +136,29 @@ that chat's log and refuses unknown ids or non-sticky notices. Dismissal works o
 stopped chats without starting a provider. Repeating it is idempotent.
 
 The single host atomically replaces the owner-only
-`$RIWORK_HOME/chats/notice-dismissals.json` file. Each entry is keyed by **provider +
-exact kind + resets_at**, or **provider + exact kind + item id** when no reset is
-known. Thus a usage-window dismissal covers all chats of that provider with the
-same reset, including new chats and notices with different ids. A later reset is
-a new occurrence and shows again; `auth_required` with a new id shows again.
-Project changes, closing/reopening tabs, window reloads and host/app restarts do
-not undo dismissal. Keys are provider-wide, including chats configured with different
-accounts of the same provider, rather than scoped by chat or project.
+`$RIWORK_HOME/chats/notice-dismissals.json` file. Each entry has a string `key`,
+`level` (the dismissed severity) and optional `resets_at`. A key is:
+
+- With a reset: `<provider>:<account or default>|<kind>@<Unix seconds>`, for example
+  `claude:default|rate_limit:seven_day@1760000000` or
+  `codex:account-a|rate_limit:codex@1760000000`.
+- Without a reset: `<provider>:<account or default>|<kind>#<item id>`.
+
+Codex uses the chat's `codex_account_id` when known; Claude currently has no chat
+account id and uses `default`. Keys cover all chats of that provider **and account**
+with the same reset, including new notices with different ids. A changed reset is
+a new occurrence; `auth_required` with a new id shows again. A dismissal suppresses
+only its recorded severity or lower. A new higher-level notice ends the lower-level
+dismissal and removes its key, so an old warning close never hides a blocking error.
+Project changes, tab close/reopen, window reloads and host/app restarts preserve it.
+The first implementation's provider-only entries remain readable: they migrate to
+the default account scope and conservatively count as warning dismissals, because
+they recorded neither account nor severity.
+
+`chat.snapshot` additionally includes optional `dismissed_notices: [key, ...]` for
+active dismissals in that chat's account scope (omitted when empty; default empty
+when decoding old snapshots). The per-item `dismissed` flag remains authoritative
+for banner rendering. Reading a snapshot never writes or prunes the dismissal file.
 
 Entries with `resets_at <= now` no longer match and are pruned on host startup,
 dismissal commands and incoming item events. The host re-emits matching existing
@@ -153,3 +169,50 @@ the driver's bounded resume tail. Consequently `chat.snapshot` contains the flag
 and `chat.events` delivers live updates. Clients must hide flagged banners and
 keep their history; older clients can ignore this additive field. Non-sticky
 notices remain view-local on the Mac. The iOS rendering change is separate work.
+
+## Rate windows (usage data, not notice banners)
+
+Drivers emit this control event, stored/replayed in `chat.events` and included in
+`chat.snapshot.controls` on the initial snapshot page:
+
+```json
+{
+  "event": "rate_limits",
+  "windows": [
+    {"id":"five_hour","label":"5h","used_percent":30.0,"resets_at":1767225600,"warn_at":70.0},
+    {"id":"seven_day","label":"weekly","used_percent":87.0,"resets_at":1767300000,"warn_at":70.0}
+  ]
+}
+```
+
+| RateWindow field | type | meaning |
+|---|---|---|
+| `id` | string | Claude window name (`five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`, `overage`); Codex `primary` or `secondary`. |
+| `label` | string | Claude: `5h`, `weekly`, `weekly Opus`, `weekly Sonnet`, `extra usage`. Codex: 300 minutes → `5h`, 10080 → `weekly`, otherwise whole days → `{d}d`, other durations → `{h}h`. |
+| `used_percent` | number | 0–100, including windows below the warning threshold. Claude utilization × 100; Codex usedPercent. |
+| `resets_at` | integer, optional | Unix seconds; milliseconds from either provider are normalized. Omitted when unknown. |
+| `warn_at` | number | Claude 70; Codex 75, except 50 for a 300-minute window on Plus or Team. |
+
+`ChatEvent::RateLimits { windows }` replaces `Transcript.rate_limits` wholesale,
+including an empty array. No such event in an older log means no known windows.
+Clients select a non-expired window at or above its own `warn_at` for a compact usage
+chip, prefer the highest percentage, use warning tone and bold at 90% or above,
+and list all windows in its tooltip. The chip is not dismissable. Do not turn these
+windows or `allowed_warning` into notice banners, even at 30%: quota data is emitted
+whenever it changes, independently of thresholds. Expired windows are retained as
+provider data; clients hide them when `resets_at <= now`.
+
+Claude merges `unifiedWindows` and the triggering window's utilization/reset into
+its known windows. `rejected` (including overage/spend limits) alone creates the
+error notice; `allowed` resolves it. Restored warning notices are still resolvable
+for log compatibility, but must not banner.
+
+Codex reads `account/rateLimits/read` once after session initialization and merges
+non-null fields from `account/rateLimits/updated`, including nested window fields,
+planType and rateLimitReachedType. A `rateLimitsByLimitId` response prefers the
+account-wide `codex` bucket, then the previously selected bucket, legacy `rateLimits`,
+or the first named bucket. The event contains primary/secondary once, with no legacy
+mirror duplicates. `usageLimitExceeded` remains `rate_limit:codex`, at error level;
+its notice uses the earliest reset among exhausted (100%) windows, or the earliest
+known reset when none is exhausted. The provider read is background work: older
+servers can refuse it without preventing chat startup.

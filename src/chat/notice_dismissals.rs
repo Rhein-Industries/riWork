@@ -10,30 +10,74 @@ use std::{
 use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct Key {
-    provider: Provider,
-    kind: String,
+struct Entry {
+    key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resets_at: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    level: super::model::NoticeLevel,
+}
+
+// Files from the first provider-wide implementation had no account or severity.
+#[derive(Deserialize)]
+struct LegacyEntry {
+    provider: Provider,
+    kind: String,
+    resets_at: Option<u64>,
     item_id: Option<String>,
 }
 
-impl Key {
-    fn for_item(provider: Provider, item: &Item) -> Option<Self> {
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredEntry {
+    Current(Entry),
+    Legacy(LegacyEntry),
+}
+
+fn prefix(provider: Provider, account: Option<&str>) -> String {
+    let provider = match provider {
+        Provider::Claude => "claude",
+        Provider::Codex => "codex",
+    };
+    format!("{provider}:{}|", account.unwrap_or("default"))
+}
+
+fn occurrence_key(
+    provider: Provider,
+    account: Option<&str>,
+    kind: &str,
+    reset: Option<u64>,
+    id: &str,
+) -> String {
+    let occurrence = match reset {
+        Some(reset) => format!("@{reset}"),
+        None => format!("#{id}"),
+    };
+    format!("{}{kind}{occurrence}", prefix(provider, account))
+}
+
+fn severity(level: super::model::NoticeLevel) -> u8 {
+    match level {
+        super::model::NoticeLevel::Info => 0,
+        super::model::NoticeLevel::Warning => 1,
+        super::model::NoticeLevel::Error => 2,
+    }
+}
+
+impl Entry {
+    fn for_item(provider: Provider, account: Option<&str>, item: &Item) -> Option<Self> {
         let ItemBody::Notice {
             kind: Some(kind),
             resets_at,
+            level,
             ..
         } = &item.body
         else {
             return None;
         };
         sticky_notice(Some(kind)).then(|| Self {
-            provider,
-            kind: kind.clone(),
+            key: occurrence_key(provider, account, kind, *resets_at, &item.id),
             resets_at: *resets_at,
-            item_id: resets_at.is_none().then(|| item.id.clone()),
+            level: *level,
         })
     }
 
@@ -42,27 +86,70 @@ impl Key {
     }
 }
 
+fn read_entries(path: &Path) -> Result<Vec<Entry>, String> {
+    let stored: Vec<StoredEntry> = match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| format!("Cannot decode {}: {e}", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(format!("Cannot read {}: {e}", path.display())),
+    };
+    Ok(stored
+        .into_iter()
+        .map(|entry| match entry {
+            StoredEntry::Current(entry) => entry,
+            // Conservatively treat an unrecorded severity as warning so an old close
+            // can never suppress a newly blocking error. Legacy scope is default.
+            StoredEntry::Legacy(old) => Entry {
+                key: occurrence_key(
+                    old.provider,
+                    None,
+                    &old.kind,
+                    old.resets_at,
+                    old.item_id.as_deref().unwrap_or(""),
+                ),
+                resets_at: old.resets_at,
+                level: super::model::NoticeLevel::Warning,
+            },
+        })
+        .collect())
+}
+
+/// Snapshots remain read-only, including when the host is not running.
+pub(super) fn snapshot_keys(
+    home: &Path,
+    info: Option<&super::model::ChatInfo>,
+) -> Result<Vec<String>, String> {
+    let Some(info) = info else {
+        return Ok(Vec::new());
+    };
+    let prefix = prefix(info.provider, info.codex_account_id.as_deref());
+    let entries = read_entries(&super::log::chats_dir(home).join("notice-dismissals.json"))?;
+    let mut keys: Vec<_> = entries
+        .into_iter()
+        .filter(|e| e.active(now()) && e.key.starts_with(&prefix))
+        .map(|e| e.key)
+        .collect();
+    keys.sort();
+    keys.dedup();
+    Ok(keys)
+}
+
 pub(super) struct Dismissals {
     path: PathBuf,
-    entries: Vec<Key>,
+    entries: Vec<Entry>,
 }
 
 impl Dismissals {
     pub fn open(home: &Path) -> Result<Self, String> {
         let path = super::log::chats_dir(home).join("notice-dismissals.json");
-        let entries = match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| format!("Cannot decode {}: {e}", path.display()))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => return Err(format!("Cannot read {}: {e}", path.display())),
-        };
+        let entries = read_entries(&path)?;
         let mut store = Self { path, entries };
         store.prune(now())?;
         Ok(store)
     }
 
     // Commit memory only after the atomic file replacement succeeds.
-    fn save(&mut self, entries: Vec<Key>) -> Result<(), String> {
+    fn save(&mut self, entries: Vec<Entry>) -> Result<(), String> {
         let bytes = serde_json::to_vec_pretty(&entries).map_err(|e| e.to_string())?;
         let dir = self.path.parent().expect("dismissals parent");
         let temporary = dir.join(format!(".notice-dismissals-{}.tmp", Uuid::new_v4()));
@@ -98,23 +185,67 @@ impl Dismissals {
         Ok(())
     }
 
-    pub fn dismiss(&mut self, provider: Provider, item: &Item, now: u64) -> Result<(), String> {
-        let key = Key::for_item(provider, item).ok_or("item is not a sticky notice")?;
+    pub fn dismiss(
+        &mut self,
+        provider: Provider,
+        account: Option<&str>,
+        item: &Item,
+        now: u64,
+    ) -> Result<(), String> {
+        let key = Entry::for_item(provider, account, item).ok_or("item is not a sticky notice")?;
         self.prune(now)?;
-        if key.active(now) && !self.entries.contains(&key) {
+        if key.active(now)
+            && !self
+                .entries
+                .iter()
+                .any(|e| e.key == key.key && severity(e.level) >= severity(key.level))
+        {
             let mut entries = self.entries.clone();
+            entries.retain(|e| e.key != key.key);
             entries.push(key);
             self.save(entries)?;
         }
         Ok(())
     }
 
+    /// Escalation ends a lower-severity dismissal for this account and occurrence.
+    pub fn forget_worsened(
+        &mut self,
+        provider: Provider,
+        account: Option<&str>,
+        item: &Item,
+    ) -> Result<(), String> {
+        let Some(key) = Entry::for_item(provider, account, item) else {
+            return Ok(());
+        };
+        let entries: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|e| e.key != key.key || severity(e.level) >= severity(key.level))
+            .cloned()
+            .collect();
+        if entries.len() != self.entries.len() {
+            self.save(entries)?;
+        }
+        Ok(())
+    }
+
     /// The store is authoritative even when a driver resumes an old dismissed body.
-    pub fn mark(&self, provider: Provider, item: &mut Item, now: u64) -> bool {
-        let Some(key) = Key::for_item(provider, item) else {
+    pub fn mark(
+        &self,
+        provider: Provider,
+        account: Option<&str>,
+        item: &mut Item,
+        now: u64,
+    ) -> bool {
+        let Some(key) = Entry::for_item(provider, account, item) else {
             return false;
         };
-        let value = key.active(now) && self.entries.contains(&key);
+        let value = key.active(now)
+            && self
+                .entries
+                .iter()
+                .any(|e| e.key == key.key && severity(e.level) >= severity(key.level));
         let ItemBody::Notice { dismissed, .. } = &mut item.body else {
             unreachable!()
         };
@@ -157,19 +288,23 @@ mod tests {
         let mut store = Dismissals::open(&home).unwrap();
         let reset = now() + 1000;
         let mut first = notice("one", "rate_limit:seven_day", Some(reset));
-        store.dismiss(Provider::Claude, &first, reset - 10).unwrap();
-        assert!(store.mark(Provider::Claude, &mut first, reset - 1));
+        store
+            .dismiss(Provider::Claude, None, &first, reset - 10)
+            .unwrap();
+        assert!(store.mark(Provider::Claude, None, &mut first, reset - 1));
         assert!(!store.mark(
             Provider::Claude,
+            None,
             &mut notice("two", "rate_limit:seven_day", Some(reset + 1)),
             reset - 1
         ));
         assert!(!store.mark(
             Provider::Codex,
+            None,
             &mut notice("two", "rate_limit:seven_day", Some(reset)),
             reset - 1
         ));
-        assert!(store.mark(Provider::Claude, &mut first, reset));
+        assert!(store.mark(Provider::Claude, None, &mut first, reset));
         assert!(matches!(
             first.body,
             ItemBody::Notice {
@@ -181,11 +316,12 @@ mod tests {
         assert!(store.entries.is_empty());
         assert_eq!(fs::read_to_string(&store.path).unwrap(), "[]");
         let mut auth = notice("auth-one", "auth_required", None);
-        store.dismiss(Provider::Claude, &auth, reset).unwrap();
+        store.dismiss(Provider::Claude, None, &auth, reset).unwrap();
         let reopened = Dismissals::open(&home).unwrap();
-        assert!(reopened.mark(Provider::Claude, &mut auth, reset));
+        assert!(reopened.mark(Provider::Claude, None, &mut auth, reset));
         assert!(!reopened.mark(
             Provider::Claude,
+            None,
             &mut notice("auth-two", "auth_required", None),
             reset
         ));

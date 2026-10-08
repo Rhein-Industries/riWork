@@ -34,7 +34,7 @@ fake unless it was told to ignore them), and {"eof": true} when stdin closed.
 A mismatch is recorded as {"mismatch": ...}
 and exits with status 98; running out of time waiting for input exits 99.
 
-The Codex driver asks `model/list` once, right before it opens the thread. A step
+The Codex driver asks `model/list` and `account/rateLimits/read` in the background. A step
 that does not itself expect that request has it answered with an empty list (and
 recorded like any frame read), so the fixtures that predate it need not mention it;
 a fixture that wants real models expects it where it comes.
@@ -169,9 +169,9 @@ for step in steps:
                 sys.exit(98)
             frame = json.loads(line)
             record({"recv": frame})
-            if frame.get("method") == "model/list" and step["frame"].get("method") != "model/list":
+            if frame.get("method") in ("model/list", "account/rateLimits/read") and step["frame"].get("method") != frame.get("method"):
                 last = frame
-                emit({"id": "$id", "result": {"data": [], "nextCursor": None}})
+                emit({"id": "$id", "result": {"data": [], "nextCursor": None} if frame.get("method") == "model/list" else {"rateLimits": None}})
                 continue
             break
         if not matches(step["frame"], frame):

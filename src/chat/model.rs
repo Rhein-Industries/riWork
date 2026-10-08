@@ -242,6 +242,17 @@ pub enum NoticeLevel {
     Error,
 }
 
+/// One provider quota window, independent of blocking notice banners.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RateWindow {
+    pub id: String,
+    pub label: String,
+    pub used_percent: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<u64>,
+    pub warn_at: f64,
+}
+
 /// The content of one transcript item.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -560,6 +571,10 @@ pub enum ChatEvent {
     Usage {
         usage: Usage,
     },
+    /// Current quota windows; replaces the previous snapshot wholesale.
+    RateLimits {
+        windows: Vec<RateWindow>,
+    },
     /// The models the provider offers. A driver sends it once after its
     /// handshake and again if the list changes; each replaces the last.
     Models {
@@ -621,6 +636,7 @@ pub struct Transcript {
     pub approvals: Vec<Approval>,
     pub questions: Vec<Question>,
     pub usage: Option<Usage>,
+    pub rate_limits: Vec<RateWindow>,
     /// The models the provider offers, empty until its driver has said (an
     /// older driver never does).
     pub models: Vec<ModelOption>,
@@ -702,6 +718,7 @@ impl Transcript {
             }
             ChatEvent::Usage { usage } => self.usage = Some(usage.clone()),
             ChatEvent::Models { models } => self.models = models.clone(),
+            ChatEvent::RateLimits { windows } => self.rate_limits = windows.clone(),
         }
     }
 }
@@ -1003,4 +1020,43 @@ pub(crate) fn sticky_notice(kind: Option<&str>) -> bool {
             || kind == notice_kind::RATE_LIMIT
             || kind.starts_with("rate_limit:")
     })
+}
+
+#[cfg(test)]
+mod rate_window_tests {
+    use super::*;
+
+    #[test]
+    fn rate_limits_wire_round_trip_and_transcript_replacement() {
+        let event = ChatEvent::RateLimits {
+            windows: vec![RateWindow {
+                id: "five_hour".into(),
+                label: "5h".into(),
+                used_percent: 30.0,
+                resets_at: Some(1767225600),
+                warn_at: 70.0,
+            }],
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["event"], "rate_limits");
+        assert_eq!(value["windows"][0]["used_percent"], 30.0);
+        assert_eq!(serde_json::from_value::<ChatEvent>(value).unwrap(), event);
+        let old: RateWindow =
+            serde_json::from_str(r#"{"id":"primary","label":"5h","used_percent":50,"warn_at":50}"#)
+                .unwrap();
+        assert_eq!(old.resets_at, None);
+        assert!(
+            serde_json::to_value(old)
+                .unwrap()
+                .get("resets_at")
+                .is_none()
+        );
+        let mut transcript = Transcript::default();
+        transcript.apply(&event);
+        assert_eq!(transcript.rate_limits.len(), 1);
+        transcript.apply(&ChatEvent::RateLimits {
+            windows: Vec::new(),
+        });
+        assert!(transcript.rate_limits.is_empty());
+    }
 }

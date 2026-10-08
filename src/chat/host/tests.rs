@@ -1671,3 +1671,117 @@ fn notice_dismissal_persists_across_host_restart_covers_other_chats_and_snapshot
         .is_err()
     );
 }
+
+#[test]
+fn rate_limits_control_replays_to_a_late_joiner_and_survives_restart_in_snapshot() {
+    let mut host = NoticeHost::new();
+    let chat = host.create(Provider::Claude);
+    let id = chat.info().id;
+    let windows = vec![crate::chat::model::RateWindow {
+        id: "seven_day".into(),
+        label: "weekly".into(),
+        used_percent: 87.0,
+        resets_at: Some(1767225600),
+        warn_at: 70.0,
+    }];
+    lock(&chat.inner).take_driver_event(ChatEvent::RateLimits {
+        windows: windows.clone(),
+    });
+    let mut replay = Vec::new();
+    log::replay(&chat.dir, 0, lock(&chat.inner).next_seq - 1, &mut replay).unwrap();
+    let mut transcript = Transcript::default();
+    for line in replay
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let envelope: Envelope = serde_json::from_slice(line).unwrap();
+        transcript.apply(&envelope.event);
+    }
+    assert_eq!(transcript.rate_limits, windows);
+    drop(chat);
+    host.restart();
+    let snapshot = log::read_snapshot(&host.home, &id, None, u64::MAX, 50, 1 << 20, &[]).unwrap();
+    assert!(
+        snapshot
+            .controls
+            .iter()
+            .any(|e| matches!(e, ChatEvent::RateLimits { windows: stored } if stored == &windows))
+    );
+}
+
+#[test]
+fn account_notice_keys_persist_but_a_worsened_limit_and_another_account_show() {
+    let mut host = NoticeHost::new();
+    let first = host.create(Provider::Codex);
+    let second = host.create(Provider::Codex);
+    for (chat, account) in [(&first, "account-a"), (&second, "account-b")] {
+        let mut inner = lock(&chat.inner);
+        inner.info.codex_account_id = Some(account.into());
+        inner.publish_info();
+    }
+    let reset = super::super::notice_dismissals::now() + 3600;
+    host.emit(
+        &first,
+        dismissal_notice("warning", "rate_limit:seven_day", Some(reset)),
+    );
+    host.emit(
+        &second,
+        dismissal_notice("other", "rate_limit:seven_day", Some(reset)),
+    );
+    host.dismiss(&first, "warning");
+    assert!(host.dismissed(&first, "warning"));
+    assert!(!host.dismissed(&second, "other"));
+    let id = first.info().id;
+    let expected = format!("codex:account-a|rate_limit:seven_day@{reset}");
+    let snapshot = log::read_snapshot(&host.home, &id, None, u64::MAX, 50, 1 << 20, &[]).unwrap();
+    assert_eq!(snapshot.dismissed_notices, [expected.clone()]);
+    assert!(
+        log::read_snapshot(
+            &host.home,
+            &second.info().id,
+            None,
+            u64::MAX,
+            50,
+            1 << 20,
+            &[]
+        )
+        .unwrap()
+        .dismissed_notices
+        .is_empty()
+    );
+    drop(first);
+    drop(second);
+    host.restart();
+    let first = host.shared.find(&id).unwrap();
+    assert!(host.dismissed(&first, "warning"));
+    host.emit(
+        &first,
+        dismissal_notice("same-reset", "rate_limit:seven_day", Some(reset)),
+    );
+    assert!(host.dismissed(&first, "same-reset"));
+    let mut blocking = dismissal_notice("blocked", "rate_limit:seven_day", Some(reset));
+    if let ItemBody::Notice { level, .. } = &mut blocking.body {
+        *level = crate::chat::model::NoticeLevel::Error;
+    }
+    host.emit(&first, blocking.clone());
+    assert!(
+        !host.dismissed(&first, "blocked"),
+        "a warning close cannot hide rejection"
+    );
+    assert!(
+        log::read_snapshot(&host.home, &id, None, u64::MAX, 50, 1 << 20, &[])
+            .unwrap()
+            .dismissed_notices
+            .is_empty(),
+        "worsening removes the obsolete warning dismissal key"
+    );
+    host.dismiss(&first, "blocked");
+    assert!(host.dismissed(&first, "blocked"));
+    let data = fs::read_to_string(host.home.join("chats/notice-dismissals.json")).unwrap();
+    assert!(data.contains(&expected) && data.contains("error"));
+    host.emit(
+        &first,
+        dismissal_notice("later-reset", "rate_limit:seven_day", Some(reset + 3600)),
+    );
+    assert!(!host.dismissed(&first, "later-reset"));
+}

@@ -330,12 +330,12 @@ const SNAPSHOT_FILE_MAX: u64 = 128 << 20;
 const SNAPSHOT_LINE_MAX: u64 = 8 << 20;
 const SNAPSHOT_EVENTS_MAX: u64 = 1_000_000;
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct SnapshotItem {
     pub order: u64,
     pub item: super::model::Item,
 }
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Snapshot {
     pub v: u8,
     pub chat_id: String,
@@ -345,6 +345,8 @@ pub struct Snapshot {
     pub more: bool,
     pub items: Vec<SnapshotItem>,
     pub controls: Vec<super::model::ChatEvent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dismissed_notices: Vec<String>,
 }
 
 pub fn read_snapshot(
@@ -453,6 +455,9 @@ pub fn read_snapshot(
         if let Some(usage) = transcript.usage.clone() {
             controls.push(ChatEvent::Usage { usage });
         }
+        controls.push(ChatEvent::RateLimits {
+            windows: transcript.rate_limits.clone(),
+        });
         controls.push(ChatEvent::Models {
             models: transcript.models.clone(),
         });
@@ -473,6 +478,8 @@ pub fn read_snapshot(
         0
     };
     items.drain(..cut);
+    let dismissed_notices =
+        super::notice_dismissals::snapshot_keys(home, transcript.info.as_ref())?;
     let mut snapshot = Snapshot {
         v: 1,
         chat_id: id.into(),
@@ -482,6 +489,7 @@ pub fn read_snapshot(
         more,
         items,
         controls,
+        dismissed_notices,
     };
     // Reduce by whole oldest items only. Oversized controls or one item are explicit errors.
     while serde_json::to_vec(&snapshot)
@@ -1153,4 +1161,24 @@ pub(super) fn read_notice_transcript(dir: &Path) -> Result<super::model::Transcr
         transcript.apply(&envelope.event);
     }
     Ok(transcript)
+}
+
+#[cfg(test)]
+mod rate_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn old_snapshot_without_dismissed_keys_or_rate_limits_still_decodes() {
+        let snapshot: Snapshot = serde_json::from_value(serde_json::json!({
+            "v":1,"chat_id":"old","cursor":"0-0-0000000000000000","next":0,
+            "before":0,"more":false,"items":[],"controls":[]
+        }))
+        .unwrap();
+        assert!(snapshot.dismissed_notices.is_empty());
+        let mut transcript = super::super::model::Transcript::default();
+        for event in snapshot.controls {
+            transcript.apply(&event);
+        }
+        assert!(transcript.rate_limits.is_empty());
+    }
 }

@@ -553,6 +553,7 @@ struct Core {
     notice_counter: u64,
     open_notices: HashMap<String, Item>,
     rate_status: HashMap<String, String>,
+    rate_windows: Vec<super::model::RateWindow>,
     retry_item: Option<Item>,
     totals: Totals,
     /// The models the CLI offers, from its `initialize` answer; empty if it said none.
@@ -621,6 +622,7 @@ impl Core {
                     Some((window.to_owned(), status.to_owned()))
                 })
                 .collect(),
+            rate_windows: Vec::new(),
             retry_item: None,
             totals: Totals::default(),
             models: Vec::new(),
@@ -1765,26 +1767,46 @@ impl Core {
 
     fn on_rate_limit(&mut self, frame: &Value) {
         let info = &frame["rate_limit_info"];
+        let windows = super::rate_limits::claude_windows(&self.rate_windows, info);
+        if windows != self.rate_windows {
+            self.rate_windows = windows.clone();
+            self.emit(ChatEvent::RateLimits { windows });
+        }
         let status = str_of(info, "status").unwrap_or_default();
         if !matches!(status, "allowed" | "allowed_warning" | "rejected") {
             return;
         }
         let provider_window = str_of(info, "rateLimitType").unwrap_or("unknown");
-        if self.rate_status.get(provider_window).map(String::as_str) == Some(status) {
-            return;
-        }
+        let kind = notice_kind::rate_limit(provider_window);
+        let reset = super::rate_limits::reset_seconds(&info["resetsAt"])
+            .or_else(|| {
+                self.rate_windows
+                    .iter()
+                    .find(|w| w.id == provider_window)
+                    .and_then(|w| w.resets_at)
+            })
+            .or_else(|| {
+                self.open_notices
+                    .get(&kind)
+                    .and_then(|item| match item.body {
+                        ItemBody::Notice { resets_at, .. } => resets_at,
+                        _ => None,
+                    })
+            });
+        let unchanged = self.rate_status.get(provider_window).map(String::as_str) == Some(status);
         self.rate_status
             .insert(provider_window.to_owned(), status.to_owned());
-        let kind = notice_kind::rate_limit(provider_window);
         if status == "allowed" {
             self.resolve_notice(&kind, "This account can use this usage window again.");
             return;
         }
-        let (level, what) = if status == "allowed_warning" {
-            (NoticeLevel::Warning, "is close to")
-        } else {
-            (NoticeLevel::Error, "has reached")
-        };
+        // Footer/chip warnings are quota data, never a new banner item.
+        if status == "allowed_warning" {
+            return;
+        }
+        if unchanged && self.open_notices.get(&kind).is_some_and(|item| {
+            matches!(item.body, ItemBody::Notice { resets_at, level: NoticeLevel::Error, .. } if resets_at == reset)
+        }) { return; }
         let window = match provider_window {
             "five_hour" => "the five-hour usage limit",
             "seven_day" => "the weekly usage limit",
@@ -1793,15 +1815,11 @@ impl Core {
             "overage" => "the extra usage limit",
             _ => "a usage limit",
         };
-        let resets_at = info["resetsAt"]
-            .as_f64()
-            .filter(|n| n.is_finite() && *n >= 0.0)
-            .map(|n| (if n > 1e11 { n / 1000.0 } else { n }) as u64);
         self.notice_at(
-            level,
+            NoticeLevel::Error,
             &kind,
-            format!("This account {what} {window}."),
-            resets_at,
+            format!("This account has reached {window}."),
+            reset,
         );
     }
 

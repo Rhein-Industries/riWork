@@ -34,6 +34,7 @@ pub(crate) mod log;
 pub mod media;
 pub mod model;
 mod notice_dismissals;
+mod rate_limits;
 #[cfg(test)]
 pub(crate) mod testing;
 #[cfg(test)]

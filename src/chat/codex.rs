@@ -334,6 +334,7 @@ struct Session {
     /// The models `model/list` named, once it has answered (none for a server
     /// that has no such method).
     models: Vec<ModelOption>,
+    rate_limits: super::rate_limits::CodexRates,
     /// The Fast tier has been sent on this thread. The tier sticks, so a model
     /// that is not known to have tiers still gets the standard one back.
     tier_sent: bool,
@@ -391,6 +392,7 @@ impl Session {
                 fast: config.fast,
             },
             models: Vec::new(),
+            rate_limits: Default::default(),
             tier_sent: false,
             effort_dropped: None,
             plan_sent: false,
@@ -466,12 +468,18 @@ impl Session {
         text: String,
         turn_id: Option<String>,
     ) -> Item {
+        let mut body = ItemBody::notice(level, text, Some(kind));
+        if kind == "rate_limit:codex" {
+            if let ItemBody::Notice { resets_at, .. } = &mut body {
+                *resets_at = self.rate_limits.blocking_reset();
+            }
+        }
         let item = Item {
             presentation: Default::default(),
             id,
             turn_id,
             status: ItemStatus::Completed,
-            body: ItemBody::notice(level, text, Some(kind)),
+            body,
         };
         if matches!(kind, notice_kind::AUTH_REQUIRED | "rate_limit:codex") {
             self.open_notices.insert(kind.to_owned(), item.clone());
@@ -965,7 +973,24 @@ impl Codex {
         });
         // The chat does not wait for the list: it arrives as an event.
         self.list_models(None, Vec::new(), 1);
+        self.read_rate_limits();
         Ok(())
+    }
+
+    /// Background quota read: unsupported methods never hold up starting a chat.
+    fn read_rate_limits(&self) {
+        let frame = self.with(|session| {
+            session.request(
+                "account/rateLimits/read",
+                Value::Null,
+                Box::new(|codex, outcome| {
+                    if let Ok(result) = outcome {
+                        codex.with(|session| session.update_rate_limits(&result));
+                    }
+                }),
+            )
+        });
+        let _ = self.proc.send(&frame);
     }
 
     /// Ask for page number `page` of `model/list` (from `cursor`, after the models
@@ -1576,6 +1601,30 @@ impl Codex {
 }
 
 impl Session {
+    fn update_rate_limits(&mut self, value: &Value) {
+        if self.rate_limits.update(value) {
+            self.emit(ChatEvent::RateLimits {
+                windows: self.rate_limits.windows.clone(),
+            });
+            // A hard stop can race the background read. Fill in its reset once
+            // quota data arrives, preserving the notice's identity.
+            if let Some(reset) = self.rate_limits.blocking_reset() {
+                let mut update = None;
+                if let Some(item) = self.open_notices.get_mut("rate_limit:codex") {
+                    if let ItemBody::Notice { resets_at, .. } = &mut item.body {
+                        if resets_at.is_none() {
+                            *resets_at = Some(reset);
+                            update = Some(item.clone());
+                        }
+                    }
+                }
+                if let Some(item) = update {
+                    self.emit(ChatEvent::ItemCompleted { item });
+                }
+            }
+        }
+    }
+
     /// Apply one notification; returns frames to send afterwards.
     fn notification(&mut self, method: &str, params: &Value) -> Vec<Value> {
         // Sub-agents report on the same connection under their own thread ids.
@@ -1595,6 +1644,7 @@ impl Session {
             }
         }
         match method {
+            "account/rateLimits/updated" => self.update_rate_limits(params),
             "turn/started" => {
                 if let Some(id) = params["turn"]["id"].as_str() {
                     return self.begin_turn(id);
