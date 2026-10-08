@@ -1404,7 +1404,8 @@ struct Workspace {
     /// Which tab hosts `shared_tab_menu`.
     shared_tab_menu_key: String,
     /// Each pane strip's scrolling tabs, so a selected tab can be revealed.
-    strip_scrolls: std::cell::RefCell<HashMap<PaneId, gpui::ScrollHandle>>,
+    /// and whether its pinned tabs scroll with the rest (a narrow pane).
+    strip_scrolls: std::cell::RefCell<HashMap<PaneId, (gpui::ScrollHandle, bool)>>,
     shared_tab_menu: Option<Entity<tab_menu::TabMenu>>,
     foreign_tabs: HashMap<String, Option<project_tabs::Entry>>,
     shared_tab_error: Option<String>,
@@ -3344,8 +3345,7 @@ impl Workspace {
         let index = target_index.min(dest.tabs.len());
         dest.tabs.insert(index, tab);
         dest.active = index;
-        // The strip publishes its own reorders (`strip_drop`).
-        if self.main_pane == Some(target) && !self.uses_tab_strip() {
+        if self.main_pane == Some(target) {
             let keys = self.panes[&target]
                 .tabs
                 .iter()
@@ -11264,6 +11264,13 @@ impl Render for Workspace {
         self.settle_terminal_drop(cx);
         if !cx.has_active_drag() {
             self.drop_target = None;
+            // A strip menu whose strip is gone (its pane closed, focus mode, a project
+            // switch) goes with it.
+            if self.strip_menu.is_some_and(|menu| {
+                self.focus_mode || !self.uses_tab_strip() || !self.panes.contains_key(&menu.pane)
+            }) {
+                self.strip_menu = None;
+            }
             if self.tab_dragging
                 && self.panel_menu.is_none()
                 && self.strip_menu.is_none()
@@ -11323,6 +11330,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_orchestrator_action))
             .on_action(cx.listener(Self::open_project_orchestrator_action))
             .capture_key_down(cx.listener(|workspace, event: &KeyDownEvent, window, cx| {
+                // A shortcut acts on the window, not the strip menu: close the menu first so
+                // the terminals thaw and focus returns before the action runs.
+                let modifiers = &event.keystroke.modifiers;
+                if workspace.strip_menu.is_some() && (modifiers.platform || modifiers.control) {
+                    workspace.close_strip_menu(window, cx);
+                }
                 if event.keystroke.key == "escape" {
                     if let Some((input, _)) = workspace
                         .focused_search

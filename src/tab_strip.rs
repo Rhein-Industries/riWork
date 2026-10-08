@@ -79,6 +79,12 @@ pub(crate) fn numbered_session(
     }
 }
 
+/// Whether pinned tabs `width` wide would leave the other tabs less than half of `room`;
+/// they then scroll with them.
+pub(crate) fn pins_scroll(width: f32, room: f32) -> bool {
+    width > room / 2.0
+}
+
 /// Whether the scrolling tabs need more than `room`: the strip then offers All tabs.
 pub(crate) fn strip_overflows(widths: &[f32], gap: f32, room: f32) -> bool {
     let total: f32 = widths.iter().sum::<f32>() + gap * widths.len().saturating_sub(1) as f32;
@@ -245,7 +251,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let reorder = (drag.pane_id == pane_id && drag.project_id == self.project_id)
+        // The main pane's drops publish in `move_tab`, which keeps its sessions in order.
+        let reorder = (drag.pane_id == pane_id
+            && drag.project_id == self.project_id
+            && self.main_pane() != Some(pane_id))
             .then(|| {
                 let pane = self.panes.get(&pane_id)?;
                 let slots = self.strip_slots(pane);
@@ -278,12 +287,19 @@ impl Workspace {
             return;
         };
         let slots = self.strip_slots(pane);
+        let scrolls = self.strip_scrolls.borrow();
+        let Some((handle, pins_scroll)) = scrolls.get(&pane_id) else {
+            return;
+        };
         let scrolled = strip_order(&slots)
             .into_iter()
-            .filter(|index| slots[*index].0 == StripSlot::Session)
+            .filter(|index| match slots[*index].0 {
+                StripSlot::Panel => false,
+                StripSlot::Pinned => *pins_scroll,
+                StripSlot::Session => true,
+            })
             .position(|index| pane.tabs[index].id == tab_id);
-        if let (Some(index), Some(handle)) = (scrolled, self.strip_scrolls.borrow().get(&pane_id))
-        {
+        if let Some(index) = scrolled {
             handle.scroll_to_item(index);
         }
     }
@@ -400,22 +416,38 @@ impl Workspace {
                     0.0
                 }
         };
-        let fixed = panels.len() as f32 * ui_text::space_f32(PANEL_SEGMENT)
+        let base = panels.len() as f32 * ui_text::space_f32(PANEL_SEGMENT)
             + if panels.is_empty() { 0.0 } else { ui_text::space_f32(14.0) }
-            + pinned.iter().map(|i| width(*i) + gap).sum::<f32>()
             + 2.0 * (ui_text::space_f32(STRIP_BUTTON) + gap)
             + ui_text::space_f32(8.0);
-        let overflow = strip_overflows(
-            &sessions.iter().map(|i| width(*i)).collect::<Vec<_>>(),
-            gap,
-            room - fixed,
-        );
-        let scroll = self
-            .strip_scrolls
-            .borrow_mut()
-            .entry(pane_id)
-            .or_default()
-            .clone();
+        let pinned_width = pinned.iter().map(|i| width(*i) + gap).sum::<f32>();
+        // Pinned tabs stay put while they leave the others at least half the room; in a
+        // pane too narrow for that they scroll too, still first, so ＋ and All tabs stay.
+        let pins_scroll = pins_scroll(pinned_width, room - base);
+        let (pinned, sessions) = if pins_scroll {
+            (Vec::new(), pinned.into_iter().chain(sessions).collect::<Vec<_>>())
+        } else {
+            (pinned, sessions)
+        };
+        let fixed = base + if pins_scroll { 0.0 } else { pinned_width };
+        let all_open = self.strip_menu
+            == Some(StripMenu {
+                pane: pane_id,
+                kind: StripMenuKind::AllTabs,
+            });
+        // An open All tabs menu keeps its button, even once the window has grown to fit.
+        let overflow = all_open
+            || strip_overflows(
+                &sessions.iter().map(|i| width(*i)).collect::<Vec<_>>(),
+                gap,
+                room - fixed,
+            );
+        let scroll = {
+            let mut scrolls = self.strip_scrolls.borrow_mut();
+            let entry = scrolls.entry(pane_id).or_default();
+            entry.1 = pins_scroll;
+            entry.0.clone()
+        };
         let error = theme::diff_colors(cx).removed;
         let tab = |index: usize, cx: &mut Context<Self>| {
             self.strip_tab(pane_id, index, slots[index].0, pane_selected, tab_can_close, error, cx)
@@ -449,11 +481,6 @@ impl Workspace {
                     pane: pane_id,
                     kind: StripMenuKind::Workers,
                 });
-        let all_open = self.strip_menu
-            == Some(StripMenu {
-                pane: pane_id,
-                kind: StripMenuKind::AllTabs,
-            });
         let plus = behavior_controls::popup(
             ("strip-new-popup", pane_id),
             self.strip_button(
@@ -861,15 +888,16 @@ impl Workspace {
                 workspace.strip_drop(drag, pane_id, index, Some(tab_id), window, cx);
                 cx.stop_propagation();
             }));
-        match &self.shared_tab_menu {
-            Some(menu) if key.as_deref() == Some(self.shared_tab_menu_key.as_str()) => {
-                behavior_controls::popup(("tab-menu-host", tab_id), element)
-                    .anchor(gpui::Anchor::TopLeft)
-                    .content(menu.clone())
-                    .into_any_element()
-            }
-            _ => element.into_any_element(),
-        }
+        // Every tab hosts its menu's popup, so the host has measured the tab before the menu
+        // opens and the menu (and its focus) is there on its first frame.
+        let menu = self
+            .shared_tab_menu
+            .clone()
+            .filter(|_| key.as_deref() == Some(self.shared_tab_menu_key.as_str()));
+        behavior_controls::popup(("tab-menu-host", tab_id), element)
+            .anchor(gpui::Anchor::TopLeft)
+            .when_some(menu, |popup, menu| popup.content(menu))
+            .into_any_element()
     }
 
     /// The open strip menu of `pane_id`, hung from its ＋ or All tabs button.
@@ -1186,6 +1214,13 @@ mod tests {
         assert_eq!(strip_move(&entries, &drawn, 2, 2), None);
         assert_eq!(strip_move(&entries, &drawn, 2, 0), None);
         assert_eq!(strip_move(&entries, &drawn, 2, 4), None);
+    }
+
+    #[test]
+    fn pinned_tabs_scroll_when_they_would_take_over_half_the_strip() {
+        assert!(!pins_scroll(200.0, 400.0));
+        assert!(pins_scroll(201.0, 400.0));
+        assert!(pins_scroll(10.0, 0.0));
     }
 
     #[test]
