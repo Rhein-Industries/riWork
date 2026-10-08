@@ -133,9 +133,14 @@ pub fn chat_orchestrators(host: &ChatHost) -> Vec<ChatInfo> {
     running_chat_orchestrators(host).unwrap_or_else(|| saved_chat_orchestrators(host))
 }
 
+/// All shared chats the host knows, without starting a host just to list them.
+pub fn running_chats(host: &ChatHost) -> Option<Vec<ChatInfo>> {
+    host.connect_running()?.list().ok()
+}
+
 /// The chat orchestrators the host knows, if one runs.
 pub fn running_chat_orchestrators(host: &ChatHost) -> Option<Vec<ChatInfo>> {
-    let mut chats = host.connect_running()?.list().ok()?;
+    let mut chats = running_chats(host)?;
     chats.retain(|chat| chat.orchestrator.is_some());
     Some(chats)
 }
@@ -261,6 +266,7 @@ fn create_chat(
     let first = orchestrator_prompt(&skill, &executable, project_id, root.as_deref(), false);
     let mut client = host.connect()?;
     let created = client.create(NewChat {
+        parent_id: None,
         provider,
         project_id: project_id.map(str::to_owned),
         worktree_id: None,

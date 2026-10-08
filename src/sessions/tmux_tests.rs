@@ -16,6 +16,8 @@ impl Fixture {
         let root = root.canonicalize().unwrap();
         Self {
             manager: SessionManager {
+                inherit_parent: false,
+                user_creation: true,
                 home: root.clone(),
                 tmux: tmux(&root),
                 socket_name: format!("riwork-test-{}", &Uuid::new_v4().simple().to_string()[..12]),
@@ -95,6 +97,53 @@ impl Fixture {
     fn registry(&self, sessions: Vec<ShellSession>) {
         self.manager.write_registry(&Registry { sessions }).unwrap();
     }
+}
+
+#[test]
+fn shell_creation_records_user_or_automation_provenance() {
+    let Some(f) = Fixture::with_tmux() else {
+        return;
+    };
+    let store = crate::store::Store::open(&f.root).unwrap();
+    let project = store
+        .add_project(f.root.clone(), Some("provenance".into()))
+        .unwrap();
+    let user = f
+        .manager
+        .for_user()
+        .create(project.id.clone(), None, f.root.clone(), None)
+        .unwrap();
+    assert!(user.user_opened && !user.is_worker());
+    assert!(
+        !crate::project_tabs::TabStore::at(&f.root, &project.id)
+            .unwrap()
+            .list()
+            .unwrap()
+            .iter()
+            .find(|e| e.key == format!("shell:{}", user.id))
+            .unwrap()
+            .hidden
+    );
+    let worker = f
+        .manager
+        .for_automation()
+        .create(project.id.clone(), None, f.root.clone(), None)
+        .unwrap();
+    assert!(!worker.user_opened && worker.is_worker());
+    assert!(
+        crate::project_tabs::TabStore::at(&f.root, &project.id)
+            .unwrap()
+            .list()
+            .unwrap()
+            .iter()
+            .find(|e| e.key == format!("shell:{}", worker.id))
+            .unwrap()
+            .hidden
+    );
+    // An orchestrator itself is pinned/root even though it was not a user shell create.
+    let mut orch = worker;
+    orch.kind = ShellKind::Orchestrator;
+    assert!(!orch.is_worker());
 }
 
 impl Drop for Fixture {
@@ -1476,6 +1525,8 @@ fn unknown_and_exited_shells_are_not_found_and_bad_ids_are_invalid() {
     let broken = fixture.root.join("broken-tmux");
     Fixture::script(&broken, "echo 'protocol error' >&2; exit 1");
     let manager = SessionManager {
+        inherit_parent: false,
+        user_creation: true,
         home: fixture.root.clone(),
         tmux: broken,
         socket_name: fixture.manager.socket_name.clone(),
@@ -1523,6 +1574,8 @@ fn a_wedged_tmux_fails_a_batch_within_the_bound() {
         ),
     );
     let manager = SessionManager {
+        inherit_parent: false,
+        user_creation: true,
         home: fixture.root.clone(),
         tmux: wedged,
         socket_name: fixture.manager.socket_name.clone(),
@@ -1650,6 +1703,8 @@ fn capture_screen_falls_back_to_a_plain_capture_when_the_report_fails() {
         ),
     );
     let manager = SessionManager {
+        inherit_parent: false,
+        user_creation: true,
         home: fixture.root.clone(),
         tmux: picky,
         socket_name: fixture.manager.socket_name.clone(),
@@ -1972,6 +2027,8 @@ fn styled_capture_falls_back_to_a_filtered_plain_capture_when_the_report_fails()
         ),
     );
     let manager = SessionManager {
+        inherit_parent: false,
+        user_creation: true,
         home: fixture.root.clone(),
         tmux: picky,
         socket_name: fixture.manager.socket_name.clone(),

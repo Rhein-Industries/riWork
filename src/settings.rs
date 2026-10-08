@@ -163,8 +163,18 @@ pub enum OrchestratorRuns {
     Chat(Provider),
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TabCloseBehavior {
+    #[default]
+    Ask,
+    Detach,
+    Exit,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Settings {
+    pub tab_close_behavior: TabCloseBehavior,
     pub chat_display: crate::chat_view::DisplayMode,
     /// Conversation overrides; chat_display remains the default for untouched chats.
     pub chat_display_modes: BTreeMap<String, crate::chat_view::DisplayMode>,
@@ -234,6 +244,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             schema_version: 1,
+            tab_close_behavior: TabCloseBehavior::Ask,
             chat_display: Default::default(),
             chat_display_modes: BTreeMap::new(),
             theme: ThemeChoice::Ghostty,
@@ -266,6 +277,11 @@ impl<'de> Deserialize<'de> for Settings {
         let object = Map::<String, Value>::deserialize(deserializer)?;
         let defaults = Self::default();
         Ok(Self {
+            tab_close_behavior: lenient_field(
+                &object,
+                "tab_close_behavior",
+                defaults.tab_close_behavior,
+            ),
             chat_display: lenient_field(&object, "chat_display", defaults.chat_display),
             chat_display_modes: object
                 .get("chat_display_modes")
@@ -619,6 +635,7 @@ pub struct SettingsPanel {
     account_refresh_focus: FocusHandle,
     account_focus: BTreeMap<String, FocusHandle>,
     theme_focus: Vec<FocusHandle>,
+    close_focus: FocusHandle,
     terminal_focus: FocusHandle,
     font_focus: FocusHandle,
     tab_icons_focus: FocusHandle,
@@ -1106,6 +1123,7 @@ impl SettingsPanel {
                 .into_iter()
                 .map(|id| (id, cx.focus_handle()))
                 .collect(),
+            close_focus: cx.focus_handle(),
             theme_focus: ThemeChoice::ALL.iter().map(|_| cx.focus_handle()).collect(),
             terminal_focus: cx.focus_handle(),
             font_focus: cx.focus_handle(),
@@ -2466,14 +2484,14 @@ impl SettingsPanel {
     /// Base radios select a value; the owner keeps the selected tab stop stable.
     /// Arrow navigation changes selection without replacing the focus handle.
     #[allow(clippy::too_many_arguments)]
-    fn choice_row<T: Copy + PartialEq + 'static>(
+    fn choice_row<T: Copy + PartialEq + 'static, const N: usize>(
         &self,
         id: &'static str,
         focus: &FocusHandle,
         title: &'static str,
         description: &'static str,
         selected: T,
-        choices: [(T, &'static str, &'static str); 2],
+        choices: [(T, &'static str, &'static str); N],
         apply: fn(&mut Settings, T),
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -2561,11 +2579,16 @@ impl SettingsPanel {
                             "left" | "right" | "up" | "down"
                         ) && !event.keystroke.modifiers.modified()
                         {
-                            let next = choices
+                            let at = choices
                                 .iter()
-                                .find(|(value, _, _)| *value != selected)
-                                .unwrap()
-                                .0;
+                                .position(|(value, _, _)| *value == selected)
+                                .unwrap_or(0);
+                            let step = if matches!(event.keystroke.key.as_str(), "left" | "up") {
+                                N - 1
+                            } else {
+                                1
+                            };
+                            let next = choices[(at + step) % N].0;
                             view.change(|settings| apply(settings, next), cx);
                             cx.stop_propagation();
                             window.prevent_default();
@@ -2612,6 +2635,20 @@ impl SettingsPanel {
                 "Icons instead of labels",
                 "Show icons instead of words on the panel tabs and on toolbar buttons, such as the create buttons in Projects and the file actions in Files. Hover an icon for its name.",
                 settings.panel_tab_icons,
+                cx,
+            ))
+            .child(self.choice_row(
+                "tab-close-behavior",
+                &self.close_focus,
+                "When closing a tab",
+                "Ask offers Detach, which hides the tab and keeps the session running, or Exit, which stops it. Workers always detach. This Mac only.",
+                settings.tab_close_behavior,
+                [
+                    (TabCloseBehavior::Ask, "Ask", "tab-close-ask"),
+                    (TabCloseBehavior::Detach, "Detach", "tab-close-detach"),
+                    (TabCloseBehavior::Exit, "Exit", "tab-close-exit"),
+                ],
+                |settings, choice| settings.tab_close_behavior = choice,
                 cx,
             ))
             .child(self.text_size_row(settings, cx))

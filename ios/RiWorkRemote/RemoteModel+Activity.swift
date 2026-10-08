@@ -66,14 +66,17 @@ extension RemoteModel {
         async let workers = try? rpc("shells.list", ["project_id": .string(project)])["shells"].decode([RemoteSession].self)
         async let managers = try? rpc("orchestrators.list")["orchestrators"].decode([RemoteSession].self)
         // The chats are tabs in the same strip, and have states of their own.
+        async let tabList = sharedTabsOfProject(project)
         async let talks = chatsOfProject(project)
-        let (listedShells, listedManagers, listedChats) = await (workers, managers, talks)
+        let (listedShells, listedManagers, listedChats, listedTabs) = await (workers, managers, talks, tabList)
         guard generation == token, projectID == project, loadedProjectID == project, state == .connected else { return }
+        if let listedTabs { acceptSharedTabs(listedTabs) }
         if let listedChats { installChats(listedChats, project: project) }
         if let listedShells, listedShells != shells { shells = listedShells }
         if let listedManagers, listedManagers != orchestrators { orchestrators = listedManagers }
         // An orchestrator that runs as a chat comes and goes with this list, and so does the chat it opened.
         reconcileChatSelection()
+        if listedTabs != nil { try? reconcileSelectedSession() }
         if listedShells != nil || listedManagers != nil { lastListRead[.sessions] = .now }
     }
 }

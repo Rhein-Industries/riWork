@@ -144,6 +144,9 @@ mod tests {
 
     fn info(provider: Provider) -> ChatInfo {
         ChatInfo {
+            parent_id: None,
+            user_title: None,
+            first_user_message: None,
             id: "id".into(),
             provider,
             project_id: None,

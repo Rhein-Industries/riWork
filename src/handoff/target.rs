@@ -35,6 +35,7 @@ pub fn start_chat(
 ) -> Result<ChatInfo, String> {
     let mut client = Client::connect(socket)?;
     let chat = client.create(NewChat {
+        parent_id: None,
         provider: chat_provider(request.provider)?,
         project_id: origin.project_id.clone(),
         worktree_id: origin.worktree_id.clone(),

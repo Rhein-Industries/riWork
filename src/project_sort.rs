@@ -283,6 +283,9 @@ mod tests {
             ..State::default()
         };
         let shell = |id: &str, project_id: Option<&str>, alive, kind| ShellSession {
+            user_opened: true,
+            parent_id: None,
+
             id: id.into(),
             project_id: project_id.map(str::to_owned),
             worktree_id: None,

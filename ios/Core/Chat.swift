@@ -100,6 +100,7 @@ public enum ChatState: Sendable, Equatable, Hashable, Codable {
 public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
     public var id: String
     public var provider: ChatProvider
+    public var parentID: String?
     public var projectID: String?
     public var worktreeID: String?
     public var cwd: String
@@ -115,9 +116,10 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
     public var codexAccountID: String?
     public var state: ChatState
 
-    public init(id: String, provider: ChatProvider, projectID: String? = nil, worktreeID: String? = nil, cwd: String = "", title: String = "",
+    public init(id: String, provider: ChatProvider, parentID: String? = nil, projectID: String? = nil, worktreeID: String? = nil, cwd: String = "", title: String = "",
                 createdAtUnix: UInt64 = 0, providerThreadID: String? = nil, model: String? = nil, effort: String? = nil, fast: Bool = false,
                 approvalMode: ChatApprovalMode = .supervised, codexAccountID: String? = nil, state: ChatState = .starting) {
+        self.parentID = parentID
         self.id = id; self.provider = provider; self.projectID = projectID; self.worktreeID = worktreeID; self.cwd = cwd; self.title = title
         self.createdAtUnix = createdAtUnix; self.providerThreadID = providerThreadID; self.model = model; self.effort = effort; self.fast = fast
         self.approvalMode = approvalMode; self.codexAccountID = codexAccountID; self.state = state
@@ -125,6 +127,7 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
 
     private enum Keys: String, CodingKey {
         case id, provider, cwd, title, model, effort, fast, state
+        case parentID = "parent_id"
         case projectID = "project_id", worktreeID = "worktree_id", createdAtUnix = "created_at_unix", providerThreadID = "provider_thread_id"
         case approvalMode = "approval_mode", codexAccountID = "codex_account_id"
     }
@@ -132,6 +135,7 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
         let c = try decoder.container(keyedBy: Keys.self)
         id = try c.decode(String.self, forKey: .id)
         provider = try c.decode(ChatProvider.self, forKey: .provider)
+        parentID = try c.decodeIfPresent(String.self, forKey: .parentID)
         projectID = try c.decodeIfPresent(String.self, forKey: .projectID)
         worktreeID = try c.decodeIfPresent(String.self, forKey: .worktreeID)
         cwd = try c.decodeIfPresent(String.self, forKey: .cwd) ?? ""
@@ -149,6 +153,7 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
         var c = encoder.container(keyedBy: Keys.self)
         try c.encode(id, forKey: .id)
         try c.encode(provider, forKey: .provider)
+        try c.encodeIfPresent(parentID, forKey: .parentID)
         try c.encodeIfPresent(projectID, forKey: .projectID)
         try c.encodeIfPresent(worktreeID, forKey: .worktreeID)
         try c.encode(cwd, forKey: .cwd)

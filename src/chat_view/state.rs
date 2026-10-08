@@ -217,6 +217,10 @@ mod tests {
 
     fn info(title: &str, state: ChatState) -> ChatInfo {
         ChatInfo {
+            parent_id: None,
+            user_title: None,
+            first_user_message: None,
+
             id: "chat".into(),
             provider: Provider::Claude,
             project_id: Some("project".into()),

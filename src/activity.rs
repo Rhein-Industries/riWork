@@ -1451,6 +1451,8 @@ mod tests {
 
     fn shell(harness: Option<HarnessKind>) -> ShellSession {
         ShellSession {
+            user_opened: true,
+            parent_id: None,
             id: Uuid::new_v4().to_string(),
             project_id: Some("project-a".into()),
             worktree_id: None,

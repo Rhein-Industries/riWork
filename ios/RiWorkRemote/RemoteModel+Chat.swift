@@ -110,13 +110,30 @@ extension RemoteModel {
     /// The strip: every terminal, every chat and every orchestrator, which runs as one or the other (`ProjectTabs`). A chat is not a
     /// terminal because it is an orchestrator: `mode` says, and the strip follows it.
     var tabs: [ProjectTab] {
-        ProjectTabs.tabs(sessions: sessions, chats: chats, chatsAvailable: chatSupport != .unsupported, missing: missingSessionIDs)
+        let legacy = ProjectTabs.tabs(sessions: sessions, chats: chats, chatsAvailable: chatSupport != .unsupported, missing: missingSessionIDs)
+        guard let sharedTabs else { return legacy }
+        let listed = Dictionary(legacy.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let shared: [ProjectTab] = sharedTabs.visible.compactMap { entry in
+            if entry.kind == .shell, var session = sessions.first(where: { $0.id == entry.sessionID && $0.alive && $0.mode != .chat && !missingSessionIDs.contains($0.id) }) {
+                session.sharedTitle = entry.title; return .terminal(session)
+            }
+            guard let tab = listed[entry.sessionID] else { return nil }
+            switch tab {
+            case .chat(var info): info.title = entry.title; return .chat(info)
+            case .terminal(var session): session.sharedTitle = entry.title; return .terminal(session)
+            case .orchestratorChat(var session, var info): session.sharedTitle = entry.title; info.title = entry.title; return .orchestratorChat(session, info)
+            case .unavailable: return tab
+            }
+        }
+        // Global orchestrators are device-local views outside project membership.
+        return shared + legacy.filter { $0.session?.kind == "orchestrator" && $0.session?.project_id == nil }
     }
     /// The chosen project's own chats in tab order: those that are not an orchestrator's.
     var projectChats: [ChatInfo] { tabs.compactMap { if case .chat(let info) = $0 { info } else { nil } } }
     /// The chat on screen, if one is: a listed chat, or the chat (`chat_id`) of an orchestrator that runs as one.
     var selectedChat: ChatInfo? {
         guard let id = selectedChatID else { return nil }
+        if openedChildViews.contains("chat:\(id)"), sharedTabs?.allEntries.contains(where: { $0.key == "chat:\(id)" && !$0.hidden }) == true { return chats.first { $0.id == id } }
         return tabs.lazy.compactMap(\.chatInfo).first { $0.id == id }
     }
     /// A chat is the screen on top of the tabs, so the terminal is not.
@@ -166,7 +183,7 @@ extension RemoteModel {
 
     /// Puts a chat on screen. The terminal behind it is released by the screen, which stops showing it.
     func selectChat(_ id: String) {
-        guard tabs.contains(where: { $0.chatInfo?.id == id }) else { return }
+        guard tabs.contains(where: { $0.chatInfo?.id == id }) || (openedChildViews.contains("chat:\(id)") && chats.contains(where: { $0.id == id })) else { return }
         _ = conversation(id)
         selectedChatID = id; selectedBlockedID = nil
     }
@@ -248,6 +265,8 @@ extension RemoteModel {
         if projectID != nil {
             if let index = chats.firstIndex(where: { $0.id == created.id }) { chats[index] = created } else { chats.append(created) }
         }
+        if let project = projectID, let list = await sharedTabsOfProject(project), generation == token, projectID == project { acceptSharedTabs(list) }
+        guard generation == token, state == .connected else { return nil }
         onCreated(created)
         selectChat(created.id)
         await refreshChatsQuietly()

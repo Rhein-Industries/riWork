@@ -83,7 +83,7 @@ riwork mcp                              Serve workspace tools over MCP stdio
 riwork version | --version              Print the RiWork version
 riwork remote pair|revoke|devices|start|relay   Encrypted mobile access (standalone binary)
 riwork remote --help                    Pairing, relay and connector command options
-riwork shell create [--project ID | --worktree ID] [--command CMD]
+riwork shell create [--project ID | --worktree ID] [--command CMD] [--no-parent]
 riwork shell create [--worktree ID] --harness codex|claude|grok [--unrestricted]
 riwork shell list [--project ID | --all]
 riwork shell output ID [--lines N] [--styled]   Read current shell output by UUID
@@ -99,6 +99,7 @@ riwork shell attach ID --exec [--ignore-size] [--read-only]   Become a tmux clie
 riwork chat serve [--idle-seconds N]    Run the chat host in the foreground (exits after 15 idle minutes by default)
 riwork chat ensure                      Start the chat host if it is not running; print its socket
 riwork chat list [--project ID] [--json]   List Codex and Claude chats, running or not
+riwork chat open CHAT_ID                 Reopen an ordinary chat in its Mac project window
 riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
                 [--model NAME] [--effort LEVEL] [--fast] [--title TEXT]
 riwork chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
@@ -132,6 +133,7 @@ other unknown command or option exits with an error.
 The chat host (`chat serve`) owns the Codex and Claude processes behind chats so
 they outlive app windows; `chat ensure` starts it detached, and it exits after
 15 minutes with no client and no chat at work. Chats are kept in RIWORK_HOME/chats.
+chat new --no-parent explicitly starts a root; otherwise a same-project caller is its parent.
 chat new defaults to the active project, like shell create, and starts the chat's
 provider at once; --mode is how much the agent may do without asking (supervised by
 default). A chat whose provider cannot start is kept as failed; chat send retries.
@@ -318,6 +320,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
             | "shell"
             | "orchestrator"
             | "chat"
+            | "tabs"
             | "handoff"
             | "schedule"
             | "automation"
@@ -411,6 +414,7 @@ pub fn run_cli(args: &[String]) -> Result<bool, String> {
         "shell" => shell_command(args, json)?,
         "orchestrator" => orchestrator_command(args, json)?,
         "chat" => chat_command(args, json)?,
+        "tabs" => tabs_command(args, json)?,
         "handoff" => handoff::command(args, json)?,
         "schedule" | "automation" => schedule_command(args, json)?,
         "search" => search_command(args, json)?,
@@ -745,6 +749,8 @@ fn gui_command(executable: PathBuf, root: &std::path::Path) -> Command {
     command
         .arg(root)
         .env_remove("RIWORK_RESTORE_TICKET")
+        .env_remove("RIWORK_CHAT_ID")
+        .env_remove("RIWORK_SHELL_ID")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -846,6 +852,7 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
             "shell_attach_exec": true,
             "chat": true,
             "orchestrator_create": true,
+            "tabs": true,
             "shell_paste": true
         }));
     }
@@ -1628,6 +1635,17 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
     let operation = pop_command(&mut args, "list");
     match operation.as_str() {
         "create" => {
+            let manager = if take_flag(&mut args, "--no-parent") {
+                manager.without_parent()
+            } else {
+                manager
+            };
+
+            let manager = if take_flag(&mut args, "--background") {
+                manager.for_automation()
+            } else {
+                manager
+            };
             let project = take_option(&mut args, "--project")?;
             let worktree = take_option(&mut args, "--worktree")?;
             let command = take_option(&mut args, "--command")?;
@@ -1921,6 +1939,39 @@ fn chat_client_command(
                 Ok(format!("{}\n", socket.display()))
             }
         }
+        "open" => {
+            let id = take_single(args, "chat open CHAT_ID")?;
+            let socket = crate::chat::client::socket_path(home);
+            let infos = Client::connect(&socket)
+                .and_then(|mut client| client.list())
+                .unwrap_or_else(|_| crate::chat::log::read_infos(home));
+            let info = infos
+                .into_iter()
+                .find(|c| c.id == id)
+                .ok_or_else(|| format!("Unknown chat {id}"))?;
+            if info.orchestrator.is_some() {
+                return Err("Use the orchestrator button to open this chat.".into());
+            }
+            let project = info
+                .project_id
+                .clone()
+                .ok_or("This chat has no project window.")?;
+            crate::project_tabs::TabStore::at(home, &project)?
+                .reconcile(&[crate::project_tabs::Session::chat(&info)])?;
+            crate::project_tabs::TabStore::at(home, &project)?.update(
+                &crate::project_tabs::Update::Unhide {
+                    key: format!("chat:{id}"),
+                },
+            )?;
+            crate::layouts::LayoutStore::open(home)?.request_chat_open(&project, &id)?;
+            if json {
+                json_text(&json!({"id":id,"project_id":project,"open_requested":true}))
+            } else {
+                Ok(format!(
+                    "Queued chat {id} for the next unlocked pane in a window of project {project}.\n"
+                ))
+            }
+        }
         "list" => {
             let project = take_option(&mut args, "--project")?;
             ensure_empty(&args)?;
@@ -1946,6 +1997,7 @@ fn chat_client_command(
             }
         }
         "new" => {
+            let no_parent = take_flag(&mut args, "--no-parent");
             // Free text first: a title may look like an option.
             let model = take_verbatim_option(&mut args, "--model")?
                 .map(|model| model_setting("--model", model))
@@ -1977,6 +2029,11 @@ fn chat_client_command(
             let (project_id, worktree_id, cwd) =
                 launch_scope(&state, project.as_deref(), worktree.as_deref())?;
             let chat = Client::connect(&ensure(home)?)?.create(crate::chat::model::NewChat {
+                parent_id: if no_parent {
+                    None
+                } else {
+                    crate::project_tabs::caller_parent()
+                },
                 provider,
                 project_id: Some(project_id),
                 worktree_id,
@@ -3211,6 +3268,64 @@ mod tests {
     const SHELL: &str = "11111111-1111-4111-8111-111111111111";
 
     #[test]
+    fn chat_open_queues_an_existing_stopped_chat_without_changing_shared_inventory() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        let home = PathBuf::from(format!(
+            "/tmp/rw-open-{}",
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(home.join("run")).unwrap();
+        let socket = crate::chat::client::socket_path(&home);
+        let listener = UnixListener::bind(&socket).unwrap();
+        let id = "11111111-1111-4111-8111-111111111111";
+        let project = "22222222-2222-4222-8222-222222222222";
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["op"], "list");
+            let response = serde_json::json!({"id":request["id"],"ok":true,"result":[{"id":id,"project_id":project,"provider":"codex","cwd":"/tmp","title":"Stopped","created_at_unix":1,"state":{"state":"stopped"}}]});
+            writeln!(stream, "{response}").unwrap();
+        });
+        let output =
+            super::chat_client_command(&home, vec!["open".into(), id.into()], true, &|_| {
+                panic!("chat open must not ensure the host")
+            })
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&output).unwrap()["open_requested"],
+            true
+        );
+        assert_eq!(
+            crate::layouts::LayoutStore::open(&home)
+                .unwrap()
+                .chat_open_requests(project)
+                .unwrap(),
+            std::collections::HashSet::from([id.to_owned()])
+        );
+        // A stopped chat can also reopen with no host or socket; `ensure` must stay unused.
+        std::fs::remove_file(&socket).unwrap();
+        let info: crate::chat::model::ChatInfo = serde_json::from_value(serde_json::json!({"id":id,"project_id":project,"provider":"codex","cwd":"/tmp","title":"Stopped","created_at_unix":1,"state":{"state":"stopped"}})).unwrap();
+        crate::chat::log::ChatLog::create(&crate::chat::log::chat_dir(&home, id).unwrap(), &info)
+            .unwrap();
+        super::chat_client_command(&home, vec!["open".into(), id.into()], true, &|_| {
+            panic!("offline reopen must not start host")
+        })
+        .unwrap();
+        assert!(!socket.exists());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn shell_output_arguments_keep_the_old_forms_and_add_the_new_ones() {
         let plain = parse_output_arguments(words(SHELL), false).unwrap();
         assert_eq!((plain.lines, plain.styled, plain.wait_ms), (200, false, 0));
@@ -4121,6 +4236,8 @@ mod open_tests {
                 Path::new("/unused/project"),
             ));
             assert!(removed.contains("RIWORK_RESTORE_TICKET"));
+            assert!(removed.contains("RIWORK_CHAT_ID"));
+            assert!(removed.contains("RIWORK_SHELL_ID"));
             assert!(removed.contains("RIWORK_CODEX_ACCOUNT_HOME"));
             assert!(removed.contains("RIWORK_CODEX_SHELL_ID"));
             assert_eq!(removed.contains("CODEX_HOME"), case == "injected");
@@ -4135,5 +4252,91 @@ mod open_tests {
         child("injected", &root, &account, &account);
         child("own", &root, &own, &own);
         let _ = fs::remove_dir_all(root);
+    }
+}
+
+fn tabs_command(args: Vec<String>, _json: bool) -> Result<(), String> {
+    let home = crate::paths::riwork_home()?;
+    match tabs_result(args, &home) {
+        Ok(value) => print_json(&value),
+        Err((code, message)) => {
+            print_json(&serde_json::json!({"error":{"code":code,"message":message}}))
+        }
+    }
+}
+
+fn tabs_result(
+    mut args: Vec<String>,
+    home: &Path,
+) -> Result<serde_json::Value, (&'static str, String)> {
+    let invalid = |error: String| ("invalid_request", error);
+    let internal = |error: String| ("cli_error", error);
+    let operation = pop_command(&mut args, "list");
+    let project = take_option(&mut args, "--project")
+        .map_err(invalid)?
+        .ok_or_else(|| invalid("--project is required".into()))?;
+    let raw_update = take_verbatim_option(&mut args, "--update-json").map_err(invalid)?;
+    let open_key = take_option(&mut args, "--key").map_err(invalid)?;
+    ensure_empty(&args).map_err(invalid)?;
+    let update = match operation.as_str() {
+        "list" if raw_update.is_none() && open_key.is_none() => None,
+        "open" if raw_update.is_none() => {
+            let key = open_key.ok_or_else(|| invalid("--key is required".into()))?;
+            crate::project_tabs::valid_key(&key).map_err(invalid)?;
+            Some(crate::project_tabs::Update::Unhide { key })
+        }
+        "update" if open_key.is_none() => {
+            let update: crate::project_tabs::Update = serde_json::from_str(
+                &raw_update.ok_or_else(|| invalid("--update-json is required".into()))?)
+                .map_err(|e| invalid(e.to_string()))?;
+            update.validate().map_err(invalid)?;
+            Some(update)
+        }
+        _ => return Err(invalid("Usage: riwork tabs (list|update|open) --project UUID [--update-json JSON | --key KIND:UUID]".into())),
+    };
+    let store = crate::project_tabs::TabStore::at(home, &project).map_err(invalid)?;
+    let projects = Store::open(home)
+        .map_err(internal)?
+        .snapshot()
+        .map_err(internal)?;
+    if !projects.projects.iter().any(|p| p.id == project) {
+        return Err(("not_found", format!("unknown project {project}")));
+    }
+    let inventory = crate::project_tabs::inventory(home, &project).map_err(internal)?;
+    store.reconcile_inventory(&inventory).map_err(internal)?;
+    if let Some(update) = update {
+        store.update(&update).map_err(|error| {
+            let code = match error.as_str() {
+                "session tab not found" | "move target not found" => "not_found",
+                "unpin the tab before hiding it"
+                | "only root tabs can be pinned"
+                | "move target must be a sibling in the same pin group" => "invalid_request",
+                _ => "cli_error",
+            };
+            (code, error)
+        })?;
+    }
+    Ok(crate::project_tabs::wire_snapshot(
+        &crate::project_tabs::snapshot_for(&store, &inventory).map_err(internal)?,
+    ))
+}
+
+#[cfg(test)]
+mod tab_error_tests {
+    use super::*;
+    #[test]
+    fn tab_cli_classifies_bad_keys_titles_and_unknown_projects() {
+        let home = env::temp_dir().join(format!("tabs-errors-{}", uuid::Uuid::new_v4()));
+        let project = uuid::Uuid::new_v4().to_string();
+        for (operation, option, value) in [
+            ("open", "--key", "bad".to_owned()),
+            ("update", "--update-json", serde_json::json!({"action":"rename","key":format!("chat:{project}"),"title":"bad\u{202e}"}).to_string()),
+        ] {
+            let args = vec![operation.into(), "--project".into(), project.clone(), option.into(), value];
+            assert_eq!(tabs_result(args, &home).unwrap_err().0, "invalid_request");
+        }
+        let args = vec!["list".into(), "--project".into(), project];
+        assert_eq!(tabs_result(args, &home).unwrap_err().0, "not_found");
+        let _ = std::fs::remove_dir_all(home);
     }
 }

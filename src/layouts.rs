@@ -1017,6 +1017,10 @@ pub struct SavedPane {
     pub active_shell_id: Option<String>,
 }
 
+fn is_zero_revision(value: &u64) -> bool {
+    *value == 0
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectLayout {
     pub layout: Layout,
@@ -1031,6 +1035,11 @@ pub struct ProjectLayout {
     pub panels_initialized: bool,
     #[serde(default)]
     pub detached_shell_ids: HashSet<String>,
+    /// Project-wide chat discovery dismissals on this Mac; the shared session stays available.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub detached_chat_ids: HashSet<String>,
+    #[serde(default, skip_serializing_if = "is_zero_revision")]
+    pub chat_dismissal_revision: u64,
     #[serde(default)]
     pub selected_worktree_id: Option<String>,
     #[serde(default)]
@@ -1360,6 +1369,7 @@ impl ProjectLayout {
         }
         self.detached_shell_ids
             .retain(|id| !id.is_empty() && !shell_ids.contains(id));
+        self.detached_chat_ids.retain(|id| !id.is_empty());
         Ok(())
     }
 }
@@ -1772,7 +1782,40 @@ impl LayoutStore {
             .window_size()
     }
 
+    #[cfg(test)]
     pub fn save(&self, project_id: &str, layout: &ProjectLayout) -> Result<(), String> {
+        self.save_chat_state(project_id, layout, &[], None)
+            .map(|_| ())
+    }
+
+    /// Apply explicit dismissal changes against the latest project state under the layout lock.
+    /// Ordinary saves merge equal revisions; stale windows cannot undo a reopen or a prune.
+    pub fn save_chat_state(
+        &self,
+        project_id: &str,
+        layout: &ProjectLayout,
+        dismiss: &[String],
+        known: Option<&HashSet<String>>,
+    ) -> Result<ProjectLayout, String> {
+        self.save_chat_state_impl(project_id, layout, dismiss, known, false)
+    }
+
+    /// Downgrade projection of shared membership; never imports legacy dismissals back.
+    pub fn save_tab_layout(
+        &self,
+        project_id: &str,
+        layout: &ProjectLayout,
+    ) -> Result<ProjectLayout, String> {
+        self.save_chat_state_impl(project_id, layout, &[], None, true)
+    }
+    fn save_chat_state_impl(
+        &self,
+        project_id: &str,
+        layout: &ProjectLayout,
+        dismiss: &[String],
+        known: Option<&HashSet<String>>,
+        shared_tabs: bool,
+    ) -> Result<ProjectLayout, String> {
         if project_id.is_empty() {
             return Err("Cannot save a layout without a project UUID".to_owned());
         }
@@ -1789,13 +1832,34 @@ impl LayoutStore {
             }
             Err(Unreadable::Kept(message)) => return Err(message),
         };
+        if !shared_tabs
+            && let Some(existing) = layouts
+                .projects
+                .get(project_id)
+                .and_then(|entry| entry.layout().ok())
+        {
+            if existing.chat_dismissal_revision != layout.chat_dismissal_revision {
+                layout.detached_chat_ids = existing.detached_chat_ids;
+            } else {
+                layout.detached_chat_ids.extend(existing.detached_chat_ids);
+            }
+            layout.chat_dismissal_revision = existing.chat_dismissal_revision;
+        }
+        let before = layout.detached_chat_ids.clone();
+        layout.detached_chat_ids.extend(dismiss.iter().cloned());
+        if let Some(known) = known {
+            layout.detached_chat_ids.retain(|id| known.contains(id));
+        }
+        if before != layout.detached_chat_ids {
+            layout.chat_dismissal_revision += 1;
+        }
         match layouts.projects.get(project_id) {
             Some(SavedEntry::Unreadable { reason, .. }) => {
                 return Err(unreadable_entry_message(reason));
             }
             // Common case: nothing changed, so skip the write and its fsync.
             Some(existing) if existing.layout().is_ok_and(|existing| existing == layout) => {
-                return Ok(());
+                return Ok(layout);
             }
             _ => {}
         }
@@ -1809,11 +1873,87 @@ impl LayoutStore {
         layouts.projects.insert(
             project_id.to_owned(),
             SavedEntry::Layout {
-                layout: Box::new(layout),
+                layout: Box::new(layout.clone()),
                 skipped,
             },
         );
+        self.write_layouts(&layouts)?;
+        Ok(layout)
+    }
+
+    /// Queue an explicit reopen without launching a host or changing any pane layout.
+    pub fn request_chat_open(&self, project: &str, id: &str) -> Result<(), String> {
+        let lock = self.lock_file()?;
+        FileExt::lock_exclusive(&lock).map_err(|e| e.to_string())?;
+        let mut layouts = self.read_layouts().map_err(Unreadable::into_message)?;
+        if let Some(SavedEntry::Layout { layout, .. }) = layouts.projects.get_mut(project) {
+            layout.detached_chat_ids.remove(id);
+            layout.chat_dismissal_revision += 1;
+        }
+        let mut requests: BTreeMap<String, HashSet<String>> = layouts
+            .extra
+            .get("chat_open_requests")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        requests
+            .entry(project.to_owned())
+            .or_default()
+            .insert(id.to_owned());
+        layouts.extra.insert(
+            "chat_open_requests".into(),
+            serde_json::to_value(requests).map_err(|e| e.to_string())?,
+        );
         self.write_layouts(&layouts)
+    }
+
+    pub fn chat_open_requests(&self, project: &str) -> Result<HashSet<String>, String> {
+        let lock = self.lock_file()?;
+        FileExt::lock_shared(&lock).map_err(|e| e.to_string())?;
+        let layouts = self.read_layouts().map_err(Unreadable::into_message)?;
+        let requests: BTreeMap<String, HashSet<String>> = layouts
+            .extra
+            .get("chat_open_requests")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        Ok(requests.get(project).cloned().unwrap_or_default())
+    }
+
+    pub fn finish_chat_open_requests(
+        &self,
+        project: &str,
+        opened: &HashSet<String>,
+        known: &HashSet<String>,
+    ) -> Result<(), String> {
+        let lock = self.lock_file()?;
+        FileExt::lock_exclusive(&lock).map_err(|e| e.to_string())?;
+        let mut layouts = self.read_layouts().map_err(Unreadable::into_message)?;
+        let mut requests: BTreeMap<String, HashSet<String>> = layouts
+            .extra
+            .get("chat_open_requests")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        let before = requests.clone();
+        if let Some(ids) = requests.get_mut(project) {
+            ids.retain(|id| known.contains(id) && !opened.contains(id));
+        }
+        requests.retain(|_, ids| !ids.is_empty());
+        if requests != before {
+            layouts.extra.insert(
+                "chat_open_requests".into(),
+                serde_json::to_value(requests).map_err(|e| e.to_string())?,
+            );
+            self.write_layouts(&layouts)?;
+        }
+        Ok(())
     }
 
     fn lock_file(&self) -> Result<File, String> {
@@ -1968,6 +2108,8 @@ mod tests {
             locked_panes: None,
             panels_initialized: false,
             detached_shell_ids: HashSet::from(["shell-detached".to_owned()]),
+            detached_chat_ids: HashSet::new(),
+            chat_dismissal_revision: 0,
             selected_worktree_id: Some("worktree-selected".to_owned()),
             selected_task_id: Some("task-selected".to_owned()),
             sidebar_visible: false,
@@ -3061,6 +3203,86 @@ mod tests {
         assert_eq!(serde_json::to_value(&tab).unwrap(), json);
         assert_eq!(serde_json::from_value::<SavedTab>(json).unwrap(), tab);
         assert_ne!(tab.key(), chat("0d40").key());
+    }
+
+    #[test]
+    fn project_chat_dismissals_merge_across_stale_window_saves() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let a = saved_layout();
+        let b = a.clone();
+        store.save("p", &a).unwrap();
+        store.save_chat_state("p", &a, &["x".into()], None).unwrap();
+        store.save("p", &b).unwrap();
+        assert!(
+            store
+                .load("p")
+                .unwrap()
+                .unwrap()
+                .detached_chat_ids
+                .contains("x")
+        );
+        store.save_chat_state("p", &b, &["y".into()], None).unwrap();
+        assert_eq!(
+            store.load("p").unwrap().unwrap().detached_chat_ids,
+            HashSet::from(["x".into(), "y".into()])
+        );
+    }
+
+    #[test]
+    fn chat_reopen_and_prune_cannot_be_undone_by_stale_windows() {
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let initial = store
+            .save_chat_state("p", &saved_layout(), &["x".into(), "deleted".into()], None)
+            .unwrap();
+        store.request_chat_open("p", "x").unwrap();
+        store.save("p", &initial).unwrap();
+        assert!(
+            !store
+                .load("p")
+                .unwrap()
+                .unwrap()
+                .detached_chat_ids
+                .contains("x")
+        );
+        assert_eq!(
+            store.chat_open_requests("p").unwrap(),
+            HashSet::from(["x".into()])
+        );
+        let known = HashSet::from(["x".into()]);
+        store
+            .save_chat_state("p", &initial, &[], Some(&known))
+            .unwrap();
+        store.save("p", &initial).unwrap();
+        assert!(
+            store
+                .load("p")
+                .unwrap()
+                .unwrap()
+                .detached_chat_ids
+                .is_empty()
+        );
+        store
+            .finish_chat_open_requests("p", &known, &known)
+            .unwrap();
+        assert!(store.chat_open_requests("p").unwrap().is_empty());
+    }
+
+    #[test]
+    fn closed_chat_tabs_survive_reload_and_older_layouts_default_to_no_closed_chats() {
+        let mut layout = saved_layout();
+        layout.detached_chat_ids.insert("closed-on-mac".into());
+        let mut value = serde_json::to_value(&layout).unwrap();
+        let restored: ProjectLayout = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(restored.detached_chat_ids, layout.detached_chat_ids);
+        value.as_object_mut().unwrap().remove("detached_chat_ids");
+        assert!(
+            serde_json::from_value::<ProjectLayout>(value)
+                .unwrap()
+                .detached_chat_ids
+                .is_empty()
+        );
     }
 
     #[test]

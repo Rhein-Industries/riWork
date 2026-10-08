@@ -317,13 +317,36 @@ pub fn check(request: &Request) -> Result<(), String> {
 /// for as long as the work takes, up to minutes when a summary is asked for, so call it
 /// off the UI thread.
 pub fn run(env: &Env<'_>, request: Request, progress: &dyn Fn(&str)) -> Result<Outcome, String> {
+    run_with_creation(env, request, progress, true)
+}
+
+/// CLI handoffs inherit the caller's parent and worker provenance, like shell create.
+pub fn run_from_caller(
+    env: &Env<'_>,
+    request: Request,
+    progress: &dyn Fn(&str),
+) -> Result<Outcome, String> {
+    run_with_creation(env, request, progress, false)
+}
+
+fn run_with_creation(
+    env: &Env<'_>,
+    request: Request,
+    progress: &dyn Fn(&str),
+    user_action: bool,
+) -> Result<Outcome, String> {
     check(&request)?;
     let home = std::path::absolute(env.home)
         .map_err(|error| format!("Cannot resolve {}: {error}", env.home.display()))?;
     // Shells need tmux; a chat to a chat does not.
     let needs_tmux = request.kind == Kind::Shell || matches!(request.source, Source::Shell(_));
     let manager = if needs_tmux {
-        Some(SessionManager::at(home.clone())?)
+        let manager = SessionManager::at(home.clone())?;
+        Some(if user_action {
+            manager.for_user()
+        } else {
+            manager
+        })
     } else {
         None
     };

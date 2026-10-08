@@ -27,6 +27,7 @@ use tokio::{
 
 mod chat;
 mod orchestrator;
+mod tabs;
 mod upload;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -296,7 +297,7 @@ fn additive_shape_ok(field: &str, value: &Value) -> bool {
         // How a session runs. Only these two words are the phone's to act on.
         "mode" => matches!(value.as_str(), Some("terminal" | "chat")),
         "provider" => matches!(value.as_str(), Some("codex" | "claude")),
-        "chat_id" => value.as_str().is_some_and(|chat| uuid(chat).is_ok()),
+        "parent_id" | "chat_id" => value.as_str().is_some_and(|chat| uuid(chat).is_ok()),
         "subagent_kinds" => value.as_array().is_some_and(|kinds| {
             kinds.len() <= 8
                 && kinds.iter().all(|kind| {
@@ -334,6 +335,7 @@ const SESSION_FIELDS: &[&str] = &[
     "id",
     "project_id",
     "worktree_id",
+    "parent_id",
     "kind",
     "cwd",
     "harness",
@@ -1082,6 +1084,7 @@ pub struct Rpc {
     chat: AtomicBool,
     /// Whether the CLI said it can create orchestrators (see `orchestrator_create_supported`).
     orchestrator_create: AtomicBool,
+    tabs: AtomicBool,
     /// Held while the CLI is asked what it can do (`capability_known`), so that two askers at
     /// once run it once.
     asking_chat: tokio::sync::Mutex<()>,
@@ -1100,6 +1103,7 @@ impl Rpc {
             attach_exec: AtomicBool::new(false),
             chat: AtomicBool::new(false),
             orchestrator_create: AtomicBool::new(false),
+            tabs: AtomicBool::new(false),
             asking_chat: tokio::sync::Mutex::new(()),
             shell_paste: AtomicBool::new(false),
             uploads: Arc::new(crate::upload::Uploads::new(storage.dir.clone())),
@@ -1131,6 +1135,9 @@ impl Rpc {
     /// one encrypted frame holds; the reply itself is checked after.
     async fn raw_capped(&self, args: Vec<String>, limit: Duration, cap: usize) -> Result<Vec<u8>> {
         let mut child = Command::new(&self.cli)
+            .env_remove("RIWORK_CHAT_ID")
+            .env_remove("RIWORK_SHELL_ID")
+            .env_remove("RIWORK_ORCHESTRATOR_SCOPE")
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1793,6 +1800,7 @@ impl Rpc {
                 self.orchestrator_create(device, project).await
             }
             // Chats; see `chat`.
+            "tabs.list" | "tabs.update" | "tabs.open" => self.project_tabs(device, r).await,
             "chats.list" => {
                 let spec = chat::list_spec(&r.params)?;
                 self.chats_list(spec, reply_limit).await

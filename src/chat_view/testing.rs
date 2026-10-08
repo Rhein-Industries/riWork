@@ -144,6 +144,10 @@ impl Drop for FakeHost {
 
 fn info(id: &str) -> ChatInfo {
     ChatInfo {
+        parent_id: None,
+        user_title: None,
+        first_user_message: None,
+
         id: id.into(),
         provider: Provider::Codex,
         project_id: None,

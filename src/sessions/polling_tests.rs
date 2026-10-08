@@ -85,6 +85,8 @@ fi
         fs::set_permissions(&tmux, fs::Permissions::from_mode(0o700)).unwrap();
         let fixture = Self {
             manager: SessionManager {
+                inherit_parent: false,
+                user_creation: true,
                 home,
                 tmux,
                 socket_name: "synthetic-only".into(),
