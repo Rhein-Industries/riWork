@@ -177,8 +177,13 @@ fingerprints and the old Claude token fingerprint are recomputed from the curren
 login's credentials and mapped to its canonical scope. Verified email-to-id
 upgrades migrate the existing keys and retain dismissal; ids never migrate back
 to email. Conflicting account identities do not inherit each other's aliases.
-Previously used managed Codex binding scopes migrate when that binding's canonical
-account is identified. A `default` key migrates only when exactly one canonical
+Alias chains are resolved to their final canonical scopes before rewriting keys,
+so token → email → id upgrades take one atomic replacement, including after an
+interruption before the replacement. Repeating migration writes nothing.
+Previously used managed Codex binding scopes migrate only when every saved chat's
+verified claims converge to the same canonical account. Conflicting or unresolved
+claims cause keys under that binding to be dropped with a host warning; directory
+iteration order cannot select the account. A `default` key migrates only when exactly one canonical
 identity is known for its provider in this home. Ambiguous/unidentified defaults
 are dropped on pruning; expired entries are also pruned. Discovery precedes this
 pruning so a uniquely identifiable legacy login can migrate. Duplicate migrated

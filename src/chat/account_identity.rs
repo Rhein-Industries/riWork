@@ -1,7 +1,12 @@
 //! Private login fingerprints. Raw account identifiers and credentials never leave here.
 use super::{driver::DriverConfig, model::Provider};
 use serde_json::Value;
-use std::{ffi::OsString, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
+    fs,
+    path::Path,
+};
 
 #[link(name = "System")]
 unsafe extern "C" {
@@ -409,23 +414,118 @@ pub(super) fn known(home: &Path, provider: Provider) -> Vec<Identity> {
         .collect()
 }
 
-/// Persisted aliases let stopped chats/snapshots use an id learned by another chat.
-/// Ranking prevents id -> email migration, irrespective of discovery order.
-pub(super) fn scope(identity: &Identity, known: &[Identity]) -> String {
-    let mut candidates: Vec<_> = known
-        .iter()
-        .filter(|other| other.rank() > identity.rank() && other.aliases.contains(&identity.scope))
-        .collect();
-    let rank = candidates.iter().map(|other| other.rank()).max();
-    candidates.retain(|other| Some(other.rank()) == rank);
-    let mut scopes: Vec<_> = candidates.iter().map(|other| other.scope.clone()).collect();
-    scopes.sort();
-    scopes.dedup();
-    if scopes.len() == 1 {
-        scopes.pop().unwrap()
-    } else {
-        identity.scope.clone()
+/// Resolve the whole alias graph before touching dismissal keys. Rank increases
+/// forbid id -> email downgrades; ambiguous final accounts remain unmapped.
+pub(super) fn scope_map(known: &[Identity]) -> BTreeMap<String, String> {
+    let mut ranks = BTreeMap::<String, u8>::new();
+    for identity in known {
+        ranks
+            .entry(identity.scope.clone())
+            .and_modify(|rank| *rank = (*rank).max(identity.rank()))
+            .or_insert(identity.rank());
+        for alias in &identity.aliases {
+            ranks.entry(alias.clone()).or_default();
+        }
     }
+    let mut edges = BTreeMap::<String, BTreeSet<String>>::new();
+    for identity in known {
+        for alias in &identity.aliases {
+            if ranks[alias] < ranks[&identity.scope] {
+                edges
+                    .entry(alias.clone())
+                    .or_default()
+                    .insert(identity.scope.clone());
+            }
+        }
+    }
+    fn terminals(
+        node: &str,
+        edges: &BTreeMap<String, BTreeSet<String>>,
+        memo: &mut BTreeMap<String, Option<BTreeSet<String>>>,
+        active: &mut BTreeSet<String>,
+    ) -> Option<BTreeSet<String>> {
+        if let Some(result) = memo.get(node) {
+            return result.clone();
+        }
+        // Defensive cycle guard if the edge/rank policy is ever extended.
+        if !active.insert(node.to_owned()) {
+            return None;
+        }
+        let result = (|| {
+            let mut final_scopes = BTreeSet::new();
+            if let Some(targets) = edges.get(node) {
+                for target in targets {
+                    final_scopes.extend(terminals(target, edges, memo, active)?);
+                }
+            } else {
+                final_scopes.insert(node.to_owned());
+            }
+            Some(final_scopes)
+        })();
+        active.remove(node);
+        memo.insert(node.to_owned(), result.clone());
+        result
+    }
+    let mut memo = BTreeMap::new();
+    ranks
+        .keys()
+        .map(|node| {
+            let final_scopes =
+                terminals(node, &edges, &mut memo, &mut BTreeSet::new()).unwrap_or_default();
+            let highest = final_scopes.iter().map(|scope| ranks[scope]).max();
+            let mut best = final_scopes
+                .into_iter()
+                .filter(|scope| Some(ranks[scope]) == highest);
+            let target = best
+                .next()
+                .filter(|_| best.next().is_none())
+                .unwrap_or_else(|| node.clone());
+            (node.clone(), target)
+        })
+        .collect()
+}
+
+/// Persisted aliases let stopped chats/snapshots reach the same final scope.
+pub(super) fn scope(identity: &Identity, known: &[Identity]) -> String {
+    let mut known = known.to_vec();
+    known.push(identity.clone());
+    scope_map(&known)
+        .remove(&identity.scope)
+        .unwrap_or_else(|| identity.scope.clone())
+}
+
+/// Every saved chat contributes its binding's verified accounts, including history.
+/// Collect all claims before migration, so conflicting bindings cannot be first-wins.
+pub(super) fn managed_aliases(home: &Path) -> Vec<(String, Option<Identity>)> {
+    let Ok(entries) = fs::read_dir(super::log::chats_dir(home)) else {
+        return vec![];
+    };
+    entries
+        .flatten()
+        .flat_map(|entry| {
+            let Some(info) = fs::read(entry.path().join("info.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<super::model::ChatInfo>(&bytes).ok())
+            else {
+                return vec![];
+            };
+            if info.provider != Provider::Codex {
+                return vec![];
+            }
+            let Some(alias) = info.codex_account_id else {
+                return vec![];
+            };
+            let identities = records(&entry.path()).1;
+            if identities.is_empty() {
+                vec![(alias, None)]
+            } else {
+                identities
+                    .into_iter()
+                    .map(|identity| (alias.clone(), Some(identity)))
+                    .collect()
+            }
+        })
+        .collect()
 }
 
 pub(super) fn for_config(config: &DriverConfig) -> Option<Identity> {
@@ -528,5 +628,57 @@ mod tests {
         assert_ne!(old.scope, new.scope);
         assert!(!new.aliases.contains(&old.scope));
         assert!(!new.aliases.contains(&hash("Codex:a@example.test")));
+    }
+}
+
+#[cfg(test)]
+mod alias_graph_tests {
+    use super::*;
+
+    #[test]
+    fn every_alias_resolves_directly_to_a_fixed_point_in_any_input_order() {
+        let token = hash("Claude:credential:old-token");
+        let email_scope = hash("Claude:a@example.test");
+        let email = Identity {
+            scope: email_scope.clone(),
+            account_id: None,
+            email: Some(email_scope.clone()),
+            aliases: vec![token.clone()],
+        };
+        let mut id = Identity::fixture(hash("Claude:account-a"));
+        id.aliases = vec![email_scope.clone()];
+        for known in [
+            vec![email.clone(), id.clone()],
+            vec![id.clone(), email.clone()],
+        ] {
+            let map = scope_map(&known);
+            assert_eq!(map[&token], id.scope);
+            assert_eq!(map[&email_scope], id.scope);
+            assert!(map.values().all(|target| &map[target] == target));
+            assert_eq!(scope(&token.clone().into(), &known), id.scope);
+        }
+    }
+
+    #[test]
+    fn cyclic_alias_claims_do_not_downgrade_or_loop() {
+        let a = hash("Claude:a@example.test");
+        let b = hash("Claude:b@example.test");
+        let known = vec![
+            Identity {
+                scope: a.clone(),
+                account_id: None,
+                email: Some(a.clone()),
+                aliases: vec![b.clone()],
+            },
+            Identity {
+                scope: b.clone(),
+                account_id: None,
+                email: Some(b.clone()),
+                aliases: vec![a.clone()],
+            },
+        ];
+        let map = scope_map(&known);
+        assert_eq!(map[&a], a);
+        assert_eq!(map[&b], b);
     }
 }
