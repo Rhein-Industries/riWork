@@ -1797,18 +1797,7 @@ impl LayoutStore {
         dismiss: &[String],
         known: Option<&HashSet<String>>,
     ) -> Result<ProjectLayout, String> {
-        self.save_chat_state_impl(project_id, layout, dismiss, known, false, false)
-    }
-
-    /// Refresh shared dismissal state without overwriting another window's pane arrangement.
-    pub fn refresh_chat_state(
-        &self,
-        project_id: &str,
-        layout: &ProjectLayout,
-        dismiss: &[String],
-        known: Option<&HashSet<String>>,
-    ) -> Result<ProjectLayout, String> {
-        self.save_chat_state_impl(project_id, layout, dismiss, known, true, false)
+        self.save_chat_state_impl(project_id, layout, dismiss, known, false)
     }
 
     /// Downgrade projection of shared membership; never imports legacy dismissals back.
@@ -1817,7 +1806,7 @@ impl LayoutStore {
         project_id: &str,
         layout: &ProjectLayout,
     ) -> Result<ProjectLayout, String> {
-        self.save_chat_state_impl(project_id, layout, &[], None, false, true)
+        self.save_chat_state_impl(project_id, layout, &[], None, true)
     }
     fn save_chat_state_impl(
         &self,
@@ -1825,7 +1814,6 @@ impl LayoutStore {
         layout: &ProjectLayout,
         dismiss: &[String],
         known: Option<&HashSet<String>>,
-        state_only: bool,
         shared_tabs: bool,
     ) -> Result<ProjectLayout, String> {
         if project_id.is_empty() {
@@ -1856,14 +1844,6 @@ impl LayoutStore {
                 layout.detached_chat_ids.extend(existing.detached_chat_ids);
             }
             layout.chat_dismissal_revision = existing.chat_dismissal_revision;
-        }
-        if state_only
-            && let Some(existing) = layouts
-                .projects
-                .get(project_id)
-                .and_then(|entry| entry.layout().ok())
-        {
-            layout = existing;
         }
         let before = layout.detached_chat_ids.clone();
         layout.detached_chat_ids.extend(dismiss.iter().cloned());

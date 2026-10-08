@@ -1093,40 +1093,6 @@ pub struct Rpc {
     /// Files the phones sent (see `crate::upload`).
     uploads: Arc<crate::upload::Uploads>,
 }
-/// The store caps child depth at eight; tolerate older CLI trees beyond serde's
-/// default limit, while bounding recursion before parsing untrusted bytes.
-fn parse_tab_reply(data: &[u8]) -> std::result::Result<Value, Fault> {
-    let (mut depth, mut quoted, mut escaped) = (0u16, false, false);
-    for &byte in data {
-        if quoted {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                quoted = false;
-            }
-        } else {
-            match byte {
-                b'"' => quoted = true,
-                b'[' | b'{' => {
-                    depth += 1;
-                    if depth > 256 {
-                        return Err(Fault::new("cli_error", "tab reply exceeds nesting limit"));
-                    }
-                }
-                b']' | b'}' => depth = depth.saturating_sub(1),
-                _ => {}
-            }
-        }
-    }
-    let mut decoder = serde_json::Deserializer::from_slice(data);
-    decoder.disable_recursion_limit();
-    let value = Value::deserialize(&mut decoder).map_err(cli_fault)?;
-    decoder.end().map_err(cli_fault)?;
-    Ok(value)
-}
-
 impl Rpc {
     pub fn new(cli: PathBuf, storage: Storage) -> Self {
         Self {
@@ -1171,6 +1137,8 @@ impl Rpc {
         let mut child = Command::new(&self.cli)
             .env_remove("RIWORK_CHAT_ID")
             .env_remove("RIWORK_SHELL_ID")
+            .env_remove("RIWORK_ORCHESTRATOR_SCOPE")
+            .env_remove("RIWORK_AUTOMATION_ID")
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1231,7 +1199,6 @@ impl Rpc {
         limit: Duration,
         cap: usize,
     ) -> std::result::Result<Value, Fault> {
-        let tabs = a.first().is_some_and(|arg| arg == "tabs");
         a.push("--json".into());
         let data = self.raw_capped(a, limit, cap).await.map_err(|e| {
             if e.is::<OutputTooLarge>() {
@@ -1243,11 +1210,7 @@ impl Rpc {
                 cli_fault(e)
             }
         })?;
-        if tabs {
-            parse_tab_reply(&data)
-        } else {
-            serde_json::from_slice(&data).map_err(cli_fault)
-        }
+        serde_json::from_slice(&data).map_err(cli_fault)
     }
     /// The session `shell` among the project shells, and if it is not one of
     /// them, among the orchestrators. Ids are unique across both, so asking the

@@ -1,5 +1,7 @@
 # Shared project tabs implementation report
 
+Review corrections and current validation are recorded in [shared-tabs-review-report.md](shared-tabs-review-report.md). The implementation history and desktop evidence below describe the original four commits.
+
 Implemented on `shared-tabs`, based on `9631456`, without pushing, rebasing, or creating another branch/worktree. The old implementation was used as a reference and adapted to the current Kit controls and chat feed lifecycle.
 
 ## Design and files

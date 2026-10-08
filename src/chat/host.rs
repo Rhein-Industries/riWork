@@ -1257,8 +1257,10 @@ fn create_identified(
     });
     lock(&shared.chats).insert(id, chat.clone());
     if let Some(project) = chat.info().project_id {
-        if let Err(error) = crate::project_tabs::TabStore::at(&shared.home, &project)
-            .and_then(|store| store.reconcile(&[crate::project_tabs::Session::chat(&chat.info())]))
+        if let Err(error) =
+            crate::project_tabs::TabStore::at(&shared.home, &project).and_then(|store| {
+                store.register_created(&crate::project_tabs::Session::chat(&chat.info()))
+            })
         {
             eprintln!("riwork tabs: {error}");
         }

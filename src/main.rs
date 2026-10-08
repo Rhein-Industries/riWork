@@ -55,6 +55,7 @@ mod status_bar;
 mod store;
 mod symbols;
 mod tab_close_dialog;
+mod tab_menu;
 mod terminal_drop;
 mod terminal_lifecycle;
 mod terminal_links;
@@ -88,8 +89,8 @@ use gpui::Focusable;
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, Div, DragMoveEvent, Entity, FocusHandle,
     Global, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton, Pixels, Point,
-    Render, StatefulInteractiveElement, TitlebarOptions, Window, WindowBounds, WindowHandle,
-    WindowOptions, actions, canvas, div, img, point, prelude::*, px, rgb, size,
+    Render, StatefulInteractiveElement, TitlebarOptions, Window, WindowBounds,
+    WindowHandle, WindowOptions, actions, canvas, div, img, point, prelude::*, px, rgb, size,
 };
 use gpui_libghostty::{TerminalConfiguration, TerminalOptions, TerminalTheme};
 use gpui_platform::application;
@@ -1388,11 +1389,12 @@ struct Workspace {
     pending_chat_dismissals: Vec<String>,
     chat_tabs: chat_tabs::Coordinator,
     shared_tabs: Option<Vec<project_tabs::Entry>>,
-    opened_child_views: HashSet<String>,
     shared_worker_picker: bool,
+    shared_tab_menu: Option<Entity<tab_menu::TabMenu>>,
     foreign_tabs: HashMap<String, Option<project_tabs::Entry>>,
     shared_tab_error: Option<String>,
     shared_tabs_revision: u64,
+    shared_tabs_epoch: String,
     shared_tab_keys: HashSet<String>,
     shells: Vec<ShellSession>,
     /// The orchestrators that run as chats, as the chat host last said (or, while no host
@@ -2036,11 +2038,12 @@ impl Workspace {
             chat_dismissal_revision: 0,
             chat_tabs: chat_tabs::Coordinator::new(),
             shared_tabs: None,
-            opened_child_views: HashSet::new(),
             shared_worker_picker: false,
+            shared_tab_menu: None,
             foreign_tabs: HashMap::new(),
             shared_tab_error: None,
             shared_tabs_revision: 0,
+            shared_tabs_epoch: String::new(),
             shared_tab_keys: HashSet::new(),
             pending_chat_dismissals: Vec::new(),
             shells: Vec::new(),
@@ -2209,9 +2212,10 @@ impl Workspace {
             })
             .map(|worktree| worktree.path.clone())
             .unwrap_or_else(|| self.cwd.clone());
-        let shell = self
-            .sessions
-            .create(self.project_id.clone(), worktree_id, cwd, None)?;
+        let shell =
+            self.sessions
+                .for_user()
+                .create(self.project_id.clone(), worktree_id, cwd, None)?;
         let result = self.attach_session(pane_id, shell, window, cx);
         if let Ok(shells) = self.sessions.list() {
             self.shells = shells;
@@ -2464,14 +2468,6 @@ impl Workspace {
     fn restore_shell_tab(&mut self, pane_id: PaneId, shell: ShellSession) {
         if self.shared_tabs.is_some() && self.detached_shell_ids.contains(&shell.id) {
             return;
-        }
-        if self
-            .shared_tab_entries()
-            .iter()
-            .any(|e| e.key == format!("shell:{}", shell.id) && e.parent.is_some() && !e.hidden)
-        {
-            self.opened_child_views
-                .insert(format!("shell:{}", shell.id));
         }
         if !claim_shell(&shell.id) {
             return;
@@ -3500,6 +3496,7 @@ impl Workspace {
             || self.remote_prompt.is_some()
             || self.handoff_dialog.is_some()
             || self.tab_close_dialog.is_some()
+            || self.shared_tab_menu.is_some()
     }
 
     fn begin_tab_drag(&mut self, cx: &mut Context<Self>) {
@@ -3815,6 +3812,7 @@ impl Workspace {
             Ok(snapshot) => {
                 self.shared_tab_error = None;
                 self.shared_tabs = Some(snapshot.entries);
+                self.shared_tabs_epoch = snapshot.epoch;
                 self.shared_tabs_revision = snapshot.revision;
                 self.shared_tab_keys = snapshot.known_keys;
             }
@@ -4102,12 +4100,6 @@ impl Workspace {
                 tab.set_visible(index == pane.active, cx);
             }
         }
-        let placed = self
-            .panes
-            .values()
-            .flat_map(|p| p.tabs.iter().filter_map(session_tab_key))
-            .collect::<HashSet<_>>();
-        self.opened_child_views.retain(|key| placed.contains(key));
         self.active_pane = active_pane;
         if saved
             .as_ref()
@@ -5621,9 +5613,11 @@ impl Workspace {
                 }
                 if workspace.chat_tabs.epoch() == chat_inventory_epoch
                     && let Ok(snapshot) = shared_tabs
-                    && snapshot.revision >= workspace.shared_tabs_revision
+                    && (snapshot.epoch != workspace.shared_tabs_epoch
+                        || snapshot.revision >= workspace.shared_tabs_revision)
                 {
                     changed |= workspace.shared_tabs.as_ref() != Some(&snapshot.entries);
+                    workspace.shared_tabs_epoch = snapshot.epoch;
                     workspace.shared_tabs_revision = snapshot.revision;
                     let shown = workspace
                         .panes
@@ -5673,7 +5667,7 @@ impl Workspace {
     /// without focus.)
 
     /// Membership strip always comes from the desktop store, even before a local view is adopted.
-    fn render_shared_strip(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_shared_strip(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme::palette(cx);
         let visible = self.shared_tab_entries().iter().filter(|e| {
             !e.hidden
@@ -5696,13 +5690,18 @@ impl Workspace {
                     .id("shared-project-tabs")
                     .flex()
                     .items_center()
-                    .pl(px(80.0))
+                    .pl(px(if window_controls_visible(window) {
+                        WINDOW_CONTROLS_CONTENT_INSET
+                    } else {
+                        0.0
+                    }))
                     .min_h(ui_text::space(32.0))
                     .overflow_x_scroll()
                     .children(visible.map(|entry| {
                         let key = entry.key.clone();
                         let close_key = key.clone();
-                        let pin_key = key.clone();
+                        let menu_key = key.clone();
+                        let keyboard_key = key.clone();
                         let active = selected.as_deref() == Some(key.as_str());
                         let label =
                             format!("{}{}", if entry.pinned { "◆ " } else { "" }, entry.title);
@@ -5730,28 +5729,24 @@ impl Workspace {
                                 .on_mouse_down(
                                     MouseButton::Right,
                                     cx.listener(move |workspace, _, window, cx| {
-                                        let pinned = workspace
-                                            .shared_tab_entries()
-                                            .iter()
-                                            .find(|e| e.key == pin_key)
-                                            .is_some_and(|e| e.pinned);
-                                        let update = if pinned {
-                                            project_tabs::Update::Unpin {
-                                                key: pin_key.clone(),
-                                            }
-                                        } else {
-                                            project_tabs::Update::Pin {
-                                                key: pin_key.clone(),
-                                            }
-                                        };
-                                        if let Err(error) =
-                                            workspace.change_shared_tab(&update, window, cx)
-                                        {
-                                            workspace.notice = Some(error);
-                                        }
-                                        cx.notify();
+                                        workspace.open_shared_tab_menu(&menu_key, window, cx);
                                     }),
-                                ),
+                                )
+                                .on_key_down(cx.listener(
+                                    move |workspace, event: &KeyDownEvent, window, cx| {
+                                        if event.keystroke.key == "menu"
+                                            || (event.keystroke.key == "f10"
+                                                && event.keystroke.modifiers.shift)
+                                        {
+                                            workspace.open_shared_tab_menu(
+                                                &keyboard_key,
+                                                window,
+                                                cx,
+                                            );
+                                            cx.stop_propagation();
+                                        }
+                                    },
+                                )),
                             )
                             .children((!entry.pinned).then(|| {
                                 behavior_controls::button_content(
@@ -5836,6 +5831,51 @@ impl Workspace {
             .into_any_element()
     }
 
+    fn open_shared_tab_menu(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() {
+            return;
+        }
+        let Some(entry) = self
+            .shared_tab_entries()
+            .iter()
+            .find(|e| e.key == key)
+            .cloned()
+        else {
+            return;
+        };
+        let (left, right) = shared_tab_moves(self.shared_tab_entries(), key);
+        self.begin_tab_drag(cx);
+        let menu = cx.new(|cx| tab_menu::TabMenu::new(&entry, left, right, window, cx));
+        menu.update(cx, |menu, cx| menu.focus(window, cx));
+        let key = key.to_owned();
+        cx.subscribe_in(&menu, window, move |workspace, _, event, window, cx| {
+            workspace.shared_tab_menu = None;
+            workspace.finish_tab_drag(cx);
+            workspace.focus_active(window, cx);
+            match event {
+                tab_menu::Event::Update(update) => {
+                    if let Err(error) = workspace.change_shared_tab(update, window, cx) {
+                        workspace.notice = Some(error);
+                    }
+                }
+                tab_menu::Event::Close => {
+                    let local = workspace.panes.iter().find_map(|(pane, p)| {
+                        p.tabs
+                            .iter()
+                            .find(|t| session_tab_key(t).as_deref() == Some(&key))
+                            .map(|t| (*pane, t.id))
+                    });
+                    workspace.request_close_session(key.clone(), local, window, cx);
+                }
+                tab_menu::Event::Cancel => {}
+            }
+            cx.notify();
+        })
+        .detach();
+        self.shared_tab_menu = Some(menu);
+        cx.notify();
+    }
+
     fn shared_tab_entries(&self) -> &[project_tabs::Entry] {
         self.shared_tabs.as_deref().unwrap_or_default()
     }
@@ -5868,6 +5908,7 @@ impl Workspace {
                 entry.status = old.status.clone();
             }
         }
+        self.shared_tabs_epoch = snapshot.epoch;
         self.shared_tabs_revision = snapshot.revision;
         self.shared_tab_keys = snapshot.known_keys;
         self.shared_tabs = Some(snapshot.entries);
@@ -5882,12 +5923,8 @@ impl Workspace {
     }
 
     fn set_session_tab_hidden(&mut self, key: &str, hidden: bool) -> Result<(), String> {
-        if self.shared_tabs.is_none() {
-            return Ok(());
-        }
-        let Some((kind, id)) = key.split_once(':') else {
-            return Ok(());
-        };
+        project_tabs::valid_key(key)?;
+        let (kind, id) = key.split_once(':').unwrap();
         let project = match kind {
             "chat" => self
                 .shared_chats
@@ -5916,8 +5953,29 @@ impl Workspace {
                 .then(|| self.project_id.clone())
         });
         let Some(project) = project else {
-            return Ok(());
+            // Global orchestrator views deliberately have no project membership.
+            let global = match kind {
+                "chat" => self.shared_chats.as_ref().is_some_and(|chats| {
+                    chats
+                        .iter()
+                        .any(|c| c.id == id && c.project_id.is_none() && c.orchestrator.is_some())
+                }),
+                "shell" => self.shells.iter().any(|s| {
+                    s.id == id
+                        && s.project_id.is_none()
+                        && s.kind == sessions::ShellKind::Orchestrator
+                }),
+                _ => false,
+            };
+            return if global {
+                Ok(())
+            } else {
+                Err("Cannot resolve the tab's project; close aborted".into())
+            };
         };
+        if project == self.project_id && self.shared_tabs.is_none() {
+            return Err("Shared tab store is unavailable; close aborted".into());
+        }
         let store = project_tabs::TabStore::at(self.sessions.state_home(), &project)?;
         let update = if hidden {
             project_tabs::Update::Hide { key: key.into() }
@@ -5932,11 +5990,8 @@ impl Workspace {
             })
         };
         if let Err(error) = result {
-            if error.contains("unpin the tab") {
-                return Err(error);
-            }
-            self.report_tab_store_error(error);
-            self.shared_tabs = None;
+            self.report_tab_store_error(error.clone());
+            return Err(error);
         }
         Ok(())
     }
@@ -5982,7 +6037,6 @@ impl Workspace {
             }
         }
         self.update_shared_tab(&project_tabs::Update::Unhide { key: key.into() })?;
-        self.opened_child_views.insert(key.into());
         if let Some((pane, tab)) = existing {
             self.bring_up_tab(pane, tab, window, cx);
             return Ok(());
@@ -6000,12 +6054,6 @@ impl Workspace {
         }
         cx.notify();
         Ok(())
-    }
-    fn shared_tab_children(&self, key: &str) -> Vec<&project_tabs::Entry> {
-        self.shared_tab_entries()
-            .iter()
-            .filter(|e| e.parent.as_deref() == Some(key))
-            .collect()
     }
     fn apply_shared_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.layout_ready || self.is_remote() {
@@ -6028,27 +6076,6 @@ impl Workspace {
         if self.tab_dragging {
             return;
         }
-        let requests = self
-            .layouts
-            .chat_open_requests(&self.project_id)
-            .unwrap_or_default();
-        for entry in &entries {
-            if entry.parent.is_some()
-                && requests.contains(&entry.key[5..])
-                && entry.kind == project_tabs::Kind::Chat
-            {
-                self.opened_child_views.insert(entry.key.clone());
-            }
-        }
-        self.opened_child_views.retain(|key| {
-            entries
-                .iter()
-                .any(|e| &e.key == key && !e.hidden && e.parent.is_some())
-                || self
-                    .foreign_tabs
-                    .get(key)
-                    .is_some_and(|e| e.as_ref().is_some_and(|e| !e.hidden && e.parent.is_some()))
-        });
         let visible = entries
             .iter()
             .filter(|e| {
@@ -6693,9 +6720,6 @@ impl Workspace {
             cx.notify();
             return;
         }
-        if let Some(key) = &key {
-            self.opened_child_views.remove(key);
-        }
         let Some(pane) = self.panes.get_mut(&pane_id) else {
             return;
         };
@@ -7105,9 +7129,7 @@ impl Workspace {
             return;
         }
         self.dismiss_project_sort_menus(window, cx);
-        if self.panel_menu.is_none() {
-            self.menu_return.capture(window, cx);
-        }
+        if self.panel_menu.is_none() { self.menu_return.capture(window, cx); }
         self.panel_menu = None;
         self.layout_menu_open = true;
         // Terminals are native views drawn above everything of ours; the menu is drawn over
@@ -7125,9 +7147,7 @@ impl Workspace {
         }
         self.layout_menu_open = false;
         self.finish_tab_drag(cx);
-        if !self.menu_return.restore_within(&self.focus, window, cx) {
-            self.focus_active(window, cx);
-        }
+        if !self.menu_return.restore_within(&self.focus, window, cx) { self.focus_active(window, cx); }
         cx.notify();
     }
 
@@ -7158,6 +7178,34 @@ impl Workspace {
         }
     }
 
+    /// Registry/log provenance remains authoritative when inventory is missing.
+    fn session_is_worker(&self, key: &str) -> Option<bool> {
+        let (kind, id) = key.split_once(':')?;
+        match kind {
+            "shell" => self
+                .shells
+                .iter()
+                .find(|s| s.id == id)
+                .cloned()
+                .or_else(|| self.sessions.registered_session(id).ok())
+                .map(|s| s.is_worker()),
+            "chat" => self
+                .shared_chats
+                .as_ref()
+                .and_then(|chats| chats.iter().find(|c| c.id == id))
+                .cloned()
+                .or_else(|| {
+                    chat::log::chat_dir(self.sessions.state_home(), id)
+                        .and_then(|dir| std::fs::read(dir.join("info.json")).ok())
+                        .and_then(|bytes| {
+                            serde_json::from_slice::<chat::model::ChatInfo>(&bytes).ok()
+                        })
+                })
+                .map(|c| c.parent_id.is_some()),
+            _ => None,
+        }
+    }
+
     fn request_close_session(
         &mut self,
         key: String,
@@ -7179,10 +7227,10 @@ impl Workspace {
             cx.notify();
             return;
         }
-        let choice = if entry
-            .as_ref()
-            .is_some_and(|e| e.worker || e.parent.is_some())
-        {
+        let choice = if entry.as_ref().map_or_else(
+            || self.session_is_worker(&key).unwrap_or(true),
+            |e| e.worker || e.parent.is_some(),
+        ) {
             settings::TabCloseBehavior::Detach
         } else {
             self.settings.tab_close_behavior
@@ -7412,6 +7460,7 @@ impl Workspace {
             .unwrap_or_else(|| self.cwd.clone());
         let result = self
             .sessions
+            .for_user()
             .create_harness(
                 self.project_id.clone(),
                 worktree_id,
@@ -7521,13 +7570,6 @@ impl Workspace {
             || !self.chat_tabs.claim(&chat_id, false)
         {
             return;
-        }
-        if self
-            .shared_tab_entries()
-            .iter()
-            .any(|e| e.key == format!("chat:{chat_id}") && e.parent.is_some() && !e.hidden)
-        {
-            self.opened_child_views.insert(format!("chat:{chat_id}"));
         }
         let config = self.chat_config();
         let info = self
@@ -7756,9 +7798,7 @@ impl Workspace {
 
     fn toggle_panel_menu(&mut self, pane_id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
         self.dismiss_project_sort_menus(window, cx);
-        if self.panel_menu.is_none() && !self.layout_menu_open {
-            self.menu_return.capture(window, cx);
-        }
+        if self.panel_menu.is_none() && !self.layout_menu_open { self.menu_return.capture(window, cx); }
         self.layout_menu_open = false;
         self.active_pane = pane_id;
         self.panel_menu = if self.panel_menu == Some(pane_id) {
@@ -7771,9 +7811,7 @@ impl Workspace {
             self.menu_focus.focus(window, cx);
         } else {
             self.finish_tab_drag(cx);
-            if !self.menu_return.restore_within(&self.focus, window, cx) {
-                self.focus_active(window, cx);
-            }
+            if !self.menu_return.restore_within(&self.focus, window, cx) { self.focus_active(window, cx); }
         }
         cx.notify();
     }
@@ -8499,11 +8537,7 @@ impl Workspace {
             for (index, tab) in pane.tabs.iter().enumerate() {
                 if matches!(tab.content, TabContent::Panel(PanelKind::Projects))
                     && terminal_lifecycle::is_shown(
-                        index,
-                        pane.active,
-                        *pane_id,
-                        self.active_pane,
-                        self.focus_mode,
+                        index, pane.active, *pane_id, self.active_pane, self.focus_mode,
                     )
                 {
                     visible.insert(tab.id);
@@ -8769,9 +8803,7 @@ impl Workspace {
         if event.keystroke.key == "escape" && self.panel_menu.is_some() {
             self.panel_menu = None;
             self.finish_tab_drag(cx);
-            if !self.menu_return.restore_within(&self.focus, window, cx) {
-                self.focus_active(window, cx);
-            }
+            if !self.menu_return.restore_within(&self.focus, window, cx) { self.focus_active(window, cx); }
             cx.stop_propagation();
             cx.notify();
             return;
@@ -9719,7 +9751,8 @@ impl Workspace {
                     project_order: self.settings.project_order,
                     project_last_edits: &self.project_last_edits,
                     project_sort_menu_open: self.project_sort_menu_open,
-                    project_sort_ui: active_tab.and_then(|tab| self.project_sort_uis.get(&tab.id)),
+                    project_sort_ui: active_tab
+                        .and_then(|tab| self.project_sort_uis.get(&tab.id)),
                 },
                 Self::panel_action,
                 window,
@@ -10986,57 +11019,45 @@ impl Workspace {
             .child(
                 behavior_controls::button_content(
                     "focus-layout-toggle",
-                    if centered {
-                        "Fill window"
-                    } else {
-                        "Center focus"
-                    },
-                    if centered {
-                        "⛶ FILL WINDOW"
-                    } else {
-                        "⊙ CENTER FOCUS"
-                    },
+                    if centered { "Fill window" } else { "Center focus" },
+                    if centered { "⛶ FILL WINDOW" } else { "⊙ CENTER FOCUS" },
                 )
-                .border_1()
-                .border_color(gpui::transparent_black())
-                .focus_visible(move |style| style.border_color(rgb(colors.focus)))
-                .flex_none()
-                .px(ui_text::space(8.0))
-                .py(ui_text::space(5.0))
-                .text_color(rgb(colors.muted))
-                .hover(|style| {
-                    style
-                        .bg(rgb(colors.panel_active))
-                        .text_color(rgb(colors.cyan))
-                })
-                .on_click(cx.listener(|workspace, _, window, cx| {
-                    workspace.focus_centered = !workspace.focus_centered;
-                    workspace.focus_active(window, cx);
-                    cx.notify();
-                })),
+                    .border_1()
+                    .border_color(gpui::transparent_black())
+                    .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+                    .flex_none()
+                    .px(ui_text::space(8.0))
+                    .py(ui_text::space(5.0))
+                    .text_color(rgb(colors.muted))
+                    .hover(|style| {
+                        style
+                            .bg(rgb(colors.panel_active))
+                            .text_color(rgb(colors.cyan))
+                    })
+                    .on_click(cx.listener(|workspace, _, window, cx| {
+                        workspace.focus_centered = !workspace.focus_centered;
+                        workspace.focus_active(window, cx);
+                        cx.notify();
+                    })),
             )
             .child(
                 behavior_controls::button_content(
                     "restore-workspace",
                     "Restore workspace",
-                    if width >= 600.0 {
-                        "↙ RESTORE  ⌘⇧F"
-                    } else {
-                        "↙ RESTORE"
-                    },
+                    if width >= 600.0 { "↙ RESTORE  ⌘⇧F" } else { "↙ RESTORE" },
                 )
-                .focus_visible(move |style| style.border_color(rgb(colors.focus)))
-                .flex_none()
-                .px(ui_text::space(10.0))
-                .py(ui_text::space(5.0))
-                .border_1()
-                .border_color(rgb(colors.divider))
-                .bg(rgb(colors.panel_active))
-                .text_color(rgb(colors.cyan))
-                .hover(|style| style.border_color(rgb(colors.cyan)))
-                .on_click(cx.listener(|workspace, _, window, cx| {
-                    workspace.set_focus_mode(false, window, cx);
-                })),
+                    .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+                    .flex_none()
+                    .px(ui_text::space(10.0))
+                    .py(ui_text::space(5.0))
+                    .border_1()
+                    .border_color(rgb(colors.divider))
+                    .bg(rgb(colors.panel_active))
+                    .text_color(rgb(colors.cyan))
+                    .hover(|style| style.border_color(rgb(colors.cyan)))
+                    .on_click(cx.listener(|workspace, _, window, cx| {
+                        workspace.set_focus_mode(false, window, cx);
+                    })),
             );
         let content = if centered {
             let toolbar_height = ui_text::space_f32(FOCUS_TOOLBAR_HEIGHT);
@@ -11339,8 +11360,7 @@ impl Render for Workspace {
         // excludes participants in the background; the scope survives renders.
         behavior_controls::sync_modal_scope(
             self.modal_open().then_some(self.modal_selection_scope),
-            window,
-            cx,
+            window, cx,
         );
         if let Some(chat_id) = self.pending_automation_chat.take() {
             let existing = self.panes.iter().find_map(|(id, pane)| pane.tabs.iter().position(|tab| matches!(&tab.content, TabContent::Chat { chat_id: current, .. } if current == &chat_id)).map(|index| (*id, index)));
@@ -11470,7 +11490,7 @@ impl Render for Workspace {
             .text_size(ui_text::text(10.0))
             .children(
                 (!self.is_remote() && !self.focus_mode && self.shared_tabs.is_some())
-                    .then(|| self.render_shared_strip(cx)),
+                    .then(|| self.render_shared_strip(window, cx)),
             )
             .child(
                 div()
@@ -11561,6 +11581,14 @@ impl Render for Workspace {
                         .child(prompt.clone()),
                     self.modal_selection_scope,
                 )
+            }))
+            .children(self.shared_tab_menu.as_ref().map(|menu| {
+                div()
+                    .absolute()
+                    .top(ui_text::space(34.0))
+                    .left(px(WINDOW_CONTROLS_CONTENT_INSET))
+                    .occlude()
+                    .child(menu.clone())
             }))
             .children(self.tab_close_dialog.as_ref().map(|dialog| {
                 div()
@@ -11852,6 +11880,31 @@ fn panel_tooltip(panel: PanelKind) -> &'static str {
     }
 }
 
+/// Adjacent movement stays inside the server's sibling/pin group.
+fn shared_tab_moves(
+    entries: &[project_tabs::Entry],
+    key: &str,
+) -> (Option<project_tabs::Update>, Option<project_tabs::Update>) {
+    let Some(entry) = entries.iter().find(|e| e.key == key) else {
+        return (None, None);
+    };
+    let mut siblings = entries
+        .iter()
+        .filter(|e| e.parent == entry.parent && e.pinned == entry.pinned && !e.hidden)
+        .collect::<Vec<_>>();
+    siblings.sort_by_key(|e| e.order);
+    let at = siblings.iter().position(|e| e.key == key).unwrap();
+    let left = at.checked_sub(1).map(|i| project_tabs::Update::Move {
+        key: key.into(),
+        before: Some(siblings[i].key.clone()),
+    });
+    let right = (at + 1 < siblings.len()).then(|| project_tabs::Update::Move {
+        key: key.into(),
+        before: siblings.get(at + 2).map(|e| e.key.clone()),
+    });
+    (left, right)
+}
+
 fn window_controls_visible(window: &Window) -> bool {
     !matches!(window.window_bounds(), WindowBounds::Fullscreen(_))
 }
@@ -11981,6 +12034,7 @@ fn shared_drop_move(
         before,
     })
 }
+
 fn orchestrator_tab_title(shell: &ShellSession) -> String {
     orchestrators::tab_title(&orchestrators::scope_of(shell.project_id.as_deref())).to_owned()
 }
@@ -13605,6 +13659,29 @@ mod workspace_tab_tests {
         }
     }
     #[test]
+    fn shared_menu_moves_are_adjacent_and_stay_in_pin_and_parent_groups() {
+        let mut entries = (0..4).map(|i| serde_json::from_value::<project_tabs::Entry>(serde_json::json!({"key":format!("chat:{}", uuid::Uuid::from_u128(i+1)),"kind":"chat","title":"Chat","status":"waiting","pinned":false,"hidden":false,"order":i,"parent":null,"children":[],"child_count":0})).unwrap()).collect::<Vec<_>>();
+        entries[0].pinned = true;
+        let key = entries[2].key.clone();
+        assert_eq!(
+            shared_tab_moves(&entries, &key),
+            (
+                Some(project_tabs::Update::Move {
+                    key: key.clone(),
+                    before: Some(entries[1].key.clone())
+                }),
+                Some(project_tabs::Update::Move {
+                    key: key.clone(),
+                    before: None
+                })
+            )
+        );
+        assert_eq!(shared_tab_moves(&entries, &entries[0].key), (None, None));
+        entries[3].parent = Some(entries[0].key.clone());
+        assert!(shared_tab_moves(&entries, &key).1.is_none());
+    }
+
+    #[test]
     fn shared_drag_mapping_ignores_panels_foreign_global_and_other_pin_groups() {
         let info: ChatInfo = serde_json::from_value(serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"provider":"codex","cwd":"/tmp","title":"a","created_at_unix":1})).unwrap();
         let home = std::env::temp_dir().join(format!("rw-drop-{}", uuid::Uuid::new_v4()));
@@ -13651,6 +13728,7 @@ mod workspace_tab_tests {
         );
         assert!(shared_drop_move(&entries, &mixed, 0).is_none());
     }
+
     #[test]
     fn a_terminal_that_some_window_already_has_is_claimed_once() {
         let id = "claim-test-4f6c1d2e-0001";
@@ -14471,7 +14549,6 @@ mod main_pane_tests {
                 std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
                 workspace.remove_tab(pane, tab, window, cx);
                 assert!(chat_tab_in(&workspace.panes, &child.id).is_some());
-                assert!(workspace.opened_child_views.contains(&key));
                 tab_store
                     .update(&project_tabs::Update::Unpin { key: key.clone() })
                     .unwrap();
@@ -14658,11 +14735,36 @@ mod main_pane_tests {
                 std::fs::write(&path, b"broken").unwrap();
                 let (pane, tab) = chat_tab_in(&workspace.panes, &chats[0].id).unwrap();
                 workspace.remove_tab(pane, tab, window, cx);
-                assert!(chat_tab_in(&workspace.panes, &chats[0].id).is_none());
-                assert!(workspace.shared_tabs.is_none());
+                assert!(chat_tab_in(&workspace.panes, &chats[0].id).is_some());
+                assert!(workspace.shared_tabs.is_some());
                 assert!(workspace.notice.is_some());
+                workspace.finish_close_session(
+                    format!("chat:{}", chats[0].id),
+                    Some((pane, tab)),
+                    settings::TabCloseBehavior::Exit,
+                    window,
+                    cx,
+                );
+                assert!(chat_tab_in(&workspace.panes, &chats[0].id).is_some());
+                workspace.shared_tabs = None;
+                assert!(
+                    workspace
+                        .hide_session_tab(&format!("chat:{}", chats[0].id))
+                        .is_err()
+                );
+                assert!(
+                    workspace
+                        .hide_session_tab(&format!("chat:{}", uuid::Uuid::new_v4()))
+                        .is_err()
+                );
+                let mut worker = chats[0].clone();
+                worker.parent_id = Some(chats[1].id.clone());
+                workspace.shared_chats.as_mut().unwrap()[0] = worker;
+                assert_eq!(
+                    workspace.session_is_worker(&format!("chat:{}", chats[0].id)),
+                    Some(true)
+                );
                 assert_eq!(std::fs::read(&path).unwrap(), b"broken");
-                assert!(workspace.shared_tab_entries().is_empty());
             })
             .unwrap();
         window

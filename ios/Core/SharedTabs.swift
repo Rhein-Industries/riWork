@@ -31,8 +31,13 @@ public struct SharedTab: Codable, Sendable, Equatable, Identifiable {
 }
 public struct SharedTabsReply: Codable, Sendable, Equatable {
     /// Includes hidden entries and children. Draw only `visible` in the strip.
+    public let epoch: String?
     public let revision: UInt64?
     public let entries: [SharedTab]
+    public func supersedes(_ current: Self?) -> Bool {
+        guard let current else { return true }
+        return epoch != current.epoch || (revision ?? 0) >= (current.revision ?? 0)
+    }
     public var allEntries: [SharedTab] {
         var stack = Array(entries.reversed()), result: [SharedTab] = []
         while let entry = stack.popLast() { result.append(entry); stack.append(contentsOf: entry.children.reversed()) }

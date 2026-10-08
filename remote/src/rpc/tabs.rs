@@ -138,15 +138,6 @@ mod tests {
         }
     }
     #[test]
-    fn replies_tolerate_deep_legacy_children_but_bound_parser_depth() {
-        let data = format!("{}0{}", "[".repeat(160), "]".repeat(160));
-        assert!(serde_json::from_slice::<Value>(data.as_bytes()).is_err());
-        assert!(parse_tab_reply(data.as_bytes()).is_ok());
-        let data = format!("{}0{}", "[".repeat(257), "]".repeat(257));
-        assert!(parse_tab_reply(data.as_bytes()).is_err());
-        assert!(parse_tab_reply(br#"{"title":"[\"{\\}"}"#).is_ok());
-    }
-    #[test]
     fn tabs_list_arguments() {
         let args = arguments(&request(
             "tabs.list",

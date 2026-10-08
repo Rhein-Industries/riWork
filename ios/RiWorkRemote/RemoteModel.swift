@@ -1058,7 +1058,7 @@ extension Duration {
 // list; there is no optimistic hiding and no session stop/delete side effect.
 extension RemoteModel {
     func acceptSharedTabs(_ reply: SharedTabsReply) {
-        if let current = sharedTabs?.revision, (reply.revision ?? 0) < current { return }
+        guard reply.supersedes(sharedTabs) else { return }
         sharedTabs = reply
         let available = Set(reply.allEntries.filter { !$0.hidden && $0.parent != nil }.map(\.key))
         openedChildViews.formIntersection(available)

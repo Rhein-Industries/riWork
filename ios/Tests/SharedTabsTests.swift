@@ -52,6 +52,22 @@ import XCTest
         try RequestValidation.validate(method: "tabs.open", params: ["project_id": .string(project), "key": .string(worker.key)], id: UUID().uuidString.lowercased())
         XCTAssertThrowsError(try RequestValidation.validate(method: "tabs.open", params: ["project_id": .string(project), "key": .string("invalid")], id: UUID().uuidString.lowercased()))
     }
+    func testStoreEpochAcceptsResetButRejectsStaleRevisionWithinInstance() throws {
+        func reply(_ epoch: String?, _ revision: UInt64) throws -> SharedTabsReply {
+            var object: [String: JSONValue] = ["revision": .number(Double(revision)), "entries": .array([])]
+            if let epoch { object["epoch"] = .string(epoch) }
+            return try JSONValue.object(object).decode(SharedTabsReply.self)
+        }
+        let current = try reply("old", 100)
+        XCTAssertFalse(try reply("old", 2).supersedes(current))
+        XCTAssertTrue(try reply("new", 1).supersedes(current))
+        XCTAssertTrue(try reply("old", 100).supersedes(current))
+        XCTAssertFalse(try reply(nil, 1).supersedes(reply(nil, 2)))
+    }
+    func testParentFallbackCannotWeakenExplicitWorkerProtection() throws {
+        let tab = try value("{\"key\":\"shell:\(session)\",\"kind\":\"shell\",\"title\":\"worker\",\"status\":\"working\",\"pinned\":false,\"hidden\":false,\"worker\":false,\"order\":0,\"parent\":\"chat:\(project)\",\"children\":[],\"child_count\":0}").decode(SharedTab.self)
+        XCTAssertEqual(TabCloseBehavior.exit.effectiveChoice(for: tab), .detach)
+    }
     func testCapabilityDefaultsOffForOlderHosts() throws {
         XCTAssertFalse(DesktopFeatures(ready: .object([:])).tabs)
         XCTAssertTrue(DesktopFeatures(ready: try value("{\"features\":{\"tabs\":true}}")).tabs)
