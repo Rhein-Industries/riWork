@@ -1317,6 +1317,12 @@ import RiWorkCore
         let hidesBefore = await rig.transport.params(of: "tabs.update").filter { $0["update"]?["action"].string == "hide" }.count
         if let action = detach.first { _ = action.actionHandler?(action) }
         await eventually("hidden") { await rig.transport.params(of: "tabs.update").filter { $0["update"]?["action"].string == "hide" }.count == hidesBefore + 1 }
+        // A desktop that shares tabs but whose list could not be read: the terminal's own close stays refused, and is not offered.
+        rig.model.sharedTabs = nil
+        let unknown = await rig.model.closeTerminal(shell)
+        XCTAssertNotNil(unknown, "no Exit while the tab list is unavailable")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(customActions(named: "Close terminal", in: rig.host.view).isEmpty)
         let closes = await rig.transport.count("shell.close")
         XCTAssertEqual(closes, 0, "shell.close never sent for a worker")
         await finish(rig)

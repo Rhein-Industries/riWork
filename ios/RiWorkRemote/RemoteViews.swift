@@ -539,7 +539,7 @@ struct TerminalTabsView: View {
                 Button("Session info", systemImage: "info.circle") { showSessionInfo() }.disabled(content == .none)
                 if let entry = currentEntry { sharedTabItems(entry) }
                 // Without shared tabs only: with them, closing goes by the tab (a worker detaches; Ask / Detach / Exit; Hide before Exit).
-                if currentEntry == nil, chrome.terminalActions, let session = model.session, model.canClose(session), model.sharedEntry(ofSession: session.id) == nil {
+                if !model.desktopFeatures.tabs, chrome.terminalActions, let session = model.session, model.canClose(session) {
                     Button("Close this terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session }
                 }
             }
@@ -675,11 +675,15 @@ struct TerminalTabsView: View {
             Text(tabDetail(session))
             if let entry { Section { sharedTabItems(entry) } }
             Button("New terminal", systemImage: "plus") { openNewTerminal() }
-            if entry == nil, model.canClose(session) { Button("Close terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session } }
+            if !model.desktopFeatures.tabs, model.canClose(session) { Button("Close terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session } }
         }
         // The same close as the menu's: by the shared tab when there is one, else the terminal's own.
-        .accessibilityAction(named: entry.map { $0.isWorker ? "Close (detach)" : "Close tab" } ?? "Close terminal") {
-            if let entry { requestClose(entry) } else if model.canClose(session) { closing = session }
+        .accessibilityActions {
+            if let entry {
+                Button(entry.isWorker ? "Close (detach)" : "Close tab") { requestClose(entry) }
+            } else if !model.desktopFeatures.tabs {
+                Button("Close terminal") { if model.canClose(session) { closing = session } }
+            }
         }
     }
     /// A chat's tab, beside the terminals': its provider's glyph, its name and the same activity indicator. An orchestrator that runs

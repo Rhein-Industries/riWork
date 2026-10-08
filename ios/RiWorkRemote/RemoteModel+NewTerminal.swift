@@ -75,6 +75,9 @@ extension RemoteModel {
         guard session.kind != "orchestrator" else { return .failed("Orchestrators are closed on the Mac.") }
         // With shared tabs a worker's shell is only ever detached: closing its tab hides it (`closeTab`), and nothing here ends it.
         if let entry = sharedEntry(ofSession: session.id), entry.isWorker { return .failed("A worker's shell is detached, not closed, from the phone.") }
+        // A desktop that shares tabs but whose list could not be read: nothing is known about the shell, so it is not ended (the
+        // contract: Exit is refused until the list is there).
+        if desktopFeatures.tabs, sharedTabs == nil { return .failed("The tab list could not be read from the Mac. Try again in a moment.") }
         guard closingTerminalID == nil else { return .busy }
         guard state == .connected else { return .notConnected }
         guard terminalControl != .unsupported else { return .unsupported }
