@@ -3716,7 +3716,7 @@ mod tests {
             toggle.flip(&mut flipped);
             assert_eq!(flipped, base);
         }
-        let ids = [
+        let toggles = [
             Toggle::TerminalColors,
             Toggle::PanelTabIcons,
             Toggle::PreviewOnSelect,
@@ -3725,11 +3725,13 @@ mod tests {
             Toggle::DictationMic,
             Toggle::ClaudeChatApiKey,
             Toggle::WindowSize,
-        ]
-        .map(Toggle::id)
-        .into_iter()
-        .collect::<std::collections::HashSet<_>>();
-        assert_eq!(ids.len(), 7);
+        ];
+        // Every toggle has an id of its own.
+        let ids = toggles
+            .map(Toggle::id)
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(ids.len(), toggles.len());
     }
 
     #[test]
