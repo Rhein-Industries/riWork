@@ -159,8 +159,9 @@ pub(crate) fn status_dot(status: &project_tabs::Status, colors: Palette, error: 
     .into_any_element()
 }
 
-/// A tab cell as the pane bar draws it: full height, square, a hairline after it; the
-/// selected cell filled, in the content's background in the selected pane.
+/// A tab cell as the pane bar draws it: full height, square, a hairline after it and none
+/// before or above it, so the first cell sits flush with the pane's edge; the selected
+/// cell filled, in the content's background in the selected pane.
 pub(crate) fn flat_cell<E: Styled>(
     cell: E,
     active: bool,
@@ -169,6 +170,8 @@ pub(crate) fn flat_cell<E: Styled>(
 ) -> E {
     if !colors.plain_tabs {
         return cell
+            .border_l_0()
+            .border_t_0()
             .border_r_1()
             .border_b_1()
             .border_color(rgb(if active { colors.cyan } else { colors.divider }))
@@ -178,7 +181,12 @@ pub(crate) fn flat_cell<E: Styled>(
                 colors.panel
             }));
     }
-    let cell = cell.border_r_1().border_color(rgb(colors.divider));
+    let cell = cell
+        .border_l_0()
+        .border_t_0()
+        .border_b_0()
+        .border_r_1()
+        .border_color(rgb(colors.divider));
     if active {
         cell.bg(rgb(if pane_selected {
             colors.bg
@@ -716,6 +724,7 @@ impl Workspace {
             .w(ui_text::space(STRIP_BUTTON))
             .text_color(rgb(colors.muted))
             .map(|button| flat_cell(button, false, false, colors))
+            .focus_visible(move |style| style.border_1().border_color(rgb(colors.focus)))
             .when(open, |button| button.bg(rgb(colors.panel_active)))
             .hover(move |style| {
                 style
@@ -754,10 +763,8 @@ impl Workspace {
         .justify_center()
         .h_full()
         .w(ui_text::space(NATIVE_ICON_TAB_FULL))
-        .border_1()
-        .border_color(gpui::transparent_black())
-        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
         .map(|cell| flat_cell(cell, active, pane_selected, colors))
+        .focus_visible(move |style| style.border_1().border_color(rgb(colors.focus)))
         .text_color(rgb(ink))
         .when(!active || !colors.plain_tabs, |cell| {
             cell.hover(move |style| {
@@ -866,6 +873,7 @@ impl Workspace {
             .text_size(ui_text::text(10.0))
             .text_color(rgb(ink))
             .map(|tab| flat_cell(tab, active, pane_selected, colors))
+            .focus_visible(move |style| style.border_1().border_color(rgb(colors.focus)))
             .when(!(active && colors.plain_tabs), |tab| {
                 tab.hover(move |style| {
                     style

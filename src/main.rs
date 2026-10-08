@@ -8784,11 +8784,19 @@ impl Workspace {
                     .hover(move |style| {
                         controls::hovered(style, colors.divider, |style| style.bg(rgb(colors.cyan)))
                     })
-                    // Native: a hairline in the middle of the grip, which fills on hover.
+                    // Native: a hairline in the middle of the grip, which fills on hover. The
+                    // grip reaches over both panes' edges and takes only the hairline's room,
+                    // so the panes sit flush against the line.
                     .map(|divider| {
                         controls::native(divider, |divider| {
+                            let overlap = px(-(DIVIDER_THICKNESS - 1.0) / 2.0);
+                            let divider = if horizontal {
+                                divider.ml(overlap).mr(overlap)
+                            } else {
+                                divider.mt(overlap).mb(overlap)
+                            };
                             divider
-                                .bg(rgb(colors.panel))
+                                .bg(gpui::transparent_black())
                                 .flex()
                                 .justify_center()
                                 .items_center()
