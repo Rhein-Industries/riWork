@@ -1116,6 +1116,14 @@ extension RemoteModel {
     /// Explicit open changes shared visibility, then selects only on this device.
     func openTab(_ key: String) async throws {
         guard desktopFeatures.tabs, let project = projectID else { throw ChatValidationError.malformed }
+        // Already a visible tab and the one on screen: nothing to ask the desktop, nothing to change.
+        if let entry = sharedTabs?.allEntries.first(where: { $0.key == key }), !entry.hidden {
+            switch entry.kind {
+            case .chat: if selectedChatID == entry.sessionID { return }
+            case .shell: if selectedChatID == nil, selectedBlockedID == nil, !terminalCovered, sessionID == entry.sessionID { return }
+            case .unknown: break
+            }
+        }
         let token = generation
         let reply = try await rpc("tabs.open", ["project_id": .string(project), "key": .string(key)]).decode(SharedTabsReply.self)
         guard generation == token, projectID == project else { return }
