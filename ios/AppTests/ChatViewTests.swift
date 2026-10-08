@@ -950,9 +950,10 @@ import RiWorkCore
 
     // MARK: Drafts
 
-    private func staged(_ n: Int, _ name: String) -> StagedAttachment {
+    private let stagedAt = Date.now
+    private func staged(_ n: Int, _ name: String, age: TimeInterval = 0) -> StagedAttachment {
         StagedAttachment(id: "aaaaaaaa-0000-4000-8000-00000000000\(n)", kind: name.hasSuffix(".jpg") ? .image : .file, name: name, size: 120_000 * n,
-                         path: "/Users/me/.local/share/riwork/uploads/\(n)/\(name)")
+                         path: "/Users/me/.local/share/riwork/uploads/\(n)/\(name)", stagedAt: stagedAt.addingTimeInterval(-age))
     }
     private func sentTexts(_ rig: Rig) async -> [String] { await sentCommands(rig).compactMap { $0["text"].string } }
 
@@ -987,7 +988,7 @@ import RiWorkCore
         type("What do these show?", into: field)
         await rig.model.sendChatDraft(chatID)
         let texts = await sentTexts(rig)
-        XCTAssertEqual(texts, ["What do these show?\n/Users/me/.local/share/riwork/uploads/1/photo.jpg\n/Users/me/.local/share/riwork/uploads/2/notes.pdf"])
+        XCTAssertEqual(texts, ["What do these show?\n/Users/me/.local/share/riwork/uploads/1/photo.jpg\n/Users/me/.local/share/riwork/uploads/2/notes.pdf\n"])
         XCTAssertEqual(conversation.attachments, [], "the cards clear")
         await eventually("the composer is empty") { self.composer(rig)?.text == "" && rig.layout.frames["attachments"] == nil }
         XCTAssertNil(rig.model.chatDrafts.draft(chatID), "sent: nothing kept")
@@ -1008,7 +1009,46 @@ import RiWorkCore
         press(field, "\r")
         await eventually("sent") { conversation.attachments.isEmpty }
         let texts = await sentTexts(rig)
-        XCTAssertEqual(texts.last, "/Users/me/.local/share/riwork/uploads/1/photo.jpg")
+        XCTAssertEqual(texts.last, "/Users/me/.local/share/riwork/uploads/1/photo.jpg\n")
+        await finish(rig)
+    }
+    /// What was typed is sent as typed, indentation and blank lines included, with cards and without; the paths follow as they did when
+    /// they were in the draft.
+    func testAMessageIsSentExactlyAsTypedWithAndWithoutCards() async throws {
+        let rig = try await makeRig()
+        let field = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        let typed = "    indented first line\n\tthen a tab\n\n\n"
+        type(typed, into: field)
+        await rig.model.sendChatDraft(chatID)
+        conversation.attachments = [staged(1, "photo.jpg")]
+        type(typed, into: field)
+        await rig.model.sendChatDraft(chatID)
+        let texts = await sentTexts(rig)
+        XCTAssertEqual(texts, [typed, typed + "/Users/me/.local/share/riwork/uploads/1/photo.jpg\n"])
+        await finish(rig)
+    }
+    /// The Mac keeps an upload for a day and a draft lasts a month: a card older than that comes back marked expired, is said above the
+    /// composer, and its path is never sent.
+    func testAnAgedCardComesBackExpiredAndIsNeverSent() async throws {
+        let suite = "com.riwork.tests.chatview.\(UUID().uuidString)"
+        defaultsNames.append(suite)
+        let store = ChatDraftStore(defaults: UserDefaults(suiteName: suite)!)
+        store.setAttachments([staged(1, "photo.jpg", age: 25 * 3600)], for: chatID)
+        let rig = try await makeRig(defaults: suite)
+        let field = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        XCTAssertEqual(conversation.attachments.count, 1, "kept, so the person sees what happened")
+        XCTAssertTrue(conversation.attachments[0].isExpired())
+        XCTAssertTrue(conversation.notice?.contains("expired on the Mac") == true, conversation.notice ?? "no notice")
+        XCTAssertFalse(conversation.hasMessage, "an expired card alone is nothing to send")
+        await rig.model.sendChatDraft(chatID)
+        var sent = await sentTexts(rig)
+        XCTAssertEqual(sent, [], "nothing sent")
+        type("look", into: field)
+        await rig.model.sendChatDraft(chatID)
+        sent = await sentTexts(rig)
+        XCTAssertEqual(sent, ["look"], "the text alone: no missing path")
         await finish(rig)
     }
     /// The cards are kept with the draft: another chat's tab, and a relaunch, find them in the composer again.
@@ -1386,7 +1426,10 @@ import RiWorkCore
             _ = try await rig.model.closeTab("shell:\(ChatTransport.shell)", choice: setting == .ask ? .exit : nil)
             try await rig.model.openTab("shell:\(ChatTransport.shell)")
         }
-        // The VoiceOver action on its tab is the tab's close, not the terminal's.
+        // The VoiceOver action on its tab is the tab's close, not the terminal's. The strip's cells are read as VoiceOver reads them:
+        // with app accessibility on, or SwiftUI builds no elements inside the strip's scroll view and every look below finds nothing.
+        let accessibility = AppAccessibility.enable()
+        defer { accessibility.restore() }
         rig.model.tabCloseBehavior = .exit
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertTrue(customActions(named: "Close terminal", in: rig.host.view).isEmpty, "no terminal Close for a shared tab")
@@ -2478,6 +2521,23 @@ import RiWorkCore
         try? FileManager.default.removeItem(at: ready)
     }
     /// The VoiceOver custom actions named `name` anywhere on the screen.
+    /// Turns app accessibility on for this process, as VoiceOver or an inspector attached to the simulator does (the setting the
+    /// simulator's `com.apple.Accessibility ApplicationAccessibilityEnabled` keeps), so SwiftUI builds the elements a test reads.
+    /// Without it a simulator that never had an accessibility client builds none inside a hosted scroll view (the tab strip).
+    private struct AppAccessibility {
+        private typealias Get = @convention(c) () -> Bool
+        private typealias Set = @convention(c) (Bool) -> Void
+        private let set: Set?, before: Bool
+        static func enable() -> AppAccessibility {
+            let library = dlopen("/usr/lib/libAccessibility.dylib", RTLD_NOW)
+            let get = dlsym(library, "_AXSApplicationAccessibilityEnabled").map { unsafeBitCast($0, to: Get.self) }
+            let set = dlsym(library, "_AXSApplicationAccessibilitySetEnabled").map { unsafeBitCast($0, to: Set.self) }
+            let state = AppAccessibility(set: set, before: get?() ?? false)
+            set?(true)
+            return state
+        }
+        func restore() { set?(before) }
+    }
     private func customActions(named name: String, in view: UIView) -> [UIAccessibilityCustomAction] {
         var seen = Set<ObjectIdentifier>(), budget = 6000, found: [UIAccessibilityCustomAction] = []
         func search(_ element: NSObject) {

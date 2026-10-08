@@ -24,8 +24,8 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     /// into the message when it is sent. Saved with the draft.
     var attachments: [StagedAttachment] = [] { didSet { if attachments != oldValue { onAttachmentsChange?(attachments) } } }
     @ObservationIgnored var onAttachmentsChange: (([StagedAttachment]) -> Void)?
-    /// Something to send: text, or a card.
-    var hasMessage: Bool { !attachments.isEmpty || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// Something to send: text, or a card whose file the Mac still has (an expired one is not sent).
+    var hasMessage: Bool { attachments.contains { !$0.isExpired() } || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     /// The cards the person opened (command output, diffs, reasoning), by item id. Kept here because rows come and go as the list scrolls.
     var expanded: Set<String> = []
     /// The mode just chosen, shown until the desktop says so itself.
@@ -217,6 +217,12 @@ extension RemoteModel {
                 let restored = saved.restored
                 conversation.draft = restored.text
                 conversation.attachments = restored.attachments
+                // The Mac keeps an upload for a day; a draft lasts a month. Cards past that are marked on the card and never sent.
+                let expired = restored.attachments.filter { $0.isExpired() }.count
+                if expired > 0 {
+                    conversation.alerts.show(.action, expired == 1 ? "An attached file has expired on the Mac. Remove it and attach it again."
+                                                                   : "\(expired) attached files have expired on the Mac. Remove them and attach them again.")
+                }
                 if restored.uncertain {
                     chatDrafts.restoreUncertain(restored.text, attachments: restored.attachments, for: id)
                     conversation.alerts.show(.action, "Your last message may not have reached the Mac. It is back in the composer: check the conversation before sending it again.")
@@ -541,8 +547,10 @@ extension RemoteModel {
     func sendChatDraft(_ chatID: String) async -> ChatControlError? {
         let conversation = conversation(chatID)
         guard conversation.hasMessage else { return nil }
-        let text = conversation.attachments.isEmpty ? conversation.draft : conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        return await sendChatMessage(chatID, text, attachments: conversation.attachments, restoring: true)
+        // Files on their way go with the next message once the Mac has them, not before.
+        guard pendingAttachments(for: chatID).isEmpty else { return .busy }
+        // The text exactly as typed: the message is byte for byte what it was when paths went into the draft.
+        return await sendChatMessage(chatID, conversation.draft, attachments: conversation.attachments, restoring: true)
     }
     /// Sends `text` as a message (also Retry on a failed chat, which sends the last message again), with the paths of `attachments`.
     @discardableResult

@@ -17,6 +17,16 @@ enum AttachmentSource: @unchecked Sendable {
     /// What a paste found on the pasteboard.
     case pasted(NSItemProvider)
 
+    /// What its card shows before the file is read: a photo is a picture; a file from Files or the pasteboard has its name.
+    var placeholder: (kind: StagedAttachment.Kind, name: String) {
+        switch self {
+        case .photo, .camera: (.image, "Photo")
+        case .file(let url): (StagedAttachment.kind(mediaType: nil, name: url.lastPathComponent), url.lastPathComponent)
+        case .pasted(let provider):
+            (PasteboardAttachments.fileType(of: provider)?.conforms(to: .image) == true ? .image : .file, provider.suggestedName ?? "Pasted item")
+        }
+    }
+
     /// The file as it should travel (`PhotoPreparation`): a photo upright, as JPEG and without its location unless it is a PNG or a GIF;
     /// a file from Files as it is, unless it is a picture no agent reads (HEIC).
     func load() async throws -> UploadFile {
@@ -257,14 +267,18 @@ struct AttachButton: View, Equatable {
 // MARK: - Cards above a chat's composer
 
 /// The files staged for a chat's message, as cards in one row above the composer's field (as Claude and ChatGPT show them): an image as
-/// a rounded thumbnail, any other file as a small card with its kind, name and size. × removes one; tapping an image shows it full
-/// screen. The row scrolls sideways when there are more than fit; the composer shows none of it while nothing is staged.
+/// a rounded thumbnail, any other file as a small card with its kind, name and size. A file shows its card the moment it is picked,
+/// with its progress, until the Mac has it (`PendingAttachment`). × removes one (or cancels the files on their way); tapping an image
+/// shows it full screen. The row scrolls sideways when there are more than fit; the composer shows none of it while nothing is staged.
 struct ChatAttachmentStrip: View {
     @Environment(\.desktopStyle) private var style
     let attachments: [StagedAttachment]
+    var pending: [PendingAttachment] = []
     let images: ChatAttachmentImages
     let remove: (String) -> Void
+    var cancelPending: () -> Void = {}
     @State private var previewing: StagedAttachment?
+    private var count: Int { attachments.count + pending.count }
 
     var body: some View {
         ScrollView(.horizontal) {
@@ -272,8 +286,13 @@ struct ChatAttachmentStrip: View {
                 ForEach(Array(attachments.enumerated()), id: \.element.id) { index, card in
                     ChatAttachmentCard(card: card, images: images, open: { previewing = card }, remove: { remove(card.id) })
                         // An earlier card's × reaches over the next card's edge: it stays on top there.
-                        .zIndex(Double(attachments.count - index))
+                        .zIndex(Double(count - index))
                         .transition(.scale(scale: 0.8).combined(with: .opacity))
+                }
+                ForEach(Array(pending.enumerated()), id: \.element.id) { index, card in
+                    ChatPendingAttachmentCard(card: card, cancel: cancelPending)
+                        .zIndex(Double(pending.count - index))
+                        .transition(.opacity)
                 }
             }
             // Room for the × badges, which stand out over the cards' corners.
@@ -282,7 +301,7 @@ struct ChatAttachmentStrip: View {
         .scrollIndicators(.hidden)
         .scrollClipDisabled()
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(attachments.count == 1 ? "1 attachment" : "\(attachments.count) attachments")
+        .accessibilityLabel(count == 1 ? "1 attachment" : "\(count) attachments")
         .accessibilityIdentifier("attachment-strip")
         .background {
             // Installed only while wanted, as the pickers are: a presenter installed for good takes the keyboard from the composer.
@@ -307,19 +326,32 @@ struct ChatAttachmentCard: View {
     private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: style.native ? style.pt(12) : 4, style: .continuous) }
 
     var body: some View {
-        content
-            .overlay(shape.strokeBorder(style.divider, lineWidth: 1))
-            .overlay(alignment: .topTrailing) { removeButton }
-            .accessibilityIdentifier("attachment-card")
+        let expired = card.isExpired()
+        content(expired: expired)
+            .opacity(expired ? 0.55 : 1)
+            .overlay(shape.strokeBorder(expired ? style.warning : style.divider, lineWidth: 1))
+            .overlay(alignment: .bottom) { if expired, card.kind == .image { expiredBadge } }
+            .overlay(alignment: .topTrailing) { ChatCardCloseButton(label: "Remove \(card.name)", action: remove) }
+            .accessibilityIdentifier(expired ? "attachment-card-expired" : "attachment-card")
     }
-    @ViewBuilder private var content: some View {
+    /// The Mac no longer has the file (`StagedAttachment.isExpired`): said on the card, and its path is not sent.
+    private var expiredBadge: some View {
+        Text("Expired").font(style.face(10, bold: true, relativeTo: .caption2)).foregroundStyle(style.background)
+            .lineLimit(1).fixedSize()
+            .padding(.horizontal, 5).padding(.vertical, 2)
+            .background(style.warning, in: Capsule())
+            .padding(.bottom, 5)
+            .accessibilityHidden(true)
+    }
+    @ViewBuilder private func content(expired: Bool) -> some View {
+        let spoken = expired ? ", expired on the Mac, attach it again" : ""
         if card.kind == .image, let thumbnail = ChatAttachmentImageCache.image(images.thumbnailURL(card.id)) {
             Button(action: open) {
                 Image(uiImage: thumbnail).resizable().scaledToFill()
                     .frame(width: side, height: side).clipShape(shape).contentShape(shape)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Image, \(card.name), \(card.sizeText)").accessibilityHint("Shows it full screen")
+            .accessibilityLabel("Image, \(card.name), \(card.sizeText)" + spoken).accessibilityHint("Shows it full screen")
         } else {
             HStack(spacing: style.pt(8)) {
                 Image(systemName: card.kind == .image ? "photo" : card.symbol)
@@ -328,7 +360,7 @@ struct ChatAttachmentCard: View {
                     .background(style.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: style.native ? style.pt(9) : 3, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(card.name).font(style.face(13, relativeTo: .footnote)).foregroundStyle(style.text).lineLimit(1).truncationMode(.middle)
-                    Text(card.sizeText).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1)
+                    Text(expired ? "Expired" : card.sizeText).font(style.face(11, relativeTo: .caption)).foregroundStyle(expired ? style.warning : style.muted).lineLimit(1)
                 }
                 .frame(maxWidth: style.pt(118), alignment: .leading)
             }
@@ -336,12 +368,68 @@ struct ChatAttachmentCard: View {
             .frame(height: side)
             .background(style.panel, in: shape)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("File, \(card.name), \(card.sizeText)")
+            .accessibilityLabel("File, \(card.name), \(card.sizeText)" + spoken)
         }
     }
-    /// A small filled circle on the card's corner, in a 44-point target centred on it.
-    private var removeButton: some View {
-        Button(action: remove) {
+}
+
+/// A file on its way to the Mac: its card at once, with a ring that fills as it is sent, until its real card takes its place. × cancels
+/// the files on their way (one upload at a time).
+struct ChatPendingAttachmentCard: View {
+    @Environment(\.desktopStyle) private var style
+    let card: PendingAttachment
+    let cancel: () -> Void
+    private var side: CGFloat { style.pt(64) }
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: style.native ? style.pt(12) : 4, style: .continuous) }
+    private var status: String { card.size == nil ? "Preparing…" : "Sending · \(Int((card.fraction * 100).rounded()))%" }
+
+    var body: some View {
+        Group {
+            if card.kind == .image {
+                ring.frame(width: side, height: side)
+            } else {
+                HStack(spacing: style.pt(8)) {
+                    ring.frame(width: style.pt(38), height: style.pt(38))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(card.name).font(style.face(13, relativeTo: .footnote)).foregroundStyle(style.text).lineLimit(1).truncationMode(.middle)
+                        Text(status).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted).monospacedDigit().lineLimit(1)
+                    }
+                    .frame(maxWidth: style.pt(118), alignment: .leading)
+                }
+                .padding(.leading, style.pt(10)).padding(.trailing, style.pt(14))
+                .frame(height: side)
+            }
+        }
+        .background(style.panel, in: shape)
+        .overlay(shape.strokeBorder(style.divider, lineWidth: 1))
+        .overlay(alignment: .topTrailing) { ChatCardCloseButton(label: "Cancel sending \(card.name)", action: cancel) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(card.kind == .image ? "Image" : "File"), \(card.name), \(status)")
+        .accessibilityIdentifier("attachment-card-pending")
+    }
+    /// Indeterminate while the file is read, then how much the Mac has.
+    private var ring: some View {
+        ZStack {
+            if card.size == nil {
+                ProgressView().controlSize(.small).tint(style.muted)
+            } else {
+                Circle().stroke(style.divider, lineWidth: 2.5)
+                Circle().trim(from: 0, to: max(0.03, card.fraction)).stroke(style.accent, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .rotationEffect(.degrees(-90)).animation(.easeOut(duration: 0.2), value: card.fraction)
+            }
+        }
+        .frame(width: style.pt(22), height: style.pt(22))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// A card's ×: a small filled circle on its corner, in a 44-point target centred on it.
+struct ChatCardCloseButton: View {
+    @Environment(\.desktopStyle) private var style
+    let label: String
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
             Image(systemName: "xmark").font(.system(size: style.pt(9), weight: .bold)).foregroundStyle(style.background)
                 .frame(width: style.pt(20), height: style.pt(20))
                 .background(style.text.opacity(0.85), in: Circle())
@@ -350,7 +438,7 @@ struct ChatAttachmentCard: View {
         }
         .buttonStyle(.plain)
         .offset(x: style.target / 2 - style.pt(6), y: -(style.target / 2 - style.pt(6)))
-        .accessibilityLabel("Remove \(card.name)")
+        .accessibilityLabel(label)
         .accessibilityIdentifier("attachment-remove")
     }
 }

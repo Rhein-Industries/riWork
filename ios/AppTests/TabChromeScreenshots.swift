@@ -457,6 +457,17 @@ import RiWorkCore
             try await shot(window, prefix + "-1-one-image")
             conversation.attachments = [photo, pdf, screenshot]
             try await shot(window, prefix + "-2-three-mixed")
+            // Picked a moment ago: a photo still being read and a file half sent beside a card the Mac has; then an expired card.
+            model.attachments.pending = [PendingAttachment(id: "p1", chat: chatID, kind: .image, name: "Photo"),
+                                         PendingAttachment(id: "p2", chat: chatID, kind: .file, name: "build-output.log", size: 2_000_000, fraction: 0.42)]
+            conversation.attachments = [photo]
+            try await shot(window, prefix + "-2b-uploading")
+            model.attachments.pending = []
+            var old = pdf; old.stagedAt = Date.now.addingTimeInterval(-25 * 3600)
+            var oldPhoto = screenshot; oldPhoto.stagedAt = old.stagedAt
+            conversation.attachments = [photo, old, oldPhoto]
+            try await shot(window, prefix + "-2c-expired")
+            conversation.attachments = [photo, pdf, screenshot]
             guard let field = views(ChatComposerTextView.self, in: window).first else { XCTFail("no composer"); continue }
             field.becomeFirstResponder()
             conversation.draft = "What changed between these two?"

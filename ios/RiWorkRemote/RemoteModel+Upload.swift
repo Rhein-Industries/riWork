@@ -18,8 +18,29 @@ struct UploadActivity: Equatable {
     var failed: Bool { if case .failed = phase { true } else { false } }
 }
 
+/// A file picked for a chat, shown as a card at once while it is read and sent (`ChatAttachmentStrip`); it becomes a `StagedAttachment`
+/// the moment the Mac has it. Not saved: an upload does not outlive the app.
+struct PendingAttachment: Identifiable, Equatable {
+    let id: String
+    let chat: String
+    var kind: StagedAttachment.Kind
+    var name: String
+    /// Known once the file is read.
+    var size: Int?
+    /// How much of it the Mac has, 0 to 1.
+    var fraction: Double = 0
+}
+
 @MainActor @Observable final class Attachments {
     var activity: UploadActivity?
+    /// The cards of files on their way to a chat, in the order picked.
+    var pending: [PendingAttachment] = []
+    static func pendingID(_ job: UUID, _ offset: Int) -> String { "\(job.uuidString)-\(offset)" }
+    /// Changes the card of file `offset` of `job`, if that job is still the one under way.
+    func updatePending(_ job: UUID, _ offset: Int, _ change: (inout PendingAttachment) -> Void) {
+        guard self.job == job, let index = pending.firstIndex(where: { $0.id == Self.pendingID(job, offset) }) else { return }
+        change(&pending[index])
+    }
     @ObservationIgnored var task: Task<Void, Never>?
     @ObservationIgnored var job: UUID?
     @ObservationIgnored var loadSource: @MainActor (AttachmentSource) async throws -> UploadFile = { try await $0.load() }
@@ -29,6 +50,9 @@ struct UploadActivity: Equatable {
 // into the shell as a drop of them on its terminal would type them, or into the chat's message as their paths. See "File upload
 // extension" in docs/remote-protocol.md.
 extension RemoteModel {
+    /// The cards of files on their way to `chat`.
+    func pendingAttachments(for chat: String) -> [PendingAttachment] { attachments.pending.filter { $0.chat == chat } }
+
     /// The activity of `target`, if it is the one under way (or the one that failed).
     func uploadActivity(for target: UploadTarget) -> UploadActivity? {
         attachments.activity.flatMap { $0.target == target ? $0 : nil }
@@ -48,41 +72,53 @@ extension RemoteModel {
         let desktopID = desktop.id
         let job = UUID()
         attachments.job = job
+        // A chat shows a card for each file at once, before a byte is read; it fills in as the file is read and sent.
+        if case .chat(let chat) = target {
+            attachments.pending = sources.enumerated().map { offset, source in
+                PendingAttachment(id: Attachments.pendingID(job, offset), chat: chat, kind: source.placeholder.kind, name: source.placeholder.name)
+            }
+        }
         let attachments = attachments
         attachments.task = Task { [weak self] in
-            defer { if attachments.job == job { attachments.task = nil; attachments.job = nil } }
+            defer { if attachments.job == job { attachments.task = nil; attachments.job = nil; attachments.pending = [] } }
             do {
                 var uploaded: [UploadedFile] = []
-                var staged: [StagedAttachment] = []
                 for (offset, source) in sources.enumerated() {
                     let file = try await attachments.loadSource(source)
                     try Task.checkCancellation()
                     guard let self, self.selectedDesktopID == desktopID, attachments.job == job else { throw CancellationError() }
                     self.update { $0.phase = .sending; $0.name = file.name; $0.index = offset + 1; $0.sent = 0; $0.total = file.data.count }
+                    attachments.updatePending(job, offset) {
+                        $0.name = file.name; $0.kind = StagedAttachment.kind(mediaType: file.mediaType, name: file.name); $0.size = file.data.count
+                    }
+                    let total = Double(max(1, file.data.count))
                     let sent = try await FileTransfer.send(file, to: target, feature: feature, over: client) { received in
-                        Task { @MainActor in if attachments.job == job, attachments.activity?.index == offset + 1 { attachments.activity?.sent = received } }
+                        Task { @MainActor in
+                            if attachments.job == job, attachments.activity?.index == offset + 1 { attachments.activity?.sent = received }
+                            attachments.updatePending(job, offset) { $0.fraction = min(1, Double(received) / total) }
+                        }
                     }
                     uploaded.append(sent)
-                    if case .chat = target {
-                        let card = StagedAttachment(id: sent.upload, kind: StagedAttachment.kind(mediaType: file.mediaType, name: file.name), name: file.name, size: file.data.count, path: sent.path)
-                        // The card's pictures, from the bytes the Mac has, made off the main thread before the card shows.
-                        let images = self.chatAttachmentImages, data = file.data
-                        let pictured = card.kind == .image ? await Task.detached(priority: .userInitiated) { images.save(card.id, data: data) }.value : false
-                        staged.append(pictured || card.kind == .file ? card : StagedAttachment(id: card.id, kind: .file, name: card.name, size: card.size, path: card.path))
+                    if case .chat(let chat) = target {
+                        let kind = StagedAttachment.kind(mediaType: file.mediaType, name: file.name)
+                        // The card's pictures, from the bytes the Mac has, made off the main thread; then the file's card takes the place
+                        // of its placeholder, so a file the Mac has is a card even if a later one fails or is cancelled.
+                        let images = self.chatAttachmentImages, data = file.data, id = sent.upload
+                        let pictured = kind == .image ? await Task.detached(priority: .userInitiated) { images.save(id, data: data) }.value : false
+                        guard self.selectedDesktopID == desktopID, attachments.job == job else { throw CancellationError() }
+                        self.stageInChat(chat, [StagedAttachment(id: id, kind: pictured ? .image : .file, name: file.name, size: file.data.count, path: sent.path)])
+                        attachments.pending.removeAll { $0.id == Attachments.pendingID(job, offset) }
                     }
                 }
                 // Another Mac chosen meanwhile: what was sent stays in that Mac's inbox until it is swept.
                 try Task.checkCancellation()
                 guard let self, self.selectedDesktopID == desktopID, attachments.job == job else { throw CancellationError() }
-                switch target {
-                case .shell(let shell):
+                if case .shell(let shell) = target {
                     self.update { $0.phase = .pasting }
                     try await FileTransfer.paste(uploaded.map(\.upload), into: shell, over: client)
                     try Task.checkCancellation()
                     guard attachments.job == job, self.selectedDesktopID == desktopID else { throw CancellationError() }
                     self.jumpToLatest()
-                case .chat(let chat):
-                    self.stageInChat(chat, staged)
                 }
                 if attachments.job == job { attachments.activity = nil }
             } catch is CancellationError {
@@ -95,6 +131,7 @@ extension RemoteModel {
 
     func cancelUpload() {
         attachments.job = nil
+        attachments.pending = []
         attachments.task?.cancel()
         attachments.task = nil
         attachments.activity = nil

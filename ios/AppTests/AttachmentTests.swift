@@ -13,6 +13,13 @@ actor UploadTransport: RemoteTransport {
     var calls: [(method: String, params: [String: JSONValue])] = []
     var received: [String: Data] = [:]
     func setOld(_ on: Bool) { old = on }
+    /// The `upload.chunk` call (counted from 1) that waits until `release()`, so a test sees a file half sent.
+    var holdChunk: Int?
+    var chunks = 0
+    var held: CheckedContinuation<Void, Never>?
+    func hold(chunk: Int) { holdChunk = chunk }
+    func isHolding() -> Bool { held != nil }
+    func release() { holdChunk = nil; held?.resume(); held = nil }
     func connect(pairing: Pairing, allowLocalDevelopment: Bool) async throws -> Pairing { connected = true; identity = UploadConnectionIdentity(pairing: pairing); return pairing }
     func disconnect() async { connected = false }
     func isConnected() async -> Bool { connected }
@@ -43,6 +50,8 @@ actor UploadTransport: RemoteTransport {
             received[upload] = Data()
             return .object(["upload": .string(upload), "status": .string("partial"), "received": .number(0)])
         case "upload.chunk":
+            chunks += 1
+            if chunks == holdChunk { await withCheckedContinuation { held = $0 } }
             var base64 = params["data"]!.string!.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
             while base64.count % 4 != 0 { base64 += "=" }
             received[upload, default: Data()].append(Data(base64Encoded: base64)!)
@@ -88,6 +97,12 @@ actor UploadTransport: RemoteTransport {
         let deadline = ContinuousClock.now + .seconds(5)
         while !condition(), ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(5)) }
         XCTAssertTrue(condition(), file: file, line: line)
+    }
+    private func settleAsync(_ condition: () async -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while await !condition(), ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(5)) }
+        let met = await condition()
+        XCTAssertTrue(met, file: file, line: line)
     }
     private func photo() -> Data {
         UIGraphicsImageRenderer(size: CGSize(width: 30, height: 20)).jpegData(withCompressionQuality: 0.9) { context in
@@ -181,6 +196,61 @@ actor UploadTransport: RemoteTransport {
         await settle { !self.exists(self.images.thumbnailURL("bbbbbbbb-0000-4000-8000-000000000000")) }
         XCTAssertTrue(exists(images.thumbnailURL(card.id)), "a staged card keeps its picture")
         await relaunched.disconnect()
+    }
+
+    /// A file's card shows the moment it is picked: a placeholder while it is read, then its name, size and progress while it is sent,
+    /// then its real card (with its thumbnail) once the Mac has it. Send waits meanwhile.
+    func testACardShowsTheMomentAFileIsPickedAndBecomesItsThumbnail() async throws {
+        let (model, transport) = try await connected()
+        let conversation = model.conversation(chat)
+        conversation.draft = "look"
+        var load: CheckedContinuation<UploadFile, any Error>?
+        model.attachments.loadSource = { _ in try await withCheckedThrowingContinuation { load = $0 } }
+        await transport.hold(chunk: 1)
+        model.attach([.camera(Data())], to: .chat(chat))
+        let placeholder = try XCTUnwrap(model.pendingAttachments(for: chat).first, "a card at once, before anything is read")
+        XCTAssertEqual(placeholder.kind, .image)
+        XCTAssertNil(placeholder.size, "preparing")
+        XCTAssertTrue(conversation.attachments.isEmpty)
+        XCTAssertTrue(model.pendingAttachments(for: "another chat").isEmpty, "only in its own chat")
+        await settle { load != nil }
+        load?.resume(returning: UploadFile(name: "beach.jpg", mediaType: "image/jpeg", data: photo()))
+        await settleAsync { await transport.isHolding() }
+        let sending = try XCTUnwrap(model.pendingAttachments(for: chat).first)
+        XCTAssertEqual(sending.name, "beach.jpg")
+        XCTAssertEqual(sending.size, photo().count, "named and sized once read")
+        let busy = await model.sendChatDraft(chat)
+        XCTAssertEqual(busy, .busy, "the message waits for the file")
+        XCTAssertEqual(conversation.draft, "look")
+        await transport.release()
+        await settle { model.attachments.task == nil }
+        XCTAssertTrue(model.pendingAttachments(for: chat).isEmpty, "the placeholder gives way")
+        let card = try XCTUnwrap(conversation.attachments.first)
+        XCTAssertEqual(card.name, "beach.jpg")
+        XCTAssertEqual(card.kind, .image)
+        XCTAssertTrue(exists(images.thumbnailURL(card.id)), "now with its thumbnail")
+        await model.disconnect()
+    }
+    /// Of several files, each becomes its card as soon as the Mac has it; × on one still on its way cancels the rest, and what was sent
+    /// stays a card.
+    func testEachFileIsACardOnceSentAndCancellingDropsOnlyThoseOnTheirWay() async throws {
+        let (model, transport) = try await connected()
+        let conversation = model.conversation(chat)
+        model.attachments.loadSource = { source in
+            if case .camera(let data) = source, data.count == 1 { return UploadFile(name: "first.pdf", mediaType: "application/pdf", data: Data([1])) }
+            return UploadFile(name: "second.txt", mediaType: "text/plain", data: Data([2, 2]))
+        }
+        await transport.hold(chunk: 2)
+        model.attach([.camera(Data([1])), .camera(Data([2, 2]))], to: .chat(chat))
+        XCTAssertEqual(model.pendingAttachments(for: chat).count, 2, "both at once")
+        await settleAsync { await transport.isHolding() }
+        XCTAssertEqual(conversation.attachments.map(\.name), ["first.pdf"], "the first is a card already")
+        XCTAssertEqual(model.pendingAttachments(for: chat).map(\.name), ["second.txt"])
+        model.cancelUpload()
+        XCTAssertTrue(model.pendingAttachments(for: chat).isEmpty)
+        XCTAssertEqual(conversation.attachments.map(\.name), ["first.pdf"], "what the Mac has stays")
+        await transport.release()
+        await model.disconnect()
     }
 
     func testAMacTooOldToTakeFilesSaysSoAndNothingIsSent() async throws {

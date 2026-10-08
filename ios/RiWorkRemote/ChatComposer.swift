@@ -205,13 +205,16 @@ struct ChatComposer: View {
     /// The cards of the files staged for the message (`ChatAttachmentStrip`), and × on one of them.
     var attachmentImages: ChatAttachmentImages?
     var removeAttachment: ((String) -> Void)?
+    /// Files on their way to the Mac, as cards with their progress; × cancels them. Send waits for them.
+    var pending: [PendingAttachment] = []
+    var cancelPending: (() -> Void)?
     var dictation = DictationController.shared
     @State private var focused = false
     @State private var insertion = TextInsertion()
 
-    private var canSend: Bool { connected && !conversation.sending && conversation.hasMessage }
+    private var canSend: Bool { connected && !conversation.sending && pending.isEmpty && conversation.hasMessage }
     private var keyContext: ChatKeyContext {
-        ChatKeyContext(composerIsEmpty: conversation.draft.isEmpty && conversation.attachments.isEmpty, approval: approval, busy: state.isBusy, canSend: connected && !conversation.sending)
+        ChatKeyContext(composerIsEmpty: conversation.draft.isEmpty && conversation.attachments.isEmpty, approval: approval, busy: state.isBusy, canSend: connected && !conversation.sending && pending.isEmpty)
     }
     private var actions: ComposerActions {
         ComposerActions(typed: conversation.hasMessage, busy: state.isBusy, mic: style.mic,
@@ -224,8 +227,9 @@ struct ChatComposer: View {
             // Every button is centred on the field's last line: on the field's middle while it holds one line, and beside the line
             // being typed (at the bottom, as Messages does) once it grows.
             let actions = actions
-            if let attachmentImages, !conversation.attachments.isEmpty {
-                ChatAttachmentStrip(attachments: conversation.attachments, images: attachmentImages, remove: { removeAttachment?($0) })
+            if let attachmentImages, !conversation.attachments.isEmpty || !pending.isEmpty {
+                ChatAttachmentStrip(attachments: conversation.attachments, pending: pending, images: attachmentImages, remove: { removeAttachment?($0) },
+                                    cancelPending: { cancelPending?() })
                     .chatLayoutProbe("attachments")
             }
             HStack(alignment: .composerLine, spacing: 0) {

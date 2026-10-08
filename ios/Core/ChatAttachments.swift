@@ -9,6 +9,10 @@ import UniformTypeIdentifiers
 //
 // The desktop has no way to delete one finished upload (`upload.cancel` leaves a complete one in its inbox): a card removed on the phone
 // is only dropped here, and its file stays in the chat's inbox until the desktop sweeps it (old uploads, a deleted chat's).
+//
+// The desktop keeps a finished upload for a day (`KEEP_SECONDS` in remote/src/upload.rs, from `upload.begin`), and has no way to ask
+// whether one is still there; a draft is kept for a month. A card older than `StagedAttachment.retention` is shown as expired and its
+// path is never sent: the person attaches the file again.
 
 /// One file staged for a chat's next message.
 public struct StagedAttachment: Codable, Sendable, Equatable, Identifiable, Hashable {
@@ -22,9 +26,24 @@ public struct StagedAttachment: Codable, Sendable, Equatable, Identifiable, Hash
     public var size: Int
     /// Where it is on the desktop: what goes into the message.
     public var path: String
-    public init(id: String, kind: Kind, name: String, size: Int, path: String) {
-        self.id = id; self.kind = kind; self.name = name; self.size = size; self.path = path
+    /// When the desktop finished taking it.
+    public var stagedAt: Date
+    public init(id: String, kind: Kind, name: String, size: Int, path: String, stagedAt: Date = .now) {
+        self.id = id; self.kind = kind; self.name = name; self.size = size; self.path = path; self.stagedAt = stagedAt
     }
+    private enum Keys: String, CodingKey { case id, kind, name, size, path, stagedAt }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        id = try c.decode(String.self, forKey: .id); kind = try c.decode(Kind.self, forKey: .kind); name = try c.decode(String.self, forKey: .name)
+        size = try c.decode(Int.self, forKey: .size); path = try c.decode(String.self, forKey: .path)
+        // A card saved without its time is of unknown age: taken for expired rather than sent as a path that may be gone.
+        stagedAt = try c.decodeIfPresent(Date.self, forKey: .stagedAt) ?? .distantPast
+    }
+    /// How long a card's file is taken to be on the desktop: its day (`KEEP_SECONDS`, counted from `upload.begin`, a little before the
+    /// card was made), less an hour.
+    public static let retention: TimeInterval = 23 * 3600
+    /// The desktop has most likely removed the file: the card says so and its path is not sent.
+    public func isExpired(at now: Date = .now) -> Bool { now.timeIntervalSince(stagedAt) >= Self.retention }
     /// An image if its media type (else its name's extension) says it is a picture.
     public static func kind(mediaType: String?, name: String) -> Kind {
         let type = mediaType.flatMap { UTType(mimeType: $0) } ?? UTType(filenameExtension: (name as NSString).pathExtension)
@@ -52,13 +71,15 @@ public struct StagedAttachment: Codable, Sendable, Equatable, Identifiable, Hash
 }
 
 public enum ChatAttachmentMessage {
-    /// The message sent for `text` and the staged files: the text, then each file's path on its own line, as a path put into the
-    /// draft always was.
-    public static func compose(_ text: String, _ attachments: [StagedAttachment]) -> String {
-        guard !attachments.isEmpty else { return text }
+    /// The message sent for `text` and the staged files, byte for byte what the draft held when paths went into it: the text as typed
+    /// (indentation and blank lines kept), a line break unless it ends in one or a space, then each path on its own line, each ending
+    /// in a line break. Expired cards (`StagedAttachment.isExpired`) are left out.
+    public static func compose(_ text: String, _ attachments: [StagedAttachment], now: Date = .now) -> String {
+        let paths = attachments.filter { !$0.isExpired(at: now) }.map(\.path)
+        guard !paths.isEmpty else { return text }
         var message = text
         if !message.isEmpty, !message.hasSuffix("\n"), !message.hasSuffix(" ") { message += "\n" }
-        return message + attachments.map(\.path).joined(separator: "\n")
+        return message + paths.joined(separator: "\n") + "\n"
     }
 }
 
