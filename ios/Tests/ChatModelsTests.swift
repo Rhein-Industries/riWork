@@ -274,7 +274,7 @@ final class ChatModelsTests: XCTestCase {
         XCTAssertEqual(tapped.stop, .model(0), "Fast is not there for this model")
     }
     func testCreationKeyboardSelectsCatalogueRowsAndKeepsCompatibleEffortAndFast() throws {
-        var form = NewTerminalForm(targets: [], kind: .codexChat, kinds: NewTerminalKind.offered(chats: true))
+        var form = NewTerminalForm(targets: [], kind: .chat, kinds: NewTerminalKind.offered(chats: true))
         form.chatModels[.codex] = list
         form.focus = .chatModel
         form.handle(.down)
@@ -311,4 +311,47 @@ final class ChatModelsTests: XCTestCase {
         XCTAssertTrue(claude.first { $0.id == "haiku" }!.efforts.isEmpty)
     }
 
+
+    // MARK: Going on with the other provider
+
+    func testTheOtherProvidersRowsAreItsDefaultThenItsModelsAndEachSendsASwitch() {
+        let opus = ChatModelOption(id: "opus", name: "Opus")
+        let claudeDefault = ChatModelOption(id: "default", name: "Default (recommended)", isDefault: true)
+        let other = ChatProviderSwitch(provider: .claude, models: [claudeDefault, opus, opus])
+        XCTAssertEqual(other.rows.map(\.id), ["default", "opus"], "one default row, one row per model")
+        XCTAssertEqual(other.rows.map(\.title), ["Default", "Opus"])
+        XCTAssertEqual(other.command(for: other.rows[0]), .switchProvider(provider: .claude))
+        XCTAssertEqual(other.command(for: other.rows[1]), .switchProvider(provider: .claude, model: "opus"))
+        XCTAssertEqual(other.command(model: "opus"), .switchProvider(provider: .claude, model: "opus"))
+        XCTAssertNil(other.command(model: "gone"))
+        XCTAssertNil(other.blocked)
+        // Not while a turn runs or waits for the person: the desktop would refuse it.
+        XCTAssertEqual(ChatProviderSwitch(provider: .claude, models: [], transcript: transcript([.state(.running)])).blocked, ChatProviderSwitch.busyReason)
+        XCTAssertEqual(ChatProviderSwitch(provider: .claude, models: [], transcript: transcript([.turnStarted(turnID: "t")])).blocked, ChatProviderSwitch.busyReason)
+        let waiting = transcript([.approvalRequested(ChatApproval(requestID: "r", kind: .command, title: "ls", choices: [.accept]))])
+        XCTAssertNotNil(ChatProviderSwitch(provider: .claude, models: [], transcript: waiting).blocked)
+        XCTAssertNil(ChatProviderSwitch(provider: .claude, models: [], transcript: transcript([.state(.idle)])).blocked)
+        XCTAssertNil(ChatProviderSwitch(provider: .claude, models: [], transcript: transcript([.state(.stopped)])).blocked, "a stopped chat can go on with either")
+        // It is not a configure.
+        XCTAssertNil(choices().configuration(for: .provider("opus")))
+    }
+    func testTheKeyboardReachesTheOtherProvidersRowsAfterFastAndOnlyWhenTheyCanBeChosen() {
+        var withSwitch = choices(model: "gpt-5.5")
+        withSwitch.switching = ChatProviderSwitch(provider: .claude, models: [ChatModelOption(id: "opus", name: "Opus")])
+        var cursor = ChatModelCursor(for: withSwitch)
+        XCTAssertEqual(cursor.stops(in: withSwitch), [.model(0), .model(1), .model(2), .effort, .fast, .other(0), .other(1)])
+        cursor.place(.other(1), in: withSwitch)
+        XCTAssertEqual(cursor.handle(.return, in: withSwitch), .provider("opus"))
+        cursor.place(.other(0), in: withSwitch)
+        XCTAssertEqual(cursor.handle(.space, in: withSwitch), .provider(nil))
+        // Applying a choice keeps the other provider's rows.
+        XCTAssertEqual(withSwitch.applying(.init(model: "bare")).switching, withSwitch.switching)
+        // While they cannot be chosen, the ring does not go there.
+        var blocked = withSwitch
+        blocked.switching = ChatProviderSwitch(provider: .claude, models: [ChatModelOption(id: "opus", name: "Opus")], blocked: ChatProviderSwitch.busyReason)
+        XCTAssertEqual(cursor.stops(in: blocked), [.model(0), .model(1), .model(2), .effort, .fast])
+        cursor.reconcile(with: blocked)
+        XCTAssertEqual(cursor.stop, .model(0), "a ring on a row that went away goes back to the models")
+        XCTAssertEqual(ChatModelCursor(for: choices()).stops(in: choices()).filter { if case .other = $0 { true } else { false } }, [], "an older desktop: none")
+    }
 }
