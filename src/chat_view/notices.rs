@@ -237,7 +237,17 @@ fn ranked_provider_banners(
                 Some(kind) => format!("kind:{kind}"),
                 None => format!("text:{text}"),
             };
-            newest.insert(key, at);
+            // A kinded notice keeps its key's banner (its usage action, its stickiness)
+            // over a kind-less copy of its text.
+            let kinded = |at: usize| {
+                matches!(
+                    &transcript.items[at].body,
+                    ItemBody::Notice { kind: Some(_), .. }
+                )
+            };
+            if kind.is_some() || newest.get(&key).is_none_or(|&was| !kinded(was)) {
+                newest.insert(key, at);
+            }
         }
     }
     let mut shown: Vec<usize> = newest
@@ -398,8 +408,9 @@ mod tests {
         ]);
         let shown = provider_banners(&t, &HashSet::new(), 0);
         let ids: Vec<&str> = shown.iter().map(|b| b.id.as_str()).collect();
-        // `close` is also the text of a `rate_limit:seven_day` notice: one banner, the newest.
-        assert_eq!(ids, ["old3", "r2", "x2"]);
+        // `close` is also the text of a `rate_limit:seven_day` notice: one banner, the
+        // kinded one, which keeps the usage action.
+        assert_eq!(ids, ["r2", "l2", "x2"]);
     }
 
     #[test]

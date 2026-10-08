@@ -99,7 +99,8 @@ impl ChatView {
             (false, None) => button(id, "×", None, look).accessibility_label(name),
             (false, Some(line)) => button(id, "×", None, look)
                 .accessibility_label(name)
-                .border_0()
+                // The edge only shows the keyboard focus.
+                .border_color(gpui::transparent_black())
                 .bg(gpui::transparent_black())
                 .px(ui_text::space(4.0))
                 .py(px(0.0))
