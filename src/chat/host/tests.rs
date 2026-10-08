@@ -850,9 +850,9 @@ fn a_chat_that_died_in_the_middle_of_a_turn_is_made_tidy_when_the_next_host_load
     fs::create_dir_all(&work).unwrap();
     let id = Uuid::new_v4().to_string();
     let info = ChatInfo {
-            parent_id: None,
-            user_title: None,
-            first_user_message: None,
+        parent_id: None,
+        user_title: None,
+        first_user_message: None,
 
         id: id.clone(),
         provider: Provider::Claude,

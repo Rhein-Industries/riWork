@@ -32,7 +32,6 @@ mod project_recency;
 mod project_settings;
 mod project_sort;
 mod project_tabs;
-mod tab_close_dialog;
 mod recency_file;
 mod remote_cache;
 mod remote_cli;
@@ -55,6 +54,7 @@ mod sgr;
 mod status_bar;
 mod store;
 mod symbols;
+mod tab_close_dialog;
 mod terminal_drop;
 mod terminal_lifecycle;
 mod terminal_links;
@@ -88,8 +88,8 @@ use gpui::Focusable;
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, Div, DragMoveEvent, Entity, FocusHandle,
     Global, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton, Pixels, Point,
-    Render, StatefulInteractiveElement, TitlebarOptions, Window, WindowBounds,
-    WindowHandle, WindowOptions, actions, canvas, div, img, point, prelude::*, px, rgb, size,
+    Render, StatefulInteractiveElement, TitlebarOptions, Window, WindowBounds, WindowHandle,
+    WindowOptions, actions, canvas, div, img, point, prelude::*, px, rgb, size,
 };
 use gpui_libghostty::{TerminalConfiguration, TerminalOptions, TerminalTheme};
 use gpui_platform::application;
@@ -4745,17 +4745,21 @@ impl Workspace {
             (tree.strip_for(desktop_id)?, colors.gold)
         };
         let reconnect = tab_id.filter(|_| ended).map(|tab_id| {
-            behavior_controls::action(("remote-reconnect", tab_id), "Reconnect remote session", colors)
-                .px(ui_text::space(8.0))
-                .py(ui_text::space(2.0))
-                .border_1()
-                .border_color(rgb(colors.divider))
-                .text_color(rgb(colors.text))
-                .hover(|style| style.bg(rgb(colors.divider)))
-                .child(ui_text::cased("Reconnect"))
-                .on_click(cx.listener(move |workspace, _, window, cx| {
-                    workspace.reconnect_remote_tab(pane_id, tab_id, window, cx);
-                }))
+            behavior_controls::action(
+                ("remote-reconnect", tab_id),
+                "Reconnect remote session",
+                colors,
+            )
+            .px(ui_text::space(8.0))
+            .py(ui_text::space(2.0))
+            .border_1()
+            .border_color(rgb(colors.divider))
+            .text_color(rgb(colors.text))
+            .hover(|style| style.bg(rgb(colors.divider)))
+            .child(ui_text::cased("Reconnect"))
+            .on_click(cx.listener(move |workspace, _, window, cx| {
+                workspace.reconnect_remote_tab(pane_id, tab_id, window, cx);
+            }))
         });
         Some(
             div()
@@ -5671,40 +5675,164 @@ impl Workspace {
     /// Membership strip always comes from the desktop store, even before a local view is adopted.
     fn render_shared_strip(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme::palette(cx);
-        let visible = self.shared_tab_entries().iter().filter(|e| !e.hidden && !(e.kind == project_tabs::Kind::Shell && e.status == project_tabs::Status::Stopped));
-        let selected = self.panes.get(&self.active_pane).and_then(|p| p.tabs.get(p.active)).and_then(session_tab_key);
-        div().flex().flex_col().bg(rgb(colors.panel)).border_b_1().border_color(rgb(colors.divider))
-            .child(div().id("shared-project-tabs").flex().items_center().min_h(ui_text::space(32.0)).overflow_x_scroll()
-                .children(visible.map(|entry| {
-                    let key = entry.key.clone(); let close_key = key.clone(); let pin_key = key.clone();
-                    let active = selected.as_deref() == Some(key.as_str());
-                    let label = format!("{}{}", if entry.pinned { "◆ " } else { "" }, entry.title);
-                    div().flex().items_center().bg(rgb(if active { colors.panel_active } else { colors.panel }))
-                        .child(behavior_controls::button_content(gpui::SharedString::from(format!("shared-tab-{key}")), label.clone(), div().child(label))
-                            .p(ui_text::space(8.0))
-                            .on_click(cx.listener(move |workspace, _, window, cx| {
-                                if let Err(error) = workspace.open_child_tab(&key, window, cx) { workspace.notice = Some(error); cx.notify(); }
+        let visible = self.shared_tab_entries().iter().filter(|e| {
+            !e.hidden
+                && !(e.kind == project_tabs::Kind::Shell
+                    && e.status == project_tabs::Status::Stopped)
+        });
+        let selected = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|p| p.tabs.get(p.active))
+            .and_then(session_tab_key);
+        div()
+            .flex()
+            .flex_col()
+            .bg(rgb(colors.panel))
+            .border_b_1()
+            .border_color(rgb(colors.divider))
+            .child(
+                div()
+                    .id("shared-project-tabs")
+                    .flex()
+                    .items_center()
+                    .pl(px(80.0))
+                    .min_h(ui_text::space(32.0))
+                    .overflow_x_scroll()
+                    .children(visible.map(|entry| {
+                        let key = entry.key.clone();
+                        let close_key = key.clone();
+                        let pin_key = key.clone();
+                        let active = selected.as_deref() == Some(key.as_str());
+                        let label =
+                            format!("{}{}", if entry.pinned { "◆ " } else { "" }, entry.title);
+                        div()
+                            .flex()
+                            .items_center()
+                            .bg(rgb(if active {
+                                colors.panel_active
+                            } else {
+                                colors.panel
                             }))
-                            .on_mouse_down(MouseButton::Right, cx.listener(move |workspace, _, window, cx| {
-                                let pinned = workspace.shared_tab_entries().iter().find(|e| e.key == pin_key).is_some_and(|e| e.pinned);
-                                let update = if pinned { project_tabs::Update::Unpin { key: pin_key.clone() } } else { project_tabs::Update::Pin { key: pin_key.clone() } };
-                                if let Err(error) = workspace.change_shared_tab(&update, window, cx) { workspace.notice = Some(error); }
-                                cx.notify();
-                            })))
-                        .children((!entry.pinned).then(|| behavior_controls::button_content(gpui::SharedString::from(format!("shared-tab-close-{close_key}")), "Close tab", div().child("×"))
-                            .p(ui_text::space(6.0)).on_click(cx.listener(move |workspace, _, window, cx| {
-                                let local = workspace.panes.iter().find_map(|(pane, p)| p.tabs.iter().find(|t| session_tab_key(t).as_deref() == Some(&close_key)).map(|t| (*pane, t.id)));
-                                workspace.request_close_session(close_key.clone(), local, window, cx);
-                            }))))
-                }))
-                .child(behavior_controls::button_content("shared-workers", "Open a worker/shell", div().child("Open a worker/shell"))
-                    .p(ui_text::space(8.0)).on_click(cx.listener(|workspace, _, _, cx| { workspace.shared_worker_picker = !workspace.shared_worker_picker; cx.notify(); }))))
-            .children(self.shared_worker_picker.then(|| div().flex().flex_wrap().gap(ui_text::space(8.0)).p(ui_text::space(8.0))
-                .children(self.shared_tab_entries().iter().filter(|e| e.hidden && !(e.kind == project_tabs::Kind::Shell && e.status == project_tabs::Status::Stopped)).map(|entry| {
-                    let key = entry.key.clone(); let label = format!("{} · {:?}", entry.title, entry.status);
-                    behavior_controls::button_content(gpui::SharedString::from(format!("open-worker-{key}")), label.clone(), div().child(label)).p(ui_text::space(6.0))
-                        .on_click(cx.listener(move |workspace, _, window, cx| { workspace.shared_worker_picker = false; if let Err(error) = workspace.open_child_tab(&key, window, cx) { workspace.notice = Some(error); } cx.notify(); }))
-                }))))
+                            .child(
+                                behavior_controls::button_content(
+                                    gpui::SharedString::from(format!("shared-tab-{key}")),
+                                    label.clone(),
+                                    div().child(label),
+                                )
+                                .p(ui_text::space(8.0))
+                                .on_click(cx.listener(move |workspace, _, window, cx| {
+                                    if let Err(error) = workspace.open_child_tab(&key, window, cx) {
+                                        workspace.notice = Some(error);
+                                        cx.notify();
+                                    }
+                                }))
+                                .on_mouse_down(
+                                    MouseButton::Right,
+                                    cx.listener(move |workspace, _, window, cx| {
+                                        let pinned = workspace
+                                            .shared_tab_entries()
+                                            .iter()
+                                            .find(|e| e.key == pin_key)
+                                            .is_some_and(|e| e.pinned);
+                                        let update = if pinned {
+                                            project_tabs::Update::Unpin {
+                                                key: pin_key.clone(),
+                                            }
+                                        } else {
+                                            project_tabs::Update::Pin {
+                                                key: pin_key.clone(),
+                                            }
+                                        };
+                                        if let Err(error) =
+                                            workspace.change_shared_tab(&update, window, cx)
+                                        {
+                                            workspace.notice = Some(error);
+                                        }
+                                        cx.notify();
+                                    }),
+                                ),
+                            )
+                            .children((!entry.pinned).then(|| {
+                                behavior_controls::button_content(
+                                    gpui::SharedString::from(format!(
+                                        "shared-tab-close-{close_key}"
+                                    )),
+                                    "Close tab",
+                                    div().child("×"),
+                                )
+                                .p(ui_text::space(6.0))
+                                .on_click(cx.listener(
+                                    move |workspace, _, window, cx| {
+                                        let local = workspace.panes.iter().find_map(|(pane, p)| {
+                                            p.tabs
+                                                .iter()
+                                                .find(|t| {
+                                                    session_tab_key(t).as_deref()
+                                                        == Some(&close_key)
+                                                })
+                                                .map(|t| (*pane, t.id))
+                                        });
+                                        workspace.request_close_session(
+                                            close_key.clone(),
+                                            local,
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                ))
+                            }))
+                    }))
+                    .child(
+                        behavior_controls::button_content(
+                            "shared-workers",
+                            "Open a worker/shell",
+                            div().child("Open a worker/shell"),
+                        )
+                        .p(ui_text::space(8.0))
+                        .on_click(cx.listener(|workspace, _, _, cx| {
+                            workspace.shared_worker_picker = !workspace.shared_worker_picker;
+                            cx.notify();
+                        })),
+                    ),
+            )
+            .children(self.shared_worker_picker.then(|| {
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(ui_text::space(8.0))
+                    .p(ui_text::space(8.0))
+                    .children(
+                        self.shared_tab_entries()
+                            .iter()
+                            .filter(|e| {
+                                e.hidden
+                                    && !(e.kind == project_tabs::Kind::Shell
+                                        && e.status == project_tabs::Status::Stopped)
+                            })
+                            .map(|entry| {
+                                let key = entry.key.clone();
+                                let label = format!("{} · {:?}", entry.title, entry.status);
+                                behavior_controls::button_content(
+                                    gpui::SharedString::from(format!("open-worker-{key}")),
+                                    label.clone(),
+                                    div().child(label),
+                                )
+                                .p(ui_text::space(6.0))
+                                .on_click(cx.listener(
+                                    move |workspace, _, window, cx| {
+                                        workspace.shared_worker_picker = false;
+                                        if let Err(error) =
+                                            workspace.open_child_tab(&key, window, cx)
+                                        {
+                                            workspace.notice = Some(error);
+                                        }
+                                        cx.notify();
+                                    },
+                                ))
+                            }),
+                    )
+            }))
             .into_any_element()
     }
 
@@ -5927,7 +6055,6 @@ impl Workspace {
                 !e.hidden
                     && !(e.kind == project_tabs::Kind::Shell
                         && e.status == project_tabs::Status::Stopped)
-
             })
             .map(|e| (e.key.clone(), e))
             .collect::<HashMap<_, _>>();
@@ -5938,10 +6065,7 @@ impl Workspace {
             pane.tabs.retain(|tab| {
                 let keep = session_tab_key(tab).is_none_or(|key| {
                     if let Some(foreign) = self.foreign_tabs.get(&key) {
-                        foreign.as_ref().is_some_and(|e| {
-                            !e.hidden
-
-                        })
+                        foreign.as_ref().is_some_and(|e| !e.hidden)
                     } else {
                         !self.shared_tab_keys.contains(&key) || visible.contains_key(&key)
                     }
@@ -5979,11 +6103,10 @@ impl Workspace {
                 .flat_map(|p| p.tabs.iter().filter_map(session_tab_key))
                 .collect::<HashSet<_>>();
             let mut budget = 16;
-            for entry in entries.iter().filter(|e| {
-                !e.hidden
-
-                    && !shown.contains(&e.key)
-            }) {
+            for entry in entries
+                .iter()
+                .filter(|e| !e.hidden && !shown.contains(&e.key))
+            {
                 if budget == 0 {
                     break;
                 }
@@ -6005,8 +6128,9 @@ impl Workspace {
                             continue;
                         }
                         let config = self.chat_config();
-                        let view =
-                            cx.new(|cx| ChatView::open_deferred(id.into(), Some(info), config, window, cx));
+                        let view = cx.new(|cx| {
+                            ChatView::open_deferred(id.into(), Some(info), config, window, cx)
+                        });
                         self.chat_tab(id.into(), view, window, cx)
                     }
                     project_tabs::Kind::Shell => {
@@ -6981,7 +7105,9 @@ impl Workspace {
             return;
         }
         self.dismiss_project_sort_menus(window, cx);
-        if self.panel_menu.is_none() { self.menu_return.capture(window, cx); }
+        if self.panel_menu.is_none() {
+            self.menu_return.capture(window, cx);
+        }
         self.panel_menu = None;
         self.layout_menu_open = true;
         // Terminals are native views drawn above everything of ours; the menu is drawn over
@@ -6999,7 +7125,9 @@ impl Workspace {
         }
         self.layout_menu_open = false;
         self.finish_tab_drag(cx);
-        if !self.menu_return.restore_within(&self.focus, window, cx) { self.focus_active(window, cx); }
+        if !self.menu_return.restore_within(&self.focus, window, cx) {
+            self.focus_active(window, cx);
+        }
         cx.notify();
     }
 
@@ -7016,48 +7144,117 @@ impl Workspace {
         {
             return;
         }
-        let key = self.panes.get(&pane_id).and_then(|p| p.tabs.iter().find(|t| t.id == tab_id)).and_then(session_tab_key);
-        if !self.is_remote() && let Some(key) = key {
+        let key = self
+            .panes
+            .get(&pane_id)
+            .and_then(|p| p.tabs.iter().find(|t| t.id == tab_id))
+            .and_then(session_tab_key);
+        if !self.is_remote()
+            && let Some(key) = key
+        {
             self.request_close_session(key, Some((pane_id, tab_id)), window, cx);
-        } else { self.remove_tab(pane_id, tab_id, window, cx); }
+        } else {
+            self.remove_tab(pane_id, tab_id, window, cx);
+        }
     }
 
-    fn request_close_session(&mut self, key: String, local: Option<(PaneId, TabId)>, window: &mut Window, cx: &mut Context<Self>) {
-        if self.modal_open() { return; }
-        let entry = self.shared_tab_entries().iter().find(|e| e.key == key).cloned()
+    fn request_close_session(
+        &mut self,
+        key: String,
+        local: Option<(PaneId, TabId)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.modal_open() {
+            return;
+        }
+        let entry = self
+            .shared_tab_entries()
+            .iter()
+            .find(|e| e.key == key)
+            .cloned()
             .or_else(|| self.foreign_tabs.get(&key).cloned().flatten());
-        if entry.as_ref().is_some_and(|e| e.pinned) { self.notice = Some("Unpin the tab before closing it".into()); cx.notify(); return; }
-        let choice = if entry.as_ref().is_some_and(|e| e.worker || e.parent.is_some()) { settings::TabCloseBehavior::Detach } else { self.settings.tab_close_behavior };
-        if choice != settings::TabCloseBehavior::Ask { self.finish_close_session(key, local, choice, window, cx); return; }
+        if entry.as_ref().is_some_and(|e| e.pinned) {
+            self.notice = Some("Unpin the tab before closing it".into());
+            cx.notify();
+            return;
+        }
+        let choice = if entry
+            .as_ref()
+            .is_some_and(|e| e.worker || e.parent.is_some())
+        {
+            settings::TabCloseBehavior::Detach
+        } else {
+            self.settings.tab_close_behavior
+        };
+        if choice != settings::TabCloseBehavior::Ask {
+            self.finish_close_session(key, local, choice, window, cx);
+            return;
+        }
         let title = entry.map(|e| e.title).unwrap_or_else(|| "session".into());
         let dialog = cx.new(|cx| tab_close_dialog::TabCloseDialog::new(title, cx));
         dialog.update(cx, |dialog, cx| dialog.focus(window, cx));
         self.tab_close_target = Some((key, local));
         cx.subscribe_in(&dialog, window, |workspace, _, choice, window, cx| {
             workspace.tab_close_dialog = None;
-            if let Some((key, local)) = workspace.tab_close_target.take() && let Some(choice) = choice {
+            if let Some((key, local)) = workspace.tab_close_target.take()
+                && let Some(choice) = choice
+            {
                 workspace.finish_close_session(key, local, *choice, window, cx);
             }
-            workspace.focus_active(window, cx); cx.notify();
-        }).detach();
-        self.tab_close_dialog = Some(dialog); cx.notify();
+            workspace.focus_active(window, cx);
+            cx.notify();
+        })
+        .detach();
+        self.tab_close_dialog = Some(dialog);
+        cx.notify();
     }
 
-    fn finish_close_session(&mut self, key: String, local: Option<(PaneId, TabId)>, choice: settings::TabCloseBehavior, window: &mut Window, cx: &mut Context<Self>) {
-        if let Err(error) = self.hide_session_tab(&key) { self.notice = Some(error); cx.notify(); return; }
-        if let Some((pane, tab)) = local { self.remove_tab(pane, tab, window, cx); }
+    fn finish_close_session(
+        &mut self,
+        key: String,
+        local: Option<(PaneId, TabId)>,
+        choice: settings::TabCloseBehavior,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = self.hide_session_tab(&key) {
+            self.notice = Some(error);
+            cx.notify();
+            return;
+        }
+        if let Some((pane, tab)) = local {
+            self.remove_tab(pane, tab, window, cx);
+        }
         self.apply_shared_tabs(window, cx);
         if choice == settings::TabCloseBehavior::Exit {
             let sessions = self.sessions.clone();
             let work = cx.background_executor().spawn(async move {
                 let (kind, id) = key.split_once(':').ok_or("invalid session key")?;
-                if kind == "shell" { sessions.close(id) } else {
+                if kind == "shell" {
+                    sessions.close(id)
+                } else {
                     let socket = chat::client::socket_path(sessions.state_home());
-                    if !socket.exists() { return Ok(()); }
-                    chat::client::Client::connect(&socket)?.command(id, chat::model::ChatCommand::Stop).map(|_| ())
+                    if !socket.exists() {
+                        return Ok(());
+                    }
+                    chat::client::Client::connect(&socket)?
+                        .command(id, chat::model::ChatCommand::Stop)
+                        .map(|_| ())
                 }
             });
-            cx.spawn_in(window, async move |this, cx| { let result = work.await; let _ = this.update_in(cx, |workspace, _, cx| { if let Err(error) = result { workspace.notice = Some(error); } workspace.session_refresh_generation = workspace.session_refresh_generation.wrapping_add(1); cx.notify(); }); }).detach();
+            cx.spawn_in(window, async move |this, cx| {
+                let result = work.await;
+                let _ = this.update_in(cx, |workspace, _, cx| {
+                    if let Err(error) = result {
+                        workspace.notice = Some(error);
+                    }
+                    workspace.session_refresh_generation =
+                        workspace.session_refresh_generation.wrapping_add(1);
+                    cx.notify();
+                });
+            })
+            .detach();
         }
         cx.notify();
     }
@@ -7292,7 +7489,8 @@ impl Workspace {
             .unwrap_or_else(|| self.cwd.clone());
         let request = new_chat_request(provider, unrestricted, &self.project_id, worktree_id, cwd);
         let config = self.chat_config();
-        let view = cx.new(|cx| ChatView::create(request, config, self.chat_tabs.clone(), window, cx));
+        let view =
+            cx.new(|cx| ChatView::create(request, config, self.chat_tabs.clone(), window, cx));
         let tab = self.chat_tab(String::new(), view, window, cx);
         if let Err(error) = self.place_new_tab(self.new_tab_pane(), tab, window, cx) {
             self.notice = Some(error);
@@ -7558,7 +7756,9 @@ impl Workspace {
 
     fn toggle_panel_menu(&mut self, pane_id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
         self.dismiss_project_sort_menus(window, cx);
-        if self.panel_menu.is_none() && !self.layout_menu_open { self.menu_return.capture(window, cx); }
+        if self.panel_menu.is_none() && !self.layout_menu_open {
+            self.menu_return.capture(window, cx);
+        }
         self.layout_menu_open = false;
         self.active_pane = pane_id;
         self.panel_menu = if self.panel_menu == Some(pane_id) {
@@ -7571,7 +7771,9 @@ impl Workspace {
             self.menu_focus.focus(window, cx);
         } else {
             self.finish_tab_drag(cx);
-            if !self.menu_return.restore_within(&self.focus, window, cx) { self.focus_active(window, cx); }
+            if !self.menu_return.restore_within(&self.focus, window, cx) {
+                self.focus_active(window, cx);
+            }
         }
         cx.notify();
     }
@@ -8297,7 +8499,11 @@ impl Workspace {
             for (index, tab) in pane.tabs.iter().enumerate() {
                 if matches!(tab.content, TabContent::Panel(PanelKind::Projects))
                     && terminal_lifecycle::is_shown(
-                        index, pane.active, *pane_id, self.active_pane, self.focus_mode,
+                        index,
+                        pane.active,
+                        *pane_id,
+                        self.active_pane,
+                        self.focus_mode,
                     )
                 {
                     visible.insert(tab.id);
@@ -8563,7 +8769,9 @@ impl Workspace {
         if event.keystroke.key == "escape" && self.panel_menu.is_some() {
             self.panel_menu = None;
             self.finish_tab_drag(cx);
-            if !self.menu_return.restore_within(&self.focus, window, cx) { self.focus_active(window, cx); }
+            if !self.menu_return.restore_within(&self.focus, window, cx) {
+                self.focus_active(window, cx);
+            }
             cx.stop_propagation();
             cx.notify();
             return;
@@ -9128,43 +9336,50 @@ impl Workspace {
                         }
                     })
                     .children(close_slot.then(|| {
-                        behavior_controls::action(("close-tab", tab_id), format!("Close {display_title}"), colors)
-                            .size(ui_text::space(18.0))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(3.0))
-                            .hover(move |style| {
-                                let style = style.bg(rgb(colors.divider));
-                                if native {
-                                    style.text_color(rgb(colors.text))
-                                } else {
-                                    style
-                                }
+                        behavior_controls::action(
+                            ("close-tab", tab_id),
+                            format!("Close {display_title}"),
+                            colors,
+                        )
+                        .size(ui_text::space(18.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(3.0))
+                        .hover(move |style| {
+                            let style = style.bg(rgb(colors.divider));
+                            if native {
+                                style.text_color(rgb(colors.text))
+                            } else {
+                                style
+                            }
+                        })
+                        // Native's close mark is a small cross in a round hover, muted
+                        // until the pointer is on it.
+                        .map(|close| {
+                            controls::native(close, |close| {
+                                close
+                                    .size(ui_text::space(NATIVE_TAB_CLOSE))
+                                    .rounded_full()
+                                    .text_color(rgb(colors.muted))
+                                    .when(!active, |close| {
+                                        behavior_controls::tab_close_reveal(close, TAB_GROUP)
+                                    })
                             })
-                            // Native's close mark is a small cross in a round hover, muted
-                            // until the pointer is on it.
-                            .map(|close| {
-                                controls::native(close, |close| {
-                                    close
-                                        .size(ui_text::space(NATIVE_TAB_CLOSE))
-                                        .rounded_full()
-                                        .text_color(rgb(colors.muted))
-                                        .when(!active, |close| {
-                                            behavior_controls::tab_close_reveal(close, TAB_GROUP)
-                                        })
-                                })
-                            })
-                            .child(icons::text_icon(Icon::Close, 10.0, colors.muted))
-                            .child(tooltip::anchor("Close tab · ⌘W", Look::Pane))
-                            .on_click(cx.listener(move |workspace, _, window, cx| {
-                                cx.stop_propagation();
-                                workspace.close_tab_by_user(pane_id, tab_id, window, cx);
-                            }))
-                            .map(|close| behavior_controls::tab_close_boundary(
-                                ("close-tab-boundary", tab_id), close,
-                            ))
+                        })
+                        .child(icons::text_icon(Icon::Close, 10.0, colors.muted))
+                        .child(tooltip::anchor("Close tab · ⌘W", Look::Pane))
+                        .on_click(cx.listener(move |workspace, _, window, cx| {
+                            cx.stop_propagation();
+                            workspace.close_tab_by_user(pane_id, tab_id, window, cx);
+                        }))
+                        .map(|close| {
+                            behavior_controls::tab_close_boundary(
+                                ("close-tab-boundary", tab_id),
+                                close,
+                            )
+                        })
                     }))
                     .on_click(cx.listener(move |workspace, _, window, cx| {
                         workspace.select_tab(pane_id, tab_id, window, cx)
@@ -9504,8 +9719,7 @@ impl Workspace {
                     project_order: self.settings.project_order,
                     project_last_edits: &self.project_last_edits,
                     project_sort_menu_open: self.project_sort_menu_open,
-                    project_sort_ui: active_tab
-                        .and_then(|tab| self.project_sort_uis.get(&tab.id)),
+                    project_sort_ui: active_tab.and_then(|tab| self.project_sort_uis.get(&tab.id)),
                 },
                 Self::panel_action,
                 window,
@@ -9639,15 +9853,20 @@ impl Workspace {
                     .child(ui_text::cased("Orchestrator skill update available"))
                     .child(div().flex_1())
                     .child(
-                        behavior_controls::action(("load-orchestrator-skill", pane_id), "Load orchestrator skill", colors)
-                            // The colorful themes call it out; Native's link is the primary color.
-                            .text_color(rgb(if ui_text::is_native() {
-                                colors.cyan
-                            } else {
-                                colors.gold
-                            }))
-                            .child(ui_text::cased("Load skill"))
-                            .on_click(cx.listener(move |workspace, _, _, cx| {
+                        behavior_controls::action(
+                            ("load-orchestrator-skill", pane_id),
+                            "Load orchestrator skill",
+                            colors,
+                        )
+                        // The colorful themes call it out; Native's link is the primary color.
+                        .text_color(rgb(if ui_text::is_native() {
+                            colors.cyan
+                        } else {
+                            colors.gold
+                        }))
+                        .child(ui_text::cased("Load skill"))
+                        .on_click(cx.listener(
+                            move |workspace, _, _, cx| {
                                 match &upgrade {
                                     SkillUpgrade::Terminal(shell_id) => {
                                         match workspace.sessions.load_orchestrator_skill(shell_id) {
@@ -9665,41 +9884,52 @@ impl Workspace {
                                     }
                                 }
                                 cx.notify();
-                            })),
+                            },
+                        )),
                     )
             }))
             .child(body);
         container
             .children(
                 (!self.focus_mode && self.panel_menu == Some(pane_id)).then(|| {
-                    let menu = behavior_controls::focus_scope(div()
-                        .id(("view-menu", pane_id))
-                        .role(gpui::Role::Menu)
-                        .aria_label("Pane menu")
-                        .absolute()
-                        .top(ui_text::space(PANE_HEADER_HEIGHT) + px(2.0))
-                        .right(px(6.0))
-                        .w(px(
-                            ui_text::space_f32(248.0).min((pane_width - 12.0).max(0.0))
-                        ))
-                        .max_h(gpui::relative(0.9))
-                        .overflow_y_scroll()
-                        .bg(rgb(colors.panel_active))
-                        .border_1()
-                        .border_color(rgb(colors.magenta))
-                        .p(ui_text::space(3.0))
-                        .map(|menu| {
-                            controls::native(menu, |menu| {
-                                controls::menu(menu, colors)
-                                    .top(ui_text::space(PANE_HEADER_HEIGHT) + px(4.0))
+                    let menu = behavior_controls::focus_scope(
+                        div()
+                            .id(("view-menu", pane_id))
+                            .role(gpui::Role::Menu)
+                            .aria_label("Pane menu")
+                            .absolute()
+                            .top(ui_text::space(PANE_HEADER_HEIGHT) + px(2.0))
+                            .right(px(6.0))
+                            .w(px(
+                                ui_text::space_f32(248.0).min((pane_width - 12.0).max(0.0))
+                            ))
+                            .max_h(gpui::relative(0.9))
+                            .overflow_y_scroll()
+                            .bg(rgb(colors.panel_active))
+                            .border_1()
+                            .border_color(rgb(colors.magenta))
+                            .p(ui_text::space(3.0))
+                            .map(|menu| {
+                                controls::native(menu, |menu| {
+                                    controls::menu(menu, colors)
+                                        .top(ui_text::space(PANE_HEADER_HEIGHT) + px(4.0))
+                                })
                             })
-                        })
-                        .on_mouse_down_out(cx.listener(|workspace, _, window, cx| {
-                            workspace.panel_menu = None;
-                            workspace.finish_tab_drag(cx);
-                            if !workspace.menu_return.restore_within(&workspace.focus, window, cx) { workspace.focus_active(window, cx); }
-                            cx.notify();
-                        })), ("pane-menu-scope", pane_id), &self.menu_focus);
+                            .on_mouse_down_out(cx.listener(|workspace, _, window, cx| {
+                                workspace.panel_menu = None;
+                                workspace.finish_tab_drag(cx);
+                                if !workspace.menu_return.restore_within(
+                                    &workspace.focus,
+                                    window,
+                                    cx,
+                                ) {
+                                    workspace.focus_active(window, cx);
+                                }
+                                cx.notify();
+                            })),
+                        ("pane-menu-scope", pane_id),
+                        &self.menu_focus,
+                    );
                     menu.child(pane_menu_heading("New tab", true, colors))
                         .children(
                             [
@@ -9971,22 +10201,26 @@ impl Workspace {
                 let name = self
                     .project_display_name(cx)
                     .unwrap_or_else(|| "Project unavailable".to_owned());
-                behavior_controls::action("status-current-project", format!("Project {name}"), colors)
-                    .max_w(ui_text::space(240.0))
-                    .min_w_0()
-                    .text_ellipsis()
-                    .overflow_hidden()
-                    .text_color(rgb(colors.cyan))
-                    .child(name)
-                    .on_click(cx.listener(|workspace, _, window, cx| {
-                        workspace.open_panel(
-                            PanelKind::ProjectSettings,
-                            workspace.active_pane,
-                            window,
-                            cx,
-                        );
-                    }))
-                    .into_any_element()
+                behavior_controls::action(
+                    "status-current-project",
+                    format!("Project {name}"),
+                    colors,
+                )
+                .max_w(ui_text::space(240.0))
+                .min_w_0()
+                .text_ellipsis()
+                .overflow_hidden()
+                .text_color(rgb(colors.cyan))
+                .child(name)
+                .on_click(cx.listener(|workspace, _, window, cx| {
+                    workspace.open_panel(
+                        PanelKind::ProjectSettings,
+                        workspace.active_pane,
+                        window,
+                        cx,
+                    );
+                }))
+                .into_any_element()
             }
             StatusItemKind::Worktree => {
                 let branch = match self.remote_project() {
@@ -10007,22 +10241,21 @@ impl Workspace {
                         .map(|worktree| worktree.branch.clone()),
                 }
                 .unwrap_or_else(|| "No worktree".to_owned());
-                behavior_controls::action("status-current-worktree", format!("Worktree {branch}"), colors)
-                    .max_w(ui_text::space(220.0))
-                    .min_w_0()
-                    .font_family(ui_text::mono_family())
-                    .text_ellipsis()
-                    .overflow_hidden()
-                    .child(branch)
-                    .on_click(cx.listener(|workspace, _, window, cx| {
-                        workspace.open_panel(
-                            PanelKind::Worktrees,
-                            workspace.active_pane,
-                            window,
-                            cx,
-                        );
-                    }))
-                    .into_any_element()
+                behavior_controls::action(
+                    "status-current-worktree",
+                    format!("Worktree {branch}"),
+                    colors,
+                )
+                .max_w(ui_text::space(220.0))
+                .min_w_0()
+                .font_family(ui_text::mono_family())
+                .text_ellipsis()
+                .overflow_hidden()
+                .child(branch)
+                .on_click(cx.listener(|workspace, _, window, cx| {
+                    workspace.open_panel(PanelKind::Worktrees, workspace.active_pane, window, cx);
+                }))
+                .into_any_element()
             }
             // Agent activity and resource use are read from this Mac's own sessions; another
             // Mac's are not sampled, so these say so rather than show the local project's.
@@ -10130,37 +10363,39 @@ impl Workspace {
                     })
                     .into_any_element()
             }
-            StatusItemKind::GlobalOrchestrator => behavior_controls::action("top-orchestrator", "Open global orchestrator", colors)
-                .flex_none()
-                .text_color(rgb(status_accent(colors.magenta, colors)))
-                .child(ui_text::quiet(format!(
-                    "{}G·ORCH",
-                    orchestrator_mark(
-                        self.chat_orchestrator_activity(&OrchestratorScope::Global, cx)
-                    )
-                )))
-                .on_click(
-                    cx.listener(|workspace, _, window, cx| workspace.open_orchestrator(window, cx)),
-                )
-                .into_any_element(),
-            StatusItemKind::ProjectOrchestrator => behavior_controls::action("project-orchestrator", "Open project orchestrator", colors)
-                .flex_none()
-                .text_color(rgb(status_accent(colors.cyan, colors)))
-                .child(ui_text::quiet(format!(
-                    "{}P·ORCH",
-                    orchestrator_mark(self.chat_orchestrator_activity(
-                        &orchestrators::scope_of(Some(&self.project_id)),
-                        cx
-                    ))
-                )))
-                .on_click(cx.listener(|workspace, _, window, cx| {
-                    workspace.open_scoped_orchestrator(
-                        Some(workspace.project_id.clone()),
-                        window,
-                        cx,
-                    );
-                }))
-                .into_any_element(),
+            StatusItemKind::GlobalOrchestrator => {
+                behavior_controls::action("top-orchestrator", "Open global orchestrator", colors)
+                    .flex_none()
+                    .text_color(rgb(status_accent(colors.magenta, colors)))
+                    .child(ui_text::quiet(format!(
+                        "{}G·ORCH",
+                        orchestrator_mark(
+                            self.chat_orchestrator_activity(&OrchestratorScope::Global, cx)
+                        )
+                    )))
+                    .on_click(cx.listener(|workspace, _, window, cx| {
+                        workspace.open_orchestrator(window, cx)
+                    }))
+                    .into_any_element()
+            }
+            StatusItemKind::ProjectOrchestrator => behavior_controls::action(
+                "project-orchestrator",
+                "Open project orchestrator",
+                colors,
+            )
+            .flex_none()
+            .text_color(rgb(status_accent(colors.cyan, colors)))
+            .child(ui_text::quiet(format!(
+                "{}P·ORCH",
+                orchestrator_mark(self.chat_orchestrator_activity(
+                    &orchestrators::scope_of(Some(&self.project_id)),
+                    cx
+                ))
+            )))
+            .on_click(cx.listener(|workspace, _, window, cx| {
+                workspace.open_scoped_orchestrator(Some(workspace.project_id.clone()), window, cx);
+            }))
+            .into_any_element(),
             StatusItemKind::Layout => self.render_layout_status(cx),
         }
     }
@@ -10257,30 +10492,34 @@ impl Workspace {
                 action: None,
             },
         ];
-        behavior_controls::focus_scope(div()
-            .id("layout-menu")
-            .role(gpui::Role::Menu)
-            .aria_label("Layout menu")
-            .absolute()
-            .left(px(left))
-            .bottom(ui_text::space(STATUS_BAR_HEIGHT) + px(3.0))
-            .w(px(width))
-            .bg(rgb(colors.panel_active))
-            .border_1()
-            .border_color(rgb(colors.magenta))
-            .p(ui_text::space(3.0))
-            .map(|menu| controls::native(menu, |menu| controls::menu(menu, colors)))
-            .occlude()
-            .on_mouse_down_out(cx.listener(
-                |workspace, event: &gpui::MouseDownEvent, window, cx| {
-                    // A click on the item itself is its own toggle.
-                    if !workspace.layout_item_bounds.get().contains(&event.position) {
-                        workspace.close_layout_menu(window, cx);
-                    }
-                },
-            ))
-            .children(rows.into_iter().map(|row| self.layout_menu_row(row, cx))), "layout-menu-scope", &self.menu_focus)
-            .into_any_element()
+        behavior_controls::focus_scope(
+            div()
+                .id("layout-menu")
+                .role(gpui::Role::Menu)
+                .aria_label("Layout menu")
+                .absolute()
+                .left(px(left))
+                .bottom(ui_text::space(STATUS_BAR_HEIGHT) + px(3.0))
+                .w(px(width))
+                .bg(rgb(colors.panel_active))
+                .border_1()
+                .border_color(rgb(colors.magenta))
+                .p(ui_text::space(3.0))
+                .map(|menu| controls::native(menu, |menu| controls::menu(menu, colors)))
+                .occlude()
+                .on_mouse_down_out(cx.listener(
+                    |workspace, event: &gpui::MouseDownEvent, window, cx| {
+                        // A click on the item itself is its own toggle.
+                        if !workspace.layout_item_bounds.get().contains(&event.position) {
+                            workspace.close_layout_menu(window, cx);
+                        }
+                    },
+                ))
+                .children(rows.into_iter().map(|row| self.layout_menu_row(row, cx))),
+            "layout-menu-scope",
+            &self.menu_focus,
+        )
+        .into_any_element()
     }
 
     /// A row has no hover hint, as the rows of the other menus have none: a hint is a window of
@@ -10747,45 +10986,57 @@ impl Workspace {
             .child(
                 behavior_controls::button_content(
                     "focus-layout-toggle",
-                    if centered { "Fill window" } else { "Center focus" },
-                    if centered { "⛶ FILL WINDOW" } else { "⊙ CENTER FOCUS" },
+                    if centered {
+                        "Fill window"
+                    } else {
+                        "Center focus"
+                    },
+                    if centered {
+                        "⛶ FILL WINDOW"
+                    } else {
+                        "⊙ CENTER FOCUS"
+                    },
                 )
-                    .border_1()
-                    .border_color(gpui::transparent_black())
-                    .focus_visible(move |style| style.border_color(rgb(colors.focus)))
-                    .flex_none()
-                    .px(ui_text::space(8.0))
-                    .py(ui_text::space(5.0))
-                    .text_color(rgb(colors.muted))
-                    .hover(|style| {
-                        style
-                            .bg(rgb(colors.panel_active))
-                            .text_color(rgb(colors.cyan))
-                    })
-                    .on_click(cx.listener(|workspace, _, window, cx| {
-                        workspace.focus_centered = !workspace.focus_centered;
-                        workspace.focus_active(window, cx);
-                        cx.notify();
-                    })),
+                .border_1()
+                .border_color(gpui::transparent_black())
+                .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+                .flex_none()
+                .px(ui_text::space(8.0))
+                .py(ui_text::space(5.0))
+                .text_color(rgb(colors.muted))
+                .hover(|style| {
+                    style
+                        .bg(rgb(colors.panel_active))
+                        .text_color(rgb(colors.cyan))
+                })
+                .on_click(cx.listener(|workspace, _, window, cx| {
+                    workspace.focus_centered = !workspace.focus_centered;
+                    workspace.focus_active(window, cx);
+                    cx.notify();
+                })),
             )
             .child(
                 behavior_controls::button_content(
                     "restore-workspace",
                     "Restore workspace",
-                    if width >= 600.0 { "↙ RESTORE  ⌘⇧F" } else { "↙ RESTORE" },
+                    if width >= 600.0 {
+                        "↙ RESTORE  ⌘⇧F"
+                    } else {
+                        "↙ RESTORE"
+                    },
                 )
-                    .focus_visible(move |style| style.border_color(rgb(colors.focus)))
-                    .flex_none()
-                    .px(ui_text::space(10.0))
-                    .py(ui_text::space(5.0))
-                    .border_1()
-                    .border_color(rgb(colors.divider))
-                    .bg(rgb(colors.panel_active))
-                    .text_color(rgb(colors.cyan))
-                    .hover(|style| style.border_color(rgb(colors.cyan)))
-                    .on_click(cx.listener(|workspace, _, window, cx| {
-                        workspace.set_focus_mode(false, window, cx);
-                    })),
+                .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+                .flex_none()
+                .px(ui_text::space(10.0))
+                .py(ui_text::space(5.0))
+                .border_1()
+                .border_color(rgb(colors.divider))
+                .bg(rgb(colors.panel_active))
+                .text_color(rgb(colors.cyan))
+                .hover(|style| style.border_color(rgb(colors.cyan)))
+                .on_click(cx.listener(|workspace, _, window, cx| {
+                    workspace.set_focus_mode(false, window, cx);
+                })),
             );
         let content = if centered {
             let toolbar_height = ui_text::space_f32(FOCUS_TOOLBAR_HEIGHT);
@@ -10850,8 +11101,16 @@ impl Workspace {
             _ => "Add tabs and manage pane",
         };
         behavior_controls::action(format!("pane-{pane_id}-{key}"), name, colors)
-            .when(key == "lock", |button| button.aria_toggled(if self.pane_is_locked(pane_id) { gpui::Toggled::True } else { gpui::Toggled::False }))
-            .when(key == "menu", |button| button.aria_expanded(self.panel_menu == Some(pane_id)))
+            .when(key == "lock", |button| {
+                button.aria_toggled(if self.pane_is_locked(pane_id) {
+                    gpui::Toggled::True
+                } else {
+                    gpui::Toggled::False
+                })
+            })
+            .when(key == "menu", |button| {
+                button.aria_expanded(self.panel_menu == Some(pane_id))
+            })
             .h_full()
             .w(ui_text::space(28.0))
             .flex()
@@ -10889,15 +11148,18 @@ impl Workspace {
     /// a pane lock has when it is on. Clicking it makes the pane an ordinary one again.
     fn main_marker(&self, pane_id: PaneId, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme::palette(cx);
-        let marker = behavior_controls::action(format!("pane-{pane_id}-main"), "Unset main pane", colors)
-            .aria_toggled(gpui::Toggled::True)
-            .h_full()
-            .flex()
-            .flex_none()
-            .items_center()
-            .justify_center()
-            .hover(move |style| toolbar_hover(style, colors))
-            .map(|marker| controls::native(marker, |marker| toolbar_button(marker, colors.cyan)));
+        let marker =
+            behavior_controls::action(format!("pane-{pane_id}-main"), "Unset main pane", colors)
+                .aria_toggled(gpui::Toggled::True)
+                .h_full()
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .hover(move |style| toolbar_hover(style, colors))
+                .map(|marker| {
+                    controls::native(marker, |marker| toolbar_button(marker, colors.cyan))
+                });
         // Native always shows the star, a symbol among the bar's other symbols.
         let marker = if self.settings.panel_tab_icons || ui_text::is_native() {
             marker
@@ -10938,13 +11200,22 @@ impl Workspace {
         let colors = theme::palette(cx);
         behavior_controls::action(format!("pane-menu-{pane_id}-{label}"), label, colors)
             .role(gpui::Role::MenuItem)
-            .when(matches!(action, PaneMenuAction::Main | PaneMenuAction::Lock), |row| {
-                row.role(gpui::Role::MenuItemCheckBox).aria_toggled(if match action {
-                    PaneMenuAction::Main => self.main_pane() == Some(pane_id),
-                    PaneMenuAction::Lock => self.pane_is_locked(pane_id),
-                    _ => false,
-                } { gpui::Toggled::True } else { gpui::Toggled::False })
-            })
+            .when(
+                matches!(action, PaneMenuAction::Main | PaneMenuAction::Lock),
+                |row| {
+                    row.role(gpui::Role::MenuItemCheckBox).aria_toggled(
+                        if match action {
+                            PaneMenuAction::Main => self.main_pane() == Some(pane_id),
+                            PaneMenuAction::Lock => self.pane_is_locked(pane_id),
+                            _ => false,
+                        } {
+                            gpui::Toggled::True
+                        } else {
+                            gpui::Toggled::False
+                        },
+                    )
+                },
+            )
             .flex()
             .items_center()
             .gap(ui_text::space(8.0))
@@ -11068,7 +11339,8 @@ impl Render for Workspace {
         // excludes participants in the background; the scope survives renders.
         behavior_controls::sync_modal_scope(
             self.modal_open().then_some(self.modal_selection_scope),
-            window, cx,
+            window,
+            cx,
         );
         if let Some(chat_id) = self.pending_automation_chat.take() {
             let existing = self.panes.iter().find_map(|(id, pane)| pane.tabs.iter().position(|tab| matches!(&tab.content, TabContent::Chat { chat_id: current, .. } if current == &chat_id)).map(|index| (*id, index)));
@@ -11196,7 +11468,10 @@ impl Render for Workspace {
             .text_color(rgb(colors.text))
             .font_family(ui_text::ui_family())
             .text_size(ui_text::text(10.0))
-            .children((!self.is_remote() && !self.focus_mode && self.shared_tabs.is_some()).then(|| self.render_shared_strip(cx)))
+            .children(
+                (!self.is_remote() && !self.focus_mode && self.shared_tabs.is_some())
+                    .then(|| self.render_shared_strip(cx)),
+            )
             .child(
                 div()
                     .flex()
@@ -11288,7 +11563,17 @@ impl Render for Workspace {
                 )
             }))
             .children(self.tab_close_dialog.as_ref().map(|dialog| {
-                div().absolute().inset_0().size_full().p(ui_text::space(16.0)).flex().items_center().justify_center().bg(gpui::rgba(0x00000099)).occlude().child(dialog.clone())
+                div()
+                    .absolute()
+                    .inset_0()
+                    .size_full()
+                    .p(ui_text::space(16.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(gpui::rgba(0x00000099))
+                    .occlude()
+                    .child(dialog.clone())
             }))
             .children(self.handoff_dialog.as_ref().map(|dialog| {
                 behavior_controls::selection_scope(
@@ -14132,6 +14417,12 @@ mod main_pane_tests {
                     .insert(format!("chat:{}", child.id));
                 workspace.apply_shared_tabs(window, cx);
                 assert!(chat_tab_in(&workspace.panes, &child.id).is_none());
+                tab_store
+                    .update(&project_tabs::Update::Unhide {
+                        key: format!("chat:{}", child.id),
+                    })
+                    .unwrap();
+                workspace.shared_tabs = Some(tab_store.list().unwrap());
                 workspace
                     .layouts
                     .request_chat_open(&workspace.project_id, &child.id)
@@ -14269,7 +14560,13 @@ mod main_pane_tests {
                     .push(foreign.clone());
                 let config = workspace.chat_config();
                 let view = cx.new(|cx| {
-                    ChatView::open_deferred(foreign.id.clone(), Some(foreign.clone()), config, window, cx)
+                    ChatView::open_deferred(
+                        foreign.id.clone(),
+                        Some(foreign.clone()),
+                        config,
+                        window,
+                        cx,
+                    )
                 });
                 let foreign_tab = workspace.chat_tab(foreign.id.clone(), view, window, cx);
                 let foreign_tab_id = foreign_tab.id;

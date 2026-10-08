@@ -389,9 +389,9 @@ impl Drop for StandIn {
 fn standin_rig(on_send: OnSend, wait: Duration) -> (PathBuf, ScheduleStore, ChatInfo, StandIn) {
     let home = short_home();
     let chat = ChatInfo {
-            parent_id: None,
-            user_title: None,
-            first_user_message: None,
+        parent_id: None,
+        user_title: None,
+        first_user_message: None,
 
         id: Uuid::new_v4().to_string(),
         provider: Provider::Codex,

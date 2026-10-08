@@ -461,8 +461,8 @@ mod tests {
                 .unwrap();
             let shell_id = Uuid::new_v4().to_string();
             let shell = ShellSession {
-            user_opened: true,
-            parent_id: None,
+                user_opened: true,
+                parent_id: None,
 
                 id: shell_id.clone(),
                 project_id: Some(project.id.clone()),

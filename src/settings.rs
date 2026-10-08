@@ -173,7 +173,13 @@ pub enum TabCloseBehavior {
 }
 impl TabCloseBehavior {
     pub const ALL: [Self; 3] = [Self::Ask, Self::Detach, Self::Exit];
-    pub fn label(self) -> &'static str { match self { Self::Ask => "Ask", Self::Detach => "Detach", Self::Exit => "Exit" } }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ask => "Ask",
+            Self::Detach => "Detach",
+            Self::Exit => "Exit",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -281,7 +287,11 @@ impl<'de> Deserialize<'de> for Settings {
         let object = Map::<String, Value>::deserialize(deserializer)?;
         let defaults = Self::default();
         Ok(Self {
-            tab_close_behavior: lenient_field(&object, "tab_close_behavior", defaults.tab_close_behavior),
+            tab_close_behavior: lenient_field(
+                &object,
+                "tab_close_behavior",
+                defaults.tab_close_behavior,
+            ),
             chat_display: lenient_field(&object, "chat_display", defaults.chat_display),
             chat_display_modes: object
                 .get("chat_display_modes")
@@ -1123,7 +1133,10 @@ impl SettingsPanel {
                 .into_iter()
                 .map(|id| (id, cx.focus_handle()))
                 .collect(),
-            close_focus: TabCloseBehavior::ALL.iter().map(|_| cx.focus_handle()).collect(),
+            close_focus: TabCloseBehavior::ALL
+                .iter()
+                .map(|_| cx.focus_handle())
+                .collect(),
             theme_focus: ThemeChoice::ALL.iter().map(|_| cx.focus_handle()).collect(),
             terminal_focus: cx.focus_handle(),
             font_focus: cx.focus_handle(),
