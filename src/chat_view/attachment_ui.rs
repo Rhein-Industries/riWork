@@ -651,7 +651,9 @@ fn attachment_card(chip: &Chip, look: Look, cx: &mut Context<ChatView>) -> AnyEl
                 .flex()
                 .items_center()
                 .gap(ui_text::space(8.))
-                .px(ui_text::space(8.))
+                .pl(ui_text::space(8.))
+                // Room for the × in the corner, so it never covers the name's end.
+                .pr(ui_text::space(26.))
                 .child(file_tile(&chip.name, look))
                 .child(
                     div()
