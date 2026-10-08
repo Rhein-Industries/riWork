@@ -83,7 +83,7 @@ struct ChatItemRow: View, Equatable {
                 DesktopRule()
             }
             .accessibilityElement(children: .combine).accessibilityLabel("Context compacted")
-        case .notice(let level, let text, _): NoticeBlock(level: level, text: text)
+        case .notice(let level, let text, _, _, _, _): NoticeBlock(level: level, text: text)
         }
     }
 }

@@ -5,11 +5,14 @@ import Foundation
 // - The provider's notices: `notice` items of the transcript (Claude's rate and usage limits, API retries, compaction, a model or
 //   effort refused; Codex's errors, warnings, config warnings and "Reconnecting… n/5"). They are not transcript rows: each kind shows
 //   once, its latest, and only while it belongs to the current turn (after the last thing the person sent), so a notice the provider
-//   repeats every turn replaces itself instead of piling up. Every notice of the chat stays reachable in a history.
+//   repeats every turn replaces itself instead of piling up. A reached usage limit and a sign-in (`rate_limit:*` at error level,
+//   `auth_required`) are sticky: they stay, whatever turn they came in, until resolved, reset or dismissed; a usage warning is never a
+//   banner (the chat's usage chip says it). Every notice of the chat stays reachable in a history (docs/chat-notices.md).
 // - The phone's own: what went wrong sending, reading or connecting (`ChatAlert.Source`), one per source, replaced in place when it
 //   recurs and taken away when its cause is resolved.
 //
-// Both can be dismissed with ×; a dismissed provider notice comes back only when the provider says it again (a new item).
+// Both can be dismissed with ×; a dismissed provider notice comes back only when the provider says it again (a new item). Closing a
+// sticky one also tells the host (`dismiss_notice`), which keeps it closed on every device and marks the item `dismissed`.
 
 /// A notice of the provider, as the banner and the history show it.
 public struct ChatProviderNotice: Sendable, Equatable, Identifiable {
@@ -22,12 +25,29 @@ public struct ChatProviderNotice: Sendable, Equatable, Identifiable {
     public let kind: String
     /// How many times this kind was said in the chat, this one included.
     public var count: Int
+    /// The host's own `kind`, when it sent one.
+    public var hostKind: String? = nil
+    public var resolved = false
+    /// When the limit it is about resets (Unix seconds).
+    public var resetsAt: UInt64? = nil
+    /// The host dismissed it (on any device).
+    public var dismissed = false
 
-    /// The grouping key: `kind:<host kind>`, or `text:<text>` for a notice without one (an older host, or a kind this phone does not
-    /// know is still the host's word for it, and is used as it is).
-    public static func key(kind: String?, text: String) -> String {
+    /// A reached usage limit or a sign-in: it stays until resolved or dismissed, and its × is the host's dismissal.
+    public var isSticky: Bool { ChatNotices.isSticky(hostKind) }
+    /// A usage limit: its banner says when it resets and offers the usage detail.
+    public var isUsageLimit: Bool { hostKind?.hasPrefix("rate_limit:") == true }
+    /// The text with the reset time of a usage limit ("… · resets Thu 14:00").
+    public func bannerText(calendar: Calendar = .current, locale: Locale = .current) -> String {
+        guard isUsageLimit, let resetsAt else { return text }
+        return text + " · resets " + ChatUsageLimits.resetTime(resetsAt, calendar: calendar, locale: locale)
+    }
+
+    /// The grouping key: `kind:<host kind>`, or `id:<item id>` for a notice without one: each is its own banner (an unknown kind is
+    /// still the host's word for it, and is used as it is).
+    public static func key(kind: String?, id: String) -> String {
         if let kind { return "kind:" + kind }
-        return "text:" + text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "id:" + id
     }
 }
 
@@ -36,22 +56,37 @@ public enum ChatNotices {
     public static func all(_ items: [ChatItem]) -> [ChatProviderNotice] {
         var counts: [String: Int] = [:]
         return items.compactMap { item in
-            guard case .notice(let level, let text, let hostKind) = item.body else { return nil }
-            let kind = ChatProviderNotice.key(kind: hostKind, text: text)
+            guard case .notice(let level, let text, let hostKind, let resolved, let resetsAt, let dismissed) = item.body else { return nil }
+            let kind = ChatProviderNotice.key(kind: hostKind, id: item.id)
             counts[kind, default: 0] += 1
-            return ChatProviderNotice(id: item.id, level: level, text: text, kind: kind, count: counts[kind]!)
+            return ChatProviderNotice(id: item.id, level: level, text: text, kind: kind, count: counts[kind]!, hostKind: hostKind, resolved: resolved,
+                                      resetsAt: resetsAt, dismissed: dismissed)
         }
     }
-    /// What the banner shows: the latest notice of each kind said since the person last sent something (all of them when nothing was
-    /// sent yet), not dismissed, most severe first and then newest first.
-    public static func current(_ items: [ChatItem], dismissed: Set<String>) -> [ChatProviderNotice] {
+    /// `rate_limit:*` (any window, known or not) and `auth_required`.
+    public static func isSticky(_ kind: String?) -> Bool { kind.map { $0.hasPrefix("rate_limit:") || $0 == "auth_required" } ?? false }
+    /// Whether one of the host's dismissal keys (`<provider>:<account>|<kind>@<resets>` or `…|<kind>#<item id>`) covers the notice.
+    public static func hostDismissed(_ notice: ChatProviderNotice, keys: Set<String>) -> Bool {
+        guard let kind = notice.hostKind, !keys.isEmpty else { return false }
+        let suffix = notice.resetsAt.map { "|\(kind)@\($0)" } ?? "|\(kind)#\(notice.id)"
+        return keys.contains { $0.hasSuffix(suffix) }
+    }
+    /// What the banner shows: for each kind (or each notice without one) its newest notice, when it is not resolved, its reset (if any)
+    /// is still ahead, nobody dismissed it (here: `dismissed`, by item id; on any device: the item's flag or the snapshot's `hostKeys`),
+    /// and it is live: said since the person last sent something (everything when nothing was sent yet), or sticky. A usage notice
+    /// below error level (a warning from an older log) is never a banner. Most severe first, then newest first.
+    public static func current(_ items: [ChatItem], dismissed: Set<String>, hostKeys: Set<String> = [], now: Date = .now) -> [ChatProviderNotice] {
         let start = items.lastIndex { if case .userMessage = $0.body { true } else { false } }.map { $0 + 1 } ?? 0
-        let all = all(items)
-        let inTurn = Set(items[start...].map(\.id))
+        let position = Dictionary(items.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
         var latest: [String: (order: Int, notice: ChatProviderNotice)] = [:]
-        for (order, notice) in all.enumerated() where inTurn.contains(notice.id) { latest[notice.kind] = (order, notice) }
-        return latest.values.filter { !dismissed.contains($0.notice.id) }
-            .sorted { ($0.notice.level.rank, $0.order) > ($1.notice.level.rank, $1.order) }.map(\.notice)
+        for notice in all(items) { latest[notice.kind] = (position[notice.id] ?? 0, notice) }
+        return latest.values.filter { order, notice in
+            guard !notice.resolved, !notice.dismissed, !dismissed.contains(notice.id), !hostDismissed(notice, keys: hostKeys) else { return false }
+            if let resetsAt = notice.resetsAt, TimeInterval(resetsAt) <= now.timeIntervalSince1970 { return false }
+            if notice.isUsageLimit, notice.level != .error { return false }
+            return order >= start || notice.isSticky
+        }
+        .sorted { ($0.notice.level.rank, $0.order) > ($1.notice.level.rank, $1.order) }.map(\.notice)
     }
     /// Whether a transcript row is drawn for the item: notices are the banner's and the history's, not the transcript's.
     public static func isTranscriptRow(_ item: ChatItem) -> Bool {

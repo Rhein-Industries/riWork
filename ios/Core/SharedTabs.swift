@@ -7,7 +7,8 @@ public struct SharedTab: Codable, Sendable, Equatable, Identifiable {
     public enum Kind: String, Codable, Sendable { case chat, shell, unknown
         public init(from decoder: any Decoder) throws { let raw = try decoder.singleValueContainer().decode(String.self); self = Self(rawValue: raw) ?? .unknown; if self == .unknown { Logger(subsystem: "com.riwork.remote", category: "tabs").warning("Unknown tab kind: \(raw, privacy: .public)") } }
     }
-    public enum Status: String, Codable, Sendable { case working, waiting, error, done, stopped, unknown
+    /// `idle`: a live shell at its prompt (or running a program RiWork does not follow).
+    public enum Status: String, Codable, Sendable { case working, waiting, error, done, idle, stopped, unknown
         public init(from decoder: any Decoder) throws { let raw = try decoder.singleValueContainer().decode(String.self); self = Self(rawValue: raw) ?? .unknown; if self == .unknown { Logger(subsystem: "com.riwork.remote", category: "tabs").warning("Unknown tab status: \(raw, privacy: .public)") } }
     }
     public let key: String

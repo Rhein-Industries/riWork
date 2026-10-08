@@ -303,6 +303,9 @@ public struct ChatCommandRequest: Sendable, Equatable {
             guard text.utf8.count <= ChatLimits.messageBytes else { throw ChatValidationError.messageTooLong }
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ChatValidationError.blankMessage }
         }
+        if case .dismissNotice(let itemID) = command {
+            guard (1...512).contains(itemID.utf8.count), !itemID.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw ChatValidationError.invalidID }
+        }
         if case .configure(let model, let effort, let mode, let fast) = command {
             guard model != nil || effort != nil || mode != nil || fast != nil else { throw ChatValidationError.emptyConfigure }
             for (field, value, limit) in [("model", model, ChatLimits.modelBytes), ("effort", effort, ChatLimits.effortBytes)] {
@@ -385,9 +388,25 @@ public struct ChatSnapshotReply: Sendable, Equatable, Codable {
     public let more: Bool
     public let items: [ChatSnapshotRow]
     public let controls: [ChatEvent]
-    enum CodingKeys: String, CodingKey { case v, chatID = "chat_id", cursor, next, before, more, items, controls }
-    public init(chatID: String, cursor: String, next: UInt64, before: UInt64, more: Bool, items: [ChatSnapshotRow], controls: [ChatEvent]) {
+    /// The host's active dismissals in this chat's account scope (`<provider>:<account>|<kind>@<resets>` or `…|<kind>#<item id>`);
+    /// empty from an older host. The per-item `dismissed` flag stays authoritative; this covers a notice the flag has not reached yet.
+    public let dismissedNotices: [String]
+    /// Rows and controls the phone could not read (an item type or an event a newer host has, such as `rate_limits` for a phone
+    /// before it): left out, never the whole snapshot. Not on the wire.
+    public let skipped: Int
+    enum CodingKeys: String, CodingKey { case v, chatID = "chat_id", cursor, next, before, more, items, controls, dismissedNotices = "dismissed_notices" }
+    public init(chatID: String, cursor: String, next: UInt64, before: UInt64, more: Bool, items: [ChatSnapshotRow], controls: [ChatEvent], dismissedNotices: [String] = []) {
         v = 1; self.chatID = chatID; self.cursor = cursor; self.next = next; self.before = before; self.more = more; self.items = items; self.controls = controls
+        self.dismissedNotices = dismissedNotices; skipped = 0
+    }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        v = try c.decode(Int.self, forKey: .v); chatID = try c.decode(String.self, forKey: .chatID); cursor = try c.decode(String.self, forKey: .cursor)
+        next = try c.decode(UInt64.self, forKey: .next); before = try c.decode(UInt64.self, forKey: .before); more = try c.decode(Bool.self, forKey: .more)
+        let rows = try c.decode([Lenient<ChatSnapshotRow>].self, forKey: .items), events = try c.decode([Lenient<ChatEvent>].self, forKey: .controls)
+        items = rows.compactMap(\.value); controls = events.compactMap(\.value)
+        skipped = rows.count - items.count + events.count - controls.count
+        dismissedNotices = (try? c.decodeIfPresent([String].self, forKey: .dismissedNotices)) ?? []
     }
 }
 extension RemoteTransport {
@@ -402,7 +421,8 @@ extension RemoteTransport {
         guard reply.v == 1, reply.chatID == chatID, reply.cursor.count <= 80, !reply.cursor.isEmpty,
               reply.items.count <= (itemIDs.isEmpty ? 50 : 100), cursor == nil || reply.cursor == cursor,
               cursor == nil || reply.controls.isEmpty,
-              reply.before == reply.items.first?.order ?? 0,
+              // A first row left out (unreadable) moves the first order on; `before` is the host's.
+              reply.before == reply.items.first?.order ?? 0 || reply.skipped > 0,
               !reply.more || !reply.items.isEmpty else { throw ChatControlError.unreadableReply }
         var last: UInt64 = 0
         var ids = Set<String>()

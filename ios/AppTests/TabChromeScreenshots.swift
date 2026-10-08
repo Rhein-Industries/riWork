@@ -479,6 +479,67 @@ import RiWorkCore
         }
     }
 
+    /// `RIWORK_TAB_SCREENSHOTS_ONLY=testUsageLimits scripts/tab-chrome-screenshots.sh <dir> <udid>`: the usage chip beside the context
+    /// ring (weekly 87 %) with a reached 5-hour limit's blocking banner, then the chip at 92 % (bold) and its usage detail, Native dark
+    /// and light.
+    func testUsageLimits() async throws {
+        guard ProcessInfo.processInfo.environment["RIWORK_TAB_SCREENSHOTS_ONLY"] == "testUsageLimits" else { throw XCTSkip("Set RIWORK_TAB_SCREENSHOTS_ONLY=testUsageLimits") }
+        for look in [Look.nativeDark, .nativeLight] {
+            guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene") }
+            let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
+            let pairing = try Pairing.parse("""
+            {"v":1,"relay_url":"wss://example.com/v1/ws","desktop_id":"11111111-1111-4111-8111-111111111111","device_id":"22222222-2222-4222-8222-222222222222","route_id":"33333333-3333-4333-8333-333333333333","device_name":"Test","pairing_secret":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","relay_token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}
+            """)
+            var desktop = SavedDesktop(name: "Fixture", pairing: pairing, allowLocalDevelopment: false)
+            desktop.selectedProjectID = project; desktop.selectedSessionID = ChatTransport.shell
+            try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
+            let suite = "com.riwork.tests.tabchrome.\(UUID().uuidString)"
+            defaultsNames.append(suite)
+            let info = ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Fix the build", createdAtUnix: 10, state: .idle)
+            let transport = ChatTransport(chats: [info], appearance: appearance(look))
+            let now = UInt64(Date().timeIntervalSince1970)
+            let fiveHour = now + 2 * 3600, weekly = now + 3 * 86400
+            await transport.append(chatID, [.info(info), .usage(ChatUsage(inputTokens: 84_000, outputTokens: 2_000, contextWindow: 200_000, contextUsed: 84_000)),
+                .itemCompleted(ChatItem(id: "u1", status: .completed, body: .userMessage("Run the full test suite"))),
+                .itemCompleted(ChatItem(id: "a1", status: .completed, body: .agentMessage("Running the tests now. The first package passed; the second one is building."))),
+                .itemCompleted(ChatItem(id: "lim", status: .completed, body: .notice(level: .error, text: "You've hit your 5-hour usage limit.", kind: "rate_limit:five_hour", resetsAt: fiveHour))),
+                .rateLimits([ChatRateWindow(id: "five_hour", label: "5h", usedPercent: 100, resetsAt: fiveHour), ChatRateWindow(id: "seven_day", label: "weekly", usedPercent: 87, resetsAt: weekly)])])
+            let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: suite)!, chatWaitMilliseconds: 300,
+                                    chatIdleInterval: .milliseconds(20), hardwareKeyboard: HardwareKeyboardMonitor(probe: { false }))
+            await model.connect()
+            await eventually("Native look") { model.theme.style.native }
+            let projectValue = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}".utf8))
+            let layout = ChatLayoutInspection()
+            let host = UIHostingController(rootView: AnyView(ThemedTabs(model: model, project: projectValue).environment(\.chatLayoutInspection, layout)))
+            let window = UIWindow(windowScene: scene)
+            window.frame = scene.coordinateSpace.bounds
+            window.windowLevel = .alert + 1
+            window.rootViewController = host
+            window.overrideUserInterfaceStyle = look == .nativeDark ? .dark : .light
+            window.makeKeyAndVisible()
+            windows.forEach { $0.isHidden = true }
+            windows.append(window)
+            model.selectChat(chatID)
+            await eventually("chat up") { model.conversation(self.chatID).following && layout.frames["banner-notice-kind:rate_limit:five_hour"] != nil }
+            try await Task.sleep(for: .milliseconds(600))
+            window.endEditing(true)
+            try await Task.sleep(for: .milliseconds(500))
+            let prefix = "usage-" + look.rawValue
+            try await shot(window, prefix + "-1-chip-and-limit-banner")
+            // The limit's Usage action, and the chip at 92 % (bold) after the 5-hour window reset.
+            await transport.append(chatID, [.rateLimits([ChatRateWindow(id: "five_hour", label: "5h", usedPercent: 12, resetsAt: fiveHour), ChatRateWindow(id: "seven_day", label: "weekly", usedPercent: 92, resetsAt: weekly)])])
+            await eventually("92%") { ChatUsageLimits.chip(model.conversation(self.chatID).transcript.rateLimits)?.bold == true }
+            try await Task.sleep(for: .milliseconds(500))
+            model.conversation(chatID).showUsageDetail()
+            try await Task.sleep(for: .milliseconds(900))
+            try await shot(window, prefix + "-2-usage-detail")
+            host.presentedViewController?.dismiss(animated: false)
+            await model.disconnect()
+            window.isHidden = true
+            try? keychain.delete()
+        }
+    }
+
     /// `RIWORK_TAB_SCREENSHOTS_ONLY=testSimulatorTaps`: real taps on the simulator (by whoever runs it): the tab already on screen, then
     /// the hidden shell's row in the open-worker picker. After each, the main thread must still answer within a second (a layout loop
     /// used to freeze the app here). Leaves `<name>.manual`, waits for `<name>.done`, writes `<name>.result`.

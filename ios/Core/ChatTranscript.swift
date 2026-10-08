@@ -14,6 +14,8 @@ public struct ChatTranscript: Sendable, Equatable {
     public private(set) var usage: ChatUsage?
     /// The models the provider offers, empty until its driver has said (an older driver, or an older desktop, never does).
     public private(set) var models: [ChatModelOption] = []
+    /// The provider's usage windows, as its last `rate_limits` said (none from an older driver or desktop).
+    public private(set) var rateLimits: [ChatRateWindow] = []
     public private(set) var turnID: String?
     /// Where each item is, by id, so a delta finds its item without a search.
     private var index: [String: Int] = [:]
@@ -73,6 +75,8 @@ public struct ChatTranscript: Sendable, Equatable {
             self.usage = usage
         case .models(let models):
             self.models = models
+        case .rateLimits(let windows):
+            rateLimits = windows
         }
     }
 
@@ -82,7 +86,7 @@ public struct ChatTranscript: Sendable, Equatable {
     }
     fileprivate mutating func restoreControls(_ value: ChatTranscript) {
         info = value.info; state = value.state; approvals = value.approvals; questions = value.questions
-        usage = value.usage; models = value.models; turnID = value.turnID
+        usage = value.usage; models = value.models; rateLimits = value.rateLimits; turnID = value.turnID
     }
 
     /// Merge only missing historical rows; live rows and controls remain authoritative.
@@ -163,6 +167,8 @@ public struct ChatFeed: Sendable, Equatable {
     public private(set) var itemArrivals = 0
 
     public private(set) var historyCursor: String?
+    /// The host's dismissals as the last snapshot gave them (`ChatSnapshotReply.dismissedNotices`).
+    public private(set) var dismissedNotices: Set<String> = []
     public private(set) var before: UInt64 = 0
     public private(set) var hasOlder = false
     private var orders: [String: UInt64] = [:]
@@ -179,15 +185,15 @@ public struct ChatFeed: Sendable, Equatable {
     public mutating func install(_ snapshot: ChatSnapshotReply) {
         self = ChatFeed()
         next = snapshot.next; loaded = true; historyCursor = snapshot.cursor; itemArrivals = snapshot.items.count
-        before = snapshot.before; hasOlder = snapshot.more
+        before = snapshot.before; hasOlder = snapshot.more; dismissedNotices = Set(snapshot.dismissedNotices)
         for event in snapshot.controls { transcript.apply(event) }
         for row in snapshot.items { orders[row.item.id] = row.order }
         transcript.mergeHistory(snapshot.items, orders: orders)
     }
 
     public mutating func beginDegradedReplay() {
-        let controls = transcript.controlsOnly(), checkpoint = next, arrivals = itemArrivals
-        self = ChatFeed(); transcript = controls; recoveryThrough = checkpoint
+        let controls = transcript.controlsOnly(), checkpoint = next, arrivals = itemArrivals, dismissed = dismissedNotices
+        self = ChatFeed(); transcript = controls; recoveryThrough = checkpoint; dismissedNotices = dismissed
         itemArrivals = arrivals; degradedReplay = true
     }
 

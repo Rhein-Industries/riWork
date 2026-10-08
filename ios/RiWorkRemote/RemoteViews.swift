@@ -1293,7 +1293,10 @@ struct OpenTabSheet: View {
                             Text(detail(row)).font(style.system(.caption)).foregroundStyle(style.muted).lineLimit(1)
                         }
                         Spacer(minLength: 4)
-                        Text(Self.status(row.tab.status)).font(style.system(.caption, weight: .medium)).foregroundStyle(row.tab.status == .waiting ? style.gold : (row.tab.status == .error ? style.error : style.muted))
+                        HStack(spacing: 5) {
+                            SharedTabStatusDot(status: row.tab.status)
+                            Text(Self.status(row.tab.status)).font(style.system(.caption, weight: .medium)).foregroundStyle(row.tab.status == .waiting ? style.gold : (row.tab.status == .error ? style.error : style.muted))
+                        }
                     }
                     .frame(minHeight: style.target).contentShape(Rectangle())
                 }
@@ -1320,9 +1323,33 @@ struct OpenTabSheet: View {
         case .waiting: "Waiting"
         case .error: "Error"
         case .done: "Done"
+        case .idle: "Idle"
         case .stopped: "Stopped"
         case .unknown: ""
         }
+    }
+}
+
+/// A shared tab's state as the Mac's strip draws it: working in the accent, waiting gold, error red, done muted, idle a small muted
+/// point (a live shell with nothing running), stopped an empty ring.
+struct SharedTabStatusDot: View {
+    @Environment(\.desktopStyle) private var style
+    let status: SharedTab.Status
+    var body: some View {
+        let size = style.pt(7)
+        Group {
+            switch status {
+            case .working: Circle().fill(style.accent).frame(width: size, height: size)
+            case .waiting: Circle().fill(style.gold).frame(width: size, height: size)
+            case .error: Circle().fill(style.error).frame(width: size, height: size)
+            case .done: Circle().fill(style.muted).frame(width: size, height: size)
+            case .idle: Circle().fill(style.muted.opacity(0.7)).frame(width: size * 0.55, height: size * 0.55)
+            case .stopped: Circle().stroke(style.muted, lineWidth: 1).frame(width: size, height: size)
+            case .unknown: EmptyView()
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
     }
 }
 

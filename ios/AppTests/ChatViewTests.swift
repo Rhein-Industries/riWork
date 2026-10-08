@@ -1576,7 +1576,7 @@ import RiWorkCore
         await rig.transport.enableSnapshots()
         let notice = { (id: String, text: String, kind: String) in ChatEvent.itemCompleted(ChatItem(id: id, status: .completed, body: .notice(level: .warning, text: text, kind: kind))) }
         await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "u1", status: .completed, body: .userMessage("go"))),
-                                            notice("n1", "Reconnecting… 1/5", "reconnecting"), notice("n2", "This account is close to the weekly usage limit", "rate_limit:seven_day")])
+                                            notice("n1", "Reconnecting… 1/5", "reconnecting"), notice("n2", "Retrying in 4 s", "api_retry")])
         let field = try await openChat(rig)
         let conversation = rig.model.conversation(chatID)
         await eventually("two notice lines") { rig.layout.frames.keys.filter { $0.hasPrefix("banner-notice-") }.count == 2 }
@@ -1593,13 +1593,55 @@ import RiWorkCore
         let closeKey = try XCTUnwrap(rig.layout.actions.keys.first { $0 == "close-notice-kind:reconnecting" })
         rig.layout.actions[closeKey]?()
         await eventually("closed") { rig.layout.frames["banner-notice-kind:reconnecting"] == nil }
-        XCTAssertGreaterThanOrEqual(rig.layout.frames["close-notice-kind:rate_limit:seven_day"]?.width ?? 0, 44, "a full target")
+        XCTAssertGreaterThanOrEqual(rig.layout.frames["close-notice-kind:api_retry"]?.width ?? 0, 44, "a full target")
         await rig.transport.append(chatID, [notice("n4", "Reconnecting… 3/5", "reconnecting")])
         await eventually("back when said again") { rig.layout.frames["banner-notice-kind:reconnecting"] != nil }
         // A new turn: last turn's notices go to the history.
         await rig.transport.append(chatID, [.itemCompleted(ChatItem(id: "u2", status: .completed, body: .userMessage("again")))])
         await eventually("history only") { !rig.layout.frames.keys.contains { $0.hasPrefix("banner-notice-") } }
         XCTAssertEqual(ChatNotices.all(conversation.transcript.items).count, 4)
+        await finish(rig)
+    }
+
+    /// A reached usage limit is a sticky banner (from an earlier turn too) with its reset time; closing it sends `dismiss_notice` once and
+    /// it stays closed when the host re-emits it dismissed, and after a fresh snapshot. A sign-in the host dismissed elsewhere (its key in
+    /// the snapshot) never shows. A usage warning is no banner: the chip beside the ring says it, bold from 90 %, and opens the windows.
+    func testUsageLimitsAChipForWindowsABannerOnlyForAReachedLimitDismissedOnTheHost() async throws {
+        let rig = try await makeRig(look: .nativeDark)
+        await rig.transport.enableSnapshots()
+        let resets = UInt64(Date().timeIntervalSince1970) + 3 * 3600
+        let limit = { (dismissed: Bool) in ChatEvent.itemCompleted(ChatItem(id: "lim", status: .completed, body: .notice(level: .error, text: "You've hit your 5-hour limit.", kind: "rate_limit:five_hour", resetsAt: resets, dismissed: dismissed))) }
+        await rig.transport.setDismissedNoticeKeys(["codex:default|auth_required#auth"])
+        await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "u1", status: .completed, body: .userMessage("go"))), limit(false),
+                                            .itemCompleted(ChatItem(id: "auth", status: .completed, body: .notice(level: .error, text: "Sign in again.", kind: "auth_required"))),
+                                            .itemCompleted(ChatItem(id: "warn", status: .completed, body: .notice(level: .warning, text: "Close to the weekly limit", kind: "rate_limit:seven_day"))),
+                                            .rateLimits([ChatRateWindow(id: "five_hour", label: "5h", usedPercent: 100, resetsAt: resets),
+                                                         ChatRateWindow(id: "seven_day", label: "weekly", usedPercent: 87, resetsAt: resets + 86400)]),
+                                            .itemCompleted(ChatItem(id: "u2", status: .completed, body: .userMessage("again")))])
+        _ = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        await eventually("the limit's banner and the windows") { rig.layout.frames["banner-notice-kind:rate_limit:five_hour"] != nil && conversation.transcript.rateLimits.count == 2 }
+        XCTAssertNil(rig.layout.frames["banner-notice-kind:auth_required"], "dismissed on another device (the snapshot's key)")
+        XCTAssertNil(rig.layout.frames["banner-notice-kind:rate_limit:seven_day"], "a warning is the chip's, not a banner")
+        XCTAssertEqual(ChatUsageLimits.chip(conversation.transcript.rateLimits)?.text, "5h 100%")
+        XCTAssertEqual(ChatUsageLimits.chip(conversation.transcript.rateLimits)?.bold, true)
+        XCTAssertTrue(try renderedText(rig, in: rig.layout.frames["banner-notice-kind:rate_limit:five_hour"]!).contains("resets"), "says when it resets")
+        // ×: hidden at once, and dismissed on the host; the host's re-emitted item keeps it closed.
+        let reemitted = limit(true)
+        await rig.transport.handleCommands { _, command in
+            if case .dismissNotice = command { return [reemitted] }
+            return []
+        }
+        rig.layout.actions["close-notice-kind:rate_limit:five_hour"]?()
+        await eventually("closed") { rig.layout.frames["banner-notice-kind:rate_limit:five_hour"] == nil }
+        await eventually("sent") { await rig.transport.commands().contains { $0["command"].string == "dismiss_notice" } }
+        let dismissals = await rig.transport.commands().filter { $0["command"].string == "dismiss_notice" }
+        XCTAssertEqual(dismissals, [.object(["command": .string("dismiss_notice"), "item_id": .string("lim")])])
+        await eventually("the host's flag is in") { conversation.transcript.item("lim").map { if case .notice(_, _, _, _, _, true) = $0.body { true } else { false } } ?? false }
+        // A fresh start (the local closing forgotten): still closed, by the host's flag.
+        conversation.dismissedNotices = []
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(rig.layout.frames["banner-notice-kind:rate_limit:five_hour"])
         await finish(rig)
     }
 

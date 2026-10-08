@@ -103,3 +103,18 @@ private actor TabsTransport: RemoteTransport {
     func disconnect() async {}
     func isConnected() async -> Bool { true }
 }
+extension SharedTabsTests {
+    func testIdleIsAStatusAndAMissingPinnedFieldDecodes() throws {
+        let json = "{\"entries\":[{\"key\":\"shell:\(session)\",\"kind\":\"shell\",\"title\":\"zsh\",\"status\":\"idle\",\"hidden\":false,\"order\":0,\"parent\":null,\"children\":[],\"child_count\":0}]}"
+        let reply = try JSONDecoder().decode(SharedTabsReply.self, from: Data(json.utf8))
+        XCTAssertEqual(reply.entries[0].status, .idle)
+        XCTAssertEqual(reply.visible.count, 1, "an idle shell is a tab")
+    }
+}
+extension SharedTabsTests {
+    func testUnknownFieldsOfATabAndOfTheReplyAreIgnored() throws {
+        let json = "{\"epoch\":\"e\",\"revision\":2,\"future\":{\"x\":1},\"entries\":[{\"key\":\"chat:\(session)\",\"kind\":\"chat\",\"title\":\"T\",\"status\":\"working\",\"hidden\":false,\"order\":0,\"parent\":null,\"children\":[],\"child_count\":0,\"pane\":\"left\",\"color\":7,\"pinned\":true}]}"
+        let reply = try JSONDecoder().decode(SharedTabsReply.self, from: Data(json.utf8))
+        XCTAssertEqual(reply.visible.map(\.title), ["T"])
+    }
+}

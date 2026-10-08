@@ -118,6 +118,7 @@
 		936C4D01DB5E668E9629B2FE /* ScrollingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26187481C9788482B0A1C8FC /* ScrollingTests.swift */; };
 		945D6C8CCD07B5CF3498593B /* DisplaySettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FA26E35BA4D4F0849B6A96F /* DisplaySettings.swift */; };
 		9464C006EFEE809976B6E824 /* LinkTiming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45ABF480BC25FB371B1806F5 /* LinkTiming.swift */; };
+		94E7234E20F1D40DDE03A4C2 /* ChatUsageLimits.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03FE281A4573F69C29C8AE3 /* ChatUsageLimits.swift */; };
 		959AA965B913F6BCF401B549 /* TabScreenChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0916469295AFF6DC8D82DAB /* TabScreenChrome.swift */; };
 		9820C138E78F3FF648A17810 /* ActivityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A22E89FABB38C3BA37192725 /* ActivityTests.swift */; };
 		98290989CA09F9AD3CE34C38 /* StyledScreenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D728F2D7B80D93B6A9D85DF5 /* StyledScreenTests.swift */; };
@@ -436,6 +437,7 @@
 		BBB6AECDCD8D87C582C856D7 /* RemoteModel+Link.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteModel+Link.swift"; sourceTree = "<group>"; };
 		BBC27824128F385E827A9FEA /* NewTerminalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewTerminalTests.swift; sourceTree = "<group>"; };
 		BEC579A3074F3FB3982001D2 /* ChatMarkdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMarkdownView.swift; sourceTree = "<group>"; };
+		C03FE281A4573F69C29C8AE3 /* ChatUsageLimits.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatUsageLimits.swift; sourceTree = "<group>"; };
 		C267561622D90717BA4F7BE5 /* RiWorkRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RiWorkRemoteApp.swift; sourceTree = "<group>"; };
 		C2EE56BC0C49CD4118865666 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
 		C31C97F6BBFBC6F473F8D162 /* KeyInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyInput.swift; sourceTree = "<group>"; };
@@ -582,6 +584,7 @@
 				D558F7B0FE2D8E3DEF243B29 /* ChatPresentation.swift */,
 				F94E782A153DC1EB5CDE51AD /* ChatRequests.swift */,
 				90675A8AC9868B616738958F /* ChatTranscript.swift */,
+				C03FE281A4573F69C29C8AE3 /* ChatUsageLimits.swift */,
 				0E55D2BB30B82DC0DF8A162F /* DesktopAppearance.swift */,
 				520666B9CCBDD7C817FE10BE /* DesktopTheme.swift */,
 				2CA7B700BC3C4DEFCB8AEFC5 /* DictationMachine.swift */,
@@ -1099,6 +1102,7 @@
 				D64E7D4DAF3BC5CA1ADBAAE8 /* ChatPresentation.swift in Sources */,
 				3CBEBD103406F820073DADFD /* ChatRequests.swift in Sources */,
 				A8747A3E67BA7B6CCE62D6A0 /* ChatTranscript.swift in Sources */,
+				94E7234E20F1D40DDE03A4C2 /* ChatUsageLimits.swift in Sources */,
 				4C09D1E8FECC3FD6F0EA1257 /* DesktopAppearance.swift in Sources */,
 				D1D209D9C9DC029D26B6A160 /* DesktopTheme.swift in Sources */,
 				4B28434C8F17FC4DF1AFC9B8 /* DictationMachine.swift in Sources */,

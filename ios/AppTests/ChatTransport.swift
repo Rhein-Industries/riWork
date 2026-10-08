@@ -146,6 +146,9 @@ actor ChatTransport: RemoteTransport {
     func setChats(_ list: [ChatInfo]) { chats = list }
     /// The orchestrators, each a JSON object as the desktop writes it.
     func setOrchestrators(_ entries: [String]) { orchestratorEntries = entries.map { (try? JSONDecoder().decode(JSONValue.self, from: Data($0.utf8))) ?? .null } }
+    /// The host's active dismissals, sent as the first snapshot page's `dismissed_notices`.
+    var dismissedNoticeKeys: [String] = []
+    func setDismissedNoticeKeys(_ keys: [String]) { dismissedNoticeKeys = keys }
     func handleCommands(_ handler: (@Sendable (String, ChatCommand) -> [ChatEvent])?) { onCommand = handler }
     func drop() { connected = false }
     func append(_ chat: String, _ events: [ChatEvent]) {
@@ -328,12 +331,14 @@ actor ChatTransport: RemoteTransport {
             if let info = transcript.info { controls.append(.info(info)) }
             controls.append(.state(transcript.state)); controls.append(.models(transcript.models))
             if let usage = transcript.usage { controls.append(.usage(usage)) }
+            if !transcript.rateLimits.isEmpty { controls.append(.rateLimits(transcript.rateLimits)) }
             if let turn = transcript.turnID { controls.append(.turnStarted(turnID: turn)) }
             controls += transcript.approvals.map { .approvalRequested($0) }
             controls += transcript.questions.map { .questionRequested($0) }
         }
         let page = ChatSnapshotReply(chatID: id, cursor: String(next), next: UInt64(next), before: items.first.map { orders[$0.id]! } ?? 0,
-            more: requested == nil && rows.count > items.count, items: items.map { ChatSnapshotRow(order: orders[$0.id]!, item: $0) }, controls: controls)
+            more: requested == nil && rows.count > items.count, items: items.map { ChatSnapshotRow(order: orders[$0.id]!, item: $0) }, controls: controls,
+            dismissedNotices: params["cursor"] == nil ? dismissedNoticeKeys : [])
         let encoded = try JSONEncoder().encode(page)
         if resourceLimits, encoded.count > 120_000 { throw RemoteError.rpc(code: "snapshot_limit", message: "snapshot response limit exceeded") }
         return try JSONDecoder().decode(JSONValue.self, from: encoded)

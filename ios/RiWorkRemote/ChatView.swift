@@ -154,6 +154,7 @@ private struct ChatToolbar: View {
     private var choices: ChatModelChoices { conversation.modelChoices(fallback: chat) }
     private var connected: Bool { model.state == .connected }
     private var meter: ChatUsageMeter? { conversation.transcript.usage.map(ChatUsageMeter.init).flatMap { $0.tokensText == nil ? nil : $0 } }
+    private var limits: ChatUsageLimits.Chip? { ChatUsageLimits.chip(conversation.transcript.rateLimits) }
 
     var body: some View {
         // The mode gives up its word before anything wraps; the model's name is cut last (`ChatModelChip` gives way first of all).
@@ -162,7 +163,10 @@ private struct ChatToolbar: View {
             row(modeTitle: false)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 4) { modelButton; Spacer(minLength: 4); modeButton(title: false) }
-                if let meter { ChatUsageRing(meter: meter) }
+                HStack(spacing: 2) {
+                    if let meter { ChatUsageRing(meter: meter) }
+                    limitsChip
+                }
             }
         }
         .padding(.horizontal, 8)
@@ -173,11 +177,18 @@ private struct ChatToolbar: View {
         HStack(spacing: 2) {
             modelButton
             if let meter { ChatUsageRing(meter: meter) }
+            limitsChip
             Spacer(minLength: 4)
             modeButton(title: modeTitle)
         }
     }
 
+    /// The provider's fullest usage window past its threshold, beside the context ring; always there for a usage limit's banner to open.
+    @ViewBuilder private var limitsChip: some View {
+        if limits != nil || !conversation.transcript.rateLimits.isEmpty {
+            ChatUsageLimitsChip(windows: conversation.transcript.rateLimits, requests: conversation.usageDetailRequests)
+        }
+    }
     private var modelButton: some View {
         ChatModelChip(choices: choices, enabled: connected, compact: true) { showModels = true }
             .chatLayoutProbe("model")
@@ -256,6 +267,60 @@ struct ChatUsageRing: View {
         .accessibilityIdentifier("chat-usage")
         .accessibilityLabel("Context usage").accessibilityValue(meter.spoken ?? "")
         .accessibilityHint("Shows the tokens used and the cost estimate")
+    }
+}
+
+/// The provider's usage windows: a compact chip for the fullest one at or past its threshold ("⚠ weekly 87% · resets Thu 14:00", in
+/// the warning tone, bold from 90 %), none below; a tap (or a usage limit's banner) lists every live window. Not dismissable.
+struct ChatUsageLimitsChip: View {
+    @Environment(\.desktopStyle) private var style
+    let windows: [ChatRateWindow]
+    let requests: Int
+    @State private var detail = false
+    var body: some View {
+        let chip = ChatUsageLimits.chip(windows)
+        Button { detail = true } label: {
+            if let chip {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill").font(style.system(.caption2)).accessibilityHidden(true)
+                    Text([chip.text, chip.resetText].compactMap { $0 }.joined(separator: " · "))
+                        .font(style.system(.footnote, weight: chip.bold ? .bold : .medium)).monospacedDigit().lineLimit(1)
+                }
+                .foregroundStyle(style.gold)
+                .padding(.horizontal, 6).frame(minHeight: style.target).contentShape(Rectangle())
+            } else {
+                // Nothing worth a chip: only the anchor for the detail a usage limit's banner opens.
+                Color.clear.frame(width: 1, height: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(chip == nil)
+        .onChange(of: requests) { _, _ in detail = true }
+        .popover(isPresented: $detail) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Usage limits").font(style.system(.caption, weight: .semibold)).foregroundStyle(style.muted)
+                ForEach(ChatUsageLimits.live(windows)) { window in
+                    HStack(spacing: 8) {
+                        Text(window.label).font(style.system(.subheadline)).foregroundStyle(style.text)
+                        Spacer(minLength: 12)
+                        Text(window.percentText).font(style.system(.subheadline, weight: window.usedPercent >= 90 ? .bold : .semibold)).monospacedDigit()
+                            .foregroundStyle(window.usedPercent >= window.warnAt ? style.gold : style.text)
+                        if let resets = window.resetsAt {
+                            Text("resets " + ChatUsageLimits.resetTime(resets)).font(style.system(.footnote)).foregroundStyle(style.muted)
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+                if ChatUsageLimits.live(windows).isEmpty { Text("No usage windows known.").font(style.system(.footnote)).foregroundStyle(style.muted) }
+            }
+            .padding(14).frame(minWidth: 240)
+            .presentationCompactAdaptation(.popover)
+        }
+        .chatLayoutProbe("usage-limits", action: { detail = true })
+        .accessibilityIdentifier("chat-usage-limits")
+        .accessibilityLabel("Usage limit").accessibilityValue(chip?.spoken ?? "")
+        .accessibilityHint("Shows every usage window")
+        .accessibilityHidden(chip == nil)
     }
 }
 
@@ -354,9 +419,12 @@ struct ChatNoticeBanners: View {
                               close: { conversation.alerts.clear(alert.source) }))
         }
         // The provider's notices of this turn, the latest of each kind.
-        for notice in ChatNotices.current(conversation.transcript.items, dismissed: conversation.dismissedNotices) {
-            lines.append(Line(id: "notice-\(notice.kind)", level: notice.level, icon: Self.icon(notice.level), text: notice.text, repeats: notice.count,
-                              close: { conversation.dismissedNotices.insert(notice.id) }))
+        // Sticky ones (a reached usage limit, a sign-in) from any turn; closing one of those closes it on the Mac too.
+        for notice in ChatNotices.current(conversation.transcript.items, dismissed: conversation.dismissedNotices, hostKeys: conversation.feed.dismissedNotices) {
+            let usage: (title: String, hint: String, enabled: Bool, run: () -> Void)? = notice.isUsageLimit && !conversation.transcript.rateLimits.isEmpty
+                ? ("Usage", "Shows the usage windows", true, { conversation.showUsageDetail() }) : nil
+            lines.append(Line(id: "notice-\(notice.kind)", level: notice.level, icon: Self.icon(notice.level), text: notice.bannerText(), repeats: notice.count,
+                              action: usage, close: { Task { await model.dismissChatNotice(chat.id, notice) } }))
         }
         return lines.sorted { $0.level.rank > $1.level.rank }
     }

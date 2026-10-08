@@ -349,7 +349,7 @@ extension ChatItemBody {
         case .webSearch(let query): "Web search: \(query)"
         case .todo(let items): "To-do, \(items.filter { $0.status == .completed }.count) of \(items.count) done"
         case .compaction: "Context compacted"
-        case .notice(_, let text, _): text
+        case .notice(_, let text, _, _, _, _): text
         }
     }
 }
