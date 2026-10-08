@@ -1401,6 +1401,8 @@ struct Workspace {
     shared_tabs: Option<Vec<project_tabs::Entry>>,
     /// The strip's ＋, worker picker or All tabs menu, open under its pane's strip.
     strip_menu: Option<tab_strip::StripMenu>,
+    /// The selection when the strip menu opened; another selection closes the menu.
+    strip_menu_selection: (PaneId, Option<TabId>),
     /// Which tab hosts `shared_tab_menu`.
     shared_tab_menu_key: String,
     /// Each pane strip's scrolling tabs, so a selected tab can be revealed.
@@ -2056,6 +2058,7 @@ impl Workspace {
             chat_tabs: chat_tabs::Coordinator::new(),
             shared_tabs: None,
             strip_menu: None,
+            strip_menu_selection: (0, None),
             shared_tab_menu_key: String::new(),
             strip_scrolls: Default::default(),
             shared_tab_menu: None,
@@ -3346,7 +3349,8 @@ impl Workspace {
         let index = target_index.min(dest.tabs.len());
         dest.tabs.insert(index, tab);
         dest.active = index;
-        if self.main_pane == Some(target) {
+        // The strip publishes its own reorders (`strip_drop`); placement stays local.
+        if self.main_pane == Some(target) && !self.uses_tab_strip() {
             let keys = self.panes[&target]
                 .tabs
                 .iter()
@@ -9379,6 +9383,7 @@ impl Workspace {
                 drag_room,
                 tab_can_close,
                 bar_buttons.into_any_element(),
+                window,
                 cx,
             )
         } else {
@@ -11271,13 +11276,7 @@ impl Render for Workspace {
         self.settle_terminal_drop(cx);
         if !cx.has_active_drag() {
             self.drop_target = None;
-            // A strip menu whose strip is gone (its pane closed, focus mode, a project
-            // switch) goes with it.
-            if self.strip_menu.is_some_and(|menu| {
-                self.focus_mode || !self.uses_tab_strip() || !self.panes.contains_key(&menu.pane)
-            }) {
-                self.strip_menu = None;
-            }
+            self.settle_strip_menu(window, cx);
             if self.tab_dragging
                 && self.panel_menu.is_none()
                 && self.strip_menu.is_none()
@@ -14310,6 +14309,104 @@ mod main_pane_tests {
     }
 
     #[gpui::test]
+    fn the_strip_draws_panels_then_pinned_then_shared_order_as_named_tabs(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui_kit::test::TestWindowExt;
+        cx.update(|cx| {
+            cx.set_global(Settings::default());
+            cx.set_global(Appearance::resolve(theme::ThemeChoice::Native, false));
+            cx.set_global(settings::CodexAccountsState::default());
+            cx.set_global(RemoteState::default());
+            cx.set_global(AccountUsage::default());
+            cx.set_global(CuaSetupState::default());
+            ui_text::init(cx);
+            text_input::init(cx);
+            behavior_controls::init(cx);
+            tooltip::init(cx);
+        });
+        let home = std::env::temp_dir().join(format!("rw-strip-{}", uuid::Uuid::new_v4()));
+        let project: Project = serde_json::from_value(serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"name":"Fixture","root":home,"created_at":1})).unwrap();
+        let project_id = project.id.clone();
+        let startup = WorkspaceStartup {
+            store: Store::open(&home).unwrap(),
+            layouts: LayoutStore::open(&home).unwrap(),
+            settings_store: SettingsStore::open(&home).unwrap(),
+            sessions: SessionManager::at(home.clone()).unwrap(),
+            state: State {
+                projects: vec![project.clone()],
+                ..Default::default()
+            },
+            project,
+            remote: None,
+        };
+        let chats = (0..3).map(|i| serde_json::from_value::<ChatInfo>(serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"provider":"codex","project_id":project_id,"cwd":"/tmp","title":format!("Chat {i}"),"created_at_unix":i,"state":{"state":"waiting"}})).unwrap()).collect::<Vec<_>>();
+        let tab_store = project_tabs::TabStore::at(&home, &project_id).unwrap();
+        tab_store
+            .reconcile(&chats.iter().map(project_tabs::Session::chat).collect::<Vec<_>>())
+            .unwrap();
+        let pinned = format!("chat:{}", chats[2].id);
+        tab_store
+            .update(&project_tabs::Update::Pin { key: pinned.clone() })
+            .unwrap();
+        let window = cx.add_window(|window, cx| Workspace::build(startup, None, window, cx, false));
+        let ids = window
+            .update(cx, |workspace, window, cx| {
+                let entries = tab_store.list().unwrap();
+                workspace.panes = BTreeMap::from([(1, pane(vec![panel(1, PanelKind::Files)], 0))]);
+                workspace.layout = Layout::Pane(1);
+                workspace.active_pane = 1;
+                workspace.main_pane = Some(1);
+                workspace.locked_panes = Some(HashSet::new());
+                workspace.next_tab_id = 2;
+                workspace.shared_chats = Some(chats.clone());
+                workspace.shared_tab_keys = entries.iter().map(|e| e.key.clone()).collect();
+                workspace.shared_tabs = Some(entries);
+                workspace.apply_shared_tabs(window, cx);
+                let pane = &workspace.panes[&1];
+                assert_eq!(pane.tabs.len(), 4);
+                let id = |key: &str| {
+                    pane.tabs
+                        .iter()
+                        .find(|tab| session_tab_key(tab).as_deref() == Some(key))
+                        .unwrap()
+                        .id
+                };
+                (
+                    pane.tabs[0].id,
+                    id(&pinned),
+                    id(&format!("chat:{}", chats[0].id)),
+                    id(&format!("chat:{}", chats[1].id)),
+                )
+            })
+            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let (panel, pinned, first, second) = (
+                window.find(("tab", ids.0)),
+                window.find(("tab", ids.1)),
+                window.find(("tab", ids.2)),
+                window.find(("tab", ids.3)),
+            );
+            for tab in [&pinned, &first, &second] {
+                assert_eq!(tab.role(), Some(gpui::Role::Tab));
+            }
+            assert_eq!(pinned.label(), Some("Chat 2, pinned, waiting"));
+            assert_eq!(first.label(), Some("Chat 0, waiting"));
+            // Panels lead, then the pinned tab, then the rest in shared order.
+            assert!(panel.bounds().right() <= pinned.bounds().left());
+            assert!(pinned.bounds().right() <= first.bounds().left());
+            assert!(first.bounds().right() <= second.bounds().left());
+            // One row: every tab sits in the same strip.
+            assert_eq!(pinned.bounds().top(), first.bounds().top());
+            let plus = window.find(("strip-new", 1u64));
+            assert_eq!(plus.label(), Some("New tab or open a worker"));
+            assert!(second.bounds().right() <= plus.bounds().left());
+        })
+        .unwrap();
+    }
+
+    #[gpui::test]
     fn shared_membership_orders_main_pane_keeps_other_panes_and_hides_without_stopping(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -14369,9 +14466,10 @@ mod main_pane_tests {
                 assert_eq!(workspace.panes[&1].tabs.len(), 4);
                 assert_eq!(workspace.active_pane, 2);
                 assert_eq!(window.focused(cx), focused);
-                // Main-pane drags publish order, including through panel slots.
+                // Strip drags publish order, including through panel slots.
                 let moved = workspace.panes[&1].tabs[3].id;
-                workspace.move_tab(
+                let target = workspace.panes[&1].tabs[1].id;
+                workspace.strip_drop(
                     &DraggedTab {
                         project_id: workspace.project_id.clone(),
                         pane_id: 1,
@@ -14380,6 +14478,7 @@ mod main_pane_tests {
                     },
                     1,
                     1,
+                    Some(target),
                     window,
                     cx,
                 );

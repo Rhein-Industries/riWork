@@ -128,10 +128,7 @@ fn activity_status(activity: AgentActivity) -> Option<project_tabs::Status> {
 /// in the terminal's red, done muted; a stopped session is an empty ring, so the state is
 /// never told by colour alone.
 pub(crate) fn status_dot(status: &project_tabs::Status, colors: Palette, error: u32) -> AnyElement {
-    let dot = div()
-        .flex_none()
-        .size(ui_text::space(DOT))
-        .rounded_full();
+    let dot = div().flex_none().size(ui_text::space(DOT)).rounded_full();
     match status {
         project_tabs::Status::Working => dot.bg(rgb(colors.working)),
         project_tabs::Status::Waiting => dot.bg(rgb(colors.gold)),
@@ -196,9 +193,8 @@ impl Workspace {
                     return (StripSlot::Panel, 0);
                 }
                 // Carried foreign views rank after this project's tabs.
-                let shared = session_tab_key(tab).and_then(|key| {
-                    self.shared_tab_entries().iter().find(|e| e.key == key)
-                });
+                let shared = session_tab_key(tab)
+                    .and_then(|key| self.shared_tab_entries().iter().find(|e| e.key == key));
                 let pinned = session_tab_key(tab)
                     .and_then(|key| self.strip_entry(&key))
                     .is_some_and(|e| e.pinned);
@@ -261,10 +257,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The main pane's drops publish in `move_tab`, which keeps its sessions in order.
-        let reorder = (drag.pane_id == pane_id
-            && drag.project_id == self.project_id
-            && self.main_pane() != Some(pane_id))
+        let reorder = (drag.pane_id == pane_id && drag.project_id == self.project_id)
             .then(|| {
                 let pane = self.panes.get(&pane_id)?;
                 let slots = self.strip_slots(pane);
@@ -361,11 +354,41 @@ impl Workspace {
         self.layout_menu_open = false;
         self.active_pane = pane;
         self.strip_menu = Some(menu);
+        self.strip_menu_selection = self.selection();
         self.begin_tab_drag(cx);
         self.menu_focus.focus(window, cx);
         // The Kit popup places itself after measuring; draw the frame that shows it.
         cx.on_next_frame(window, |_, _, cx| cx.notify());
         cx.notify();
+    }
+
+    /// The selected pane and its selected tab.
+    pub(crate) fn selection(&self) -> (PaneId, Option<TabId>) {
+        let tab = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .map(|tab| tab.id);
+        (self.active_pane, tab)
+    }
+
+    /// A strip menu goes when its strip does (its pane closed, focus mode, a project
+    /// switch) and when something else acted while it was open: a shortcut changed the
+    /// selection, or thawed the terminals it froze.
+    pub(crate) fn settle_strip_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(menu) = self.strip_menu else {
+            return;
+        };
+        let gone =
+            self.focus_mode || !self.uses_tab_strip() || !self.panes.contains_key(&menu.pane);
+        let moved = self.selection() != self.strip_menu_selection;
+        if gone || moved || !self.tab_dragging {
+            self.strip_menu = None;
+            self.finish_tab_drag(cx);
+            if moved || gone {
+                self.focus_active(window, cx);
+            }
+        }
     }
 
     pub(crate) fn close_strip_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -392,6 +415,7 @@ impl Workspace {
         drag_room: bool,
         tab_can_close: bool,
         bar_buttons: AnyElement,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme::palette(cx);
@@ -429,7 +453,11 @@ impl Workspace {
                 }
         };
         let base = panels.len() as f32 * ui_text::space_f32(PANEL_SEGMENT)
-            + if panels.is_empty() { 0.0 } else { ui_text::space_f32(14.0) }
+            + if panels.is_empty() {
+                0.0
+            } else {
+                ui_text::space_f32(14.0)
+            }
             + 2.0 * (ui_text::space_f32(STRIP_BUTTON) + gap)
             + ui_text::space_f32(8.0);
         let pinned_width = pinned.iter().map(|i| width(*i) + gap).sum::<f32>();
@@ -437,7 +465,10 @@ impl Workspace {
         // pane too narrow for that they scroll too, still first, so ＋ and All tabs stay.
         let pins_scroll = pins_scroll(pinned_width, room - base);
         let (pinned, sessions) = if pins_scroll {
-            (Vec::new(), pinned.into_iter().chain(sessions).collect::<Vec<_>>())
+            (
+                Vec::new(),
+                pinned.into_iter().chain(sessions).collect::<Vec<_>>(),
+            )
         } else {
             (pinned, sessions)
         };
@@ -482,13 +513,21 @@ impl Workspace {
                 if let Some(at) = sessions.iter().position(|index| *index == pane.active) {
                     entry.0.scroll_to_item(at);
                 }
-                cx.notify();
+                cx.on_next_frame(window, |_, _, cx| cx.notify());
             }
             entry.0.clone()
         };
         let error = theme::diff_colors(cx).removed;
         let tab = |index: usize, cx: &mut Context<Self>| {
-            self.strip_tab(pane_id, index, slots[index].0, pane_selected, tab_can_close, error, cx)
+            self.strip_tab(
+                pane_id,
+                index,
+                slots[index].0,
+                pane_selected,
+                tab_can_close,
+                error,
+                cx,
+            )
         };
         let panel_segment = (!panels.is_empty()).then(|| {
             behavior_controls::segments(("strip-panels", pane_id), "Panels", colors)
@@ -497,7 +536,11 @@ impl Workspace {
                 .gap(px(0.0))
                 .p(px(1.0))
                 .map(|track| controls::native(track, |track| track.rounded_full()))
-                .children(panels.iter().map(|index| self.strip_panel(pane_id, *index, cx)))
+                .children(
+                    panels
+                        .iter()
+                        .map(|index| self.strip_panel(pane_id, *index, cx)),
+                )
                 .into_any_element()
         });
         let divider = || {
@@ -605,9 +648,7 @@ impl Workspace {
                             .then(divider),
                     )
                     .children(pinned.iter().map(|index| tab(*index, cx)))
-                    .children(
-                        (!pinned.is_empty() && !sessions.is_empty()).then(divider),
-                    )
+                    .children((!pinned.is_empty() && !sessions.is_empty()).then(divider))
                     .child(
                         div()
                             .id(("tab-strip-scroll", pane_id))
@@ -736,10 +777,12 @@ impl Workspace {
                 cx.new(|_| drag.clone())
             },
         )
-        .on_drop(cx.listener(move |workspace, drag: &DraggedTab, window, cx| {
-            workspace.strip_drop(drag, pane_id, index, Some(tab_id), window, cx);
-            cx.stop_propagation();
-        }))
+        .on_drop(
+            cx.listener(move |workspace, drag: &DraggedTab, window, cx| {
+                workspace.strip_drop(drag, pane_id, index, Some(tab_id), window, cx);
+                cx.stop_propagation();
+            }),
+        )
         .into_any_element()
     }
 
@@ -833,9 +876,7 @@ impl Workspace {
                         .text_color(rgb(colors.text))
                 })
             })
-            .drag_over::<DraggedTab>(move |style, _, _, _| {
-                style.border_color(rgb(colors.cyan))
-            })
+            .drag_over::<DraggedTab>(move |style, _, _, _| style.border_color(rgb(colors.cyan)))
             .children(pinned.then(|| {
                 if native {
                     icons::symbol("pin.fill", 8.0, Some(ink))
@@ -846,7 +887,11 @@ impl Workspace {
                         .into_any_element()
                 }
             }))
-            .children(status.as_ref().map(|status| status_dot(status, colors, error)))
+            .children(
+                status
+                    .as_ref()
+                    .map(|status| status_dot(status, colors, error)),
+            )
             .child(
                 div()
                     .min_w_0()
@@ -864,9 +909,7 @@ impl Workspace {
                     .justify_center()
                     .rounded_full()
                     .text_color(rgb(colors.muted))
-                    .hover(move |style| {
-                        style.bg(rgb(colors.divider)).text_color(rgb(colors.text))
-                    })
+                    .hover(move |style| style.bg(rgb(colors.divider)).text_color(rgb(colors.text)))
                     .when(!active, |close| {
                         behavior_controls::tab_close_reveal(close, TAB_GROUP)
                     })
@@ -900,14 +943,16 @@ impl Workspace {
                     }
                 }),
             )
-            .on_key_down(cx.listener(move |workspace, event: &KeyDownEvent, window, cx| {
-                let menu = event.keystroke.key == "menu"
-                    || (event.keystroke.key == "f10" && event.keystroke.modifiers.shift);
-                if menu && let Some(key) = &keyboard_key {
-                    workspace.open_shared_tab_menu(key, window, cx);
-                    cx.stop_propagation();
-                }
-            }))
+            .on_key_down(
+                cx.listener(move |workspace, event: &KeyDownEvent, window, cx| {
+                    let menu = event.keystroke.key == "menu"
+                        || (event.keystroke.key == "f10" && event.keystroke.modifiers.shift);
+                    if menu && let Some(key) = &keyboard_key {
+                        workspace.open_shared_tab_menu(key, window, cx);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .on_drag(
                 DraggedTab {
                     pane_id,
@@ -924,10 +969,12 @@ impl Workspace {
                     cx.new(|_| drag.clone())
                 },
             )
-            .on_drop(cx.listener(move |workspace, drag: &DraggedTab, window, cx| {
-                workspace.strip_drop(drag, pane_id, index, Some(tab_id), window, cx);
-                cx.stop_propagation();
-            }));
+            .on_drop(
+                cx.listener(move |workspace, drag: &DraggedTab, window, cx| {
+                    workspace.strip_drop(drag, pane_id, index, Some(tab_id), window, cx);
+                    cx.stop_propagation();
+                }),
+            );
         // Every tab hosts its menu's popup, so the host has measured the tab before the menu
         // opens and the menu (and its focus) is there on its first frame.
         let menu = self
@@ -1028,10 +1075,17 @@ impl Workspace {
                         project_tabs::Kind::Shell => "Shell",
                     };
                     let parent = entry.parent.as_deref().and_then(|parent| {
-                        entries.iter().find(|e| e.key == parent).map(|e| e.title.clone())
+                        entries
+                            .iter()
+                            .find(|e| e.key == parent)
+                            .map(|e| e.title.clone())
                     });
                     let mut detail = if entry.worker {
-                        format!("Worker {} · {}", kind.to_lowercase(), status_word(&entry.status))
+                        format!(
+                            "Worker {} · {}",
+                            kind.to_lowercase(),
+                            status_word(&entry.status)
+                        )
                     } else {
                         format!("{kind} · {}", status_word(&entry.status))
                     };
@@ -1172,7 +1226,11 @@ impl Workspace {
                     .flex_none()
                     .flex()
                     .justify_center()
-                    .children(if checked { Some(menu_icon(Icon::Check, colors)) } else { lead }),
+                    .children(if checked {
+                        Some(menu_icon(Icon::Check, colors))
+                    } else {
+                        lead
+                    }),
             )
             .child(
                 div()
@@ -1208,7 +1266,14 @@ mod tests {
 
     #[test]
     fn panels_lead_then_pinned_sessions_then_the_rest_in_shared_order() {
-        let slots = [(Session, 7), (Panel, 0), (Pinned, 1), (Session, 3), (Panel, 0), (Pinned, 0)];
+        let slots = [
+            (Session, 7),
+            (Panel, 0),
+            (Pinned, 1),
+            (Session, 3),
+            (Panel, 0),
+            (Pinned, 0),
+        ];
         assert_eq!(strip_order(&slots), vec![1, 4, 5, 2, 3, 0]);
         // A view without a shared entry keeps its place after the shared tabs.
         let slots = [(Session, usize::MAX), (Session, 2), (Session, usize::MAX)];
@@ -1217,7 +1282,13 @@ mod tests {
 
     #[test]
     fn command_numbers_count_session_tabs_and_nine_is_the_last() {
-        let slots = [(Panel, 0), (Session, 2), (Pinned, 0), (Session, 3), (Session, 4)];
+        let slots = [
+            (Panel, 0),
+            (Session, 2),
+            (Pinned, 0),
+            (Session, 3),
+            (Session, 4),
+        ];
         let order = strip_order(&slots);
         assert_eq!(numbered_session(&order, &slots, 1), Some(2));
         assert_eq!(numbered_session(&order, &slots, 2), Some(1));
@@ -1272,9 +1343,18 @@ mod tests {
 
     #[test]
     fn stopped_and_unknown_activity_map_to_the_phones_states() {
-        assert_eq!(activity_status(AgentActivity::Working), Some(project_tabs::Status::Working));
-        assert_eq!(activity_status(AgentActivity::Waiting), Some(project_tabs::Status::Waiting));
-        assert_eq!(activity_status(AgentActivity::Exited), Some(project_tabs::Status::Stopped));
+        assert_eq!(
+            activity_status(AgentActivity::Working),
+            Some(project_tabs::Status::Working)
+        );
+        assert_eq!(
+            activity_status(AgentActivity::Waiting),
+            Some(project_tabs::Status::Waiting)
+        );
+        assert_eq!(
+            activity_status(AgentActivity::Exited),
+            Some(project_tabs::Status::Stopped)
+        );
         assert_eq!(activity_status(AgentActivity::Unknown), None);
         assert_eq!(status_word(&project_tabs::Status::Error), "error");
     }
