@@ -459,6 +459,71 @@ import RiWorkCore
         }
     }
 
+    /// `RIWORK_TAB_SCREENSHOTS_ONLY=testSimulatorTaps`: real taps on the simulator (by whoever runs it): the tab already on screen, then
+    /// the hidden shell's row in the open-worker picker. After each, the main thread must still answer within a second (a layout loop
+    /// used to freeze the app here). Leaves `<name>.manual`, waits for `<name>.done`, writes `<name>.result`.
+    func testSimulatorTaps() async throws {
+        guard ProcessInfo.processInfo.environment["RIWORK_TAB_SCREENSHOTS_ONLY"] == "testSimulatorTaps" else { throw XCTSkip("Set RIWORK_TAB_SCREENSHOTS_ONLY=testSimulatorTaps") }
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene") }
+        let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
+        let pairing = try Pairing.parse("""
+        {"v":1,"relay_url":"wss://example.com/v1/ws","desktop_id":"11111111-1111-4111-8111-111111111111","device_id":"22222222-2222-4222-8222-222222222222","route_id":"33333333-3333-4333-8333-333333333333","device_name":"Test","pairing_secret":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","relay_token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}
+        """)
+        var desktop = SavedDesktop(name: "Fixture", pairing: pairing, allowLocalDevelopment: false)
+        desktop.selectedProjectID = project; desktop.selectedSessionID = ChatTransport.shell
+        try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
+        let suite = "com.riwork.tests.tabchrome.\(UUID().uuidString)"
+        defaultsNames.append(suite)
+        let user = "dddddddd-3333-4333-8333-333333333333"
+        let transport = ChatTransport(chats: [ChatInfo(id: user, provider: .codex, projectID: project, cwd: "/fixture", title: "User chat", createdAtUnix: 20, state: .idle)], appearance: appearance(.nativeDark))
+        await transport.setShellOutput((0..<40).map { "\u{1b}[32m~/fixture\u{1b}[0m $ make test  # line \($0)" }.joined(separator: "\r\n"))
+        await transport.setSharedTabs([.init(key: "chat:\(user)", kind: "chat", title: "User chat"),
+                                       .init(key: "shell:\(ChatTransport.shell)", kind: "shell", title: "worker zsh", worker: true, parent: "chat:\(user)")])
+        let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: suite)!, chatWaitMilliseconds: 300,
+                                chatIdleInterval: .milliseconds(20), hardwareKeyboard: HardwareKeyboardMonitor(probe: { true }))
+        await model.connect()
+        let projectValue = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}".utf8))
+        let layout = ChatLayoutInspection()
+        let host = UIHostingController(rootView: AnyView(ThemedTabs(model: model, project: projectValue).environment(\.chatLayoutInspection, layout)))
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
+        window.windowLevel = .alert + 1
+        window.rootViewController = host
+        window.overrideUserInterfaceStyle = .dark
+        window.makeKeyAndVisible()
+        windows.forEach { $0.isHidden = true }
+        windows.append(window)
+        await eventually("shell on screen") { model.sharedTabs != nil && model.sessionID == ChatTransport.shell && model.hasOutput }
+        func step(_ name: String) async throws {
+            let marker = directory.appendingPathComponent(name + ".manual"), done = directory.appendingPathComponent(name + ".done")
+            try Data().write(to: marker)
+            let deadline = Date().addingTimeInterval(240)
+            while !FileManager.default.fileExists(atPath: done.path), Date() < deadline { try await Task.sleep(for: .milliseconds(200)) }
+            try? FileManager.default.removeItem(at: marker)
+            // Responsive: a short sleep on the main actor comes back in time, several times over.
+            var worst: Duration = .zero
+            for _ in 0..<10 {
+                let start = ContinuousClock.now
+                try await Task.sleep(for: .milliseconds(50))
+                worst = max(worst, ContinuousClock.now - start)
+            }
+            let line = "\(name) selected=\(model.sessionID ?? "nil") worst=\(worst) tabs=\(model.tabs.map(\.id))"
+            try Data(line.utf8).write(to: directory.appendingPathComponent(name + ".result"))
+            XCTAssertLessThan(worst, .seconds(1), line)
+        }
+        // 1. A tap on the tab already on screen.
+        try await step("tap-1-selected-tab")
+        // 2. Close it (a worker: detached), then open it again from the picker with a tap on its row.
+        _ = try await model.closeTab("shell:\(ChatTransport.shell)", choice: .detach)
+        layout.actions["open-workers"]?()
+        try await Task.sleep(for: .milliseconds(800))
+        try await step("tap-2-picker-row")
+        XCTAssertEqual(model.sessionID, ChatTransport.shell, "reopened from the picker")
+        await model.disconnect()
+        window.isHidden = true
+        try? keychain.delete()
+    }
+
     /// A state a person must finish by hand (a system menu, which a test cannot open): leaves `<name>.manual` and waits a while for
     /// `<name>.png`, taken by whoever opened the menu (`xcrun simctl io <udid> screenshot <name>.png`); goes on without it.
     private func manualShot(_ name: String) async throws {

@@ -355,6 +355,8 @@ struct TerminalTabsView: View {
         .statusBarHidden(chrome.statusBarHidden)
         .onChange(of: model.sessionID) { _, _ in sessionInfo = nil; followOutput = true }
         .onChange(of: model.focusMode) { _, _ in model.updateKeepAwake() }
+        // A confirmation asked on the last connection does not carry over to this one.
+        .onChange(of: model.connectionEpoch) { _, _ in closing = nil; closingTab = nil }
         // A desktop that no longer offers shared tabs (a reconnect to an older one): what was open for them goes.
         .onChange(of: model.desktopFeatures.tabs && model.sharedTabs != nil) { _, shared in
             if !shared { showingWorkers = false; showingEditTabs = false; closingTab = nil; renamingTab = nil; dropTarget = nil }
@@ -539,7 +541,7 @@ struct TerminalTabsView: View {
                 Button("Session info", systemImage: "info.circle") { showSessionInfo() }.disabled(content == .none)
                 if let entry = currentEntry { sharedTabItems(entry) }
                 // Without shared tabs only: with them, closing goes by the tab (a worker detaches; Ask / Detach / Exit; Hide before Exit).
-                if !model.desktopFeatures.tabs, chrome.terminalActions, let session = model.session, model.canClose(session) {
+                if chrome.terminalActions, let session = model.session, model.legacyCloseAvailable(session) {
                     Button("Close this terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session }
                 }
             }
@@ -675,14 +677,14 @@ struct TerminalTabsView: View {
             Text(tabDetail(session))
             if let entry { Section { sharedTabItems(entry) } }
             Button("New terminal", systemImage: "plus") { openNewTerminal() }
-            if !model.desktopFeatures.tabs, model.canClose(session) { Button("Close terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session } }
+            if model.legacyCloseAvailable(session) { Button("Close terminal…", systemImage: "xmark.circle", role: .destructive) { closing = session } }
         }
         // The same close as the menu's: by the shared tab when there is one, else the terminal's own.
         .accessibilityActions {
             if let entry {
                 Button(entry.isWorker ? "Close (detach)" : "Close tab") { requestClose(entry) }
-            } else if !model.desktopFeatures.tabs {
-                Button("Close terminal") { if model.canClose(session) { closing = session } }
+            } else if model.legacyCloseAvailable(session) {
+                Button("Close terminal") { if model.legacyCloseAvailable(session) { closing = session } }
             }
         }
     }
@@ -1191,6 +1193,8 @@ struct StatusStrip: View {
     let model: RemoteModel
     var body: some View {
         HStack(spacing: 6) {
+            // The two symbols differ in height by a fraction of a point, so this strip's height follows the state; the terminal under
+            // it ignores sub-point changes of its area (`reportTerminalArea`), or the two could feed each other without end.
             Image(systemName: outputStale ? "clock.badge.exclamationmark" : "checkmark.circle")
             Text(outputStale ? "Stale · \(model.state.label.lowercased())" : (model.syncMode == .live ? "Live" : "Latest snapshot"))
             if model.syncMode != .live || outputStale, let date = model.lastOutputAt { Text(date, style: .time) }

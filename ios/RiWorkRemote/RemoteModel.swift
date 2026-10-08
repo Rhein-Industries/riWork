@@ -31,6 +31,12 @@ enum ConnectionState: Equatable {
     /// Counts installs of the project's lists (shells, chats, shared tabs): a quiet refresh whose reads started before a newer install
     /// is older than what is on screen, and is dropped whole.
     @ObservationIgnored var inventoryStamp = 0
+    /// The connection's capabilities (and, for a desktop that shares tabs, its first lists) are in: until then no close is offered.
+    var capabilitiesKnown = false
+    /// Counts connections: what was asked on the last one (a pending confirmation) does not carry over.
+    var connectionEpoch = 0
+    /// Shells this device has ever seen as a shared worker: never closed from here, whatever a later connection says or has not said.
+    @ObservationIgnored var everSharedWorkers: Set<String> = []
     /// "When closing a tab: Ask / Detach / Exit", this device's own (`tab_close_behavior` in the app's defaults; Ask until chosen).
     var tabCloseBehavior = TabCloseBehavior.ask {
         didSet { defaults.set(tabCloseBehavior.rawValue, forKey: TabCloseBehavior.settingKey) }
@@ -522,6 +528,7 @@ enum ConnectionState: Equatable {
         polling?.cancel()
         stopThemeSync()
         generation = UUID(); let token = generation
+        capabilitiesKnown = false; connectionEpoch &+= 1
         viewportSessionID = nil; appliedViewport = nil; failedViewport = nil; viewportError = nil
         missingSessionIDs = []; loadedProjectID = nil; outputLines = [:]
         // A fresh connection may reach an upgraded desktop: detect direct typing again. Buffers survive.
@@ -563,6 +570,7 @@ enum ConnectionState: Equatable {
             startThemeSync(token: token)
             try await refresh(token: token)
             guard generation == token else { return }
+            capabilitiesKnown = true
             startPolling(token: token)
             kickKeySender()
         } catch {
@@ -731,6 +739,9 @@ enum ConnectionState: Equatable {
     }
     func chooseSession(_ session: RemoteSession) async {
         guard openSessions.contains(where: { $0.id == session.id }) else { return }
+        // Already the terminal on screen (a tap on its own tab, opening it from the picker): nothing to change, and the line being
+        // typed into it is kept.
+        if sessionID == session.id, selectedChatID == nil, selectedBlockedID == nil, !terminalCovered, outputSessionID == session.id { return }
         // A terminal tab takes the screen back from a chat.
         selectedChatID = nil; selectedBlockedID = nil
         do {
@@ -1061,6 +1072,7 @@ extension RemoteModel {
     @discardableResult func acceptSharedTabs(_ reply: SharedTabsReply) -> Bool {
         guard reply.supersedes(sharedTabs) else { return false }
         sharedTabs = reply
+        everSharedWorkers.formUnion(reply.allEntries.filter { $0.kind == .shell && $0.isWorker }.map(\.sessionID))
         return true
     }
     /// Whether a shared entry is an orchestrator (in a terminal, or running as a chat): it is detached from the phone, never exited.
@@ -1109,7 +1121,7 @@ extension RemoteModel {
         guard generation == token, projectID == project else { return }
         acceptSharedTabs(reply)
         guard let entry = reply.allEntries.first(where: { $0.key == key }) else { throw ChatValidationError.invalidID }
-        if entry.kind == .chat { selectChat(entry.sessionID) }
+        if entry.kind == .chat { if selectedChatID != entry.sessionID { selectChat(entry.sessionID) } }
         else if let shell = sessions.first(where: { $0.id == entry.sessionID && $0.alive }) { await chooseSession(shell) }
     }
     /// Ask is returned to the UI without a mutation. The sheet supplies an explicit choice. A worker only ever detaches; an
@@ -1130,7 +1142,7 @@ extension RemoteModel {
         if effective == .exit {
             if entry.kind == .chat { if let failure = await sendChatCommand(entry.sessionID, .stop) { throw NSError(domain: "RiWorkTabs", code: 1, userInfo: [NSLocalizedDescriptionKey: failure.message]) } }
             else if entry.kind == .shell, let shell = sessions.first(where: { $0.id == entry.sessionID }) {
-                if let failure = await closeTerminal(shell) { throw NSError(domain: "RiWorkTabs", code: 1, userInfo: [NSLocalizedDescriptionKey: failure.message]) }
+                if let failure = await closeTerminal(shell, viaSharedTab: true) { throw NSError(domain: "RiWorkTabs", code: 1, userInfo: [NSLocalizedDescriptionKey: failure.message]) }
             }
         }
         return true

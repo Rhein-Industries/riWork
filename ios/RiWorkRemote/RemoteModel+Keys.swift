@@ -62,6 +62,8 @@ extension RemoteModel {
 
     /// The terminal pane changed size (rotation, keyboard, focus mode, safe area). The grid follows.
     func reportTerminalArea(_ size: CGSize) {
+        // Sub-point jitter (a neighbour settling by a pixel) is no new area: following it could feed a resize back into the layout.
+        if let area = terminalArea, abs(area.width - size.width) < 1, abs(area.height - size.height) < 1 { return }
         terminalArea = size
         recomputeViewport()
     }

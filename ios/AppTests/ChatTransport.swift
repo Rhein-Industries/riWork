@@ -71,6 +71,7 @@ actor ChatTransport: RemoteTransport {
     /// The next `tabs.update` fails with this (the list is left as it was).
     var tabUpdateError: RemoteError?
     func failNextTabUpdate(_ error: RemoteError?) { tabUpdateError = error }
+    func setTabsFeature(_ on: Bool) { tabsFeature = on }
     /// The desktop's store was reset: a new epoch, counting from 1 again.
     func resetTabStore(_ tabs: [Tab]) {
         tabsEpoch = UUID().uuidString.lowercased(); tabsRevision = 1

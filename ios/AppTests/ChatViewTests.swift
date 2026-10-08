@@ -1306,7 +1306,7 @@ import RiWorkCore
         for setting in TabCloseBehavior.allCases {
             rig.model.tabCloseBehavior = setting
             _ = try await rig.model.closeTab("shell:\(ChatTransport.shell)", choice: setting == .ask ? .exit : nil)
-            try await rig.model.unhideTab("shell:\(ChatTransport.shell)")
+            try await rig.model.openTab("shell:\(ChatTransport.shell)")
         }
         // The VoiceOver action on its tab is the tab's close, not the terminal's.
         rig.model.tabCloseBehavior = .exit
@@ -1394,6 +1394,98 @@ import RiWorkCore
         let stops = await rig.transport.commands().compactMap { $0["command"].string }.filter { $0 == "stop" }
         XCTAssertTrue(stops.isEmpty)
         await finish(rig)
+    }
+
+    /// Closing a worker's shell tab and opening it again (the only terminal, so nothing is selected in between) settles: no layout loop
+    /// (the status strip used to change height by a fraction of a point between Stale and Live, which could flip the terminal's rows
+    /// and the state again without end, freezing the app).
+    func testReopeningAClosedShellTabSettles() async throws {
+        let rig = try await makeRig(chats: sharedChats())
+        await rig.transport.setSharedTabs([
+            .init(key: "chat:\(userChatID)", kind: "chat", title: "User chat"),
+            .init(key: "shell:\(ChatTransport.shell)", kind: "shell", title: "worker zsh", worker: true, parent: "chat:\(userChatID)")])
+        await rig.model.disconnect(); await rig.model.connect()
+        await eventually("the shared list is in") { rig.model.sharedTabs != nil && rig.model.tabs.contains { $0.id == ChatTransport.shell } }
+        final class Flag { var done = false }
+        let flag = Flag()
+        Task { @MainActor in
+            for setting in TabCloseBehavior.allCases {
+                rig.model.tabCloseBehavior = setting
+                _ = try? await rig.model.closeTab("shell:\(ChatTransport.shell)", choice: setting == .ask ? .exit : nil)
+                try? await rig.model.openTab("shell:\(ChatTransport.shell)")
+            }
+            flag.done = true
+        }
+        await eventually("closing and reopening settles", timeout: 10) { flag.done }
+        XCTAssertEqual(rig.model.sessionID, ChatTransport.shell)
+        // And the screen is still answering: a later frame is drawn.
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(flag.done)
+        await finish(rig)
+    }
+
+    /// Choosing the terminal that is already on screen (its own tab, or opening it from the picker) changes nothing: no new read, the
+    /// line being typed is kept, and it returns at once.
+    func testChoosingTheTerminalAlreadyOnScreenIsANoOp() async throws {
+        let rig = try await makeRig(chats: sharedChats())
+        await rig.transport.setSharedTabs([.init(key: "shell:\(ChatTransport.shell)", kind: "shell", title: "zsh")])
+        await rig.model.disconnect(); await rig.model.connect()
+        await eventually("on screen") { rig.model.sharedTabs != nil && rig.model.sessionID == ChatTransport.shell && rig.model.outputSessionID == ChatTransport.shell }
+        let shell = try XCTUnwrap(rig.model.sessions.first { $0.id == ChatTransport.shell })
+        rig.model.draft = "half a command"
+        let reads = await rig.transport.count("shell.output")
+        let started = ContinuousClock.now
+        await rig.model.chooseSession(shell)
+        try await rig.model.openTab("shell:\(ChatTransport.shell)")
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(2))
+        XCTAssertEqual(rig.model.draft, "half a command", "the line being typed is kept")
+        XCTAssertEqual(rig.model.sessionID, ChatTransport.shell)
+        let after = await rig.transport.count("shell.output")
+        XCTAssertLessThanOrEqual(after - reads, 1, "no read of its own (a live poll may land meanwhile)")
+        await finish(rig)
+    }
+
+    /// A reconnect: while the new connection's capabilities and tab list are still on their way, no close is offered and the terminal's
+    /// own close is refused; a confirmation asked before the reconnect does not close anything after it (a user shell goes by its tab
+    /// once the desktop shares tabs); a shell once seen as a worker is never closed, even by a desktop that no longer shares tabs.
+    func testAReconnectNeverLetsATerminalCloseReachShellClose() async throws {
+        for worker in [true, false] {
+            let rig = try await makeRig(chats: sharedChats())
+            await rig.transport.setSharedTabs([
+                .init(key: "chat:\(userChatID)", kind: "chat", title: "User chat"),
+                .init(key: "shell:\(ChatTransport.shell)", kind: "shell", title: "zsh", worker: worker, parent: worker ? "chat:\(userChatID)" : nil)])
+            await rig.model.disconnect(); await rig.model.connect()
+            await eventually("shared list in") { rig.model.sharedTabs != nil && rig.model.capabilitiesKnown }
+            let shell = try XCTUnwrap(rig.model.sessions.first { $0.id == ChatTransport.shell })
+            XCTAssertFalse(rig.model.legacyCloseAvailable(shell), "worker=\(worker): the terminal's own close is not offered with shared tabs")
+            let epoch = rig.model.connectionEpoch
+            // A reconnect whose tab list is held back: the window before the capabilities are known.
+            await rig.model.disconnect()
+            await rig.transport.hold(["tabs.list"])
+            let reconnect = Task { await rig.model.connect() }
+            await eventually("connected, capabilities pending") { rig.model.state == .connected && !rig.model.capabilitiesKnown }
+            XCTAssertGreaterThan(rig.model.connectionEpoch, epoch, "a pending confirmation is dropped")
+            XCTAssertFalse(rig.model.legacyCloseAvailable(shell), "worker=\(worker): nothing offered while capabilities are unknown")
+            // The confirmation asked before the reconnect lands now.
+            let during = await rig.model.closeTerminal(shell)
+            XCTAssertNotNil(during, "worker=\(worker): refused while unknown")
+            await rig.transport.releaseHeld()
+            await reconnect.value
+            XCTAssertTrue(rig.model.capabilitiesKnown)
+            let after = await rig.model.closeTerminal(shell)
+            XCTAssertNotNil(after, "worker=\(worker): with shared tabs it goes by its tab")
+            if worker {
+                // A desktop that no longer shares tabs: a shell once a worker is still never closed from here.
+                await rig.model.disconnect(); await rig.transport.setTabsFeature(false); await rig.model.connect()
+                await eventually("capabilities known") { rig.model.capabilitiesKnown && !rig.model.desktopFeatures.tabs }
+                XCTAssertFalse(rig.model.legacyCloseAvailable(shell))
+                let legacy = await rig.model.closeTerminal(shell)
+                XCTAssertNotNil(legacy)
+            }
+            let closes = await rig.transport.count("shell.close")
+            XCTAssertEqual(closes, 0, "worker=\(worker): shell.close never sent")
+            await finish(rig)
+        }
     }
 
     func testTheSettingIsThisDevicesAndKeptUnderItsKey() async throws {
