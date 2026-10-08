@@ -1138,7 +1138,6 @@ impl Rpc {
             .env_remove("RIWORK_CHAT_ID")
             .env_remove("RIWORK_SHELL_ID")
             .env_remove("RIWORK_ORCHESTRATOR_SCOPE")
-            .env_remove("RIWORK_AUTOMATION_ID")
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

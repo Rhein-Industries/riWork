@@ -150,7 +150,7 @@ pub(super) fn output(caller: &Caller<'_>, args: Vec<String>, json: bool) -> Resu
         account: caller.account,
         timing: caller.timing,
     };
-    let outcome = handoff::run(&env, request, &|step| eprintln!("{step}"))?;
+    let outcome = handoff::run_from_caller(&env, request, &|step| eprintln!("{step}"))?;
     let (kind, id) = match &outcome.target {
         Started::Shell(shell) => ("shell", shell.id.clone()),
         Started::Chat(chat) => ("chat", chat.id.clone()),
