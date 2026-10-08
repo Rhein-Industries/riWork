@@ -84,8 +84,9 @@ pub(super) struct Notices {
     items: usize,
     /// Provider notices the user closed, by item id.
     dismissed: HashSet<String>,
-    /// Reset captured by an optimistic local dismissal: a later reset can show again.
-    dismissed_resets: HashMap<String, u64>,
+    /// The reset time and level a closed notice had: the same item with another reset or
+    /// a higher level shows again.
+    dismissed_as: HashMap<String, (Option<u64>, u8)>,
     /// "n more" was pressed: every banner shows.
     pub expanded: bool,
     /// The history of every notice is open above the message box.
@@ -128,18 +129,17 @@ impl Notices {
         }
     }
 
+    /// × on a provider notice: it stays away until the same item comes back with another
+    /// reset time or a higher level (the host decides for good; this is the quick hide).
     pub fn dismiss_occurrence(&mut self, id: &str, transcript: &Transcript) {
         self.dismiss(id);
-        if let Some(reset) = transcript.items.iter().find_map(|item| {
-            if item.id != id {
-                return None;
-            }
-            match &item.body {
-                ItemBody::Notice { resets_at, .. } => *resets_at,
-                _ => None,
-            }
+        if let Some(seen) = transcript.items.iter().find_map(|item| match &item.body {
+            ItemBody::Notice {
+                level, resets_at, ..
+            } if item.id == id => Some((*resets_at, rank(*level))),
+            _ => None,
         }) {
-            self.dismissed_resets.insert(id.to_owned(), reset);
+            self.dismissed_as.insert(id.to_owned(), seen);
         }
     }
 
@@ -147,14 +147,14 @@ impl Notices {
         self.dismissed
             .iter()
             .filter(|id| {
-                self.dismissed_resets.get(*id).is_none_or(|reset| {
-                    let later_reset = transcript.items.iter().any(|item| {
-                        item.id == **id
-                            && matches!(item.body, ItemBody::Notice {
-                                resets_at: Some(later), ..
-                            } if later > *reset)
-                    });
-                    !later_reset
+                let Some((reset, level)) = self.dismissed_as.get(*id) else {
+                    return true;
+                };
+                !transcript.items.iter().any(|item| {
+                    item.id == **id
+                        && matches!(&item.body, ItemBody::Notice {
+                            level: now, resets_at, ..
+                        } if resets_at != reset || rank(*now) > *level)
                 })
             })
             .cloned()
@@ -200,6 +200,15 @@ impl Notices {
         );
         ranked.sort_by(|a, b| b.0.cmp(&a.0));
         ranked.into_iter().map(|(_, banner)| banner).collect()
+    }
+}
+
+/// How much a level weighs: a dismissed notice that worsens comes back.
+fn rank(level: NoticeLevel) -> u8 {
+    match level {
+        NoticeLevel::Info => 0,
+        NoticeLevel::Warning => 1,
+        NoticeLevel::Error => 2,
     }
 }
 
@@ -490,6 +499,29 @@ mod tests {
                 "retrying"
             ]
         );
+    }
+
+    #[test]
+    fn a_closed_notice_comes_back_when_its_item_gets_a_reset_or_worsens() {
+        let mut notices = Notices::default();
+        let mut t = transcript(vec![
+            user("u"),
+            notice("x", NoticeLevel::Error, "limit", Some("rate_limit:codex")),
+            notice("s", NoticeLevel::Warning, "slow", Some("silence")),
+        ]);
+        notices.dismiss_occurrence("x", &t);
+        notices.dismiss_occurrence("s", &t);
+        assert!(notices.banners(&t, 0).is_empty());
+        // The usage read brings the reset after the ×: a new occurrence for the host.
+        let mut limit = notice("x", NoticeLevel::Error, "limit", Some("rate_limit:codex"));
+        if let ItemBody::Notice { resets_at, .. } = &mut limit.body {
+            *resets_at = Some(100);
+        }
+        t.apply(&ChatEvent::ItemCompleted { item: limit });
+        t.apply(&ChatEvent::ItemCompleted {
+            item: notice("s", NoticeLevel::Error, "stuck", Some("silence")),
+        });
+        assert_eq!(texts(&notices.banners(&t, 0)), ["stuck", "limit"]);
     }
 
     #[test]

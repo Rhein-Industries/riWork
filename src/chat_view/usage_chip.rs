@@ -46,7 +46,7 @@ pub(super) fn chip_text(window: &RateWindow, now: u64, tight: bool) -> String {
     }
 }
 
-/// Every window, for the chip's hover hint.
+/// Every window, for the chip's hover hint (one line: a hint does not wrap).
 pub(super) fn chip_details(windows: &[RateWindow], now: u64) -> String {
     windows
         .iter()
@@ -62,7 +62,7 @@ pub(super) fn chip_details(windows: &[RateWindow], now: u64) -> String {
             }
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("; ")
 }
 
 impl ChatView {
@@ -163,7 +163,7 @@ mod tests {
         let five = window("five_hour", "5h", 40.0, 70.0, None);
         assert_eq!(
             chip_details(&[w, five], now),
-            "weekly 87% used · resets Sat 14:00\n5h 40% used"
+            "weekly 87% used · resets Sat 14:00; 5h 40% used"
         );
     }
 }

@@ -548,47 +548,55 @@ impl ChatView {
                 dimmed("chat-compact", "Compact", look).into_any_element()
             })
             .child(div().flex_1())
-            .children(self.usage_chip(look, cx))
-            .children(self.model.transcript.usage.as_ref().map(|usage| {
-                let fraction = toolbar::context_fraction(usage);
+            // The usage chip and the context meter stay together when the row wraps.
+            .child(
                 div()
-                    .relative()
+                    .flex_none()
                     .flex()
                     .items_center()
-                    .gap(ui_text::space(6.0))
-                    .text_size(ui_text::text(10.0))
-                    .text_color(rgb(colors.muted))
-                    // Counts, in the monospace accent where Native keeps one.
-                    .font_family(ui_text::mono_family())
-                    .children(fraction.map(|fraction| {
+                    .gap(ui_text::space(8.0))
+                    .children(self.usage_chip(look, cx))
+                    .children(self.model.transcript.usage.as_ref().map(|usage| {
+                        let fraction = toolbar::context_fraction(usage);
                         div()
-                            .w(ui_text::space(44.0))
-                            .h(ui_text::space(5.0))
-                            .rounded(px(3.0))
-                            .when(look.native, |track| track.rounded_full())
-                            .bg(rgb(colors.divider))
-                            .child(
+                            .relative()
+                            .flex()
+                            .items_center()
+                            .gap(ui_text::space(6.0))
+                            .text_size(ui_text::text(10.0))
+                            .text_color(rgb(colors.muted))
+                            // Counts, in the monospace accent where Native keeps one.
+                            .font_family(ui_text::mono_family())
+                            .children(fraction.map(|fraction| {
                                 div()
-                                    .h_full()
+                                    .w(ui_text::space(44.0))
+                                    .h(ui_text::space(5.0))
                                     .rounded(px(3.0))
-                                    .when(look.native, |fill| fill.rounded_full())
-                                    .w(relative(fraction))
-                                    .bg(rgb(if fraction >= 0.9 {
-                                        look.error()
-                                    } else if fraction >= 0.7 {
-                                        colors.gold
-                                    } else {
-                                        colors.cyan
-                                    })),
-                            )
-                    }))
-                    .child(toolbar::usage_text(usage))
-                    .children(usage.cost_usd.map(toolbar::cost_text))
-                    .child(tooltip::anchor(
-                        toolbar::usage_details(usage),
-                        TipLook::Control,
-                    ))
-            }))
+                                    .when(look.native, |track| track.rounded_full())
+                                    .bg(rgb(colors.divider))
+                                    .child(
+                                        div()
+                                            .h_full()
+                                            .rounded(px(3.0))
+                                            .when(look.native, |fill| fill.rounded_full())
+                                            .w(relative(fraction))
+                                            .bg(rgb(if fraction >= 0.9 {
+                                                look.error()
+                                            } else if fraction >= 0.7 {
+                                                colors.gold
+                                            } else {
+                                                colors.cyan
+                                            })),
+                                    )
+                            }))
+                            .child(toolbar::usage_text(usage))
+                            .children(usage.cost_usd.map(toolbar::cost_text))
+                            .child(tooltip::anchor(
+                                toolbar::usage_details(usage),
+                                TipLook::Control,
+                            ))
+                    })),
+            )
             .children(thread.map(|thread| {
                 let key = "thread".to_owned();
                 let copied = self.copied.as_deref() == Some("thread");

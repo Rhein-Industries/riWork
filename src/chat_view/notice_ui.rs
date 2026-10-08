@@ -154,7 +154,7 @@ impl ChatView {
 
     /// One banner. Closed (the default) it is one line as tall as the message box's
     /// buttons: its level's symbol, the text's first line cut to fit (the whole text in a
-    /// tooltip), a usage limit's reset time and the way to the Usage panel, a chevron when
+    /// hover hint), a usage limit's reset time and the way to the Usage panel, a chevron when
     /// there is more to read, and ×. Open, the text wraps and the symbol and buttons stay
     /// beside its first line. A long error opens by itself.
     fn notice_banner(&self, notice: &Banner, look: Look, cx: &mut Context<Self>) -> AnyElement {
@@ -208,9 +208,11 @@ impl ChatView {
                 .min_w_0()
                 .truncate()
                 .child(first_line(&notice.text).to_owned())
-                .children(more.then(|| {
-                    crate::tooltip::anchor(notice.text.clone(), crate::tooltip::Look::Control)
-                }))
+                // The whole text, also where a short one is cut in a narrow pane.
+                .child(crate::tooltip::anchor(
+                    notice.text.replace('\n', " "),
+                    crate::tooltip::Look::Control,
+                ))
                 .test_support()
                 .into_any_element()
         };
