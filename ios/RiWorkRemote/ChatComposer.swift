@@ -231,7 +231,7 @@ struct ChatComposer: View {
                     .alignmentGuide(.composerLine) { [band = ChatComposerField.lineBand(style, typeSize)] d in d.height - band / 2 }
                     .chatLayoutProbe("composer-field")
                 if actions.stop { stopButton }
-                if actions.mic { DictationButton(owner: .chat(conversation.id), insertion: insertion, compact: true).chatLayoutProbe("mic") }
+                if actions.mic { DictationButton(owner: .chat(conversation.id), insertion: insertion, compact: true, alerts: false).chatLayoutProbe("mic") }
                 if actions.send { sendButton }
             }
             .padding(.leading, attach == nil ? 6 : 0).padding(.trailing, 0)

@@ -739,6 +739,7 @@ struct SessionConsole: View {
     @State private var paneSize = CGSize.zero
     private var fontSize: Double { pinchScale.map { TerminalFontSize.pinched(from: model.terminalFontSize, scale: $0) } ?? model.terminalFontSize }
     private var focused: Bool { model.focusMode }
+    private var shellUploadFailed: Bool { model.sessionID.flatMap { model.uploadActivity(for: .shell($0)) }?.failed == true }
     var body: some View {
         let _ = Perf.count("body.SessionConsole")
         Group {
@@ -751,11 +752,18 @@ struct SessionConsole: View {
                     terminal
                     // What went wrong, in the same place and look as a chat's banner row: above the input, with ×, in focus mode too.
                     // It goes by itself when the cause is resolved (a read that succeeds, a reconnect).
-                    if let error = model.error {
-                        ChatNoticeLine(line: ChatNoticeBanners.Line(id: "shell-error", level: .warning, icon: ChatNoticeBanners.icon(.warning), text: error,
-                                                                    close: { model.error = nil }))
-                            .padding(.vertical, 4)
+                    VStack(spacing: 4) {
+                        if let error = model.error {
+                            ChatNoticeLine(line: ChatNoticeBanners.Line(id: "shell-error", level: .warning, icon: ChatNoticeBanners.icon(.warning), text: error,
+                                                                        close: { model.error = nil }))
+                        }
+                        if let id = model.sessionID, let activity = model.uploadActivity(for: .shell(id)), case .failed(let message) = activity.phase {
+                            ChatNoticeLine(line: ChatNoticeBanners.Line(id: "upload", level: .warning, icon: ChatNoticeBanners.icon(.warning), text: message,
+                                                                        close: { model.dismissUploadFailure() }))
+                        }
+                        if let line = ChatNoticeBanners.dictationLine(.terminal) { ChatNoticeLine(line: line) }
                     }
+                    .padding(.vertical, model.error != nil || ChatNoticeBanners.dictationLine(.terminal) != nil || shellUploadFailed ? 4 : 0)
                     bottomPanel
                 }
                 .background {
@@ -851,7 +859,7 @@ struct SessionConsole: View {
         .onChange(of: style.mic) { _, on in if !on { dictatedLine = nil } }
         // A file on its way to the Mac: at the top, clear of the chip and notices at the bottom.
         .overlay(alignment: .top) {
-            if let id = model.sessionID, let activity = model.uploadActivity(for: .shell(id)) {
+            if let id = model.sessionID, let activity = model.uploadActivity(for: .shell(id)), !activity.failed {
                 UploadStatusBar(activity: activity, cancel: model.cancelUpload, dismiss: model.dismissUploadFailure)
             }
         }

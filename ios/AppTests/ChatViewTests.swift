@@ -896,30 +896,55 @@ import RiWorkCore
 
     /// A swipe from the left edge goes back to the projects from a shell tab and from a chat, as on any pushed screen, although the
     /// screen hides the navigation bar for its own header (which turns UIKit's swipe off unless it is turned back on).
+    ///
+    /// Checked against the real screen: the navigation controller's own edge recognizer (a left-edge pan) is on and may begin, and every
+    /// scroll view actually on screen — the tab strip, the terminal, the key bar, the transcript, the composer — waits for it, through
+    /// their real pan recognizers; a pop updates the stack's path as Back does. What a hosted test cannot do is move a finger: XCTest
+    /// has no touch synthesis outside UI tests, and the app has no fixture launch mode for a UI-test target, so the drag itself (tracking,
+    /// cancelling half way) is the system's and is not exercised here.
     func testTheEdgeSwipeGoesBackFromAShellAndFromAChat() async throws {
+        // With a hardware keyboard the key bar stands alone at the bottom, on screen without the software keyboard.
         let rig = try await makeRig(pushed: true)
         func find(_ controller: UIViewController) -> UINavigationController? {
             (controller as? UINavigationController) ?? controller.children.lazy.compactMap(find).first
         }
         let navigation = try XCTUnwrap(find(rig.host), "the screen is pushed on a navigation controller")
-        func assertSwipeBack(_ screen: String) throws {
-            let gesture = try XCTUnwrap(navigation.interactivePopGestureRecognizer)
+        let gesture = try XCTUnwrap(navigation.interactivePopGestureRecognizer)
+        let edge = try XCTUnwrap(gesture as? UIScreenEdgePanGestureRecognizer, "the system's edge pan")
+        XCTAssertEqual(edge.edges, .left)
+        XCTAssertTrue(gesture.view === navigation.view, "on the navigation controller's view, over the whole screen")
+        func assertSwipeBack(_ screen: String, expecting kinds: [String]) throws {
             XCTAssertTrue(gesture.isEnabled, "\(screen): the edge swipe is on")
             XCTAssertTrue(gesture.delegate === EdgeSwipeBackDelegate.shared, "\(screen): with the delegate that allows it without a bar")
             XCTAssertEqual(navigation.viewControllers.count, 2, "\(screen): pushed over the projects")
             XCTAssertTrue(EdgeSwipeBackDelegate.shared.gestureRecognizerShouldBegin(gesture), "\(screen): it may begin")
-            let scroll = UIScrollView(), pan = scroll.panGestureRecognizer
-            XCTAssertTrue(EdgeSwipeBackDelegate.shared.gestureRecognizer(gesture, shouldBeRequiredToFailBy: pan), "\(screen): a scroll view at the edge waits for it")
+            let scrolls = descendants(UIScrollView.self, in: rig.window).filter { $0.window != nil && !$0.isHidden }
+            XCTAssertFalse(scrolls.isEmpty)
+            for scroll in scrolls {
+                XCTAssertTrue(EdgeSwipeBackDelegate.shared.gestureRecognizer(gesture, shouldBeRequiredToFailBy: scroll.panGestureRecognizer),
+                              "\(screen): \(Swift.type(of: scroll)) waits for the edge swipe")
+            }
+            let names = scrolls.map { "\(Swift.type(of: $0))" }
+            for kind in kinds { XCTAssertTrue(names.contains { $0.contains(kind) }, "\(screen): \(kind) is on screen and covered (\(names))") }
+            // Nothing else on the screen claims a touch at the left edge before the swipe: no other recognizer there is a left-edge pan.
+            let atEdge = descendants(UIView.self, in: rig.window).filter { view in
+                view.window != nil && view.convert(view.bounds, to: nil).contains(CGPoint(x: 4, y: rig.window.bounds.midY))
+            }
+            let rivals = atEdge.flatMap { $0.gestureRecognizers ?? [] }.compactMap { $0 as? UIScreenEdgePanGestureRecognizer }
+                // The navigation controller's own (iOS 26 adds a content-wide back swipe beside the edge one) go back too.
+                .filter { $0 !== gesture && $0.edges.contains(.left) && $0.view !== navigation.view }
+            XCTAssertTrue(rivals.isEmpty, "\(screen): no other left-edge recognizer: \(rivals.map { "\(Swift.type(of: $0)) on \(Swift.type(of: $0.view!)) delegate \(String(describing: $0.delegate.map { Swift.type(of: $0) })) enabled \($0.isEnabled)" })")
         }
-        try assertSwipeBack("shell")
+        try assertSwipeBack("shell", expecting: ["ScrollView"])
         let field = try await openChat(rig)
+        try await Task.sleep(for: .milliseconds(300))
+        try assertSwipeBack("chat", expecting: ["ChatComposerTextView"])
         XCTAssertNotNil(field)
-        try await Task.sleep(for: .milliseconds(300))
-        try assertSwipeBack("chat")
-        // Back at the first screen there is nothing to go back to.
+        // Going back (what the swipe finishes with) updates the stack's path, as Back does.
         navigation.popViewController(animated: false)
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertFalse(EdgeSwipeBackDelegate.shared.gestureRecognizerShouldBegin(try XCTUnwrap(navigation.interactivePopGestureRecognizer)), "none on the first screen")
+        await eventually("the path follows the pop") { rig.stack.items.isEmpty }
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(EdgeSwipeBackDelegate.shared.gestureRecognizerShouldBegin(gesture), "none on the first screen")
         await finish(rig)
     }
 
@@ -1015,6 +1040,90 @@ import RiWorkCore
         await finish(rig)
     }
 
+    /// A message on its way keeps its chat's one-at-a-time guard when the conversation is let go (another desktop, the chat gone from
+    /// a list, eviction) and made again: a second send is refused, and the first one's answer lands in the conversation now shown
+    /// without touching what was typed since.
+    func testAnInFlightSendKeepsItsGuardWhenTheConversationIsMadeAgain() async throws {
+        for outcome in ["sent", "refused"] {
+            let rig = try await makeRig()
+            let field = try await openChat(rig)
+            type("first message", into: field)
+            await rig.transport.gateCommands(true)
+            let first = Task { await rig.model.sendChatDraft(chatID) }
+            await eventually("\(outcome): on its way") { rig.model.chatSendsInFlight.contains(self.chatID) }
+            // The conversation is let go and made again while the message is on its way.
+            rig.model.chatConversations[chatID] = nil
+            let again = rig.model.conversation(chatID)
+            XCTAssertTrue(again.sending, "\(outcome): the guard comes with it")
+            let refused = await rig.model.sendChatMessage(chatID, "second message", restoring: false)
+            XCTAssertEqual(refused, .busy, "\(outcome): no second message before the first is answered")
+            again.draft = "typed since"
+            if outcome == "refused" { await rig.transport.failCommand(.rpc(code: "unavailable", message: "The desktop is busy")) }
+            await rig.transport.gateCommands(false)
+            _ = await first.value
+            XCTAssertFalse(again.sending, "\(outcome): the guard is released on the conversation shown")
+            XCTAssertFalse(rig.model.chatSendsInFlight.contains(chatID))
+            if outcome == "sent" {
+                XCTAssertEqual(again.draft, "typed since", "the answer does not overwrite what was typed since")
+            } else {
+                XCTAssertEqual(again.draft, "first message\ntyped since", "a refused message comes back before it, in the conversation shown")
+                XCTAssertNotNil(again.notice)
+            }
+            XCTAssertEqual(rig.model.chatDrafts.draft(chatID)?.text, again.draft, "\(outcome): the saved draft is the one shown")
+            XCTAssertNil(rig.model.chatDrafts.draft(chatID)?.sending, "\(outcome): nothing left marked as on its way")
+            let commands = await rig.transport.commands().count
+            XCTAssertEqual(commands, 1, "\(outcome): one message sent, once")
+            await finish(rig)
+        }
+    }
+
+    /// A send whose outcome is unknown (the link dropped or timed out) comes back to the composer flagged, and stays flagged across a
+    /// relaunch, until the person sends it again or empties the composer.
+    func testAnUncertainSendStaysUncertainAcrossARelaunch() async throws {
+        let rig = try await makeRig()
+        await rig.transport.enableSnapshots()
+        let field = try await openChat(rig)
+        type("deploy to staging", into: field)
+        await rig.transport.failCommand(.timeout)
+        let failure = await rig.model.sendChatDraft(chatID)
+        XCTAssertEqual(failure, .outcomeUnknown(.command))
+        XCTAssertEqual(rig.model.conversation(chatID).draft, "deploy to staging")
+        XCTAssertTrue(rig.model.conversation(chatID).notice?.contains("may or may not have gone through") == true)
+        XCTAssertEqual(rig.model.chatDrafts.draft(chatID)?.uncertain, true, "flagged in the saved draft")
+        let suite = try XCTUnwrap(defaultsNames.last)
+        await finish(rig)
+        let relaunched = try await makeRig(defaults: suite)
+        await relaunched.transport.enableSnapshots()
+        let again = try await openChat(relaunched)
+        XCTAssertEqual(again.text, "deploy to staging")
+        XCTAssertTrue(relaunched.model.conversation(chatID).notice?.contains("may not have reached the Mac") == true, "still said after a relaunch")
+        let sent = await relaunched.transport.commands().count
+        XCTAssertEqual(sent, 0, "never sent again by itself")
+        // Sending it is the person's decision; then it is an ordinary chat again.
+        await relaunched.model.sendChatDraft(chatID)
+        XCTAssertNil(relaunched.model.chatDrafts.draft(chatID))
+        await finish(relaunched)
+    }
+
+    /// A provider notice that recurs says how often in its one line ("×3"), as the phone's own messages do.
+    func testAProviderNoticeLineCountsItsRepeats() async throws {
+        let rig = try await makeRig(look: .nativeDark)
+        await rig.transport.enableSnapshots()
+        let notice = { (id: String, text: String) in ChatEvent.itemCompleted(ChatItem(id: id, status: .completed, body: .notice(level: .warning, text: text, kind: "api_retry"))) }
+        await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "u1", status: .completed, body: .userMessage("go"))),
+                                            notice("r1", "Retrying in 1 s"), notice("r2", "Retrying in 2 s"), notice("r3", "Retrying in 4 s")])
+        _ = try await openChat(rig)
+        await eventually("one line") { rig.layout.frames["banner-notice-kind:api_retry"] != nil }
+        var text = ""
+        await eventually("drawn") {
+            text = (try? self.renderedText(rig, in: rig.layout.frames["banner-notice-kind:api_retry"] ?? .zero)) ?? ""
+            return text.contains("×3")
+        }
+        XCTAssertTrue(text.contains("4 s"), "the latest: \(text)")
+        XCTAssertTrue(text.contains("×3"), "with how often: \(text)")
+        await finish(rig)
+    }
+
     // MARK: Messages of the moment
 
     /// The provider's notices are not transcript rows: the latest of each kind of this turn is one banner line above the composer,
@@ -1022,9 +1131,9 @@ import RiWorkCore
     func testProviderNoticesAreOneBannerPerKindAboveTheComposer() async throws {
         let rig = try await makeRig(look: .nativeDark)
         await rig.transport.enableSnapshots()
-        let notice = { (id: String, text: String, level: ChatNoticeLevel) in ChatEvent.itemCompleted(ChatItem(id: id, status: .completed, body: .notice(level: level, text: text))) }
+        let notice = { (id: String, text: String, kind: String) in ChatEvent.itemCompleted(ChatItem(id: id, status: .completed, body: .notice(level: .warning, text: text, kind: kind))) }
         await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "u1", status: .completed, body: .userMessage("go"))),
-                                            notice("n1", "Reconnecting… 1/5", .warning), notice("n2", "This account is close to the weekly usage limit", .warning)])
+                                            notice("n1", "Reconnecting… 1/5", "reconnecting"), notice("n2", "This account is close to the weekly usage limit", "rate_limit:seven_day")])
         let field = try await openChat(rig)
         let conversation = rig.model.conversation(chatID)
         await eventually("two notice lines") { rig.layout.frames.keys.filter { $0.hasPrefix("banner-notice-") }.count == 2 }
@@ -1034,16 +1143,16 @@ import RiWorkCore
         XCTAssertLessThanOrEqual(banners.maxY, field.convert(field.bounds, to: rig.window).minY + 1, "directly above the composer")
         XCTAssertGreaterThanOrEqual(banners.minY, scroll.convert(scroll.bounds, to: rig.window).maxY - 1, "under the transcript")
         // It recurs: the same line says the new text.
-        await rig.transport.append(chatID, [notice("n3", "Reconnecting… 2/5", .warning)])
-        await eventually("replaced in place") { (try? self.renderedText(rig, in: rig.layout.frames.first { $0.key.hasPrefix("banner-notice-reconnecting") }?.value ?? .zero).contains("2/5")) == true }
+        await rig.transport.append(chatID, [notice("n3", "Reconnecting… 2/5", "reconnecting")])
+        await eventually("replaced in place") { (try? self.renderedText(rig, in: rig.layout.frames.first { $0.key == "banner-notice-kind:reconnecting" }?.value ?? .zero).contains("2/5")) == true }
         XCTAssertEqual(rig.layout.frames.keys.filter { $0.hasPrefix("banner-notice-") }.count, 2, "not stacked")
         // ×: closed, until the provider says it again.
-        let closeKey = try XCTUnwrap(rig.layout.actions.keys.first { $0.hasPrefix("close-notice-reconnecting") })
+        let closeKey = try XCTUnwrap(rig.layout.actions.keys.first { $0 == "close-notice-kind:reconnecting" })
         rig.layout.actions[closeKey]?()
-        await eventually("closed") { !rig.layout.frames.keys.contains { $0.hasPrefix("banner-notice-reconnecting") } }
-        XCTAssertGreaterThanOrEqual(rig.layout.frames["close-notice-this account is close to the weekly usage limit"]?.width ?? 0, 44, "a full target")
-        await rig.transport.append(chatID, [notice("n4", "Reconnecting… 3/5", .warning)])
-        await eventually("back when said again") { rig.layout.frames.keys.contains { $0.hasPrefix("banner-notice-reconnecting") } }
+        await eventually("closed") { rig.layout.frames["banner-notice-kind:reconnecting"] == nil }
+        XCTAssertGreaterThanOrEqual(rig.layout.frames["close-notice-kind:rate_limit:seven_day"]?.width ?? 0, 44, "a full target")
+        await rig.transport.append(chatID, [notice("n4", "Reconnecting… 3/5", "reconnecting")])
+        await eventually("back when said again") { rig.layout.frames["banner-notice-kind:reconnecting"] != nil }
         // A new turn: last turn's notices go to the history.
         await rig.transport.append(chatID, [.itemCompleted(ChatItem(id: "u2", status: .completed, body: .userMessage("again")))])
         await eventually("history only") { !rig.layout.frames.keys.contains { $0.hasPrefix("banner-notice-") } }
@@ -1223,6 +1332,9 @@ import RiWorkCore
         _ = try await openChat(rig)
         await eventually("fresh chat loaded") { rig.model.conversation(self.chatID).transcript.items.count == 12 }
         try await Task.sleep(for: .milliseconds(400))
+        // The banner row's note about an older desktop goes once its history is in, and the transcript grows into its room: match the
+        // scroll view to the measured frame once both have settled.
+        await eventually("the transcript's frame has settled") { self.transcriptScroll(rig) != nil }
         let scroll = try XCTUnwrap(transcriptScroll(rig))
         await eventually("fresh loaded chat at valid bottom") { self.isAtValidBottom(scroll) }
         if jumpFirst {

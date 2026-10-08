@@ -17,16 +17,17 @@ public struct ChatProviderNotice: Sendable, Equatable, Identifiable {
     public let id: String
     public let level: ChatNoticeLevel
     public let text: String
-    /// What makes two notices "the same kind": the host's own kind when it sends one, else the text with its numbers taken out
-    /// ("Reconnecting… 2/5" and "Reconnecting… 3/5" are one kind).
+    /// What makes two notices "the same kind": the host's `kind` when it sends one ("rate_limit:seven_day", "reconnecting", …, the
+    /// same key the Mac groups by), else the notice's own text, so a notice without a kind is a line of its own.
     public let kind: String
     /// How many times this kind was said in the chat, this one included.
     public var count: Int
 
-    public static func kind(of text: String) -> String {
-        let folded = text.lowercased().unicodeScalars.map { CharacterSet.decimalDigits.contains($0) ? "#" : String($0) }.joined()
-        let squeezed = folded.replacingOccurrences(of: "#+", with: "#", options: .regularExpression)
-        return String(squeezed.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+    /// The grouping key: `kind:<host kind>`, or `text:<text>` for a notice without one (an older host, or a kind this phone does not
+    /// know is still the host's word for it, and is used as it is).
+    public static func key(kind: String?, text: String) -> String {
+        if let kind { return "kind:" + kind }
+        return "text:" + text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -35,8 +36,8 @@ public enum ChatNotices {
     public static func all(_ items: [ChatItem]) -> [ChatProviderNotice] {
         var counts: [String: Int] = [:]
         return items.compactMap { item in
-            guard case .notice(let level, let text) = item.body else { return nil }
-            let kind = ChatProviderNotice.kind(of: text)
+            guard case .notice(let level, let text, let hostKind) = item.body else { return nil }
+            let kind = ChatProviderNotice.key(kind: hostKind, text: text)
             counts[kind, default: 0] += 1
             return ChatProviderNotice(id: item.id, level: level, text: text, kind: kind, count: counts[kind]!)
         }

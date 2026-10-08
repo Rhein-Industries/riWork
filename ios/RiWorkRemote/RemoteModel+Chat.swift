@@ -181,9 +181,11 @@ extension RemoteModel {
     /// again by itself.
     func restoreDraft(_ conversation: ChatConversation) {
         let id = conversation.id
+        if chatSendsInFlight.contains(id) { conversation.sending = true }
         if let saved = chatDrafts.draft(id) {
             if chatSendsInFlight.contains(id) {
-                // Its message is on its way in this run (the conversation was let go meanwhile): only the text is the composer's.
+                // Its message is on its way in this run (the conversation was let go meanwhile, with the desktop or the project): only
+                // the text is the composer's, and the guard goes with it, so a second message is not sent before the first is answered.
                 conversation.draft = saved.text
             } else {
                 let restored = saved.restored
@@ -233,7 +235,7 @@ extension RemoteModel {
         reconcileChatSelection()
         // A chat the desktop no longer has is not held on to (an orchestrator's chat is the orchestrator list's to keep).
         let known = Set(ordered.map(\.id)).union(tabs.compactMap { $0.chatInfo?.id })
-        for id in chatConversations.keys where !known.contains(id) && chatConversations[id]?.following != true { chatConversations[id] = nil }
+        for id in chatConversations.keys where !known.contains(id) && chatConversations[id]?.following != true && !chatSendsInFlight.contains(id) { chatConversations[id] = nil }
         lastListRead[.sessions] = .now
     }
 
@@ -514,19 +516,39 @@ extension RemoteModel {
     @discardableResult
     func sendChatMessage(_ chatID: String, _ text: String, restoring: Bool = false) async -> ChatControlError? {
         let conversation = conversation(chatID)
-        guard !conversation.sending else { return .busy }
+        // One message at a time per chat, also across a conversation let go and made again while the first is on its way.
+        guard !conversation.sending, !chatSendsInFlight.contains(chatID) else { return .busy }
         conversation.sending = true
+        chatSendsInFlight.insert(chatID)
         // The text is held until the desktop answers: if the app ends before that, it comes back into the composer.
-        if restoring { chatDrafts.beginSending(text, for: chatID); chatSendsInFlight.insert(chatID); conversation.draft = "" }
-        defer { conversation.sending = false; if restoring { chatDrafts.endSending(for: chatID); chatSendsInFlight.remove(chatID) } }
+        if restoring { chatDrafts.beginSending(text, for: chatID); conversation.draft = "" }
+        // The answer lands in the chat's conversation as it is now (the one the person sees), which may have been made again meanwhile.
+        var current: ChatConversation { chatConversations[chatID] ?? conversation }
+        defer {
+            conversation.sending = false; current.sending = false
+            chatSendsInFlight.remove(chatID)
+        }
         let failure = await sendChatCommand(chatID, .send(text: text))
         if let failure {
-            if restoring { conversation.draft = conversation.draft.isEmpty ? text : text + "\n" + conversation.draft }
-            conversation.notice = failure.message
+            if restoring {
+                let draft = current.draft
+                let back = draft.isEmpty ? text : text + "\n" + draft
+                current.draft = back
+                if case .outcomeUnknown = failure {
+                    // The link dropped or timed out: the Mac may have it. It stays flagged, across relaunches, until the person sends it
+                    // again or empties the composer; it is never sent again by itself.
+                    chatDrafts.restoreUncertain(back, for: chatID)
+                    current.alerts.show(.action, failure.message)
+                    return failure
+                }
+                chatDrafts.endSending(for: chatID)
+            }
+            current.notice = failure.message
             return failure
         }
-        conversation.notice = nil
-        conversation.jumpToEnd()
+        if restoring { chatDrafts.endSending(for: chatID) }
+        current.notice = nil
+        current.jumpToEnd()
         return nil
     }
 

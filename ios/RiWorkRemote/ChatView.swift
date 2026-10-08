@@ -59,7 +59,8 @@ struct ChatScreen: View {
                 }
                 .id(question.requestID)
             }
-            if let activity = model.uploadActivity(for: .chat(chat.id)) {
+            // A file on its way (with Cancel); one that failed is said in the banner row.
+            if let activity = model.uploadActivity(for: .chat(chat.id)), !activity.failed {
                 UploadStatusBar(activity: activity, cancel: model.cancelUpload, dismiss: model.dismissUploadFailure)
             }
             // Every message of the moment, in one place: the link, the chat's state, what went wrong, the provider's notices.
@@ -342,6 +343,11 @@ struct ChatNoticeBanners: View {
                                   close: { closedState = banner.text }))
             }
         }
+        // A file that did not reach the Mac, and a dictation that failed (with Open Settings when that is the way out).
+        if let activity = model.uploadActivity(for: .chat(chat.id)), case .failed(let message) = activity.phase {
+            lines.append(Line(id: "upload", level: .warning, icon: "exclamationmark.triangle.fill", text: message, close: { model.dismissUploadFailure() }))
+        }
+        if let line = Self.dictationLine(.chat(chat.id)) { lines.append(line) }
         // What the phone itself has to say: one line per source, replaced in place.
         for alert in conversation.alerts.ordered {
             lines.append(Line(id: "alert-\(alert.source.rawValue)", level: alert.level, icon: Self.icon(alert.level), text: alert.text, repeats: alert.repeats,
@@ -349,10 +355,19 @@ struct ChatNoticeBanners: View {
         }
         // The provider's notices of this turn, the latest of each kind.
         for notice in ChatNotices.current(conversation.transcript.items, dismissed: conversation.dismissedNotices) {
-            lines.append(Line(id: "notice-\(notice.kind)", level: notice.level, icon: Self.icon(notice.level), text: notice.text,
+            lines.append(Line(id: "notice-\(notice.kind)", level: notice.level, icon: Self.icon(notice.level), text: notice.text, repeats: notice.count,
                               close: { conversation.dismissedNotices.insert(notice.id) }))
         }
         return lines.sorted { $0.level.rank > $1.level.rank }
+    }
+    /// A failed dictation of `owner`, as a banner line: its reason, Open Settings when permission is the way out, × to put it away.
+    static func dictationLine(_ owner: DictationOwner, controller: DictationController = .shared) -> Line? {
+        guard case .failed(let problem) = controller.phase(for: owner) else { return nil }
+        let settings: (title: String, hint: String, enabled: Bool, run: () -> Void)? = problem.opensSettings ? ("Open Settings", "Opens RiWork's settings", true, {
+            controller.dismiss()
+            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+        }) : nil
+        return Line(id: "dictation", level: .warning, icon: "mic.slash", text: problem.message, action: settings, close: { controller.dismiss() })
     }
     static func icon(_ level: ChatNoticeLevel) -> String {
         switch level {
@@ -362,6 +377,11 @@ struct ChatNoticeBanners: View {
         }
     }
 
+    /// A small link with a full 44-point target around it.
+    private func link(_ title: String, alignment: Alignment) -> some View {
+        Text(title).font(style.system(.caption)).foregroundStyle(style.link)
+            .padding(.horizontal, 8).frame(minWidth: style.target, minHeight: style.target, alignment: alignment).contentShape(Rectangle())
+    }
     var body: some View {
         let lines = lines
         let history = ChatNotices.all(conversation.transcript.items).count
@@ -371,17 +391,18 @@ struct ChatNoticeBanners: View {
             if lines.count > 2 || (history > 0 && !lines.isEmpty) {
                 HStack(spacing: 12) {
                     if lines.count > 2 {
-                        Button(expanded ? "Show fewer" : "\(lines.count - 2) more") { expanded.toggle() }
+                        Button { expanded.toggle() } label: { link(expanded ? "Show fewer" : "\(lines.count - 2) more", alignment: .leading) }
                             .accessibilityLabel(expanded ? "Show fewer messages" : "Show \(lines.count - 2) more messages")
+                            .chatLayoutProbe("banners-more", action: { expanded.toggle() })
                     }
                     Spacer(minLength: 0)
                     if history > 0 {
-                        Button("\(history) \(history == 1 ? "notice" : "notices")", action: showHistory).accessibilityHint("Every notice of the provider in this chat")
+                        Button(action: showHistory) { link("\(history) \(history == 1 ? "notice" : "notices")", alignment: .trailing) }
+                            .accessibilityHint("Every notice of the provider in this chat")
                             .chatLayoutProbe("notices-history", action: showHistory)
                     }
                 }
-                .font(style.system(.caption)).foregroundStyle(style.link).buttonStyle(.plain)
-                .padding(.horizontal, 14).frame(minHeight: 32).contentShape(Rectangle())
+                .buttonStyle(.plain).padding(.horizontal, 6)
             }
         }
         .padding(.top, lines.isEmpty ? 0 : 4)

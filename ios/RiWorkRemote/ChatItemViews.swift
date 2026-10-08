@@ -83,7 +83,7 @@ struct ChatItemRow: View, Equatable {
                 DesktopRule()
             }
             .accessibilityElement(children: .combine).accessibilityLabel("Context compacted")
-        case .notice(let level, let text): NoticeBlock(level: level, text: text)
+        case .notice(let level, let text, _): NoticeBlock(level: level, text: text)
         }
     }
 }
@@ -237,11 +237,14 @@ private struct CardHeader<Trailing: View>: View {
             Button(action: toggle) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     ChatStatusGlyph(status: status, errored: errored).alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+                    // The title keeps its room before the subtitle does, and is cut itself only when it alone is too long (a long
+                    // server and tool name): nothing in the row ever pushes it wider than the card.
                     Text(title).font(titleFont ?? style.system(.subheadline, weight: .semibold)).foregroundStyle(style.text)
-                        .lineLimit(isOpen ? 6 : 1).layoutPriority(subtitle.isEmpty ? 1 : 0.5).fixedSize(horizontal: !subtitle.isEmpty && titleFont == nil, vertical: false)
+                        .lineLimit(isOpen ? 6 : 1).truncationMode(.tail).layoutPriority(1)
                     if !subtitle.isEmpty {
                         Text(subtitle).font(subtitleFont ?? style.codeSmall).foregroundStyle(style.muted)
                             .lineLimit(isOpen ? 4 : 1).truncationMode(truncation).multilineTextAlignment(.leading)
+                            .frame(minWidth: style.pt(48), alignment: .leading)
                     }
                     Spacer(minLength: 0)
                 }
@@ -261,6 +264,7 @@ private struct CardHeader<Trailing: View>: View {
         }
         .padding(.leading, 10)
         .background(style.cardHeader)
+        .chatLayoutProbe("card-header-\(label.prefix(24))")
     }
 }
 extension CardHeader where Trailing == EmptyView {
