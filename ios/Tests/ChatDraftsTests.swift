@@ -98,4 +98,22 @@ import XCTest
         defaults.set(Data(#"{"a":{"text":"old","updatedAt":800000000}}"#.utf8), forKey: ChatDraftStore.key)
         XCTAssertEqual(ChatDraftStore(defaults: defaults, now: { Date(timeIntervalSinceReferenceDate: 800000100) }).draft("a")?.text, "old")
     }
+    func testOnlyTheSendThatOwnsTheDraftMayEndOrReturnIt() {
+        let store = ChatDraftStore(defaults: defaults())
+        let first = store.beginSending("first", for: "a")
+        store.setText("typed since", for: "a")
+        store.endSending(for: "a", token: "someone else")
+        XCTAssertEqual(store.draft("a")?.sending, "first", "a stale answer changes nothing")
+        XCTAssertNil(store.returnUnsent("first", token: "someone else", uncertain: false, for: "a"))
+        XCTAssertEqual(store.returnUnsent("first", token: first, uncertain: true, for: "a"), "first\ntyped since")
+        XCTAssertEqual(store.draft("a")?.text, "first\ntyped since")
+        XCTAssertEqual(store.draft("a")?.uncertain, true)
+        XCTAssertNil(store.draft("a")?.sendToken)
+        XCTAssertNil(store.returnUnsent("first", token: first, uncertain: false, for: "a"), "answered once")
+        let second = store.beginSending("second", for: "a")
+        store.endSending(for: "a", token: first)
+        XCTAssertEqual(store.draft("a")?.sending, "second", "the first send's late answer does not end the second")
+        store.endSending(for: "a", token: second)
+        XCTAssertNil(store.draft("a")?.sending)
+    }
 }

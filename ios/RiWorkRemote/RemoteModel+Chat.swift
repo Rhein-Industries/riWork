@@ -520,35 +520,39 @@ extension RemoteModel {
         guard !conversation.sending, !chatSendsInFlight.contains(chatID) else { return .busy }
         conversation.sending = true
         chatSendsInFlight.insert(chatID)
-        // The text is held until the desktop answers: if the app ends before that, it comes back into the composer.
-        if restoring { chatDrafts.beginSending(text, for: chatID); conversation.draft = "" }
-        // The answer lands in the chat's conversation as it is now (the one the person sees), which may have been made again meanwhile.
-        var current: ChatConversation { chatConversations[chatID] ?? conversation }
+        // The text is held until the desktop answers: if the app ends before that, it comes back into the composer. The token ties the
+        // answer to this send in the saved draft.
+        let token = restoring ? chatDrafts.beginSending(text, for: chatID) : nil
+        if restoring { conversation.draft = "" }
+        // The conversation the person sees now, if any: the one this send started from may have been let go and made again (or let
+        // go with nothing in its place). A conversation let go is never written to: its text may be older than the saved draft.
+        var live: ChatConversation? { chatConversations[chatID] }
         defer {
-            conversation.sending = false; current.sending = false
+            conversation.sending = false; live?.sending = false
             chatSendsInFlight.remove(chatID)
         }
         let failure = await sendChatCommand(chatID, .send(text: text))
         if let failure {
-            if restoring {
-                let draft = current.draft
-                let back = draft.isEmpty ? text : text + "\n" + draft
-                current.draft = back
-                if case .outcomeUnknown = failure {
-                    // The link dropped or timed out: the Mac may have it. It stays flagged, across relaunches, until the person sends it
-                    // again or empties the composer; it is never sent again by itself.
-                    chatDrafts.restoreUncertain(back, for: chatID)
-                    current.alerts.show(.action, failure.message)
+            if let token {
+                // The saved draft has whatever was typed since, in whichever composer: the message comes back before it there, and the
+                // composer shown (if any) shows the same. A stale answer (another send owns the draft now) changes nothing.
+                let uncertain = failure.outcomeIsUncertain
+                if let back = chatDrafts.returnUnsent(text, token: token, uncertain: uncertain, for: chatID), let live {
+                    live.draft = back
+                }
+                if uncertain {
+                    // The Mac may have it (the link dropped, it timed out, or its answer could not be read): flagged in the saved draft
+                    // until the person sends it again or empties the composer, across relaunches; never sent again by itself.
+                    live?.alerts.show(.action, failure.message)
                     return failure
                 }
-                chatDrafts.endSending(for: chatID)
             }
-            current.notice = failure.message
+            (live ?? conversation).notice = failure.message
             return failure
         }
-        if restoring { chatDrafts.endSending(for: chatID) }
-        current.notice = nil
-        current.jumpToEnd()
+        if let token { chatDrafts.endSending(for: chatID, token: token) }
+        live?.notice = nil
+        live?.jumpToEnd()
         return nil
     }
 

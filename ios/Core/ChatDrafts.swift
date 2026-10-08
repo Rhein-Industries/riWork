@@ -14,19 +14,22 @@ public struct ChatDraft: Codable, Sendable, Equatable {
     public var text: String
     /// A message sent and not yet answered by the desktop.
     public var sending: String?
+    /// Which send `sending` belongs to: only that send's answer may end it or bring it back.
+    public var sendToken: String?
     /// The text holds a message that may have reached the desktop already: said again on every restore until the person sends or
     /// empties the composer.
     public var uncertain: Bool
     /// When it last changed, so drafts of chats long gone can be let go.
     public var updatedAt: Date
-    public init(text: String = "", sending: String? = nil, uncertain: Bool = false, updatedAt: Date = .now) {
-        self.text = text; self.sending = sending; self.uncertain = uncertain; self.updatedAt = updatedAt
+    public init(text: String = "", sending: String? = nil, sendToken: String? = nil, uncertain: Bool = false, updatedAt: Date = .now) {
+        self.text = text; self.sending = sending; self.sendToken = sendToken; self.uncertain = uncertain; self.updatedAt = updatedAt
     }
-    private enum Keys: String, CodingKey { case text, sending, uncertain, updatedAt }
+    private enum Keys: String, CodingKey { case text, sending, sendToken, uncertain, updatedAt }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
         sending = try c.decodeIfPresent(String.self, forKey: .sending)
+        sendToken = try c.decodeIfPresent(String.self, forKey: .sendToken)
         uncertain = try c.decodeIfPresent(Bool.self, forKey: .uncertain) ?? false
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? .now
     }
@@ -70,17 +73,36 @@ public struct ChatDraft: Codable, Sendable, Equatable {
     public func setText(_ text: String, for chatID: String) {
         update(chatID) { $0.text = Self.bounded(text) }
     }
-    /// A message leaves the composer: held until `endSending`. Sending is the person's decision about an uncertain one, too.
-    public func beginSending(_ text: String, for chatID: String) {
-        update(chatID) { $0.sending = Self.bounded(text); $0.uncertain = false }
+    /// A message leaves the composer: held until its answer (`endSending` or `returnUnsent` with the token returned here). Sending is
+    /// the person's decision about an uncertain one, too.
+    @discardableResult
+    public func beginSending(_ text: String, for chatID: String) -> String {
+        let token = UUID().uuidString
+        update(chatID) { $0.sending = Self.bounded(text); $0.sendToken = token; $0.uncertain = false }
+        return token
+    }
+    /// The desktop has the message: it is no longer on its way. Only the send `token` belongs to may say so.
+    public func endSending(for chatID: String, token: String) {
+        guard drafts[chatID]?.sendToken == token else { return }
+        update(chatID) { $0.sending = nil; $0.sendToken = nil }
+    }
+    /// The message did not go through (or may not have): it comes back before whatever is in the draft now (typed since, in whichever
+    /// composer), flagged when its outcome is unknown. Returns the draft's text now, or nil when `token` is not the send in the draft
+    /// (a stale answer), which changes nothing.
+    @discardableResult
+    public func returnUnsent(_ text: String, token: String, uncertain: Bool, for chatID: String) -> String? {
+        guard let draft = drafts[chatID], draft.sendToken == token else { return nil }
+        let back = draft.text.isEmpty ? text : text + "\n" + draft.text
+        update(chatID) { $0.text = Self.bounded(back); $0.sending = nil; $0.sendToken = nil; $0.uncertain = uncertain || $0.uncertain }
+        return back
     }
     /// A message never answered is back in the composer as `text`: an ordinary draft now, still flagged until sent or emptied.
     public func restoreUncertain(_ text: String, for chatID: String) {
-        update(chatID) { $0.text = Self.bounded(text); $0.sending = nil; $0.uncertain = true }
+        update(chatID) { $0.text = Self.bounded(text); $0.sending = nil; $0.sendToken = nil; $0.uncertain = true }
     }
-    /// The desktop has it, or it came back into the composer (which saved it as text): either way it is no longer on its way.
+    /// No longer on its way, whichever send it was (a draft restored after a relaunch).
     public func endSending(for chatID: String) {
-        update(chatID) { $0.sending = nil }
+        update(chatID) { $0.sending = nil; $0.sendToken = nil }
     }
     /// The person cleared it, or the chat is gone for good.
     public func remove(_ chatID: String) {
@@ -93,7 +115,7 @@ public struct ChatDraft: Codable, Sendable, Equatable {
         let before = draft
         change(&draft)
         if draft.text.isEmpty { draft.uncertain = false }
-        guard draft.text != before.text || draft.sending != before.sending || draft.uncertain != before.uncertain else { return }
+        guard draft != before else { return }
         draft.updatedAt = now()
         if draft.isEmpty { drafts[chatID] = nil } else { drafts[chatID] = draft }
         if drafts.count > Self.maximumDrafts {

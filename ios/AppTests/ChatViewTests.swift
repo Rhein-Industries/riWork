@@ -1077,32 +1077,66 @@ import RiWorkCore
         }
     }
 
-    /// A send whose outcome is unknown (the link dropped or timed out) comes back to the composer flagged, and stays flagged across a
-    /// relaunch, until the person sends it again or empties the composer.
-    func testAnUncertainSendStaysUncertainAcrossARelaunch() async throws {
+    /// A send's failure that arrives after its conversation was made again, typed into, and let go once more (another desktop) goes
+    /// into the saved draft before what was typed since, never over it from the conversation the send started in; the next composer
+    /// shows it.
+    func testAStaleSendFailureNeverOverwritesANewerDraft() async throws {
         let rig = try await makeRig()
-        await rig.transport.enableSnapshots()
         let field = try await openChat(rig)
-        type("deploy to staging", into: field)
-        await rig.transport.failCommand(.timeout)
-        let failure = await rig.model.sendChatDraft(chatID)
-        XCTAssertEqual(failure, .outcomeUnknown(.command))
-        XCTAssertEqual(rig.model.conversation(chatID).draft, "deploy to staging")
-        XCTAssertTrue(rig.model.conversation(chatID).notice?.contains("may or may not have gone through") == true)
-        XCTAssertEqual(rig.model.chatDrafts.draft(chatID)?.uncertain, true, "flagged in the saved draft")
-        let suite = try XCTUnwrap(defaultsNames.last)
+        type("first message", into: field)
+        let a = rig.model.conversation(chatID)
+        await rig.transport.gateCommands(true)
+        let send = Task { await rig.model.sendChatDraft(chatID) }
+        await eventually("on its way") { rig.model.chatSendsInFlight.contains(self.chatID) }
+        // Made again (B), and the person types there.
+        rig.model.chatConversations[chatID] = nil
+        let b = rig.model.conversation(chatID)
+        XCTAssertFalse(a === b)
+        b.draft = "newer text"
+        // Let go again (as a desktop switch does), with nothing in its place when the answer comes.
+        rig.model.chatConversations = [:]
+        await rig.transport.failCommand(.rpc(code: "unavailable", message: "The desktop is busy"))
+        await rig.transport.gateCommands(false)
+        let failure = await send.value
+        XCTAssertNotNil(failure)
+        XCTAssertEqual(rig.model.chatDrafts.draft(chatID)?.text, "first message\nnewer text", "back before the newer text, which is kept")
+        XCTAssertEqual(a.draft, "", "the conversation let go is not written to")
+        XCTAssertNil(rig.model.chatDrafts.draft(chatID)?.sending)
+        let c = rig.model.conversation(chatID)
+        XCTAssertEqual(c.draft, "first message\nnewer text", "the next composer shows it")
+        XCTAssertFalse(c.sending)
         await finish(rig)
-        let relaunched = try await makeRig(defaults: suite)
-        await relaunched.transport.enableSnapshots()
-        let again = try await openChat(relaunched)
-        XCTAssertEqual(again.text, "deploy to staging")
-        XCTAssertTrue(relaunched.model.conversation(chatID).notice?.contains("may not have reached the Mac") == true, "still said after a relaunch")
-        let sent = await relaunched.transport.commands().count
-        XCTAssertEqual(sent, 0, "never sent again by itself")
-        // Sending it is the person's decision; then it is an ordinary chat again.
-        await relaunched.model.sendChatDraft(chatID)
-        XCTAssertNil(relaunched.model.chatDrafts.draft(chatID))
-        await finish(relaunched)
+    }
+
+    /// A send whose outcome is unknown (the link dropped, it timed out, or the Mac's answer could not be read) comes back to the
+    /// composer flagged, and stays flagged across a relaunch, until the person sends it again or empties the composer.
+    func testAnUncertainSendStaysUncertainAcrossARelaunch() async throws {
+        for (name, error, expected) in [("timeout", RemoteError.timeout, ChatControlError.outcomeUnknown(.command)),
+                                        ("unreadable reply", RemoteError.rpc(code: "invalid_reply", message: "garbled"), ChatControlError.unreadableReply)] {
+            let rig = try await makeRig()
+            await rig.transport.enableSnapshots()
+            let field = try await openChat(rig)
+            type("deploy to staging", into: field)
+            await rig.transport.failCommand(error)
+            let failure = await rig.model.sendChatDraft(chatID)
+            XCTAssertEqual(failure, expected, name)
+            XCTAssertEqual(rig.model.conversation(chatID).draft, "deploy to staging", name)
+            XCTAssertEqual(rig.model.conversation(chatID).notice, expected.message, "\(name): said")
+            XCTAssertEqual(rig.model.chatDrafts.draft(chatID)?.uncertain, true, "\(name): flagged in the saved draft")
+            let suite = try XCTUnwrap(defaultsNames.last)
+            await finish(rig)
+            let relaunched = try await makeRig(defaults: suite)
+            await relaunched.transport.enableSnapshots()
+            let again = try await openChat(relaunched)
+            XCTAssertEqual(again.text, "deploy to staging", name)
+            XCTAssertTrue(relaunched.model.conversation(chatID).notice?.contains("may not have reached the Mac") == true, "\(name): still said after a relaunch")
+            let sent = await relaunched.transport.commands().count
+            XCTAssertEqual(sent, 0, "\(name): never sent again by itself")
+            // Sending it is the person's decision; then it is an ordinary chat again.
+            await relaunched.model.sendChatDraft(chatID)
+            XCTAssertNil(relaunched.model.chatDrafts.draft(chatID), name)
+            await finish(relaunched)
+        }
     }
 
     /// A provider notice that recurs says how often in its one line ("×3"), as the phone's own messages do.
@@ -1693,13 +1727,16 @@ import RiWorkCore
     /// those of the bars over the composer. (Over the keyboard the transcript can be shorter than a bar's, so size does not tell.)
     private func transcriptScroll(_ rig: Rig) -> UIScrollView? {
         guard let frame = rig.layout.frames["transcript"] else { return nil }
-        // Match the actual transcript viewport; compact tabs and nested horizontal output also use UIScrollView.
-        return descendants(UIScrollView.self, in: rig.host.view).first { scroll in
+        // Match the actual transcript viewport; compact tabs and nested horizontal output also use UIScrollView. Its top and width
+        // identify it; its height is the scroll view's own (the measured one can lag a line of the banner row going away).
+        let candidates = descendants(UIScrollView.self, in: rig.host.view).filter { scroll in
             guard !(scroll is UITextView), scroll.window != nil else { return false }
             let actual = scroll.convert(scroll.bounds, to: rig.window)
-            return abs(actual.minY - frame.minY) < 1 && abs(actual.width - frame.width) < 1 && abs(actual.height - frame.height) < 1
+            return abs(actual.minY - frame.minY) < 1 && abs(actual.width - frame.width) < 1 && actual.height > 40
         }
+        return candidates.max { $0.bounds.height < $1.bounds.height }
     }
+
     private func questionAndStatusLines(_ look: Look, height: CGFloat = 874, name: String = "chat-question-failed") async throws -> Rig {
         let rig = try await makeRig(chats: [chat(state: .failed("the process exited with status 1"))], height: height, look: look)
         await rig.transport.append(chatID, [

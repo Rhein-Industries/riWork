@@ -387,6 +387,9 @@ struct ChatNoticeBanners: View {
         let history = ChatNotices.all(conversation.transcript.items).count
         let shown = expanded ? lines : Array(lines.prefix(2))
         VStack(spacing: 4) {
+            // Always one view, at no height when there is nothing to say, so the row's own geometry (and the transcript's beside it)
+            // keeps being measured as lines come and go.
+            Color.clear.frame(height: 0)
             ForEach(shown) { line in ChatNoticeLine(line: line) }
             if lines.count > 2 || (history > 0 && !lines.isEmpty) {
                 HStack(spacing: 12) {
@@ -405,8 +408,6 @@ struct ChatNoticeBanners: View {
                 .buttonStyle(.plain).padding(.horizontal, 6)
             }
         }
-        .padding(.top, lines.isEmpty ? 0 : 4)
-        .animation(.easeInOut(duration: 0.15), value: lines.map(\.id))
         .onChange(of: model.state) { _, _ in closedLink = nil }
         .onChange(of: state) { _, _ in closedState = nil }
         .onChange(of: conversation.readError?.message) { _, message in if message == nil { conversation.dismissedReadError = nil } }
