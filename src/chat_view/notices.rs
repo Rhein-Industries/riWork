@@ -301,6 +301,8 @@ fn ranked_provider_banners(
                     }
                 )
                 && !dismissed.contains(&item.id)
+                // Nearing a limit is the usage chip's; only a reached one blocks.
+                && !(notice.usage_limit() && notice.level != NoticeLevel::Error)
                 && notice.resets_at.is_none_or(|reset| reset > now)
                 && (at >= exchange || sticky(notice.kind.as_deref()))
         })
@@ -406,7 +408,7 @@ mod tests {
             user("u"),
             notice(
                 "a",
-                NoticeLevel::Warning,
+                NoticeLevel::Error,
                 "close to",
                 Some("rate_limit:seven_day"),
             ),
@@ -433,7 +435,7 @@ mod tests {
             notice("x1", NoticeLevel::Error, "Overloaded", None),
             notice(
                 "l1",
-                NoticeLevel::Warning,
+                NoticeLevel::Error,
                 close,
                 Some("rate_limit:seven_day"),
             ),
@@ -456,6 +458,41 @@ mod tests {
     }
 
     #[test]
+    fn nearing_a_usage_limit_is_no_banner_but_reaching_it_is() {
+        let t = transcript(vec![
+            user("u"),
+            // An older log's warning: the usage chip shows it now.
+            notice(
+                "w",
+                NoticeLevel::Warning,
+                "This account is close to the weekly usage limit.",
+                Some("rate_limit:seven_day"),
+            ),
+            notice("r", NoticeLevel::Warning, "retrying", Some("api_retry")),
+        ]);
+        assert_eq!(
+            texts(&provider_banners(&t, &HashSet::new(), 0)),
+            ["retrying"]
+        );
+        let mut t = t;
+        t.apply(&ChatEvent::ItemCompleted {
+            item: notice(
+                "x",
+                NoticeLevel::Error,
+                "This account has reached the weekly usage limit.",
+                Some("rate_limit:seven_day"),
+            ),
+        });
+        assert_eq!(
+            texts(&provider_banners(&t, &HashSet::new(), 0)),
+            [
+                "This account has reached the weekly usage limit.",
+                "retrying"
+            ]
+        );
+    }
+
+    #[test]
     fn resolved_dismissed_and_expired_notices_do_not_show() {
         let mut t = transcript(vec![
             user("u"),
@@ -463,7 +500,7 @@ mod tests {
             notice("x", NoticeLevel::Error, "closed", None),
             notice(
                 "limit",
-                NoticeLevel::Warning,
+                NoticeLevel::Error,
                 "close",
                 Some("rate_limit:five_hour"),
             ),
@@ -490,7 +527,7 @@ mod tests {
             notice("f", NoticeLevel::Error, "turn failed", Some("turn_failed")),
             notice(
                 "l",
-                NoticeLevel::Warning,
+                NoticeLevel::Error,
                 "limit",
                 Some("rate_limit:seven_day"),
             ),
@@ -627,7 +664,7 @@ mod dismissal_tests {
     fn notice_with_a_later_reset_overcomes_optimistic_local_dismissal_of_the_same_id() {
         let make = |reset| {
             let mut body = ItemBody::notice(
-                NoticeLevel::Warning,
+                NoticeLevel::Error,
                 "weekly limit",
                 Some("rate_limit:seven_day"),
             );

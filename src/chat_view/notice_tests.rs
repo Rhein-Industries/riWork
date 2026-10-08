@@ -42,7 +42,7 @@ fn two_banners_show_newest_first_the_rest_fold_and_each_closes(cx: &mut TestAppC
         cx,
         "b",
         ItemBody::notice(
-            NoticeLevel::Warning,
+            NoticeLevel::Error,
             "This account is close to the weekly usage limit.",
             Some("rate_limit:seven_day"),
         ),
@@ -172,7 +172,7 @@ fn a_limit_banner_goes_by_itself_at_its_reset_time(cx: &mut TestAppContext) {
     let (handle, view, _recording) = mount(cx);
     push(&view, cx, "u", ItemBody::UserMessage { text: "hi".into() });
     let mut body = ItemBody::notice(
-        NoticeLevel::Warning,
+        NoticeLevel::Error,
         "This account is close to the weekly usage limit.",
         Some("rate_limit:seven_day"),
     );
@@ -263,7 +263,7 @@ fn a_banner_is_one_line_as_tall_as_the_buttons_and_a_long_one_opens(cx: &mut Tes
             false,
         ),
         (
-            NoticeLevel::Warning,
+            NoticeLevel::Error,
             "Close to the weekly limit.",
             Some("rate_limit:seven_day"),
             false,
@@ -378,7 +378,7 @@ fn a_banner_is_one_line_as_tall_as_the_buttons_and_a_long_one_opens(cx: &mut Tes
 fn host_dismissed_notice_has_no_banner_and_close_sends_the_host_command(cx: &mut TestAppContext) {
     let (handle, view, recording) = mount(cx);
     let mut body = ItemBody::notice(
-        NoticeLevel::Warning,
+        NoticeLevel::Error,
         "weekly limit",
         Some("rate_limit:seven_day"),
     );
