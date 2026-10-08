@@ -374,13 +374,14 @@ fn command_json(command: &Value) -> std::result::Result<Value, Fault> {
         .ok_or_else(|| invalid("command.command must be a string"))?;
     let allowed: &[&str] = match kind {
         "send" => &["command", "text"],
+        "dismiss_notice" => &["command", "item_id"],
         "interrupt" | "compact" | "stop" => &["command"],
         "approve" => &["command", "request_id", "decision"],
         "answer" => &["command", "request_id", "answers"],
         "configure" => &["command", "model", "effort", "approval_mode", "fast"],
         _ => {
             return Err(invalid(
-                "command.command must be send, interrupt, approve, answer, configure, compact or stop",
+                "command.command must be send, interrupt, approve, answer, configure, compact, stop or dismiss_notice",
             ));
         }
     };
@@ -391,6 +392,13 @@ fn command_json(command: &Value) -> std::result::Result<Value, Fault> {
         )
     })?;
     Ok(match kind {
+        "dismiss_notice" => {
+            let item_id = required(object, "item_id")?;
+            if item_id.is_empty() || item_id.len() > 512 || has_control(item_id) {
+                return Err(invalid("item_id must be 1..=512 bytes without control characters"));
+            }
+            json!({"command":"dismiss_notice","item_id":item_id})
+        }
         "send" => {
             let text = required(object, "text")?;
             if text.trim().is_empty() || text.len() > TEXT_MAX {
@@ -1331,6 +1339,22 @@ mod tests {
         assert_eq!(label("title", Some("   "), 200).unwrap(), None);
         assert_eq!(label("title", None, 200).unwrap(), None);
         assert!(label("title", Some("a\u{85}b"), 200).is_err());
+    }
+
+    #[test]
+    fn notice_dismissal_command_is_validated_and_forwarded() {
+        let command = json!({"command":"dismiss_notice","item_id":"notice-one"});
+        assert_eq!(command_json(&command).unwrap(), command);
+        for bad in [
+            json!({"command":"dismiss_notice"}),
+            json!({"command":"dismiss_notice","item_id":""}),
+            json!({"command":"dismiss_notice","item_id":null}),
+            json!({"command":"dismiss_notice","item_id":"bad\nline"}),
+            json!({"command":"dismiss_notice","item_id":"x".repeat(513)}),
+            json!({"command":"dismiss_notice","item_id":"one","kind":"auth_required"}),
+        ] {
+            assert!(command_json(&bad).is_err(), "{bad}");
+        }
     }
 
     const PROJECT: &str = "11111111-2222-4333-8444-555555555555";
