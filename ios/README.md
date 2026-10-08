@@ -111,7 +111,19 @@ Every kind of tab has the same one-row header (`TabScreenChrome`): Back, the tab
 44 pt targets, so switching between a terminal and a chat never moves, adds or resizes a bar. The ⋯ menu is the screen's only one,
 in sections: what is on screen (a chat's actions, see Chats; or a terminal's: focus mode, jump to latest, Display, text size, the
 line composer, copy screen, refresh output), the tab (Session info; Close this terminal), and the project (refreshing the tabs, the
-global orchestrator, the connection). A swipe from the left edge goes back to the projects, as Back does, from a terminal and
+global orchestrator, the connection). **Shared tabs** (a desktop that offers `tabs`, docs/shared-tabs.md; `Core/SharedTabStrip.swift`, tested): the row is the desktop's
+own list for the project, in its order, with its titles, pins and states, the same as the Mac's strip; workers (sessions another
+session started) are hidden until opened. ＋ holds New terminal…, **Open shell/worker…** (the hidden chats and live shells, workers
+first, each with its kind, state and the tab it belongs to; opening one shows it here and on the Mac and starts nothing) and Edit
+tabs…. A tab's long-press menu (and ⋯ → Tab for the tab on screen) has Pin or Unpin (top-level tabs only; the project orchestrator
+starts pinned), Rename… (empty uses the session's name), Edit tabs… and Close: a worker's tab detaches at once; a chat or shell you
+opened follows Settings → Tabs, **When closing a tab: Ask / Detach / Exit** (this iPhone's own, `tab_close_behavior`, Ask until
+chosen): Ask shows Detach (hide it, it keeps running on the Mac) and Exit (hide it and stop the chat, whose history stays, or close
+the shell); a pinned tab is unpinned first. **Reorder** by long-pressing a tab and dragging it onto another (it goes before that one;
+past the last tab, to the end of its group), or in **Edit tabs** with drag handles; a move stays within its group (pinned, the
+others, a parent's opened children), and the desktop's reply is the row. A quick drag still scrolls the row, and the edge swipe still
+goes back. Changes made on the Mac arrive with the four-second refresh without moving the tab on screen. An older desktop keeps the
+earlier strip (every terminal and chat). A swipe from the left edge goes back to the projects, as Back does, from a terminal and
 from a chat alike (the navigation stack's own gesture, turned back on although the screen hides the bar: `edgeSwipeBack()`). A tab's short session ID and worktree
 branch are in its long-press menu and its accessibility label. **Session info** exposes the full UUID,
 kind and working directory. The compact status row keeps snapshot freshness,

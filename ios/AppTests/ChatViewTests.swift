@@ -1158,6 +1158,141 @@ import RiWorkCore
         await finish(rig)
     }
 
+    // MARK: Shared tabs
+
+    private let userChatID = "dddddddd-3333-4333-8333-333333333333", workerChatID = "eeeeeeee-4444-4444-8444-444444444444"
+    private func sharedChats() -> [ChatInfo] {
+        [ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Project orchestrator", createdAtUnix: 10, state: .idle),
+         ChatInfo(id: userChatID, provider: .codex, projectID: project, cwd: "/fixture", title: "User chat", createdAtUnix: 20, state: .idle),
+         ChatInfo(id: workerChatID, provider: .codex, projectID: project, cwd: "/fixture", title: "Worker chat", createdAtUnix: 30, state: .idle)]
+    }
+    /// A pinned orchestrator chat, a user chat with a hidden worker chat, and the fixture shell.
+    private func sharedRig() async throws -> Rig {
+        let rig = try await makeRig(chats: sharedChats())
+        await rig.transport.setSharedTabs([
+            .init(key: "chat:\(chatID)", kind: "chat", title: "Project orchestrator", pinned: true),
+            .init(key: "chat:\(userChatID)", kind: "chat", title: "Shared title"),
+            .init(key: "chat:\(workerChatID)", kind: "chat", title: "Worker chat", status: "waiting", hidden: true, worker: true, parent: "chat:\(userChatID)"),
+            .init(key: "shell:\(ChatTransport.shell)", kind: "shell", title: "zsh")])
+        // The shared list is offered from the next connection on.
+        await rig.model.disconnect(); await rig.model.connect()
+        await eventually("the shared list is in") { rig.model.desktopFeatures.tabs && rig.model.sharedTabs != nil && rig.model.tabs.count == 3 }
+        return rig
+    }
+
+    func testTheRowDrawsTheSharedListInItsOrderWithoutHiddenWorkers() async throws {
+        let rig = try await sharedRig()
+        XCTAssertEqual(rig.model.tabs.map(\.id), [chatID, userChatID, ChatTransport.shell], "shared order; the hidden worker is not a tab")
+        XCTAssertEqual(rig.model.tabs[1].chatInfo?.title, "Shared title", "the shared title")
+        await eventually("the row is drawn with drag targets") { rig.layout.frames["tab-chat:\(self.chatID)"] != nil && rig.layout.frames["tab-shell:\(ChatTransport.shell)"] != nil }
+        let first = try XCTUnwrap(rig.layout.frames["tab-chat:\(chatID)"]), last = try XCTUnwrap(rig.layout.frames["tab-shell:\(ChatTransport.shell)"])
+        XCTAssertLessThan(first.minX, last.minX)
+        XCTAssertEqual(SharedTabStrip.openable(rig.model.sharedTabs).map(\.tab.key), ["chat:\(workerChatID)"], "the picker offers the worker")
+        // Opening it: tabs.open, shown here (and on the Mac), and on screen.
+        try await rig.model.openTab("chat:\(workerChatID)")
+        let opens = await rig.transport.params(of: "tabs.open")
+        XCTAssertEqual(opens.last?["key"]?.string, "chat:\(workerChatID)")
+        XCTAssertEqual(rig.model.selectedChatID, workerChatID)
+        XCTAssertTrue(rig.model.tabs.contains { $0.id == self.workerChatID })
+        await finish(rig)
+    }
+
+    func testWithoutSharedTabsTheOldStripStays() async throws {
+        let rig = try await makeRig(chats: sharedChats())
+        await eventually("the strip is up") { rig.model.tabs.count == 4 }
+        XCTAssertFalse(rig.model.desktopFeatures.tabs)
+        XCTAssertNil(rig.model.sharedTabs)
+        XCTAssertTrue(rig.model.tabs.contains { $0.id == self.workerChatID }, "an older desktop: every chat is a tab")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(rig.layout.frames.keys.contains { $0.hasPrefix("tab-") }, "no reordering without the shared list")
+        let calls = await rig.transport.calls.map(\.method)
+        XCTAssertFalse(calls.contains { $0.hasPrefix("tabs.") }, "nothing asked of a desktop that does not offer it")
+        do { try await rig.model.moveTab("chat:\(userChatID)", before: nil); XCTFail("refused") } catch {}
+        await finish(rig)
+    }
+
+    func testMovesPinsAndRenamesAreOneUpdateEachAndTheReplyIsTheRow() async throws {
+        let rig = try await sharedRig()
+        let shared = try XCTUnwrap(rig.model.sharedTabs)
+        let all = Dictionary(shared.allEntries.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
+        let shell = try XCTUnwrap(all["shell:\(ChatTransport.shell)"]), user = try XCTUnwrap(all["chat:\(userChatID)"]), pinned = try XCTUnwrap(all["chat:\(chatID)"])
+        XCTAssertNil(SharedTabStrip.move(shell, onto: pinned, in: shared), "a drop into the pinned group is not sent")
+        try await rig.model.updateTabs(try XCTUnwrap(SharedTabStrip.move(shell, onto: user, in: shared)))
+        var updates = await rig.transport.params(of: "tabs.update")
+        XCTAssertEqual(updates.last?["update"], .object(["action": .string("move"), "key": .string(shell.key), "before": .string(user.key)]))
+        XCTAssertEqual(rig.model.tabs.map(\.id), [chatID, ChatTransport.shell, userChatID], "the authoritative reply is the row")
+        try await rig.model.pinTab(user.key)
+        XCTAssertEqual(rig.model.sharedTabs?.allEntries.first { $0.key == user.key }?.pinned, true)
+        try await rig.model.renameTab(user.key, title: "Renamed")
+        XCTAssertEqual(rig.model.tabs.first { $0.id == self.userChatID }?.chatInfo?.title, "Renamed")
+        updates = await rig.transport.params(of: "tabs.update")
+        XCTAssertEqual(updates.count, 3)
+        await finish(rig)
+    }
+
+    func testClosingFollowsTheSettingAndAWorkerOnlyEverDetaches() async throws {
+        let rig = try await sharedRig()
+        func commands() async -> [String] { await rig.transport.commands().compactMap { $0["command"].string } }
+        // Ask: nothing changes until the sheet's choice.
+        rig.model.tabCloseBehavior = .ask
+        let asked = try await rig.model.closeTab("chat:\(userChatID)")
+        XCTAssertFalse(asked)
+        var hides = await rig.transport.params(of: "tabs.update").filter { $0["update"]?["action"].string == "hide" }
+        XCTAssertTrue(hides.isEmpty, "Ask changes nothing by itself")
+        // The sheet's Detach: hidden, the chat keeps running.
+        _ = try await rig.model.closeTab("chat:\(userChatID)", choice: .detach)
+        hides = await rig.transport.params(of: "tabs.update").filter { $0["update"]?["action"].string == "hide" }
+        XCTAssertEqual(hides.count, 1)
+        let afterDetach = await commands()
+        XCTAssertFalse(afterDetach.contains("stop"), "Detach stops nothing")
+        XCTAssertFalse(rig.model.tabs.contains { $0.id == self.userChatID })
+        // A worker, opened and then closed with Exit set: it only detaches.
+        try await rig.model.openTab("chat:\(workerChatID)")
+        rig.model.tabCloseBehavior = .exit
+        _ = try await rig.model.closeTab("chat:\(workerChatID)")
+        let afterWorker = await commands()
+        XCTAssertFalse(afterWorker.contains("stop"), "a worker is never stopped by closing its tab")
+        // A user tab with Exit: hidden and stopped.
+        try await rig.model.openTab("chat:\(userChatID)")
+        _ = try await rig.model.closeTab("chat:\(userChatID)")
+        let afterExit = await commands()
+        XCTAssertTrue(afterExit.contains("stop"), "Exit stops the chat (its history stays)")
+        // A pinned tab is unpinned before it can be closed.
+        let pinned = try XCTUnwrap(rig.model.sharedTabs?.allEntries.first { $0.key == "chat:\(self.chatID)" })
+        XCTAssertEqual(SharedTabStrip.closePlan(pinned, setting: .exit), .unpinFirst)
+        await finish(rig)
+    }
+
+    func testTheSettingIsThisDevicesAndKeptUnderItsKey() async throws {
+        let rig = try await makeRig()
+        XCTAssertEqual(rig.model.tabCloseBehavior, .ask, "Ask until chosen")
+        rig.model.tabCloseBehavior = .detach
+        XCTAssertEqual(rig.defaults.string(forKey: "tab_close_behavior"), "detach")
+        let suite = try XCTUnwrap(defaultsNames.last)
+        await finish(rig)
+        let again = try await makeRig(defaults: suite)
+        XCTAssertEqual(again.model.tabCloseBehavior, .detach)
+        await finish(again)
+    }
+
+    /// A change on the Mac (order, title, a tab opened there) is in the row at the next refresh, and the tab on screen stays on screen.
+    func testPeerChangesArriveWithoutDisturbingTheSelectedTab() async throws {
+        let rig = try await sharedRig()
+        rig.model.selectChat(userChatID)
+        await eventually("on screen") { rig.model.selectedChatID == self.userChatID }
+        let worker = "chat:\(workerChatID)", user = "chat:\(userChatID)"
+        await rig.transport.peerChange { tabs in
+            let shell = tabs.remove(at: tabs.firstIndex { $0.kind == "shell" }!)
+            tabs.insert(shell, at: 1)
+            if let i = tabs.firstIndex(where: { $0.key == user }) { tabs[i].title = "Renamed on the Mac" }
+            if let i = tabs.firstIndex(where: { $0.key == worker }) { tabs[i].hidden = false }
+        }
+        await eventually("the next refresh has it", timeout: 8) { rig.model.tabs.first { $0.id == self.userChatID }?.chatInfo?.title == "Renamed on the Mac" }
+        XCTAssertEqual(rig.model.tabs.map(\.id), [chatID, ChatTransport.shell, userChatID, workerChatID])
+        XCTAssertEqual(rig.model.selectedChatID, userChatID, "the selected tab is left alone")
+        await finish(rig)
+    }
+
     // MARK: Messages of the moment
 
     /// The provider's notices are not transcript rows: the latest of each kind of this turn is one banner line above the composer,

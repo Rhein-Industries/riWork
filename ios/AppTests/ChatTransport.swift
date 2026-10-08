@@ -49,8 +49,64 @@ actor ChatTransport: RemoteTransport {
     /// What `shell.output` gives for the fixture shell.
     var shellOutput = "screen"
     private var created = 0
+    /// The desktop's shared tab list (`tabs.*`, docs/shared-tabs.md): offered once a test sets it.
+    struct Tab: Sendable, Equatable {
+        var key: String, kind: String, title: String, status = "working", pinned = false, hidden = false, worker = false, order = 0, parent: String? = nil
+    }
+    var tabsFeature = false
+    var sharedTabs: [Tab] = []
+    var tabsRevision = 0
 
     init(chats: [ChatInfo] = [], appearance: JSONValue? = nil) { self.chats = chats; self.appearance = appearance }
+
+    /// Offers shared tabs with these entries (in this order).
+    func setSharedTabs(_ tabs: [Tab]) {
+        tabsFeature = true
+        sharedTabs = tabs.enumerated().map { var tab = $0.element; tab.order = $0.offset; return tab }
+        tabsRevision += 1
+    }
+    /// A change made on the Mac (another device): the next `tabs.list` has it.
+    func peerChange(_ change: @Sendable (inout [Tab]) -> Void) {
+        change(&sharedTabs)
+        for index in sharedTabs.indices { sharedTabs[index].order = index }
+        tabsRevision += 1
+    }
+    private func tabsReply() -> JSONValue {
+        func node(_ tab: Tab) -> JSONValue {
+            let children = sharedTabs.filter { $0.parent == tab.key }
+            return .object(["key": .string(tab.key), "kind": .string(tab.kind), "title": .string(tab.title), "status": .string(tab.status),
+                            "pinned": .bool(tab.pinned), "hidden": .bool(tab.hidden), "worker": .bool(tab.worker), "order": .number(Double(tab.order)),
+                            "parent": tab.parent.map(JSONValue.string) ?? .null, "children": .array(children.map(node)), "child_count": .number(Double(children.count))])
+        }
+        let keys = Set(sharedTabs.map(\.key))
+        return .object(["revision": .number(Double(tabsRevision)), "entries": .array(sharedTabs.filter { $0.parent == nil || !keys.contains($0.parent!) }.map(node))])
+    }
+    private func applyTabUpdate(_ update: [String: JSONValue]) throws {
+        guard let key = update["key"]?.string, let index = sharedTabs.firstIndex(where: { $0.key == key }) else { throw RemoteError.rpc(code: "not_found", message: "no such tab") }
+        switch update["action"]?.string {
+        case "pin": sharedTabs[index].pinned = true; sharedTabs[index].hidden = false
+        case "unpin": sharedTabs[index].pinned = false
+        case "hide":
+            guard !sharedTabs[index].pinned else { throw RemoteError.rpc(code: "invalid_request", message: "unpin before hiding") }
+            sharedTabs[index].hidden = true
+        case "unhide": sharedTabs[index].hidden = false
+        case "rename": sharedTabs[index].title = update["title"]?.string ?? sharedTabs[index].title
+        case "move":
+            let moving = sharedTabs.remove(at: index)
+            if let before = update["before"]?.string, let target = sharedTabs.firstIndex(where: { $0.key == before }) {
+                guard sharedTabs[target].parent == moving.parent, sharedTabs[target].pinned == moving.pinned else {
+                    sharedTabs.insert(moving, at: index); throw RemoteError.rpc(code: "invalid_request", message: "another group")
+                }
+                sharedTabs.insert(moving, at: target)
+            } else {
+                let last = sharedTabs.lastIndex { $0.parent == moving.parent && $0.pinned == moving.pinned }.map { $0 + 1 } ?? sharedTabs.count
+                sharedTabs.insert(moving, at: last)
+            }
+            for i in sharedTabs.indices { sharedTabs[i].order = i }
+        default: throw RemoteError.rpc(code: "invalid_request", message: "unknown action")
+        }
+        tabsRevision += 1
+    }
 
     // MARK: Script
 
@@ -100,6 +156,7 @@ actor ChatTransport: RemoteTransport {
         var features: [String: JSONValue] = [:]
         if chatFeature { features["chat"] = .bool(true) }
         if orchestratorFeature { features["orchestrator_create"] = .bool(true) }
+        if tabsFeature { features["tabs"] = .bool(true) }
         return features.isEmpty ? DesktopFeatures() : DesktopFeatures(ready: .object(["features": .object(features)]))
     }
 
@@ -141,6 +198,17 @@ actor ChatTransport: RemoteTransport {
                 return .object(["chat": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(info))])
             }
         case "chat.snapshot": return try await snapshot(params)
+        case "tabs.list":
+            guard tabsFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            return tabsReply()
+        case "tabs.open":
+            guard tabsFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            try applyTabUpdate(["action": .string("unhide"), "key": params["key"] ?? .null])
+            return tabsReply()
+        case "tabs.update":
+            guard tabsFeature, case .object(let update)? = params["update"] else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            try applyTabUpdate(update)
+            return tabsReply()
         case "chat.events":
             guard chatFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
             return try await events(params)

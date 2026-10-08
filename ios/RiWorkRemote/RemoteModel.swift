@@ -29,8 +29,9 @@ enum ConnectionState: Equatable {
     var worktrees: [RemoteWorktree] = []
     var openedChildViews: Set<String> = []
     var sharedTabs: SharedTabsReply?
-    var tabCloseBehavior = TabCloseBehavior(rawValue: UserDefaults.standard.string(forKey: TabCloseBehavior.settingKey) ?? "ask") ?? .ask {
-        didSet { UserDefaults.standard.set(tabCloseBehavior.rawValue, forKey: TabCloseBehavior.settingKey) }
+    /// "When closing a tab: Ask / Detach / Exit", this device's own (`tab_close_behavior` in the app's defaults; Ask until chosen).
+    var tabCloseBehavior = TabCloseBehavior.ask {
+        didSet { defaults.set(tabCloseBehavior.rawValue, forKey: TabCloseBehavior.settingKey) }
     }
     var hiddenTabs: [SharedTab] { sharedTabs?.allEntries.filter { $0.hidden && !($0.kind == .shell && $0.status == .stopped) } ?? [] }
 
@@ -311,6 +312,7 @@ enum ConnectionState: Equatable {
         self.reconnectBackoff = reconnectBackoff
         self.defaults = defaults
         self.chatDrafts = ChatDraftStore(defaults: defaults)
+        self.tabCloseBehavior = TabCloseBehavior(rawValue: defaults.string(forKey: TabCloseBehavior.settingKey) ?? "") ?? .ask
         self.themeRefreshInterval = themeRefreshInterval
         self.themeMinimumGap = themeMinimumGap
         self.activityRefreshInterval = activityRefreshInterval

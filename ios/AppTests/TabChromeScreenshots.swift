@@ -386,6 +386,79 @@ import RiWorkCore
             try? keychain.delete()
         }
     }
+    /// `RIWORK_TAB_SCREENSHOTS_ONLY=testSharedTabs scripts/tab-chrome-screenshots.sh <dir> <udid>`: the row on the desktop's shared tab
+    /// list (a pinned orchestrator and a user chat), the open-worker picker, the close sheet, a reorder in progress (the drop bar and
+    /// the Edit tabs sheet) and the setting row, in Native light and dark.
+    func testSharedTabs() async throws {
+        guard ProcessInfo.processInfo.environment["RIWORK_TAB_SCREENSHOTS_ONLY"] == "testSharedTabs" else { throw XCTSkip("Set RIWORK_TAB_SCREENSHOTS_ONLY=testSharedTabs") }
+        let user = "dddddddd-3333-4333-8333-333333333333", worker = "eeeeeeee-4444-4444-8444-444444444444", worker2 = "ffffffff-5555-4555-8555-555555555555"
+        for look in [Look.nativeDark, .nativeLight] {
+            guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene") }
+            let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
+            let pairing = try Pairing.parse("""
+            {"v":1,"relay_url":"wss://example.com/v1/ws","desktop_id":"11111111-1111-4111-8111-111111111111","device_id":"22222222-2222-4222-8222-222222222222","route_id":"33333333-3333-4333-8333-333333333333","device_name":"Test","pairing_secret":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","relay_token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}
+            """)
+            var desktop = SavedDesktop(name: "Fixture", pairing: pairing, allowLocalDevelopment: false)
+            desktop.selectedProjectID = project; desktop.selectedSessionID = ChatTransport.shell
+            try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
+            let suite = "com.riwork.tests.tabchrome.\(UUID().uuidString)"
+            defaultsNames.append(suite)
+            let chats = [ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Project orchestrator", createdAtUnix: 10, state: .idle),
+                         ChatInfo(id: user, provider: .codex, projectID: project, cwd: "/fixture", title: "Fix the build", createdAtUnix: 20, state: .idle),
+                         ChatInfo(id: worker, provider: .codex, projectID: project, cwd: "/fixture", title: "Codex worker", createdAtUnix: 30, state: .running),
+                         ChatInfo(id: worker2, provider: .claude, projectID: project, cwd: "/fixture", title: "Review worker", createdAtUnix: 40, state: .idle)]
+            let transport = ChatTransport(chats: chats, appearance: appearance(look))
+            await transport.setShellOutput((0..<40).map { "\u{1b}[32m~/fixture\u{1b}[0m $ make test  # line \($0)" }.joined(separator: "\r\n"))
+            await transport.setSharedTabs([
+                .init(key: "chat:\(chatID)", kind: "chat", title: "Project orchestrator", pinned: true),
+                .init(key: "chat:\(user)", kind: "chat", title: "Fix the build", status: "waiting"),
+                .init(key: "chat:\(worker)", kind: "chat", title: "Codex worker", hidden: true, worker: true, parent: "chat:\(user)"),
+                .init(key: "chat:\(worker2)", kind: "chat", title: "Review worker", status: "done", hidden: true, worker: true, parent: "chat:\(chatID)"),
+                .init(key: "shell:\(ChatTransport.shell)", kind: "shell", title: "zsh · main")])
+            await transport.append(chatID, [.info(chats[0])] + (0..<6).map { .itemCompleted(ChatItem(id: "m\($0)", status: .completed, body: .agentMessage("Message \($0). The orchestrator coordinates the workers of this project."))) })
+            await transport.append(user, [.info(chats[1]), .itemCompleted(ChatItem(id: "u", status: .completed, body: .userMessage("Fix the build please")))])
+            let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: suite)!, chatWaitMilliseconds: 300,
+                                    chatIdleInterval: .milliseconds(20), hardwareKeyboard: HardwareKeyboardMonitor(probe: { true }))
+            await model.connect()
+            await eventually("Native look") { model.theme.style.native }
+            let projectValue = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}".utf8))
+            let layout = ChatLayoutInspection()
+            let host = UIHostingController(rootView: AnyView(ThemedTabs(model: model, project: projectValue).environment(\.chatLayoutInspection, layout)))
+            let window = UIWindow(windowScene: scene)
+            window.frame = scene.coordinateSpace.bounds
+            window.windowLevel = .alert + 1
+            window.rootViewController = host
+            window.overrideUserInterfaceStyle = look == .nativeDark ? .dark : .light
+            window.makeKeyAndVisible()
+            windows.forEach { $0.isHidden = true }
+            windows.append(window)
+            await eventually("shared row") { model.sharedTabs != nil && model.tabs.count == 3 }
+            model.selectChat(user)
+            await eventually("chat up") { model.conversation(user).following }
+            try await Task.sleep(for: .milliseconds(600))
+            window.endEditing(true)
+            try await Task.sleep(for: .milliseconds(500))
+            let prefix = "tabs-" + look.rawValue
+            try await shot(window, prefix + "-1-row")
+            if let preview = layout.actions["drop-preview"] {
+                preview()
+                try await Task.sleep(for: .milliseconds(300))
+                try await shot(window, prefix + "-2-reorder-drop-bar")
+            }
+            for (name, action) in [("3-open-worker-picker", "open-workers"), ("4-edit-tabs", "edit-tabs"), ("5-close-sheet", "close-current"), ("6-setting", "display-settings")] {
+                guard let run = layout.actions[action] else { XCTFail("no \(action)"); continue }
+                run()
+                try await Task.sleep(for: .milliseconds(900))
+                try await shot(window, prefix + "-" + name)
+                host.presentedViewController?.dismiss(animated: false)
+                try await Task.sleep(for: .milliseconds(500))
+            }
+            await model.disconnect()
+            window.isHidden = true
+            try? keychain.delete()
+        }
+    }
+
     /// A state a person must finish by hand (a system menu, which a test cannot open): leaves `<name>.manual` and waits a while for
     /// `<name>.png`, taken by whoever opened the menu (`xcrun simctl io <udid> screenshot <name>.png`); goes on without it.
     private func manualShot(_ name: String) async throws {
