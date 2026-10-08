@@ -243,6 +243,25 @@ pub fn cost_text(cost_usd: f64) -> String {
     }
 }
 
+/// How the ring warns: the text color below 70 % in use, the warning tint from 70 %, red
+/// from 90 %. The iPhone's ring uses the same thresholds, so both agree on a chat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RingTone {
+    Normal,
+    Warning,
+    Critical,
+}
+
+pub fn ring_tone(fraction: f32) -> RingTone {
+    if fraction >= 0.9 {
+        RingTone::Critical
+    } else if fraction >= 0.7 {
+        RingTone::Warning
+    } else {
+        RingTone::Normal
+    }
+}
+
 /// The points of the ring's filled arc, starting at the top and running clockwise for
 /// `fraction` of the circle, around `center` (y grows downward). No points for nothing in use.
 pub fn ring_arc(fraction: f32, center: (f32, f32), radius: f32) -> Vec<(f32, f32)> {
@@ -348,6 +367,22 @@ mod tests {
             ..Usage::default()
         };
         assert!(usage_details(&usage).ends_with("≈ $344.31 (estimate)"));
+    }
+
+    #[test]
+    fn the_ring_warns_from_70_and_turns_red_from_90_percent() {
+        assert_eq!(
+            [0.0, 0.56, 0.699, 0.7, 0.89, 0.9, 1.0].map(ring_tone),
+            [
+                RingTone::Normal,
+                RingTone::Normal,
+                RingTone::Normal,
+                RingTone::Warning,
+                RingTone::Warning,
+                RingTone::Critical,
+                RingTone::Critical
+            ]
+        );
     }
 
     #[test]

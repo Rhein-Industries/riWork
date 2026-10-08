@@ -12545,6 +12545,7 @@ fn main() {
         text_input::init(cx);
         behavior_controls::init(cx);
         chat_drafts::init(&state_home, cx);
+        chat_view::init_attachments(cx);
         // After both globals exist: publishes now and again on every change.
         appearance_sync::start(state_home, cx);
         settings::refresh_codex_accounts(cx);

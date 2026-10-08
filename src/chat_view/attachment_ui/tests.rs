@@ -5,7 +5,7 @@ use crate::{
     chat::{attachments, client::CallError, model::ChatCommand},
     chat_view::{HostConfig, attachment_draft, editor_tests, feed, state::Link},
 };
-use gpui::{SharedString, TestAppContext};
+use gpui::{SharedString, TestAppContext, px};
 use gpui_kit::test::TestWindowExt;
 use std::{
     io::Cursor,
@@ -672,5 +672,56 @@ fn preview_bytes_only_for_bounded_regular_files() {
     assert!(read_preview_bytes(&big).is_none());
     assert!(read_preview_bytes(&root).is_none());
     assert!(read_preview_bytes(&root.join("missing.png")).is_none());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_name_splits_into_stem_and_extension_as_written() {
+    assert_eq!(
+        split_name("Report.Final.PDF"),
+        ("Report.Final".into(), Some(".PDF".into()))
+    );
+    assert_eq!(split_name("Makefile"), ("Makefile".into(), None));
+    assert_eq!(split_name(".env"), (".env".into(), None));
+    assert_eq!(split_name("a.not-an-ext"), ("a.not-an-ext".into(), None));
+}
+
+#[gpui::test]
+fn a_wide_name_keeps_its_extension_inside_the_widest_card(cx: &mut TestAppContext) {
+    let (handle, view, _recording) = editor_tests::mount_selection(cx);
+    let root = std::env::temp_dir().join(format!("riwork-wide-name-{}", Uuid::new_v4()));
+    fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+    let chat = root.join("chat");
+    fs::DirBuilder::new().mode(0o700).create(&chat).unwrap();
+    let name = format!("{}.txt", "W".repeat(18));
+    let path = root.join(&name);
+    fs::write(&path, "wide\n").unwrap();
+    let staged = attachments::stage(&chat, &path).unwrap();
+    let key = staged.id.clone();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |v, cx| {
+            v.model.link = Link::Live;
+            v.attachments = vec![Chip::ready(staged)];
+            v.bump_generation();
+            cx.notify();
+        });
+        window.render_frame(cx);
+        let card = window.find(id("attachment-card", &key)).bounds();
+        let ext = window.find(id("attachment-ext", &key));
+        assert!(ext.visible());
+        let ext = ext.bounds();
+        assert!(
+            card.size.width <= ui_text::space(200.) + px(0.5),
+            "the card is at its widest: {card:?}"
+        );
+        assert!(ext.size.width > px(0.), "{ext:?}");
+        assert!(ext.left() >= card.left(), "{ext:?} in {card:?}");
+        // Clear of the × badge's corner too.
+        assert!(
+            ext.right() <= card.right() - ui_text::space(22.) + px(0.5),
+            "{ext:?} in {card:?}"
+        );
+    })
+    .unwrap();
     let _ = fs::remove_dir_all(root);
 }

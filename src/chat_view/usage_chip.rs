@@ -193,12 +193,12 @@ impl ChatView {
             })
             .on_click(cx.listener(|_, _, _, cx| cx.emit(ChatViewEvent::ShowUsage)))
             .children(fraction.map(|fraction| {
-                let fill = if fraction >= 0.9 {
-                    look.error()
-                } else if fraction >= 0.7 {
-                    colors.gold
-                } else {
-                    colors.cyan
+                let fill = match toolbar::ring_tone(fraction) {
+                    toolbar::RingTone::Critical => look.error(),
+                    toolbar::RingTone::Warning => look.tone(super::cards::notice_tone(
+                        crate::chat::model::NoticeLevel::Warning,
+                    )),
+                    toolbar::RingTone::Normal => colors.text,
                 };
                 div()
                     .flex_none()

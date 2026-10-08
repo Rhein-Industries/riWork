@@ -28,8 +28,17 @@ use std::{
 };
 use uuid::Uuid;
 
+mod quick_look;
 #[cfg(test)]
 mod tests;
+
+/// Sweep Quick Look copies an earlier run left behind, and close the panel on quit.
+pub(crate) fn init(cx: &mut gpui::App) {
+    #[cfg(not(test))]
+    quick_look::init(cx);
+    #[cfg(test)]
+    let _ = cx;
+}
 
 #[derive(Clone)]
 pub(super) enum Source {
@@ -556,7 +565,8 @@ const CARD_SIDE: f32 = 64.;
 /// A file card's narrowest and widest.
 const FILE_CARD_MIN: f32 = 132.;
 const FILE_CARD_MAX: f32 = 200.;
-/// The most characters of a file name a file card shows before it cuts out the middle.
+/// The most characters of a file name's stem a file card shows before it cuts out the
+/// middle; a stem still too wide for the card is cut at its end, before the extension.
 const NAME_CHARS: usize = 22;
 
 fn card_radius(look: Look) -> f32 {
@@ -662,13 +672,29 @@ fn attachment_card(chip: &Chip, look: Look, cx: &mut Context<ChatView>) -> AnyEl
                         .flex_1()
                         .min_w_0()
                         .gap(ui_text::space(2.))
-                        .child(
+                        .child({
+                            // The stem gives way at the card's width; the extension never does.
+                            let (stem, ext) = split_name(&chip.name);
                             div()
+                                .flex()
+                                .min_w_0()
                                 .text_size(ui_text::text(10.5))
                                 .text_color(rgb(colors.text))
-                                .truncate()
-                                .child(middle_truncate(&chip.name, NAME_CHARS)),
-                        )
+                                .whitespace_nowrap()
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(middle_truncate(&stem, NAME_CHARS)),
+                                )
+                                .children(ext.map(|ext| {
+                                    div()
+                                        .id(format!("attachment-ext-{key}"))
+                                        .flex_none()
+                                        .child(ext)
+                                        .test_support()
+                                }))
+                        })
                         .child(
                             status_label(&key, &status, visible)
                                 .text_size(ui_text::text(9.5))
@@ -868,9 +894,8 @@ pub(super) fn content_type(kind: &AttachmentKind) -> &'static str {
     }
 }
 
-/// Show the host's staged copy in a Quick Look panel (`qlmanage -p`), from a private
-/// temporary copy under the attachment's own name so the panel titles it so; the copy goes
-/// when the panel closes. False when there is no staged copy to show.
+/// Show the host's staged copy in the one Quick Look panel (see `quick_look`). False when
+/// there is no staged copy to show.
 fn quick_look(attachment: &Attachment) -> bool {
     if !attachment.path.is_file() {
         return false;
@@ -883,36 +908,11 @@ fn quick_look(attachment: &Attachment) -> bool {
     }
     #[cfg(not(test))]
     {
-        use std::process::{Command, Stdio};
-        let source = attachment.path.clone();
-        let name = quick_look_name(&attachment.name);
-        std::thread::Builder::new()
-            .name("attachment-quick-look".into())
-            .spawn(move || {
-                let dir =
-                    std::env::temp_dir().join(format!("riwork-quick-look-{}", Uuid::new_v4()));
-                let copy = fs::DirBuilder::new()
-                    .mode(0o700)
-                    .create(&dir)
-                    .ok()
-                    .map(|()| dir.join(name))
-                    .filter(|copy| fs::copy(&source, copy).is_ok());
-                if let Ok(mut child) = Command::new("/usr/bin/qlmanage")
-                    .arg("-p")
-                    .arg("-c")
-                    .arg(content_type)
-                    .arg(copy.as_ref().unwrap_or(&source))
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-                {
-                    let _ = child.wait();
-                }
-                // Only this freshly allocated directory, never the staged copy.
-                let _ = fs::remove_dir_all(&dir);
-            })
-            .is_ok()
+        quick_look::show(
+            &attachment.path,
+            &quick_look_name(&attachment.name),
+            content_type,
+        )
     }
 }
 
@@ -977,6 +977,15 @@ pub(super) fn extension(name: &str) -> Option<String> {
         && ext.chars().count() <= 8
         && ext.chars().all(|c| c.is_ascii_alphanumeric()))
     .then(|| ext.to_ascii_lowercase())
+}
+
+/// A name as its stem and its extension with the dot, as written ("report", ".PDF"); no
+/// extension for a name `extension` does not take as one.
+pub(super) fn split_name(name: &str) -> (String, Option<String>) {
+    match (extension(name), name.rsplit_once('.')) {
+        (Some(_), Some((stem, ext))) => (stem.to_owned(), Some(format!(".{ext}"))),
+        _ => (name.to_owned(), None),
+    }
 }
 
 /// The extension as the colorful themes' file tile shows it: "PNG", at most four letters,
