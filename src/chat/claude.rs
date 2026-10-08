@@ -257,6 +257,8 @@ fn start_with(
         if core.dead.is_none() {
             core.set_state(ChatState::Idle);
         }
+        // A resumed session's title is in its transcript before any frame says so.
+        core.check_title();
     }
     let weak = Arc::downgrade(&shared);
     thread::spawn(move || supervise(weak));
@@ -1269,6 +1271,8 @@ impl Core {
                 }
                 self.note_fast_state(frame);
                 self.session_used = true;
+                // A resumed session brings the title it already has.
+                self.check_title();
             }
             Some("status") => {
                 if let Some(mode) = str_of(frame, "permissionMode") {
@@ -1738,6 +1742,11 @@ impl Core {
             self.finish_turn();
         }
         // Claude titles the session in its transcript, a little after the first turn.
+        self.check_title();
+    }
+
+    /// Tells the host the session's title from Claude's transcript, when it is new.
+    fn check_title(&mut self) {
         if let Some(title) = self.titles.check(&self.session_id) {
             self.emit(ChatEvent::ProviderTitle { title });
         }
@@ -1915,6 +1924,10 @@ impl Core {
 
     /// What the watchdog does on each tick.
     fn watch(&mut self, tuning: &Tuning) -> bool {
+        // Claude writes its title some time after a turn; an idle chat learns it here.
+        if self.titles.due(Instant::now()) {
+            self.check_title();
+        }
         if !self.ready || self.restarting || self.stopped || self.dead.is_some() {
             return false;
         }
@@ -2848,6 +2861,13 @@ fn question_prompts(input: &Value, questions: &[String]) -> Vec<QuestionPrompt> 
 #[path = "claude_tests.rs"]
 mod tests;
 
+/// How often the watchdog looks for a title Claude wrote while the chat sat idle.
+const TITLE_WATCH: Duration = if cfg!(test) {
+    Duration::from_millis(50)
+} else {
+    Duration::from_secs(5)
+};
+
 /// Where Claude keeps its transcripts: `CLAUDE_CONFIG_DIR` as the driver sets it or
 /// inherits it, else `~/.claude`.
 fn claude_home(config: &DriverConfig) -> Option<std::path::PathBuf> {
@@ -2878,6 +2898,8 @@ struct TranscriptTitles {
     ai: Option<String>,
     custom: Option<String>,
     told: Option<String>,
+    /// When the watchdog last looked, so an idle chat reads the folder only so often.
+    watched: Option<Instant>,
 }
 
 impl TranscriptTitles {
@@ -2886,6 +2908,18 @@ impl TranscriptTitles {
             home,
             ..Default::default()
         }
+    }
+
+    /// Whether the watchdog's next look is due: every `TITLE_WATCH` at most.
+    fn due(&mut self, now: Instant) -> bool {
+        if self
+            .watched
+            .is_some_and(|at| now.duration_since(at) < TITLE_WATCH)
+        {
+            return false;
+        }
+        self.watched = Some(now);
+        true
     }
 
     /// The session's title, when it is new since the last check.

@@ -192,24 +192,34 @@ pub(crate) fn flat_cell<E: Styled>(
 }
 
 /// The `before` of a Move that takes the tab drawn at `from` to where the tab at `to` is:
-/// the next tab after that spot, or `None` for the end. `None` overall when nothing
-/// moves. Parents do not part the strip: a tab goes beside another tab's workers as beside
-/// any other tab.
+/// the next tab of the project after that spot, or `None` for the end. Each drawn tab is
+/// `(id, key, ours)`; a carried foreign or global view is not the project's, so it is
+/// neither moved (dragging it changes local placement only) nor a place to move before.
+/// `None` overall when nothing moves. Parents do not part the strip: a tab goes beside
+/// another tab's workers as beside any other tab.
 pub(crate) fn strip_move(
-    drawn: &[(TabId, String)],
+    drawn: &[(TabId, String, bool)],
     from: usize,
     to: usize,
 ) -> Option<Option<String>> {
-    if from == to {
+    if from == to || !drawn[from].2 {
         return None;
     }
+    let moved = &drawn[from].1;
+    let ours = |(_, key, ours): &&(TabId, String, bool)| *ours && key != moved;
+    // Where the drop leaves the tab among the project's other tabs.
     let after = if to > from { to + 1 } else { to };
+    let spot = drawn[..after].iter().filter(ours).count();
+    let was = drawn[..from].iter().filter(ours).count();
+    if spot == was {
+        return None;
+    }
     Some(
-        drawn[after..]
+        drawn
             .iter()
-            .map(|(_, key)| key)
-            .find(|key| **key != drawn[from].1)
-            .cloned(),
+            .filter(ours)
+            .nth(spot)
+            .map(|(_, key, _)| key.clone()),
     )
 }
 
@@ -298,12 +308,16 @@ impl Workspace {
                 let drawn = strip_order(&slots)
                     .into_iter()
                     .filter(|i| slots[*i].0 != StripSlot::Panel)
-                    .filter_map(|i| Some((pane.tabs[i].id, session_tab_key(&pane.tabs[i])?)))
+                    .filter_map(|i| {
+                        let key = session_tab_key(&pane.tabs[i])?;
+                        let ours = self.shared_tab_entries().iter().any(|e| e.key == key);
+                        Some((pane.tabs[i].id, key, ours))
+                    })
                     .collect::<Vec<_>>();
-                let from = drawn.iter().position(|(id, _)| *id == drag.tab_id)?;
+                let from = drawn.iter().position(|(id, _, _)| *id == drag.tab_id)?;
                 let key = drawn[from].1.clone();
                 let to = match target {
-                    Some(target) => drawn.iter().position(|(id, _)| *id == target)?,
+                    Some(target) => drawn.iter().position(|(id, _, _)| *id == target)?,
                     None => drawn.len() - 1,
                 };
                 strip_move(&drawn, from, to)
@@ -1275,7 +1289,7 @@ mod tests {
         let drawn = ["o", "a", "b", "c", "w"]
             .iter()
             .enumerate()
-            .map(|(i, key)| (i as TabId, key.to_string()))
+            .map(|(i, key)| (i as TabId, key.to_string(), true))
             .collect::<Vec<_>>();
         // Leftward lands before the target, rightward after it.
         assert_eq!(strip_move(&drawn, 3, 1), Some(Some("a".into())));
@@ -1290,6 +1304,27 @@ mod tests {
         assert_eq!(strip_move(&drawn, 2, 0), Some(Some("o".into())));
         // No move onto itself.
         assert_eq!(strip_move(&drawn, 2, 2), None);
+    }
+
+    #[test]
+    fn carried_foreign_and_global_views_are_never_move_operands() {
+        // "f" is another project's view carried into this window, "g" the global
+        // orchestrator: neither is in this project's list.
+        let drawn = [("a", true), ("f", false), ("b", true), ("g", false)]
+            .iter()
+            .enumerate()
+            .map(|(i, (key, ours))| (i as TabId, key.to_string(), *ours))
+            .collect::<Vec<_>>();
+        // Rightward past b, the next drawn tab is g: the move goes to the end.
+        assert_eq!(strip_move(&drawn, 0, 2), Some(None));
+        // Dropped on f, a still comes before b: nothing moves among the project's tabs.
+        assert_eq!(strip_move(&drawn, 0, 1), None);
+        assert_eq!(strip_move(&drawn, 2, 1), None);
+        // b dropped on a goes before a, never before f.
+        assert_eq!(strip_move(&drawn, 2, 0), Some(Some("a".into())));
+        // A foreign or global view dragged changes local placement only.
+        assert_eq!(strip_move(&drawn, 1, 0), None);
+        assert_eq!(strip_move(&drawn, 3, 0), None);
     }
 
     #[test]

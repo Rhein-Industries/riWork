@@ -217,9 +217,12 @@ impl Session {
     pub fn chat(info: &ChatInfo) -> Self {
         use title_source::*;
         let named = |title: &Option<String>| title.clone().filter(|t| !t.trim().is_empty());
-        // RiWork names an orchestrator; a name it gave is not the user's.
-        let user =
-            named(&info.user_title).filter(|t| crate::orchestrators::fixed_title(t).is_none());
+        // RiWork names an orchestrator; a name it gave one is not the user's. Any other chat
+        // keeps whatever it was explicitly called, "Project orchestrator" included.
+        let given = |title: &str| {
+            info.orchestrator.is_some() && crate::orchestrators::fixed_title(title).is_some()
+        };
+        let user = named(&info.user_title).filter(|t| !given(t));
         let fixed = info
             .orchestrator
             .as_ref()
@@ -233,7 +236,7 @@ impl Session {
         } else if let Some(title) = named(&info.first_user_message) {
             (DERIVED, title)
         } else if !matches!(info.title.as_str(), "Codex chat" | "Claude chat" | "")
-            && crate::orchestrators::fixed_title(&info.title).is_none()
+            && !given(&info.title)
         {
             (DEFAULT, info.title.clone())
         } else {
@@ -1596,6 +1599,13 @@ mod tests {
             serde_json::json!({"orchestrator":{"scope":"global"},"first_user_message":"hi"}),
         ));
         assert_eq!(global.title, "Global orchestrator");
+        // An ordinary chat explicitly named like one keeps its name.
+        for named in ["Project orchestrator", "P·ORCH · PROJECT"] {
+            let chat = Session::chat(&chat_info(
+                serde_json::json!({"user_title":named,"title":named,"first_user_message":"hi"}),
+            ));
+            assert_eq!((chat.title_priority, chat.title.as_str()), (USER, named));
+        }
     }
     #[test]
     fn a_title_is_set_once_and_only_a_higher_source_or_a_new_rename_replaces_it() {
