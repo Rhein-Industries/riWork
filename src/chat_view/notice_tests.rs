@@ -373,3 +373,35 @@ fn a_banner_is_one_line_as_tall_as_the_buttons_and_a_long_one_opens(cx: &mut Tes
     }
     notices::TEST_NOW.with(|now| now.set(None));
 }
+
+#[gpui::test]
+fn host_dismissed_notice_has_no_banner_and_close_sends_the_host_command(cx: &mut TestAppContext) {
+    let (handle, view, recording) = mount(cx);
+    let mut body = ItemBody::notice(
+        NoticeLevel::Warning,
+        "weekly limit",
+        Some("rate_limit:seven_day"),
+    );
+    if let ItemBody::Notice { dismissed, .. } = &mut body {
+        *dismissed = true;
+    }
+    push(&view, cx, "host-dismissed", body);
+    push(
+        &view,
+        cx,
+        "auth",
+        ItemBody::notice(NoticeLevel::Error, "sign in", Some("auth_required")),
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!shown(window, "host-dismissed"));
+        assert!(shown(window, "auth"));
+        window.click("chat-notice-close:auth", cx);
+        window.render_frame(cx);
+        assert!(!shown(window, "auth"));
+    })
+    .unwrap();
+    assert!(
+        matches!(recording.try_recv().unwrap(), feed::Delivery::Command(ChatCommand::DismissNotice { item_id }) if item_id == "auth")
+    );
+}

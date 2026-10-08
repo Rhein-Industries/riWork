@@ -155,7 +155,7 @@ chat snapshot UUID --json reads current full items and controls directly from di
 starting a host. --max is 1–100 (default 50); --max-bytes bounds the complete response.
 Use its cursor and before with --cursor TOKEN --before ORDER to page older full items.
 chat command takes one ChatCommand as JSON (send, interrupt, approve,
-answer, configure, compact, stop) and refuses unknown fields; errors that start with
+answer, configure, compact, stop, dismiss_notice) and refuses unknown fields; errors that start with
 `invalid_request:` are about the command, anything else about the host or the chat.
 capabilities --json has \"chat\": true and \"orchestrator_create\": true.
 handoff writes the source conversation into RIWORK_HOME/handoffs/ID.md (owner-only) and

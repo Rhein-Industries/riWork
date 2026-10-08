@@ -518,6 +518,13 @@ pub(super) fn parse_command(text: &str) -> Result<ChatCommand, String> {
         ));
     }
     match &command {
+        ChatCommand::DismissNotice { item_id } => {
+            if item_id.is_empty() || item_id.len() > 512 || item_id.chars().any(char::is_control) {
+                return Err(invalid(
+                    "item_id must be 1 to 512 bytes without control characters",
+                ));
+            }
+        }
         ChatCommand::Send { text } => {
             if text.trim().is_empty() {
                 return Err(invalid("a message must not be blank"));

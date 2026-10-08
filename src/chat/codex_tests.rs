@@ -816,6 +816,7 @@ fn plans_tools_searches_and_file_changes_map_to_items() {
             text: "Reconnected.".into(),
             kind: Some(notice_kind::RECONNECTING.into()),
             resolved: true,
+            dismissed: false,
             resets_at: None
         }
     );

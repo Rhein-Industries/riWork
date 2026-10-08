@@ -1438,13 +1438,14 @@ fields of its kind, none null and none unknown:
 | `approve` | `request_id` (1 to 200 bytes, one line), `decision` | answers an `approval_requested` |
 | `answer` | `request_id`, `answers`: 1 to 16 lists (one per question, in order) of at most 64 strings of at most 8 192 bytes, 65 536 bytes in all | answers a `question_requested`: the chosen labels, or free text |
 | `configure` | at least one of `model` (at most 100 characters), `effort` (at most 32), `approval_mode`, `fast` (boolean, since 2026-10-05) | changes them for the next turns (`fast: false` turns fast mode off; an effort the model does not take is left out and a `notice` item says so) |
+| `dismiss_notice` | `item_id`: 1 to 512 bytes, no control characters | persists a sticky notice dismissal on the host across chats of the provider; re-emits matching notice items with optional `dismissed: true`, included in `chat.snapshot`; see [Chat notices](chat-notices.md#dismissal) |
 | `compact` | | compacts the context |
 | `stop` | | stops the agent process, like `chat.stop` |
 
 Result `{"status":"ok"}`: the chat host accepted the command, which says nothing about
 how the agent takes it; the effect arrives as events. An approval or a question is
 answered once: answering it again, or after the turn ended, is a `cli_error` with the
-host's own words, which a client may show quietly. A command other than `send` to a
+host's own words, which a client may show quietly. A command other than `send`, `configure`, `stop` or `dismiss_notice` to a
 stopped chat is a `cli_error` too ("the chat is stopped; send a message to resume
 it"). A `send` that has to start the agent again can take several seconds; if it cannot
 (the agent is not installed, an account is gone) the error is `harness_unavailable` for
@@ -1877,7 +1878,7 @@ ready response. Values are test-only and must never provision production devices
   `worktree_id`, optional `approval_mode`, `model`, `effort`, `title`), `chat.events` (a
   long poll: `chat_id`, `since`, `wait_ms` 0 to 25 000, optional `max_events` 1 to 2000;
   answers events after the cursor with `next` and `more`, in a page cut to fit one reply),
-  `chat.command` (`send`, `interrupt`, `approve`, `answer`, `configure`, `compact`, `stop`)
+  `chat.command` (`send`, `interrupt`, `approve`, `answer`, `configure`, `compact`, `stop`, `dismiss_notice`)
   and `chat.stop`; `ready.features.chat` when the CLI says `"chat": true` in `riwork
   capabilities --json`. The chat JSON is the desktop's `src/chat/model.rs`. `chat.create`,
   `chat.command` and `chat.stop` run in the ordered lane and are not cut short when the

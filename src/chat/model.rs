@@ -308,6 +308,9 @@ pub enum ItemBody {
         /// the history keeps it.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         resolved: bool,
+        /// The user dismissed this occurrence on the host.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        dismissed: bool,
         /// When the limit the notice is about resets, in Unix seconds, if it says.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resets_at: Option<u64>,
@@ -322,6 +325,7 @@ impl ItemBody {
             text: text.into(),
             kind: kind.map(str::to_owned),
             resolved: false,
+            dismissed: false,
             resets_at: None,
         }
     }
@@ -576,6 +580,10 @@ pub enum ChatCommand {
     SendAttachments {
         text: String,
         attachments: Vec<super::attachments::Attachment>,
+    },
+    /// Persist dismissal of a sticky notice; the host resolves its occurrence key.
+    DismissNotice {
+        item_id: String,
     },
     Interrupt,
     Approve {
@@ -986,4 +994,13 @@ mod tests {
         t.apply(&ChatEvent::Models { models: Vec::new() });
         assert!(t.models.is_empty());
     }
+}
+
+/// Notices whose occurrence remains relevant across turns.
+pub(crate) fn sticky_notice(kind: Option<&str>) -> bool {
+    kind.is_some_and(|kind| {
+        kind == notice_kind::AUTH_REQUIRED
+            || kind == notice_kind::RATE_LIMIT
+            || kind.starts_with("rate_limit:")
+    })
 }

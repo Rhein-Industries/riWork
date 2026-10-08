@@ -7,7 +7,8 @@
 //! existed repeats the same notice under new ids), or the kind a newer notice with that
 //! text has; a tab error's `LocalKey`. A newer
 //! notice of a kind replaces the older one's banner, a resolved one takes it away, and a
-//! dismissed one stays away until the kind comes again as a new item.
+//! dismissed sticky occurrence stays away across clients and restarts. Local closes
+//! hide an item until a new id or a later reset arrives.
 
 use std::collections::{HashMap, HashSet};
 
@@ -71,11 +72,7 @@ impl Banner {
 
 /// A kind that stays up across turns until it is resolved or dismissed.
 fn sticky(kind: Option<&str>) -> bool {
-    kind.is_some_and(|kind| {
-        kind == notice_kind::AUTH_REQUIRED
-            || kind == notice_kind::RATE_LIMIT
-            || kind.starts_with(&format!("{}:", notice_kind::RATE_LIMIT))
-    })
+    crate::chat::model::sticky_notice(kind)
 }
 
 #[derive(Default)]
@@ -87,6 +84,8 @@ pub(super) struct Notices {
     items: usize,
     /// Provider notices the user closed, by item id.
     dismissed: HashSet<String>,
+    /// Reset captured by an optimistic local dismissal: a later reset can show again.
+    dismissed_resets: HashMap<String, u64>,
     /// "n more" was pressed: every banner shows.
     pub expanded: bool,
     /// The history of every notice is open above the message box.
@@ -129,10 +128,43 @@ impl Notices {
         }
     }
 
+    pub fn dismiss_occurrence(&mut self, id: &str, transcript: &Transcript) {
+        self.dismiss(id);
+        if let Some(reset) = transcript.items.iter().find_map(|item| {
+            if item.id != id {
+                return None;
+            }
+            match &item.body {
+                ItemBody::Notice { resets_at, .. } => *resets_at,
+                _ => None,
+            }
+        }) {
+            self.dismissed_resets.insert(id.to_owned(), reset);
+        }
+    }
+
+    fn dismissed_for(&self, transcript: &Transcript) -> HashSet<String> {
+        self.dismissed
+            .iter()
+            .filter(|id| {
+                self.dismissed_resets.get(*id).is_none_or(|reset| {
+                    let later_reset = transcript.items.iter().any(|item| {
+                        item.id == **id
+                            && matches!(item.body, ItemBody::Notice {
+                                resets_at: Some(later), ..
+                            } if later > *reset)
+                    });
+                    !later_reset
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
     /// The soonest time a shown banner's limit resets, when it must go without anything
     /// else happening.
     pub fn next_expiry(&self, transcript: &Transcript, now: u64) -> Option<u64> {
-        provider_banners(transcript, &self.dismissed, now)
+        provider_banners(transcript, &self.dismissed_for(transcript), now)
             .iter()
             .filter_map(|banner| banner.resets_at)
             .min()
@@ -162,7 +194,7 @@ impl Notices {
             })
             .collect();
         ranked.extend(
-            ranked_provider_banners(transcript, &self.dismissed, now)
+            ranked_provider_banners(transcript, &self.dismissed_for(transcript), now)
                 .into_iter()
                 .map(|(at, banner)| ((2 * at + 1, 0), banner)),
         );
@@ -178,6 +210,7 @@ fn banner(id: &str, body: &ItemBody) -> Option<Banner> {
         kind,
         resolved,
         resets_at,
+        ..
     } = body
     else {
         return None;
@@ -260,6 +293,13 @@ fn ranked_provider_banners(
                 return false;
             };
             !notice.resolved
+                && !matches!(
+                    item.body,
+                    ItemBody::Notice {
+                        dismissed: true,
+                        ..
+                    }
+                )
                 && !dismissed.contains(&item.id)
                 && notice.resets_at.is_none_or(|reset| reset > now)
                 && (at >= exchange || sticky(notice.kind.as_deref()))
@@ -575,5 +615,41 @@ mod tests {
             reset_text(at(20, 8), now).unwrap(),
             "resets 28 Oct at 08:30"
         );
+    }
+}
+
+#[cfg(test)]
+mod dismissal_tests {
+    use super::*;
+    use crate::chat::model::{ChatEvent, Item, ItemStatus};
+
+    #[test]
+    fn notice_with_a_later_reset_overcomes_optimistic_local_dismissal_of_the_same_id() {
+        let make = |reset| {
+            let mut body = ItemBody::notice(
+                NoticeLevel::Warning,
+                "weekly limit",
+                Some("rate_limit:seven_day"),
+            );
+            if let ItemBody::Notice { resets_at, .. } = &mut body {
+                *resets_at = Some(reset);
+            }
+            Item {
+                id: "limit".into(),
+                turn_id: None,
+                status: ItemStatus::Completed,
+                body,
+                presentation: Default::default(),
+            }
+        };
+        let mut transcript = Transcript::default();
+        transcript.apply(&ChatEvent::ItemCompleted { item: make(100) });
+        let mut notices = Notices::default();
+        notices.dismiss_occurrence("limit", &transcript);
+        assert!(notices.banners(&transcript, 0).is_empty());
+        transcript.apply(&ChatEvent::ItemCompleted { item: make(100) });
+        assert!(notices.banners(&transcript, 0).is_empty());
+        transcript.apply(&ChatEvent::ItemCompleted { item: make(200) });
+        assert_eq!(notices.banners(&transcript, 0).len(), 1);
     }
 }

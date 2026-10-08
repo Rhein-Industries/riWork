@@ -1459,3 +1459,215 @@ fn outstanding_sticky_notices_exclude_resolved_and_superseded_items() {
     assert_eq!(outstanding["rate_limit:codex"].id, "codex");
     assert_eq!(outstanding["rate_limit:future_window"].id, "future-window");
 }
+
+fn dismissal_notice(id: &str, kind: &str, reset: Option<u64>) -> Item {
+    let mut body = ItemBody::notice(
+        super::super::model::NoticeLevel::Warning,
+        "notice",
+        Some(kind),
+    );
+    if let ItemBody::Notice { resets_at, .. } = &mut body {
+        *resets_at = reset;
+    }
+    Item {
+        id: id.into(),
+        turn_id: None,
+        status: ItemStatus::Completed,
+        body,
+        presentation: Default::default(),
+    }
+}
+
+// Exercise the host's real persistence, command and subscriber paths without a
+// socket or provider process. This also runs where the sandbox forbids bind().
+struct NoticeHost {
+    home: PathBuf,
+    shared: Shared,
+}
+
+impl NoticeHost {
+    fn shared(home: &Path) -> Shared {
+        let dismissals = Arc::new(Mutex::new(
+            super::super::notice_dismissals::Dismissals::open(home).unwrap(),
+        ));
+        let chats = load_chats(home, &dismissals);
+        Shared {
+            home: home.to_owned(),
+            dismissals,
+            paths: Paths::new(home).unwrap(),
+            providers: fake_providers(),
+            options: quick_options(),
+            chats: Mutex::new(chats),
+            orchestrator_creation: Mutex::new(()),
+            connections: AtomicUsize::new(0),
+            activity: Mutex::new(Instant::now()),
+            quit: AtomicBool::new(false),
+        }
+    }
+
+    fn new() -> Self {
+        let home = short_home();
+        fs::create_dir_all(home.join("chats")).unwrap();
+        Self {
+            shared: Self::shared(&home),
+            home,
+        }
+    }
+
+    fn restart(&mut self) {
+        self.shared = Self::shared(&self.home);
+    }
+
+    fn create(&self, provider: Provider) -> Arc<Chat> {
+        let info: ChatInfo = serde_json::from_value(serde_json::json!({
+            "id": Uuid::new_v4().to_string(), "provider": provider, "cwd": self.home,
+            "title": "test", "created_at_unix": 0, "state": {"state":"stopped"}
+        }))
+        .unwrap();
+        let dir = log::chat_dir(&self.home, &info.id).unwrap();
+        let chat_log = ChatLog::create(&dir, &info).unwrap();
+        let mut inner = Inner::new(info.clone(), chat_log, 0, self.shared.dismissals.clone());
+        inner.append(ChatEvent::Info { info: info.clone() });
+        let chat = Arc::new(Chat {
+            dir,
+            lifecycle: Mutex::new(()),
+            inner: Mutex::new(inner),
+        });
+        lock(&self.shared.chats).insert(info.id, chat.clone());
+        chat
+    }
+
+    fn emit(&self, chat: &Chat, item: Item) {
+        lock(&chat.inner).take_driver_event(ChatEvent::ItemCompleted { item });
+    }
+
+    fn dismissed(&self, chat: &Chat, id: &str) -> bool {
+        let t = log::read_notice_transcript(&chat.dir).unwrap();
+        matches!(
+            t.items.iter().find(|item| item.id == id).unwrap().body,
+            ItemBody::Notice {
+                dismissed: true,
+                ..
+            }
+        )
+    }
+
+    fn dismiss(&self, chat: &Arc<Chat>, id: &str) {
+        run_command(
+            &self.shared,
+            chat,
+            ChatCommand::DismissNotice { item_id: id.into() },
+        )
+        .unwrap();
+    }
+}
+
+impl Drop for NoticeHost {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.home).unwrap();
+    }
+}
+
+#[test]
+fn notice_dismissal_persists_across_host_restart_covers_other_chats_and_snapshot() {
+    let mut host = NoticeHost::new();
+    let first = host.create(Provider::Claude);
+    let second = host.create(Provider::Claude);
+    let reset = super::super::notice_dismissals::now() + 3600;
+    host.emit(
+        &first,
+        dismissal_notice("one", "rate_limit:seven_day", Some(reset)),
+    );
+    host.emit(
+        &second,
+        dismissal_notice("two", "rate_limit:seven_day", Some(reset)),
+    );
+    let (tx, rx) = mpsc::sync_channel(10);
+    lock(&second.inner).subscribers.push(Subscriber {
+        tx,
+        queued: Arc::new(AtomicUsize::new(0)),
+        max_bytes: 1 << 20,
+    });
+    // A stopped chat can dismiss without resuming its provider.
+    host.dismiss(&first, "one");
+    assert!(lock(&first.inner).run.is_none());
+    assert!(host.dismissed(&first, "one"));
+    assert!(host.dismissed(&second, "two"));
+    let live: Envelope =
+        serde_json::from_str(&rx.recv_timeout(Duration::from_secs(2)).unwrap()).unwrap();
+    assert!(
+        matches!(live.event, ChatEvent::ItemCompleted { item } if item.id == "two" && matches!(item.body, ItemBody::Notice { dismissed: true, .. }))
+    );
+    host.dismiss(&first, "one");
+    assert!(rx.try_recv().is_err(), "repeated dismissal is idempotent");
+    let snapshot = serde_json::to_value(
+        log::read_snapshot(
+            &host.home,
+            &second.info().id,
+            None,
+            u64::MAX,
+            50,
+            1 << 20,
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        snapshot["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["item"]["id"] == "two" && row["item"]["body"]["dismissed"] == true)
+    );
+    host.emit(
+        &second,
+        dismissal_notice("three", "rate_limit:seven_day", Some(reset)),
+    );
+    assert!(host.dismissed(&second, "three"));
+    let first_id = first.info().id;
+    let second_id = second.info().id;
+    drop(first);
+    drop(second);
+    host.restart();
+    assert!(host.dismissed(&host.shared.find(&first_id).unwrap(), "one"));
+    assert!(host.dismissed(&host.shared.find(&second_id).unwrap(), "three"));
+    let third = host.create(Provider::Claude);
+    host.emit(
+        &third,
+        dismissal_notice("after-restart", "rate_limit:seven_day", Some(reset)),
+    );
+    assert!(host.dismissed(&third, "after-restart"));
+    // An in-place update with a later reset is a new occurrence even with the same id.
+    host.emit(
+        &third,
+        dismissal_notice("after-restart", "rate_limit:seven_day", Some(reset + 3600)),
+    );
+    assert!(!host.dismissed(&third, "after-restart"));
+    host.emit(&third, dismissal_notice("auth", "auth_required", None));
+    host.dismiss(&third, "auth");
+    assert!(host.dismissed(&third, "auth"));
+    host.emit(&third, dismissal_notice("new-auth", "auth_required", None));
+    assert!(!host.dismissed(&third, "new-auth"));
+    assert!(
+        run_command(
+            &host.shared,
+            &third,
+            ChatCommand::DismissNotice {
+                item_id: "unknown".into()
+            }
+        )
+        .is_err()
+    );
+    host.emit(&third, dismissal_notice("retry", "api_retry", None));
+    assert!(
+        run_command(
+            &host.shared,
+            &third,
+            ChatCommand::DismissNotice {
+                item_id: "retry".into()
+            }
+        )
+        .is_err()
+    );
+}

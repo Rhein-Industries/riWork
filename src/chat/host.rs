@@ -377,10 +377,16 @@ struct Inner {
     broken: bool,
     /// The reader thread should stop the chat (the log broke).
     stop_wanted: bool,
+    dismissals: Arc<Mutex<super::notice_dismissals::Dismissals>>,
 }
 
 impl Inner {
-    fn new(info: ChatInfo, log: ChatLog, last_seq: u64) -> Self {
+    fn new(
+        info: ChatInfo,
+        log: ChatLog,
+        last_seq: u64,
+        dismissals: Arc<Mutex<super::notice_dismissals::Dismissals>>,
+    ) -> Self {
         Self {
             info,
             log,
@@ -392,6 +398,7 @@ impl Inner {
             deleted: false,
             broken: false,
             stop_wanted: false,
+            dismissals,
         }
     }
 
@@ -408,9 +415,16 @@ impl Inner {
     }
 
     /// Writes `event` to the log, then offers it to the subscribers.
-    fn append(&mut self, event: ChatEvent) {
+    fn append(&mut self, mut event: ChatEvent) {
         if self.broken || self.deleted {
             return;
+        }
+        if let ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } = &mut event {
+            let mut dismissals = lock(&self.dismissals);
+            if let Err(error) = dismissals.prune(super::notice_dismissals::now()) {
+                eprintln!("riwork chat: {error}");
+            }
+            dismissals.mark(self.info.provider, item, super::notice_dismissals::now());
         }
         self.open.apply(&event);
         // Boundaries are worth surviving a power loss; the stream in between is
@@ -575,6 +589,7 @@ impl Chat {
 
 struct Shared {
     home: PathBuf,
+    dismissals: Arc<Mutex<super::notice_dismissals::Dismissals>>,
     paths: Paths,
     providers: Providers,
     options: Options,
@@ -700,13 +715,17 @@ impl Host {
         let chats_dir = log::chats_dir(&home);
         crate::paths::create_private_dir(&chats_dir)
             .map_err(|error| format!("Cannot create {}: {error}", chats_dir.display()))?;
-        let chats = load_chats(&home);
+        let dismissals = Arc::new(Mutex::new(super::notice_dismissals::Dismissals::open(
+            &home,
+        )?));
+        let chats = load_chats(&home, &dismissals);
         let listener = UnixListener::bind(&paths.socket)
             .map_err(|error| format!("Cannot listen on {}: {error}", paths.socket.display()))?;
         fs::set_permissions(&paths.socket, fs::Permissions::from_mode(0o600))
             .map_err(|error| format!("Cannot protect {}: {error}", paths.socket.display()))?;
         let shared = Arc::new(Shared {
             home,
+            dismissals,
             paths,
             providers,
             options,
@@ -1248,7 +1267,7 @@ fn create_identified(
     };
     let dir = log::chat_dir(&shared.home, &id).ok_or("invalid chat id")?;
     let log = ChatLog::create(&dir, &info)?;
-    let mut inner = Inner::new(info.clone(), log, 0);
+    let mut inner = Inner::new(info.clone(), log, 0, shared.dismissals.clone());
     inner.append(ChatEvent::Info { info });
     let chat = Arc::new(Chat {
         dir,
@@ -1292,7 +1311,10 @@ fn check_orchestrator_scope(new: &NewChat, scope: &OrchestratorScope) -> Result<
 
 /// Reads every chat from disk. No provider is started: a chat that was running
 /// when the last host ended is stopped now, and a turn it left open is closed.
-fn load_chats(home: &Path) -> HashMap<String, Arc<Chat>> {
+fn load_chats(
+    home: &Path,
+    dismissals: &Arc<Mutex<super::notice_dismissals::Dismissals>>,
+) -> HashMap<String, Arc<Chat>> {
     let mut chats = HashMap::new();
     let Ok(entries) = fs::read_dir(log::chats_dir(home)) else {
         return chats;
@@ -1317,7 +1339,7 @@ fn load_chats(home: &Path) -> HashMap<String, Arc<Chat>> {
             info.state,
             ChatState::Starting | ChatState::Running | ChatState::Waiting
         );
-        let mut inner = Inner::new(info, chat_log, last);
+        let mut inner = Inner::new(info, chat_log, last, dismissals.clone());
         if was_at_work {
             // Only a chat that died mid-turn needs its log read whole.
             match log::read_envelopes(&dir) {
@@ -1335,6 +1357,9 @@ fn load_chats(home: &Path) -> HashMap<String, Arc<Chat>> {
         ) {
             inner.settle(TurnOutcome::Interrupted);
             inner.set_state(ChatState::Stopped);
+        }
+        if let Err(error) = refresh_notice_dismissals(home, &name, &mut inner) {
+            eprintln!("riwork chat: {error}");
         }
         chats.insert(
             name.clone(),
@@ -1645,6 +1670,9 @@ fn live_driver(chat: &Chat) -> Option<DriverHandle> {
 /// Routes a user command to the chat's driver, starting (resuming) the driver
 /// first for a command that needs a process.
 fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Result<(), String> {
+    if let ChatCommand::DismissNotice { item_id } = &command {
+        return dismiss_notice(shared, chat, item_id);
+    }
     if let ChatCommand::SendAttachments { text, attachments } = &command {
         if text.len() > super::attachments::TEXT_BYTES {
             return Err("attachment message text exceeds 1 MiB".into());
@@ -1916,3 +1944,49 @@ fn ensure_host_with(exe: &Path, home: &Path) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests;
+
+/// Re-emit changed notice bodies so replay, snapshot and live subscribers agree.
+fn refresh_notice_dismissals(home: &Path, id: &str, inner: &mut Inner) -> Result<(), String> {
+    let dir = log::chat_dir(home, id).ok_or("invalid chat id")?;
+    let transcript = log::read_notice_transcript(&dir)?;
+    for mut item in transcript.items {
+        let changed = lock(&inner.dismissals).mark(
+            inner.info.provider,
+            &mut item,
+            super::notice_dismissals::now(),
+        );
+        if changed {
+            inner.append(ChatEvent::ItemCompleted { item });
+        }
+    }
+    Ok(())
+}
+
+fn dismiss_notice(shared: &Shared, chat: &Chat, item_id: &str) -> Result<(), String> {
+    {
+        let inner = lock(&chat.inner);
+        if inner.deleted || inner.broken {
+            return Err("this chat is unavailable".into());
+        }
+        let transcript = log::read_notice_transcript(&chat.dir)?;
+        let item = transcript
+            .items
+            .iter()
+            .find(|item| item.id == item_id)
+            .ok_or("unknown notice item")?;
+        lock(&shared.dismissals).dismiss(
+            inner.info.provider,
+            item,
+            super::notice_dismissals::now(),
+        )?;
+    }
+    // Never hold the store lock while acquiring a chat lock (append uses the reverse).
+    for chat in shared.all() {
+        let mut inner = lock(&chat.inner);
+        if !inner.deleted && !inner.broken {
+            let id = inner.info.id.clone();
+            refresh_notice_dismissals(&shared.home, &id, &mut inner)?;
+        }
+    }
+    Ok(())
+}

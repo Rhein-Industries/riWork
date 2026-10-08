@@ -904,6 +904,7 @@ impl Core {
                 Ok(())
             }
             ChatCommand::Stop => Ok(()),
+            ChatCommand::DismissNotice { .. } => Err("notice dismissal belongs to the host".into()),
         }
     }
 

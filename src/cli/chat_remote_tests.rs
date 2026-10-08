@@ -1152,3 +1152,22 @@ fn bounded_body_placeholder_says_full_text_is_on_the_mac_and_keeps_identity() {
         "This message is too long to show here. Full text is on your Mac."
     );
 }
+
+#[test]
+fn notice_dismiss_command_decodes_and_rejects_invalid_fields() {
+    assert_eq!(
+        super::chat_remote::parse_command(r#"{"command":"dismiss_notice","item_id":"notice-1"}"#)
+            .unwrap(),
+        ChatCommand::DismissNotice {
+            item_id: "notice-1".into()
+        }
+    );
+    for json in [
+        r#"{"command":"dismiss_notice"}"#,
+        r#"{"command":"dismiss_notice","item_id":""}"#,
+        r#"{"command":"dismiss_notice","item_id":"bad\nline"}"#,
+        r#"{"command":"dismiss_notice","item_id":"one","kind":"auth_required"}"#,
+    ] {
+        assert!(super::chat_remote::parse_command(json).is_err(), "{json}");
+    }
+}

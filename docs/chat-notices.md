@@ -18,6 +18,7 @@ chat log, returned by `chat.snapshot` and `chat.events`) whose body is:
   "text": "This account is close to the weekly usage limit.",
   "kind": "rate_limit:seven_day",
   "resolved": true,
+  "dismissed": true,
   "resets_at": 1767225600
 }
 ```
@@ -30,10 +31,11 @@ chat log, returned by `chat.snapshot` and `chat.events`) whose body is:
 | `kind` | string | optional | Stable dedupe key, see below. Absent in logs written before it existed and for one-off notices. |
 | `resolved` | bool | optional, omitted when false | The cause went away (retry worked, reconnected, limit reset). |
 | `resets_at` | integer | optional | When the limit the notice is about resets, Unix **seconds**. |
+| `dismissed` | bool | optional, omitted when false | The host has dismissed this sticky notice occurrence; hide its banner, retain it in history. |
 
-All three new fields use `#[serde(default)]` and are skipped when empty, so older
+All optional fields use `#[serde(default)]` and are skipped when empty, so older
 phones (whose decoder ignores unknown keys) keep working and show the text as they
-always did; older logs decode with `kind: None`, `resolved: false`.
+always did; older logs decode with `kind: None`, `resolved: false`, `dismissed: false`.
 
 Updates reuse the item id: a driver that updates a notice in place ("Reconnecting…
 2/5" → "3/5") or resolves it re-emits `ItemCompleted` with **the same item id**. A
@@ -100,9 +102,10 @@ Notices without `kind` are one-offs: each is its own banner.
    dismissed, whatever turn they came in.
 4. **Stack.** Newest on top. At most two banners are visible; the rest collapse into a
    "n more" control that expands the stack in place.
-5. **Dismissal.** Each banner has a close (×) button. Dismissing hides that item id;
-   an update of the same item in place stays dismissed, a new occurrence of the kind
-   (a new item id) shows again. Dismissals are per device and need not persist.
+5. **Dismissal.** Each banner has a close (×) button. Sticky notices use the host
+   dismissal below; clients hide `dismissed: true` notices. The Mac hides immediately
+   while sending the command. Non-sticky and tab-local notices use view-local
+   item-id dismissal; an update stays hidden, a new item id shows again.
 6. **Level colours.** info → the theme's muted/accent tone, warning → warning tone,
    error → error tone, as transcript notices used.
 7. **Usage limits.** A `rate_limit:*` banner shows its reset time when `resets_at` is
@@ -116,3 +119,37 @@ The Mac also routes the chat tab's own transient errors (could not reach the hos
 could not delete, attachment errors) into the same stack under local keys, so a
 repeated error updates its banner instead of stacking, and each clears itself when
 its cause is resolved (the host is reachable again, the delete succeeded).
+
+## Dismissal
+
+Send the existing `chat.command` RPC with:
+
+```json
+{"chat_id":"UUID","command":{"command":"dismiss_notice","item_id":"notice-item-id"}}
+```
+
+On the host socket this is `ChatCommand::DismissNotice { item_id }`; the CLI accepts
+`riwork chat command UUID --command-json '{"command":"dismiss_notice","item_id":"notice-item-id"}' --json`.
+`item_id` is 1–512 bytes without control characters. The host resolves the item in
+that chat's log and refuses unknown ids or non-sticky notices. Dismissal works on
+stopped chats without starting a provider. Repeating it is idempotent.
+
+The single host atomically replaces the owner-only
+`$RIWORK_HOME/chats/notice-dismissals.json` file. Each entry is keyed by **provider +
+exact kind + resets_at**, or **provider + exact kind + item id** when no reset is
+known. Thus a usage-window dismissal covers all chats of that provider with the
+same reset, including new chats and notices with different ids. A later reset is
+a new occurrence and shows again; `auth_required` with a new id shows again.
+Project changes, closing/reopening tabs, window reloads and host/app restarts do
+not undo dismissal. Keys are provider-wide, including chats configured with different
+accounts of the same provider, rather than scoped by chat or project.
+
+Entries with `resets_at <= now` no longer match and are pruned on host startup,
+dismissal commands and incoming item events. The host re-emits matching existing
+items as `ItemCompleted` with the same id and `dismissed: true`, across all chats,
+and marks matching incoming notices before logging/broadcasting them. Startup
+reconciles stored notice bodies with the dismissal file, including notices outside
+the driver's bounded resume tail. Consequently `chat.snapshot` contains the flag
+and `chat.events` delivers live updates. Clients must hide flagged banners and
+keep their history; older clients can ignore this additive field. Non-sticky
+notices remain view-local on the Mac. The iOS rendering change is separate work.

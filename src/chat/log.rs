@@ -935,6 +935,15 @@ mod snapshot_tests {
         let tail = notice_tail(&f.dir, NOTICE_TAIL);
         let ids: Vec<_> = tail.items.iter().map(|item| item.id.as_str()).collect();
         assert_eq!(ids, ["late"], "only notices, only from the tail");
+        let full = read_notice_transcript(&f.dir).unwrap();
+        assert_eq!(
+            full.items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["early", "late"],
+            "dismissal must also find notices outside the driver resume tail"
+        );
         // A missing log has none.
         assert!(
             notice_tail(&f.dir.join("missing"), NOTICE_TAIL)
@@ -964,6 +973,7 @@ mod snapshot_tests {
                 text: "close".into(),
                 kind: Some("rate_limit:seven_day".into()),
                 resolved: true,
+                dismissed: false,
                 resets_at: Some(1767225600),
             }
         );
@@ -1118,4 +1128,29 @@ mod snapshot_tests {
             .unwrap();
         assert!(read_snapshot(&f.home, &f.id, None, u64::MAX, 50, 120_000, &[]).is_err());
     }
+}
+
+/// Full notice history for account-wide dismissal, including notices older than the
+/// bounded driver-resume tail. Stream past conversation bodies without retaining them.
+pub(super) fn read_notice_transcript(dir: &Path) -> Result<super::model::Transcript, String> {
+    let file = File::open(dir.join(EVENTS)).map_err(|e| e.to_string())?;
+    let mut reader = BufReader::new(file);
+    let mut transcript = super::model::Transcript::default();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader
+            .read_until(b'\n', &mut line)
+            .map_err(|e| e.to_string())?
+            == 0
+        {
+            break;
+        }
+        if line.last() != Some(&b'\n') || !contains(&line, br#""type":"notice""#) {
+            continue;
+        }
+        let envelope: Envelope = serde_json::from_slice(&line).map_err(|e| e.to_string())?;
+        transcript.apply(&envelope.event);
+    }
+    Ok(transcript)
 }

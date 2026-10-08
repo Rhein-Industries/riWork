@@ -1143,6 +1143,7 @@ impl Codex {
             }
             // Handled by the driver, which owns the process.
             ChatCommand::Stop => Ok(()),
+            ChatCommand::DismissNotice { .. } => Err("notice dismissal belongs to the host".into()),
         }
     }
 

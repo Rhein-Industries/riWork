@@ -55,7 +55,17 @@ fn escape(event: &KeyDownEvent) -> bool {
 
 impl ChatView {
     fn dismiss_notice(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.notices.dismiss(id);
+        self.notices.dismiss_occurrence(id, &self.model.transcript);
+        if self.model.transcript.items.iter().any(|item| {
+            item.id == id
+                && matches!(&item.body,
+                crate::chat::model::ItemBody::Notice { kind, .. }
+                if crate::chat::model::sticky_notice(kind.as_deref()))
+        }) {
+            self.command(crate::chat::model::ChatCommand::DismissNotice {
+                item_id: id.to_owned(),
+            });
+        }
         // The keys go back to the message box, not to nothing.
         self.focus_composer = true;
         window.refresh();
