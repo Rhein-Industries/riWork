@@ -2023,3 +2023,23 @@ fn a_login_change_rereads_identity_and_drops_the_previous_logins_delayed_reply()
     assert!(identities[1].is_none());
     assert_ne!(identities[0], identities[2]);
 }
+
+#[test]
+fn the_threads_own_name_reaches_the_chat_on_resume_and_on_a_rename() {
+    let mut run = Run::start_with("resume_named", |config| {
+        config.resume = Some("thread-9".into())
+    });
+    run.send("again");
+    run.finish_turn();
+    let titles = run
+        .seen
+        .iter()
+        .filter_map(|event| match event {
+            ChatEvent::ProviderTitle { title } => Some(title.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    // A sub-agent's thread renamed on the same connection is not this chat's name.
+    assert_eq!(titles, ["Release checklist", "Release notes"]);
+    run.end();
+}

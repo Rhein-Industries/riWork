@@ -797,6 +797,7 @@ fn placeholder_source() -> handoff::Source {
         parent_id: None,
         user_title: None,
         first_user_message: None,
+        provider_title: None,
 
         id: String::new(),
         provider: crate::chat::model::Provider::Codex,

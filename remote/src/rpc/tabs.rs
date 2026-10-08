@@ -20,8 +20,6 @@ struct Change {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 enum Update {
-    Pin { key: String },
-    Unpin { key: String },
     Hide { key: String },
     Unhide { key: String },
     Move { key: String, before: Option<String> },
@@ -57,10 +55,7 @@ fn arguments(r: &Request) -> std::result::Result<Vec<String>, Fault> {
         let p: Change = params(r)?;
         id(&p.project_id)?;
         match &p.update {
-            Update::Pin { key: k }
-            | Update::Unpin { key: k }
-            | Update::Hide { key: k }
-            | Update::Unhide { key: k } => key(k)?,
+            Update::Hide { key: k } | Update::Unhide { key: k } => key(k)?,
             Update::Move { key: k, before } => {
                 key(k)?;
                 if let Some(before) = before {
@@ -156,7 +151,7 @@ mod tests {
     }
     #[test]
     fn tabs_update_arguments() {
-        for action in ["pin", "unpin", "hide", "unhide"] {
+        for action in ["hide", "unhide"] {
             let args=arguments(&request("tabs.update",json!({"project_id":"00000000-0000-4000-8000-000000000002","update":{"action":action,"key":"chat:00000000-0000-4000-8000-000000000003"}}))).unwrap();
             assert_eq!(args[4], "--update-json");
             assert!(args[5].contains(action));
@@ -166,16 +161,18 @@ mod tests {
     fn tabs_updates_refuse_unknown_and_invalid_fields() {
         for update in [
             json!({"action":"pin","key":"x"}),
+            // Pins are gone: an older phone's Pin/Unpin is an invalid request.
+            json!({"action":"pin","key":"chat:00000000-0000-4000-8000-000000000003"}),
+            json!({"action":"unpin","key":"chat:00000000-0000-4000-8000-000000000003"}),
             json!({"action":"rename","key":"shell:00000000-0000-4000-8000-000000000003","title":"\n"}),
             json!({"action":"hide","key":"chat:00000000-0000-4000-8000-000000000003","stop":true}),
         ] {
-            assert!(
-                arguments(&request(
-                    "tabs.update",
-                    json!({"project_id":"00000000-0000-4000-8000-000000000002","update":update})
-                ))
-                .is_err()
-            );
+            let fault = arguments(&request(
+                "tabs.update",
+                json!({"project_id":"00000000-0000-4000-8000-000000000002","update":update}),
+            ))
+            .unwrap_err();
+            assert_eq!(fault.code, "invalid_request");
         }
     }
 }

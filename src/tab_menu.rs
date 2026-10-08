@@ -15,7 +15,6 @@ pub enum Event {
 }
 pub struct TabMenu {
     key: String,
-    pinned: bool,
     left: Option<project_tabs::Update>,
     right: Option<project_tabs::Update>,
     focus: FocusHandle,
@@ -41,11 +40,10 @@ impl TabMenu {
         });
         Self {
             key: entry.key.clone(),
-            pinned: entry.pinned,
             left,
             right,
             focus: cx.focus_handle(),
-            buttons: (0..6).map(|_| cx.focus_handle()).collect(),
+            buttons: (0..5).map(|_| cx.focus_handle()).collect(),
             rename: false,
             input,
             _subscription: subscription,
@@ -93,12 +91,12 @@ impl Render for TabMenu {
                             .iter()
                             .position(|f| f.is_focused(window))
                             .unwrap_or(0);
-                        let step = if event.keystroke.key == "up" { 5 } else { 1 };
-                        let mut next = (current + step) % 6;
-                        while (next == 2 && menu.left.is_none())
-                            || (next == 3 && menu.right.is_none())
+                        let step = if event.keystroke.key == "up" { 4 } else { 1 };
+                        let mut next = (current + step) % 5;
+                        while (next == 1 && menu.left.is_none())
+                            || (next == 2 && menu.right.is_none())
                         {
-                            next = (next + step) % 6;
+                            next = (next + step) % 5;
                         }
                         menu.buttons[next].focus(window, cx);
                         cx.stop_propagation();
@@ -129,7 +127,7 @@ impl Render for TabMenu {
                                 controls::Button::Secondary,
                                 colors,
                             )
-                            .track_focus(&self.buttons[5])
+                            .track_focus(&self.buttons[4])
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(Event::Cancel))),
                         )
                         .child(
@@ -163,7 +161,6 @@ impl Render for TabMenu {
         panel
             .children(
                 [
-                    if self.pinned { "Unpin" } else { "Pin" },
                     "Rename…",
                     "Move left",
                     "Move right",
@@ -173,8 +170,8 @@ impl Render for TabMenu {
                 .into_iter()
                 .enumerate()
                 .flat_map(|(index, label)| {
-                    let disabled = (index == 2 && self.left.is_none())
-                        || (index == 3 && self.right.is_none());
+                    let disabled = (index == 1 && self.left.is_none())
+                        || (index == 2 && self.right.is_none());
                     let item = row(behavior::button_content(
                         ("shared-tab-menu-action", index),
                         label,
@@ -185,23 +182,14 @@ impl Render for TabMenu {
                     .disabled(disabled)
                     .when(disabled, |item| item.text_color(rgb(colors.muted)))
                     .on_click(cx.listener(move |menu, _, window, cx| match index {
-                        0 => cx.emit(Event::Update(if menu.pinned {
-                            project_tabs::Update::Unpin {
-                                key: menu.key.clone(),
-                            }
-                        } else {
-                            project_tabs::Update::Pin {
-                                key: menu.key.clone(),
-                            }
-                        })),
-                        1 => {
+                        0 => {
                             menu.rename = true;
                             menu.input.read(cx).focus_handle(cx).focus(window, cx);
                             cx.notify();
                         }
-                        4 => cx.emit(Event::Close),
-                        2 | 3 => {
-                            if let Some(update) = if index == 2 { &menu.left } else { &menu.right }
+                        3 => cx.emit(Event::Close),
+                        1 | 2 => {
+                            if let Some(update) = if index == 1 { &menu.left } else { &menu.right }
                             {
                                 cx.emit(Event::Update(update.clone()));
                             }
@@ -209,7 +197,7 @@ impl Render for TabMenu {
                         _ => cx.emit(Event::Cancel),
                     }))
                     .into_any_element();
-                    let separator = matches!(index, 2 | 4 | 5).then(|| controls::menu_separator(colors));
+                    let separator = matches!(index, 1 | 3 | 4).then(|| controls::menu_separator(colors));
                     separator.into_iter().chain([item])
                 }),
             )
@@ -223,16 +211,22 @@ mod tests {
     use gpui_kit::test::TestWindowExt;
     #[gpui::test]
     fn keyboard_menu_moves_focus_and_rename_uses_persistent_input(cx: &mut gpui::TestAppContext) {
-        let entry: project_tabs::Entry = serde_json::from_value(serde_json::json!({"key":format!("chat:{}",uuid::Uuid::new_v4()),"kind":"chat","title":"Original","status":"waiting","pinned":false,"hidden":false,"worker":false,"order":0,"parent":null,"children":[],"child_count":0})).unwrap();
+        let entry: project_tabs::Entry = serde_json::from_value(serde_json::json!({"key":format!("chat:{}",uuid::Uuid::new_v4()),"kind":"chat","title":"Original","status":"waiting","hidden":false,"worker":false,"order":0,"parent":null,"children":[],"child_count":0})).unwrap();
         let (window, menu) = crate::form_input::test_window(cx, move |window, cx| {
             TabMenu::new(&entry, None, None, window, cx)
         });
         crate::form_input::test_turn(cx, window, |window, cx| {
             menu.update(cx, |menu, cx| menu.focus(window, cx));
         });
+        // Down skips the disabled moves to Close; up comes back to Rename….
         crate::form_input::test_turn(cx, window, |window, cx| window.press("down", cx));
         cx.update_window(window, |_, window, cx| {
-            assert!(menu.read(cx).buttons[1].is_focused(window));
+            assert!(menu.read(cx).buttons[3].is_focused(window));
+        })
+        .unwrap();
+        crate::form_input::test_turn(cx, window, |window, cx| window.press("up", cx));
+        cx.update_window(window, |_, window, cx| {
+            assert!(menu.read(cx).buttons[0].is_focused(window));
         })
         .unwrap();
         crate::form_input::test_turn(cx, window, |window, cx| {

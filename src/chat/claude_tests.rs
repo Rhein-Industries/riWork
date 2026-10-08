@@ -2400,3 +2400,85 @@ fn system_frames_report_only_hashed_login_identity_to_the_host() {
     assert!(first.scope.starts_with("sha256:"));
     assert!(!first.scope.contains("private"));
 }
+
+#[test]
+fn the_sessions_title_comes_from_claudes_transcript_custom_over_ai_and_once() {
+    let home = std::env::temp_dir().join(format!("rw-claude-home-{}", Uuid::new_v4()));
+    let folder = home.join("projects").join("-tmp-project");
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("sess-1.jsonl");
+    let append = |line: &str| {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(line.as_bytes()).unwrap();
+    };
+    let mut titles = TranscriptTitles::new(Some(home.clone()));
+    // No transcript yet, then one without a title.
+    assert_eq!(titles.check("sess-1"), None);
+    append("{\"type\":\"user\",\"message\":{\"content\":\"ai-title is just words here\"}}\n");
+    assert_eq!(titles.check("sess-1"), None);
+    append("{\"type\":\"ai-title\",\"aiTitle\":\"Fix flaky build\",\"sessionId\":\"sess-1\"}\n");
+    assert_eq!(titles.check("sess-1").as_deref(), Some("Fix flaky build"));
+    // Told once; a half-written line waits for its end.
+    assert_eq!(titles.check("sess-1"), None);
+    append("{\"type\":\"custom-title\",\"customTitle\":\"Release");
+    assert_eq!(titles.check("sess-1"), None);
+    append(" prep\",\"sessionId\":\"sess-1\"}\n");
+    assert_eq!(titles.check("sess-1").as_deref(), Some("Release prep"));
+    // A later AI title does not replace Claude's custom one.
+    append("{\"type\":\"ai-title\",\"aiTitle\":\"Something else\",\"sessionId\":\"sess-1\"}\n");
+    assert_eq!(titles.check("sess-1"), None);
+    // Another session starts over.
+    assert_eq!(titles.check("sess-2"), None);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn a_resumed_session_and_an_idle_chat_learn_claudes_title_without_another_turn() {
+    let home = std::env::temp_dir().join(format!("rw-claude-titles-{}", Uuid::new_v4()));
+    let folder = home.join("projects").join("-tmp-project");
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join("sess-1.jsonl");
+    std::fs::write(
+        &path,
+        "{\"type\":\"ai-title\",\"aiTitle\":\"Old title\",\"sessionId\":\"sess-1\"}\n",
+    )
+    .unwrap();
+    let mut rig = Rig::with(&["turn"], fast(), |config| {
+        config
+            .env
+            .push(("CLAUDE_CONFIG_DIR".into(), home.clone().into_os_string()));
+    });
+    let titled = |want: &'static str| move |event: &ChatEvent| matches!(event, ChatEvent::ProviderTitle { title } if title == want);
+    // Resuming: the title the session already has, before any turn.
+    if !rig.seen.iter().any(titled("Old title")) {
+        rig.until(titled("Old title"));
+    }
+    // Renamed in Claude while the chat sits idle: the watchdog finds it, no turn needed.
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(
+            b"{\"type\":\"custom-title\",\"customTitle\":\"Renamed in Claude\",\"sessionId\":\"sess-1\"}\n",
+        )
+        .unwrap();
+    }
+    rig.until(titled("Renamed in Claude"));
+    assert_eq!(
+        rig.seen
+            .iter()
+            .filter(|event| matches!(event, ChatEvent::ProviderTitle { .. }))
+            .count(),
+        2,
+        "each title is told once"
+    );
+    rig.driver.shutdown();
+    let _ = std::fs::remove_dir_all(home);
+}

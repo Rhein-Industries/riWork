@@ -966,6 +966,15 @@ impl Codex {
             .to_owned();
         self.with(|session| {
             session.thread_id = Some(thread);
+            // A resumed thread brings the name it was given.
+            if let Some(title) = result["thread"]["name"]
+                .as_str()
+                .filter(|t| !t.trim().is_empty())
+            {
+                session.emit(ChatEvent::ProviderTitle {
+                    title: title.to_owned(),
+                });
+            }
             session.thread_model = result["model"].as_str().map(str::to_owned);
             session.tier_sent = config.fast;
             // A resumed thread may still be in the plan mode it was left in.
@@ -1827,6 +1836,17 @@ impl Session {
                                     .unwrap_or_default(),
                             },
                         },
+                    });
+                }
+            }
+            // Codex names a thread only when it is renamed (`/rename`, `thread/name/set`).
+            "thread/name/updated" => {
+                if let Some(title) = params["threadName"]
+                    .as_str()
+                    .filter(|t| !t.trim().is_empty())
+                {
+                    self.emit(ChatEvent::ProviderTitle {
+                        title: title.to_owned(),
                     });
                 }
             }

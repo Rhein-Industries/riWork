@@ -1406,10 +1406,9 @@ struct Workspace {
     strip_menu_selection: (PaneId, Option<TabId>),
     /// Which tab hosts `shared_tab_menu`.
     shared_tab_menu_key: String,
-    /// Each pane strip's scrolling tabs, so a selected tab can be revealed.
-    /// whether its pinned tabs scroll with the rest (a narrow pane), and what it last showed.
-    strip_scrolls:
-        std::cell::RefCell<HashMap<PaneId, (gpui::ScrollHandle, bool, tab_strip::StripShape)>>,
+    /// Each pane strip's scrolling tabs, so a selected tab can be revealed, and what it
+    /// last showed.
+    strip_scrolls: std::cell::RefCell<HashMap<PaneId, (gpui::ScrollHandle, tab_strip::StripShape)>>,
     shared_tab_menu: Option<Entity<tab_menu::TabMenu>>,
     foreign_tabs: HashMap<String, Option<project_tabs::Entry>>,
     shared_tab_error: Option<String>,
@@ -7091,19 +7090,11 @@ impl Workspace {
             .find(|e| e.key == key)
             .cloned()
             .or_else(|| self.foreign_tabs.get(&key).cloned().flatten());
-        if entry.as_ref().is_some_and(|e| e.pinned) {
-            self.notice = Some("Unpin the tab before closing it".into());
-            cx.notify();
-            return;
-        }
-        let choice = if entry.as_ref().map_or_else(
+        let choice = session_close_choice(
+            entry.as_ref(),
             || self.session_is_worker(&key).unwrap_or(true),
-            |e| e.worker || e.parent.is_some(),
-        ) {
-            settings::TabCloseBehavior::Detach
-        } else {
-            self.settings.tab_close_behavior
-        };
+            self.settings.tab_close_behavior,
+        );
         if choice != settings::TabCloseBehavior::Ask {
             self.finish_close_session(key, local, choice, window, cx);
             return;
@@ -7211,15 +7202,6 @@ impl Workspace {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        if aggregation_target(self.main_pane(), pane_id, self.pane_is_locked(pane_id)).is_none()
-            && let Some(entries) = &self.shared_tabs
-        {
-            if entries.iter().any(|e| e.pinned && keys.contains(&e.key)) {
-                self.notice = Some("Unpin the tab before closing its pane.".into());
-                cx.notify();
-                return;
-            }
-        }
         // Panes moved into the main pane keep membership; only panes whose tabs close hide them.
         if aggregation_target(self.main_pane(), pane_id, self.pane_is_locked(pane_id)).is_none() {
             for key in keys {
@@ -11795,7 +11777,22 @@ fn panel_tooltip(panel: PanelKind) -> &'static str {
     }
 }
 
-/// Adjacent movement stays inside the server's sibling/pin group.
+/// What closing a session tab does: a worker is only detached; any other tab, the project
+/// orchestrator included, follows the close setting (Ask, Detach or Exit). A tab without a
+/// shared entry asks `unknown_is_worker`.
+fn session_close_choice(
+    entry: Option<&project_tabs::Entry>,
+    unknown_is_worker: impl FnOnce() -> bool,
+    setting: settings::TabCloseBehavior,
+) -> settings::TabCloseBehavior {
+    if entry.map_or_else(unknown_is_worker, |e| e.worker || e.parent.is_some()) {
+        settings::TabCloseBehavior::Detach
+    } else {
+        setting
+    }
+}
+
+/// The menu's Move left/right step past the adjacent tab of the same parent.
 fn shared_tab_moves(
     entries: &[project_tabs::Entry],
     key: &str,
@@ -11805,7 +11802,7 @@ fn shared_tab_moves(
     };
     let mut siblings = entries
         .iter()
-        .filter(|e| e.parent == entry.parent && e.pinned == entry.pinned && !e.hidden)
+        .filter(|e| e.parent == entry.parent && !e.hidden)
         .collect::<Vec<_>>();
     siblings.sort_by_key(|e| e.order);
     let at = siblings.iter().position(|e| e.key == key).unwrap();
@@ -11939,9 +11936,9 @@ fn shared_drop_move(
         .skip(index + 1)
         .flatten()
         .find(|candidate| {
-            entries.iter().any(|e| {
-                &e.key == *candidate && e.parent == moved.parent && e.pinned == moved.pinned
-            })
+            entries
+                .iter()
+                .any(|e| &e.key == *candidate && e.parent == moved.parent)
         })
         .cloned();
     Some(project_tabs::Update::Move {
@@ -13588,9 +13585,8 @@ mod workspace_tab_tests {
         }
     }
     #[test]
-    fn shared_menu_moves_are_adjacent_and_stay_in_pin_and_parent_groups() {
-        let mut entries = (0..4).map(|i| serde_json::from_value::<project_tabs::Entry>(serde_json::json!({"key":format!("chat:{}", uuid::Uuid::from_u128(i+1)),"kind":"chat","title":"Chat","status":"waiting","pinned":false,"hidden":false,"order":i,"parent":null,"children":[],"child_count":0})).unwrap()).collect::<Vec<_>>();
-        entries[0].pinned = true;
+    fn shared_menu_moves_are_adjacent_and_stay_in_parent_groups() {
+        let mut entries = (0..4).map(|i| serde_json::from_value::<project_tabs::Entry>(serde_json::json!({"key":format!("chat:{}", uuid::Uuid::from_u128(i+1)),"kind":"chat","title":"Chat","status":"waiting","hidden":false,"order":i,"parent":null,"children":[],"child_count":0})).unwrap()).collect::<Vec<_>>();
         let key = entries[2].key.clone();
         assert_eq!(
             shared_tab_moves(&entries, &key),
@@ -13605,42 +13601,61 @@ mod workspace_tab_tests {
                 })
             )
         );
-        assert_eq!(shared_tab_moves(&entries, &entries[0].key), (None, None));
+        assert!(shared_tab_moves(&entries, &entries[0].key).0.is_none());
         entries[3].parent = Some(entries[0].key.clone());
         assert!(shared_tab_moves(&entries, &key).1.is_none());
     }
 
     #[test]
-    fn shared_drag_mapping_ignores_panels_foreign_global_and_other_pin_groups() {
+    fn the_orchestrator_closes_like_any_user_chat_and_workers_only_detach() {
+        use settings::TabCloseBehavior::{Ask, Detach, Exit};
+        let home = std::env::temp_dir().join(format!("rw-close-{}", uuid::Uuid::new_v4()));
+        let project = uuid::Uuid::new_v4().to_string();
+        let store = project_tabs::TabStore::at(&home, &project).unwrap();
+        let info: ChatInfo = serde_json::from_value(serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"provider":"codex","cwd":"/tmp","title":"a","created_at_unix":1})).unwrap();
+        let mut orchestrator = project_tabs::Session::chat(&info);
+        orchestrator.orchestrator = true;
+        let mut worker = project_tabs::Session::chat(&info);
+        worker.key = format!("chat:{}", uuid::Uuid::new_v4());
+        worker.parent_id = Some(info.id.clone());
+        let entries = store
+            .reconcile(&[orchestrator.clone(), worker.clone()])
+            .unwrap();
+        let entry = |key: &str| entries.iter().find(|e| e.key == key);
+        for setting in [Ask, Detach, Exit] {
+            assert_eq!(
+                session_close_choice(entry(&orchestrator.key), || true, setting),
+                setting
+            );
+            assert_eq!(
+                session_close_choice(entry(&worker.key), || false, setting),
+                Detach
+            );
+        }
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn shared_drag_mapping_ignores_panels_foreign_and_global() {
         let info: ChatInfo = serde_json::from_value(serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"provider":"codex","cwd":"/tmp","title":"a","created_at_unix":1})).unwrap();
         let home = std::env::temp_dir().join(format!("rw-drop-{}", uuid::Uuid::new_v4()));
         let project = uuid::Uuid::new_v4().to_string();
         let store = project_tabs::TabStore::at(&home, &project).unwrap();
         let mut b = info.clone();
         b.id = uuid::Uuid::new_v4().to_string();
-        let mut pin = info.clone();
-        pin.id = uuid::Uuid::new_v4().to_string();
         let _entries = store
             .reconcile(&[
                 project_tabs::Session::chat(&info),
                 project_tabs::Session::chat(&b),
-                project_tabs::Session::chat(&pin),
             ])
             .unwrap();
         let key = format!("chat:{}", info.id);
         let target = format!("chat:{}", b.id);
-        let pinned = format!("chat:{}", pin.id);
-        store
-            .update(&project_tabs::Update::Pin {
-                key: pinned.clone(),
-            })
-            .unwrap();
         let entries = store.list().unwrap();
         let mixed = vec![
             None,
             Some(key.clone()),
             Some("shell:global".into()),
-            Some(pinned),
             None,
             Some(target.clone()),
         ];
@@ -14507,7 +14522,7 @@ mod main_pane_tests {
     }
 
     #[gpui::test]
-    fn the_selected_strip_tab_stays_in_view_when_it_or_a_pinned_tab_is_renamed(
+    fn the_selected_strip_tab_stays_in_view_when_it_or_a_tab_before_it_is_renamed(
         cx: &mut gpui::TestAppContext,
     ) {
         let (handle, workspace, chats, _, _) = strip_workspace(cx, 24);
@@ -14526,14 +14541,7 @@ mod main_pane_tests {
                 });
             });
         };
-        let pinned = format!("chat:{}", chats[0].id);
-        crate::form_input::test_turn(cx, handle, |window, cx| {
-            workspace.update(cx, |workspace, cx| {
-                workspace
-                    .change_shared_tab(&project_tabs::Update::Pin { key: pinned.clone() }, window, cx)
-                    .unwrap();
-            });
-        });
+        let first = format!("chat:{}", chats[0].id);
         // The last tab, selected: the strip scrolls to its end.
         let key = format!("chat:{}", chats[23].id);
         let selected = strip_tab_id(&workspace, &key, cx);
@@ -14546,14 +14554,14 @@ mod main_pane_tests {
         rename(key, "A much longer title for the selected tab at the strip's end", cx);
         settle(cx);
         assert!(strip_shows(handle, selected, cx), "revealed after renaming itself");
-        // The pinned tab grows, narrowing the scrolling area from the left.
-        rename(pinned, "A much longer title for the pinned tab before the rest", cx);
+        // The first tab grows, pushing the rest along.
+        rename(first, "A much longer title for the first tab before the rest", cx);
         settle(cx);
-        assert!(strip_shows(handle, selected, cx), "revealed after a pinned tab grew");
+        assert!(strip_shows(handle, selected, cx), "revealed after a tab before it grew");
     }
 
     #[gpui::test]
-    fn the_strip_draws_panels_then_pinned_then_shared_order_as_named_tabs(
+    fn the_strip_draws_panels_then_shared_order_as_named_tabs(
         cx: &mut gpui::TestAppContext,
     ) {
         use gpui_kit::test::TestWindowExt;
@@ -14589,9 +14597,12 @@ mod main_pane_tests {
         tab_store
             .reconcile(&chats.iter().map(project_tabs::Session::chat).collect::<Vec<_>>())
             .unwrap();
-        let pinned = format!("chat:{}", chats[2].id);
+        let moved = format!("chat:{}", chats[2].id);
         tab_store
-            .update(&project_tabs::Update::Pin { key: pinned.clone() })
+            .update(&project_tabs::Update::Move {
+                key: moved.clone(),
+                before: Some(format!("chat:{}", chats[0].id)),
+            })
             .unwrap();
         let window = cx.add_window(|window, cx| Workspace::build(startup, None, window, cx, false));
         let ids = window
@@ -14618,7 +14629,7 @@ mod main_pane_tests {
                 };
                 (
                     pane.tabs[0].id,
-                    id(&pinned),
+                    id(&moved),
                     id(&format!("chat:{}", chats[0].id)),
                     id(&format!("chat:{}", chats[1].id)),
                 )
@@ -14626,23 +14637,23 @@ mod main_pane_tests {
             .unwrap();
         cx.update_window(window.into(), |_, window, cx| {
             window.render_frame(cx);
-            let (panel, pinned, first, second) = (
+            let (panel, moved, first, second) = (
                 window.find(("tab", ids.0)),
                 window.find(("tab", ids.1)),
                 window.find(("tab", ids.2)),
                 window.find(("tab", ids.3)),
             );
-            for tab in [&pinned, &first, &second] {
+            for tab in [&moved, &first, &second] {
                 assert_eq!(tab.role(), Some(gpui::Role::Tab));
             }
-            assert_eq!(pinned.label(), Some("Chat 2, pinned, waiting"));
+            assert_eq!(moved.label(), Some("Chat 2, waiting"));
             assert_eq!(first.label(), Some("Chat 0, waiting"));
-            // Panels lead, then the pinned tab, then the rest in shared order.
-            assert!(panel.bounds().right() <= pinned.bounds().left());
-            assert!(pinned.bounds().right() <= first.bounds().left());
+            // Panels lead, then the tabs in shared order.
+            assert!(panel.bounds().right() <= moved.bounds().left());
+            assert!(moved.bounds().right() <= first.bounds().left());
             assert!(first.bounds().right() <= second.bounds().left());
             // One row: every tab sits in the same strip.
-            assert_eq!(pinned.bounds().top(), first.bounds().top());
+            assert_eq!(moved.bounds().top(), first.bounds().top());
             let plus = window.find(("strip-new", 1u64));
             assert_eq!(plus.label(), Some("New tab or open a worker"));
             assert!(second.bounds().right() <= plus.bounds().left());
@@ -14783,26 +14794,7 @@ mod main_pane_tests {
                     workspace.panes[&pane].tabs[workspace.panes[&pane].active].id,
                     tab
                 );
-                // A legacy pinned child must keep its view/exemption on refusal.
-                let path = home
-                    .join("project-tabs")
-                    .join(format!("{}.json", project_id));
-                let mut saved: serde_json::Value =
-                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
                 let key = format!("chat:{}", child.id);
-                let entry = saved["entries"]
-                    .as_array_mut()
-                    .unwrap()
-                    .iter_mut()
-                    .find(|e| e["key"] == key)
-                    .unwrap();
-                entry["pinned"] = true.into();
-                std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
-                workspace.remove_tab(pane, tab, window, cx);
-                assert!(chat_tab_in(&workspace.panes, &child.id).is_some());
-                tab_store
-                    .update(&project_tabs::Update::Unpin { key: key.clone() })
-                    .unwrap();
                 // Just-created chats can close before the inventory knows them.
                 chat::log::ChatLog::create(&chat::log::chat_dir(&home, &child.id).unwrap(), &child)
                     .unwrap();
@@ -14907,8 +14899,16 @@ mod main_pane_tests {
                 let moved = workspace.panes.get_mut(&1).unwrap().tabs.remove(index);
                 workspace.panes.get_mut(&2).unwrap().tabs.push(moved);
                 let key = format!("chat:{}", chats[2].id);
+                let first = workspace.shared_tab_entries()[0].key.clone();
                 workspace
-                    .change_shared_tab(&project_tabs::Update::Pin { key: key.clone() }, window, cx)
+                    .change_shared_tab(
+                        &project_tabs::Update::Move {
+                            key: key.clone(),
+                            before: Some(first),
+                        },
+                        window,
+                        cx,
+                    )
                     .unwrap();
                 assert_eq!(
                     workspace.panes[&1].tabs[1].chat_id(),
@@ -14919,18 +14919,6 @@ mod main_pane_tests {
                     Some(chats[1].id.as_str())
                 );
                 assert_eq!(workspace.panes[&1].active, 0);
-                assert!(
-                    workspace
-                        .update_shared_tab(&project_tabs::Update::Hide { key: key.clone() })
-                        .is_err()
-                );
-                workspace
-                    .change_shared_tab(
-                        &project_tabs::Update::Unpin { key: key.clone() },
-                        window,
-                        cx,
-                    )
-                    .unwrap();
                 let key = format!("chat:{}", chats[1].id);
                 tab_store
                     .update(&project_tabs::Update::Hide { key })

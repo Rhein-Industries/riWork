@@ -26,6 +26,9 @@ pub enum Status {
     Waiting,
     Error,
     Done,
+    /// A live shell with nothing running in it that RiWork follows: at its prompt, or a
+    /// program without activity tracking.
+    Idle,
     Stopped,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,7 +41,8 @@ pub struct Entry {
     #[serde(default)]
     pub title_priority: u8,
     pub status: Status,
-    pub pinned: bool,
+    /// Stores written before pins were removed carry a `pinned` field; it is ignored on load
+    /// and not written again.
     pub hidden: bool,
     #[serde(default)]
     pub worker: bool,
@@ -70,19 +74,13 @@ pub struct Session {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Update {
-    Pin {
-        key: String,
-    },
-    Unpin {
-        key: String,
-    },
     Hide {
         key: String,
     },
     Unhide {
         key: String,
     },
-    /// Move before a sibling of the same pin group, or to its end (before=null).
+    /// Move before a tab of the same pin group, or to its end (before=null).
     Move {
         key: String,
         before: Option<String>,
@@ -95,9 +93,7 @@ pub enum Update {
 impl Update {
     pub fn key(&self) -> &str {
         match self {
-            Self::Pin { key }
-            | Self::Unpin { key }
-            | Self::Hide { key }
+            Self::Hide { key }
             | Self::Unhide { key }
             | Self::Move { key, .. }
             | Self::Rename { key, .. } => key,
@@ -162,40 +158,101 @@ pub fn caller_parent() -> Option<String> {
                 .filter(|id| uuid::Uuid::parse_str(id).is_ok_and(|v| v.to_string() == *id))
         })
 }
+/// Where a tab's base title comes from, lowest first (`Entry::title_priority`). A title is
+/// set once: only a higher source replaces it, and only an explicit name replaces one of
+/// its own kind. Stores written before these ranks kept explicit names at 2, which reads
+/// as a provider title and gives way to the same name at `USER`.
+pub mod title_source {
+    /// "Claude chat", "Codex chat", a plain shell's program, a chat's creation title.
+    pub const DEFAULT: u8 = 0;
+    /// A chat's first message; a shell's program · branch.
+    pub const DERIVED: u8 = 1;
+    /// The provider's own thread or session title; an editor's file.
+    pub const PROVIDER: u8 = 2;
+    /// An orchestrator's fixed name.
+    pub const FIXED: u8 = 3;
+    /// An explicit name.
+    pub const USER: u8 = 4;
+}
+/// Longest auto title from a first message, in characters, ellipsis included.
+const MESSAGE_TITLE_MAX: usize = 60;
+/// A chat's auto title from its first message: the first sentence, or the first line when
+/// it has none, cut at a word boundary with an ellipsis when it runs past 60 characters.
 pub fn message_title(text: &str) -> String {
-    text.split_whitespace()
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    let words = line
+        .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .chars()
         .filter(|c| !c.is_control())
-        .take(40)
-        .collect()
+        .collect::<String>();
+    // The first sentence ends at . ! ? or 。 before a space or the end.
+    let chars = words.chars().collect::<Vec<_>>();
+    let end = (0..chars.len())
+        .find(|&i| {
+            matches!(chars[i], '.' | '!' | '?' | '。')
+                && chars.get(i + 1).is_none_or(|c| c.is_whitespace())
+        })
+        .map_or(chars.len(), |i| if chars[i] == '.' { i } else { i + 1 });
+    let sentence = &chars[..end];
+    if sentence.len() <= MESSAGE_TITLE_MAX {
+        return sentence.iter().collect::<String>().trim().to_owned();
+    }
+    let room = &sentence[..MESSAGE_TITLE_MAX - 1];
+    let cut = room
+        .iter()
+        .rposition(|c| c.is_whitespace())
+        .filter(|at| *at > 0)
+        .unwrap_or(room.len());
+    let mut title = room[..cut].iter().collect::<String>().trim_end().to_owned();
+    title.push('…');
+    title
 }
 impl Session {
     pub fn chat(info: &ChatInfo) -> Self {
-        Self {
-            title_priority: if info.user_title.is_some() {
-                2
-            } else if info.first_user_message.is_some() {
-                1
-            } else {
-                0
-            },
-            key: format!("chat:{}", info.id),
-            kind: Kind::Chat,
-            title: info
-                .user_title
-                .clone()
-                .or_else(|| info.first_user_message.clone())
-                .or_else(|| {
-                    (!matches!(info.title.as_str(), "Codex chat" | "Claude chat" | ""))
-                        .then(|| info.title.clone())
-                })
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| match info.provider {
+        use title_source::*;
+        let named = |title: &Option<String>| title.clone().filter(|t| !t.trim().is_empty());
+        // RiWork names an orchestrator; a name it gave one is not the user's. Any other chat
+        // keeps whatever it was explicitly called, "Project orchestrator" included.
+        let given = |title: &str| {
+            info.orchestrator.is_some() && crate::orchestrators::fixed_title(title).is_some()
+        };
+        let user = named(&info.user_title).filter(|t| !given(t));
+        let fixed = info
+            .orchestrator
+            .as_ref()
+            .map(crate::orchestrators::chat_title);
+        let (title_priority, title) = if let Some(title) = user {
+            (USER, title)
+        } else if let Some(title) = fixed {
+            (FIXED, title.to_owned())
+        } else if let Some(title) = named(&info.provider_title) {
+            (PROVIDER, title)
+        } else if let Some(title) = named(&info.first_user_message) {
+            (DERIVED, title)
+        } else if !matches!(info.title.as_str(), "Codex chat" | "Claude chat" | "")
+            && !given(&info.title)
+        {
+            (DEFAULT, info.title.clone())
+        } else {
+            (
+                DEFAULT,
+                match info.provider {
                     Provider::Claude => "Claude chat".into(),
                     Provider::Codex => "Codex chat".into(),
-                }),
+                },
+            )
+        };
+        Self {
+            title_priority,
+            key: format!("chat:{}", info.id),
+            kind: Kind::Chat,
+            title,
             parent_id: info.parent_id.clone(),
             worker: info.parent_id.is_some(),
             status: match info.state {
@@ -413,10 +470,7 @@ impl TabStore {
                 .entries
                 .iter()
                 .filter(|e| {
-                    e.hidden
-                        && !e.pinned
-                        && stopped.contains(e.key.as_str())
-                        && !parents.contains(&e.key)
+                    e.hidden && stopped.contains(e.key.as_str()) && !parents.contains(&e.key)
                 })
                 .collect::<Vec<_>>();
             hidden.sort_by_key(|e| std::cmp::Reverse((e.created, &e.key)));
@@ -492,10 +546,16 @@ impl TabStore {
                             || (entry.created == 0 && !entry.legacy_dismissed)
                             || (entry.title.is_empty() && !entry.hidden))
                     {
-                        entry.pinned = true;
                         entry.hidden = false;
                     }
-                    if session.title_priority >= entry.title_priority {
+                    // Set once: only a higher source replaces the title, and an explicit
+                    // name a newer one.
+                    let explicit = session.title_priority == title_source::USER
+                        && session.title != entry.base_title;
+                    if session.title_priority > entry.title_priority
+                        || explicit
+                        || entry.base_title.is_empty()
+                    {
                         entry.base_title = session.title.clone();
                         entry.title_priority = session.title_priority;
                     }
@@ -522,7 +582,6 @@ impl TabStore {
                         base_title: session.title.clone(),
                         title_priority: session.title_priority,
                         status: session.status.clone(),
-                        pinned: session.orchestrator,
                         hidden: session.worker
                             || (session.kind == Kind::Shell && session.status == Status::Stopped),
                         worker: session.worker,
@@ -617,20 +676,7 @@ impl TabStore {
                 .position(|e| e.key == update.key())
                 .ok_or("session tab not found")?;
             match update {
-                Update::Pin { .. } => {
-                    if state.entries[at].parent.is_some() {
-                        return Err("only root tabs can be pinned".into());
-                    }
-                    state.entries[at].pinned = true;
-                    state.entries[at].hidden = false;
-                }
-                Update::Unpin { .. } => state.entries[at].pinned = false,
-                Update::Hide { .. } => {
-                    if state.entries[at].pinned {
-                        return Err("unpin the tab before hiding it".into());
-                    }
-                    state.entries[at].hidden = true;
-                }
+                Update::Hide { .. } => state.entries[at].hidden = true,
                 Update::Unhide { .. } => state.entries[at].hidden = false,
                 Update::Rename { title, .. } => {
                     state.entries[at].rename =
@@ -644,19 +690,13 @@ impl TabStore {
                     if before.as_deref() == Some(update.key()) {
                         return Ok(tree(state));
                     }
-                    let (parent, pinned) =
-                        (state.entries[at].parent.clone(), state.entries[at].pinned);
-                    if let Some(before) = before {
-                        let target = state
-                            .entries
-                            .iter()
-                            .find(|e| &e.key == before)
-                            .ok_or("move target not found")?;
-                        if target.parent != parent || target.pinned != pinned {
-                            return Err(
-                                "move target must be a sibling in the same pin group".into()
-                            );
-                        }
+                    // Any tab is a place to go: a worker sits beside tabs that are not its
+                    // siblings in the one order every strip draws, and keeps its parent
+                    // wherever it goes.
+                    if let Some(before) = before
+                        && !state.entries.iter().any(|e| &e.key == before)
+                    {
+                        return Err("move target not found".into());
                     }
                     let entry = state.entries.remove(at);
                     let into = before
@@ -693,7 +733,6 @@ fn seed(state: &mut State, key: String, hidden: bool) {
         base_title: String::new(),
         title_priority: 0,
         status: Status::Stopped,
-        pinned: false,
         hidden,
         worker: false,
         legacy_user_opened,
@@ -727,18 +766,11 @@ fn bound_parent_depth(state: &mut State) {
             cursor = parent.clone();
             depth += 1;
         }
-        if entry.parent.is_some() {
-            entry.pinned = false;
-        }
     }
 }
 fn normalize(state: &mut State) {
-    state.entries.sort_by_key(|e| !e.pinned);
     for (order, e) in state.entries.iter_mut().enumerate() {
         e.order = order;
-        if e.pinned {
-            e.hidden = false;
-        }
         e.children.clear();
         e.child_count = 0;
     }
@@ -806,7 +838,25 @@ pub fn refresh_snapshot(home: &Path, project: &str) -> Result<Snapshot, String> 
     store.reconcile_inventory(&sessions)?;
     snapshot_for(&store, &sessions)
 }
-/// Shared base title, following the local shell's current directory and program.
+/// A shell's status from whether its tmux session is there and what its agent is doing
+/// (`AgentActivity::as_str`, absent for a shell without one): `stopped` without the
+/// session, `working` or `waiting` while an agent works or waits on an approval, `done`
+/// once an agent's run has ended, `error` for a failed program, and otherwise `idle`.
+pub fn shell_status(alive: bool, activity: Option<&str>) -> Status {
+    if !alive {
+        return Status::Stopped;
+    }
+    match activity {
+        Some("working") => Status::Working,
+        Some("waiting") => Status::Waiting,
+        Some("done") => Status::Done,
+        Some("error" | "failed") => Status::Error,
+        // At its prompt, a program RiWork does not follow, or an agent gone back to it.
+        _ => Status::Idle,
+    }
+}
+/// A shell's base title from its current directory and program; the store keeps the first
+/// one it is given (`title_source`).
 /// Numbering and user overrides are applied by the store, never by pane IDs.
 pub fn shell_base_title(
     shell: &crate::sessions::ShellSession,
@@ -864,21 +914,21 @@ pub fn inventory(home: &Path, project: &str) -> Result<Vec<Session>, String> {
             &state,
             directories.get(&shell.id).map(PathBuf::as_path),
         );
-        let status = if !shell.alive {
-            Status::Stopped
-        } else {
-            match entries
+        let status = shell_status(
+            shell.alive,
+            entries
                 .iter()
                 .find(|e| e["id"].as_str() == Some(&shell.id))
-                .and_then(|e| e["activity"].as_str())
-            {
-                Some("working") => Status::Working,
-                Some("waiting") => Status::Waiting,
-                _ => Status::Done,
-            }
-        };
+                .and_then(|e| e["activity"].as_str()),
+        );
         result.push(Session {
-            title_priority: if shell.editor_path.is_some() { 2 } else { 1 },
+            title_priority: if shell.kind == crate::sessions::ShellKind::Orchestrator {
+                title_source::FIXED
+            } else if shell.editor_path.is_some() {
+                title_source::PROVIDER
+            } else {
+                title_source::DERIVED
+            },
             key: format!("shell:{}", shell.id),
             kind: Kind::Shell,
             title: name,
@@ -934,10 +984,14 @@ pub fn register_shell(
         branch.map_or(name.clone(), |b| format!("{name} · {b}"))
     };
     TabStore::at(home, project)?.register_created(&Session {
-        title_priority: if shell.editor_path.is_some() {
-            2
+        title_priority: if shell.kind == crate::sessions::ShellKind::Orchestrator {
+            title_source::FIXED
+        } else if shell.editor_path.is_some() {
+            title_source::PROVIDER
+        } else if branch.is_some() {
+            title_source::DERIVED
         } else {
-            u8::from(branch.is_some())
+            title_source::DEFAULT
         },
         key: format!("shell:{}", shell.id),
         kind: Kind::Shell,
@@ -989,7 +1043,7 @@ pub fn wire(entries: &[Entry]) -> serde_json::Value {
             .iter()
             .filter_map(|k| take(k, nodes, children))
             .collect::<Vec<_>>();
-        let mut value = serde_json::json!({"key":e.key,"kind":e.kind,"title":e.title,"status":e.status,"pinned":e.pinned,"hidden":e.hidden,"worker":e.worker,"order":e.order,"parent":e.parent,"child_count":e.child_count});
+        let mut value = serde_json::json!({"key":e.key,"kind":e.kind,"title":e.title,"status":e.status,"hidden":e.hidden,"worker":e.worker,"order":e.order,"parent":e.parent,"child_count":e.child_count});
         value
             .as_object_mut()
             .unwrap()
@@ -1120,7 +1174,7 @@ mod tests {
     }
     #[test]
     fn update_rejects_unknown_fields_on_every_variant() {
-        for action in ["pin", "unpin", "hide", "unhide", "move", "rename"] {
+        for action in ["hide", "unhide", "move", "rename"] {
             let mut value = serde_json::json!({"action":action,"key":session(2).key});
             if action == "rename" {
                 value["title"] = serde_json::json!("title");
@@ -1178,7 +1232,7 @@ mod tests {
         let sessions = vec![session(2), session(3), harness, orch];
         let list = f.store.reconcile(&sessions).unwrap();
         let orch = list.iter().find(|entry| entry.key == session(5).key).unwrap();
-        assert!(orch.pinned && !orch.hidden && !orch.worker);
+        assert!(!orch.hidden && !orch.worker);
         assert!(
             !list
                 .iter()
@@ -1267,7 +1321,7 @@ mod tests {
         assert!(!entries.iter().find(|e| e.key == user.key).unwrap().hidden);
     }
     #[test]
-    fn new_sessions_append_and_pin_groups_are_first() {
+    fn new_sessions_append_and_any_tab_hides() {
         let f = Fixture::new();
         f.store.reconcile(&[session(3), session(2)]).unwrap();
         let keys = f
@@ -1278,36 +1332,17 @@ mod tests {
             .map(|e| e.key)
             .collect::<Vec<_>>();
         assert_eq!(keys, vec![session(2).key, session(3).key, session(4).key]);
-        let list = f
-            .store
-            .update(&Update::Pin {
-                key: session(4).key,
-            })
-            .unwrap();
-        assert_eq!(list[0].key, session(4).key);
         assert!(
             f.store
                 .update(&Update::Hide {
                     key: session(4).key
                 })
-                .is_err()
-        );
-        f.store
-            .update(&Update::Unpin {
-                key: session(4).key,
-            })
-            .unwrap();
-        assert!(
-            f.store
-                .update(&Update::Hide {
-                    key: session(4).key
-                })
-                .unwrap()[0]
+                .unwrap()[2]
                 .hidden
         );
     }
     #[test]
-    fn stale_inventory_keeps_hide_pin_and_rename() {
+    fn stale_inventory_keeps_hide_and_rename() {
         let f = Fixture::new();
         let s = session(2);
         f.store.reconcile(&[s.clone()]).unwrap();
@@ -1322,13 +1357,11 @@ mod tests {
         let entries = f.store.reconcile(&[s.clone()]).unwrap();
         assert_eq!(entries[0].title, "Mine");
         assert!(entries[0].hidden);
-        f.store.update(&Update::Pin { key: s.key }).unwrap();
-        let entries = other.list().unwrap();
-        assert!(entries[0].pinned);
-        assert!(!entries[0].hidden);
+        f.store.update(&Update::Unhide { key: s.key }).unwrap();
+        assert!(!other.list().unwrap()[0].hidden);
     }
     #[test]
-    fn moves_are_durable_and_do_not_cross_pin_or_parent_groups() {
+    fn moves_are_durable_and_need_a_known_target() {
         let f = Fixture::new();
         f.store
             .reconcile(&[session(2), session(3), session(4)])
@@ -1341,20 +1374,91 @@ mod tests {
             })
             .unwrap();
         assert_eq!(list[0].key, session(4).key);
-        f.store
-            .update(&Update::Pin {
-                key: session(2).key,
-            })
-            .unwrap();
-        assert!(
+        assert_eq!(
             f.store
                 .update(&Update::Move {
                     key: session(3).key,
-                    before: Some(session(2).key)
+                    before: Some(session(9).key)
                 })
-                .is_err()
+                .unwrap_err(),
+            "move target not found"
         );
-        assert_eq!(f.store.list().unwrap()[1].key, session(4).key);
+        assert_eq!(f.store.list().unwrap()[1].key, session(2).key);
+    }
+    #[test]
+    fn pins_are_gone_from_old_stores_the_wire_and_updates() {
+        let f = Fixture::new();
+        let mut orch = session(3);
+        orch.orchestrator = true;
+        f.store.reconcile(&[session(2), orch.clone()]).unwrap();
+        // A store written while pins existed: the orchestrator pinned and sorted first.
+        let path = f.home.join("project-tabs").join(format!("{}.json", id(1)));
+        let mut old: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let entries = old["entries"].as_array_mut().unwrap();
+        entries.reverse();
+        for entry in entries.iter_mut() {
+            entry["pinned"] = (entry["key"] == orch.key.as_str()).into();
+        }
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let list = f.store.list().unwrap();
+        assert_eq!(list[0].key, orch.key, "the order it had is kept");
+        // The orchestrator is an ordinary tab: it moves after others and hides.
+        let list = f
+            .store
+            .update(&Update::Move {
+                key: orch.key.clone(),
+                before: None,
+            })
+            .unwrap();
+        assert_eq!(list[1].key, orch.key);
+        assert!(
+            f.store
+                .update(&Update::Hide {
+                    key: orch.key.clone()
+                })
+                .unwrap()[1]
+                .hidden
+        );
+        assert!(
+            !String::from_utf8(std::fs::read(&path).unwrap())
+                .unwrap()
+                .contains("pinned")
+        );
+        assert!(!wire(&list).to_string().contains("pinned"));
+        for action in ["pin", "unpin"] {
+            let value = serde_json::json!({"action":action,"key":orch.key});
+            assert!(serde_json::from_value::<Update>(value).is_err());
+        }
+    }
+    #[test]
+    fn a_root_moves_beside_another_tabs_worker_and_the_worker_keeps_its_parent() {
+        // A strip draws one order of roots and workers: dropping a root on a worker of
+        // another tab, or a worker among roots, is a move like any other.
+        let f = Fixture::new();
+        let mut worker = session(3);
+        worker.parent_id = Some(id(2));
+        f.store
+            .reconcile(&[session(2), worker.clone(), session(4)])
+            .unwrap();
+        let list = f
+            .store
+            .update(&Update::Move {
+                key: session(4).key,
+                before: Some(worker.key.clone()),
+            })
+            .unwrap();
+        let keys = list.iter().map(|e| e.key.clone()).collect::<Vec<_>>();
+        assert_eq!(keys, [session(2).key, session(4).key, worker.key.clone()]);
+        let list = f
+            .store
+            .update(&Update::Move {
+                key: worker.key.clone(),
+                before: None,
+            })
+            .unwrap();
+        assert_eq!(list[2].key, worker.key);
+        assert_eq!(list[2].parent, Some(session(2).key));
     }
     #[test]
     fn parents_cross_kinds_and_children_carry_status() {
@@ -1413,16 +1517,186 @@ mod tests {
         assert!(f.store.reconcile(&[s]).unwrap().is_empty());
     }
     #[test]
-    fn first_message_title_is_unicode_bounded_and_never_regresses() {
-        assert_eq!(message_title("  hello\n world  "), "hello world");
-        assert_eq!(message_title(&"猫".repeat(80)).chars().count(), 40);
+    fn a_first_message_names_by_its_first_sentence_or_sixty_characters_at_a_word() {
+        assert_eq!(message_title("  hello\n world  "), "hello");
+        assert_eq!(
+            message_title("Fix the build. Then run tests."),
+            "Fix the build"
+        );
+        assert_eq!(
+            message_title("Why does it hang? Look at x."),
+            "Why does it hang?"
+        );
+        assert_eq!(message_title("version 1.2 is out"), "version 1.2 is out");
+        let long = "Please look into why the tab strip loses its scroll position after a rename";
+        let title = message_title(long);
+        assert_eq!(
+            title,
+            "Please look into why the tab strip loses its scroll…"
+        );
+        assert!(title.chars().count() <= 60);
+        let cjk = message_title(&"猫".repeat(80));
+        assert_eq!(cjk.chars().count(), 60);
+        assert!(cjk.ends_with('…'));
+        assert_eq!(message_title("\n\n  "), "");
+    }
+    fn chat_info(value: serde_json::Value) -> ChatInfo {
+        let mut base = serde_json::json!({"id":id(2),"provider":"claude","project_id":id(1),"cwd":"/tmp","title":"Claude chat","created_at_unix":1});
+        base.as_object_mut()
+            .unwrap()
+            .extend(value.as_object().unwrap().clone());
+        serde_json::from_value(base).unwrap()
+    }
+    #[test]
+    fn titles_come_from_a_rename_then_the_provider_then_the_first_message_then_the_kind() {
+        use title_source::*;
+        let title = |v| {
+            let s = Session::chat(&chat_info(v));
+            (s.title_priority, s.title)
+        };
+        assert_eq!(
+            title(serde_json::json!({})),
+            (DEFAULT, "Claude chat".into())
+        );
+        assert_eq!(
+            title(serde_json::json!({"first_user_message":"Fix it"})),
+            (DERIVED, "Fix it".into())
+        );
+        assert_eq!(
+            title(serde_json::json!({"first_user_message":"Fix it","provider_title":"Build fix"})),
+            (PROVIDER, "Build fix".into())
+        );
+        assert_eq!(
+            title(serde_json::json!({"user_title":"Mine","provider_title":"Build fix"})),
+            (USER, "Mine".into())
+        );
+    }
+    #[test]
+    fn orchestrators_keep_their_fixed_names_and_only_a_rename_changes_them() {
+        use title_source::*;
+        let project = serde_json::json!({"orchestrator":{"scope":"project","project_id":id(1)}});
+        let with = |extra: serde_json::Value| {
+            let mut v = project.clone();
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let s = Session::chat(&chat_info(v));
+            (s.title_priority, s.title)
+        };
+        // Neither its first message, the provider, nor the label it was created with.
+        for extra in [
+            serde_json::json!({"first_user_message":"Next thing to do"}),
+            serde_json::json!({"provider_title":"Thread name"}),
+            serde_json::json!({"user_title":"P·ORCH · PROJECT","title":"P·ORCH · PROJECT"}),
+        ] {
+            assert_eq!(with(extra), (FIXED, "Project orchestrator".into()));
+        }
+        assert_eq!(
+            with(serde_json::json!({"user_title":"Planner"})),
+            (USER, "Planner".into())
+        );
+        let global = Session::chat(&chat_info(
+            serde_json::json!({"orchestrator":{"scope":"global"},"first_user_message":"hi"}),
+        ));
+        assert_eq!(global.title, "Global orchestrator");
+        // An ordinary chat explicitly named like one keeps its name.
+        for named in ["Project orchestrator", "P·ORCH · PROJECT"] {
+            let chat = Session::chat(&chat_info(
+                serde_json::json!({"user_title":named,"title":named,"first_user_message":"hi"}),
+            ));
+            assert_eq!((chat.title_priority, chat.title.as_str()), (USER, named));
+        }
+    }
+    #[test]
+    fn a_title_is_set_once_and_only_a_higher_source_or_a_new_rename_replaces_it() {
+        use title_source::*;
         let f = Fixture::new();
-        let old = session(2);
-        let mut new = old.clone();
-        new.title = "First message".into();
-        new.title_priority = 1;
-        f.store.reconcile(&[new]).unwrap();
-        assert_eq!(f.store.reconcile(&[old]).unwrap()[0].title, "First message");
+        let with = |title: &str, priority: u8| {
+            let mut s = session(2);
+            s.title = title.into();
+            s.title_priority = priority;
+            s
+        };
+        let title = |s: Session| f.store.reconcile(&[s]).unwrap()[0].title.clone();
+        assert_eq!(title(with("Claude chat", DEFAULT)), "Claude chat");
+        assert_eq!(title(with("First message", DERIVED)), "First message");
+        // A restart that saw another "first" message, or the default again, changes nothing.
+        assert_eq!(title(with("Next message", DERIVED)), "First message");
+        assert_eq!(title(with("Claude chat", DEFAULT)), "First message");
+        // The provider's title replaces a first-message title once.
+        assert_eq!(title(with("Provider name", PROVIDER)), "Provider name");
+        assert_eq!(
+            title(with("Another provider name", PROVIDER)),
+            "Provider name"
+        );
+        // An explicit name wins, and a newer explicit name replaces it; nothing else does.
+        assert_eq!(title(with("Mine", USER)), "Mine");
+        assert_eq!(title(with("Provider name", PROVIDER)), "Mine");
+        assert_eq!(title(with("Renamed", USER)), "Renamed");
+        // A shell's program · branch is set once too.
+        let mut shell = with("Codex", DEFAULT);
+        shell.kind = Kind::Shell;
+        shell.key = format!("shell:{}", id(3));
+        assert_eq!(
+            f.store.reconcile(&[shell.clone()]).unwrap()[1].title,
+            "Codex"
+        );
+        shell.title = "Codex · main".into();
+        shell.title_priority = DERIVED;
+        assert_eq!(
+            f.store.reconcile(&[shell.clone()]).unwrap()[1].title,
+            "Codex · main"
+        );
+        shell.title = "Codex · feature".into();
+        assert_eq!(
+            f.store.reconcile(&[shell]).unwrap()[1].title,
+            "Codex · main"
+        );
+    }
+    #[test]
+    fn an_orchestrator_named_by_its_first_message_gets_its_fixed_name_back() {
+        let f = Fixture::new();
+        // As stores were left by the 40-character cut: an orchestrator and a user chat
+        // titled by their first messages, and an orchestrator renamed in the strip.
+        let mut orch = session(2);
+        orch.orchestrator = true;
+        orch.title = "Please check why the nightly build fail".into();
+        orch.title_priority = title_source::DERIVED;
+        let mut chat = session(3);
+        chat.title = "Write the release notes for version 2.4".into();
+        chat.title_priority = title_source::DERIVED;
+        let mut renamed = session(4);
+        renamed.orchestrator = true;
+        renamed.title = "Some first message".into();
+        renamed.title_priority = title_source::DERIVED;
+        f.store
+            .reconcile(&[orch.clone(), chat.clone(), renamed.clone()])
+            .unwrap();
+        f.store
+            .update(&Update::Rename {
+                key: renamed.key.clone(),
+                title: "My planner".into(),
+            })
+            .unwrap();
+        // The next inventory reads them as this version does.
+        let info = |n: u8, orchestrator: bool, first: &str| {
+            let mut v = serde_json::json!({"id":id(n),"first_user_message":first});
+            if orchestrator {
+                v["orchestrator"] = serde_json::json!({"scope":"project","project_id":id(1)});
+            }
+            Session::chat(&chat_info(v))
+        };
+        let list = f
+            .store
+            .reconcile(&[
+                info(2, true, "Please check why the nightly build fail"),
+                info(3, false, "Write the release notes for version 2.4"),
+                info(4, true, "Some first message"),
+            ])
+            .unwrap();
+        assert_eq!(list[0].title, "Project orchestrator");
+        assert_eq!(list[1].title, "Write the release notes for version 2.4");
+        assert_eq!(list[2].title, "My planner");
     }
     #[test]
     fn duplicate_shell_names_number_only_shells_and_remain_stable() {
@@ -1478,10 +1752,11 @@ mod tests {
             .store
             .reconcile(&[orch, session(3), dismissed_orch])
             .unwrap();
-        assert_eq!(list[0].key, session(2).key);
-        assert!(list[0].pinned);
+        // The saved pane order stands; the orchestrator is visible but not put first.
+        assert_eq!(list[0].key, session(3).key);
+        assert_eq!(list[1].key, session(2).key);
+        assert!(!list[1].hidden);
         assert!(list[2].hidden);
-        assert!(!list[2].pinned);
         layout.detached_chat_ids.clear();
         LayoutStore::open(&f.home)
             .unwrap()
@@ -1651,10 +1926,6 @@ mod tests {
                 .unwrap()
                 .parent
                 .is_some()
-        );
-        assert_eq!(
-            f.store.update(&Update::Pin { key: child.key }).unwrap_err(),
-            "only root tabs can be pinned"
         );
     }
     #[test]

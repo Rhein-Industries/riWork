@@ -366,6 +366,7 @@ mod tests {
             parent_id: None,
             user_title: None,
             first_user_message: None,
+            provider_title: None,
             id: "chat-1".into(),
             provider: Provider::Codex,
             project_id: None,

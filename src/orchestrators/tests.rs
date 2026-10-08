@@ -103,7 +103,7 @@ fn a_global_chat_orchestrator_works_where_a_terminal_one_does_and_is_told_what_i
     );
     // The global orchestrator asks before commands and edits.
     assert_eq!(chat.approval_mode, ApprovalMode::Supervised);
-    assert_eq!(chat.title, "G·ORCH · GLOBAL");
+    assert_eq!(chat.title, "Global orchestrator");
     assert_eq!(chat.codex_account_id.as_deref(), Some("account-a"));
 
     // The first message is the terminal's startup message: the scope, and the
@@ -159,7 +159,7 @@ fn a_project_chat_orchestrator_belongs_to_its_project_and_never_asks() {
     assert_eq!(chat.project_id.as_deref(), Some(PROJECT));
     assert_eq!(chat.orchestrator, Some(scope));
     assert_eq!(chat.approval_mode, ApprovalMode::Full);
-    assert_eq!(chat.title, "P·ORCH · PROJECT");
+    assert_eq!(chat.title, "Project orchestrator");
     assert_eq!(
         chat.cwd,
         host.home.join("orchestrators/projects").join(PROJECT)
@@ -411,6 +411,7 @@ fn chat_orchestrators_are_found_from_disk_while_no_host_runs() {
         parent_id: None,
         user_title: None,
         first_user_message: None,
+        provider_title: None,
         id: Uuid::new_v4().to_string(),
         provider: Provider::Claude,
         project_id: Some(PROJECT.into()),

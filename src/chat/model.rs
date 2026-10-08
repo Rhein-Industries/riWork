@@ -87,9 +87,13 @@ pub struct ChatInfo {
     /// Explicit user name, distinct from provider-generated titles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_title: Option<String>,
-    /// First accepted user message, normalized and bounded to 40 characters.
+    /// The chat's auto title from its first accepted user message (`message_title`), set
+    /// once: resumes, restarts and re-reading the log never derive it again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_user_message: Option<String>,
+    /// The provider's own name for its thread or session, when it gives one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_title: Option<String>,
     pub provider: Provider,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
@@ -539,6 +543,11 @@ pub enum ChatEvent {
     Info {
         info: ChatInfo,
     },
+    /// A driver learned the provider's own name for the thread or session. The host takes
+    /// it into the info (`ChatInfo::provider_title`); it is never logged or sent.
+    ProviderTitle {
+        title: String,
+    },
     State {
         state: ChatState,
     },
@@ -656,6 +665,8 @@ impl Transcript {
                 self.state = info.state.clone();
                 self.info = Some(info.clone());
             }
+            // The host folds it into the next Info.
+            ChatEvent::ProviderTitle { .. } => {}
             ChatEvent::State { state } => {
                 self.state = state.clone();
                 if let Some(info) = &mut self.info {

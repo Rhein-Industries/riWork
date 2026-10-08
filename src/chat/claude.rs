@@ -257,6 +257,8 @@ fn start_with(
         if core.dead.is_none() {
             core.set_state(ChatState::Idle);
         }
+        // A resumed session's title is in its transcript before any frame says so.
+        core.check_title();
     }
     let weak = Arc::downgrade(&shared);
     thread::spawn(move || supervise(weak));
@@ -567,6 +569,8 @@ struct Core {
     model: Option<String>,
     context_window: Option<u64>,
     context_used: Option<u64>,
+    /// The session's own title, read from Claude's transcript (`titles`).
+    titles: TranscriptTitles,
 }
 
 impl Core {
@@ -634,6 +638,7 @@ impl Core {
             model: None,
             context_window: None,
             context_used: None,
+            titles: TranscriptTitles::new(claude_home(config)),
         }
     }
 
@@ -1283,6 +1288,8 @@ impl Core {
                 }
                 self.note_fast_state(frame);
                 self.session_used = true;
+                // A resumed session brings the title it already has.
+                self.check_title();
             }
             Some("status") => {
                 if let Some(mode) = str_of(frame, "permissionMode") {
@@ -1751,6 +1758,15 @@ impl Core {
         if !self.state_events && self.turn.is_some() {
             self.finish_turn();
         }
+        // Claude titles the session in its transcript, a little after the first turn.
+        self.check_title();
+    }
+
+    /// Tells the host the session's title from Claude's transcript, when it is new.
+    fn check_title(&mut self) {
+        if let Some(title) = self.titles.check(&self.session_id) {
+            self.emit(ChatEvent::ProviderTitle { title });
+        }
     }
 
     fn usage_from(&mut self, result: &Value) -> Usage {
@@ -1941,6 +1957,10 @@ impl Core {
 
     /// What the watchdog does on each tick.
     fn watch(&mut self, tuning: &Tuning) -> bool {
+        // Claude writes its title some time after a turn; an idle chat learns it here.
+        if self.titles.due(Instant::now()) {
+            self.check_title();
+        }
         if !self.ready || self.restarting || self.stopped || self.dead.is_some() {
             return false;
         }
@@ -2873,3 +2893,128 @@ fn question_prompts(input: &Value, questions: &[String]) -> Vec<QuestionPrompt> 
 #[cfg(test)]
 #[path = "claude_tests.rs"]
 mod tests;
+
+/// How often the watchdog looks for a title Claude wrote while the chat sat idle.
+const TITLE_WATCH: Duration = if cfg!(test) {
+    Duration::from_millis(50)
+} else {
+    Duration::from_secs(5)
+};
+
+/// Where Claude keeps its transcripts: `CLAUDE_CONFIG_DIR` as the driver sets it or
+/// inherits it, else `~/.claude`.
+fn claude_home(config: &DriverConfig) -> Option<std::path::PathBuf> {
+    config
+        .env
+        .iter()
+        .rev()
+        .find(|(name, _)| name == "CLAUDE_CONFIG_DIR")
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR"))
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".claude"))
+        })
+}
+
+/// The title Claude gives a session: not on stream-json, only in its transcript at
+/// `<home>/projects/<folder>/<session>.jsonl`, as `ai-title` entries and, after a user
+/// rename in Claude, `custom-title` ones. Each check reads what was appended since the
+/// last one.
+#[derive(Debug, Default)]
+struct TranscriptTitles {
+    home: Option<std::path::PathBuf>,
+    session: String,
+    path: Option<std::path::PathBuf>,
+    offset: u64,
+    ai: Option<String>,
+    custom: Option<String>,
+    told: Option<String>,
+    /// When the watchdog last looked, so an idle chat reads the folder only so often.
+    watched: Option<Instant>,
+}
+
+impl TranscriptTitles {
+    fn new(home: Option<std::path::PathBuf>) -> Self {
+        Self {
+            home,
+            ..Default::default()
+        }
+    }
+
+    /// Whether the watchdog's next look is due: every `TITLE_WATCH` at most.
+    fn due(&mut self, now: Instant) -> bool {
+        if self
+            .watched
+            .is_some_and(|at| now.duration_since(at) < TITLE_WATCH)
+        {
+            return false;
+        }
+        self.watched = Some(now);
+        true
+    }
+
+    /// The session's title, when it is new since the last check.
+    fn check(&mut self, session: &str) -> Option<String> {
+        if session.is_empty() {
+            return None;
+        }
+        if self.session != session {
+            *self = Self::new(self.home.take());
+            self.session = session.to_owned();
+        }
+        if self.path.is_none() {
+            let name = format!("{session}.jsonl");
+            self.path = std::fs::read_dir(self.home.as_ref()?.join("projects"))
+                .ok()?
+                .flatten()
+                .map(|folder| folder.path().join(&name))
+                .find(|path| path.is_file());
+        }
+        let (titles, offset) = read_titles(self.path.as_ref()?, self.offset)?;
+        self.offset = offset;
+        for (custom, title) in titles {
+            *if custom {
+                &mut self.custom
+            } else {
+                &mut self.ai
+            } = Some(title);
+        }
+        let title = self.custom.clone().or_else(|| self.ai.clone())?;
+        (self.told.as_ref() != Some(&title)).then(|| {
+            self.told = Some(title.clone());
+            title
+        })
+    }
+}
+
+/// The titles in the whole lines of `path` after `offset`, `true` for a custom title, and
+/// the offset after the last whole line.
+fn read_titles(path: &std::path::Path, offset: u64) -> Option<(Vec<(bool, String)>, u64)> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let whole = bytes
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map_or(0, |at| at + 1);
+    let titles = bytes[..whole]
+        .split(|b| *b == b'\n')
+        // Only title lines are parsed; the rest of the transcript is skipped unread.
+        .filter(|line| {
+            let line = String::from_utf8_lossy(line);
+            line.contains("\"ai-title\"") || line.contains("\"custom-title\"")
+        })
+        .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
+        .filter_map(|entry| match entry["type"].as_str()? {
+            "ai-title" => Some((false, entry["aiTitle"].as_str()?.trim().to_owned())),
+            "custom-title" => Some((true, entry["customTitle"].as_str()?.trim().to_owned())),
+            _ => None,
+        })
+        .filter(|(_, title)| !title.is_empty())
+        .collect();
+    Some((titles, offset + whole as u64))
+}
