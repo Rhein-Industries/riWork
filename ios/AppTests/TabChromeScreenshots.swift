@@ -387,8 +387,9 @@ import RiWorkCore
         }
     }
     /// `RIWORK_TAB_SCREENSHOTS_ONLY=testSharedTabs scripts/tab-chrome-screenshots.sh <dir> <udid>`: the row on the desktop's shared tab
-    /// list (a pinned orchestrator and a user chat), the open-worker picker, the close sheet, a reorder in progress (the drop bar and
-    /// the Edit tabs sheet) and the setting row, in Native light and dark.
+    /// list (the project orchestrator, sent as pinned by an older desktop, and a user chat), the open-worker picker, the close sheet, a
+    /// reorder in progress (the drop bar and the Edit tabs sheet), the setting row, the orchestrator's close sheet (Detach and Exit, as
+    /// any tab) and the tab's ⋯ menu (the items of its long-press menu; no Pin), in Native light and dark.
     func testSharedTabs() async throws {
         guard ProcessInfo.processInfo.environment["RIWORK_TAB_SCREENSHOTS_ONLY"] == "testSharedTabs" else { throw XCTSkip("Set RIWORK_TAB_SCREENSHOTS_ONLY=testSharedTabs") }
         let user = "dddddddd-3333-4333-8333-333333333333", worker = "eeeeeeee-4444-4444-8444-444444444444", worker2 = "ffffffff-5555-4555-8555-555555555555"
@@ -415,6 +416,8 @@ import RiWorkCore
                 .init(key: "chat:\(worker)", kind: "chat", title: "Codex worker", hidden: true, worker: true, parent: "chat:\(user)"),
                 .init(key: "chat:\(worker2)", kind: "chat", title: "Review worker", status: "done", hidden: true, worker: true, parent: "chat:\(chatID)"),
                 .init(key: "shell:\(ChatTransport.shell)", kind: "shell", title: "zsh · main")])
+            // The project orchestrator runs as the chat `chatID`.
+            await transport.setOrchestrators(["{\"id\":\"99999999-9999-4999-8999-999999999999\",\"project_id\":\"\(project)\",\"worktree_id\":null,\"kind\":\"orchestrator\",\"cwd\":\"/fixture\",\"harness\":null,\"alive\":true,\"created_at_unix\":3,\"mode\":\"chat\",\"chat_id\":\"\(chatID)\",\"provider\":\"claude\"}"])
             await transport.append(chatID, [.info(chats[0])] + (0..<6).map { .itemCompleted(ChatItem(id: "m\($0)", status: .completed, body: .agentMessage("Message \($0). The orchestrator coordinates the workers of this project."))) })
             await transport.append(user, [.info(chats[1]), .itemCompleted(ChatItem(id: "u", status: .completed, body: .userMessage("Fix the build please")))])
             let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: suite)!, chatWaitMilliseconds: 300,
@@ -453,6 +456,23 @@ import RiWorkCore
                 host.presentedViewController?.dismiss(animated: false)
                 try await Task.sleep(for: .milliseconds(500))
             }
+            // The orchestrator's close sheet: the same Detach / Exit as any tab.
+            model.tabCloseBehavior = .ask
+            model.selectChat(chatID)
+            await eventually("orchestrator up") { model.selectedChatID == self.chatID }
+            try await Task.sleep(for: .milliseconds(600))
+            layout.actions["close-current"]?()
+            try await Task.sleep(for: .milliseconds(900))
+            try await shot(window, prefix + "-7-orchestrator-close-sheet")
+            host.presentedViewController?.dismiss(animated: false)
+            try await Task.sleep(for: .milliseconds(500))
+            // The tab's menu (⋯ → Tab holds the same items as its long-press menu: Rename, Move, Edit tabs, Close; no Pin).
+            model.selectChat(user)
+            try await Task.sleep(for: .milliseconds(600))
+            if await openMenu(at: CGPoint(x: window.bounds.maxX - 24, y: layout.frames["navigation"]?.midY ?? 84), in: window) {
+                try await shot(window, prefix + "-8-tab-menu")
+            } else { XCTFail("no tab menu") }
+            await dismissMenus(window)
             await model.disconnect()
             window.isHidden = true
             try? keychain.delete()

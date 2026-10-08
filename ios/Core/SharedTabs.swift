@@ -1,7 +1,8 @@
 import Foundation
 import OSLog
 
-/// Mac-owned membership; selection and pane placement are deliberately absent.
+/// Mac-owned membership; selection and pane placement are deliberately absent. There are no pins: a `pinned` field an older desktop
+/// still sends is not read, so every tab moves and closes alike.
 public struct SharedTab: Codable, Sendable, Equatable, Identifiable {
     public enum Kind: String, Codable, Sendable { case chat, shell, unknown
         public init(from decoder: any Decoder) throws { let raw = try decoder.singleValueContainer().decode(String.self); self = Self(rawValue: raw) ?? .unknown; if self == .unknown { Logger(subsystem: "com.riwork.remote", category: "tabs").warning("Unknown tab kind: \(raw, privacy: .public)") } }
@@ -13,7 +14,6 @@ public struct SharedTab: Codable, Sendable, Equatable, Identifiable {
     public let kind: Kind
     public let title: String
     public let status: Status
-    public let pinned: Bool
     public let hidden: Bool
     public let worker: Bool?
     public var isWorker: Bool { worker == true || parent != nil }
@@ -25,7 +25,7 @@ public struct SharedTab: Codable, Sendable, Equatable, Identifiable {
     public var sessionID: String { String(key.split(separator: ":", maxSplits: 1).last ?? "") }
     public var isTopLevelVisible: Bool { !hidden && !(kind == .shell && status == .stopped) }
     private enum CodingKeys: String, CodingKey {
-        case key, kind, title, status, pinned, hidden, worker, order, parent, children
+        case key, kind, title, status, hidden, worker, order, parent, children
         case childCount = "child_count"
     }
 }
@@ -46,14 +46,12 @@ public struct SharedTabsReply: Codable, Sendable, Equatable {
     public var visible: [SharedTab] { allEntries.filter(\.isTopLevelVisible).sorted { $0.order < $1.order } }
 }
 public enum TabUpdate: Sendable, Equatable {
-    case pin(String), unpin(String), hide(String), unhide(String)
+    case hide(String), unhide(String)
     case move(String, before: String?)
     case rename(String, title: String)
     public var json: JSONValue {
         var fields: [String: JSONValue]
         switch self {
-        case .pin(let key): fields = ["action": .string("pin"), "key": .string(key)]
-        case .unpin(let key): fields = ["action": .string("unpin"), "key": .string(key)]
         case .hide(let key): fields = ["action": .string("hide"), "key": .string(key)]
         case .unhide(let key): fields = ["action": .string("unhide"), "key": .string(key)]
         case .move(let key, let before): fields = ["action": .string("move"), "key": .string(key), "before": before.map(JSONValue.string) ?? .null]
@@ -77,7 +75,7 @@ public enum SharedTabsRequests {
         try key(update["key"])
         var allowed: Set<String> = ["action", "key"]
         switch action {
-        case "pin", "unpin", "hide", "unhide": break
+        case "hide", "unhide": break
         case "move":
             allowed.insert("before")
             if let before = update["before"], before != .null { try key(before) }

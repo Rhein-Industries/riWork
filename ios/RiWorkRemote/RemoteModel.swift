@@ -92,8 +92,11 @@ enum ConnectionState: Equatable {
     var chatSupport: ChatSupport = .unknown
     /// The chosen project's chats, from `chats.list`: tabs in the strip beside the terminals.
     var chats: [ChatInfo] = [] { didSet { inventoryStamp &+= 1 } }
-    /// The chat on screen; nil while a terminal is. Not remembered across launches.
+    /// The chat on screen; nil while a terminal is. With shared tabs, the tab on screen is remembered per project
+    /// (`SavedDesktop.projectTabKeys`) and put back on entering the project, on relaunch and on reconnect.
     var selectedChatID: String?
+    /// The next project listing puts the project's remembered tab back on screen (set on entering a project and on connecting).
+    @ObservationIgnored var restoreTabPending = true
     /// The orchestrator whose tab is on screen although it can be opened as neither a terminal nor a chat (it runs as a chat on a
     /// desktop that has none): the screen says so. Nil while a terminal or a chat is; see `selectedBlocked`.
     var selectedBlockedID: String?
@@ -548,6 +551,7 @@ enum ConnectionState: Equatable {
         // The new connection may leave on another link: its speed and round trip are measured again (what the desktop and its history
         // are like is not about the link, and is kept).
         linkMeter.pathChanged(); settleUntil = nil
+        restoreTabPending = true
         sharedTabs = nil
         desktopFeatures = DesktopFeatures(); compressionAgreed = false; historyLineLimit = HistoryLimits.legacyMaximumPageLines
         linkWatcher?.start()
@@ -681,6 +685,7 @@ enum ConnectionState: Equatable {
                 }
             }
             resetOutput(); draft = ""; deliveryNotice = nil
+            restoreTabPending = true
             sharedTabs = nil; worktrees = []; shells = []; loadedProjectID = nil; snapshotStale = true
             chats = []; selectedChatID = nil; selectedBlockedID = nil
             clearOrchestratorNotice()
@@ -714,6 +719,7 @@ enum ConnectionState: Equatable {
         worktrees = listing.worktrees; shells = listing.shells; loadedProjectID = id
         lastListRead[.sessions] = .now
         if let talks = listing.chats { installChats(talks, project: id) }
+        if restoreTabPending { restoreTabPending = false; if listing.tabs != nil { restoreRememberedTab(project: id) } }
         reconcileChatSelection()
         try reconcileSelectedSession()
         if sessionID == nil { try await synchronizeViewport(token: token) }
@@ -751,6 +757,7 @@ enum ConnectionState: Equatable {
                     var selections = $0.projectSessionIDs ?? [:]; selections[project] = session.id; $0.projectSessionIDs = selections
                 }
             }
+            rememberTab("shell:\(session.id)")
             if outputSessionID != session.id { resetOutput() }
             draft = ""; deliveryNotice = nil
             await readOutput()
@@ -1075,13 +1082,32 @@ extension RemoteModel {
         everSharedWorkers.formUnion(reply.allEntries.filter { $0.kind == .shell && $0.isWorker }.map(\.sessionID))
         return true
     }
-    /// Whether a shared entry is an orchestrator (in a terminal, or running as a chat): it is detached from the phone, never exited.
-    func isOrchestrator(_ entry: SharedTab) -> Bool {
-        switch entry.kind {
-        case .chat: return orchestrator(ofChat: entry.sessionID) != nil || orchestrators.contains { $0.chat_id == entry.sessionID }
-        case .shell: return sessions.contains { $0.id == entry.sessionID && $0.kind == "orchestrator" }
-        case .unknown: return false
+    /// Remembers the shared tab on screen as the project's last one (only a tab the shared list has; a device-local one is not).
+    func rememberTab(_ key: String) {
+        guard desktopFeatures.tabs, let project = projectID, desktop?.projectTabKeys?[project] != key,
+              sharedTabs?.allEntries.contains(where: { $0.key == key }) == true else { return }
+        try? updateDesktop { var keys = $0.projectTabKeys ?? [:]; keys[project] = key; $0.projectTabKeys = keys }
+    }
+    /// Puts the project's remembered tab back on screen, or its first tab when that one is gone (`SharedTabStrip.restoredTab`).
+    func restoreRememberedTab(project: String) {
+        guard desktopFeatures.tabs, let shared = sharedTabs, projectID == project else { return }
+        let chatIDs = Set(tabs.compactMap { $0.chatInfo?.id }), shellIDs = Set(openSessions.map(\.id))
+        let opens: (SharedTab) -> Bool = { $0.kind == .chat ? chatIDs.contains($0.sessionID) : shellIDs.contains($0.sessionID) }
+        // Nothing remembered yet (a device from before this): the terminal it had selected there, as before.
+        let remembered = desktop?.projectTabKeys?[project] ?? sessionID.map { "shell:\($0)" }
+        guard let entry = SharedTabStrip.restoredTab(remembered: remembered, in: shared, opens: opens) else { return }
+        if entry.kind == .chat {
+            if selectedChatID != entry.sessionID { selectChat(entry.sessionID) }
+            return
         }
+        selectedChatID = nil; selectedBlockedID = nil
+        guard sessionID != entry.sessionID else { return }
+        try? updateDesktop {
+            $0.selectedSessionID = entry.sessionID
+            var selections = $0.projectSessionIDs ?? [:]; selections[project] = entry.sessionID; $0.projectSessionIDs = selections
+        }
+        rememberTab(entry.key)
+        resetOutput(); snapshotStale = true; draft = ""; deliveryNotice = nil
     }
     /// The shared entry of a terminal, when the desktop shares its tabs: closing it then goes through `closeTab`.
     func sharedEntry(ofSession id: String) -> SharedTab? {
@@ -1132,17 +1158,12 @@ extension RemoteModel {
         if entry.kind == .chat { if selectedChatID != entry.sessionID { selectChat(entry.sessionID) } }
         else if let shell = sessions.first(where: { $0.id == entry.sessionID && $0.alive }) { await chooseSession(shell) }
     }
-    /// Ask is returned to the UI without a mutation. The sheet supplies an explicit choice. A worker only ever detaches; an
-    /// orchestrator is never exited from here (refused before anything changes); a Hide that fails, or whose answer belongs to another
-    /// connection or project, ends the close before any Stop.
+    /// Ask is returned to the UI without a mutation. The sheet supplies an explicit choice. A worker only ever detaches; the project
+    /// orchestrator closes like any other tab. A Hide that fails, or whose answer belongs to another connection or project, ends the
+    /// close before any Stop.
     @discardableResult func closeTab(_ key: String, choice: TabCloseBehavior? = nil) async throws -> Bool {
         guard desktopFeatures.tabs, let entry = sharedTabs?.allEntries.first(where: { $0.key == key }) else { throw ChatValidationError.invalidID }
-        var effective = (choice ?? tabCloseBehavior).effectiveChoice(for: entry)
-        if isOrchestrator(entry) {
-            guard effective != .exit else { throw TabCloseError.orchestratorExit }
-            if choice == nil, effective == .ask { return false }
-            effective = effective == .ask ? .ask : .detach
-        }
+        let effective = (choice ?? tabCloseBehavior).effectiveChoice(for: entry)
         guard effective != .ask else { return false }
         let token = generation, project = projectID
         try await hideTab(key)
@@ -1155,8 +1176,6 @@ extension RemoteModel {
         }
         return true
     }
-    func pinTab(_ key: String) async throws { try await updateTabs(.pin(key)) }
-    func unpinTab(_ key: String) async throws { try await updateTabs(.unpin(key)) }
     func hideTab(_ key: String) async throws { try await updateTabs(.hide(key)) }
     func unhideTab(_ key: String) async throws { try await updateTabs(.unhide(key)) }
     func moveTab(_ key: String, before: String?) async throws { try await updateTabs(.move(key, before: before)) }
@@ -1165,11 +1184,6 @@ extension RemoteModel {
 
 /// Why closing a shared tab stopped short.
 enum TabCloseError: LocalizedError, Equatable {
-    case orchestratorExit, connectionChanged
-    var errorDescription: String? {
-        switch self {
-        case .orchestratorExit: "An orchestrator is detached from the phone, not exited. Stop it on the Mac."
-        case .connectionChanged: "The connection changed while the tab was closing. Nothing was stopped."
-        }
-    }
+    case connectionChanged
+    var errorDescription: String? { "The connection changed while the tab was closing. Nothing was stopped." }
 }

@@ -50,6 +50,8 @@ actor ChatTransport: RemoteTransport {
     var shellOutput = "screen"
     private var created = 0
     /// The desktop's shared tab list (`tabs.*`, docs/shared-tabs.md): offered once a test sets it.
+    /// `pinned` is only what an older desktop still sends (as `"pinned": true`); the phone does not read it, and nothing here treats a
+    /// pinned tab differently.
     struct Tab: Sendable, Equatable {
         var key: String, kind: String, title: String, status = "working", pinned = false, hidden = false, worker = false, order = 0, parent: String? = nil
     }
@@ -95,9 +97,11 @@ actor ChatTransport: RemoteTransport {
     private func tabsReply() -> JSONValue {
         func node(_ tab: Tab) -> JSONValue {
             let children = sharedTabs.filter { $0.parent == tab.key }
-            return .object(["key": .string(tab.key), "kind": .string(tab.kind), "title": .string(tab.title), "status": .string(tab.status),
-                            "pinned": .bool(tab.pinned), "hidden": .bool(tab.hidden), "worker": .bool(tab.worker), "order": .number(Double(tab.order)),
-                            "parent": tab.parent.map(JSONValue.string) ?? .null, "children": .array(children.map(node)), "child_count": .number(Double(children.count))])
+            var fields: [String: JSONValue] = ["key": .string(tab.key), "kind": .string(tab.kind), "title": .string(tab.title), "status": .string(tab.status),
+                            "hidden": .bool(tab.hidden), "worker": .bool(tab.worker), "order": .number(Double(tab.order)),
+                            "parent": tab.parent.map(JSONValue.string) ?? .null, "children": .array(children.map(node)), "child_count": .number(Double(children.count))]
+            if tab.pinned { fields["pinned"] = .bool(true) }
+            return .object(fields)
         }
         let keys = Set(sharedTabs.map(\.key))
         return .object(["epoch": .string(tabsEpoch), "revision": .number(Double(tabsRevision)), "entries": .array(sharedTabs.filter { $0.parent == nil || !keys.contains($0.parent!) }.map(node))])
@@ -105,22 +109,18 @@ actor ChatTransport: RemoteTransport {
     private func applyTabUpdate(_ update: [String: JSONValue]) throws {
         guard let key = update["key"]?.string, let index = sharedTabs.firstIndex(where: { $0.key == key }) else { throw RemoteError.rpc(code: "not_found", message: "no such tab") }
         switch update["action"]?.string {
-        case "pin": sharedTabs[index].pinned = true; sharedTabs[index].hidden = false
-        case "unpin": sharedTabs[index].pinned = false
-        case "hide":
-            guard !sharedTabs[index].pinned else { throw RemoteError.rpc(code: "invalid_request", message: "unpin before hiding") }
-            sharedTabs[index].hidden = true
+        case "hide": sharedTabs[index].hidden = true
         case "unhide": sharedTabs[index].hidden = false
         case "rename": sharedTabs[index].title = update["title"]?.string ?? sharedTabs[index].title
         case "move":
             let moving = sharedTabs.remove(at: index)
             if let before = update["before"]?.string, let target = sharedTabs.firstIndex(where: { $0.key == before }) {
-                guard sharedTabs[target].parent == moving.parent, sharedTabs[target].pinned == moving.pinned else {
+                guard sharedTabs[target].parent == moving.parent else {
                     sharedTabs.insert(moving, at: index); throw RemoteError.rpc(code: "invalid_request", message: "another group")
                 }
                 sharedTabs.insert(moving, at: target)
             } else {
-                let last = sharedTabs.lastIndex { $0.parent == moving.parent && $0.pinned == moving.pinned }.map { $0 + 1 } ?? sharedTabs.count
+                let last = sharedTabs.lastIndex { $0.parent == moving.parent }.map { $0 + 1 } ?? sharedTabs.count
                 sharedTabs.insert(moving, at: last)
             }
             for i in sharedTabs.indices { sharedTabs[i].order = i }

@@ -222,6 +222,7 @@ extension RemoteModel {
         guard tabs.contains(where: { $0.chatInfo?.id == id }) else { return }
         _ = conversation(id)
         selectedChatID = id; selectedBlockedID = nil
+        rememberTab("chat:\(id)")
     }
     func deselectChat() { selectedChatID = nil }
 

@@ -112,18 +112,19 @@ Every kind of tab has the same one-row header (`TabScreenChrome`): Back, the tab
 in sections: what is on screen (a chat's actions, see Chats; or a terminal's: focus mode, jump to latest, Display, text size, the
 line composer, copy screen, refresh output), the tab (Session info; Close this terminal), and the project (refreshing the tabs, the
 global orchestrator, the connection). **Shared tabs** (a desktop that offers `tabs`, docs/shared-tabs.md; `Core/SharedTabStrip.swift`, tested): the row is the desktop's
-own list for the project, in its order, with its titles, pins and states, the same as the Mac's strip; workers (sessions another
+own list for the project, in its order, with its titles and states, the same as the Mac's strip (there are no pins: a `pinned` field an older desktop still sends is not
+read); workers (sessions another
 session started) are hidden until opened. ＋ holds New terminal…, **Open shell/worker…** (the hidden chats and live shells, workers
 first, each with its kind, state and the tab it belongs to; opening one shows it here and on the Mac and starts nothing) and Edit
-tabs…. A tab's long-press menu (and ⋯ → Tab for the tab on screen) has Pin or Unpin (top-level tabs only; the project orchestrator
-starts pinned), Rename… (empty uses the session's name), Move left / Move right (one place among the visible tabs of its group, as
+tabs…. A tab's long-press menu (and ⋯ → Tab for the tab on screen) has Rename… (empty uses the session's name), Move left / Move right (one place among the visible tabs of its group, as
 the Mac's tab menu has them), Edit tabs… and Close: a worker's tab detaches at once; a chat or shell you
 opened follows Settings → Tabs, **When closing a tab: Ask / Detach / Exit** (this iPhone's own, `tab_close_behavior`, Ask until
 chosen): Ask shows Detach (hide it, it keeps running on the Mac) and Exit (hide it and stop the chat, whose history stays, or close
-the shell); a pinned tab is unpinned first. A Hide that fails ends the close there (nothing is stopped) and is said. **Reorder** by long-pressing a tab and dragging it onto another (it goes before that one;
-past the last tab, to the end of its group), or in **Edit tabs** with drag handles; a move stays within its group (pinned, the
-others, a parent's opened children), and the desktop's reply is the row. A quick drag still scrolls the row, and the edge swipe still
-goes back. Changes made on the Mac arrive with the four-second refresh without moving the tab on screen. An older desktop keeps the
+the shell). The project orchestrator is an ordinary tab: it moves like any other and closes the same way. A Hide that fails ends the close there (nothing is stopped) and is said. **Reorder** by long-pressing a tab and dragging it onto another (it goes before that one;
+past the last tab, to the end of its group), or in **Edit tabs** with drag handles; any top-level tab goes anywhere among the
+top-level tabs, a parent's opened children stay among themselves, and the desktop's reply is the row. A quick drag still scrolls the row, and the edge swipe still
+goes back. **The last tab** on screen in each project is kept on this iPhone (`SavedDesktop.projectTabKeys`): entering the
+project, relaunching and reconnecting put it back while the shared list still shows it, else the first tab. Changes made on the Mac arrive with the four-second refresh without moving the tab on screen. An older desktop keeps the
 earlier strip (every terminal and chat). A swipe from the left edge goes back to the projects, as Back does, from a terminal and
 from a chat alike (the navigation stack's own gesture, turned back on although the screen hides the bar: `edgeSwipeBack()`). A tab's short session ID and worktree
 branch are in its long-press menu and its accessibility label. **Session info** exposes the full UUID,

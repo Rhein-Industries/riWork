@@ -79,7 +79,8 @@ extension RemoteModel {
     /// Ends a terminal (`shell.close`). `viaSharedTab`: called by a shared tab's Exit, after its Hide (`closeTab`); any other caller is
     /// the terminal's own Close, which exists only for a desktop known not to share tabs.
     func closeTerminal(_ session: RemoteSession, viaSharedTab: Bool = false) async -> TerminalControlError? {
-        guard session.kind != "orchestrator" else { return .failed("Orchestrators are closed on the Mac.") }
+        // A shared tab's Exit closes the project orchestrator like any other tab; the terminal's own Close never does.
+        guard viaSharedTab || session.kind != "orchestrator" else { return .failed("Orchestrators are closed on the Mac.") }
         // A shell ever seen as a shared worker is only ever detached, on any connection: nothing here ends it.
         if everSharedWorkers.contains(session.id) || sharedEntry(ofSession: session.id)?.isWorker == true {
             return .failed("A worker's shell is detached, not closed, from the phone.")

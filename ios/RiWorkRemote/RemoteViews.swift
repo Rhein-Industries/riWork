@@ -300,8 +300,6 @@ struct TerminalTabsView: View {
     // The shared tab list (docs/shared-tabs.md), when the desktop has one: the tab asked to be closed (the Detach / Exit sheet), the
     // one being renamed, the "Open shell/worker…" picker, the Edit tabs sheet and the tab a drag is over.
     @State private var closingTab: SharedTab?
-    /// The close sheet offers Exit (not for an orchestrator).
-    @State private var closingAllowsExit = true
     @State private var renamingTab: SharedTab?
     @State private var renameText = ""
     @State private var showingWorkers = false
@@ -375,14 +373,11 @@ struct TerminalTabsView: View {
         .confirmationDialog(closingTab.map { "Close \($0.title)?" } ?? "", isPresented: Binding(get: { closingTab != nil }, set: { if !$0 { closingTab = nil } }),
                             titleVisibility: .visible, presenting: closingTab) { entry in
             Button("Detach") { close(entry, .detach) }
-            if closingAllowsExit { Button("Exit", role: .destructive) { close(entry, .exit) } }
+            Button("Exit", role: .destructive) { close(entry, .exit) }
             Button("Cancel", role: .cancel) { closingTab = nil }
         } message: { entry in
-            if !closingAllowsExit { Text("Detach keeps the orchestrator running on your Mac. Stop it on the Mac.") }
-            else {
-                Text(entry.kind == .chat ? "Detach keeps the chat running on your Mac. Exit stops it; its history stays."
-                                         : "Detach keeps the shell running on your Mac. Exit closes it and ends its process.")
-            }
+            Text(entry.kind == .chat ? "Detach keeps the chat running on your Mac. Exit stops it; its history stays."
+                                     : "Detach keeps the shell running on your Mac. Exit closes it and ends its process.")
         }
         .alert("Rename tab", isPresented: Binding(get: { renamingTab != nil }, set: { if !$0 { renamingTab = nil } }), presenting: renamingTab) { entry in
             TextField("Title", text: $renameText)
@@ -474,11 +469,9 @@ struct TerminalTabsView: View {
         guard !model.terminalCovered, let session = model.session else { return nil }
         return SharedTabStrip.entry(chatID: nil, sessionID: session.id, in: model.sharedTabs)
     }
-    /// A tab's own actions on the shared list: pin or unpin, rename, close (by the setting); the same in its long-press menu and in ⋯.
+    /// A tab's own actions on the shared list: rename, move, close (by the setting); the same in its long-press menu and in ⋯.
     @ViewBuilder private func sharedTabItems(_ entry: SharedTab) -> some View {
         let actions = SharedTabStrip.actions(entry)
-        if actions.pin { Button("Pin", systemImage: "pin") { tabAction { try await model.pinTab(entry.key) } } }
-        if actions.unpin { Button("Unpin", systemImage: "pin.slash") { tabAction { try await model.unpinTab(entry.key) } } }
         if actions.rename { Button("Rename…", systemImage: "pencil") { renameText = entry.title; renamingTab = entry } }
         // One place at a time within its group, as the Mac's tab menu has it (and a reorder without dragging).
         if let shared = model.sharedTabs {
@@ -493,11 +486,10 @@ struct TerminalTabsView: View {
             Button(entry.isWorker ? "Close (detach)" : "Close tab…", systemImage: "xmark") { requestClose(entry) }
         }
     }
-    /// Closing by the setting: Ask shows the sheet; Detach and Exit go at once; a worker always detaches; a pinned tab is unpinned first.
+    /// Closing by the setting: Ask shows the sheet; Detach and Exit go at once; a worker always detaches.
     private func requestClose(_ entry: SharedTab) {
-        switch SharedTabStrip.closePlan(entry, setting: model.tabCloseBehavior, orchestrator: model.isOrchestrator(entry)) {
-        case .unpinFirst: report("Unpin \(entry.title) before closing it.")
-        case .ask(let exitAllowed): closingAllowsExit = exitAllowed; closingTab = entry
+        switch SharedTabStrip.closePlan(entry, setting: model.tabCloseBehavior) {
+        case .ask: closingTab = entry
         case .detach: close(entry, .detach)
         case .exit: close(entry, .exit)
         }
@@ -628,7 +620,7 @@ struct TerminalTabsView: View {
                 .onAppear { scrollToSelected(proxy, animated: false) }
                 .onChange(of: model.tabs.map(\.id)) { _, _ in scrollToSelected(proxy, animated: true) }
                 // Titles and pins change widths (a rename on the Mac) without changing which tabs there are.
-                .onChange(of: model.sharedTabs?.visible.map { "\($0.key)|\($0.title)|\($0.pinned)" }) { _, _ in scrollToSelected(proxy, animated: true) }
+                .onChange(of: model.sharedTabs?.visible.map { "\($0.key)|\($0.title)" }) { _, _ in scrollToSelected(proxy, animated: true) }
         }
     }
     private func scrollToSelected(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -667,14 +659,13 @@ struct TerminalTabsView: View {
                             .foregroundStyle(session.kind == "orchestrator" ? style.magenta : style.text)
                     }.font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
                     ActivityIndicator(activity: session.shownActivity, subagents: session.subagents_working)
-                    if entry?.pinned == true { PinMark() }
                 }
             }
             .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
             .tabChrome(selected: selected, waiting: session.shownActivity == .waiting)
         }
         .buttonStyle(.plain).id(session.id)
-        .accessibilityLabel(["\(session.title), \(tabDetail(session))", entry?.pinned == true ? "pinned" : nil, session.activitySummary].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityLabel(["\(session.title), \(tabDetail(session))", session.activitySummary].compactMap { $0 }.joined(separator: ", "))
         .accessibilityAddTraits(selected ? .isSelected : [])
         .contextMenu {
             Text(tabDetail(session))
@@ -706,7 +697,6 @@ struct TerminalTabsView: View {
                         .font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
                     ActivityIndicator(activity: activity)
                     if case .failed = state { Image(systemName: "exclamationmark.triangle.fill").font(style.system(.caption2)).foregroundStyle(style.error).accessibilityHidden(true) }
-                    if entry?.pinned == true { PinMark() }
                 }
             }
             .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
@@ -714,7 +704,7 @@ struct TerminalTabsView: View {
             .opacity(state == .stopped && !selected ? 0.6 : 1)
         }
         .buttonStyle(.plain).id(chat.id)
-        .accessibilityLabel([ChatTabs.title(chat) + ", " + ChatTabs.detail(chat, branch: branch), entry?.pinned == true ? "pinned" : nil, state.spokenCondition, activity.spoken()].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityLabel([ChatTabs.title(chat) + ", " + ChatTabs.detail(chat, branch: branch), state.spokenCondition, activity.spoken()].compactMap { $0 }.joined(separator: ", "))
         .accessibilityAddTraits(selected ? .isSelected : [])
         .contextMenu {
             Text(ChatTabs.detail(chat, branch: branch))
@@ -1257,15 +1247,6 @@ struct EdgeSwipeBack: UIViewControllerRepresentable {
 
 // MARK: - Shared tabs
 
-/// The small pin of a pinned tab (the project orchestrator starts pinned).
-private struct PinMark: View {
-    @Environment(\.desktopStyle) private var style
-    var body: some View {
-        Image(systemName: "pin.fill").font(.system(size: style.pt(9), weight: .semibold)).foregroundStyle(style.muted).rotationEffect(.degrees(45))
-            .accessibilityHidden(true)
-    }
-}
-
 /// A tab of the row as a drag source and a drop target for reordering: a long press lifts it (the row's horizontal scroll and the
 /// screen's edge swipe are plain drags and are untouched), dropping it on another tab puts it before that one, within its group. A
 /// bar shows where it would go.
@@ -1345,7 +1326,7 @@ struct OpenTabSheet: View {
     }
 }
 
-/// Edit tabs: the row's tabs in groups (pinned, the others, each parent's opened children) with drag handles; a move is one Move of
+/// Edit tabs: the row's tabs in groups (the top-level tabs, each parent's opened children) with drag handles; a move is one Move of
 /// the shared list within its group. The accessible way to reorder, beside dragging in the row.
 struct EditTabsSheet: View {
     @Environment(\.desktopStyle) private var style
@@ -1364,7 +1345,6 @@ struct EditTabsSheet: View {
                                         .accessibilityHidden(true)
                                     Text(tab.title).foregroundStyle(style.text).lineLimit(1)
                                     Spacer(minLength: 4)
-                                    if tab.pinned { PinMark() }
                                 }
                                 .frame(minHeight: style.target)
                                 .listRowBackground(style.background)
