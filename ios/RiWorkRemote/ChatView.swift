@@ -67,7 +67,8 @@ struct ChatScreen: View {
             ChatNoticeBanners(model: model, chat: info, conversation: conversation, state: state, showHistory: { showNotices = true })
             ChatComposer(conversation: conversation, provider: info.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
                          send: { Task { await model.sendChatDraft(chat.id) } }, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } },
-                         attach: { picking = $0 }, pasteFiles: pasteFiles)
+                         attach: { picking = $0 }, pasteFiles: pasteFiles,
+                         attachmentImages: model.chatAttachmentImages, removeAttachment: { model.removeStagedAttachment($0, from: chat.id) })
         }
         .frame(maxWidth: 760)
         .frame(maxWidth: .infinity)

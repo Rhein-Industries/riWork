@@ -202,16 +202,19 @@ struct ChatComposer: View {
     /// The paperclip (a photo or a file goes to the Mac and its path into the message), and a paste of files.
     var attach: ((AttachmentChoice) -> Void)?
     var pasteFiles: (() -> Bool)?
+    /// The cards of the files staged for the message (`ChatAttachmentStrip`), and × on one of them.
+    var attachmentImages: ChatAttachmentImages?
+    var removeAttachment: ((String) -> Void)?
     var dictation = DictationController.shared
     @State private var focused = false
     @State private var insertion = TextInsertion()
 
-    private var canSend: Bool { connected && !conversation.sending && !conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var canSend: Bool { connected && !conversation.sending && conversation.hasMessage }
     private var keyContext: ChatKeyContext {
-        ChatKeyContext(composerIsEmpty: conversation.draft.isEmpty, approval: approval, busy: state.isBusy, canSend: connected && !conversation.sending)
+        ChatKeyContext(composerIsEmpty: conversation.draft.isEmpty && conversation.attachments.isEmpty, approval: approval, busy: state.isBusy, canSend: connected && !conversation.sending)
     }
     private var actions: ComposerActions {
-        ComposerActions(typed: !conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, busy: state.isBusy, mic: style.mic,
+        ComposerActions(typed: conversation.hasMessage, busy: state.isBusy, mic: style.mic,
                         // A dictation that failed keeps the mic (and the alert it owns) until the alert is dismissed.
                         dictating: dictation.phase(for: .chat(conversation.id)) != .idle)
     }
@@ -221,6 +224,11 @@ struct ChatComposer: View {
             // Every button is centred on the field's last line: on the field's middle while it holds one line, and beside the line
             // being typed (at the bottom, as Messages does) once it grows.
             let actions = actions
+            if let attachmentImages, !conversation.attachments.isEmpty {
+                ChatAttachmentStrip(attachments: conversation.attachments, images: attachmentImages, remove: { removeAttachment?($0) })
+                    .padding(.horizontal, BottomBarGeometry.composerInnerInset)
+                    .chatLayoutProbe("attachments")
+            }
             HStack(alignment: .composerLine, spacing: 0) {
                 if let attach {
                     ComposerPaperclip(connected: connected, choose: attach).equatable()
@@ -240,6 +248,7 @@ struct ChatComposer: View {
             .padding(.horizontal, BottomBarGeometry.composerInnerInset)
             .chatLayoutProbe("composer")
         }
+        .animation(.easeInOut(duration: 0.15), value: conversation.attachments)
         // Lined up with the terminal's key bar: the field's ends sit where the key bar's capsule does, and the row stands as close above
         // the keyboard as the key bar's capsule (`BottomBarGeometry.composerInsets`).
         .padding(.horizontal, BottomBarGeometry.composerInsets(glass: style.glass).horizontal).padding(.top, 6)

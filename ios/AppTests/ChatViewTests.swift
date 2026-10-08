@@ -950,6 +950,79 @@ import RiWorkCore
 
     // MARK: Drafts
 
+    private func staged(_ n: Int, _ name: String) -> StagedAttachment {
+        StagedAttachment(id: "aaaaaaaa-0000-4000-8000-00000000000\(n)", kind: name.hasSuffix(".jpg") ? .image : .file, name: name, size: 120_000 * n,
+                         path: "/Users/me/.local/share/riwork/uploads/\(n)/\(name)")
+    }
+    private func sentTexts(_ rig: Rig) async -> [String] { await sentCommands(rig).compactMap { $0["text"].string } }
+
+    /// The cards stand in a row above the field and the row goes when the last card does.
+    func testTheCardRowStandsAboveTheFieldOnlyWhileSomethingIsStaged() async throws {
+        let rig = try await makeRig()
+        _ = try await openChat(rig)
+        XCTAssertNil(rig.layout.frames["attachments"], "nothing staged: no row")
+        let conversation = rig.model.conversation(chatID)
+        conversation.attachments = [staged(1, "photo.jpg"), staged(2, "notes.pdf"), staged(3, "build.log")]
+        await eventually("the row is up") { rig.layout.frames["attachments"] != nil }
+        let row = try XCTUnwrap(rig.layout.frames["attachments"]), field = try XCTUnwrap(rig.layout.frames["composer-field"])
+        XCTAssertLessThanOrEqual(row.maxY, field.minY + 1, "above the field")
+        XCTAssertGreaterThanOrEqual(row.minX, 0); XCTAssertLessThanOrEqual(row.maxX, rig.window.bounds.width, "within the composer's insets")
+        rig.model.removeStagedAttachment(staged(2, "notes.pdf").id, from: chatID)
+        XCTAssertEqual(conversation.attachments.map(\.name), ["photo.jpg", "build.log"])
+        conversation.attachments = []
+        await eventually("the row is gone") { rig.layout.frames["attachments"] == nil }
+        await finish(rig)
+    }
+
+    /// Send puts the cards' paths after the text, as the draft used to hold them, and the cards leave with the text.
+    func testSendingNamesTheCardsInTheMessageAndClearsThem() async throws {
+        let rig = try await makeRig()
+        let field = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        conversation.attachments = [staged(1, "photo.jpg"), staged(2, "notes.pdf")]
+        type("What do these show?", into: field)
+        await rig.model.sendChatDraft(chatID)
+        let texts = await sentTexts(rig)
+        XCTAssertEqual(texts, ["What do these show?\n/Users/me/.local/share/riwork/uploads/1/photo.jpg\n/Users/me/.local/share/riwork/uploads/2/notes.pdf"])
+        XCTAssertEqual(conversation.attachments, [], "the cards clear")
+        await eventually("the composer is empty") { self.composer(rig)?.text == "" && rig.layout.frames["attachments"] == nil }
+        XCTAssertNil(rig.model.chatDrafts.draft(chatID), "sent: nothing kept")
+        await finish(rig)
+    }
+    /// A card alone is something to send (Return sends it), and a refused message brings its cards back with its text.
+    func testACardAloneSendsAndARefusedOneComesBack() async throws {
+        let rig = try await makeRig()
+        let field = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        conversation.attachments = [staged(1, "photo.jpg")]
+        await rig.transport.failCommand(.rpc(code: "unavailable", message: "The desktop is busy"))
+        await rig.model.sendChatDraft(chatID)
+        XCTAssertEqual(conversation.attachments, [staged(1, "photo.jpg")], "a refused message's card comes back")
+        XCTAssertEqual(conversation.draft, "")
+        XCTAssertEqual(rig.model.chatDrafts.draft(chatID)?.attachments, [staged(1, "photo.jpg")])
+        await rig.transport.failCommand(nil)
+        press(field, "\r")
+        await eventually("sent") { conversation.attachments.isEmpty }
+        let texts = await sentTexts(rig)
+        XCTAssertEqual(texts.last, "/Users/me/.local/share/riwork/uploads/1/photo.jpg")
+        await finish(rig)
+    }
+    /// The cards are kept with the draft: another chat's tab, and a relaunch, find them in the composer again.
+    func testCardsAreKeptWithTheDraft() async throws {
+        let suite = "com.riwork.tests.chatview.\(UUID().uuidString)"
+        defaultsNames.append(suite)
+        let rig = try await makeRig(defaults: suite)
+        _ = try await openChat(rig)
+        rig.model.conversation(chatID).attachments = [staged(1, "photo.jpg")]
+        await finish(rig)
+        let relaunched = try await makeRig(defaults: suite)
+        _ = try await openChat(relaunched)
+        XCTAssertEqual(relaunched.model.conversation(chatID).attachments, [staged(1, "photo.jpg")])
+        await eventually("the row is up") { relaunched.layout.frames["attachments"] != nil }
+        await finish(relaunched)
+    }
+
+
     /// Types into the composer as a person does: through the text view, so the binding and the saving run as they do on a device.
     private func type(_ text: String, into field: ChatComposerTextView) {
         field.text = text

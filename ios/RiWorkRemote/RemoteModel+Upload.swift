@@ -34,8 +34,8 @@ extension RemoteModel {
         attachments.activity.flatMap { $0.target == target ? $0 : nil }
     }
 
-    /// Sends what was picked or pasted to `target`. For a shell the files are then pasted into it; for a chat their paths go into its
-    /// draft (`appendToChat`), where the agent reads them as files when the message is sent.
+    /// Sends what was picked or pasted to `target`. For a shell the files are then pasted into it; for a chat they become cards above its
+    /// composer (`stageInChat`), and their paths go into the message when it is sent, where the agent reads them as files.
     func attach(_ sources: [AttachmentSource], to target: UploadTarget) {
         guard !sources.isEmpty else { return }
         if attachments.task != nil { attachments.activity?.phase = .failed("Wait for the files under way, or cancel them."); return }
@@ -53,6 +53,7 @@ extension RemoteModel {
             defer { if attachments.job == job { attachments.task = nil; attachments.job = nil } }
             do {
                 var uploaded: [UploadedFile] = []
+                var staged: [StagedAttachment] = []
                 for (offset, source) in sources.enumerated() {
                     let file = try await attachments.loadSource(source)
                     try Task.checkCancellation()
@@ -62,6 +63,13 @@ extension RemoteModel {
                         Task { @MainActor in if attachments.job == job, attachments.activity?.index == offset + 1 { attachments.activity?.sent = received } }
                     }
                     uploaded.append(sent)
+                    if case .chat = target {
+                        let card = StagedAttachment(id: sent.upload, kind: StagedAttachment.kind(mediaType: file.mediaType, name: file.name), name: file.name, size: file.data.count, path: sent.path)
+                        // The card's pictures, from the bytes the Mac has, made off the main thread before the card shows.
+                        let images = self.chatAttachmentImages, data = file.data
+                        let pictured = card.kind == .image ? await Task.detached(priority: .userInitiated) { images.save(card.id, data: data) }.value : false
+                        staged.append(pictured || card.kind == .file ? card : StagedAttachment(id: card.id, kind: .file, name: card.name, size: card.size, path: card.path))
+                    }
                 }
                 // Another Mac chosen meanwhile: what was sent stays in that Mac's inbox until it is swept.
                 try Task.checkCancellation()
@@ -74,7 +82,7 @@ extension RemoteModel {
                     guard attachments.job == job, self.selectedDesktopID == desktopID else { throw CancellationError() }
                     self.jumpToLatest()
                 case .chat(let chat):
-                    self.appendToChat(chat, paths: uploaded.map(\.path))
+                    self.stageInChat(chat, staged)
                 }
                 if attachments.job == job { attachments.activity = nil }
             } catch is CancellationError {
@@ -93,12 +101,22 @@ extension RemoteModel {
     }
     func dismissUploadFailure() { if attachments.activity?.failed == true { attachments.activity = nil } }
 
-    /// The paths go at the end of the draft, each on its own line, so the message names the files the agent should read.
-    func appendToChat(_ chat: String, paths: [String]) {
-        guard let conversation = chatConversations[chat], !paths.isEmpty else { return }
-        var draft = conversation.draft
-        if !draft.isEmpty, !draft.hasSuffix("\n"), !draft.hasSuffix(" ") { draft += "\n" }
-        conversation.draft = draft + paths.joined(separator: "\n") + "\n"
+    /// The files sent become cards after those staged already; their paths go into the message when it is sent. A chat whose conversation
+    /// was let go meanwhile gets them in its saved draft.
+    func stageInChat(_ chat: String, _ cards: [StagedAttachment]) {
+        guard !cards.isEmpty else { return }
+        if let conversation = chatConversations[chat] {
+            conversation.attachments = ChatDraft.merged(conversation.attachments, cards)
+        } else {
+            chatDrafts.setAttachments(ChatDraft.merged(chatDrafts.draft(chat)?.attachments ?? [], cards), for: chat)
+        }
+    }
+    /// The card leaves the composer. The desktop has no way to delete one finished upload (`upload.cancel` leaves a complete one), so
+    /// the file stays in the chat's inbox until the desktop sweeps it; only the phone forgets it.
+    func removeStagedAttachment(_ id: String, from chat: String) {
+        let conversation = conversation(chat)
+        conversation.attachments.removeAll { $0.id == id }
+        if !chatDrafts.attachmentIDs.contains(id) { chatAttachmentImages.remove(id) }
     }
 
     private func update(_ change: (inout UploadActivity) -> Void) {

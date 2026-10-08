@@ -60,23 +60,25 @@ actor UploadTransport: RemoteTransport {
     private let shell = "44444444-4444-4444-8444-444444444444"
     private let chat = "55555555-5555-4555-8555-555555555555"
     private var defaultsNames: [String] = []
+    private let images = ChatAttachmentImages(directory: FileManager.default.temporaryDirectory.appendingPathComponent("attachment-tests-\(UUID().uuidString)"))
 
     override func tearDown() async throws {
         for name in defaultsNames { UserDefaults().removePersistentDomain(forName: name) }
         defaultsNames = []
+        try? FileManager.default.removeItem(at: images.directory)
     }
-    private func connected(old: Bool = false) async throws -> (RemoteModel, UploadTransport) {
+    private func connected(old: Bool = false, defaults suite: String? = nil) async throws -> (RemoteModel, UploadTransport) {
         let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
         let pairing = try Pairing.parse("""
         {"v":1,"relay_url":"wss://example.com/v1/ws","desktop_id":"11111111-1111-4111-8111-111111111111","device_id":"22222222-2222-4222-8222-222222222222","route_id":"33333333-3333-4333-8333-333333333333","device_name":"Test","pairing_secret":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","relay_token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}
         """)
         let desktop = SavedDesktop(name: "Fixture", pairing: pairing, allowLocalDevelopment: false)
         try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
-        let name = "com.riwork.tests.attach.\(UUID().uuidString)"
-        defaultsNames.append(name)
+        let name = suite ?? "com.riwork.tests.attach.\(UUID().uuidString)"
+        if suite == nil { defaultsNames.append(name) }
         let transport = UploadTransport()
         await transport.setOld(old)
-        let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: name)!)
+        let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: name)!, attachmentImages: images)
         await model.connect()
         XCTAssertEqual(model.state, .connected)
         await settle { model.desktopFeatures.upload != nil || old }
@@ -108,17 +110,77 @@ actor UploadTransport: RemoteTransport {
         await model.disconnect()
     }
 
-    func testAPhotoForAChatPutsItsPathInTheDraft() async throws {
+    private let path = "/Users/me/.local/share/riwork/uploads/x/photo-0a1b2c3d.jpg"
+    private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
+
+    /// A photo for a chat becomes a card above the composer, not text: the draft is as it was, the card knows the path the message will
+    /// name, its pictures are on the phone, and it is saved with the draft.
+    func testAPhotoForAChatIsStagedAsACard() async throws {
         let (model, transport) = try await connected()
-        let conversation = ChatConversation(id: chat)
+        let conversation = model.conversation(chat)
         conversation.draft = "What is in this picture?"
-        model.chatConversations[chat] = conversation
         model.attach([.camera(photo())], to: .chat(chat))
         await settle { model.attachments.task == nil }
-        XCTAssertEqual(conversation.draft, "What is in this picture?\n/Users/me/.local/share/riwork/uploads/x/photo-0a1b2c3d.jpg\n")
+        XCTAssertEqual(conversation.draft, "What is in this picture?", "no path in the text")
+        let card = try XCTUnwrap(conversation.attachments.first)
+        XCTAssertEqual(conversation.attachments.count, 1)
+        XCTAssertEqual(card.kind, .image)
+        XCTAssertEqual(card.name, "photo.jpg")
+        XCTAssertEqual(card.path, path)
+        XCTAssertGreaterThan(card.size, 0)
+        XCTAssertTrue(exists(images.thumbnailURL(card.id)) && exists(images.previewURL(card.id)), "pictured from the bytes sent")
+        XCTAssertEqual(model.chatDrafts.draft(chat)?.attachments, [card], "kept with the draft")
         let methods = await transport.methods()
-        XCTAssertFalse(methods.contains("shell.paste"), "a chat gets the path, nothing is typed")
+        XCTAssertEqual(methods, ["upload.begin", "upload.chunk", "upload.finish"], "sent at once; nothing is typed")
         await model.disconnect()
+    }
+    func testAFileForAChatIsAFileCardAfterTheOnesStagedAlready() async throws {
+        let (model, _) = try await connected()
+        let conversation = model.conversation(chat)
+        model.attach([.camera(photo())], to: .chat(chat))
+        await settle { model.attachments.task == nil }
+        model.attachments.loadSource = { _ in UploadFile(name: "notes.pdf", mediaType: "application/pdf", data: Data(repeating: 7, count: 2_400)) }
+        model.attach([.camera(Data())], to: .chat(chat))
+        await settle { model.attachments.task == nil }
+        XCTAssertEqual(conversation.attachments.map(\.kind), [.image, .file])
+        let file = try XCTUnwrap(conversation.attachments.last)
+        XCTAssertEqual(file.name, "notes.pdf")
+        XCTAssertEqual(file.sizeText, "2 KB")
+        XCTAssertFalse(exists(images.thumbnailURL(file.id)), "a file has no picture")
+        await model.disconnect()
+    }
+    /// × drops the card and its pictures. The desktop has no way to delete a finished upload, so nothing is asked of it.
+    func testRemovingACardDropsItHereOnly() async throws {
+        let (model, transport) = try await connected()
+        let conversation = model.conversation(chat)
+        model.attach([.camera(photo())], to: .chat(chat))
+        await settle { model.attachments.task == nil }
+        let card = try XCTUnwrap(conversation.attachments.first)
+        model.removeStagedAttachment(card.id, from: chat)
+        XCTAssertTrue(conversation.attachments.isEmpty)
+        XCTAssertNil(model.chatDrafts.draft(chat), "nothing left to keep")
+        XCTAssertFalse(exists(images.thumbnailURL(card.id)) || exists(images.previewURL(card.id)))
+        let methods = await transport.methods()
+        XCTAssertEqual(methods, ["upload.begin", "upload.chunk", "upload.finish"], "no RPC for a removal")
+        await model.disconnect()
+    }
+    /// Cards outlive the app as the text does, and come back into the composer of the chat; pictures no draft holds are tidied away.
+    func testCardsComeBackAfterARelaunch() async throws {
+        let suite = "com.riwork.tests.attach.\(UUID().uuidString)"
+        defaultsNames.append(suite)
+        let (model, _) = try await connected(defaults: suite)
+        model.conversation(chat).draft = "look"
+        model.attach([.camera(photo())], to: .chat(chat))
+        await settle { model.attachments.task == nil }
+        let card = try XCTUnwrap(model.conversation(chat).attachments.first)
+        images.save("bbbbbbbb-0000-4000-8000-000000000000", data: photo())
+        await model.disconnect()
+        let (relaunched, _) = try await connected(defaults: suite)
+        XCTAssertEqual(relaunched.conversation(chat).draft, "look")
+        XCTAssertEqual(relaunched.conversation(chat).attachments, [card])
+        await settle { !self.exists(self.images.thumbnailURL("bbbbbbbb-0000-4000-8000-000000000000")) }
+        XCTAssertTrue(exists(images.thumbnailURL(card.id)), "a staged card keeps its picture")
+        await relaunched.disconnect()
     }
 
     func testAMacTooOldToTakeFilesSaysSoAndNothingIsSent() async throws {

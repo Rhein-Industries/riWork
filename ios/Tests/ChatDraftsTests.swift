@@ -105,7 +105,7 @@ import XCTest
         store.endSending(for: "a", token: "someone else")
         XCTAssertEqual(store.draft("a")?.sending, "first", "a stale answer changes nothing")
         XCTAssertNil(store.returnUnsent("first", token: "someone else", uncertain: false, for: "a"))
-        XCTAssertEqual(store.returnUnsent("first", token: first, uncertain: true, for: "a"), "first\ntyped since")
+        XCTAssertEqual(store.returnUnsent("first", token: first, uncertain: true, for: "a")?.text, "first\ntyped since")
         XCTAssertEqual(store.draft("a")?.text, "first\ntyped since")
         XCTAssertEqual(store.draft("a")?.uncertain, true)
         XCTAssertNil(store.draft("a")?.sendToken)
