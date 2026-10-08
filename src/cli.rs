@@ -4262,7 +4262,7 @@ fn tabs_command(mut args: Vec<String>, _json: bool) -> Result<(), String> {
             let key = open_key.ok_or("--key is required")?;
             crate::project_tabs::valid_key(&key)?;
             Some(crate::project_tabs::Update::Unhide { key })
-        },
+        }
         "update" => {
             let update: crate::project_tabs::Update =
                 serde_json::from_str(&raw_update.ok_or("--update-json is required")?)

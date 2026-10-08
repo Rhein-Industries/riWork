@@ -7,7 +7,10 @@ struct List {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Open { project_id: String, key: String }
+struct Open {
+    project_id: String,
+    key: String,
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Change {
@@ -40,8 +43,16 @@ fn arguments(r: &Request) -> std::result::Result<Vec<String>, Fault> {
         id(&p.project_id)?;
         args.extend(["list".into(), "--project".into(), p.project_id]);
     } else if r.method == "tabs.open" {
-        let p: Open = params(r)?; id(&p.project_id)?; key(&p.key)?;
-        args.extend(["open".into(), "--project".into(), p.project_id, "--key".into(), p.key]);
+        let p: Open = params(r)?;
+        id(&p.project_id)?;
+        key(&p.key)?;
+        args.extend([
+            "open".into(),
+            "--project".into(),
+            p.project_id,
+            "--key".into(),
+            p.key,
+        ]);
     } else {
         let p: Change = params(r)?;
         id(&p.project_id)?;
@@ -144,6 +155,13 @@ mod tests {
         .unwrap();
         assert_eq!(&args[..2], &["tabs", "list"]);
         assert!(arguments(&request("tabs.list", json!({"project_id":"no"}))).is_err());
+    }
+    #[test]
+    fn tabs_open_unhides_an_existing_session_without_process_commands() {
+        let args = arguments(&request("tabs.open", json!({"project_id":"00000000-0000-4000-8000-000000000002","key":"shell:00000000-0000-4000-8000-000000000003"}))).unwrap();
+        assert_eq!(&args[..2], &["tabs", "open"]);
+        assert_eq!(args[4], "--key");
+        assert!(arguments(&request("tabs.open", json!({"project_id":"00000000-0000-4000-8000-000000000002","key":"invalid"}))).is_err());
     }
     #[test]
     fn tabs_update_arguments() {

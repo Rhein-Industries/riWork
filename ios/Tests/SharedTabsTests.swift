@@ -40,6 +40,18 @@ import XCTest
         let shell = try value("{\"id\":\"\(session)\",\"parent_id\":\"\(project)\",\"kind\":\"project\",\"cwd\":\"/p\",\"alive\":true,\"created_at_unix\":0}").decode(RemoteSession.self)
         XCTAssertEqual(shell.parent_id, project)
     }
+    func testClosePreferenceAlwaysDetachesWorkersEvenAfterParentExit() throws {
+        let base: [String: JSONValue] = ["key": .string("shell:\(session)"), "kind": .string("shell"), "title": .string("Worker"), "status": .string("working"), "pinned": .bool(false), "hidden": .bool(false), "worker": .bool(true), "order": .number(0), "parent": .null, "children": .array([]), "child_count": .number(0)]
+        let worker = try JSONValue.object(base).decode(SharedTab.self)
+        for preference in TabCloseBehavior.allCases { XCTAssertEqual(preference.effectiveChoice(for: worker), .detach) }
+        var user = base; user["worker"] = .bool(false)
+        let userTab = try JSONValue.object(user).decode(SharedTab.self)
+        XCTAssertEqual(TabCloseBehavior.ask.effectiveChoice(for: userTab), .ask)
+        XCTAssertEqual(TabCloseBehavior.exit.effectiveChoice(for: userTab), .exit)
+        XCTAssertEqual(TabCloseBehavior.settingKey, "tab_close_behavior")
+        try RequestValidation.validate(method: "tabs.open", params: ["project_id": .string(project), "key": .string(worker.key)], id: UUID().uuidString.lowercased())
+        XCTAssertThrowsError(try RequestValidation.validate(method: "tabs.open", params: ["project_id": .string(project), "key": .string("invalid")], id: UUID().uuidString.lowercased()))
+    }
     func testCapabilityDefaultsOffForOlderHosts() throws {
         XCTAssertFalse(DesktopFeatures(ready: .object([:])).tabs)
         XCTAssertTrue(DesktopFeatures(ready: try value("{\"features\":{\"tabs\":true}}")).tabs)

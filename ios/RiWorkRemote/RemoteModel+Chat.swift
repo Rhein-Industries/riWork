@@ -113,7 +113,7 @@ extension RemoteModel {
         let legacy = ProjectTabs.tabs(sessions: sessions, chats: chats, chatsAvailable: chatSupport != .unsupported, missing: missingSessionIDs)
         guard let sharedTabs else { return legacy }
         let listed = Dictionary(legacy.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        return sharedTabs.visible.compactMap { entry in
+        let shared: [ProjectTab] = sharedTabs.visible.compactMap { entry in
             if entry.kind == .shell, var session = sessions.first(where: { $0.id == entry.sessionID && $0.alive && $0.mode != .chat && !missingSessionIDs.contains($0.id) }) {
                 session.sharedTitle = entry.title; return .terminal(session)
             }
@@ -125,6 +125,8 @@ extension RemoteModel {
             case .unavailable: return tab
             }
         }
+        // Global orchestrators are device-local views outside project membership.
+        return shared + legacy.filter { $0.session?.kind == "orchestrator" && $0.session?.project_id == nil }
     }
     /// The chosen project's own chats in tab order: those that are not an orchestrator's.
     var projectChats: [ChatInfo] { tabs.compactMap { if case .chat(let info) = $0 { info } else { nil } } }

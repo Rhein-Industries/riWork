@@ -379,7 +379,7 @@ enum ConnectionState: Equatable {
     /// The terminal tabs: what runs in a terminal and is alive. An entry the desktop runs as a chat is never one, whatever it says it is.
     var openSessions: [RemoteSession] {
         if let sharedTabs {
-            return sharedTabs.allEntries.filter { $0.kind == .shell && !$0.hidden }.compactMap { entry in sessions.first { $0.id == entry.sessionID && $0.mode != .chat && $0.alive && !missingSessionIDs.contains($0.id) } }
+            return sharedTabs.allEntries.filter { $0.kind == .shell && !$0.hidden }.compactMap { entry in sessions.first { $0.id == entry.sessionID && $0.mode != .chat && $0.alive && !missingSessionIDs.contains($0.id) } } + sessions.filter { $0.kind == "orchestrator" && $0.project_id == nil && $0.mode != .chat && $0.alive && !missingSessionIDs.contains($0.id) }
         }
         return sessions.filter { $0.mode != .chat && $0.alive && !missingSessionIDs.contains($0.id) }
     }

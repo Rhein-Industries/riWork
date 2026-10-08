@@ -261,6 +261,7 @@ impl ChatView {
 
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.feed_started
+            && self.feed.is_none()
             && !self.deleted()
             && let Some(id) = self.chat_id.clone()
         {

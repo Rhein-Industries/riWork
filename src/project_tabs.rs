@@ -441,7 +441,9 @@ impl TabStore {
                         .rename
                         .clone()
                         .unwrap_or_else(|| entry.base_title.clone());
-                    if entry.created == 0 && session.worker { entry.hidden = true; }
+                    if entry.created == 0 && session.worker {
+                        entry.hidden = true;
+                    }
                     entry.created = session.created;
                     entry.status = session.status.clone();
                     entry.parent = parent;
@@ -455,7 +457,8 @@ impl TabStore {
                         title_priority: session.title_priority,
                         status: session.status.clone(),
                         pinned: session.orchestrator,
-                        hidden: session.worker || (session.kind == Kind::Shell && session.status == Status::Stopped),
+                        hidden: session.worker
+                            || (session.kind == Kind::Shell && session.status == Status::Stopped),
                         worker: session.worker,
                         order: 0,
                         parent,
@@ -810,7 +813,10 @@ pub fn inventory(home: &Path, project: &str) -> Result<Vec<Session>, String> {
             kind: Kind::Shell,
             title: name,
             parent_id: shell.parent_id.clone(),
-            worker: shell.parent_id.is_some() || (shell.harness.is_some() && !shell.user_opened && shell.kind != crate::sessions::ShellKind::Orchestrator),
+            worker: shell.parent_id.is_some()
+                || (shell.harness.is_some()
+                    && !shell.user_opened
+                    && shell.kind != crate::sessions::ShellKind::Orchestrator),
             status,
             orchestrator: shell.kind == crate::sessions::ShellKind::Orchestrator,
             created: shell.created_at_unix,
@@ -870,7 +876,10 @@ pub fn register_shell(
         kind: Kind::Shell,
         title: name,
         parent_id: shell.parent_id.clone(),
-        worker: shell.parent_id.is_some() || (shell.harness.is_some() && !shell.user_opened && shell.kind != crate::sessions::ShellKind::Orchestrator),
+        worker: shell.parent_id.is_some()
+            || (shell.harness.is_some()
+                && !shell.user_opened
+                && shell.kind != crate::sessions::ShellKind::Orchestrator),
         status: Status::Done,
         orchestrator: shell.kind == crate::sessions::ShellKind::Orchestrator,
         created: shell.created_at_unix,
@@ -972,6 +981,72 @@ mod tests {
             worker: false,
             created: n.into(),
         }
+    }
+    #[test]
+    fn workers_start_hidden_open_on_both_devices_and_never_resurrect_after_detach() {
+        let f = Fixture::new();
+        let root = session(2);
+        let mut worker = session(3);
+        worker.parent_id = Some(id(2));
+        worker.worker = true;
+        let initial = f.store.reconcile(&[root.clone(), worker.clone()]).unwrap();
+        assert!(!initial.iter().find(|e| e.key == root.key).unwrap().hidden);
+        assert!(initial.iter().find(|e| e.key == worker.key).unwrap().hidden);
+        let peer = TabStore::at(&f.home, &id(1)).unwrap();
+        peer.update(&Update::Unhide {
+            key: worker.key.clone(),
+        })
+        .unwrap();
+        assert!(
+            !f.store
+                .reconcile(&[root.clone(), worker.clone()])
+                .unwrap()
+                .iter()
+                .find(|e| e.key == worker.key)
+                .unwrap()
+                .hidden
+        );
+        f.store
+            .update(&Update::Hide {
+                key: worker.key.clone(),
+            })
+            .unwrap();
+        let closed_revision = f.store.snapshot().unwrap().revision;
+        for _ in 0..3 {
+            peer.reconcile(&[root.clone(), worker.clone()]).unwrap();
+        }
+        let after = peer.snapshot().unwrap();
+        assert_eq!(after.revision, closed_revision);
+        let child = after.entries.iter().find(|e| e.key == worker.key).unwrap();
+        assert!(child.hidden && child.worker);
+        assert_eq!(child.parent.as_deref(), Some(root.key.as_str()));
+        f.store.forget(&root.key).unwrap();
+        let orphan = peer
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|e| e.key == worker.key)
+            .unwrap();
+        assert!(orphan.hidden && orphan.worker);
+        assert!(orphan.parent.is_none());
+    }
+    #[test]
+    fn background_harness_roots_are_hidden_but_explicit_user_sessions_are_visible() {
+        let f = Fixture::new();
+        let mut harness = session(3);
+        harness.kind = Kind::Shell;
+        harness.key = format!("shell:{}", id(3));
+        harness.worker = true;
+        let user = session(2);
+        let entries = f.store.reconcile(&[harness.clone(), user.clone()]).unwrap();
+        assert!(
+            entries
+                .iter()
+                .find(|e| e.key == harness.key)
+                .unwrap()
+                .hidden
+        );
+        assert!(!entries.iter().find(|e| e.key == user.key).unwrap().hidden);
     }
     #[test]
     fn new_sessions_append_and_pin_groups_are_first() {
