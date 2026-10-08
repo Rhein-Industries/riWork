@@ -122,7 +122,6 @@ fn user_shell_caller() -> bool {
         "RIWORK_CHAT_ID",
         "RIWORK_SHELL_ID",
         "RIWORK_ORCHESTRATOR_SCOPE",
-        "RIWORK_AUTOMATION_ID",
     ]
     .iter()
     .any(|key| std::env::var_os(key).is_some_and(|value| !value.is_empty()))
