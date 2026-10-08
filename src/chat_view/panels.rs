@@ -1539,7 +1539,15 @@ impl ChatView {
                     .max_h(ui_text::space(280.))
                     .flex_none()
                     .overflow_y_scroll()
-                    .child(self.attachment_chips(look, cx))
+                    .child(
+                        self.attachment_chips(
+                            look,
+                            Some(self.composer_width.get() - 2. * layout.inset)
+                                .filter(|_| self.composer_width.get() > 0.),
+                            window,
+                            cx,
+                        ),
+                    )
                     .test_support()
             }))
             .child(buttons_and_field)

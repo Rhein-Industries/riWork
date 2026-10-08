@@ -533,6 +533,33 @@ pub fn change(change: SizeChange, cx: &mut App) {
     }
 }
 
+/// How wide `text` is drawn on one line in `family` at `size`, in px.
+pub fn line_width(
+    text: &str,
+    family: SharedString,
+    size: Pixels,
+    bold: bool,
+    window: &gpui::Window,
+) -> f32 {
+    let mut font = gpui::font(family);
+    if bold {
+        font.weight = gpui::FontWeight::BOLD;
+    }
+    let run = gpui::TextRun {
+        len: text.len(),
+        font,
+        color: gpui::black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let line =
+        window
+            .text_system()
+            .shape_line(SharedString::from(text.to_owned()), size, &[run], None);
+    f32::from(line.width)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

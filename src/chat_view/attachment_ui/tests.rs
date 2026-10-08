@@ -568,26 +568,26 @@ fn pure_clipboard_thumbnail_keeps_shared_static_image_admission() {
 }
 
 #[test]
-fn middle_truncation_keeps_start_and_extension() {
-    assert_eq!(middle_truncate("notes.txt", 22), "notes.txt");
-    let long = "Screenshot 2026-10-08 at 22.14.23.png";
-    let cut = middle_truncate(long, 22);
-    assert_eq!(cut.chars().count(), 22);
-    assert_eq!(cut, "Screensho…22.14.23.png");
-    assert!(cut.ends_with(".png"));
-    // Exactly the limit is left alone; multi-byte names count characters, not bytes.
-    let exact = "a".repeat(18) + ".png";
-    assert_eq!(middle_truncate(&exact, 22), exact);
-    let crab = "🦀".repeat(30) + ".rs";
-    let cut = middle_truncate(&crab, 12);
+fn a_cut_keeps_the_start_and_the_end_as_wide_as_the_room() {
+    // One unit per character, a stand-in for a measured width.
+    let chars = |text: &str| text.chars().count() as f32;
+    assert_eq!(fit_middle("notes", 5., chars), "notes");
+    assert_eq!(fit_middle("abcdefghijklmnop", 9., chars), "abcd…mnop");
+    assert_eq!(fit_middle("abcdefghijklmnop", 10., chars), "abcde…mnop");
+    let crab = "🦀".repeat(30);
+    let cut = fit_middle(&crab, 12., chars);
     assert_eq!(cut.chars().count(), 12);
-    assert!(cut.ends_with("🦀.rs") && cut.contains('…'));
-    // No extension, or one too long to keep: a plain middle cut.
-    assert_eq!(middle_truncate("abcdefghijklmnop", 9), "abcd…mnop");
-    assert_eq!(middle_truncate("abcdefgh.verylong", 9), "abcd…long");
-    assert_eq!(middle_truncate("abcdef.png", 6), "abc…ng");
-    assert_eq!(middle_truncate("abc", 0), "");
-    assert_eq!(middle_truncate("abc", 1), "…");
+    assert!(cut.contains('…'));
+    // No room: the ellipsis alone, never more than the room allows otherwise.
+    assert_eq!(fit_middle("abc", 1., chars), "…");
+    assert_eq!(fit_middle("abc", 0., chars), "…");
+    // Wide glyphs leave fewer characters than narrow ones in the same room.
+    let wide = |text: &str| {
+        text.chars()
+            .map(|c| if c == 'W' { 2. } else { 1. })
+            .sum::<f32>()
+    };
+    assert_eq!(fit_middle("WWWWWWWWWW", 9., wide), "WW…WW");
 }
 
 #[test]
@@ -681,47 +681,114 @@ fn a_name_splits_into_stem_and_extension_as_written() {
         split_name("Report.Final.PDF"),
         ("Report.Final".into(), Some(".PDF".into()))
     );
+    assert_eq!(
+        split_name("backup.tar.gz"),
+        ("backup.tar".into(), Some(".gz".into()))
+    );
+    // Whatever follows the last dot, any characters, up to its own cap.
+    assert_eq!(
+        split_name("a.not-an-ext"),
+        ("a".into(), Some(".not-an-ext".into()))
+    );
+    assert_eq!(
+        split_name("notes.abcdefghijkl"),
+        ("notes".into(), Some(".abcdefghijkl".into()))
+    );
+    assert_eq!(
+        split_name("notes.abcdefghijklmnop"),
+        ("notes".into(), Some(".abcdefghijk…".into()))
+    );
     assert_eq!(split_name("Makefile"), ("Makefile".into(), None));
     assert_eq!(split_name(".env"), (".env".into(), None));
-    assert_eq!(split_name("a.not-an-ext"), ("a.not-an-ext".into(), None));
+    assert_eq!(split_name("trailing."), ("trailing.".into(), None));
 }
 
 #[gpui::test]
-fn a_wide_name_keeps_its_extension_inside_the_widest_card(cx: &mut TestAppContext) {
-    let (handle, view, _recording) = editor_tests::mount_selection(cx);
+fn a_wide_name_keeps_its_extension_whole_in_cards_of_120_160_and_200(cx: &mut TestAppContext) {
     let root = std::env::temp_dir().join(format!("riwork-wide-name-{}", Uuid::new_v4()));
     fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let chat = root.join("chat");
     fs::DirBuilder::new().mode(0o700).create(&chat).unwrap();
-    let name = format!("{}.txt", "W".repeat(18));
-    let path = root.join(&name);
-    fs::write(&path, "wide\n").unwrap();
-    let staged = attachments::stage(&chat, &path).unwrap();
-    let key = staged.id.clone();
-    cx.update_window(handle.into(), |_, window, cx| {
+    let staged: Vec<Attachment> = [
+        format!("{}.txt", "W".repeat(18)),
+        "project-backup-2026-10-09-nightly.tar.gz".to_owned(),
+        "quarterly-figures.abcdefghijkl".to_owned(),
+    ]
+    .iter()
+    .map(|name| {
+        // Staging takes text, PNG and JPEG; a card shows any name, so the staged text file
+        // stands in under each one.
+        let path = root.join(format!("{}.txt", Uuid::new_v4()));
+        fs::write(&path, "wide\n").unwrap();
+        let mut staged = attachments::stage(&chat, &path).unwrap();
+        staged.name = name.clone();
+        staged
+    })
+    .collect();
+    let config = || HostConfig {
+        ensure: Arc::new(|| Err("fixture staging is disabled".into())),
+    };
+    // The window width that gives a card of `target`: the row is the window less the
+    // composer's insets, found from a first try.
+    let card_at = |cx: &mut TestAppContext, window_width: f32| {
+        let (handle, view, _recording) = editor_tests::mount_sized(cx, config(), window_width);
         view.update(cx, |v, cx| {
             v.model.link = Link::Live;
-            v.attachments = vec![Chip::ready(staged)];
+            v.attachments = staged.iter().cloned().map(Chip::ready).collect();
             v.bump_generation();
             cx.notify();
         });
-        window.render_frame(cx);
-        let card = window.find(id("attachment-card", &key)).bounds();
-        let ext = window.find(id("attachment-ext", &key));
-        assert!(ext.visible());
-        let ext = ext.bounds();
-        assert!(
-            card.size.width <= ui_text::space(200.) + px(0.5),
-            "the card is at its widest: {card:?}"
-        );
-        assert!(ext.size.width > px(0.), "{ext:?}");
-        assert!(ext.left() >= card.left(), "{ext:?} in {card:?}");
-        // Clear of the × badge's corner too.
-        assert!(
-            ext.right() <= card.right() - ui_text::space(22.) + px(0.5),
-            "{ext:?} in {card:?}"
-        );
-    })
-    .unwrap();
+        (handle, view)
+    };
+    for target in [120.0_f32, 160., 200.] {
+        let mut window_width = target + 60.;
+        for _ in 0..3 {
+            let (handle, _view) = card_at(cx, window_width);
+            let mut width = 0.;
+            cx.update_window(handle.into(), |_, window, cx| {
+                // The first frame measures the composer; the next ones fit the cards to it.
+                for _ in 0..3 {
+                    window.render_frame(cx);
+                }
+                width = f32::from(
+                    window
+                        .find(id("attachment-card", &staged[0].id))
+                        .bounds()
+                        .size
+                        .width,
+                );
+                if (width - target).abs() > 0.5 {
+                    return;
+                }
+                for attachment in &staged {
+                    let what = format!("{} at {target}", attachment.name);
+                    let card = window.find(id("attachment-card", &attachment.id)).bounds();
+                    let stem = window.find(id("attachment-stem", &attachment.id)).bounds();
+                    let ext = window.find(id("attachment-ext", &attachment.id));
+                    assert!(ext.visible(), "{what}");
+                    let ext = ext.bounds();
+                    assert!(ext.size.width > px(0.), "{what}");
+                    assert!(ext.left() >= card.left(), "{what}: {ext:?} in {card:?}");
+                    // Clear of the × badge's corner, and the stem never runs under it.
+                    assert!(
+                        ext.right() <= card.right() - ui_text::space(22.) + px(0.5),
+                        "{what}: {ext:?} in {card:?}"
+                    );
+                    assert!(
+                        stem.right() <= ext.left() + px(0.5),
+                        "{what}: {stem:?} {ext:?}"
+                    );
+                    assert!(stem.size.width > px(0.), "{what}: {stem:?}");
+                }
+            })
+            .unwrap();
+            if (width - target).abs() <= 0.5 {
+                window_width = -1.;
+                break;
+            }
+            window_width += target - width;
+        }
+        assert_eq!(window_width, -1., "no window gave a {target} px card");
+    }
     let _ = fs::remove_dir_all(root);
 }

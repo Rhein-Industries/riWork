@@ -3,10 +3,7 @@
 //! panel it opens; nearing a limit is no banner and no chip, only a blocking limit is a banner
 //! (see `notices`). docs/chat-notices.md has the windows' wire shape.
 
-use gpui::{
-    AnyElement, Context, PathBuilder, Pixels, SharedString, TextRun, Window, canvas, div, point,
-    prelude::*, px, rgb,
-};
+use gpui::{AnyElement, Context, PathBuilder, Window, canvas, div, point, prelude::*, px, rgb};
 use gpui_kit::base::TestSupportExt as _;
 
 use crate::{
@@ -62,26 +59,6 @@ fn reset(window: &RateWindow, now: u64) -> Option<String> {
         .map(|text| text.replacen(" at ", " ", 1))
 }
 
-fn text_width(text: &str, family: SharedString, size: Pixels, bold: bool, window: &Window) -> f32 {
-    let mut font = gpui::font(family);
-    if bold {
-        font.weight = gpui::FontWeight::BOLD;
-    }
-    let run = TextRun {
-        len: text.len(),
-        font,
-        color: gpui::black(),
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    let line =
-        window
-            .text_system()
-            .shape_line(SharedString::from(text.to_owned()), size, &[run], None);
-    f32::from(line.width)
-}
-
 /// Every window, for the meter's hover hint (one line: a hint does not wrap).
 pub(super) fn chip_details(windows: &[RateWindow], now: u64) -> String {
     windows
@@ -117,7 +94,7 @@ impl ChatView {
         } else {
             let space = |base: f32| f32::from(ui_text::space(base));
             let mono = |text: &str| {
-                text_width(
+                ui_text::line_width(
                     text,
                     ui_text::mono_family(),
                     ui_text::text(10.0),

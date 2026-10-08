@@ -136,6 +136,34 @@ pub(super) fn sweep(root: &Path, older_than: Duration, now: SystemTime) -> usize
         .count()
 }
 
+/// What an earlier build left directly in the temporary folder: one
+/// `riwork-quick-look-<uuid>` directory per panel, changed `older_than` before `now`. How
+/// many went.
+pub(super) fn sweep_earlier_builds(temp: &Path, older_than: Duration, now: SystemTime) -> usize {
+    let Ok(entries) = fs::read_dir(temp) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.strip_prefix("riwork-quick-look-"))
+                .is_some_and(|id| Uuid::parse_str(id).is_ok())
+        })
+        // Not following a link: only a directory this name was given to.
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter(|entry| {
+            entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .is_ok_and(|changed| now.duration_since(changed).unwrap_or_default() >= older_than)
+        })
+        .filter(|entry| fs::remove_dir_all(entry.path()).is_ok())
+        .count()
+}
+
 #[cfg(not(test))]
 mod app {
     use super::*;
@@ -159,7 +187,10 @@ mod app {
     pub fn init(cx: &mut gpui::App) {
         std::thread::Builder::new()
             .name("quick-look-sweep".into())
-            .spawn(|| sweep(&root(), STALE, SystemTime::now()))
+            .spawn(|| {
+                let now = SystemTime::now();
+                sweep(&root(), STALE, now) + sweep_earlier_builds(&std::env::temp_dir(), STALE, now)
+            })
             .ok();
         cx.on_app_quit(|_| {
             with(Previews::close);
@@ -223,14 +254,18 @@ mod app {
         };
         // NSApplicationActivateIgnoringOtherApps.
         const IGNORING_OTHER_APPS: usize = 1 << 1;
-        unsafe {
+        let activated = unsafe {
             let app: *mut AnyObject = msg_send![
                 class!(NSRunningApplication),
                 runningApplicationWithProcessIdentifier: pid
             ];
-            if !app.is_null() {
-                let _: bool = msg_send![app, activateWithOptions: IGNORING_OTHER_APPS];
+            !app.is_null() && {
+                let done: bool = msg_send![app, activateWithOptions: IGNORING_OTHER_APPS];
+                done
             }
+        };
+        if !activated {
+            eprintln!("riwork: could not bring the Quick Look panel (pid {pid}) forward");
         }
     }
 }
@@ -311,6 +346,30 @@ mod tests {
         assert!(failed.is_err());
         assert_eq!(copies(&root), 0);
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn the_sweep_takes_stale_folders_an_earlier_build_left_and_nothing_else() {
+        let temp = scratch();
+        let now = SystemTime::now();
+        let old = SystemTime::now() - STALE - Duration::from_secs(60);
+        let make = |name: &str, age: SystemTime| {
+            let path = temp.join(name);
+            fs::create_dir(&path).unwrap();
+            fs::write(path.join("a.png"), "x").unwrap();
+            fs::File::open(&path).unwrap().set_modified(age).unwrap();
+            path
+        };
+        let stale = make(&format!("riwork-quick-look-{}", Uuid::new_v4()), old);
+        let fresh = make(&format!("riwork-quick-look-{}", Uuid::new_v4()), now);
+        let not_ours = make("riwork-quick-look-notes", old);
+        let current_root = make("riwork-quick-look", old);
+        let file = temp.join(format!("riwork-quick-look-{}", Uuid::new_v4()));
+        fs::write(&file, "x").unwrap();
+        assert_eq!(sweep_earlier_builds(&temp, STALE, now), 1);
+        assert!(!stale.exists());
+        assert!(fresh.exists() && not_ours.exists() && current_root.exists() && file.exists());
+        fs::remove_dir_all(temp).unwrap();
     }
 
     #[test]

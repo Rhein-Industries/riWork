@@ -16,7 +16,7 @@ use crate::{
 };
 use gpui::{
     AnyElement, ClipboardEntry, ClipboardItem, Context, ExternalPaths, Image, ImageFormat,
-    PathPromptOptions, SharedString, Window, div, img, prelude::*, rgb,
+    PathPromptOptions, SharedString, Window, div, img, prelude::*, px, rgb,
 };
 use gpui_kit::base::TestSupportExt as _;
 use std::{
@@ -513,7 +513,15 @@ impl ChatView {
     }
     /// The draft's attachments as a wrapping row of cards above the message box, then the
     /// inline previews of the ones opened without Quick Look.
-    pub(super) fn attachment_chips(&self, look: Look, cx: &mut Context<Self>) -> AnyElement {
+    /// `row` is the width the cards wrap in, when it is known.
+    pub(super) fn attachment_chips(
+        &self,
+        look: Look,
+        row: Option<f32>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let card_width = file_card_width(row);
         div()
             .w_full()
             .flex()
@@ -528,7 +536,7 @@ impl ChatView {
                     .children(
                         self.attachments
                             .iter()
-                            .map(|chip| attachment_card(chip, look, cx)),
+                            .map(|chip| attachment_card(chip, look, card_width, window, cx)),
                     ),
             )
             .children(
@@ -562,12 +570,35 @@ impl ChatView {
 
 /// A square image card's side, and a file card's height.
 const CARD_SIDE: f32 = 64.;
-/// A file card's narrowest and widest.
-const FILE_CARD_MIN: f32 = 132.;
+/// A file card's widest; in a narrower row it takes the row's width.
 const FILE_CARD_MAX: f32 = 200.;
-/// The most characters of a file name's stem a file card shows before it cuts out the
-/// middle; a stem still too wide for the card is cut at its end, before the extension.
-const NAME_CHARS: usize = 22;
+/// From this width on a file card shows its type tile.
+const FILE_TILE_FROM: f32 = 150.;
+/// The name's size on a file card.
+const NAME_SIZE: f32 = 10.5;
+/// A file card's width in px for a row of `row` px (unknown: its widest).
+fn file_card_width(row: Option<f32>) -> f32 {
+    let widest = f32::from(ui_text::space(FILE_CARD_MAX));
+    row.filter(|row| *row > 0.)
+        .map_or(widest, |row| row.min(widest))
+}
+
+/// Whether a file card `width` px wide shows its type tile.
+fn shows_tile(width: f32) -> bool {
+    width >= f32::from(ui_text::space(FILE_TILE_FROM))
+}
+
+/// The room a file card `width` px wide leaves for its name, in px: less its border, its
+/// padding (the right one keeps the × clear), and the tile and its gap where it shows.
+pub(super) fn name_room(width: f32) -> f32 {
+    let space = |base: f32| f32::from(ui_text::space(base));
+    let tile = if shows_tile(width) {
+        space(32.) + space(8.)
+    } else {
+        0.
+    };
+    (width - 2. - space(8.) - space(26.) - tile).max(0.)
+}
 
 fn card_radius(look: Look) -> f32 {
     if look.native { 10. } else { 4. }
@@ -575,7 +606,13 @@ fn card_radius(look: Look) -> f32 {
 
 /// One attachment: an image as its thumbnail filling a square card, any other file as a
 /// card with its type, name and size; a × in the corner on hover or keyboard focus.
-fn attachment_card(chip: &Chip, look: Look, cx: &mut Context<ChatView>) -> AnyElement {
+fn attachment_card(
+    chip: &Chip,
+    look: Look,
+    card_width: f32,
+    window: &Window,
+    cx: &mut Context<ChatView>,
+) -> AnyElement {
     let colors = look.colors;
     let key = chip.id.clone();
     let failed = matches!(chip.state, Stage::Failed(_));
@@ -656,6 +693,20 @@ fn attachment_card(chip: &Chip, look: Look, cx: &mut Context<ChatView>) -> AnyEl
                 Stage::Failed(_) => "Failed · retry".into_any_element(),
                 Stage::Ready(_) => status.clone().into_any_element(),
             };
+            // The stem is cut in the middle to the room its card leaves beside the extension,
+            // measured as drawn; the extension always shows whole, or to its own cap.
+            let (stem, ext) = split_name(&chip.name);
+            let measure = |text: &str| {
+                ui_text::line_width(
+                    text,
+                    ui_text::ui_family(),
+                    ui_text::text(NAME_SIZE),
+                    false,
+                    window,
+                )
+            };
+            let room = name_room(card_width) - ext.as_deref().map_or(0., measure);
+            let stem = fit_middle(&stem, room, measure);
             div()
                 .size_full()
                 .flex()
@@ -664,7 +715,7 @@ fn attachment_card(chip: &Chip, look: Look, cx: &mut Context<ChatView>) -> AnyEl
                 .pl(ui_text::space(8.))
                 // Room for the × in the corner, so it never covers the name's end.
                 .pr(ui_text::space(26.))
-                .child(file_tile(&chip.name, look))
+                .children(shows_tile(card_width).then(|| file_tile(&chip.name, look)))
                 .child(
                     div()
                         .flex()
@@ -672,20 +723,21 @@ fn attachment_card(chip: &Chip, look: Look, cx: &mut Context<ChatView>) -> AnyEl
                         .flex_1()
                         .min_w_0()
                         .gap(ui_text::space(2.))
-                        .child({
-                            // The stem gives way at the card's width; the extension never does.
-                            let (stem, ext) = split_name(&chip.name);
+                        .child(
                             div()
                                 .flex()
                                 .min_w_0()
-                                .text_size(ui_text::text(10.5))
+                                .font_family(ui_text::ui_family())
+                                .text_size(ui_text::text(NAME_SIZE))
                                 .text_color(rgb(colors.text))
                                 .whitespace_nowrap()
                                 .child(
                                     div()
+                                        .id(format!("attachment-stem-{key}"))
                                         .min_w_0()
-                                        .truncate()
-                                        .child(middle_truncate(&stem, NAME_CHARS)),
+                                        .overflow_hidden()
+                                        .child(stem)
+                                        .test_support(),
                                 )
                                 .children(ext.map(|ext| {
                                     div()
@@ -693,8 +745,8 @@ fn attachment_card(chip: &Chip, look: Look, cx: &mut Context<ChatView>) -> AnyEl
                                         .flex_none()
                                         .child(ext)
                                         .test_support()
-                                }))
-                        })
+                                })),
+                        )
                         .child(
                             status_label(&key, &status, visible)
                                 .text_size(ui_text::text(9.5))
@@ -719,8 +771,7 @@ fn attachment_card(chip: &Chip, look: Look, cx: &mut Context<ChatView>) -> AnyEl
             if image {
                 card.w(side)
             } else {
-                card.min_w(ui_text::space(FILE_CARD_MIN))
-                    .max_w(ui_text::space(FILE_CARD_MAX))
+                card.w(px(card_width))
             }
         })
         .rounded(radius)
@@ -979,13 +1030,53 @@ pub(super) fn extension(name: &str) -> Option<String> {
     .then(|| ext.to_ascii_lowercase())
 }
 
-/// A name as its stem and its extension with the dot, as written ("report", ".PDF"); no
-/// extension for a name `extension` does not take as one.
+/// The most characters of an extension a file card shows, its own "…" included.
+pub(super) const EXT_CHARS: usize = 12;
+
+/// A name as its stem and, as a file card shows it, its extension: the dot and whatever
+/// follows the last one, cut to `EXT_CHARS` with its own "…" ("archive.tar" and ".gz").
+/// A name without a stem before its dot (".env") or nothing after it has none.
 pub(super) fn split_name(name: &str) -> (String, Option<String>) {
-    match (extension(name), name.rsplit_once('.')) {
-        (Some(_), Some((stem, ext))) => (stem.to_owned(), Some(format!(".{ext}"))),
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => {
+            let ext: String = if ext.chars().count() > EXT_CHARS {
+                ext.chars().take(EXT_CHARS - 1).chain(['…']).collect()
+            } else {
+                ext.to_owned()
+            };
+            (stem.to_owned(), Some(format!(".{ext}")))
+        }
         _ => (name.to_owned(), None),
     }
+}
+
+/// `text` as wide as `room` at most, as `measure` says: whole when it fits, else its start
+/// and its end around a "…", as much of both as fits.
+pub(super) fn fit_middle(text: &str, room: f32, measure: impl Fn(&str) -> f32) -> String {
+    if measure(text) <= room {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let cut = |keep: usize| {
+        let head = keep.div_ceil(2);
+        let tail = keep - head;
+        chars[..head]
+            .iter()
+            .chain(['…'].iter())
+            .chain(chars[chars.len() - tail..].iter())
+            .collect::<String>()
+    };
+    // The most characters kept that still fit: wider with each one kept.
+    let (mut fits, mut over) = (0, chars.len());
+    while over - fits > 1 {
+        let mid = (fits + over) / 2;
+        if measure(&cut(mid)) <= room {
+            fits = mid;
+        } else {
+            over = mid;
+        }
+    }
+    cut(fits)
 }
 
 /// The extension as the colorful themes' file tile shows it: "PNG", at most four letters,
@@ -995,31 +1086,6 @@ pub(super) fn extension_label(name: &str) -> String {
         || "FILE".into(),
         |ext| ext.to_ascii_uppercase().chars().take(4).collect(),
     )
-}
-
-/// `name` in at most `max_chars` characters, its middle replaced by "…" so the start and
-/// the end, extension included, stay readable: "Screensho…22.14.23.png".
-pub(super) fn middle_truncate(name: &str, max_chars: usize) -> String {
-    let chars: Vec<char> = name.chars().collect();
-    if chars.len() <= max_chars {
-        return name.to_owned();
-    }
-    if max_chars == 0 {
-        return String::new();
-    }
-    let keep = max_chars - 1;
-    let ext_len = extension(name).map_or(0, |ext| ext.chars().count() + 1);
-    // The extension stays whole when it leaves room for a few characters of the stem.
-    let ext_len = if ext_len + 4 <= keep { ext_len } else { 0 };
-    let stem = &chars[..chars.len() - ext_len];
-    let available = keep - ext_len;
-    let head = available.div_ceil(2);
-    let tail = available - head;
-    let mut out: String = stem[..head].iter().collect();
-    out.push('…');
-    out.extend(&stem[stem.len() - tail..]);
-    out.extend(&chars[chars.len() - ext_len..]);
-    out
 }
 
 /// A size as a file card shows it: "512 B", "36 KB", "4.5 KB", "1.2 MB" (1024-based, one
