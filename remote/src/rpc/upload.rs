@@ -280,7 +280,7 @@ impl Rpc {
         let _device_guard = device_lock.lock().await;
         let _lock = self
             .storage
-            .lock(&format!("keys-{device}.lock"))
+            .ledger_lock(&format!("keys-{device}.lock"))
             .map_err(cli_fault)?;
         let path = self.storage.dir.join(format!("keys-{device}.json"));
         let mut ledger: BatchLedger = if path.exists() {
