@@ -382,13 +382,16 @@ final class NewTerminalTests: XCTestCase {
     func testKindsAreOrderedAndNamed() {
         XCTAssertEqual(NewTerminalKind.terminalKinds.map(\.title), ["Shell", "Codex", "Claude", "Grok"])
         XCTAssertEqual(NewTerminalKind.terminalKinds.map(\.isAgent), [false, true, true, true])
-        // The chats come after the terminals, only where the desktop has them.
-        XCTAssertEqual(NewTerminalKind.allCases.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Codex chat", "Claude chat"])
+        // One chat for both providers comes after the terminals, only where the desktop has chats.
+        XCTAssertEqual(NewTerminalKind.allCases.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Chat"])
         XCTAssertEqual(NewTerminalKind.offered(chats: false), NewTerminalKind.terminalKinds)
         XCTAssertEqual(NewTerminalKind.offered(chats: true), NewTerminalKind.allCases)
-        XCTAssertEqual(NewTerminalKind.allCases.map(\.isChat), [false, false, false, false, true, true])
-        XCTAssertEqual(NewTerminalKind.codexChat.chatProvider, .codex); XCTAssertEqual(NewTerminalKind.claudeChat.chatProvider, .claude)
-        XCTAssertTrue(NewTerminalKind.codexChat.isAgent, "its Unrestricted switch is the Full mode")
+        XCTAssertEqual(NewTerminalKind.allCases.map(\.isChat), [false, false, false, false, true])
+        XCTAssertTrue(NewTerminalKind.chat.isAgent, "its Unrestricted switch is the Full mode")
+        // What an older version remembered per provider is the chat, and says which provider.
+        XCTAssertEqual(NewTerminalKind.remembered("codex_chat"), .chat); XCTAssertEqual(NewTerminalKind.remembered("claude_chat"), .chat)
+        XCTAssertEqual(NewTerminalKind.legacyChatProvider("claude_chat"), .claude); XCTAssertNil(NewTerminalKind.legacyChatProvider("chat"))
+        XCTAssertEqual(NewTerminalKind.remembered("grok"), .grok); XCTAssertNil(NewTerminalKind.remembered("bash"))
         XCTAssertEqual(NewTerminalKind.standard, .shell)
         XCTAssertEqual(NewTerminalKind.shell.moved(by: -1), .grok)
         XCTAssertEqual(NewTerminalKind.grok.moved(by: 5), .shell)
@@ -399,36 +402,42 @@ final class NewTerminalTests: XCTestCase {
     // MARK: Chats in the same sheet
 
     func testChatKindsAreOpenedByChatCreateAndNeverByShellCreate() throws {
-        for kind in [NewTerminalKind.codexChat, .claudeChat] {
-            XCTAssertThrowsError(try request(.project(project), kind)) { XCTAssertEqual($0 as? NewTerminalValidationError, .unknownKind) }
-            XCTAssertThrowsError(try NewTerminalRequest(params: ["kind": .string(kind.rawValue), "project_id": .string(project)])) { XCTAssertEqual($0 as? NewTerminalValidationError, .unknownKind) }
+        XCTAssertThrowsError(try request(.project(project), .chat)) { XCTAssertEqual($0 as? NewTerminalValidationError, .unknownKind) }
+        for word in ["chat", "codex_chat", "claude_chat"] {
+            XCTAssertThrowsError(try NewTerminalRequest(params: ["kind": .string(word), "project_id": .string(project)])) { XCTAssertEqual($0 as? NewTerminalValidationError, .unknownKind) }
         }
         let targets = [NewTerminalTarget.project(id: project, name: "Alpha")]
-        var form = NewTerminalForm(targets: targets, kind: .codexChat, kinds: NewTerminalKind.allCases)
-        XCTAssertEqual(form.kind, .codexChat)
+        var form = NewTerminalForm(targets: targets, kind: .chat, kinds: NewTerminalKind.allCases)
+        XCTAssertEqual(form.kind, .chat); XCTAssertEqual(form.chatProvider, .codex, "Codex unless said otherwise")
         XCTAssertEqual(try form.submission(), .chat(try ChatCreateRequest(provider: .codex, target: .project(project))))
         XCTAssertNil(try ChatCreateRequest(provider: .codex, target: .project(project)).params["approval_mode"], "restricted: the desktop's default mode")
         XCTAssertThrowsError(try form.request(), "the terminal request is for terminals")
         form.setUnrestricted(true)
         XCTAssertEqual(try form.submission(), .chat(try ChatCreateRequest(provider: .codex, target: .project(project), approvalMode: .full)))
-        form.select(kind: .claudeChat)
-        XCTAssertFalse(form.unrestricted, "chosen on purpose, each time")
-        XCTAssertEqual(try form.submission(), .chat(try ChatCreateRequest(provider: .claude, target: .project(project))))
+        // The provider is the model's: choosing a Claude row keeps the chat and its mode.
+        form.chooseChatRow(.providerDefault(.claude))
+        XCTAssertEqual(form.kind, .chat)
+        XCTAssertEqual(try form.submission(), .chat(try ChatCreateRequest(provider: .claude, target: .project(project), approvalMode: .full)))
+        form.selectChat(.codex)
+        XCTAssertEqual(try form.submission(), .chat(try ChatCreateRequest(provider: .codex, target: .project(project), approvalMode: .full)))
         form.select(kind: .grok)
+        XCTAssertFalse(form.unrestricted, "chosen on purpose, each time")
         XCTAssertEqual(try form.submission(), .terminal(try NewTerminalRequest(target: .project(project), kind: .grok)))
     }
     func testAChatInAWorktreeIsAskedForThere() throws {
         let tree = NewTerminalTarget.worktree(id: self.tree, projectID: project, projectName: "Alpha", branch: "main", isPrimary: true)
-        let form = NewTerminalForm(targets: [tree], kind: .claudeChat, kinds: NewTerminalKind.allCases)
+        let form = NewTerminalForm(targets: [tree], kind: .chat, kinds: NewTerminalKind.allCases, chatProvider: .claude)
         XCTAssertEqual(try form.submission(), .chat(try ChatCreateRequest(provider: .claude, target: .worktree(self.tree))))
-        XCTAssertThrowsError(try NewTerminalForm(targets: [], kind: .codexChat, kinds: NewTerminalKind.allCases).submission()) { XCTAssertEqual($0 as? NewTerminalValidationError, .needsOneTarget) }
+        XCTAssertThrowsError(try NewTerminalForm(targets: [], kind: .chat, kinds: NewTerminalKind.allCases).submission()) { XCTAssertEqual($0 as? NewTerminalValidationError, .needsOneTarget) }
     }
     func testWithoutChatsTheFormOffersTerminalsOnlyAndForgetsARememberedChat() {
         let targets = [NewTerminalTarget.project(id: project, name: "Alpha")]
-        var form = NewTerminalForm(targets: targets, kind: .codexChat)
+        var form = NewTerminalForm(targets: targets, kind: .chat)
         XCTAssertEqual(form.kind, .shell, "remembered on a desktop that had chats")
         XCTAssertEqual(form.kinds, NewTerminalKind.terminalKinds)
-        form.select(kind: .claudeChat)
+        form.select(kind: .chat)
+        XCTAssertEqual(form.kind, .shell, "not on offer")
+        form.selectChat(.claude)
         XCTAssertEqual(form.kind, .shell, "not on offer")
         form.select(kind: .grok)
         form.handle(.down)
@@ -437,12 +446,60 @@ final class NewTerminalTests: XCTestCase {
     func testTheArrowsStepThroughTheChatRowsToo() {
         let targets = [NewTerminalTarget.project(id: project, name: "Alpha")]
         var form = NewTerminalForm(targets: targets, kind: .grok, kinds: NewTerminalKind.allCases)
-        form.handle(.down); XCTAssertEqual(form.kind, .codexChat)
-        form.handle(.down); XCTAssertEqual(form.kind, .claudeChat)
+        form.handle(.down); XCTAssertEqual(form.kind, .chat)
         form.handle(.down); XCTAssertEqual(form.kind, .shell, "wraps")
-        form.handle(.up); XCTAssertEqual(form.kind, .claudeChat)
+        form.handle(.up); XCTAssertEqual(form.kind, .chat)
         XCTAssertEqual(form.fields, [.target, .kind, .chatModel, .unrestricted, .create], "a chat has its model row between the kind and the toggle; a terminal has none")
         form.select(kind: .grok)
         XCTAssertEqual(form.fields, [.target, .kind, .unrestricted, .create])
+    }
+
+    // MARK: The desktop's Settings decide
+
+    func testWhereTheDesktopDecidesAgentTerminalsHaveNoSwitchAndAskForNothing() throws {
+        let targets = [NewTerminalTarget.project(id: project, name: "Alpha")]
+        var form = NewTerminalForm(targets: targets, kind: .codex, kinds: NewTerminalKind.allCases)
+        form.agentsFollowDesktop = true
+        for kind in [NewTerminalKind.codex, .claude, .grok] {
+            form.select(kind: kind)
+            XCTAssertFalse(form.offersUnrestricted, kind.title)
+            XCTAssertEqual(form.fields, [.target, .kind, .create], "no switch: the Mac's Agent terminals run unrestricted decides")
+            form.setUnrestricted(true)
+            XCTAssertFalse(form.unrestricted)
+            XCTAssertEqual(try form.request().params, ["kind": .string(kind.rawValue), "project_id": .string(project), "as_settings": .bool(true)],
+                           "the desktop is asked to decide; a request without either field stays restricted")
+        }
+        // A chat keeps its own: its Full mode is a choice of the chat, not the terminals' setting.
+        form.select(kind: .chat)
+        XCTAssertTrue(form.offersUnrestricted)
+        XCTAssertEqual(form.fields, [.target, .kind, .chatModel, .unrestricted, .create])
+        form.setUnrestricted(true)
+        XCTAssertEqual(try form.submission(), .chat(try ChatCreateRequest(provider: .codex, target: .project(project), approvalMode: .full)))
+        // A desktop from before it: the switch is there, as it always was.
+        var older = NewTerminalForm(targets: targets, kind: .claude, kinds: NewTerminalKind.allCases)
+        XCTAssertTrue(older.offersUnrestricted)
+        XCTAssertEqual(try older.request().params, ["kind": .string("claude"), "project_id": .string(project)], "off: neither field, restricted")
+        older.setUnrestricted(true)
+        XCTAssertEqual(try older.request().params["unrestricted"], .bool(true))
+        XCTAssertNil(try older.request().params["as_settings"])
+        // A plain shell is never left to the Settings.
+        form.select(kind: .shell)
+        XCTAssertEqual(try form.request().params, ["kind": .string("shell"), "project_id": .string(project)])
+    }
+    func testAsSettingsIsForAnAgentAloneAndReadsBackThroughTheSameRules() throws {
+        let agent = try NewTerminalRequest(target: .project(project), kind: .grok, asSettings: true)
+        XCTAssertEqual(agent.params, ["kind": .string("grok"), "project_id": .string(project), "as_settings": .bool(true)])
+        XCTAssertEqual(try NewTerminalRequest(params: agent.params), agent)
+        XCTAssertNoThrow(try RequestValidation.validate(method: "shell.create", params: agent.params, id: "55555555-5555-4555-8555-555555555555"))
+        XCTAssertThrowsError(try NewTerminalRequest(target: .project(project), kind: .shell, asSettings: true)) { XCTAssertEqual($0 as? NewTerminalValidationError, .unrestrictedNeedsAgent) }
+        XCTAssertThrowsError(try NewTerminalRequest(target: .project(project), kind: .codex, unrestricted: true, asSettings: true)) {
+            XCTAssertEqual($0 as? NewTerminalValidationError, .unrestrictedOrAsSettings)
+        }
+        // As the desktop: either field, never both, even when one is false; and only a boolean.
+        let base: [String: JSONValue] = ["kind": .string("codex"), "project_id": .string(project)]
+        var both = base; both["unrestricted"] = .bool(false); both["as_settings"] = .bool(true)
+        XCTAssertThrowsError(try NewTerminalRequest(params: both)) { XCTAssertEqual($0 as? NewTerminalValidationError, .unrestrictedOrAsSettings) }
+        var odd = base; odd["as_settings"] = .string("yes")
+        XCTAssertThrowsError(try NewTerminalRequest(params: odd)) { XCTAssertEqual($0 as? NewTerminalValidationError, .malformed) }
     }
 }

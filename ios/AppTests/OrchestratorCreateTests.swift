@@ -71,7 +71,7 @@ import RiWorkCore
         XCTAssertEqual(rig.model.orchestratorCreateSupport, .supported)
         XCTAssertTrue(rig.model.orchestratorsOffered)
         XCTAssertEqual(try XCTUnwrap(rig.model.newTerminalForm()).kinds.map(\.title),
-                       ["Shell", "Codex", "Claude", "Grok", "Codex chat", "Claude chat", "Project orchestrator", "Global orchestrator"])
+                       ["Shell", "Codex", "Claude", "Grok", "Chat", "Project orchestrator", "Global orchestrator"])
         await rig.model.disconnect()
 
         let older = try await connected(feature: false)

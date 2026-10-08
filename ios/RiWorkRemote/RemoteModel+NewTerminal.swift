@@ -10,9 +10,10 @@ enum TerminalControlSupport: Equatable { case unknown, supported, unsupported }
 extension RemoteModel {
     static let newTerminalKindKey = "riwork.newTerminal.kind"
 
-    /// The kind the last terminal was opened with (not whether it was unrestricted: that is chosen on purpose, every time).
+    /// The kind the last terminal was opened with (not whether it was unrestricted: that is chosen on purpose, every time). A chat kind
+    /// remembered per provider by an older version is the chat.
     var lastTerminalKind: NewTerminalKind {
-        defaults.string(forKey: Self.newTerminalKindKey).flatMap(NewTerminalKind.init(rawValue:)) ?? .standard
+        defaults.string(forKey: Self.newTerminalKindKey).flatMap(NewTerminalKind.remembered) ?? .standard
     }
     func rememberTerminalKind(_ kind: NewTerminalKind) { defaults.set(kind.rawValue, forKey: Self.newTerminalKindKey) }
 
@@ -30,8 +31,11 @@ extension RemoteModel {
         guard let project = projectID else { return nil }
         let options = NewTerminalTargets.options(projectID: project, projects: projects, worktrees: worktrees)
         let viewed = session.flatMap { $0.project_id == project ? $0.worktree_id : nil }
-        return NewTerminalForm(targets: options, targetIndex: NewTerminalTargets.preselected(in: options, selectedWorktreeID: viewed), kind: lastTerminalKind,
-                               kinds: NewTerminalKind.offered(chats: chatsOffered, orchestrators: orchestratorsOffered))
+        var form = NewTerminalForm(targets: options, targetIndex: NewTerminalTargets.preselected(in: options, selectedWorktreeID: viewed), kind: lastTerminalKind,
+                                   kinds: NewTerminalKind.offered(chats: chatsOffered, orchestrators: orchestratorsOffered), chatProvider: lastChatProvider)
+        // A desktop whose Settings decide whether its agent terminals are unrestricted: the sheet has no switch for them.
+        form.agentsFollowDesktop = desktopFeatures.shellCreateAsSettings
+        return form
     }
 
     /// Opens a terminal and switches to it. Returns nil on success, otherwise why not. `onCreated` runs as soon as the desktop has
@@ -144,10 +148,15 @@ struct NewTabProblem: Equatable {
 @MainActor @Observable final class NewTerminalSheetModel: Identifiable {
     let id = UUID()
     var form: NewTerminalForm
-    var loadingChatModels = false
+    /// The providers whose models are being read for a new chat.
+    var loadingProviders: Set<ChatProvider> = []
+    var loadingChatModels: Bool { !loadingProviders.isEmpty }
     var chatModelsSources: [ChatProvider: ChatCatalogueSource] = [:]
-    var chatModelsError: String?
-    var catalogueRequest = UUID()
+    /// Why a provider's live list could not be read, per provider: one provider's trouble is said under its own rows.
+    var chatModelsErrors: [ChatProvider: String] = [:]
+    /// The error of the provider that is chosen.
+    var chatModelsError: String? { chatModelsErrors[form.chatProvider] }
+    var catalogueRequests: [ChatProvider: UUID] = [:]
     var error: TerminalControlError?
     /// The same for a chat, which has its own errors.
     var chatError: ChatControlError?
@@ -202,6 +211,11 @@ struct NewTabProblem: Equatable {
         keyboardInUse = false; error = nil; chatError = nil; orchestratorError = nil
         form.select(kind: kind); form.focus = .kind
     }
+    /// A chat with one of `provider`'s models (its remembered one, or its default).
+    func selectChat(_ provider: ChatProvider) {
+        select(kind: .chat)
+        form.selectChatProvider(provider)
+    }
     func select(targetAt index: Int) {
         keyboardInUse = false; error = nil; chatError = nil; orchestratorError = nil
         form.select(targetAt: index); form.focus = .target
@@ -250,6 +264,7 @@ struct NewTabProblem: Equatable {
             }
         case .chat(let request):
             model.rememberChatChoice(form.chatChoices[request.provider] ?? NewChatChoice(), for: request.provider)
+            model.rememberChatProvider(request.provider)
             pending = Task { [weak self] in
                 guard let self else { return }
                 let failure = await model.createChat(request) { _ in self.dismiss() }

@@ -8,7 +8,9 @@ final class NewChatChoiceTests: XCTestCase {
     private let opus = ChatModelOption(id: "opus", name: "Claude Opus 4.1", description: "Most capable", efforts: ["low", "medium", "high"], defaultEffort: "medium", supportsFast: true)
     private let haiku = ChatModelOption(id: "haiku", name: "Claude Haiku", efforts: [], supportsFast: false)
     private var targets: [NewTerminalTarget] { [.project(id: project, name: "Alpha")] }
-    private func form(_ kind: NewTerminalKind = .claudeChat) -> NewTerminalForm { NewTerminalForm(targets: targets, kind: kind, kinds: NewTerminalKind.allCases) }
+    private func form(_ kind: NewTerminalKind = .chat, _ provider: ChatProvider = .claude) -> NewTerminalForm {
+        NewTerminalForm(targets: targets, kind: kind, kinds: NewTerminalKind.allCases, chatProvider: provider)
+    }
     private func request(_ form: NewTerminalForm) throws -> ChatCreateRequest {
         guard case .chat(let request) = try form.submission() else { throw XCTSkip("not a chat") }
         return request
@@ -112,10 +114,16 @@ final class NewChatChoiceTests: XCTestCase {
         var chat = form()
         chat.chatChoices[.claude] = NewChatChoice(model: opus)
         chat.focus = .chatModel
+        // The rows: Codex's default, Claude's default, Claude's last model (no list is known in this test).
+        XCTAssertEqual(chat.chatRows, [.providerDefault(.codex), .providerDefault(.claude), .last(.claude, opus)])
+        XCTAssertEqual(chat.chosenChatRow, .providerDefault(.claude))
         chat.handle(.down)
-        XCTAssertEqual(chat.chatChoice?.usesModel, true); XCTAssertEqual(chat.kind, .claudeChat, "the arrows did not change the kind")
+        XCTAssertEqual(chat.chatChoice?.usesModel, true); XCTAssertEqual(chat.kind, .chat, "the arrows did not change the kind")
+        XCTAssertEqual(chat.chosenChatRow, .last(.claude, opus))
         XCTAssertEqual(chat.focus, .chatModel)
-        chat.handle(.down); XCTAssertEqual(chat.chatChoice?.usesModel, true, "the last row is the last")
+        chat.handle(.down); XCTAssertEqual(chat.chatProvider, .codex, "past the last row is the first, which is Codex's")
+        XCTAssertEqual(chat.chosenChatRow, .providerDefault(.codex))
+        chat.handle(.up); XCTAssertEqual(chat.chatProvider, .claude); XCTAssertEqual(chat.chatChoice?.usesModel, true)
         chat.handle(.up); XCTAssertEqual(chat.chatChoice?.usesModel, false)
         chat.handle(.down)
         // Efforts: medium is chosen; down goes to high and stops there.
@@ -150,20 +158,53 @@ final class NewChatChoiceTests: XCTestCase {
         XCTAssertEqual(chat.focus, .kind, "the ring leaves a control that went away")
     }
     func testEachProviderKeepsItsOwnChoiceAndTheRequestIsTheSelectedProviders() throws {
-        var chat = form(.codexChat)
+        var chat = form(.chat, .codex)
         let gpt = ChatModelOption(id: "gpt-5.5", name: "GPT-5.5", efforts: ["low", "high"], defaultEffort: "low", supportsFast: true)
         chat.chatChoices = [.codex: NewChatChoice(model: gpt, usesModel: true, effort: "high", fast: true), .claude: NewChatChoice(model: opus, usesModel: true)]
         XCTAssertEqual(try request(chat).params, ["provider": .string("codex"), "project_id": .string(project), "model": .string("gpt-5.5"), "effort": .string("high"), "fast": .bool(true)])
-        chat.select(kind: .claudeChat)
+        chat.selectChat(.claude)
         XCTAssertEqual(try request(chat).params, ["provider": .string("claude"), "project_id": .string(project), "model": .string("opus")])
         chat.setUnrestricted(true)
         XCTAssertEqual(try request(chat).approvalMode, .full, "the mode and the model are separate choices")
-        chat.select(kind: .codexChat)
+        chat.selectChat(.codex)
         chat.selectChatEffort("low")
         XCTAssertEqual(chat.chatChoices[.codex]?.effort, "low"); XCTAssertNil(chat.chatChoices[.claude]?.effort)
         chat.select(kind: .shell)
         XCTAssertNoThrow(try chat.request(), "a terminal is unaffected")
         chat.selectChatEffort("high")
         XCTAssertEqual(chat.chatChoices[.codex]?.effort, "low", "no chat is selected: nothing changed")
+    }
+
+    // MARK: One list for both providers
+
+    func testBothProvidersAreOneListAndTheRowChosenIsTheProvider() throws {
+        let gpt = ChatModelOption(id: "gpt-5.5", name: "GPT-5.5", efforts: ["low", "high"], defaultEffort: "low", supportsFast: true, isDefault: true)
+        let mini = ChatModelOption(id: "gpt-5.4-mini", name: "GPT-5.4 mini", efforts: ["low"], defaultEffort: "low")
+        var chat = form(.chat, .codex)
+        chat.chatModels = [.codex: [gpt, mini], .claude: [opus, haiku]]
+        chat.chatChoices[.claude] = NewChatChoice(model: opus)
+        XCTAssertEqual(chat.chatRows, [.providerDefault(.codex), .model(.codex, gpt), .model(.codex, mini), .providerDefault(.claude), .model(.claude, opus), .model(.claude, haiku)],
+                       "Codex first, each provider under its default, no 'last used' row while the list is known")
+        XCTAssertEqual(Set(chat.chatRows.map(\.id)).count, chat.chatRows.count, "row ids are unique")
+        chat.chooseChatRow(.model(.claude, haiku))
+        XCTAssertEqual(chat.chatProvider, .claude)
+        XCTAssertEqual(chat.chosenChatRow, .model(.claude, haiku))
+        XCTAssertEqual(try request(chat).params, ["provider": .string("claude"), "project_id": .string(project), "model": .string("haiku")])
+        XCTAssertNil(chat.chatChoices[.codex]?.chosen, "the other provider's choice is untouched")
+        chat.chooseChatRow(.model(.codex, mini))
+        XCTAssertEqual(try request(chat).params, ["provider": .string("codex"), "project_id": .string(project), "model": .string("gpt-5.4-mini"), "effort": .string("low")],
+                       "a model is chosen with its own effort, as in a chat")
+        XCTAssertEqual(chat.chatChoices[.claude]?.chosen, haiku, "and each keeps its own")
+        chat.chooseChatRow(.providerDefault(.codex))
+        XCTAssertEqual(try request(chat).params, ["provider": .string("codex"), "project_id": .string(project)])
+        // A model a provider's list no longer names is chosen still, but no row shows it.
+        chat.chatChoices[.claude] = NewChatChoice(model: ChatModelOption(id: "gone", name: "Gone"), usesModel: true)
+        chat.selectChatProvider(.claude)
+        XCTAssertNil(chat.chosenChatRow)
+        XCTAssertEqual(try request(chat).model, "gone")
+        // A terminal has no rows chosen and ignores a row.
+        var shell = form(.shell, .codex)
+        shell.chooseChatRow(.providerDefault(.claude))
+        XCTAssertNil(shell.chosenChatRow); XCTAssertEqual(shell.chatProvider, .codex, "unchanged")
     }
 }

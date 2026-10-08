@@ -16,6 +16,11 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     var modelCatalogue: [ChatModelOption] = []
     var modelCatalogueSource: ChatCatalogueSource = .live
     var modelCatalogueRevision: UInt64 = 0
+    /// The other provider's models, for going on with it (`switch`); empty until read.
+    var switchCatalogue: [ChatModelOption] = []
+    var switchCatalogueSource: ChatCatalogueSource = .bundled
+    /// A `switch` is on its way: the other provider's rows wait for it.
+    var switching = false
     /// What the person has typed and not sent. Kept per chat, so changing tabs loses nothing.
     var draft = ""
     /// The cards the person opened (command output, diffs, reasoning), by item id. Kept here because rows come and go as the list scrolls.
@@ -74,9 +79,15 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     @discardableResult
     func accept(_ reply: ChatEventsReply, since: UInt64) -> ChatFeed.Outcome {
         let previousNext = feed.next
+        let provider = transcript.info?.provider
         let outcome = feed.accept(reply, since: since)
         if outcome == .restarted { modelCatalogue = []; modelCatalogueRevision &+= 1 }
-        else {
+        else if let provider, let now = transcript.info?.provider, now != provider {
+            // The chat went on with the other provider: what was held for the last one (its list, a choice on its way) is not this one's.
+            modelCatalogue = transcript.models; modelCatalogueSource = .live; modelCatalogueRevision &+= 1
+            pendingModel = nil; modelExpiry?.cancel()
+            switchCatalogue = []
+        } else {
             for envelope in reply.events where envelope.seq > previousNext {
                 if case .models = envelope.event {
                     modelCatalogue = transcript.models; modelCatalogueSource = .live; modelCatalogueRevision &+= 1
@@ -242,7 +253,8 @@ extension RemoteModel {
             return failure
         }
         if generation == token { chatSupport = .supported }
-        rememberTerminalKind(request.provider == .codex ? .codexChat : .claudeChat)
+        rememberTerminalKind(.chat)
+        rememberChatProvider(request.provider)
         // A reconnect or another desktop in the meantime: the chat exists, but this screen is no longer its.
         guard generation == token, state == .connected else { return nil }
         if projectID != nil {
@@ -344,6 +356,9 @@ extension RemoteModel {
                 backoff.success()
                 conversation.accept(reply, since: since)
                 if !reply.more { conversation.legacyLoading = false }
+                // A chat that went on with the other provider: its tab shows the new one's mark and name at once.
+                if let info = conversation.transcript.info, let at = chats.firstIndex(where: { $0.id == info.id }),
+                   chats[at].provider != info.provider || chats[at].title != info.title { chats[at] = info }
                 if let info = conversation.transcript.info {
                     prepareChatCatalogue(info)
                 }

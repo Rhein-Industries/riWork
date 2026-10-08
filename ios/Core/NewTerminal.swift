@@ -6,18 +6,18 @@ import Foundation
 // extension"), so a request that leaves the phone is one the desktop will not reject as malformed. Everything here is
 // pure and `Sendable`; the app owns the timing.
 
-/// What a new terminal runs: the Mac's default shell, or one of the agents RiWork launches. Or, with the same sheet, a native chat with
-/// Codex or Claude (`chat.create`, not `shell.create`).
+/// What a new terminal runs: the Mac's default shell, or one of the agents RiWork launches. Or, with the same sheet, a native chat
+/// (`chat.create`, not `shell.create`): one kind for both providers, whose model says which (`NewTerminalForm.chatProvider`).
 public enum NewTerminalKind: String, CaseIterable, Sendable, Codable, Identifiable {
     case shell, codex, claude, grok
-    case codexChat = "codex_chat", claudeChat = "claude_chat"
+    case chat
     /// The orchestrator of the project on screen, or the global one: opened (or started, if it is not there yet) by `orchestrator.create`,
     /// neither `shell.create` nor `chat.create`. Whether it is a terminal or a chat is the Mac's setting.
     case projectOrchestrator = "project_orchestrator", globalOrchestrator = "global_orchestrator"
     public var id: String { rawValue }
     /// The kinds that make a tab of their own, a terminal or a chat. The orchestrators are not among them: there is one of each, and
     /// asking for it again opens the one that is there (`orchestratorKinds`).
-    public static var allCases: [NewTerminalKind] { [.shell, .codex, .claude, .grok, .codexChat, .claudeChat] }
+    public static var allCases: [NewTerminalKind] { [.shell, .codex, .claude, .grok, .chat] }
     public static let orchestratorKinds: [NewTerminalKind] = [.projectOrchestrator, .globalOrchestrator]
     public var title: String {
         switch self {
@@ -25,8 +25,7 @@ public enum NewTerminalKind: String, CaseIterable, Sendable, Codable, Identifiab
         case .codex: "Codex"
         case .claude: "Claude"
         case .grok: "Grok"
-        case .codexChat: ChatProvider.codex.chatTitle
-        case .claudeChat: ChatProvider.claude.chatTitle
+        case .chat: "Chat"
         case .projectOrchestrator: "Project orchestrator"
         case .globalOrchestrator: "Global orchestrator"
         }
@@ -37,16 +36,22 @@ public enum NewTerminalKind: String, CaseIterable, Sendable, Codable, Identifiab
     /// An orchestrator, which `orchestrator.create` opens.
     public var isOrchestrator: Bool { self == .projectOrchestrator || self == .globalOrchestrator }
     /// A chat tab, which `chat.create` makes, as opposed to a terminal, which `shell.create` makes.
-    public var chatProvider: ChatProvider? {
-        switch self {
-        case .codexChat: .codex
-        case .claudeChat: .claude
+    public var isChat: Bool { self == .chat }
+    /// The first time, and whenever the remembered value is not one of ours.
+    public static let standard = NewTerminalKind.shell
+    /// A kind as it was remembered, also by a version that had a chat kind per provider (`codex_chat`, `claude_chat`): those are the chat now.
+    public static func remembered(_ word: String) -> NewTerminalKind? {
+        if let kind = NewTerminalKind(rawValue: word) { return kind }
+        return legacyChatProvider(word) != nil ? .chat : nil
+    }
+    /// The provider a remembered per-provider chat kind named.
+    public static func legacyChatProvider(_ word: String) -> ChatProvider? {
+        switch word {
+        case "codex_chat": .codex
+        case "claude_chat": .claude
         default: nil
         }
     }
-    public var isChat: Bool { chatProvider != nil }
-    /// The first time, and whenever the remembered value is not one of ours.
-    public static let standard = NewTerminalKind.shell
     /// What every desktop can open.
     public static let terminalKinds: [NewTerminalKind] = [.shell, .codex, .claude, .grok]
     /// What the sheet offers: the chats only on a desktop that has them, the orchestrators only on one that opens them.
@@ -130,7 +135,7 @@ public enum NewTerminalTargets {
 
 /// Why a request cannot be sent. Nothing has left the phone when one of these is thrown.
 public enum NewTerminalValidationError: Error, Equatable, Sendable, LocalizedError {
-    case needsOneTarget, invalidID, unknownKind, unrestrictedNeedsAgent, commandNeedsShell
+    case needsOneTarget, invalidID, unknownKind, unrestrictedNeedsAgent, unrestrictedOrAsSettings, commandNeedsShell
     case commandBlank, commandTooLong, commandHasControlCharacters, commandStartsWithDash, malformed
     public var errorDescription: String? {
         switch self {
@@ -138,6 +143,7 @@ public enum NewTerminalValidationError: Error, Equatable, Sendable, LocalizedErr
         case .invalidID: "The project or worktree is not a full UUID."
         case .unknownKind: "Choose Shell, Codex, Claude or Grok."
         case .unrestrictedNeedsAgent: "Only an agent can run unrestricted."
+        case .unrestrictedOrAsSettings: "Ask for unrestricted, or leave it to the Mac’s Settings, not both."
         case .commandNeedsShell: "A command can only start a plain shell."
         case .commandBlank: "Enter a command, or leave it empty."
         case .commandTooLong: "A command is at most \(NewTerminalRequest.commandByteLimit) bytes."
@@ -159,23 +165,27 @@ public struct NewTerminalRequest: Sendable, Equatable {
     public let target: Target
     public let kind: NewTerminalKind
     public let unrestricted: Bool
+    /// The desktop's **Agent terminals run unrestricted** decides (`as_settings`, with `features.shell_create_as_settings`); only for an
+    /// agent, and never together with `unrestricted`.
+    public let asSettings: Bool
     public let command: String?
 
-    public init(target: Target, kind: NewTerminalKind, unrestricted: Bool = false, command: String? = nil) throws {
+    public init(target: Target, kind: NewTerminalKind, unrestricted: Bool = false, asSettings: Bool = false, command: String? = nil) throws {
         switch target {
         case .project(let id), .worktree(let id): guard Self.isCanonicalUUID(id) else { throw NewTerminalValidationError.invalidID }
         }
         // A chat is made by `chat.create` and an orchestrator opened by `orchestrator.create`: `shell.create` has no such kind.
         if kind.isChat || kind.isOrchestrator { throw NewTerminalValidationError.unknownKind }
-        if unrestricted, !kind.isAgent { throw NewTerminalValidationError.unrestrictedNeedsAgent }
+        if unrestricted || asSettings, !kind.isAgent { throw NewTerminalValidationError.unrestrictedNeedsAgent }
+        if unrestricted, asSettings { throw NewTerminalValidationError.unrestrictedOrAsSettings }
         if let command {
             guard kind == .shell else { throw NewTerminalValidationError.commandNeedsShell }
             try Self.validate(command: command)
         }
-        self.target = target; self.kind = kind; self.unrestricted = unrestricted; self.command = command
+        self.target = target; self.kind = kind; self.unrestricted = unrestricted; self.asSettings = asSettings; self.command = command
     }
 
-    /// The wire parameters. `unrestricted` is sent only when it is on, so the default stays the desktop's.
+    /// The wire parameters. `unrestricted` is sent only when it is on (left out, restricted) and `as_settings` only when the desktop decides.
     public var params: [String: JSONValue] {
         var params: [String: JSONValue] = ["kind": .string(kind.rawValue)]
         switch target {
@@ -183,13 +193,16 @@ public struct NewTerminalRequest: Sendable, Equatable {
         case .worktree(let id): params["worktree_id"] = .string(id)
         }
         if unrestricted { params["unrestricted"] = .bool(true) }
+        if asSettings { params["as_settings"] = .bool(true) }
         if let command { params["command"] = .string(command) }
         return params
     }
 
     /// Reads wire parameters back through the same rules (the transport checks every request this way).
     public init(params: [String: JSONValue]) throws {
-        guard Set(params.keys).isSubset(of: ["project_id", "worktree_id", "kind", "unrestricted", "command"]) else { throw NewTerminalValidationError.malformed }
+        guard Set(params.keys).isSubset(of: ["project_id", "worktree_id", "kind", "unrestricted", "as_settings", "command"]) else { throw NewTerminalValidationError.malformed }
+        // As the desktop: one or the other, even when one of them is false.
+        if params["unrestricted"] != nil, params["as_settings"] != nil { throw NewTerminalValidationError.unrestrictedOrAsSettings }
         let target: Target
         switch (params["project_id"], params["worktree_id"]) {
         case (.string(let id)?, nil): target = .project(id)
@@ -198,17 +211,21 @@ public struct NewTerminalRequest: Sendable, Equatable {
         default: throw NewTerminalValidationError.invalidID
         }
         guard case .string(let name)? = params["kind"], let kind = NewTerminalKind(rawValue: name) else { throw NewTerminalValidationError.unknownKind }
-        var unrestricted = false
+        var unrestricted = false, asSettings = false
         if let value = params["unrestricted"] {
             guard case .bool(let flag) = value else { throw NewTerminalValidationError.malformed }
             unrestricted = flag
+        }
+        if let value = params["as_settings"] {
+            guard case .bool(let flag) = value else { throw NewTerminalValidationError.malformed }
+            asSettings = flag
         }
         var command: String?
         if let value = params["command"] {
             guard case .string(let text) = value else { throw NewTerminalValidationError.malformed }
             command = text
         }
-        try self.init(target: target, kind: kind, unrestricted: unrestricted, command: command)
+        try self.init(target: target, kind: kind, unrestricted: unrestricted, asSettings: asSettings, command: command)
     }
 
     static func isCanonicalUUID(_ value: String) -> Bool { value.utf8.count == 36 && UUID(uuidString: value)?.uuidString.lowercased() == value }
@@ -370,24 +387,33 @@ public struct NewTerminalForm: Equatable, Sendable {
     public private(set) var unrestricted = false
     public private(set) var orchestratorMode: NewOrchestratorMode = .desktop
     public var focus = Field.kind
-    /// The model, effort and Fast of a new Codex or Claude chat, per provider (`NewChatChoice`); a provider with none is the default.
+    /// The model, effort and Fast of a new chat, per provider (`NewChatChoice`); a provider with none is the default.
     public var chatModels: [ChatProvider: [ChatModelOption]] = [:]
     public var chatChoices: [ChatProvider: NewChatChoice] = [:]
+    /// The provider of a new chat: the one whose model row is chosen (`NewChatChoice.swift`).
+    public private(set) var chatProvider: ChatProvider
+    /// The desktop starts an agent terminal unrestricted or not as its own Settings say when asked to (`as_settings`, with
+    /// `features.shell_create_as_settings`): Codex, Claude and Grok then have no switch here. A chat keeps its own (Full mode).
+    public var agentsFollowDesktop = false
 
-    public init(targets: [NewTerminalTarget], targetIndex: Int = 0, kind: NewTerminalKind = .standard, kinds: [NewTerminalKind] = NewTerminalKind.terminalKinds) {
+    public init(targets: [NewTerminalTarget], targetIndex: Int = 0, kind: NewTerminalKind = .standard, kinds: [NewTerminalKind] = NewTerminalKind.terminalKinds,
+                chatProvider: ChatProvider = .codex) {
         self.targets = targets
         self.targetIndex = targets.isEmpty ? 0 : min(max(0, targetIndex), targets.count - 1)
         self.kinds = kinds
         // A kind remembered from a desktop that had chats, now on one that has not.
         self.kind = kinds.contains(kind) ? kind : .standard
+        self.chatProvider = chatProvider
     }
 
     public var target: NewTerminalTarget? { targets.indices.contains(targetIndex) ? targets[targetIndex] : nil }
-    /// The controls that can have focus now: the toggle only exists for agents, an orchestrator has no worktree to choose (it
+    /// The Unrestricted switch is on offer: for a chat (its Full mode), and for an agent terminal unless the desktop's Settings decide.
+    public var offersUnrestricted: Bool { kind.isChat || (kind.isAgent && !agentsFollowDesktop) }
+    /// The controls that can have focus now: the toggle only where it is offered, an orchestrator has no worktree to choose (it
     /// belongs to the project, or to none) but chooses how it runs, and the model controls only for a chat.
     public var fields: [Field] {
         Field.allCases.filter {
-            ($0 != .orchestratorMode || kind.isOrchestrator) && ($0 != .unrestricted || kind.isAgent)
+            ($0 != .orchestratorMode || kind.isOrchestrator) && ($0 != .unrestricted || offersUnrestricted)
                 && ($0 != .target || !kind.isOrchestrator) && chatFieldShown($0)
         }
     }
@@ -399,9 +425,20 @@ public struct NewTerminalForm: Equatable, Sendable {
         unrestricted = false
         if !fields.contains(focus) { focus = .kind }
     }
+    /// A chat whose model is one of `provider`'s: the kind and the provider at once.
+    public mutating func selectChat(_ provider: ChatProvider) {
+        select(kind: .chat)
+        guard kind == .chat else { return }
+        selectChatProvider(provider)
+    }
+    /// The provider of a new chat; its remembered choice (or default) comes with it.
+    public mutating func selectChatProvider(_ provider: ChatProvider) {
+        chatProvider = provider
+        if !fields.contains(focus) { focus = .kind }
+    }
     public mutating func select(targetAt index: Int) { if targets.indices.contains(index) { targetIndex = index } }
     public mutating func setOrchestratorMode(_ mode: NewOrchestratorMode) { orchestratorMode = mode }
-    public mutating func setUnrestricted(_ on: Bool) { unrestricted = on && kind.isAgent }
+    public mutating func setUnrestricted(_ on: Bool) { unrestricted = on && offersUnrestricted }
     public mutating func moveTarget(by steps: Int) {
         guard !targets.isEmpty else { return }
         targetIndex = ((targetIndex + steps) % targets.count + targets.count) % targets.count
@@ -430,10 +467,12 @@ public struct NewTerminalForm: Equatable, Sendable {
         }
     }
 
-    /// The terminal request for what is chosen. Throws while there is no target, and for a chat kind (see `submission()`).
+    /// The terminal request for what is chosen. Throws while there is no target, and for a chat kind (see `submission()`). Where the desktop
+    /// decides, an agent is asked for with `as_settings` (a request without either field stays restricted, as an older phone's always was).
     public func request() throws -> NewTerminalRequest {
         guard let target else { throw NewTerminalValidationError.needsOneTarget }
-        return try NewTerminalRequest(target: target.requestTarget, kind: kind, unrestricted: unrestricted && kind.isAgent)
+        let byDesktop = agentsFollowDesktop && kind.isAgent && !kind.isChat
+        return try NewTerminalRequest(target: target.requestTarget, kind: kind, unrestricted: unrestricted && offersUnrestricted, asSettings: byDesktop)
     }
 
     /// What Create sends: `shell.create` for a terminal, `chat.create` for a chat, `orchestrator.create` for an orchestrator (the
@@ -445,9 +484,9 @@ public struct NewTerminalForm: Equatable, Sendable {
             guard let target else { throw NewTerminalValidationError.needsOneTarget }
             return .orchestrator(try NewOrchestratorRequest(projectID: target.projectID, mode: orchestratorMode))
         }
-        guard let provider = kind.chatProvider else { return .terminal(try request()) }
+        guard kind.isChat else { return .terminal(try request()) }
         guard let target else { throw NewTerminalValidationError.needsOneTarget }
-        return .chat(try ChatCreateRequest(provider: provider, target: target.requestTarget, approvalMode: unrestricted ? .full : nil, choice: chatChoices[provider] ?? NewChatChoice()))
+        return .chat(try ChatCreateRequest(provider: chatProvider, target: target.requestTarget, approvalMode: unrestricted ? .full : nil, choice: chatChoices[chatProvider] ?? NewChatChoice()))
     }
 }
 
