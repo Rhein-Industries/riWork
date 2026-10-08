@@ -127,7 +127,10 @@ fn two_banners_show_newest_first_the_rest_fold_and_each_closes(cx: &mut TestAppC
     })
     .unwrap();
     view.read_with(cx, |view, _| {
-        assert_eq!(notices::history(&view.model.transcript).len(), 3);
+        assert_eq!(
+            notices::history(&view.model.transcript, usize::MAX).len(),
+            3
+        );
     });
 }
 
@@ -546,4 +549,170 @@ fn the_session_id_card_stays_in_the_row_and_copies_the_whole_id(cx: &mut TestApp
         );
     })
     .unwrap();
+}
+
+/// Times the ⋯ menu with a chat that has many notices. Run with
+/// `cargo test --bin riwork profile_more_menu -- --ignored --nocapture`.
+#[gpui::test]
+#[ignore]
+fn profile_more_menu(cx: &mut TestAppContext) {
+    use std::time::Instant;
+    let (handle, view, _recording) = mount(cx);
+    view.update(cx, |view, cx| {
+        view.model.link = state::Link::Live;
+        for at in 0..3_000 {
+            if at % 3 == 0 {
+                view.model.transcript.apply(&ChatEvent::ItemCompleted {
+                    item: Item {
+                        id: format!("u{at}"),
+                        turn_id: Some(format!("turn{at}")),
+                        status: ItemStatus::Completed,
+                        body: ItemBody::UserMessage {
+                            text: format!("message {at}"),
+                        },
+                        presentation: Default::default(),
+                    },
+                });
+            }
+            view.model.transcript.apply(&ChatEvent::ItemCompleted {
+                item: Item {
+                    id: format!("n{at}"),
+                    turn_id: Some(format!("turn{at}")),
+                    status: ItemStatus::Completed,
+                    body: ItemBody::notice(
+                        NoticeLevel::Warning,
+                        format!("Notice number {at} about something that happened"),
+                        Some(if at % 2 == 0 {
+                            "rate_limit:five_hour"
+                        } else {
+                            "turn_failed"
+                        }),
+                    ),
+                    presentation: Default::default(),
+                },
+            });
+        }
+        cx.notify();
+    });
+    let frames = 10;
+    let mut report =
+        |label: &str, cx: &mut TestAppContext, step: &dyn Fn(&mut Window, &mut gpui::App)| {
+            let (mut act, mut frame) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
+            for _ in 0..frames {
+                cx.update_window(handle.into(), |_, window, cx| {
+                    view.update(cx, |view, cx| {
+                        view.menu = None;
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                    let start = Instant::now();
+                    step(window, cx);
+                    act += start.elapsed();
+                    let start = Instant::now();
+                    window.render_frame(cx);
+                    frame += start.elapsed();
+                })
+                .unwrap();
+            }
+            eprintln!(
+                "{label}: action {:?}, next frame {:?}",
+                act / frames,
+                frame / frames
+            );
+        };
+    report("re-render, menu closed", cx, &|_, cx| {
+        view.update(cx, |_, cx| cx.notify())
+    });
+    report("menu = More, notify", cx, &|_, cx| {
+        view.update(cx, |view, cx| {
+            view.menu = Some(Menu::More);
+            cx.notify();
+        })
+    });
+    report("click ⋯", cx, &|window, cx| window.click("chat-more", cx));
+    report("toggle_menu(More) directly", cx, &|window, cx| {
+        view.update(cx, |view, cx| view.toggle_menu(Menu::More, window, cx))
+    });
+    report("focus the view", cx, &|window, cx| {
+        view.update(cx, |view, cx| view.focus(window, cx))
+    });
+    report("click Compact (another button)", cx, &|window, cx| {
+        window.click("chat-compact", cx)
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        let start = Instant::now();
+        for _ in 0..frames {
+            view.update(cx, |view, cx| {
+                let _ = view.menu_popover_for_profile(window, cx);
+            });
+        }
+        eprintln!("menu build alone: {:?}", start.elapsed() / frames);
+    })
+    .unwrap();
+    view.read_with(cx, |view, _| {
+        let t = &view.model.transcript;
+        let start = Instant::now();
+        for _ in 0..frames {
+            std::hint::black_box(view.notices.count(t));
+        }
+        eprintln!("count (cached): {:?}", start.elapsed() / frames);
+        let start = Instant::now();
+        for _ in 0..frames {
+            std::hint::black_box(notices::history(t, notices::HISTORY_SHOWN));
+        }
+        eprintln!(
+            "history (newest {}): {:?}",
+            notices::HISTORY_SHOWN,
+            start.elapsed() / frames
+        );
+        let start = Instant::now();
+        for _ in 0..frames {
+            std::hint::black_box(view.notices.banners(t, notices::now_unix()));
+        }
+        eprintln!("banners (cached): {:?}", start.elapsed() / frames);
+        eprintln!("items: {}", t.items.len());
+    });
+}
+
+#[gpui::test]
+fn a_long_history_draws_only_the_newest_and_says_how_many_there_are(cx: &mut TestAppContext) {
+    let (handle, view, _recording) = mount(cx);
+    let total = notices::HISTORY_SHOWN + 50;
+    view.update(cx, |view, cx| {
+        view.model.link = state::Link::Live;
+        for at in 0..total {
+            view.model.transcript.apply(&ChatEvent::ItemCompleted {
+                item: Item {
+                    id: format!("n{at}"),
+                    turn_id: Some("turn".into()),
+                    status: ItemStatus::Completed,
+                    body: ItemBody::notice(NoticeLevel::Info, format!("notice {at}"), None),
+                    presentation: Default::default(),
+                },
+            });
+        }
+        cx.notify();
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("chat-more", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("chat-notice-history").label(),
+            Some(format!("Notices ({total})").as_str())
+        );
+        window.click("chat-notice-history", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("chat-notice-history-older").is_some());
+    })
+    .unwrap();
+    view.read_with(cx, |view, _| {
+        let shown = notices::history(&view.model.transcript, notices::HISTORY_SHOWN);
+        assert_eq!(shown.len(), notices::HISTORY_SHOWN);
+        assert_eq!(
+            shown[0].text,
+            format!("notice {}", total - 1),
+            "newest first"
+        );
+    });
 }

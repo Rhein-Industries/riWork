@@ -641,7 +641,7 @@ pub enum ChatCommand {
 
 /// A chat's transcript as events build it: what a tab draws, and what the
 /// host replays to a tab that connects late.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct Transcript {
     pub info: Option<ChatInfo>,
     pub state: ChatState,
@@ -656,10 +656,44 @@ pub struct Transcript {
     pub models: Vec<ModelOption>,
     pub turn_id: Option<String>,
     index: HashMap<String, usize>,
+    /// Bumped by every event applied, so what is derived from the transcript can be kept
+    /// until it changes. Not part of what the transcript says.
+    revision: u64,
+}
+
+/// Two transcripts are equal when they say the same, however many events built them.
+impl PartialEq for Transcript {
+    fn eq(&self, other: &Self) -> bool {
+        self.info == other.info
+            && self.state == other.state
+            && self.items == other.items
+            && self.approvals == other.approvals
+            && self.questions == other.questions
+            && self.usage == other.usage
+            && self.rate_limits == other.rate_limits
+            && self.models == other.models
+            && self.turn_id == other.turn_id
+            && self.index == other.index
+    }
 }
 
 impl Transcript {
+    /// Changes whenever an event is applied.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// The item with `id`, found through the index.
+    pub fn item(&self, id: &str) -> Option<&Item> {
+        self.index
+            .get(id)
+            .and_then(|&at| self.items.get(at))
+            .filter(|item| item.id == id)
+            .or_else(|| self.items.iter().find(|item| item.id == id))
+    }
+
     pub fn apply(&mut self, event: &ChatEvent) {
+        self.revision = self.revision.wrapping_add(1);
         match event {
             ChatEvent::Info { info } => {
                 self.state = info.state.clone();

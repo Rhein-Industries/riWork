@@ -645,6 +645,17 @@ impl ChatView {
             .into_any_element()
     }
 
+    /// The ⋯ menu's popover alone, for timing its build.
+    #[cfg(test)]
+    pub(super) fn menu_popover_for_profile(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let look = Look::of(cx);
+        self.menu_popover(Menu::More, look, window, cx)
+    }
+
     /// The popover under a toolbar button.
     fn menu_popover(
         &self,
@@ -814,10 +825,7 @@ impl ChatView {
             Menu::More => vec![
                 row(
                     "chat-notice-history".into(),
-                    format!(
-                        "Notices ({})",
-                        super::notices::count(&self.model.transcript)
-                    ),
+                    format!("Notices ({})", self.notices.count(&self.model.transcript)),
                     Some("Every notice of this chat, dismissed and resolved ones too"),
                     self.notices.history,
                 )
