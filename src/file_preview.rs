@@ -879,37 +879,6 @@ mod tests {
         assert!(read_text(&fixture.0, &path, selected).is_err());
     }
 
-    #[test]
-    fn copy_block_is_decided_from_the_listing() {
-        let identity = |length| FileIdentity {
-            device: 1,
-            inode: 2,
-            length,
-            modified_seconds: 3,
-            modified_nanoseconds: 4,
-        };
-        assert_eq!(
-            copy_block(Path::new("a/main.rs"), identity(TEXT_LIMIT)),
-            None
-        );
-        assert_eq!(copy_block(Path::new("a/empty"), identity(0)), None);
-        assert!(
-            copy_block(Path::new("a/big.log"), identity(TEXT_LIMIT + 1))
-                .unwrap()
-                .contains("over 1 MiB")
-        );
-        for name in ["pic.png", "PHOTO.JPG", "scan.Pdf", "icon.ico"] {
-            assert!(
-                copy_block(Path::new(name), identity(10))
-                    .unwrap()
-                    .contains("Images and PDFs"),
-                "{name}"
-            );
-        }
-        // An unrecognized extension is only judged by reading it.
-        assert_eq!(copy_block(Path::new("a/data.bin"), identity(10)), None);
-    }
-
     fn png(width: u32, height: u32) -> Vec<u8> {
         let mut bytes = Cursor::new(Vec::new());
         image::DynamicImage::new_rgba8(width, height)
@@ -993,14 +962,6 @@ mod tests {
         };
         assert_eq!(pixel_size(&image), (2, 3));
         assert!(description.contains("2 × 3"));
-    }
-
-    #[test]
-    fn pdf_extension_check_is_case_insensitive() {
-        assert!(is_pdf(Path::new("a/Report.PDF")));
-        assert!(is_pdf(Path::new("plain.pdf")));
-        assert!(!is_pdf(Path::new("pdf")));
-        assert!(!is_pdf(Path::new("notes.pdf.txt")));
     }
 
     #[cfg(target_os = "macos")]

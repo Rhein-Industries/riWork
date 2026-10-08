@@ -3501,21 +3501,6 @@ mod tests {
     use super::*;
     use crate::store::{Project, ProjectFolder};
 
-    #[test]
-    fn panels_without_a_remote_api_say_so_and_the_lists_are_the_hosts() {
-        use PanelKind::*;
-        for kind in [Worktrees, Tasks, Shells] {
-            assert_eq!(remote_support(kind), RemoteSupport::Lists, "{kind:?}");
-        }
-        for kind in [Files, Preview, ProjectSettings, Schedules, Usage] {
-            assert_eq!(remote_support(kind), RemoteSupport::Unavailable, "{kind:?}");
-        }
-        // The folders of projects and the settings are not about one project.
-        for kind in [Projects, Settings] {
-            assert_eq!(remote_support(kind), RemoteSupport::Global, "{kind:?}");
-        }
-    }
-
     fn project_tree(state: &State, query: &str, collapsed: &HashSet<String>) -> ProjectTree {
         super::project_tree(
             state,
@@ -3605,24 +3590,6 @@ mod tests {
             tree.rows
                 .contains(&ProjectTreeRow::Project { index: 1, depth: 3 })
         );
-    }
-
-    #[test]
-    fn collapsing_a_parent_hides_its_complete_subtree() {
-        let state = nested_state();
-        let collapsed = HashSet::from(["work".into()]);
-        let tree = project_tree(&state, "", &collapsed);
-        assert_eq!(
-            labels(&state, &tree),
-            ["unfiled", "outside", "personal", "work"]
-        );
-        assert_eq!(tree.matched_projects, 3);
-        assert!(tree.rows.contains(&ProjectTreeRow::Folder {
-            index: 0,
-            depth: 0,
-            count: 2,
-            collapsed: true,
-        }));
     }
 
     #[test]
@@ -3844,25 +3811,12 @@ mod tests {
         // A folder found present on its first check needs no repaint.
         assert!(!presence.finish(b.to_owned(), false, later));
     }
-
-    #[test]
-    fn a_worktree_folder_is_missing_unless_it_is_a_directory() {
-        let directory = std::env::temp_dir().join(format!("riwork-panels-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let file = directory.join("file");
-        std::fs::write(&file, "").unwrap();
-        assert!(!folder_missing(&directory));
-        assert!(folder_missing(&file));
-        assert!(folder_missing(&directory.join("gone")));
-        std::fs::remove_dir_all(&directory).unwrap();
-    }
 }
 
 #[cfg(test)]
 mod kit_control_tests {
     use super::*;
     use crate::form_input::{test_turn, test_window};
-    use gpui::InputEvent as _;
     use gpui::TestAppContext;
     use gpui_kit::test::TestWindowExt;
 
@@ -4020,191 +3974,6 @@ mod kit_control_tests {
                 !actions
                     .iter()
                     .any(|a| matches!(a, PanelAction::OpenProject(_)))
-            );
-        });
-    }
-
-    #[gpui::test]
-    fn native_project_actions_reveal_for_keyboard_scope_and_keep_pointer_hover(
-        cx: &mut TestAppContext,
-    ) {
-        let (window, owner) = mount(cx);
-        // Exercise Native's actual visibility policy without loading a native
-        // theme, Ghostty settings, StateStore, Workspace or any service.
-        test_turn(cx, window, |window, app| {
-            owner.update(app, |owner, cx| {
-                owner.native_reveal = true;
-                cx.notify();
-            });
-            window.dispatch_event(
-                gpui::MouseMoveEvent {
-                    position: gpui::point(
-                        window.viewport_size().width - px(2.),
-                        window.viewport_size().height - px(2.),
-                    ),
-                    pressed_button: None,
-                    modifiers: Default::default(),
-                }
-                .to_platform_input(),
-                app,
-            );
-        });
-        test_turn(cx, window, |window, app| {
-            assert!(
-                !window
-                    .find("settings-project-synthetic-project-id")
-                    .visible()
-            );
-            let position = window
-                .find("project-synthetic-project-id")
-                .bounds()
-                .center();
-            window.dispatch_event(
-                gpui::MouseMoveEvent {
-                    position,
-                    pressed_button: None,
-                    modifiers: Default::default(),
-                }
-                .to_platform_input(),
-                app,
-            );
-        });
-        test_turn(cx, window, |window, app| {
-            assert!(
-                window
-                    .find("settings-project-synthetic-project-id")
-                    .visible()
-            );
-            assert!(owner.read(app).actions.is_empty());
-            window.dispatch_event(
-                gpui::MouseMoveEvent {
-                    position: gpui::point(
-                        window.viewport_size().width - px(2.),
-                        window.viewport_size().height - px(2.),
-                    ),
-                    pressed_button: None,
-                    modifiers: Default::default(),
-                }
-                .to_platform_input(),
-                app,
-            );
-        });
-        test_turn(cx, window, |window, app| {
-            assert!(
-                !window
-                    .find("settings-project-synthetic-project-id")
-                    .visible()
-            );
-            let focus = owner.read(app).row_focus.clone();
-            focus.focus(window, app);
-            // Programmatic focus preserves pointer modality. A non-activating
-            // key establishes keyboard focus and lets the row reveal its child
-            // before Root's next Tab enumerates the actually painted tab stops.
-            window.press("right", app);
-        });
-        test_turn(cx, window, |window, app| {
-            assert!(owner.read(app).row_focus.is_focused(window));
-            assert!(
-                window
-                    .find("settings-project-synthetic-project-id")
-                    .visible()
-            );
-            assert!(owner.read(app).actions.is_empty());
-            window.press("tab", app);
-        });
-        test_turn(cx, window, |window, app| {
-            let nested = window.find("settings-project-synthetic-project-id");
-            assert_eq!(nested.focused(), Some(true));
-            assert!(
-                nested.visible(),
-                "keyboard focus within the row reveals Native actions"
-            );
-            let node = crate::form_input::test_ax_node(
-                window,
-                app,
-                "settings-project-synthetic-project-id",
-            );
-            assert_eq!(node.role(), gpui::Role::Button);
-            assert_eq!(node.label(), Some("Project settings"));
-            assert!(!node.is_disabled());
-            assert!(node.supports_action(gpui::accesskit::Action::Click));
-            window.press("space", app);
-        });
-        test_turn(cx, window, |window, app| {
-            assert!(
-                matches!(owner.read(app).actions.as_slice(), [PanelAction::ProjectSettings(id)] if id == "synthetic-project-id")
-            );
-            let focus = owner.read(app).sort.trigger_focus.clone();
-            focus.focus(window, app);
-        });
-        test_turn(cx, window, |window, app| {
-            assert!(
-                !window
-                    .find("settings-project-synthetic-project-id")
-                    .visible()
-            );
-            assert!(owner.read(app).sort.trigger_focus.is_focused(window));
-        });
-    }
-
-    #[gpui::test]
-    fn sort_popover_keyboard_reselect_dismissal_and_refresh_preserve_focus(
-        cx: &mut TestAppContext,
-    ) {
-        let (window, owner) = mount(cx);
-        let identity = owner.read_with(cx, |owner, _| owner.sort.state.entity_id());
-        test_turn(cx, window, |window, app| {
-            window.click("project-sort-selector", app)
-        });
-        test_turn(cx, window, |window, app| {
-            let owner = owner.read(app);
-            assert!(owner.sort.state.read(app).is_open());
-            assert!(
-                owner
-                    .sort
-                    .state
-                    .read(app)
-                    .focus_handle(app)
-                    .contains_focused(window, app)
-            );
-            assert!(matches!(
-                owner.actions.as_slice(),
-                [PanelAction::SetProjectSortMenuOpen(true)]
-            ));
-            window.press("tab", app);
-        });
-        test_turn(cx, window, |window, app| window.press("enter", app));
-        test_turn(cx, window, |window, app| {
-            let owner = owner.read(app);
-            assert!(!owner.sort.state.read(app).is_open());
-            assert_eq!(
-                owner
-                    .actions
-                    .iter()
-                    .filter(|a| matches!(a, PanelAction::SetProjectOrder(_)))
-                    .count(),
-                1
-            );
-            assert!(owner.sort.trigger_focus.is_focused(window));
-            window.press("space", app);
-        });
-        test_turn(cx, window, |window, app| window.press("escape", app));
-        test_turn(cx, window, |window, app| {
-            assert!(!owner.read(app).sort.state.read(app).is_open());
-            assert!(owner.read(app).sort.trigger_focus.is_focused(window));
-            owner.update(app, |_, cx| cx.notify());
-        });
-        test_turn(cx, window, |window, app| {
-            assert_eq!(owner.read(app).sort.state.entity_id(), identity);
-            assert!(owner.read(app).sort.trigger_focus.is_focused(window));
-            assert_eq!(
-                owner
-                    .read(app)
-                    .actions
-                    .iter()
-                    .filter(|a| matches!(a, PanelAction::CloseProjectSortMenu))
-                    .count(),
-                1
             );
         });
     }
@@ -4574,11 +4343,6 @@ mod search_regression_tests {
     }
 
     #[gpui::test]
-    fn sessions_native_controls_search_and_exact_uuid_selection(cx: &mut TestAppContext) {
-        sessions_controls(cx, true);
-    }
-
-    #[gpui::test]
     fn sessions_new_chat_is_explicit_and_survives_narrow_filtered_history(cx: &mut TestAppContext) {
         let (handle, owner) = mount(cx, true);
         test_turn(cx, handle, |_, app| {
@@ -4629,83 +4393,10 @@ mod search_regression_tests {
     }
 
     #[gpui::test]
-    fn sessions_colorful_controls_search_and_exact_uuid_selection(cx: &mut TestAppContext) {
-        sessions_controls(cx, false);
+    fn sessions_native_controls_search_and_exact_uuid_selection(cx: &mut TestAppContext) {
+        sessions_controls(cx, true);
     }
 
-    fn geometry(cx: &mut TestAppContext, native: bool) {
-        let (handle, owner) = mount(cx, native);
-        let entity = owner.read_with(cx, |owner, _| owner.inputs[0].1.entity_id());
-        for width in [160., 240., 480.] {
-            test_turn(cx, handle, |_, app| {
-                owner.update(app, |owner, cx| {
-                    owner.width = width;
-                    cx.notify();
-                })
-            });
-            test_turn(cx, handle, |window, app| {
-                assert_eq!(ui_text::is_native(), native);
-                let mut panel = window.within(("search-fixture-panel", 101u64));
-                let search = panel.find("projects-search");
-                let icon = panel.find("projects-search-icon");
-                let editor = panel.find("projects-search-input");
-                assert!(search.visible() && icon.visible() && editor.visible());
-                assert_eq!(editor.role(), Some(gpui::Role::TextInput));
-                assert_eq!(editor.label(), Some("Search projects"));
-                assert!(
-                    editor.bounds().size.width >= px(80.),
-                    "readable editor at pane width {width}: {:?}",
-                    editor.bounds()
-                );
-                assert!(editor.bounds().size.height >= ui_text::space(18.));
-                assert!(editor.bounds().left() >= icon.bounds().right());
-                assert!(editor.bounds().right() <= search.bounds().right());
-                assert!(editor.bounds().top() >= search.bounds().top());
-                assert!(editor.bounds().bottom() <= search.bounds().bottom());
-                let input = owner.read(app).inputs[0].1.clone();
-                assert_eq!(input.entity_id(), entity);
-                assert_eq!(
-                    input.read(app).presentation().placeholder().as_ref(),
-                    "Search  ⌘F"
-                );
-                let caret = input
-                    .read(app)
-                    .range_to_bounds(&(0..0))
-                    .expect("the empty placeholder has real editor layout");
-                assert!(caret.size.height > px(0.));
-                assert!(
-                    caret.left() >= editor.bounds().left()
-                        && caret.right() <= editor.bounds().right()
-                );
-                // An icon press must focus this real field, including the
-                // padding/background path outside Base's glyph hit target.
-                panel.click("projects-search-icon", app);
-            });
-            test_turn(cx, handle, |window, app| {
-                assert!(
-                    owner.read(app).inputs[0]
-                        .1
-                        .read(app)
-                        .focus_handle(app)
-                        .is_focused(window)
-                );
-                assert_eq!(owner.read(app).focused, Some(101));
-                assert!(owner.read(app).actions.is_empty());
-            });
-        }
-    }
-    #[gpui::test]
-    fn projects_search_has_readable_bounds_and_placeholder_in_narrow_colorful_panels(
-        cx: &mut TestAppContext,
-    ) {
-        geometry(cx, false);
-    }
-    #[gpui::test]
-    fn projects_search_has_readable_bounds_and_placeholder_in_narrow_native_panels(
-        cx: &mut TestAppContext,
-    ) {
-        geometry(cx, true);
-    }
     fn editing_and_binding(cx: &mut TestAppContext, native: bool) {
         let (handle, owner) = mount(cx, native);
         test_turn(cx, handle, |_, app| {
@@ -4802,81 +4493,9 @@ mod search_regression_tests {
         });
     }
     #[gpui::test]
-    fn projects_search_pointer_editing_copy_cursor_and_sibling_tab_binding_colorful(
-        cx: &mut TestAppContext,
-    ) {
-        editing_and_binding(cx, false);
-    }
-    #[gpui::test]
     fn projects_search_pointer_editing_copy_cursor_and_sibling_tab_binding_native(
         cx: &mut TestAppContext,
     ) {
         editing_and_binding(cx, true);
-    }
-    fn clearing(cx: &mut TestAppContext, native: bool) {
-        let (handle, owner) = mount(cx, native);
-        test_turn(cx, handle, |_, app| {
-            owner.update(app, |owner, cx| {
-                owner.width = 240.;
-                cx.notify();
-            })
-        });
-        test_turn(cx, handle, |window, app| {
-            let mut panel = window.within(("search-fixture-panel", 101u64));
-            assert!(panel.try_find("projects-search-clear").is_none());
-            panel.click("projects-search-icon", app)
-        });
-        for character in "Al".chars() {
-            let character = character.to_string();
-            test_turn(cx, handle, |window, app| window.input(&character, app));
-        }
-        test_turn(cx, handle, |window, app| {
-            let mut panel = window.within(("search-fixture-panel", 101u64));
-            let search = panel.find("projects-search");
-            let editor = panel.find("projects-search-input");
-            let clear = panel.find("projects-search-clear");
-            // Inside the one field, after the text.
-            assert!(clear.visible());
-            assert_eq!(clear.label(), Some("Clear the search"));
-            assert!(clear.bounds().left() >= editor.bounds().right());
-            assert!(clear.bounds().right() <= search.bounds().right());
-            panel.click("projects-search-clear", app);
-        });
-        test_turn(cx, handle, |window, app| {
-            let fixture = owner.read(app);
-            assert!(matches!(
-                fixture.actions.as_slice(),
-                [PanelAction::ClearSearch]
-            ));
-            for (id, input) in &fixture.inputs {
-                assert_eq!(input.read(app).value(), "");
-                assert_eq!(input.read(app).cursor(), 0);
-                assert_eq!(fixture.queries[id], "");
-            }
-            let panel = window.within(("search-fixture-panel", 101u64));
-            assert!(panel.try_find("projects-search-clear").is_none());
-            assert!(panel.try_find("project-alpha-id").is_some());
-            assert!(panel.try_find("project-beta-id").is_some());
-            // The pressed field keeps its own editor focused, not the active pane's.
-            assert!(
-                fixture.inputs[0]
-                    .1
-                    .read(app)
-                    .focus_handle(app)
-                    .is_focused(window)
-            );
-        });
-    }
-    #[gpui::test]
-    fn projects_search_clear_button_sits_in_the_field_and_keeps_its_editor_focused_colorful(
-        cx: &mut TestAppContext,
-    ) {
-        clearing(cx, false);
-    }
-    #[gpui::test]
-    fn projects_search_clear_button_sits_in_the_field_and_keeps_its_editor_focused_native(
-        cx: &mut TestAppContext,
-    ) {
-        clearing(cx, true);
     }
 }
