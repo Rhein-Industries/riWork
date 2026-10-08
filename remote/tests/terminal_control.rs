@@ -27,6 +27,7 @@ impl Drop for Server {
     }
 }
 #[test]
+#[ignore = "slow: drives a real private tmux server"]
 fn real_equal_size_pins_policy_and_old_owner_cannot_clear_new_owner() -> Result<()> {
     let home = tempfile::tempdir()?;
     let server = Server(format!("riwork-viewport-test-{}", Uuid::new_v4()));

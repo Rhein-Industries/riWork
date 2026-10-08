@@ -227,6 +227,7 @@ fn future_at(days: i64) -> String {
 }
 
 #[test]
+#[ignore = "slow: three real tmux fixture shells per test"]
 fn cli_and_mcp_share_three_scope_lifecycle_and_stdio_protocol() {
     let fixture = Fixture::new();
     let protocol = fixture.mcp(&[
@@ -399,6 +400,7 @@ fn cli_and_mcp_share_three_scope_lifecycle_and_stdio_protocol() {
 }
 
 #[test]
+#[ignore = "slow: three real tmux fixture shells per test"]
 fn invalid_ids_scope_time_revision_and_target_are_structured_errors() {
     let fixture = Fixture::new();
     let at = future_at(7);
@@ -517,6 +519,7 @@ fn invalid_ids_scope_time_revision_and_target_are_structured_errors() {
 }
 
 #[test]
+#[ignore = "slow: three real tmux fixture shells per test"]
 fn two_cli_processes_cannot_apply_the_same_revision() {
     let fixture = Fixture::new();
     let created = fixture.tool_ok(
@@ -585,6 +588,7 @@ fn two_cli_processes_cannot_apply_the_same_revision() {
 }
 
 #[test]
+#[ignore = "slow: three real tmux fixture shells per test"]
 fn grok_sessions_and_control_character_titles_are_refused_by_cli_and_mcp() {
     let fixture = Fixture::new();
     let registry = fixture.home.join("sessions.json");
@@ -673,6 +677,7 @@ fn grok_sessions_and_control_character_titles_are_refused_by_cli_and_mcp() {
 }
 
 #[test]
+#[ignore = "slow: three real tmux fixture shells per test"]
 fn fresh_chat_cli_mcp_create_revision_lifecycle_and_invalid_destinations() {
     let fixture = Fixture::new();
     let at = future_at(8);
@@ -748,6 +753,7 @@ fn fresh_chat_cli_mcp_create_revision_lifecycle_and_invalid_destinations() {
 }
 
 #[test]
+#[ignore = "slow: three real tmux fixture shells per test"]
 fn explicit_existing_shell_interfaces_pin_ordinary_project_kind_and_preserve_legacy_defaults() {
     let fixture = Fixture::new();
     let shell = &fixture.shells[2];
@@ -813,6 +819,7 @@ fn explicit_existing_shell_interfaces_pin_ordinary_project_kind_and_preserve_leg
 }
 
 #[test]
+#[ignore = "slow: three real tmux fixture shells per test"]
 fn new_create_only_fields_are_rejected_on_every_other_mcp_operation_without_mutation() {
     let fixture = Fixture::new();
     let at = future_at(8);
@@ -910,6 +917,7 @@ fn new_create_only_fields_are_rejected_on_every_other_mcp_operation_without_muta
 }
 
 #[test]
+#[ignore = "slow: three real tmux fixture shells per test"]
 fn fresh_create_rejects_explicit_shell_presence_even_when_empty() {
     let fixture = Fixture::new();
     let at = future_at(8);

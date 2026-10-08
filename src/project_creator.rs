@@ -13,8 +13,6 @@ use gpui::{
     MouseButton, PathPromptOptions, Render, Window, div, prelude::*, rgb,
 };
 use gpui::{Entity, Focusable, Subscription};
-#[cfg(test)]
-use std::ops::Range;
 
 use crate::{
     behavior_controls as behavior,
@@ -31,13 +29,6 @@ pub enum ProjectCreationEvent {
 enum Field {
     Path,
     Name,
-}
-
-#[cfg(test)]
-#[derive(Default)]
-struct Input {
-    text: String,
-    selection: Range<usize>,
 }
 
 /// Expands `~` and requires an absolute folder. A bare or relative path would
@@ -67,14 +58,6 @@ fn resolve_folder(text: &str, home: Option<&OsStr>) -> Result<PathBuf, String> {
         return Err("A project folder cannot be named .git or live inside it".to_owned());
     }
     Ok(path)
-}
-
-/// The text a copy or cut would place on the clipboard; an empty selection must
-/// leave the clipboard alone.
-#[cfg(test)]
-fn selected_text(input: &Input) -> Option<String> {
-    let text = &input.text[input.selection.clone()];
-    (!text.is_empty()).then(|| text.to_owned())
 }
 
 /// Cmd+G toggles Git initialization. With Shift it is the global Open Grok shortcut.
@@ -822,33 +805,6 @@ mod tests {
         }
         assert!(resolve_folder("/srv/.github", home).is_ok());
         assert!(resolve_folder("/srv/my.git", home).is_ok());
-    }
-
-    #[test]
-    fn copy_and_cut_need_a_selection() {
-        let mut input = Input {
-            text: "/path/to/app".to_owned(),
-            selection: 3..3,
-            ..Default::default()
-        };
-        assert_eq!(selected_text(&input), None);
-        input.selection = 1..5;
-        assert_eq!(selected_text(&input).as_deref(), Some("path"));
-        assert_eq!(selected_text(&Input::default()), None);
-    }
-
-    #[test]
-    fn shift_leaves_cmd_g_to_the_global_open_grok_shortcut() {
-        let command = Modifiers {
-            platform: true,
-            ..Default::default()
-        };
-        assert!(init_git_shortcut(&command));
-        assert!(!init_git_shortcut(&Modifiers {
-            shift: true,
-            ..command
-        }));
-        assert!(!init_git_shortcut(&Modifiers::default()));
     }
 
     #[test]

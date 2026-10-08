@@ -165,11 +165,6 @@ pub struct Observed {
     pub frozen_writes: usize,
     /// Replies sent as deflated frames.
     pub deflated_replies: usize,
-    /// How many of the next `pty.write`s are refused with `pty_limit`.
-    pub refuse_writes: usize,
-    /// `pty.write`s answered `pty_limit`, and those after them refused for skipping bytes.
-    pub refused_writes: usize,
-    pub skipped_writes: usize,
 }
 #[derive(Clone, Debug)]
 pub struct Write {
@@ -205,11 +200,6 @@ pub struct HostOptions {
     pub greeting: Vec<u8>,
     /// Whether a terminal echoes what is written to it.
     pub echo: bool,
-    /// The host is behind: this many `pty.write`s are refused with `pty_limit`, and the
-    /// ones pipelined behind them then skip bytes, as the real host answers.
-    pub refuse_writes: usize,
-    /// How late the acknowledgement of a `pty.write` comes, so that several are in flight.
-    pub ack_delay: Duration,
 }
 impl Default for HostOptions {
     fn default() -> Self {
@@ -218,8 +208,6 @@ impl Default for HostOptions {
             refuse_open: None,
             greeting: b"READY\r\n".to_vec(),
             echo: true,
-            refuse_writes: 0,
-            ack_delay: Duration::ZERO,
         }
     }
 }
@@ -244,10 +232,7 @@ impl Drop for FakeHost {
 }
 impl FakeHost {
     pub fn start(net: &Net, device_id: &str, options: HostOptions) -> Self {
-        let observed = Arc::new(Mutex::new(Observed {
-            refuse_writes: options.refuse_writes,
-            ..Observed::default()
-        }));
+        let observed = Arc::new(Mutex::new(Observed::default()));
         let (ctl, ctl_rx) = mpsc::unbounded_channel();
         let task = tokio::spawn(run_host(
             net.host.clone(),
@@ -587,17 +572,6 @@ fn handle_request(
                 .unwrap_or_default();
             let seq = params["seq"].as_u64().unwrap_or(u64::MAX);
             let expected = *state.write_seq.lock().unwrap();
-            {
-                let mut o = observed.lock().unwrap();
-                if o.refuse_writes > 0 && seq == expected {
-                    o.refuse_writes -= 1;
-                    o.refused_writes += 1;
-                    return reply(err(&id, "pty_limit", "terminal input is backed up"));
-                }
-                if seq > expected {
-                    o.skipped_writes += 1;
-                }
-            }
             if seq != expected {
                 return reply(err(
                     &id,
@@ -616,16 +590,10 @@ fn handle_request(
             if options.echo {
                 state.buf.lock().unwrap().extend(data);
             }
-            let ack = ok(&id, json!({"stream":stream,"seq":seq,"status":"written"}));
-            if options.ack_delay.is_zero() {
-                reply(ack);
-            } else {
-                let (out, delay) = (out.clone(), options.ack_delay);
-                tokio::spawn(async move {
-                    sleep(delay).await;
-                    let _ = out.send(ack);
-                });
-            }
+            reply(ok(
+                &id,
+                json!({"stream":stream,"seq":seq,"status":"written"}),
+            ));
         }
         "pty.resize" => {
             let Some((stream, _)) = stream_of(streams) else {

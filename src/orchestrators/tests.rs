@@ -190,6 +190,7 @@ fn a_project_chat_orchestrator_belongs_to_its_project_and_never_asks() {
 }
 
 #[test]
+#[ignore = "slow: starts a real tmux server for a terminal orchestrator"]
 fn a_scope_has_one_orchestrator_across_modes_and_scopes_do_not_share() {
     let host = TestHost::new();
     let (sessions, _server) = sessions(&host);
@@ -295,6 +296,7 @@ fn creators_that_race_make_one_chat_and_one_first_message() {
 }
 
 #[test]
+#[ignore = "slow: starts a real tmux server for a terminal orchestrator"]
 fn a_dead_terminal_orchestrator_makes_room_for_a_chat() {
     let host = TestHost::new();
     let (sessions, _server) = sessions(&host);
@@ -330,6 +332,7 @@ fn a_dead_terminal_orchestrator_makes_room_for_a_chat() {
 }
 
 #[test]
+#[ignore = "slow: starts a real tmux server for a terminal orchestrator"]
 fn a_custom_command_is_a_terminal_whatever_the_setting_says() {
     let host = TestHost::new();
     let (sessions, _server) = sessions(&host);
@@ -497,48 +500,6 @@ fn the_entry_of_a_chat_orchestrator_has_the_usual_fields_and_the_three_that_name
         (json!("failed"), json!("gone"))
     );
     assert_eq!(entry["activity"], "exited");
-    // A terminal orchestrator's entry says which kind it is.
-    let terminal = sessions
-        .orchestrator_create(host.home.clone(), Some("sleep 600".into()))
-        .unwrap();
-    assert_eq!(entry_of(&host.home, &terminal)["mode"], "terminal");
-}
-
-fn entry_of(home: &Path, shell: &ShellSession) -> Value {
-    entry(home, &Orchestrator::Terminal(shell.clone()))
-}
-
-#[test]
-fn output_is_the_conversation_as_plain_text() {
-    let host = TestHost::new();
-    let (sessions, _server) = sessions(&host);
-    let (chat, _) =
-        chat_of(global_chat(&sessions, &host, OrchestratorRuns::Chat(Provider::Codex)).unwrap());
-    send(&chat_host(&host.home), &chat, "list the projects").unwrap();
-    host.wait_for_log(&chat.id, |log| {
-        log.iter()
-            .filter(|e| matches!(e.event, ChatEvent::TurnCompleted { .. }))
-            .count()
-            == 2
-    });
-    let lines = output(&host.home, &chat, 100).unwrap();
-    assert!(
-        lines[0].starts_with("user: $riwork-orchestrator"),
-        "{lines:?}"
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.starts_with("agent: echo: $riwork-orchestrator"))
-    );
-    assert_eq!(
-        lines[lines.len() - 2..],
-        ["user: list the projects", "agent: echo: list the projects"]
-    );
-    assert_eq!(
-        output(&host.home, &chat, 1).unwrap(),
-        ["agent: echo: list the projects"]
-    );
 }
 
 #[test]

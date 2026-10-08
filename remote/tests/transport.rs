@@ -240,6 +240,7 @@ fn quick_liveness() -> Tuning {
     }
 }
 #[tokio::test]
+#[ignore = "slow: about 3 s of liveness windows against a real relay"]
 async fn relay_closes_silent_registrations_but_keeps_responsive_ones() {
     let s = server_with(8, quick_liveness()).await;
     // Held but never polled: no pong is ever sent for the relay's pings.

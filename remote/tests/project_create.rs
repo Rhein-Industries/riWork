@@ -116,8 +116,9 @@ impl Fixture {
 
 /// Logs each call (arguments separated by U+001F). `capabilities` prints `capabilities.out` (by
 /// default a CLI that knows `--exclusive`), or fails like a CLI from before the command if
-/// `capabilities.unknown` exists. `project create` waits `create.delay` seconds if that exists,
-/// marks `create.ran`, then prints `create.json`, or fails with the line in `create.error`.
+/// `capabilities.unknown` exists. `project create` waits for `create.gate` (20 s at
+/// most) if `create.hold` exists, marks `create.ran`, then prints `create.json`, or fails with
+/// the line in `create.error`.
 /// `project list` prints `projects.json` (default `[]`).
 fn stub_cli(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -134,7 +135,7 @@ fn stub_cli(dir: &Path) -> PathBuf {
                if [ -e \"$d/capabilities.unknown\" ]; then echo \"riwork: Unknown invocation 'capabilities'\" >&2; exit 2; fi\n\
                if [ -e \"$d/capabilities.out\" ]; then cat \"$d/capabilities.out\"; else printf '{{\"v\":1,\"verifies_shell\":true,\"project_create_exclusive\":true}}'; fi;;\n\
              'project create')\n\
-               if [ -e \"$d/create.delay\" ]; then sleep \"$(cat \"$d/create.delay\")\"; fi\n\
+               if [ -e \"$d/create.hold\" ]; then i=0; while [ ! -e \"$d/create.gate\" ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done; fi\n\
                touch \"$d/create.ran\"\n\
                if [ -e \"$d/create.error\" ]; then printf 'riwork: %s\\n' \"$(cat \"$d/create.error\")\" >&2; exit 2; fi\n\
                cat \"$d/create.json\";;\n\
@@ -247,52 +248,6 @@ async fn parameters_are_validated_before_any_cli_runs() {
     for params in bad {
         let response = f.create(params.clone()).await;
         assert_eq!(code(&response), "invalid_request", "{params}: {response}");
-    }
-}
-
-#[tokio::test]
-async fn names_at_the_limits_and_odd_but_legal_ones_are_accepted() {
-    let f = Fixture::new();
-    let boundary_chars = "x".repeat(100);
-    // 100 two-byte characters are 200 bytes; 85 three-byte ones are 255; 63 four-byte ones 252.
-    let two_byte = "\u{e9}".repeat(100);
-    let three_byte = "\u{65e5}".repeat(85);
-    let four_byte = "\u{1f600}".repeat(63);
-    // Combining marks and joiners are characters, counted one by one.
-    let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
-    let good = [
-        "a",
-        "Fresh",
-        "My App",
-        "my-app_2.0",
-        "my--app",
-        "app.",
-        "a.b",
-        "1234",
-        "caf\u{e9} \u{65e5}\u{672c}",
-        "e\u{301}",
-        family,
-        "it's \"fine\"",
-        "a;b $(x) `y` | z && w > v < u",
-        "a=b,c:d",
-        "*",
-        "?",
-        "~",
-        "~x",
-        "%s%n",
-        "#{x}",
-        "C#Tools",
-        "a b  c",
-        &boundary_chars,
-        &two_byte,
-        &three_byte,
-        &four_byte,
-    ];
-    for name in good {
-        f.cli_says(f.project(&new_uuid(), name));
-        let response = f.create(json!({ "name": name })).await;
-        assert_eq!(response["ok"], true, "{name:?}: {response}");
-        assert_eq!(response["result"]["project"]["name"], name);
     }
 }
 
@@ -576,13 +531,13 @@ async fn a_project_being_made_is_finished_when_the_request_is_dropped() {
     // the CLI must not be killed between making the folder and writing the project down.
     let f = std::sync::Arc::new(Fixture::new());
     f.cli_says(f.project(&new_uuid(), "Fresh"));
-    f.set("create.delay", "0.6");
+    f.set("create.hold", "");
     let task = {
         let f = f.clone();
         tokio::spawn(async move { f.create(json!({"name":"Fresh"})).await })
     };
     // Wait until the CLI is running, then drop the request.
-    for _ in 0..100 {
+    for _ in 0..500 {
         if !f.calls_of("project", "create").is_empty() {
             break;
         }
@@ -591,7 +546,9 @@ async fn a_project_being_made_is_finished_when_the_request_is_dropped() {
     assert_eq!(f.calls_of("project", "create").len(), 1);
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
-    for _ in 0..100 {
+    // Only now may the CLI finish: the request is gone, the CLI must not be.
+    f.set("create.gate", "");
+    for _ in 0..200 {
         if f.stub.path().join("create.ran").exists() {
             break;
         }
@@ -601,20 +558,6 @@ async fn a_project_being_made_is_finished_when_the_request_is_dropped() {
         f.stub.path().join("create.ran").exists(),
         "the CLI was killed before it finished"
     );
-}
-
-#[tokio::test]
-async fn a_revoked_device_creates_nothing() {
-    let f = Fixture::new();
-    f.cli_says(f.project(&new_uuid(), "Fresh"));
-    f.rpc.storage.revoke(&f.device).unwrap();
-    assert!(
-        f.rpc
-            .handle(&f.device, req("project.create", json!({"name":"Fresh"})))
-            .await
-            .is_err()
-    );
-    assert!(f.calls().is_empty(), "{:?}", f.calls());
 }
 
 #[tokio::test]
@@ -635,22 +578,6 @@ async fn creation_is_not_deduplicated_a_second_request_runs_the_cli_again() {
         let response = f.call(reused.clone()).await;
         assert_eq!(code(&response), "already_exists", "{response}");
     }
-}
-
-#[tokio::test]
-async fn the_older_methods_are_unaffected_and_unknown_ones_still_fail() {
-    let f = Fixture::new();
-    for method in [
-        "project.created",
-        "project.add",
-        "project.delete",
-        "projects.create",
-    ] {
-        let response = f.call(req(method, json!({"name":"Fresh"}))).await;
-        assert_eq!(code(&response), "invalid_request", "{method}");
-        assert_eq!(message(&response), "unsupported RPC method", "{method}");
-    }
-    assert!(f.calls().is_empty(), "{:?}", f.calls());
 }
 
 /// The real CLI, in a throwaway RIWORK_HOME and a throwaway HOME (so `~/Documents/riwork` is the

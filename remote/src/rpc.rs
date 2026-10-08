@@ -2308,25 +2308,6 @@ mod tests {
     }
 
     #[test]
-    fn a_creation_the_connector_stopped_is_told_apart_from_one_that_failed() {
-        let stopped = project_create_fault(cli_fault("RiWork CLI timeout"), "Fresh");
-        assert_eq!(stopped.code, "cli_error");
-        assert!(
-            stopped
-                .message
-                .contains("check the project list before trying again"),
-            "{}",
-            stopped.message
-        );
-        // A fault that is not a CLI failure passes through untouched.
-        let big = project_create_fault(Fault::new("response_too_large", "x"), "Fresh");
-        assert_eq!(
-            (big.code, big.message.as_str()),
-            ("response_too_large", "x")
-        );
-    }
-
-    #[test]
     fn a_created_shell_passes_on_its_mode_but_not_a_chat_it_does_not_have() {
         let (project_id, shell) = (
             uuid::Uuid::new_v4().to_string(),

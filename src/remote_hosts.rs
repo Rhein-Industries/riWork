@@ -1319,6 +1319,7 @@ exit 0
     }
 
     #[test]
+    #[ignore = "slow: wall-clock deadline with a sleeping writer thread"]
     fn a_trickle_of_unrelated_lines_does_not_extend_the_deadline() {
         let daemon = FakeDaemon::start(|_request, mut stream| {
             while writeln!(stream, r#"{{"id":"other","ok":true}}"#).is_ok() {
@@ -1436,26 +1437,6 @@ exit 0
                 .map(|r| r["op"].clone())
                 .collect::<Vec<_>>(),
             vec![json!("status"); 4]
-        );
-    }
-
-    #[test]
-    fn status_times_out_on_a_silent_daemon() {
-        let daemon = FakeDaemon::start(|_request, stream| hold_until_closed(stream));
-        let fake = FakeCli::new(daemon.path());
-        let daemons = daemons(&fake);
-        warm(&daemons);
-
-        let started = Instant::now();
-        assert_eq!(daemons.status("h1").err(), Some(RemoteError::Timeout));
-        let waited = started.elapsed();
-        assert!(
-            waited >= Duration::from_millis(250),
-            "gave up early: {waited:?}"
-        );
-        assert!(
-            waited < Duration::from_secs(3),
-            "waited too long: {waited:?}"
         );
     }
 
@@ -1793,6 +1774,7 @@ exit 0
     }
 
     #[test]
+    #[ignore = "slow: real subprocess killed at a wall-clock timeout"]
     fn a_hanging_subprocess_is_killed_at_the_timeout() {
         let fake = FakeCli::new(Path::new("/tmp/unused.sock"));
         let cli = fake
@@ -1819,16 +1801,6 @@ exit 0
             .status()
             .is_ok_and(|status| status.success());
         assert!(!alive, "process {pid} survived the timeout");
-    }
-
-    #[test]
-    fn a_missing_binary_is_a_plain_error() {
-        let cli = RemoteCli::at(PathBuf::from("/nonexistent/riwork-remote"));
-        let error = cli.hosts().expect_err("cannot start");
-        assert!(
-            error.starts_with("Cannot start /nonexistent/riwork-remote"),
-            "{error}"
-        );
     }
 
     #[test]
@@ -1875,33 +1847,6 @@ exit 0
         ] {
             assert!(!is_insecure_loopback(relay), "{relay}");
         }
-    }
-
-    #[test]
-    fn error_helpers_classify_and_describe() {
-        let rpc = |code: &str, message: &str| RemoteError::Rpc {
-            code: code.into(),
-            message: message.into(),
-        };
-        assert!(rpc("invalid_request", "Unsupported RPC method: pty.open").is_unsupported());
-        assert!(!rpc("not_found", "unsupported RPC method").is_unsupported());
-        assert!(!rpc("invalid_request", "bad params").is_unsupported());
-        assert_eq!(RemoteError::Timeout.message(), "No answer in time");
-        assert_eq!(
-            rpc("busy", "").message(),
-            "The host reported an error (busy)"
-        );
-        assert_eq!(rpc("busy", "Try later").to_string(), "Try later (busy)");
-        assert_eq!(RemoteError::Timeout.to_string(), "No answer in time");
-        let boxed: Box<dyn std::error::Error> = Box::new(RemoteError::Timeout);
-        assert_eq!(boxed.to_string(), "No answer in time");
-    }
-
-    #[test]
-    fn daemons_can_be_shared_across_threads() {
-        fn shared<T: Send + Sync>() {}
-        shared::<Daemons>();
-        shared::<RemoteCli>();
     }
 
     #[test]

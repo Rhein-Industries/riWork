@@ -279,6 +279,7 @@ fn mcp_rejects_an_undeclared_argument_before_touching_any_state() {
 }
 
 #[test]
+#[ignore = "slow: real tmux shells"]
 fn a_named_project_scopes_worktree_selectors_in_the_cli_and_mcp() {
     let home = Home::new();
     let first = repository(&home, "first");
@@ -421,6 +422,7 @@ fn mark_as_grok(home: &Home, shell: &str) {
 
 #[cfg(unix)]
 #[test]
+#[ignore = "slow: real tmux shells"]
 fn grok_shell_usage_reports_the_session_grok_lists_for_the_panes_process() {
     let home = Home::new();
     let project = home.0.join("project");
@@ -684,6 +686,7 @@ fn shell_keys_rejects_bad_invocations_before_reaching_any_shell() {
 }
 
 #[test]
+#[ignore = "slow: real tmux shells"]
 fn shell_keys_types_into_a_pane_and_output_json_reports_the_screen() {
     let home = Home::new();
     let repo = repository(&home, "typing");
@@ -743,6 +746,7 @@ fn shell_keys_types_into_a_pane_and_output_json_reports_the_screen() {
 }
 
 #[test]
+#[ignore = "slow: real tmux shells"]
 fn shell_history_pages_the_scrollback_and_output_json_tells_how_long_it_is() {
     let home = Home::new();
     let repo = repository(&home, "scrollback");

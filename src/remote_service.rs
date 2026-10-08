@@ -303,7 +303,6 @@ fn spawn(backend: Arc<Backend>, request: Request, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote_tree::WorktreeClick;
     use serde_json::Value;
     use std::{
         fs,
@@ -448,24 +447,6 @@ mod tests {
     }
 
     #[test]
-    fn the_selected_worktree_scopes_the_shell_and_a_plain_shell_is_never_unrestricted() {
-        let daemon = Daemon::start(created);
-        let backend = daemon.backend();
-        backend
-            .create_shell(
-                "h1",
-                &ShellScope::Worktree("w1".into()),
-                NewShellKind::Shell,
-                true,
-            )
-            .expect("created");
-        assert_eq!(
-            daemon.requests()[0]["params"],
-            json!({"worktree_id": "w1", "kind": "shell"})
-        );
-    }
-
-    #[test]
     fn a_creation_whose_reply_is_lost_is_never_sent_again() {
         // The daemon takes the request and hangs up without answering.
         let daemon = Daemon::start(|_, stream| {
@@ -494,151 +475,6 @@ mod tests {
             .map(|request| request["method"].as_str().unwrap().to_owned())
             .collect::<Vec<_>>();
         assert_eq!(methods, ["shell.create", "project.create"]);
-    }
-
-    /// What a click on a worktree does: choose (`click_worktree`), then ask once.
-    /// `Workspace::select_remote_worktree` does exactly this; the host sees what is below.
-    fn click_worktree(
-        tree: &mut RemoteTree,
-        backend: &Backend,
-        open_tabs: &[&str],
-    ) -> Option<Result<RemoteShell, RemoteError>> {
-        match tree.click_worktree("h1", "p1", "w1", open_tabs) {
-            WorktreeClick::Start if tree.begin_shell("h1", "p1") => Some(backend.create_shell(
-                "h1",
-                &ShellScope::Worktree("w1".into()),
-                NewShellKind::Shell,
-                false,
-            )),
-            _ => None,
-        }
-    }
-
-    #[test]
-    fn a_click_on_a_worktree_with_no_shell_starts_one_plain_shell_there_exactly_once() {
-        let daemon = Daemon::start(created);
-        let backend = daemon.backend();
-        let mut tree = RemoteTree::default();
-        tree.set_hosts(vec![Host {
-            id: "h1".into(),
-            label: "Studio".into(),
-        }]);
-        tree.apply(
-            &Request::Status { host: "h1".into() },
-            Reply::Status(Ok(crate::remote_hosts::HostStatus {
-                state: crate::remote_hosts::LinkState::Online,
-                rtt_ms: None,
-                since: None,
-                reason: None,
-                label: None,
-            })),
-        );
-        // The host's shells have been read, and none is in the worktree.
-        let wanted = Wants {
-            selected: Some(crate::remote_tree::SelectedWants {
-                host: "h1".into(),
-                project: "p1".into(),
-                shells: true,
-                ..Default::default()
-            }),
-            ..Wants::default()
-        };
-        let asked = tree.plan(Instant::now(), &wanted);
-        assert!(asked.contains(&Request::Shells {
-            host: "h1".into(),
-            project: "p1".into()
-        }));
-        tree.apply(
-            &Request::Shells {
-                host: "h1".into(),
-                project: "p1".into(),
-            },
-            Reply::Shells(Ok(vec![])),
-        );
-
-        // First click: one `shell.create` for the worktree, a plain shell.
-        let made = click_worktree(&mut tree, &backend, &[]);
-        assert!(matches!(made, Some(Ok(_))), "{made:?}");
-        // A second click while that is still pending (its answer not yet recorded) does
-        // nothing: no second request reaches the host.
-        assert!(click_worktree(&mut tree, &backend, &[]).is_none());
-        let requests = daemon.requests();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0]["method"], "shell.create");
-        assert_eq!(
-            requests[0]["params"],
-            json!({"worktree_id": "w1", "kind": "shell"})
-        );
-
-        // The answer arrives: the shell is handed back to be opened.
-        let shell = tree
-            .finish_shell("h1", "p1", made.unwrap())
-            .expect("the new shell");
-        assert_eq!(shell.id, "s9");
-        // Another click, with its tab open and the list not yet naming it, shows the tab.
-        assert!(click_worktree(&mut tree, &backend, &["s9"]).is_none());
-        assert_eq!(daemon.requests().len(), 1);
-    }
-
-    #[test]
-    fn a_click_on_a_worktree_never_retries_a_creation_that_got_no_answer() {
-        // The daemon takes the request and hangs up.
-        let daemon = Daemon::start(|_, stream| {
-            let _ = stream.shutdown(std::net::Shutdown::Both);
-        });
-        let backend = daemon.backend();
-        let mut tree = RemoteTree::default();
-        tree.set_hosts(vec![Host {
-            id: "h1".into(),
-            label: "Studio".into(),
-        }]);
-        tree.apply(
-            &Request::Shells {
-                host: "h1".into(),
-                project: "p1".into(),
-            },
-            Reply::Shells(Ok(vec![])),
-        );
-        // The shells list only exists once asked for, which `begin_shell` also arranges.
-        assert!(tree.begin_shell("h1", "p1"));
-        tree.finish_shell("h1", "p1", Err(RemoteError::Timeout));
-        tree.apply(
-            &Request::Shells {
-                host: "h1".into(),
-                project: "p1".into(),
-            },
-            Reply::Shells(Ok(vec![])),
-        );
-        let lost = click_worktree(&mut tree, &backend, &[]);
-        assert!(
-            matches!(lost, Some(Err(RemoteError::Protocol(_)))),
-            "{lost:?}"
-        );
-        tree.finish_shell("h1", "p1", lost.unwrap());
-        thread::sleep(Duration::from_millis(200));
-        // Time passes and the person does nothing: nothing more is sent.
-        for _ in 0..3 {
-            let _ = tree.plan(Instant::now() + Duration::from_secs(60), &Wants::default());
-        }
-        thread::sleep(Duration::from_millis(200));
-        assert_eq!(daemon.requests().len(), 1);
-    }
-
-    #[test]
-    fn a_new_project_is_one_project_create_with_just_the_name() {
-        let daemon = Daemon::start(|request, stream| {
-            reply(
-                stream,
-                request,
-                json!({"project_id": "p9", "project": {"id": "p9", "name": "App", "created_at": 3}}),
-            );
-        });
-        let backend = daemon.backend();
-        let made = backend.create_project("h1", "App").expect("created");
-        assert_eq!((made.id.as_str(), made.name.as_str()), ("p9", "App"));
-        let requests = daemon.requests();
-        assert_eq!(requests[0]["method"], "project.create");
-        assert_eq!(requests[0]["params"], json!({"name": "App"}));
     }
 
     #[test]

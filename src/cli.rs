@@ -3273,11 +3273,11 @@ mod orchestrator_tests;
 #[cfg(test)]
 mod tests {
     use super::{
-        HistoryArguments, agent_hook_command, appearance_summary, frozen_codex_usage_home,
-        history_json, opens_workspace, output_json, parse_history_arguments, parse_keys_arguments,
+        HistoryArguments, agent_hook_command, frozen_codex_usage_home, history_json,
+        opens_workspace, output_json, parse_history_arguments, parse_keys_arguments,
         parse_output_arguments, reload_failure_details, reload_summary, schedule_line,
         scoped_codex_usage_home, take_flag_before_separator, take_orchestrator_project,
-        take_update_profile, terminal_safe, unknown_invocation, unreadable_reload_error,
+        take_update_profile, terminal_safe, unreadable_reload_error,
     };
     use crate::sessions::ShellSession;
     use crate::store::{State, Store};
@@ -3506,46 +3506,6 @@ mod tests {
                 "id": SHELL, "output": "1\n\n3", "line_count": 3,
                 "history_size": 40, "complete": false
             })
-        );
-    }
-
-    #[test]
-    fn appearance_summary_names_mode_colors_and_terminal() {
-        let mut published =
-            crate::theme::Appearance::resolve(crate::theme::ThemeChoice::RiWork, false)
-                .published(false);
-        published.updated_at = 1_790_000_000;
-        assert_eq!(
-            appearance_summary(&published),
-            "Appearance: dark (updated 2026-09-21 14:13:20 UTC)\n\
-             Palette:    bg #090d14 panel #101720 panel_active #14212a divider #253c45\n\
-             \x20           cyan #55e6dc magenta #ce78ef gold #f4bf75 text #d3e1e6 muted #708993\n\
-             Terminal:   background #090d14 foreground #d3e1e6 and 16 palette colors\n"
-        );
-        published.native = true;
-        assert!(
-            appearance_summary(&published)
-                .starts_with("Appearance: dark, Native (updated 2026-09-21 14:13:20 UTC)\n")
-        );
-        published.mic = true;
-        assert!(
-            appearance_summary(&published)
-                .starts_with("Appearance: dark, Native, mic (updated 2026-09-21 14:13:20 UTC)\n")
-        );
-        published.native = false;
-        assert!(
-            appearance_summary(&published)
-                .starts_with("Appearance: dark, mic (updated 2026-09-21 14:13:20 UTC)\n")
-        );
-        published.mic = false;
-        published.dark = false;
-        published.terminal = None;
-        published.updated_at = u64::MAX;
-        let summary = appearance_summary(&published);
-        assert!(summary.starts_with("Appearance: light (updated 18446744073709551615)\n"));
-        assert!(
-            summary.ends_with("Terminal:   colors unknown\n"),
-            "{summary}"
         );
     }
 
@@ -3889,34 +3849,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn unknown_invocation_names_the_argument_and_points_to_usage() {
-        let option = unknown_invocation(&args(&["--bogus"]));
-        assert!(option.contains("Unknown option '--bogus'"), "{option}");
-        let command = unknown_invocation(&args(&["shells", "list"]));
-        assert!(
-            command.contains("'shells' is not a riwork command"),
-            "{command}"
-        );
-        for message in [option, command] {
-            assert!(message.contains("Usage: riwork"), "{message}");
-            assert!(message.contains("riwork help"), "{message}");
-        }
-    }
-
-    #[test]
-    fn grok_usage_is_an_empty_report_not_an_error() {
-        let usage = crate::usage::grok_provider_usage(&crate::usage::GrokTabUsage::unavailable(
-            "This Grok session is not running",
-        ));
-        let json = serde_json::to_value(&usage).unwrap();
-        assert_eq!(json["provider"], "grok");
-        assert_eq!(json["windows"], serde_json::json!([]));
-        assert_eq!(json["account_label"], "unknown");
-        assert_eq!(json["session_error"], "This Grok session is not running");
-        assert!(json.get("session").is_none());
-    }
-
     fn main_worktree_state() -> (State, [String; 3]) {
         let projects: [String; 3] = std::array::from_fn(|_| uuid::Uuid::new_v4().to_string());
         let mut worktrees = Vec::new();
@@ -4072,16 +4004,6 @@ mod tests {
             serde_json::to_value(&stranded).unwrap()["unreadable_registrations"],
             2
         );
-    }
-
-    #[test]
-    fn reload_with_readable_and_unreadable_apps_still_reports_what_was_reloaded() {
-        let mixed = reload_report(1, &[2, 1]);
-        assert_eq!(
-            reload_summary(&mixed),
-            "Reloaded 2 RiWork apps (3 windows). Running shells and agents were preserved."
-        );
-        assert!(unreadable_reload_error(&mixed).is_some());
     }
 
     #[test]

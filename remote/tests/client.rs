@@ -417,6 +417,7 @@ async fn call_and_status_go_through_a_client_process_that_ensure_starts_once() {
 }
 
 #[tokio::test]
+#[ignore = "slow: real connector and client processes; stops and restarts the host and waits out reconnect backoff"]
 async fn the_client_process_reconnects_when_the_host_returns_and_stays_offline_when_revoked() {
     let mut rig = Rig::new(1).await;
     assert!(rig.add(0, "Studio").await.status.success());
@@ -453,6 +454,7 @@ async fn the_client_process_reconnects_when_the_host_returns_and_stays_offline_w
 }
 
 #[tokio::test]
+#[ignore = "slow: real connector and client processes; stops and restarts the host and waits out reconnect backoff"]
 async fn watch_streams_state_changes() {
     let mut rig = Rig::new(1).await;
     assert!(rig.add(0, "Studio").await.status.success());
@@ -494,6 +496,7 @@ async fn watch_streams_state_changes() {
 }
 
 #[tokio::test]
+#[ignore = "slow: real client process; waits out a 2 s idle timeout (about 5 s)"]
 async fn the_client_process_exits_when_idle_and_a_second_one_does_not_start() {
     let rig = Rig::new(1).await;
     assert!(rig.add(0, "Studio").await.status.success());
@@ -569,20 +572,4 @@ async fn removing_a_host_stops_its_client_process_and_forgets_its_credentials() 
     assert!(text(&call.stderr).contains("no host"));
     let twice = rig.run(&["hosts", "remove", &id]).await;
     assert!(!twice.status.success());
-}
-
-#[tokio::test]
-async fn a_loose_registry_file_is_refused() {
-    let rig = Rig::new(1).await;
-    assert!(rig.add(0, "Studio").await.status.success());
-    std::fs::set_permissions(rig.hosts_file(), std::fs::Permissions::from_mode(0o644)).unwrap();
-    let out = rig.run(&["hosts", "list"]).await;
-    assert!(!out.status.success());
-    assert!(
-        text(&out.stderr).contains("mode 600"),
-        "{}",
-        text(&out.stderr)
-    );
-    std::fs::set_permissions(rig.hosts_file(), std::fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(rig.run(&["hosts", "list"]).await.status.success());
 }

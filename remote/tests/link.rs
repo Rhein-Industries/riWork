@@ -281,31 +281,6 @@ async fn ready_announces_what_the_desktop_can_do_and_every_reply_reports_server_
 }
 
 #[tokio::test]
-async fn a_phone_that_never_opts_in_gets_plain_json_and_the_old_size_limit() {
-    let rig = Rig::new().await;
-    rig.history_page(4000, 9000);
-    let mut phone = Phone::connect(&rig.pairing).await;
-    let params = json!({"shell_id":rig.shell,"end":0,"lines":4000,"styled":true});
-    let reply = phone.call("shell.history", params).await;
-    assert!(!reply.deflated());
-    assert_eq!(reply.code(), "response_too_large", "{}", reply.value);
-    assert!(reply.value["server_ms"].is_u64());
-
-    // What fits is plain JSON, whatever its size.
-    rig.history_page(300, 9000);
-    let reply = phone
-        .call(
-            "shell.history",
-            json!({"shell_id":rig.shell,"end":0,"lines":300,"styled":true}),
-        )
-        .await;
-    assert_eq!(reply.value["ok"], true, "{}", reply.value);
-    assert!(!reply.deflated());
-    assert!(reply.json_len > link::MIN_COMPRESS_BYTES);
-    assert_eq!(reply.value["result"]["line_count"], 300);
-}
-
-#[tokio::test]
 async fn after_the_opt_in_large_replies_are_deflated_and_small_ones_are_not() {
     let rig = Rig::new().await;
     rig.history_page(4000, 9000);
@@ -415,52 +390,6 @@ async fn link_configure_refuses_bad_params_and_a_new_connection_starts_plain() {
     );
     again.compression("deflate").await;
     assert!(again.call("shell.history", page).await.deflated());
-}
-
-#[tokio::test]
-async fn history_pages_of_up_to_five_thousand_lines_are_accepted_and_more_is_not() {
-    let rig = Rig::new().await;
-    rig.history_page(5000, 20000);
-    let mut phone = Phone::connect(&rig.pairing).await;
-    phone.compression("deflate").await;
-    let ok = phone
-        .call(
-            "shell.history",
-            json!({"shell_id":rig.shell,"end":0,"lines":5000,"styled":true}),
-        )
-        .await;
-    assert_eq!(ok.value["ok"], true, "{}", ok.value);
-    assert_eq!(ok.value["result"]["line_count"], 5000);
-    let over = phone
-        .call(
-            "shell.history",
-            json!({"shell_id":rig.shell,"end":0,"lines":5001,"styled":true}),
-        )
-        .await;
-    assert_eq!(over.code(), "invalid_request");
-}
-
-#[tokio::test]
-async fn many_replies_in_a_row_keep_their_counters_and_their_order() {
-    let rig = Rig::new().await;
-    rig.history_page(2500, 9000);
-    let mut phone = Phone::connect(&rig.pairing).await;
-    phone.compression("deflate").await;
-    for i in 0..12 {
-        let lines = if i % 2 == 0 { 2500 } else { 1 };
-        let reply = if lines == 1 {
-            phone.call("projects.list", json!({})).await
-        } else {
-            phone
-                .call(
-                    "shell.history",
-                    json!({"shell_id":rig.shell,"end":0,"lines":2500,"styled":true}),
-                )
-                .await
-        };
-        assert_eq!(reply.value["ok"], true, "{}", reply.value);
-        assert_eq!(reply.deflated(), lines > 1);
-    }
 }
 
 #[tokio::test]

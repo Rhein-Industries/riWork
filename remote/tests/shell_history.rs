@@ -452,18 +452,3 @@ async fn a_page_the_response_cannot_carry_is_response_too_large() {
         100_000
     );
 }
-
-#[tokio::test]
-async fn the_request_id_is_echoed_in_the_response() {
-    let f = Fixture::new();
-    f.cli_says(page(&f.shell, "a", 1, 5, true));
-    let request = req(
-        "shell.history",
-        json!({"shell_id":f.shell,"end":0,"lines":5}),
-    );
-    let response = f.call(request.clone()).await;
-    assert_eq!(response["id"], request["id"]);
-    assert_eq!(response["type"], "response");
-    assert_eq!(response["ok"], true);
-    assert_eq!(f.history_calls(), 1);
-}

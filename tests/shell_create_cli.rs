@@ -176,6 +176,7 @@ fn is_canonical_uuid(text: &str) -> bool {
 }
 
 #[test]
+#[ignore = "slow: real tmux shells"]
 fn create_prints_the_session_that_shell_list_shows_for_a_project_or_a_worktree() {
     let home = Home::new();
     let (project, worktree, root) = home.project("app");
@@ -282,6 +283,7 @@ fn create_prints_the_session_that_shell_list_shows_for_a_project_or_a_worktree()
 }
 
 #[test]
+#[ignore = "slow: real tmux shells"]
 fn a_command_is_one_argument_and_reaches_the_terminal_as_typed() {
     let home = Home::new();
     let (_, worktree, _) = home.project("app");
@@ -410,6 +412,7 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
 }
 
 #[test]
+#[ignore = "slow: real tmux shells"]
 fn an_agent_is_restricted_unless_unrestricted_is_asked_for() {
     let home = Home::new();
     let (project, worktree, _) = home.project("app");
@@ -498,6 +501,7 @@ fn an_agent_is_restricted_unless_unrestricted_is_asked_for() {
 }
 
 #[test]
+#[ignore = "slow: real tmux shells"]
 fn as_settings_follows_the_agent_terminals_setting_and_needs_an_agent() {
     let home = Home::new();
     let (_, worktree, _) = home.project("app");

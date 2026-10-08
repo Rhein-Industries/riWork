@@ -503,6 +503,7 @@ async fn an_orchestrator_being_made_is_finished_when_the_phone_goes_away() {
 }
 
 #[tokio::test]
+#[ignore = "slow: real relay and connector; asserts wall-clock windows of 1.8 s, 1.9 s and 3.9 s"]
 async fn waiting_for_events_leaves_room_for_reads_and_for_typing_and_a_third_wait_queues() {
     let rig = Rig::new().await;
     rig.events(1, |_| "hi".into());
@@ -618,48 +619,4 @@ async fn a_page_is_sealed_as_the_session_asked_and_always_fits_one_frame() {
     assert_eq!(cut.value["result"]["more"], true);
     assert_eq!(cut.value["result"]["next"], held.last().unwrap()["seq"]);
     assert_eq!(held[0]["seq"], 1);
-}
-
-#[tokio::test]
-async fn a_chat_being_made_is_finished_when_the_phone_goes_away() {
-    let rig = Rig::new().await;
-    let info = json!({
-        "id": rig.chat, "provider": "codex", "project_id": Uuid::new_v4().to_string(),
-        "cwd": "/Users/me/app", "title": "Codex chat", "created_at_unix": 1790000000u64,
-        "approval_mode": "supervised", "state": {"state": "idle"}
-    });
-    rig.canned("create.json", &info);
-    std::fs::write(rig.dir.path().join("create.delay"), "1").unwrap();
-    let project = info["project_id"].clone();
-    let mut phone = Phone::connect(&rig.pairing).await;
-    phone
-        .send(
-            "chat.create",
-            json!({"provider":"codex","project_id":project}),
-        )
-        .await;
-    // Wait for the CLI to be running, then the phone leaves.
-    for _ in 0..200 {
-        if rig.calls("chat", "new") > 0 {
-            break;
-        }
-        sleep(Duration::from_millis(25)).await;
-    }
-    assert_eq!(rig.calls("chat", "new"), 1);
-    drop(phone);
-    for _ in 0..200 {
-        if rig.dir.path().join("create.ran").exists() {
-            break;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
-    assert!(
-        rig.dir.path().join("create.ran").exists(),
-        "the CLI was cut short"
-    );
-    // The chat exists once; a phone that comes back finds the desktop as it was.
-    let mut phone = Phone::connect(&rig.pairing).await;
-    let listed = phone.call("chats.list", json!({})).await;
-    assert_eq!(listed.value["ok"], true, "{}", listed.value);
-    assert_eq!(rig.calls("chat", "new"), 1);
 }

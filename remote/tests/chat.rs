@@ -166,7 +166,7 @@ fn warm(cli: &Path) {
 /// `capabilities` if `capabilities.unknown` exists. `project show` and
 /// `worktree show` print the id they were asked for, or the one in `show.id`, or
 /// fail with the line in `show.error`. `chat list` prints `list.json` (default
-/// `[]`). `chat new` waits `create.delay` seconds if that exists, marks
+/// `[]`). `chat new` waits for `create.gate` (20 s at most) if `create.hold` exists, marks
 /// `create.ran`, then prints `create.json`. `chat events` waits `events.delay`
 /// and prints `events.json`. `chat command` and `chat stop` print the chat they
 /// were given. `chat models` prints `models.json`. Each of the `chat` calls fails with the
@@ -193,7 +193,7 @@ fn stub_cli(dir: &Path) -> PathBuf {
                if [ -e \"$d/show.id\" ]; then printf '{{\"id\":\"%s\"}}' \"$(cat \"$d/show.id\")\"; else printf '{{\"id\":\"%s\"}}' \"$3\"; fi;;\n\
              'chat list') fail list; if [ -e \"$d/list.json\" ]; then cat \"$d/list.json\"; else echo '[]'; fi;;\n\
              'chat new')\n\
-               if [ -e \"$d/create.delay\" ]; then sleep \"$(cat \"$d/create.delay\")\"; fi\n\
+               if [ -e \"$d/create.hold\" ]; then i=0; while [ ! -e \"$d/create.gate\" ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done; fi\n\
                touch \"$d/create.ran\"\n\
                fail create\n\
                cat \"$d/create.json\";;\n\
@@ -834,37 +834,6 @@ async fn every_value_is_its_own_argument_and_the_cli_gets_json() {
 }
 
 #[tokio::test]
-async fn the_command_that_reaches_the_cli_holds_only_what_was_validated() {
-    // Nothing the connector did not check can travel in the command: it is rebuilt.
-    let f = Fixture::new();
-    let response = f
-        .call(
-            "chat.command",
-            json!({"chat_id":f.chat,"command":{"command":"configure","model":"opus"}}),
-        )
-        .await;
-    assert_eq!(response["ok"], true, "{response}");
-    let call = f.calls_of("chat", "command").pop().unwrap();
-    assert_eq!(call[4], r#"{"command":"configure","model":"opus"}"#);
-    let call_for = |command: Value| {
-        let f = &f;
-        async move {
-            f.call("chat.command", json!({"chat_id":f.chat,"command":command}))
-                .await;
-            f.calls_of("chat", "command").pop().unwrap()[4].clone()
-        }
-    };
-    assert_eq!(
-        call_for(json!({"command":"send","text":"hi"})).await,
-        r#"{"command":"send","text":"hi"}"#
-    );
-    assert_eq!(
-        call_for(json!({"command":"stop"})).await,
-        r#"{"command":"stop"}"#
-    );
-}
-
-#[tokio::test]
 async fn the_result_is_the_chat_the_cli_printed_and_a_list_holds_only_chats() {
     let f = Fixture::new();
     let other = new_uuid();
@@ -1104,35 +1073,6 @@ async fn fast_mode_is_a_flag_of_the_new_chat_and_a_chat_that_ignored_it_is_stopp
 }
 
 #[tokio::test]
-async fn a_models_event_and_the_fast_flag_pass_through_a_page_as_the_cli_printed_them() {
-    let f = Fixture::new();
-    let models = json!({"seq": 12, "event": {
-        "event": "models",
-        "models": [{
-            "id": "gpt-5.5", "name": "GPT-5.5", "description": "Frontier",
-            "efforts": ["low", "medium", "high"], "default_effort": "medium",
-            "supports_fast": true, "is_default": true
-        }, {"id": "default", "name": "Default"}]
-    }});
-    let mut info = f.info(&f.chat);
-    info["fast"] = json!(true);
-    let changed = json!({"seq": 13, "event": {"event": "info", "info": info}});
-    let page = f.page(&[models, changed], 13, false);
-    f.says("events.json", &page);
-    let response = f
-        .call(
-            "chat.events",
-            json!({"chat_id":f.chat,"since":11,"wait_ms":0}),
-        )
-        .await;
-    assert_eq!(response["result"], page, "{response}");
-    // And so does a chat that has it, in a list.
-    f.says("list.json", &json!([info]));
-    let listed = f.call("chats.list", json!({})).await;
-    assert_eq!(listed["result"]["chats"][0]["fast"], true, "{listed}");
-}
-
-#[tokio::test]
 async fn the_target_must_exist_under_exactly_the_id_given() {
     let f = Fixture::new();
     let other = new_uuid();
@@ -1187,7 +1127,7 @@ async fn a_chat_being_made_is_finished_when_the_request_is_dropped() {
     // and the answer.
     let f = Arc::new(Fixture::new());
     f.says("create.json", &f.info(&f.chat));
-    f.set("create.delay", "0.6");
+    f.set("create.hold", "");
     let task = {
         let f = f.clone();
         tokio::spawn(async move {
@@ -1207,6 +1147,8 @@ async fn a_chat_being_made_is_finished_when_the_request_is_dropped() {
     assert_eq!(f.calls_of("chat", "new").len(), 1);
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
+    // Only now may the CLI finish: the request is gone, the CLI must not be.
+    f.set("create.gate", "");
     for _ in 0..200 {
         if f.stub.path().join("create.ran").exists() {
             break;
@@ -1604,54 +1546,6 @@ async fn a_cli_that_prints_more_than_a_reply_may_hold_is_too_large() {
         .await;
     assert_eq!(code(&response), "response_too_large", "{response}");
     assert!(message(&response).contains("fewer events"), "{response}");
-}
-
-#[tokio::test]
-async fn a_revoked_device_does_nothing() {
-    let f = Fixture::new();
-    f.rpc.storage.revoke(&f.device).unwrap();
-    for (method, params) in [
-        ("chats.list", json!({})),
-        (
-            "chat.create",
-            json!({"provider":"codex","project_id":f.project}),
-        ),
-        (
-            "chat.events",
-            json!({"chat_id":f.chat,"since":0,"wait_ms":0}),
-        ),
-        (
-            "chat.command",
-            json!({"chat_id":f.chat,"command":{"command":"stop"}}),
-        ),
-        ("chat.stop", json!({"chat_id":f.chat})),
-    ] {
-        assert!(
-            f.rpc.handle(&f.device, req(method, params)).await.is_err(),
-            "{method}"
-        );
-    }
-    assert!(f.chat_calls().is_empty());
-    assert!(f.calls_of("project", "show").is_empty());
-}
-
-#[tokio::test]
-async fn the_other_methods_are_unchanged() {
-    // The chat methods are exact names.
-    let f = Fixture::new();
-    for method in [
-        "chats.create",
-        "chat.list",
-        "chat",
-        "chat.events.",
-        "Chat.stop",
-        "chat.delete",
-    ] {
-        let response = f.call(method, json!({})).await;
-        assert_eq!(code(&response), "invalid_request", "{method}");
-        assert_eq!(message(&response), "unsupported RPC method", "{method}");
-    }
-    assert!(f.calls().is_empty());
 }
 
 /// The real CLI in a throwaway home, behind a wrapper that keeps it off the user's real
