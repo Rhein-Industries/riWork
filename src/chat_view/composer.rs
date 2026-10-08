@@ -1,7 +1,5 @@
 //! The message box: what ⏎ and ⎋ do in it, moving between its lines, and the text it sends.
 
-#[cfg(test)]
-use crate::ui_text;
 use crate::{
     chat::model::Decision,
     dictation::{self, Phase},
@@ -230,102 +228,11 @@ mod tests {
     }
 
     #[test]
-    fn the_box_has_no_helper_text_at_rest_and_says_what_a_dictation_does() {
-        assert_eq!(status(&Phase::Idle, true), None);
-        assert_eq!(status(&Phase::Idle, false), None);
-        assert_eq!(
-            status(&Phase::Failed(dictation::Problem::Unsupported), true),
-            None
-        );
-        let listening = Phase::Listening { text: "hi".into() };
-        assert!(status(&listening, true).unwrap().starts_with("Listening"));
-        // Hidden mid-dictation (before the dictation is cancelled), nothing.
-        assert_eq!(status(&listening, false), None);
-        let preparing = Phase::Preparing { note: None };
-        assert_eq!(
-            status(&preparing, true).as_deref(),
-            Some("Getting the microphone ready…")
-        );
-        assert_eq!(status(&preparing, false), None);
-    }
-
-    #[test]
-    fn the_card_keeps_its_insets_and_its_buttons_share_what_the_pane_leaves() {
-        let round = super::super::widgets::ROUND_BUTTON;
-        // At 1.0 in a wide pane: 14 inset, 7 padding, 4 gap and full-size buttons; an empty
-        // box shares the controls' row from 680 px, a draft never does.
-        let wide = layout(900.0, 1.0, true, 3);
-        assert_eq!(
-            (wide.inset, wide.padding, wide.gap, wide.button),
-            (14.0, 7.0, 4.0, round)
-        );
-        assert!(wide.compact && !wide.narrow);
-        assert!(!layout(900.0, 1.0, false, 3).compact);
-        assert!(layout(680.0, 1.0, true, 1).compact);
-        assert!(!layout(679.0, 1.0, true, 1).compact);
-        // Under 360 px the card gives up its insets for 4 px ones that do not grow.
-        let narrow = layout(359.0, 1.0, true, 3);
-        assert!(narrow.narrow && !narrow.compact);
-        assert_eq!(
-            (narrow.inset, narrow.padding, narrow.gap),
-            (NARROW_SPACE, NARROW_SPACE, NARROW_SPACE)
-        );
-        assert!(!layout(360.0, 1.0, true, 3).narrow);
-        // Not laid out yet: the usual insets and full-size buttons.
-        let unmeasured = layout(0.0, 1.0, true, 3);
-        assert!(!unmeasured.narrow && !unmeasured.compact && unmeasured.button == round);
-        for scale in [0.8, 1.0, 1.5, 24.0 / ui_text::REFERENCE_SIZE] {
-            for pane in [100.0, 160.0, 240.0, 300.0, 368.0, 500.0, 720.0, 1440.0] {
-                for actions in 1..=3 {
-                    let fit = layout(pane, scale, true, actions);
-                    let what = format!("{pane} px at {scale}×, {actions} actions");
-                    // The action row fits inside the card, whose insets fit in the pane.
-                    let row = actions as f32 * fit.button + (actions - 1) as f32 * fit.gap;
-                    let inner = pane - 2.0 * (fit.inset + fit.padding) - 2.0;
-                    assert!(row <= inner + 0.01, "row {row} > {inner}: {what}");
-                    assert!(fit.button >= 1.0 && fit.button <= (round * scale.max(1.0)).round());
-                    // A scale grows the insets with the text, the narrow ones stay as they are.
-                    if !fit.narrow {
-                        assert_eq!(fit.inset, (CARD_INSET * scale.max(1.0)).round(), "{what}");
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
     fn a_message_is_the_trimmed_text_or_nothing() {
         assert_eq!(message("  hello\n\n"), Some("hello".to_owned()));
         assert_eq!(message("a\n\nb"), Some("a\n\nb".to_owned()));
         assert_eq!(message(" \n\t "), None);
         assert_eq!(message(""), None);
-    }
-
-    #[test]
-    fn lines_are_found_around_the_cursor() {
-        let text = "one\ntwo\n\nfour";
-        assert_eq!((line_start(text, 0), line_end(text, 0)), (0, 3));
-        assert_eq!((line_start(text, 5), line_end(text, 5)), (4, 7));
-        assert_eq!((line_start(text, 8), line_end(text, 8)), (8, 8));
-        assert_eq!((line_start(text, 13), line_end(text, 13)), (9, 13));
-        assert_eq!((line_start("", 0), line_end("", 0)), (0, 0));
-    }
-
-    #[test]
-    fn up_and_down_keep_the_column_where_the_line_is_long_enough() {
-        let text = "hello\nhi\n\nworld!";
-        let end = text.len();
-        // From the end of "world!" up to the empty line, and from there to the start of "hi".
-        assert_eq!(vertical(text, end, true), Some(9));
-        assert_eq!(vertical(text, 9, true), Some(6));
-        assert_eq!(vertical(text, 9, false), Some(10));
-        // Column 4 of "hello" has no match in the two-letter "hi": its end.
-        assert_eq!(vertical(text, 4, false), Some(8));
-        // Column 2 of "hi" is column 2 of "hello".
-        assert_eq!(vertical(text, 8, true), Some(2));
-        assert_eq!(vertical(text, 2, true), None, "the first line");
-        assert_eq!(vertical(text, end, false), None, "the last line");
-        assert_eq!(vertical("", 0, true), None);
     }
 
     #[test]

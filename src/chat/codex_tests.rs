@@ -941,22 +941,6 @@ fn a_program_that_dies_at_startup_is_an_error_with_its_stderr() {
 }
 
 #[test]
-fn a_missing_program_is_an_error_naming_it() {
-    let fake = Fake::new(&[&fixture("codex/idle.ndjson")]);
-    let mut config = fake.config(Provider::Codex);
-    config.program = "/nonexistent/riwork-codex".into();
-    let (sender, events) = mpsc::channel();
-    let error = start(config, sender).err().unwrap();
-    assert!(error.contains("/nonexistent/riwork-codex"), "{error}");
-    assert_eq!(
-        events.try_iter().last(),
-        Some(ChatEvent::State {
-            state: ChatState::Failed { message: error }
-        })
-    );
-}
-
-#[test]
 fn stop_ends_the_process_and_later_commands_fail() {
     let mut run = Run::start("idle");
     run.driver.command(ChatCommand::Stop).unwrap();

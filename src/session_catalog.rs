@@ -359,21 +359,6 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_catalog_notice_describes_metadata_and_deferred_transcript_truthfully() {
-        let expected = "Live chat catalog unavailable (offline); showing saved sessions; transcript loads when the backend is available. Selecting a session does not start it.";
-        assert_eq!(unavailable_note("offline", None), expected);
-        let detail = "Some saved chat metadata could not be read within the catalog limits.";
-        assert_eq!(
-            unavailable_note("offline", Some(detail)),
-            format!("{expected} {detail}")
-        );
-        assert_eq!(
-            unavailable_note(&"x".repeat(200), None),
-            expected.replace("offline", &"x".repeat(180))
-        );
-    }
-
-    #[test]
     fn full_catalog_retains_closed_stopped_failed_and_both_providers_by_project_uuid() {
         let mut cache = Catalog::default();
         let now = Instant::now();

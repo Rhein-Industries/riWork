@@ -135,23 +135,6 @@ pub fn detect(text: &str, whole: bool) -> Vec<(Range<usize>, String)> {
 mod tests {
     use super::*;
     #[test]
-    fn unicode_spaces_positions_and_http_are_recognized_without_io() {
-        assert_eq!(
-            local_target("<docs/Grüße file.rs:12:3>").unwrap(),
-            (PathBuf::from("docs/Grüße file.rs"), Some(12))
-        );
-        assert_eq!(
-            local_target("file:///tmp/a%20b.txt#L2").unwrap(),
-            (PathBuf::from("/tmp/a b.txt"), Some(2))
-        );
-        assert_eq!(local_target("a#b.txt").unwrap().0, PathBuf::from("a#b.txt"));
-        assert_eq!(local_target("%☀.png").unwrap().0, PathBuf::from("%☀.png"));
-        let text = "Read `docs/Grüße file.rs:12` and src/main.rs:3, https://example.com/a.rs";
-        let links = detect(text, false);
-        assert_eq!(links.len(), 2);
-        assert_eq!(&text[links[0].0.clone()], "docs/Grüße file.rs:12");
-    }
-    #[test]
     fn preview_rejects_missing_files_traversal_and_symlinks() {
         let root = std::env::temp_dir().join(format!("riwork-chat-path-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();

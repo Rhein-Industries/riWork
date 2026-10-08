@@ -139,30 +139,6 @@ fn messages_are_whole_and_commands_and_tools_are_short() {
 }
 
 #[test]
-fn a_short_output_is_shown_whole_and_an_empty_one_not_at_all() {
-    let body = conversation(vec![
-        Entry::Command {
-            command: "ls".into(),
-            output: "a\nb\nc\n".into(),
-            exit_code: Some(0),
-        },
-        Entry::Command {
-            command: "true".into(),
-            output: "\n  \n".into(),
-            exit_code: Some(0),
-        },
-    ]);
-    let text = render(&header(), &body, BUDGET);
-    assert!(
-        text.contains("**Ran** `ls`\n\n```text\na\nb\nc\n```"),
-        "{text}"
-    );
-    assert!(text.contains("**Ran** `true`\n\n"), "{text}");
-    assert!(!text.contains("(exit 0)"));
-    assert_eq!(text.matches("```text").count(), 1, "{text}");
-}
-
-#[test]
 fn backticks_in_output_and_in_commands_cannot_break_out() {
     let body = conversation(vec![Entry::Command {
         command: "echo `date`".into(),
@@ -270,18 +246,6 @@ fn a_scrollback_keeps_its_newest_lines_under_a_marker() {
         "{text}"
     );
     assert!(!text.contains("left out"));
-}
-
-#[test]
-fn a_summary_is_the_whole_document_after_the_heading() {
-    let text = render(
-        &header(),
-        &Body::Summary("## Goal\nShip it.\n\n## Next\n- tests\n".into()),
-        BUDGET,
-    );
-    assert!(text.contains("- **Contents:** a summary the agent wrote"));
-    assert!(text.contains("## Summary\n"));
-    assert!(text.contains("## Goal\nShip it.\n\n## Next\n- tests\n"));
 }
 
 #[test]

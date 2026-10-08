@@ -344,8 +344,9 @@ impl StandIn {
         let listener = UnixListener::bind(socket_path(home)).unwrap();
         let chat = chat.clone();
         let thread = std::thread::spawn(move || {
-            // The connection for `deliver`: a list, then the message.
-            let (stream, _) = listener.accept().unwrap();
+            // The connection for `deliver`: a list, then the message. Bounded,
+            // so a scheduler that never connects fails the test, not hangs it.
+            let stream = bounded_fixture_accept(&listener);
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut writer = stream;
             for _ in 0..2 {

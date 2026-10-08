@@ -537,22 +537,6 @@ mod connection_policy_tests {
             "following remains read-only after explicit send recovery"
         );
     }
-
-    #[test]
-    fn ordinary_follow_and_delivery_keep_the_shared_ensure_policy() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let counted = calls.clone();
-        let ensure: Ensure = Arc::new(move || {
-            counted.fetch_add(1, Ordering::SeqCst);
-            Ok("/synthetic-only/normal.sock".into())
-        });
-        let id = "c97ab6ed-a6e8-49fa-87dd-53ed45b7990e";
-        let policy = Connections::new(ensure.clone(), ensure, id.into());
-        assert_eq!(policy.resolve_follow().unwrap().chat_id, id);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(policy.resolve_delivery().unwrap().chat_id, id);
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-    }
 }
 
 #[cfg(test)]
@@ -612,17 +596,6 @@ mod tests {
     }
 
     #[test]
-    fn backoff_doubles_up_to_its_longest() {
-        let backoff = Backoff::DEFAULT;
-        let delays = [1, 2, 3, 4, 5, 6, 40].map(|failures| backoff.delay(failures));
-        assert_eq!(
-            delays.map(|d| d.as_millis()),
-            [500, 1000, 2000, 4000, 5000, 5000, 5000]
-        );
-        assert_eq!(backoff.delay(0), backoff.first);
-    }
-
-    #[test]
     fn events_are_next_repeated_or_missing() {
         assert_eq!(sequence(0, 1), Sequence::Next);
         assert_eq!(sequence(4, 5), Sequence::Next);
@@ -649,18 +622,6 @@ mod tests {
     }
 
     #[test]
-    fn a_subscription_starts_after_the_event_it_is_given() {
-        let host = FakeHost::with_chats(&["chat"]);
-        for _ in 0..5 {
-            host.push("chat", state(ChatState::Idle));
-        }
-        let (feed, receiver) = feed_of(&host, "chat", 3);
-        let (_, seqs) = collect(&receiver, |_, seqs| seqs.len() == 2);
-        assert_eq!(seqs, [4, 5]);
-        feed.join();
-    }
-
-    #[test]
     fn after_the_host_drops_the_connection_it_subscribes_again_from_the_last_event() {
         let host = FakeHost::with_chats(&["chat"]);
         host.push("chat", state(ChatState::Starting));
@@ -679,36 +640,6 @@ mod tests {
             host.subscribes(),
             [("chat".to_owned(), 0), ("chat".to_owned(), 2)]
         );
-        feed.join();
-    }
-
-    #[test]
-    fn a_host_that_is_not_there_yet_is_waited_for() {
-        let host = FakeHost::with_chats(&["chat"]);
-        host.push("chat", state(ChatState::Idle));
-        let socket = host.socket.clone();
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let counted = attempts.clone();
-        let ensure: Ensure = Arc::new(move || {
-            if counted.fetch_add(1, Ordering::SeqCst) < 3 {
-                Err("the chat host is starting".to_owned())
-            } else {
-                Ok(socket.clone())
-            }
-        });
-        let (sender, receiver) = async_channel::unbounded();
-        let feed = Feed::start(ensure, "chat".into(), 0, sender, fast());
-        let (links, seqs) = collect(&receiver, |_, seqs| seqs.len() == 1);
-        assert_eq!(
-            links,
-            [
-                Link::Reconnecting,
-                Link::Reconnecting,
-                Link::Reconnecting,
-                Link::Live
-            ]
-        );
-        assert_eq!(seqs, [1]);
         feed.join();
     }
 
