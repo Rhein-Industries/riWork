@@ -1,9 +1,9 @@
 //! The Claude driver: `claude` spoken to directly in stream-json, the way the
 //! Agent SDK does, with no SDK in between.
 //!
-//! The process runs unmodified and logged in (never given a token; the
-//! environment loses `ANTHROPIC_API_KEY`, which would silently switch it to API
-//! billing) as
+//! The process runs unmodified and logged in (never given a token; its
+//! environment is the configuration's, which removes `ANTHROPIC_API_KEY` only
+//! when Settings asks Claude chats to ignore it) as
 //!
 //! ```text
 //! claude <extra_args> --output-format stream-json --verbose --input-format stream-json
@@ -22,7 +22,12 @@
 //! `start` sends the `initialize` control request and returns once it is
 //! answered, with stdin kept open for the whole chat. The answer carries the models
 //! the CLI offers (`models`, SDK `ModelInfo`) and the Fast mode state
-//! (`fast_mode_state`, `fast_mode_disabled_reason`); see "Models and Fast mode". A new chat is started
+//! (`fast_mode_state`, `fast_mode_disabled_reason`); see "Models and Fast mode". It also
+//! carries how the CLI signed in (`account`), which becomes an `Account` event: an
+//! `apiKeySource` there means an API key is billed, `subscriptionType` names the plan.
+//! Checked live against claude 2.1.293: logged in it answers `subscriptionType`
+//! ("Claude Max"); with `ANTHROPIC_API_KEY` set it answers `apiKeySource`
+//! (`"ANTHROPIC_API_KEY"`) and no subscription. A new chat is started
 //! with a session id of our own (`--session-id`), since `system/init` only
 //! arrives with the first message; the id is known as soon as `start` returns.
 //! Resuming a session Claude never saved (it exits 1 with "No conversation
@@ -147,9 +152,9 @@
 use super::child::{self, Frame, FrameReader, MAX_FRAME_BYTES, Proc};
 use super::driver::{Driver, DriverConfig};
 use super::model::{
-    Approval, ApprovalKind, ApprovalMode, ChangeKind, ChatCommand, ChatEvent, ChatState, Decision,
-    FileChange, Item, ItemBody, ItemStatus, ModelOption, NoticeLevel, Question, QuestionOption,
-    QuestionPrompt, Step, StepStatus, TurnOutcome, Usage,
+    Account, Approval, ApprovalKind, ApprovalMode, ChangeKind, ChatCommand, ChatEvent, ChatState,
+    Decision, FileChange, Item, ItemBody, ItemStatus, ModelOption, NoticeLevel, Question,
+    QuestionOption, QuestionPrompt, Step, StepStatus, TurnOutcome, Usage,
 };
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
@@ -551,6 +556,8 @@ struct Core {
     totals: Totals,
     /// The models the CLI offers, from its `initialize` answer; empty if it said none.
     models: Vec<ModelOption>,
+    /// How the CLI said it signed in, from its `initialize` answer; `None` until it has.
+    account: Option<Account>,
     /// The last Fast mode state a notice told the user about, as `(state, reason)`,
     /// and `None` while Fast mode is on, not asked for, or not yet known.
     fast_reported: Option<(String, Option<String>)>,
@@ -600,6 +607,7 @@ impl Core {
             notice_counter: 0,
             totals: Totals::default(),
             models: Vec::new(),
+            account: None,
             fast_reported: None,
             model: None,
             context_window: None,
@@ -1051,8 +1059,8 @@ impl Core {
         let _ = self.control(json!({"subtype": "initialize", "hooks": null}), reply);
     }
 
-    /// What the CLI said about itself in an `initialize` answer: the models it offers
-    /// and whether Fast mode is on.
+    /// What the CLI said about itself in an `initialize` answer: the models it offers,
+    /// how it signed in and whether Fast mode is on.
     fn take_state(&mut self, state: &Value) {
         let models: Vec<ModelOption> = state["models"]
             .as_array()
@@ -1063,6 +1071,12 @@ impl Core {
         if !models.is_empty() && models != self.models {
             self.models = models.clone();
             self.emit(ChatEvent::Models { models });
+        }
+        if let Some(account) = account_of(state)
+            && self.account.as_ref() != Some(&account)
+        {
+            self.account = Some(account.clone());
+            self.emit(ChatEvent::Account { account });
         }
         self.note_fast_state(state);
     }
@@ -1855,9 +1869,7 @@ fn start_process(shared: &Arc<Shared>) -> Result<(), String> {
     };
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let mut command = child::command(&shared.config, &args);
-    command
-        .env("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1")
-        .env_remove("ANTHROPIC_API_KEY");
+    command.env("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1");
     let (proc, stdout) = Proc::spawn(command)?;
     let (answer_tx, answer_rx) = mpsc::channel();
     let (out_tx, out_rx) = mpsc::channel::<Outgoing>();
@@ -2144,6 +2156,23 @@ fn permission_mode(mode: ApprovalMode) -> &'static str {
         ApprovalMode::Full => "bypassPermissions",
         ApprovalMode::Plan => "plan",
     }
+}
+
+/// How the CLI signed in, from the `account` of an `initialize` answer; `None` for a CLI
+/// that does not say. An `apiKeySource` means an API key is billed, whatever else it
+/// knows: with `ANTHROPIC_API_KEY` set, a headless CLI uses the key over its Claude
+/// login, and its answer names no subscription. The email and organization stay out.
+fn account_of(state: &Value) -> Option<Account> {
+    let account = state.get("account").filter(|account| account.is_object())?;
+    let named = |key| {
+        str_of(account, key)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    Some(Account {
+        api_key_source: named("apiKeySource"),
+        plan: named("subscriptionType"),
+    })
 }
 
 /// A model the CLI offers (`ModelInfo` of the SDK) as the chat shows it. Its `value` is

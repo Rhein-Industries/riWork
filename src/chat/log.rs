@@ -364,6 +364,8 @@ pub fn read_snapshot(
         controls.push(ChatEvent::Models {
             models: transcript.models.clone(),
         });
+        // No `Account`: a phone reads the controls as one list and refuses a reply with
+        // an event it does not know. It follows the live events, which skip one alone.
     }
     let mut items: Vec<_> = transcript
         .items

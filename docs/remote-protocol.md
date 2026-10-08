@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-08: Additive, in the same "Chat extension": how a chat's agent signed in. A new `account` event (`account`: `{api_key_source?, plan?}`), sent by the Claude driver after its agent starts and again if that changes, so it is in the chat's history like any event. `api_key_source` set means the agent bills an Anthropic API key, not a subscription, and names where the key came from (`ANTHROPIC_API_KEY`, `apiKeyHelper`, ...); `plan` names the subscription (`Claude Max`). Never an email, an organization or a credential. It is not among the `controls` of `chat.snapshot`, which a phone reads as one list. No new method, no new error code. A phone that does not know it skips it alone, as every unknown event; a desktop from before it never sends it. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
 - 2026-10-05: Chat items may carry optional `presentation` with `phase` (`commentary` or `final`) and `images` (`label`, `source`). Image sources are tagged by `kind`: `local` (`path`), `data` (`mime`, `base64`), `url` (`url`), or `unavailable` (`reason`). Providers retain at most eight images and 8 MiB of encoded image data per item, with 4 MiB per image; unsupported or larger data is marked unavailable. Remote page/frame trimming replaces an image source that cannot fit with `unavailable`, rather than truncating base64. Existing clients may ignore presentation; existing events and their ordering remain intact. Desktop Normal/Verbose is a local saved display preference, with no new RPC or command.
 - 2026-10-05: Additive chat orchestrators and orchestrator creation, no new error code. `orchestrators.list` (and `shells.list`) entries gain optional `mode` (`terminal|chat`) and, for an orchestrator that runs as a chat, `chat_id` (equal to `id`) and `provider` (`codex|claude`), so the phone can open it as a chat tab with the existing `chats.list`, `chat.events` and `chat.command` methods; the `shell.*` methods on a chat orchestrator's id are `invalid_request`; see "Chat orchestrators" under "Chat extension" below. A desktop without chat orchestrators leaves the fields out and an older phone ignores them; the connector checks each field's shape, leaves a malformed one out, and passes `chat_id` and `provider` only for an entry whose `mode` is `chat`. A project's orchestrator that runs as a chat also counts in that project's `agents` and `last_activity_unix` of `projects.list`, as a terminal one does. One new method, `orchestrator.create` (`{}` or `{"project_id":"UUID"}`), makes the global or a project's orchestrator, in the mode the desktop's "Orchestrator runs as" setting says, or returns the one that exists (`created` false); it runs in the ordered lane and a creation is not cut short when the phone's session ends, and `features.orchestrator_create` in `ready` says the installed CLI has it; see "Orchestrator creation extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates `orchestrator.create` answers `invalid_request` "unsupported RPC method", and one whose `riwork` CLI predates it leaves `features.orchestrator_create` out.
 - 2026-10-05: Additive, in the same "Chat extension": the models a chat can use and the provider's fast mode. A new `models` event (`models`: a list of `{id, name, description, efforts, default_effort, supports_fast, is_default}`, sent by the agent's driver once after it starts and again if the list changes, so it is in the chat's history like any event), `fast` on `ChatInfo` (the person's choice, a boolean, absent in a chat from before it), an optional `fast` boolean in `chat.create`, and an optional `fast` boolean in the `configure` command. A model's `id` is what `model` takes; `efforts` are the efforts that model takes; `supports_fast` says whether the toggle belongs to it. No new method and no new error code. A desktop from before it refuses `fast` as an unknown field (`invalid_request`) and never sends a `models` event; a client that has seen none offers a text field for the model and the usual efforts, as before. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
@@ -1247,8 +1248,8 @@ reason to fail a page.
   `item_completed` (`item`), `item_delta` (`item_id`, `delta`: `{"kind":"text|output",
   "text"}`), `approval_requested` (`approval`), `approval_resolved` (`request_id`,
   `decision`), `question_requested` (`question`), `question_resolved` (`request_id`),
-  `usage` (`usage`) and `models` (`models`, see below). An `item_completed` replaces what
-  the deltas of that item built.
+  `usage` (`usage`), `models` (`models`, see below) and `account` (`account`, see
+  below). An `item_completed` replaces what the deltas of that item built.
 - An item is `{id, turn_id?, status, body}`, `status` `in_progress|completed|failed|
   declined|interrupted`; `body` has the tag `type`: `user_message`, `agent_message`
   (Markdown) and `reasoning` (`text`), `plan` (`explanation?`, `steps`), `command`
@@ -1262,6 +1263,13 @@ reason to fail a page.
   multi_select}]}`. A decision is `accept`, `accept_for_session`, `decline` or `cancel`.
 - `Usage` is `{input_tokens, output_tokens, cached_input_tokens, context_window?,
   context_used?, cost_usd?}`; `cost_usd` is the provider's own estimate, never a bill.
+- `account` carries `account`, `{api_key_source?, plan?}` (since 2026-10-08): how the
+  chat's agent says it signed in. `api_key_source` set means it bills an Anthropic API key
+  instead of a subscription, and is where the key came from as the agent names it
+  (`ANTHROPIC_API_KEY`, `apiKeyHelper`, ...); `plan` is the subscription it names (`Claude
+  Max`). Both may be absent. A later `account` event replaces the earlier one. Only the
+  Claude driver sends it, a moment after its agent starts; it is never in the `controls` of
+  `chat.snapshot`.
 - `models` carries `models`, a list of `{id, name, description, efforts, default_effort?,
   supports_fast, is_default}` (since 2026-10-05; every field but `id` and `name` may be
   absent: empty, `null` or `false`). It is what the provider itself says it offers, as
@@ -1904,6 +1912,12 @@ ready response. Values are test-only and must never provision production devices
   orchestrator_create` when the CLI says `"orchestrator_create": true` in `riwork capabilities
   --json`. No new error code. Needs the iOS worker's agreement; the iOS side implements the same
   text.
+- 2026-10-08: additive and backward compatible. An `account` chat event (`account`:
+  `{api_key_source?, plan?}`) says how a Claude chat's agent signed in, so a client can
+  show that it bills an API key. It passes through `chat.events` like every event and is
+  left out of `chat.snapshot`'s `controls`, which a phone decodes as one list. No new
+  method, no new error code. A phone that does not know it skips it alone. Needs the iOS
+  worker's agreement.
 - 2026-10-05: additive and backward compatible. Models and fast mode in the Chat extension.
   A `models` chat event (`models`: `{id, name, description, efforts, default_effort,
   supports_fast, is_default}` each), `fast` on `ChatInfo`, an optional boolean `fast` in

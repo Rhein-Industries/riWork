@@ -1,7 +1,7 @@
 //! The words and numbers of the chat toolbar: the approval modes, the choices for model and
 //! effort, the context meter and the thread id.
 
-use crate::chat::model::{ApprovalMode, ModelOption, Provider, Usage};
+use crate::chat::model::{Account, ApprovalMode, ModelOption, Provider, Usage};
 
 /// The modes in the order the picker lists them, with what each lets the agent do.
 pub const MODES: [(ApprovalMode, &str, &str); 4] = [
@@ -263,6 +263,18 @@ pub fn cost_text(cost_usd: f64) -> String {
     }
 }
 
+/// The toolbar badge of a chat that bills an API key, and its hover hint; `None` while the
+/// agent runs on a subscription or has not said how it signed in.
+pub fn api_key_badge(account: Option<&Account>) -> Option<(&'static str, String)> {
+    let source = account?.api_key_source.as_deref()?;
+    let hint = if source == "ANTHROPIC_API_KEY" {
+        "Billed to the Anthropic API key in ANTHROPIC_API_KEY, not a Claude subscription. To use your subscription, turn on Claude chats ignore ANTHROPIC_API_KEY in Settings, then Stop chat.".to_owned()
+    } else {
+        format!("Billed to an Anthropic API key ({source}), not a Claude subscription.")
+    };
+    Some(("API key", hint))
+}
+
 /// Everything the meter knows, for its hover hint.
 pub fn usage_details(usage: &Usage) -> String {
     let mut parts = vec![
@@ -338,6 +350,36 @@ mod tests {
         assert_eq!(cost_text(0.4213), "≈ $0.42 (estimate)");
         assert_eq!(cost_text(12.0), "≈ $12.00 (estimate)");
         assert_eq!(cost_text(0.004), "≈ $0.004 (estimate)");
+    }
+
+    #[test]
+    fn only_a_chat_that_bills_an_api_key_shows_the_badge() {
+        assert_eq!(api_key_badge(None), None);
+        let plan = Account {
+            api_key_source: None,
+            plan: Some("Claude Max".into()),
+        };
+        assert_eq!(api_key_badge(Some(&plan)), None);
+        // An answer that says neither is no reason for a warning.
+        assert_eq!(api_key_badge(Some(&Account::default())), None);
+        let env = Account {
+            api_key_source: Some("ANTHROPIC_API_KEY".into()),
+            plan: None,
+        };
+        let (label, hint) = api_key_badge(Some(&env)).unwrap();
+        assert_eq!(label, "API key");
+        // The setting that keeps a shell's key out is named only where it helps.
+        assert!(
+            hint.contains("Claude chats ignore ANTHROPIC_API_KEY"),
+            "{hint}"
+        );
+        let helper = Account {
+            api_key_source: Some("apiKeyHelper".into()),
+            plan: None,
+        };
+        let (_, hint) = api_key_badge(Some(&helper)).unwrap();
+        assert!(hint.contains("(apiKeyHelper)"), "{hint}");
+        assert!(!hint.contains("Settings"), "{hint}");
     }
 
     #[test]

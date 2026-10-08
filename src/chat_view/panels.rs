@@ -21,7 +21,7 @@ use crate::{
 };
 
 use super::{
-    ChatView, ChatViewEvent, Creation, Draft, Menu, approval, composer, dictate,
+    ChatView, ChatViewEvent, Creation, Draft, Menu, approval, cards, composer, dictate,
     state::provider_name,
     toolbar,
     widgets::{self, Look, button, capsule, dimmed},
@@ -469,6 +469,25 @@ impl ChatView {
                 dimmed("chat-compact", "Compact", look).into_any_element()
             })
             .child(div().flex_1())
+            .children(
+                toolbar::api_key_badge(self.model.transcript.account.as_ref()).map(
+                    |(label, hint)| {
+                        div()
+                            .relative()
+                            .flex_none()
+                            .child(widgets::badge(
+                                "chat-api-key",
+                                &cards::Badge {
+                                    label: label.into(),
+                                    tone: cards::Tone::Warning,
+                                    live: false,
+                                },
+                                look,
+                            ))
+                            .child(tooltip::anchor(hint, TipLook::Control))
+                    },
+                ),
+            )
             .children(self.model.transcript.usage.as_ref().map(|usage| {
                 let fraction = toolbar::context_fraction(usage);
                 div()

@@ -437,6 +437,20 @@ pub struct Usage {
     pub cost_usd: Option<f64>,
 }
 
+/// How the agent says it signed in, from its own handshake: only what tells who is
+/// billed, never an email, an organization or a credential.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Account {
+    /// Set when the agent runs on an API key, which is billed instead of a subscription:
+    /// where the key came from, as the agent names it (Claude's `apiKeySource`, such as
+    /// `ANTHROPIC_API_KEY` or `apiKeyHelper`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_source: Option<String>,
+    /// The subscription it runs under, as the agent names it ("Claude Max").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum TurnOutcome {
@@ -495,6 +509,11 @@ pub enum ChatEvent {
     Models {
         models: Vec<ModelOption>,
     },
+    /// How the agent signed in. A driver sends it after its handshake and again if
+    /// that changes; each replaces the last.
+    Account {
+        account: Account,
+    },
 }
 
 /// What the user asks of a chat.
@@ -550,6 +569,8 @@ pub struct Transcript {
     /// The models the provider offers, empty until its driver has said (an
     /// older driver never does).
     pub models: Vec<ModelOption>,
+    /// How the agent signed in, once its driver has said (an older driver never does).
+    pub account: Option<Account>,
     pub turn_id: Option<String>,
     index: HashMap<String, usize>,
 }
@@ -628,6 +649,7 @@ impl Transcript {
             }
             ChatEvent::Usage { usage } => self.usage = Some(usage.clone()),
             ChatEvent::Models { models } => self.models = models.clone(),
+            ChatEvent::Account { account } => self.account = Some(account.clone()),
         }
     }
 }
@@ -919,5 +941,34 @@ mod tests {
         assert_eq!(t.models, [model_option()]);
         t.apply(&ChatEvent::Models { models: Vec::new() });
         assert!(t.models.is_empty());
+    }
+
+    #[test]
+    fn each_account_event_replaces_the_last_and_its_wire_form_is_stable() {
+        let mut t = Transcript::default();
+        assert_eq!(t.account, None);
+        let key = Account {
+            api_key_source: Some("ANTHROPIC_API_KEY".into()),
+            plan: None,
+        };
+        let event = ChatEvent::Account {
+            account: key.clone(),
+        };
+        let line = serde_json::to_string(&event).unwrap();
+        assert_eq!(
+            line,
+            r#"{"event":"account","account":{"api_key_source":"ANTHROPIC_API_KEY"}}"#
+        );
+        assert_eq!(serde_json::from_str::<ChatEvent>(&line).unwrap(), event);
+        t.apply(&event);
+        assert_eq!(t.account.as_ref(), Some(&key));
+        let plan = Account {
+            api_key_source: None,
+            plan: Some("Claude Max".into()),
+        };
+        t.apply(&ChatEvent::Account {
+            account: plan.clone(),
+        });
+        assert_eq!(t.account, Some(plan));
     }
 }
