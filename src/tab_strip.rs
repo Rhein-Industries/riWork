@@ -191,6 +191,12 @@ pub(crate) fn flat_cell<E: Styled>(
     }
 }
 
+/// The popup host around a strip cell spans the bar's height, so the cell inside fills
+/// it as the panel cells do.
+fn strip_host(popup: behavior_controls::Popup) -> behavior_controls::Popup {
+    popup.flex().flex_none().h_full()
+}
+
 /// The `before` of a Move that takes the tab drawn at `from` to where the tab at `to` is:
 /// the next tab of the project after that spot, or `None` for the end. Each drawn tab is
 /// `(id, key, ours)`; a carried foreign or global view is not the project's, so it is
@@ -572,7 +578,7 @@ impl Workspace {
                     pane: pane_id,
                     kind: StripMenuKind::Workers,
                 });
-        let plus = behavior_controls::popup(
+        let plus = strip_host(behavior_controls::popup(
             ("strip-new-popup", pane_id),
             self.strip_button(
                 ("strip-new", pane_id),
@@ -584,13 +590,13 @@ impl Workspace {
             .on_click(cx.listener(move |workspace, _, window, cx| {
                 workspace.toggle_strip_menu(pane_id, StripMenuKind::New, window, cx);
             })),
-        )
+        ))
         .anchor(gpui::Anchor::TopLeft)
         .when(new_open, |popup| {
             popup.content(self.render_strip_menu(pane_id, cx))
         });
         let all_tabs = overflow.then(|| {
-            behavior_controls::popup(
+            strip_host(behavior_controls::popup(
                 ("strip-all-popup", pane_id),
                 self.strip_button(
                     ("strip-all", pane_id),
@@ -606,7 +612,7 @@ impl Workspace {
                 .on_click(cx.listener(move |workspace, _, window, cx| {
                     workspace.toggle_strip_menu(pane_id, StripMenuKind::AllTabs, window, cx);
                 })),
-            )
+            ))
             .anchor(gpui::Anchor::TopLeft)
             .when(all_open, |popup| {
                 popup.content(self.render_strip_menu(pane_id, cx))
@@ -709,6 +715,7 @@ impl Workspace {
             .h_full()
             .w(ui_text::space(STRIP_BUTTON))
             .text_color(rgb(colors.muted))
+            .map(|button| flat_cell(button, false, false, colors))
             .when(open, |button| button.bg(rgb(colors.panel_active)))
             .hover(move |style| {
                 style
@@ -963,7 +970,7 @@ impl Workspace {
             .shared_tab_menu
             .clone()
             .filter(|_| key.as_deref() == Some(self.shared_tab_menu_key.as_str()));
-        behavior_controls::popup(("tab-menu-host", tab_id), element)
+        strip_host(behavior_controls::popup(("tab-menu-host", tab_id), element))
             .anchor(gpui::Anchor::TopLeft)
             .when_some(menu, |popup, menu| popup.content(menu))
             .into_any_element()
