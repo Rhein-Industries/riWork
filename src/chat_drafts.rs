@@ -10,8 +10,6 @@
 //!
 //! The text alone is kept: attachments are staged files that a restart does not keep.
 use gpui::{App, Global};
-#[cfg(test)]
-use std::sync::mpsc;
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
@@ -22,6 +20,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 use uuid::Uuid;
+#[cfg(test)]
+use std::sync::mpsc;
 
 pub const DIR_NAME: &str = "chat-drafts";
 pub const MAX_DRAFTS: usize = 64;

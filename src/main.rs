@@ -91,8 +91,8 @@ use gpui::Focusable;
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, Div, DragMoveEvent, Entity, FocusHandle,
     Global, IntoElement, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseButton, Pixels, Point,
-    Render, StatefulInteractiveElement, TitlebarOptions, Window, WindowBounds, WindowHandle,
-    WindowOptions, actions, canvas, div, img, point, prelude::*, px, rgb, size,
+    Render, StatefulInteractiveElement, TitlebarOptions, Window, WindowBounds,
+    WindowHandle, WindowOptions, actions, canvas, div, img, point, prelude::*, px, rgb, size,
 };
 use gpui_libghostty::{TerminalConfiguration, TerminalOptions, TerminalTheme};
 use gpui_platform::application;
@@ -4763,21 +4763,17 @@ impl Workspace {
             (tree.strip_for(desktop_id)?, colors.gold)
         };
         let reconnect = tab_id.filter(|_| ended).map(|tab_id| {
-            behavior_controls::action(
-                ("remote-reconnect", tab_id),
-                "Reconnect remote session",
-                colors,
-            )
-            .px(ui_text::space(8.0))
-            .py(ui_text::space(2.0))
-            .border_1()
-            .border_color(rgb(colors.divider))
-            .text_color(rgb(colors.text))
-            .hover(|style| style.bg(rgb(colors.divider)))
-            .child(ui_text::cased("Reconnect"))
-            .on_click(cx.listener(move |workspace, _, window, cx| {
-                workspace.reconnect_remote_tab(pane_id, tab_id, window, cx);
-            }))
+            behavior_controls::action(("remote-reconnect", tab_id), "Reconnect remote session", colors)
+                .px(ui_text::space(8.0))
+                .py(ui_text::space(2.0))
+                .border_1()
+                .border_color(rgb(colors.divider))
+                .text_color(rgb(colors.text))
+                .hover(|style| style.bg(rgb(colors.divider)))
+                .child(ui_text::cased("Reconnect"))
+                .on_click(cx.listener(move |workspace, _, window, cx| {
+                    workspace.reconnect_remote_tab(pane_id, tab_id, window, cx);
+                }))
         });
         Some(
             div()
@@ -7002,9 +6998,7 @@ impl Workspace {
             return;
         }
         self.dismiss_project_sort_menus(window, cx);
-        if self.panel_menu.is_none() {
-            self.menu_return.capture(window, cx);
-        }
+        if self.panel_menu.is_none() { self.menu_return.capture(window, cx); }
         self.panel_menu = None;
         self.layout_menu_open = true;
         // Terminals are native views drawn above everything of ours; the menu is drawn over
@@ -7022,9 +7016,7 @@ impl Workspace {
         }
         self.layout_menu_open = false;
         self.finish_tab_drag(cx);
-        if !self.menu_return.restore_within(&self.focus, window, cx) {
-            self.focus_active(window, cx);
-        }
+        if !self.menu_return.restore_within(&self.focus, window, cx) { self.focus_active(window, cx); }
         cx.notify();
     }
 
@@ -7697,9 +7689,7 @@ impl Workspace {
 
     fn toggle_panel_menu(&mut self, pane_id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
         self.dismiss_project_sort_menus(window, cx);
-        if self.panel_menu.is_none() && !self.layout_menu_open {
-            self.menu_return.capture(window, cx);
-        }
+        if self.panel_menu.is_none() && !self.layout_menu_open { self.menu_return.capture(window, cx); }
         self.layout_menu_open = false;
         self.active_pane = pane_id;
         self.panel_menu = if self.panel_menu == Some(pane_id) {
@@ -7712,9 +7702,7 @@ impl Workspace {
             self.menu_focus.focus(window, cx);
         } else {
             self.finish_tab_drag(cx);
-            if !self.menu_return.restore_within(&self.focus, window, cx) {
-                self.focus_active(window, cx);
-            }
+            if !self.menu_return.restore_within(&self.focus, window, cx) { self.focus_active(window, cx); }
         }
         cx.notify();
     }
@@ -8440,11 +8428,7 @@ impl Workspace {
             for (index, tab) in pane.tabs.iter().enumerate() {
                 if matches!(tab.content, TabContent::Panel(PanelKind::Projects))
                     && terminal_lifecycle::is_shown(
-                        index,
-                        pane.active,
-                        *pane_id,
-                        self.active_pane,
-                        self.focus_mode,
+                        index, pane.active, *pane_id, self.active_pane, self.focus_mode,
                     )
                 {
                     visible.insert(tab.id);
@@ -8710,9 +8694,7 @@ impl Workspace {
         if event.keystroke.key == "escape" && self.panel_menu.is_some() {
             self.panel_menu = None;
             self.finish_tab_drag(cx);
-            if !self.menu_return.restore_within(&self.focus, window, cx) {
-                self.focus_active(window, cx);
-            }
+            if !self.menu_return.restore_within(&self.focus, window, cx) { self.focus_active(window, cx); }
             cx.stop_propagation();
             cx.notify();
             return;
@@ -9678,7 +9660,8 @@ impl Workspace {
                     project_order: self.settings.project_order,
                     project_last_edits: &self.project_last_edits,
                     project_sort_menu_open: self.project_sort_menu_open,
-                    project_sort_ui: active_tab.and_then(|tab| self.project_sort_uis.get(&tab.id)),
+                    project_sort_ui: active_tab
+                        .and_then(|tab| self.project_sort_uis.get(&tab.id)),
                 },
                 Self::panel_action,
                 window,
@@ -9812,20 +9795,15 @@ impl Workspace {
                     .child(ui_text::cased("Orchestrator skill update available"))
                     .child(div().flex_1())
                     .child(
-                        behavior_controls::action(
-                            ("load-orchestrator-skill", pane_id),
-                            "Load orchestrator skill",
-                            colors,
-                        )
-                        // The colorful themes call it out; Native's link is the primary color.
-                        .text_color(rgb(if ui_text::is_native() {
-                            colors.cyan
-                        } else {
-                            colors.gold
-                        }))
-                        .child(ui_text::cased("Load skill"))
-                        .on_click(cx.listener(
-                            move |workspace, _, _, cx| {
+                        behavior_controls::action(("load-orchestrator-skill", pane_id), "Load orchestrator skill", colors)
+                            // The colorful themes call it out; Native's link is the primary color.
+                            .text_color(rgb(if ui_text::is_native() {
+                                colors.cyan
+                            } else {
+                                colors.gold
+                            }))
+                            .child(ui_text::cased("Load skill"))
+                            .on_click(cx.listener(move |workspace, _, _, cx| {
                                 match &upgrade {
                                     SkillUpgrade::Terminal(shell_id) => {
                                         match workspace.sessions.load_orchestrator_skill(shell_id) {
@@ -9843,52 +9821,41 @@ impl Workspace {
                                     }
                                 }
                                 cx.notify();
-                            },
-                        )),
+                            })),
                     )
             }))
             .child(body);
         container
             .children(
                 (!self.focus_mode && self.panel_menu == Some(pane_id)).then(|| {
-                    let menu = behavior_controls::focus_scope(
-                        div()
-                            .id(("view-menu", pane_id))
-                            .role(gpui::Role::Menu)
-                            .aria_label("Pane menu")
-                            .absolute()
-                            .top(ui_text::space(PANE_HEADER_HEIGHT) + px(2.0))
-                            .right(px(6.0))
-                            .w(px(
-                                ui_text::space_f32(248.0).min((pane_width - 12.0).max(0.0))
-                            ))
-                            .max_h(gpui::relative(0.9))
-                            .overflow_y_scroll()
-                            .bg(rgb(colors.panel_active))
-                            .border_1()
-                            .border_color(rgb(colors.magenta))
-                            .p(ui_text::space(3.0))
-                            .map(|menu| {
-                                controls::native(menu, |menu| {
-                                    controls::menu(menu, colors)
-                                        .top(ui_text::space(PANE_HEADER_HEIGHT) + px(4.0))
-                                })
+                    let menu = behavior_controls::focus_scope(div()
+                        .id(("view-menu", pane_id))
+                        .role(gpui::Role::Menu)
+                        .aria_label("Pane menu")
+                        .absolute()
+                        .top(ui_text::space(PANE_HEADER_HEIGHT) + px(2.0))
+                        .right(px(6.0))
+                        .w(px(
+                            ui_text::space_f32(248.0).min((pane_width - 12.0).max(0.0))
+                        ))
+                        .max_h(gpui::relative(0.9))
+                        .overflow_y_scroll()
+                        .bg(rgb(colors.panel_active))
+                        .border_1()
+                        .border_color(rgb(colors.magenta))
+                        .p(ui_text::space(3.0))
+                        .map(|menu| {
+                            controls::native(menu, |menu| {
+                                controls::menu(menu, colors)
+                                    .top(ui_text::space(PANE_HEADER_HEIGHT) + px(4.0))
                             })
-                            .on_mouse_down_out(cx.listener(|workspace, _, window, cx| {
-                                workspace.panel_menu = None;
-                                workspace.finish_tab_drag(cx);
-                                if !workspace.menu_return.restore_within(
-                                    &workspace.focus,
-                                    window,
-                                    cx,
-                                ) {
-                                    workspace.focus_active(window, cx);
-                                }
-                                cx.notify();
-                            })),
-                        ("pane-menu-scope", pane_id),
-                        &self.menu_focus,
-                    );
+                        })
+                        .on_mouse_down_out(cx.listener(|workspace, _, window, cx| {
+                            workspace.panel_menu = None;
+                            workspace.finish_tab_drag(cx);
+                            if !workspace.menu_return.restore_within(&workspace.focus, window, cx) { workspace.focus_active(window, cx); }
+                            cx.notify();
+                        })), ("pane-menu-scope", pane_id), &self.menu_focus);
                     menu.child(pane_menu_heading("New tab", true, colors))
                         .children(
                             [
@@ -10160,26 +10127,22 @@ impl Workspace {
                 let name = self
                     .project_display_name(cx)
                     .unwrap_or_else(|| "Project unavailable".to_owned());
-                behavior_controls::action(
-                    "status-current-project",
-                    format!("Project {name}"),
-                    colors,
-                )
-                .max_w(ui_text::space(240.0))
-                .min_w_0()
-                .text_ellipsis()
-                .overflow_hidden()
-                .text_color(rgb(colors.cyan))
-                .child(name)
-                .on_click(cx.listener(|workspace, _, window, cx| {
-                    workspace.open_panel(
-                        PanelKind::ProjectSettings,
-                        workspace.active_pane,
-                        window,
-                        cx,
-                    );
-                }))
-                .into_any_element()
+                behavior_controls::action("status-current-project", format!("Project {name}"), colors)
+                    .max_w(ui_text::space(240.0))
+                    .min_w_0()
+                    .text_ellipsis()
+                    .overflow_hidden()
+                    .text_color(rgb(colors.cyan))
+                    .child(name)
+                    .on_click(cx.listener(|workspace, _, window, cx| {
+                        workspace.open_panel(
+                            PanelKind::ProjectSettings,
+                            workspace.active_pane,
+                            window,
+                            cx,
+                        );
+                    }))
+                    .into_any_element()
             }
             StatusItemKind::Worktree => {
                 let branch = match self.remote_project() {
@@ -10200,21 +10163,22 @@ impl Workspace {
                         .map(|worktree| worktree.branch.clone()),
                 }
                 .unwrap_or_else(|| "No worktree".to_owned());
-                behavior_controls::action(
-                    "status-current-worktree",
-                    format!("Worktree {branch}"),
-                    colors,
-                )
-                .max_w(ui_text::space(220.0))
-                .min_w_0()
-                .font_family(ui_text::mono_family())
-                .text_ellipsis()
-                .overflow_hidden()
-                .child(branch)
-                .on_click(cx.listener(|workspace, _, window, cx| {
-                    workspace.open_panel(PanelKind::Worktrees, workspace.active_pane, window, cx);
-                }))
-                .into_any_element()
+                behavior_controls::action("status-current-worktree", format!("Worktree {branch}"), colors)
+                    .max_w(ui_text::space(220.0))
+                    .min_w_0()
+                    .font_family(ui_text::mono_family())
+                    .text_ellipsis()
+                    .overflow_hidden()
+                    .child(branch)
+                    .on_click(cx.listener(|workspace, _, window, cx| {
+                        workspace.open_panel(
+                            PanelKind::Worktrees,
+                            workspace.active_pane,
+                            window,
+                            cx,
+                        );
+                    }))
+                    .into_any_element()
             }
             // Agent activity and resource use are read from this Mac's own sessions; another
             // Mac's are not sampled, so these say so rather than show the local project's.
@@ -10451,34 +10415,30 @@ impl Workspace {
                 action: None,
             },
         ];
-        behavior_controls::focus_scope(
-            div()
-                .id("layout-menu")
-                .role(gpui::Role::Menu)
-                .aria_label("Layout menu")
-                .absolute()
-                .left(px(left))
-                .bottom(ui_text::space(STATUS_BAR_HEIGHT) + px(3.0))
-                .w(px(width))
-                .bg(rgb(colors.panel_active))
-                .border_1()
-                .border_color(rgb(colors.magenta))
-                .p(ui_text::space(3.0))
-                .map(|menu| controls::native(menu, |menu| controls::menu(menu, colors)))
-                .occlude()
-                .on_mouse_down_out(cx.listener(
-                    |workspace, event: &gpui::MouseDownEvent, window, cx| {
-                        // A click on the item itself is its own toggle.
-                        if !workspace.layout_item_bounds.get().contains(&event.position) {
-                            workspace.close_layout_menu(window, cx);
-                        }
-                    },
-                ))
-                .children(rows.into_iter().map(|row| self.layout_menu_row(row, cx))),
-            "layout-menu-scope",
-            &self.menu_focus,
-        )
-        .into_any_element()
+        behavior_controls::focus_scope(div()
+            .id("layout-menu")
+            .role(gpui::Role::Menu)
+            .aria_label("Layout menu")
+            .absolute()
+            .left(px(left))
+            .bottom(ui_text::space(STATUS_BAR_HEIGHT) + px(3.0))
+            .w(px(width))
+            .bg(rgb(colors.panel_active))
+            .border_1()
+            .border_color(rgb(colors.magenta))
+            .p(ui_text::space(3.0))
+            .map(|menu| controls::native(menu, |menu| controls::menu(menu, colors)))
+            .occlude()
+            .on_mouse_down_out(cx.listener(
+                |workspace, event: &gpui::MouseDownEvent, window, cx| {
+                    // A click on the item itself is its own toggle.
+                    if !workspace.layout_item_bounds.get().contains(&event.position) {
+                        workspace.close_layout_menu(window, cx);
+                    }
+                },
+            ))
+            .children(rows.into_iter().map(|row| self.layout_menu_row(row, cx))), "layout-menu-scope", &self.menu_focus)
+            .into_any_element()
     }
 
     /// A row has no hover hint, as the rows of the other menus have none: a hint is a window of
@@ -10945,57 +10905,45 @@ impl Workspace {
             .child(
                 behavior_controls::button_content(
                     "focus-layout-toggle",
-                    if centered {
-                        "Fill window"
-                    } else {
-                        "Center focus"
-                    },
-                    if centered {
-                        "⛶ FILL WINDOW"
-                    } else {
-                        "⊙ CENTER FOCUS"
-                    },
+                    if centered { "Fill window" } else { "Center focus" },
+                    if centered { "⛶ FILL WINDOW" } else { "⊙ CENTER FOCUS" },
                 )
-                .border_1()
-                .border_color(gpui::transparent_black())
-                .focus_visible(move |style| style.border_color(rgb(colors.focus)))
-                .flex_none()
-                .px(ui_text::space(8.0))
-                .py(ui_text::space(5.0))
-                .text_color(rgb(colors.muted))
-                .hover(|style| {
-                    style
-                        .bg(rgb(colors.panel_active))
-                        .text_color(rgb(colors.cyan))
-                })
-                .on_click(cx.listener(|workspace, _, window, cx| {
-                    workspace.focus_centered = !workspace.focus_centered;
-                    workspace.focus_active(window, cx);
-                    cx.notify();
-                })),
+                    .border_1()
+                    .border_color(gpui::transparent_black())
+                    .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+                    .flex_none()
+                    .px(ui_text::space(8.0))
+                    .py(ui_text::space(5.0))
+                    .text_color(rgb(colors.muted))
+                    .hover(|style| {
+                        style
+                            .bg(rgb(colors.panel_active))
+                            .text_color(rgb(colors.cyan))
+                    })
+                    .on_click(cx.listener(|workspace, _, window, cx| {
+                        workspace.focus_centered = !workspace.focus_centered;
+                        workspace.focus_active(window, cx);
+                        cx.notify();
+                    })),
             )
             .child(
                 behavior_controls::button_content(
                     "restore-workspace",
                     "Restore workspace",
-                    if width >= 600.0 {
-                        "↙ RESTORE  ⌘⇧F"
-                    } else {
-                        "↙ RESTORE"
-                    },
+                    if width >= 600.0 { "↙ RESTORE  ⌘⇧F" } else { "↙ RESTORE" },
                 )
-                .focus_visible(move |style| style.border_color(rgb(colors.focus)))
-                .flex_none()
-                .px(ui_text::space(10.0))
-                .py(ui_text::space(5.0))
-                .border_1()
-                .border_color(rgb(colors.divider))
-                .bg(rgb(colors.panel_active))
-                .text_color(rgb(colors.cyan))
-                .hover(|style| style.border_color(rgb(colors.cyan)))
-                .on_click(cx.listener(|workspace, _, window, cx| {
-                    workspace.set_focus_mode(false, window, cx);
-                })),
+                    .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+                    .flex_none()
+                    .px(ui_text::space(10.0))
+                    .py(ui_text::space(5.0))
+                    .border_1()
+                    .border_color(rgb(colors.divider))
+                    .bg(rgb(colors.panel_active))
+                    .text_color(rgb(colors.cyan))
+                    .hover(|style| style.border_color(rgb(colors.cyan)))
+                    .on_click(cx.listener(|workspace, _, window, cx| {
+                        workspace.set_focus_mode(false, window, cx);
+                    })),
             );
         let content = if centered {
             let toolbar_height = ui_text::space_f32(FOCUS_TOOLBAR_HEIGHT);
@@ -11159,22 +11107,13 @@ impl Workspace {
         let colors = theme::palette(cx);
         behavior_controls::action(format!("pane-menu-{pane_id}-{label}"), label, colors)
             .role(gpui::Role::MenuItem)
-            .when(
-                matches!(action, PaneMenuAction::Main | PaneMenuAction::Lock),
-                |row| {
-                    row.role(gpui::Role::MenuItemCheckBox).aria_toggled(
-                        if match action {
-                            PaneMenuAction::Main => self.main_pane() == Some(pane_id),
-                            PaneMenuAction::Lock => self.pane_is_locked(pane_id),
-                            _ => false,
-                        } {
-                            gpui::Toggled::True
-                        } else {
-                            gpui::Toggled::False
-                        },
-                    )
-                },
-            )
+            .when(matches!(action, PaneMenuAction::Main | PaneMenuAction::Lock), |row| {
+                row.role(gpui::Role::MenuItemCheckBox).aria_toggled(if match action {
+                    PaneMenuAction::Main => self.main_pane() == Some(pane_id),
+                    PaneMenuAction::Lock => self.pane_is_locked(pane_id),
+                    _ => false,
+                } { gpui::Toggled::True } else { gpui::Toggled::False })
+            })
             .flex()
             .items_center()
             .gap(ui_text::space(8.0))
@@ -11298,8 +11237,7 @@ impl Render for Workspace {
         // excludes participants in the background; the scope survives renders.
         behavior_controls::sync_modal_scope(
             self.modal_open().then_some(self.modal_selection_scope),
-            window,
-            cx,
+            window, cx,
         );
         if let Some(chat_id) = self.pending_automation_chat.take() {
             let existing = self.panes.iter().find_map(|(id, pane)| pane.tabs.iter().position(|tab| matches!(&tab.content, TabContent::Chat { chat_id: current, .. } if current == &chat_id)).map(|index| (*id, index)));
@@ -11368,33 +11306,15 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::close_pane_action))
             .on_action(cx.listener(Self::next_tab_action))
             .on_action(cx.listener(Self::previous_tab_action))
-            .on_action(
-                cx.listener(|w, _: &SelectTab1, window, cx| w.select_numbered_tab(1, window, cx)),
-            )
-            .on_action(
-                cx.listener(|w, _: &SelectTab2, window, cx| w.select_numbered_tab(2, window, cx)),
-            )
-            .on_action(
-                cx.listener(|w, _: &SelectTab3, window, cx| w.select_numbered_tab(3, window, cx)),
-            )
-            .on_action(
-                cx.listener(|w, _: &SelectTab4, window, cx| w.select_numbered_tab(4, window, cx)),
-            )
-            .on_action(
-                cx.listener(|w, _: &SelectTab5, window, cx| w.select_numbered_tab(5, window, cx)),
-            )
-            .on_action(
-                cx.listener(|w, _: &SelectTab6, window, cx| w.select_numbered_tab(6, window, cx)),
-            )
-            .on_action(
-                cx.listener(|w, _: &SelectTab7, window, cx| w.select_numbered_tab(7, window, cx)),
-            )
-            .on_action(
-                cx.listener(|w, _: &SelectTab8, window, cx| w.select_numbered_tab(8, window, cx)),
-            )
-            .on_action(
-                cx.listener(|w, _: &SelectTab9, window, cx| w.select_numbered_tab(9, window, cx)),
-            )
+            .on_action(cx.listener(|w, _: &SelectTab1, window, cx| w.select_numbered_tab(1, window, cx)))
+            .on_action(cx.listener(|w, _: &SelectTab2, window, cx| w.select_numbered_tab(2, window, cx)))
+            .on_action(cx.listener(|w, _: &SelectTab3, window, cx| w.select_numbered_tab(3, window, cx)))
+            .on_action(cx.listener(|w, _: &SelectTab4, window, cx| w.select_numbered_tab(4, window, cx)))
+            .on_action(cx.listener(|w, _: &SelectTab5, window, cx| w.select_numbered_tab(5, window, cx)))
+            .on_action(cx.listener(|w, _: &SelectTab6, window, cx| w.select_numbered_tab(6, window, cx)))
+            .on_action(cx.listener(|w, _: &SelectTab7, window, cx| w.select_numbered_tab(7, window, cx)))
+            .on_action(cx.listener(|w, _: &SelectTab8, window, cx| w.select_numbered_tab(8, window, cx)))
+            .on_action(cx.listener(|w, _: &SelectTab9, window, cx| w.select_numbered_tab(9, window, cx)))
             .on_action(cx.listener(Self::toggle_sidebar_action))
             .on_action(cx.listener(Self::open_settings_action))
             .on_action(cx.listener(Self::open_project_settings_action))
@@ -14415,13 +14335,7 @@ mod main_pane_tests {
     fn strip_workspace(
         cx: &mut gpui::TestAppContext,
         count: usize,
-    ) -> (
-        gpui::AnyWindowHandle,
-        Entity<Workspace>,
-        Vec<ChatInfo>,
-        PathBuf,
-        String,
-    ) {
+    ) -> (gpui::AnyWindowHandle, Entity<Workspace>, Vec<ChatInfo>, PathBuf, String) {
         cx.update(|cx| {
             cx.set_global(Settings::default());
             cx.set_global(Appearance::resolve(theme::ThemeChoice::Native, false));
@@ -14450,12 +14364,7 @@ mod main_pane_tests {
         let chats = (0..count).map(|i| serde_json::from_value::<ChatInfo>(serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"provider":"codex","project_id":project_id,"cwd":"/tmp","title":format!("Chat {i}"),"created_at_unix":i,"state":{"state":"waiting"}})).unwrap()).collect::<Vec<_>>();
         project_tabs::TabStore::at(&home, &project_id)
             .unwrap()
-            .reconcile(
-                &chats
-                    .iter()
-                    .map(project_tabs::Session::chat)
-                    .collect::<Vec<_>>(),
-            )
+            .reconcile(&chats.iter().map(project_tabs::Session::chat).collect::<Vec<_>>())
             .unwrap();
         let (handle, workspace) = crate::form_input::test_window(cx, move |window, cx| {
             Workspace::build(startup, None, window, cx, false)
@@ -14488,11 +14397,7 @@ mod main_pane_tests {
         (handle, workspace, chats, home, project_id)
     }
 
-    fn strip_tab_id(
-        workspace: &Entity<Workspace>,
-        key: &str,
-        cx: &mut gpui::TestAppContext,
-    ) -> TabId {
+    fn strip_tab_id(workspace: &Entity<Workspace>, key: &str, cx: &mut gpui::TestAppContext) -> TabId {
         workspace.read_with(cx, |workspace, _| {
             workspace.panes[&1]
                 .tabs
@@ -14504,11 +14409,7 @@ mod main_pane_tests {
     }
 
     /// Whether the tab is drawn wholly inside its strip's visible scrolling area.
-    fn strip_shows(
-        handle: gpui::AnyWindowHandle,
-        tab: TabId,
-        cx: &mut gpui::TestAppContext,
-    ) -> bool {
+    fn strip_shows(handle: gpui::AnyWindowHandle, tab: TabId, cx: &mut gpui::TestAppContext) -> bool {
         use gpui_kit::test::TestWindowExt;
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
@@ -14559,31 +14460,20 @@ mod main_pane_tests {
         let key = format!("chat:{}", chats[0].id);
         let selected = strip_tab_id(&workspace, &key, cx);
         crate::form_input::test_turn(cx, handle, |window, cx| {
-            workspace.update(cx, |workspace, cx| {
-                workspace.select_tab(1, selected, window, cx)
-            });
+            workspace.update(cx, |workspace, cx| workspace.select_tab(1, selected, window, cx));
         });
         for _ in 0..4 {
             crate::form_input::test_turn(cx, handle, |_, _| {});
         }
         assert!(strip_shows(handle, selected, cx));
         let last = format!("chat:{}", chats[23].id);
-        assert!(
-            !strip_shows(handle, strip_tab_id(&workspace, &last, cx), cx),
-            "the strip overflows"
-        );
+        assert!(!strip_shows(handle, strip_tab_id(&workspace, &last, cx), cx), "the strip overflows");
         // A Move from another device takes the selected tab to the end of the strip.
         project_tabs::TabStore::at(&home, &project_id)
             .unwrap()
-            .update(&project_tabs::Update::Move {
-                key: key.clone(),
-                before: None,
-            })
+            .update(&project_tabs::Update::Move { key: key.clone(), before: None })
             .unwrap();
-        let entries = project_tabs::TabStore::at(&home, &project_id)
-            .unwrap()
-            .list()
-            .unwrap();
+        let entries = project_tabs::TabStore::at(&home, &project_id).unwrap().list().unwrap();
         crate::form_input::test_turn(cx, handle, |window, cx| {
             workspace.update(cx, |workspace, cx| {
                 workspace.shared_tabs = Some(entries);
@@ -14613,10 +14503,7 @@ mod main_pane_tests {
         for _ in 0..4 {
             crate::form_input::test_turn(cx, handle, |_, _| {});
         }
-        assert!(
-            strip_shows(handle, selected, cx),
-            "revealed after the rename"
-        );
+        assert!(strip_shows(handle, selected, cx), "revealed after the rename");
     }
 
     #[gpui::test]
@@ -14643,13 +14530,7 @@ mod main_pane_tests {
         crate::form_input::test_turn(cx, handle, |window, cx| {
             workspace.update(cx, |workspace, cx| {
                 workspace
-                    .change_shared_tab(
-                        &project_tabs::Update::Pin {
-                            key: pinned.clone(),
-                        },
-                        window,
-                        cx,
-                    )
+                    .change_shared_tab(&project_tabs::Update::Pin { key: pinned.clone() }, window, cx)
                     .unwrap();
             });
         });
@@ -14657,34 +14538,18 @@ mod main_pane_tests {
         let key = format!("chat:{}", chats[23].id);
         let selected = strip_tab_id(&workspace, &key, cx);
         crate::form_input::test_turn(cx, handle, |window, cx| {
-            workspace.update(cx, |workspace, cx| {
-                workspace.select_tab(1, selected, window, cx)
-            });
+            workspace.update(cx, |workspace, cx| workspace.select_tab(1, selected, window, cx));
         });
         settle(cx);
         assert!(strip_shows(handle, selected, cx));
         // Its own title grows past ＋.
-        rename(
-            key,
-            "A much longer title for the selected tab at the strip's end",
-            cx,
-        );
+        rename(key, "A much longer title for the selected tab at the strip's end", cx);
         settle(cx);
-        assert!(
-            strip_shows(handle, selected, cx),
-            "revealed after renaming itself"
-        );
+        assert!(strip_shows(handle, selected, cx), "revealed after renaming itself");
         // The pinned tab grows, narrowing the scrolling area from the left.
-        rename(
-            pinned,
-            "A much longer title for the pinned tab before the rest",
-            cx,
-        );
+        rename(pinned, "A much longer title for the pinned tab before the rest", cx);
         settle(cx);
-        assert!(
-            strip_shows(handle, selected, cx),
-            "revealed after a pinned tab grew"
-        );
+        assert!(strip_shows(handle, selected, cx), "revealed after a pinned tab grew");
     }
 
     #[gpui::test]
@@ -14722,18 +14587,11 @@ mod main_pane_tests {
         let chats = (0..3).map(|i| serde_json::from_value::<ChatInfo>(serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"provider":"codex","project_id":project_id,"cwd":"/tmp","title":format!("Chat {i}"),"created_at_unix":i,"state":{"state":"waiting"}})).unwrap()).collect::<Vec<_>>();
         let tab_store = project_tabs::TabStore::at(&home, &project_id).unwrap();
         tab_store
-            .reconcile(
-                &chats
-                    .iter()
-                    .map(project_tabs::Session::chat)
-                    .collect::<Vec<_>>(),
-            )
+            .reconcile(&chats.iter().map(project_tabs::Session::chat).collect::<Vec<_>>())
             .unwrap();
         let pinned = format!("chat:{}", chats[2].id);
         tab_store
-            .update(&project_tabs::Update::Pin {
-                key: pinned.clone(),
-            })
+            .update(&project_tabs::Update::Pin { key: pinned.clone() })
             .unwrap();
         let window = cx.add_window(|window, cx| Workspace::build(startup, None, window, cx, false));
         let ids = window

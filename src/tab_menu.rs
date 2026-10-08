@@ -173,8 +173,8 @@ impl Render for TabMenu {
                 .into_iter()
                 .enumerate()
                 .flat_map(|(index, label)| {
-                    let disabled =
-                        (index == 2 && self.left.is_none()) || (index == 3 && self.right.is_none());
+                    let disabled = (index == 2 && self.left.is_none())
+                        || (index == 3 && self.right.is_none());
                     let item = row(behavior::button_content(
                         ("shared-tab-menu-action", index),
                         label,
@@ -209,8 +209,7 @@ impl Render for TabMenu {
                         _ => cx.emit(Event::Cancel),
                     }))
                     .into_any_element();
-                    let separator =
-                        matches!(index, 2 | 4 | 5).then(|| controls::menu_separator(colors));
+                    let separator = matches!(index, 2 | 4 | 5).then(|| controls::menu_separator(colors));
                     separator.into_iter().chain([item])
                 }),
             )

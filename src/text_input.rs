@@ -11,10 +11,7 @@ use gpui::{
 pub use gpui_kit::base::input::{InputBase, InputEvent, InputState, TextareaState};
 use gpui_kit::base::{
     ColorTokens, Theme, ThemeAppearance,
-    input::{
-        Enter, Escape, IndentInline, Input, InputBaseState, InputModeKind, OutdentInline, Paste,
-        Textarea,
-    },
+    input::{Enter, Escape, IndentInline, Input, InputBaseState, InputModeKind, OutdentInline, Paste, Textarea},
 };
 
 use crate::{settings::Settings, theme, ui_text};
