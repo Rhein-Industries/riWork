@@ -185,6 +185,9 @@ public struct SavedDesktop: Codable, Sendable, Identifiable {
     public var selectedProjectID: String?
     public var selectedSessionID: String?
     public var projectSessionIDs: [String: String]?
+    /// The shared tab (`chat:<id>` or `shell:<id>`) last on screen in each project, by project id: entering the project, relaunching
+    /// and reconnecting put it back while the desktop still lists it.
+    public var projectTabKeys: [String: String]?
     public var pendingInput: PendingInput?
     public init(name: String, pairing: Pairing, allowLocalDevelopment: Bool) {
         self.name = name; self.pairing = pairing; self.allowLocalDevelopment = allowLocalDevelopment

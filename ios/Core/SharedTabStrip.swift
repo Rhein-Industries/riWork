@@ -15,8 +15,9 @@ public enum SharedTabStrip {
         return nil
     }
 
-    /// Tabs that may be moved past each other: the same parent and the same pin group (docs/shared-tabs.md, Move).
-    public static func sameGroup(_ a: SharedTab, _ b: SharedTab) -> Bool { a.parent == b.parent && a.pinned == b.pinned }
+    /// Tabs that may be moved past each other: the same parent (docs/shared-tabs.md, Move). Any top-level tab goes anywhere among the
+    /// top-level tabs; an opened child stays among its parent's.
+    public static func sameGroup(_ a: SharedTab, _ b: SharedTab) -> Bool { a.parent == b.parent }
 
     /// The move for dropping `dragged` on `target` (it goes before it), or at the end of its group when `target` is nil. Nil when the
     /// drop says nothing (on itself, or where it already is) or is not allowed (another group: the desktop would refuse it).
@@ -31,7 +32,7 @@ public enum SharedTabStrip {
         return .move(dragged.key, before: target.key)
     }
 
-    /// Move left / Move right, as the Mac's tab menu has them: one place among the visible tabs of its sibling and pin group; nil at the
+    /// Move left / Move right, as the Mac's tab menu has them: one place among the visible tabs of its sibling group; nil at the
     /// group's boundary. Right goes before the tab after the next one in shared order (hidden members included), or to the group's end.
     public static func moveLeft(_ tab: SharedTab, in reply: SharedTabsReply) -> TabUpdate? {
         let visible = reply.visible.filter { sameGroup($0, tab) }
@@ -56,14 +57,13 @@ public enum SharedTabStrip {
         return .move(group[source].key, before: before)
     }
 
-    /// The groups of the Edit tabs sheet, in the row's order: the pinned tabs, then the other top-level tabs, then the opened children
-    /// of each parent; each can only be reordered within itself.
+    /// The groups of the Edit tabs sheet, in the row's order: the top-level tabs, then the opened children of each parent; each can
+    /// only be reordered within itself.
     public struct Group: Sendable, Equatable, Identifiable {
         public let parent: String?
-        public let pinned: Bool
         public let title: String
         public let tabs: [SharedTab]
-        public var id: String { "\(parent ?? "root"):\(pinned)" }
+        public var id: String { parent ?? "root" }
     }
     public static func groups(_ reply: SharedTabsReply) -> [Group] {
         // Kinds this phone does not know are ignored (the contract), so never reordered from here.
@@ -72,19 +72,18 @@ public enum SharedTabStrip {
         var groups: [Group] = []
         var seen: [String: Int] = [:]
         for tab in visible {
-            let id = "\(tab.parent ?? "root"):\(tab.pinned)"
+            let id = tab.parent ?? "root"
             if let index = seen[id] {
-                groups[index] = Group(parent: groups[index].parent, pinned: groups[index].pinned, title: groups[index].title, tabs: groups[index].tabs + [tab])
+                groups[index] = Group(parent: groups[index].parent, title: groups[index].title, tabs: groups[index].tabs + [tab])
             } else {
-                let title = tab.parent.map { "In \(titles[$0] ?? "another tab")" } ?? (tab.pinned ? "Pinned" : "Tabs")
+                let title = tab.parent.map { "In \(titles[$0] ?? "another tab")" } ?? "Tabs"
                 seen[id] = groups.count
-                groups.append(Group(parent: tab.parent, pinned: tab.pinned, title: title, tabs: [tab]))
+                groups.append(Group(parent: tab.parent, title: title, tabs: [tab]))
             }
         }
-        // Pinned first, then the other top-level tabs, then the children's groups in the order they first appear.
-        return groups.sorted { rank($0) < rank($1) }
+        // The top-level tabs first, then the children's groups in the order they first appear.
+        return groups.sorted { ($0.parent == nil ? 0 : 1) < ($1.parent == nil ? 0 : 1) }
     }
-    private static func rank(_ group: Group) -> Int { group.parent != nil ? 2 : (group.pinned ? 0 : 1) }
 
     /// One row of the "Open shell/worker…" picker: a hidden chat or shell that can be opened, and the tab it belongs to.
     public struct Openable: Sendable, Equatable, Identifiable {
@@ -104,33 +103,38 @@ public enum SharedTabStrip {
             .map { Openable(tab: $0, parentTitle: $0.parent.flatMap { titles[$0] }) }
     }
 
+    /// The tab to put on screen on entering a project: the one last on screen there (`remembered`), when it is still a visible tab this
+    /// phone can open (`opens`), else the first such tab; nil when there is none.
+    public static func restoredTab(remembered: String?, in reply: SharedTabsReply, opens: (SharedTab) -> Bool) -> SharedTab? {
+        let candidates = reply.visible.filter { $0.kind != .unknown && opens($0) }
+        return candidates.first { $0.key == remembered } ?? candidates.first
+    }
+
     /// What closing a tab does now, by the device's setting (`tab_close_behavior`) and what the tab is.
     public enum ClosePlan: Sendable, Equatable {
-        /// A pinned tab is not closed: it must be unpinned first (the desktop refuses to hide a pinned one).
-        case unpinFirst
-        /// Ask: the sheet with Detach (and Exit, unless the tab is an orchestrator's) and Cancel; nothing changes until a choice.
-        case ask(exitAllowed: Bool)
+        /// Ask: the sheet with Detach, Exit and Cancel; nothing changes until a choice.
+        case ask
         /// Hide it; its process carries on (always, for a worker).
         case detach
         /// Hide it, then stop the chat or close the shell; a chat's history stays.
         case exit
+        /// Ask or Exit for a tab the phone cannot end (`exitable` false): the sheet with Detach and Cancel only.
+        case detachOnly
     }
-    /// An orchestrator (`orchestrator`) is never exited from the phone: Ask and Exit both show the sheet with Detach only.
-    public static func closePlan(_ tab: SharedTab, setting: TabCloseBehavior, orchestrator: Bool = false) -> ClosePlan {
-        if tab.pinned { return .unpinFirst }
+    /// The project orchestrator is an ordinary tab here: in a chat it closes like any chat the person opened. One that runs in a
+    /// terminal cannot be ended from the phone (the relay closes only project terminals and has no orchestrator stop), so it is
+    /// `exitable: false`: Detach only, never a Hide that is followed by a failed close.
+    public static func closePlan(_ tab: SharedTab, setting: TabCloseBehavior, exitable: Bool = true) -> ClosePlan {
         switch setting.effectiveChoice(for: tab) {
-        case .ask: return .ask(exitAllowed: !orchestrator)
+        case .ask: return exitable ? .ask : .detachOnly
         case .detach: return .detach
-        case .exit: return orchestrator ? .ask(exitAllowed: false) : .exit
+        case .exit: return exitable ? .exit : .detachOnly
         }
     }
 
     /// What the long-press menu offers for a tab.
     public struct Actions: Sendable, Equatable {
-        public let pin: Bool, unpin: Bool, rename: Bool, close: Bool
+        public let rename: Bool, close: Bool
     }
-    public static func actions(_ tab: SharedTab) -> Actions {
-        // Only top-level tabs may be pinned; a pinned tab is unpinned before it can be closed.
-        Actions(pin: !tab.pinned && tab.parent == nil, unpin: tab.pinned, rename: tab.kind != .unknown, close: !tab.pinned)
-    }
+    public static func actions(_ tab: SharedTab) -> Actions { Actions(rename: tab.kind != .unknown, close: true) }
 }

@@ -290,12 +290,13 @@ public enum ChatItemBody: Sendable, Equatable, Codable {
     case todo([ChatStep])
     case compaction
     /// `kind` is the host's dedupe key ("rate_limit:seven_day", "api_retry", "reconnecting", …): notices of one kind are one line of
-    /// the banner row. Older hosts send none.
-    case notice(level: ChatNoticeLevel, text: String, kind: String? = nil)
+    /// the banner row. Older hosts send none. `resolved`: the cause went away; `resetsAt`: when the limit it is about resets (Unix
+    /// seconds); `dismissed`: the host dismissed this sticky notice on some device (docs/chat-notices.md). All optional on the wire.
+    case notice(level: ChatNoticeLevel, text: String, kind: String? = nil, resolved: Bool = false, resetsAt: UInt64? = nil, dismissed: Bool = false)
 
     private enum Keys: String, CodingKey {
-        case type, text, explanation, steps, command, cwd, output, changes, server, tool, input, query, items, level, kind
-        case exitCode = "exit_code"
+        case type, text, explanation, steps, command, cwd, output, changes, server, tool, input, query, items, level, kind, resolved, dismissed
+        case exitCode = "exit_code", resetsAt = "resets_at"
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -318,7 +319,10 @@ public enum ChatItemBody: Sendable, Equatable, Codable {
         case "notice":
             // A kind that is not a non-empty string is no kind (the notice is then its own line, by its text).
             let kind = (try? c.decodeIfPresent(String.self, forKey: .kind))?.flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
-            self = .notice(level: c.lenient(ChatNoticeLevel.self, forKey: .level, default: .info), text: try c.decode(String.self, forKey: .text), kind: kind)
+            // A flag or a time of the wrong type is read as absent, never as the notice.
+            let resetsAt = c.tolerant(UInt64.self, forKey: .resetsAt) ?? c.tolerant(Double.self, forKey: .resetsAt).flatMap { $0 >= 0 && $0 < 1e15 ? UInt64($0) : nil }
+            self = .notice(level: c.lenient(ChatNoticeLevel.self, forKey: .level, default: .info), text: try c.decode(String.self, forKey: .text), kind: kind,
+                           resolved: c.tolerant(Bool.self, forKey: .resolved) ?? false, resetsAt: resetsAt, dismissed: c.tolerant(Bool.self, forKey: .dismissed) ?? false)
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "Unknown item type \(type)")
         }
     }
@@ -340,8 +344,11 @@ public enum ChatItemBody: Sendable, Equatable, Codable {
         case .webSearch(let query): try c.encode("web_search", forKey: .type); try c.encode(query, forKey: .query)
         case .todo(let items): try c.encode("todo", forKey: .type); try c.encode(items, forKey: .items)
         case .compaction: try c.encode("compaction", forKey: .type)
-        case .notice(let level, let text, let kind):
+        case .notice(let level, let text, let kind, let resolved, let resetsAt, let dismissed):
             try c.encode("notice", forKey: .type); try c.encode(level, forKey: .level); try c.encode(text, forKey: .text); try c.encodeIfPresent(kind, forKey: .kind)
+            if resolved { try c.encode(true, forKey: .resolved) }
+            try c.encodeIfPresent(resetsAt, forKey: .resetsAt)
+            if dismissed { try c.encode(true, forKey: .dismissed) }
         }
     }
 }
@@ -592,9 +599,11 @@ public enum ChatEvent: Sendable, Equatable, Codable {
     case usage(ChatUsage)
     /// The models the provider offers: sent once after the handshake and again if the list changes; each replaces the last.
     case models([ChatModelOption])
+    /// The provider's usage windows (5h, weekly, …), each replacing the last wholesale; an empty list is no known windows.
+    case rateLimits([ChatRateWindow])
 
     private enum Keys: String, CodingKey {
-        case event, info, state, outcome, item, delta, approval, decision, question, usage, models
+        case event, info, state, outcome, item, delta, approval, decision, question, usage, models, windows
         case turnID = "turn_id", itemID = "item_id", requestID = "request_id"
     }
     public init(from decoder: any Decoder) throws {
@@ -617,6 +626,8 @@ public enum ChatEvent: Sendable, Equatable, Codable {
         case "usage": self = .usage(try c.decode(ChatUsage.self, forKey: .usage))
         // A list that is no array is no list: the event is skipped and the models held stay. A model the phone cannot read is left out.
         case "models": self = .models(try c.decode([Lenient<ChatModelOption>].self, forKey: .models).compactMap(\.value))
+        // A window the phone cannot read is left out; a list that is no array is no event.
+        case "rate_limits": self = .rateLimits(try c.decode([Lenient<ChatRateWindow>].self, forKey: .windows).compactMap(\.value))
         default: throw DecodingError.dataCorruptedError(forKey: .event, in: c, debugDescription: "Unknown event \(word)")
         }
     }
@@ -638,6 +649,7 @@ public enum ChatEvent: Sendable, Equatable, Codable {
         case .questionResolved(let requestID): try c.encode("question_resolved", forKey: .event); try c.encode(requestID, forKey: .requestID)
         case .usage(let usage): try c.encode("usage", forKey: .event); try c.encode(usage, forKey: .usage)
         case .models(let models): try c.encode("models", forKey: .event); try c.encode(models, forKey: .models)
+        case .rateLimits(let windows): try c.encode("rate_limits", forKey: .event); try c.encode(windows, forKey: .windows)
         }
     }
 }
@@ -657,10 +669,12 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
     case compact
     /// Stops the provider process; the chat resumes with the next message.
     case stop
+    /// Closes a sticky notice (a usage limit, a sign-in) on every device: the host records it and re-emits it `dismissed`.
+    case dismissNotice(itemID: String)
 
     private enum Keys: String, CodingKey {
         case command, text, decision, answers, model, effort, fast
-        case requestID = "request_id", approvalMode = "approval_mode"
+        case requestID = "request_id", approvalMode = "approval_mode", itemID = "item_id"
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -675,6 +689,7 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
                               approvalMode: try c.decodeIfPresent(ChatApprovalMode.self, forKey: .approvalMode), fast: try c.decodeIfPresent(Bool.self, forKey: .fast))
         case "compact": self = .compact
         case "stop": self = .stop
+        case "dismiss_notice": self = .dismissNotice(itemID: try c.decode(String.self, forKey: .itemID))
         default: throw DecodingError.dataCorruptedError(forKey: .command, in: c, debugDescription: "Unknown command \(word)")
         }
     }
@@ -691,6 +706,7 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
             try c.encodeIfPresent(fast, forKey: .fast)
         case .compact: try c.encode("compact", forKey: .command)
         case .stop: try c.encode("stop", forKey: .command)
+        case .dismissNotice(let itemID): try c.encode("dismiss_notice", forKey: .command); try c.encode(itemID, forKey: .itemID)
         }
     }
 }

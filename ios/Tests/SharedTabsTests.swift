@@ -8,12 +8,24 @@ import XCTest
     func testBothCallsValidateAndAllUpdatesHaveTheirOwnShape() throws {
         let id = UUID().uuidString.lowercased(), key = "chat:\(session)"
         try RequestValidation.validate(method: "tabs.list", params: ["project_id": .string(project)], id: id)
-        for update in [TabUpdate.pin(key), .unpin(key), .hide(key), .unhide(key), .move(key, before: nil), .rename(key, title: "Name")] {
+        for update in [TabUpdate.hide(key), .unhide(key), .move(key, before: nil), .rename(key, title: "Name")] {
             try RequestValidation.validate(method: "tabs.update", params: ["project_id": .string(project), "update": update.json], id: id)
         }
         XCTAssertThrowsError(try RequestValidation.validate(method: "tabs.update", params: ["project_id": .string(project), "update": TabUpdate.hide("../x").json], id: id))
         XCTAssertThrowsError(try RequestValidation.validate(method: "tabs.update", params: ["project_id": .string(project), "update": TabUpdate.rename(key, title: "\n").json], id: id))
         XCTAssertThrowsError(try RequestValidation.validate(method: "tabs.list", params: ["project_id": .string(project), "stop": .bool(true)], id: id))
+        for action in ["pin", "unpin"] {
+            XCTAssertThrowsError(try RequestValidation.validate(method: "tabs.update", params: ["project_id": .string(project), "update": .object(["action": .string(action), "key": .string(key)])], id: id), "the phone has no pins")
+        }
+    }
+    func testAPinnedFieldIsNotReadWhetherMissingOrTrue() throws {
+        let base: [String: JSONValue] = ["key": .string("chat:\(session)"), "kind": .string("chat"), "title": .string("Project orchestrator"), "status": .string("working"), "hidden": .bool(false), "order": .number(0), "parent": .null, "children": .array([]), "child_count": .number(0)]
+        var pinned = base; pinned["pinned"] = .bool(true)
+        let missing = try JSONValue.object(base).decode(SharedTab.self), present = try JSONValue.object(pinned).decode(SharedTab.self)
+        XCTAssertEqual(missing, present, "a pinned tab is an ordinary tab")
+        XCTAssertEqual(SharedTabStrip.actions(present), .init(rename: true, close: true))
+        XCTAssertEqual(SharedTabStrip.closePlan(present, setting: .ask), .ask)
+        XCTAssertEqual(SharedTabStrip.closePlan(present, setting: .exit), .exit)
     }
     func testDecodeKeepsChildrenStatusAndFiltersHiddenAndParentedEntries() throws {
         let base: [String: JSONValue] = ["key": .string("chat:\(session)"), "kind": .string("chat"), "title": .string("Shared"), "status": .string("waiting"), "pinned": .bool(true), "hidden": .bool(false), "order": .number(0), "parent": .null, "children": .array([]), "child_count": .number(0)]
@@ -90,4 +102,19 @@ private actor TabsTransport: RemoteTransport {
     func request(method: String, params: [String: JSONValue], id: String) async throws -> JSONValue { methods.append(method); return .object(["entries": .array([])]) }
     func disconnect() async {}
     func isConnected() async -> Bool { true }
+}
+extension SharedTabsTests {
+    func testIdleIsAStatusAndAMissingPinnedFieldDecodes() throws {
+        let json = "{\"entries\":[{\"key\":\"shell:\(session)\",\"kind\":\"shell\",\"title\":\"zsh\",\"status\":\"idle\",\"hidden\":false,\"order\":0,\"parent\":null,\"children\":[],\"child_count\":0}]}"
+        let reply = try JSONDecoder().decode(SharedTabsReply.self, from: Data(json.utf8))
+        XCTAssertEqual(reply.entries[0].status, .idle)
+        XCTAssertEqual(reply.visible.count, 1, "an idle shell is a tab")
+    }
+}
+extension SharedTabsTests {
+    func testUnknownFieldsOfATabAndOfTheReplyAreIgnored() throws {
+        let json = "{\"epoch\":\"e\",\"revision\":2,\"future\":{\"x\":1},\"entries\":[{\"key\":\"chat:\(session)\",\"kind\":\"chat\",\"title\":\"T\",\"status\":\"working\",\"hidden\":false,\"order\":0,\"parent\":null,\"children\":[],\"child_count\":0,\"pane\":\"left\",\"color\":7,\"pinned\":true}]}"
+        let reply = try JSONDecoder().decode(SharedTabsReply.self, from: Data(json.utf8))
+        XCTAssertEqual(reply.visible.map(\.title), ["T"])
+    }
 }

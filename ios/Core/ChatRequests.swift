@@ -256,14 +256,16 @@ public struct ChatEventsRequest: Sendable, Equatable {
     public var isLongPoll: Bool { waitMilliseconds > 0 }
 
     public var params: [String: JSONValue] {
-        var params: [String: JSONValue] = ["chat_id": .string(chatID), "since": .number(Double(since)), "wait_ms": .number(Double(waitMilliseconds))]
+        var params: [String: JSONValue] = ["chat_id": .string(chatID), "since": .number(Double(since)), "wait_ms": .number(Double(waitMilliseconds)),
+                                           "features": ChatFeatures.requested]
         if complete { params["complete"] = .bool(true) }
         if bounded { params["bounded"] = .bool(true) }
         if let maxEvents { params["max_events"] = .number(Double(maxEvents)) }
         return params
     }
     public init(params: [String: JSONValue]) throws {
-        guard Set(params.keys).isSubset(of: ["chat_id", "since", "wait_ms", "max_events", "complete", "bounded"]) else { throw ChatValidationError.malformed }
+        guard Set(params.keys).isSubset(of: ["chat_id", "since", "wait_ms", "max_events", "complete", "bounded", "features"]) else { throw ChatValidationError.malformed }
+        try ChatFeatures.validate(params["features"])
         func whole(_ key: String, in range: ClosedRange<Double>) throws -> Int? {
             guard let value = params[key] else { return nil }
             guard case .number(let number) = value, number.isFinite, number.rounded() == number, range.contains(number) else { throw ChatValidationError.malformed }
@@ -290,6 +292,19 @@ public struct ChatEventsRequest: Sendable, Equatable {
     }
 }
 
+/// What the phone asks of `chat.snapshot` and `chat.events` beyond the base protocol: the host withholds a newer event from a client
+/// that does not name it. `rate_limits`: the provider's usage windows (docs/chat-notices.md).
+public enum ChatFeatures {
+    public static let names = ["rate_limits"]
+    public static var requested: JSONValue { .array(names.map(JSONValue.string)) }
+    /// At most 16 non-empty strings of at most 64 bytes (the host's limits).
+    public static func validate(_ value: JSONValue?) throws {
+        guard let value else { return }
+        guard case .array(let items) = value, items.count <= 16,
+              items.allSatisfy({ if case .string(let name) = $0 { !name.isEmpty && name.utf8.count <= 64 } else { false } }) else { throw ChatValidationError.malformed }
+    }
+}
+
 // MARK: - chat.command and chat.stop
 
 /// `chat.command`: one command for one chat. Sent once; the app never retries one.
@@ -302,6 +317,9 @@ public struct ChatCommandRequest: Sendable, Equatable {
         if case .send(let text) = command {
             guard text.utf8.count <= ChatLimits.messageBytes else { throw ChatValidationError.messageTooLong }
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ChatValidationError.blankMessage }
+        }
+        if case .dismissNotice(let itemID) = command {
+            guard (1...512).contains(itemID.utf8.count), !itemID.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw ChatValidationError.invalidID }
         }
         if case .configure(let model, let effort, let mode, let fast) = command {
             guard model != nil || effort != nil || mode != nil || fast != nil else { throw ChatValidationError.emptyConfigure }
@@ -385,15 +403,31 @@ public struct ChatSnapshotReply: Sendable, Equatable, Codable {
     public let more: Bool
     public let items: [ChatSnapshotRow]
     public let controls: [ChatEvent]
-    enum CodingKeys: String, CodingKey { case v, chatID = "chat_id", cursor, next, before, more, items, controls }
-    public init(chatID: String, cursor: String, next: UInt64, before: UInt64, more: Bool, items: [ChatSnapshotRow], controls: [ChatEvent]) {
+    /// The host's active dismissals in this chat's account scope (`<provider>:<account>|<kind>@<resets>` or `…|<kind>#<item id>`);
+    /// empty from an older host. The per-item `dismissed` flag stays authoritative; this covers a notice the flag has not reached yet.
+    public let dismissedNotices: [String]
+    /// Rows and controls the phone could not read (an item type or an event a newer host has, such as `rate_limits` for a phone
+    /// before it): left out, never the whole snapshot. Not on the wire.
+    public let skipped: Int
+    enum CodingKeys: String, CodingKey { case v, chatID = "chat_id", cursor, next, before, more, items, controls, dismissedNotices = "dismissed_notices" }
+    public init(chatID: String, cursor: String, next: UInt64, before: UInt64, more: Bool, items: [ChatSnapshotRow], controls: [ChatEvent], dismissedNotices: [String] = []) {
         v = 1; self.chatID = chatID; self.cursor = cursor; self.next = next; self.before = before; self.more = more; self.items = items; self.controls = controls
+        self.dismissedNotices = dismissedNotices; skipped = 0
+    }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        v = try c.decode(Int.self, forKey: .v); chatID = try c.decode(String.self, forKey: .chatID); cursor = try c.decode(String.self, forKey: .cursor)
+        next = try c.decode(UInt64.self, forKey: .next); before = try c.decode(UInt64.self, forKey: .before); more = try c.decode(Bool.self, forKey: .more)
+        let rows = try c.decode([Lenient<ChatSnapshotRow>].self, forKey: .items), events = try c.decode([Lenient<ChatEvent>].self, forKey: .controls)
+        items = rows.compactMap(\.value); controls = events.compactMap(\.value)
+        skipped = rows.count - items.count + events.count - controls.count
+        dismissedNotices = (try? c.decodeIfPresent([String].self, forKey: .dismissedNotices)) ?? []
     }
 }
 extension RemoteTransport {
     public func chatSnapshot(chatID: String, cursor: String? = nil, before: UInt64? = nil, itemIDs: [String] = []) async throws -> ChatSnapshotReply {
         guard NewTerminalRequest.isCanonicalUUID(chatID) else { throw ChatValidationError.invalidID }
-        var params: [String: JSONValue] = ["chat_id": .string(chatID), "limit": .number(50)]
+        var params: [String: JSONValue] = ["chat_id": .string(chatID), "limit": .number(50), "features": ChatFeatures.requested]
         if let cursor { params["cursor"] = .string(cursor) }
         if !itemIDs.isEmpty { params["item_ids"] = .array(itemIDs.map { .string($0) }) }
         if let before { params["before"] = .number(Double(before)) }
@@ -402,8 +436,11 @@ extension RemoteTransport {
         guard reply.v == 1, reply.chatID == chatID, reply.cursor.count <= 80, !reply.cursor.isEmpty,
               reply.items.count <= (itemIDs.isEmpty ? 50 : 100), cursor == nil || reply.cursor == cursor,
               cursor == nil || reply.controls.isEmpty,
-              reply.before == reply.items.first?.order ?? 0,
-              !reply.more || !reply.items.isEmpty else { throw ChatControlError.unreadableReply }
+              // A first row left out (unreadable) moves the first order on; `before` is the host's.
+              reply.before == reply.items.first?.order ?? 0 || reply.skipped > 0,
+              // A page of only unreadable rows is still a page: history goes on from the host's `before`.
+              !reply.more || !reply.items.isEmpty || reply.skipped > 0,
+              before.map { reply.before < $0 } ?? true || !reply.more else { throw ChatControlError.unreadableReply }
         var last: UInt64 = 0
         var ids = Set<String>()
         for row in reply.items {

@@ -50,6 +50,8 @@ actor ChatTransport: RemoteTransport {
     var shellOutput = "screen"
     private var created = 0
     /// The desktop's shared tab list (`tabs.*`, docs/shared-tabs.md): offered once a test sets it.
+    /// `pinned` is only what an older desktop still sends (as `"pinned": true`); the phone does not read it, and nothing here treats a
+    /// pinned tab differently.
     struct Tab: Sendable, Equatable {
         var key: String, kind: String, title: String, status = "working", pinned = false, hidden = false, worker = false, order = 0, parent: String? = nil
     }
@@ -68,6 +70,9 @@ actor ChatTransport: RemoteTransport {
         while !heldReleased { try await Task.sleep(for: .milliseconds(3)) }
         return reply
     }
+    /// The next this many `tabs.list` fail (a transient error).
+    var tabsListFailures = 0
+    func failTabsList(_ times: Int) { tabsListFailures = times }
     /// The next `tabs.update` fails with this (the list is left as it was).
     var tabUpdateError: RemoteError?
     func failNextTabUpdate(_ error: RemoteError?) { tabUpdateError = error }
@@ -95,9 +100,11 @@ actor ChatTransport: RemoteTransport {
     private func tabsReply() -> JSONValue {
         func node(_ tab: Tab) -> JSONValue {
             let children = sharedTabs.filter { $0.parent == tab.key }
-            return .object(["key": .string(tab.key), "kind": .string(tab.kind), "title": .string(tab.title), "status": .string(tab.status),
-                            "pinned": .bool(tab.pinned), "hidden": .bool(tab.hidden), "worker": .bool(tab.worker), "order": .number(Double(tab.order)),
-                            "parent": tab.parent.map(JSONValue.string) ?? .null, "children": .array(children.map(node)), "child_count": .number(Double(children.count))])
+            var fields: [String: JSONValue] = ["key": .string(tab.key), "kind": .string(tab.kind), "title": .string(tab.title), "status": .string(tab.status),
+                            "hidden": .bool(tab.hidden), "worker": .bool(tab.worker), "order": .number(Double(tab.order)),
+                            "parent": tab.parent.map(JSONValue.string) ?? .null, "children": .array(children.map(node)), "child_count": .number(Double(children.count))]
+            if tab.pinned { fields["pinned"] = .bool(true) }
+            return .object(fields)
         }
         let keys = Set(sharedTabs.map(\.key))
         return .object(["epoch": .string(tabsEpoch), "revision": .number(Double(tabsRevision)), "entries": .array(sharedTabs.filter { $0.parent == nil || !keys.contains($0.parent!) }.map(node))])
@@ -105,22 +112,18 @@ actor ChatTransport: RemoteTransport {
     private func applyTabUpdate(_ update: [String: JSONValue]) throws {
         guard let key = update["key"]?.string, let index = sharedTabs.firstIndex(where: { $0.key == key }) else { throw RemoteError.rpc(code: "not_found", message: "no such tab") }
         switch update["action"]?.string {
-        case "pin": sharedTabs[index].pinned = true; sharedTabs[index].hidden = false
-        case "unpin": sharedTabs[index].pinned = false
-        case "hide":
-            guard !sharedTabs[index].pinned else { throw RemoteError.rpc(code: "invalid_request", message: "unpin before hiding") }
-            sharedTabs[index].hidden = true
+        case "hide": sharedTabs[index].hidden = true
         case "unhide": sharedTabs[index].hidden = false
         case "rename": sharedTabs[index].title = update["title"]?.string ?? sharedTabs[index].title
         case "move":
             let moving = sharedTabs.remove(at: index)
             if let before = update["before"]?.string, let target = sharedTabs.firstIndex(where: { $0.key == before }) {
-                guard sharedTabs[target].parent == moving.parent, sharedTabs[target].pinned == moving.pinned else {
+                guard sharedTabs[target].parent == moving.parent else {
                     sharedTabs.insert(moving, at: index); throw RemoteError.rpc(code: "invalid_request", message: "another group")
                 }
                 sharedTabs.insert(moving, at: target)
             } else {
-                let last = sharedTabs.lastIndex { $0.parent == moving.parent && $0.pinned == moving.pinned }.map { $0 + 1 } ?? sharedTabs.count
+                let last = sharedTabs.lastIndex { $0.parent == moving.parent }.map { $0 + 1 } ?? sharedTabs.count
                 sharedTabs.insert(moving, at: last)
             }
             for i in sharedTabs.indices { sharedTabs[i].order = i }
@@ -146,6 +149,9 @@ actor ChatTransport: RemoteTransport {
     func setChats(_ list: [ChatInfo]) { chats = list }
     /// The orchestrators, each a JSON object as the desktop writes it.
     func setOrchestrators(_ entries: [String]) { orchestratorEntries = entries.map { (try? JSONDecoder().decode(JSONValue.self, from: Data($0.utf8))) ?? .null } }
+    /// The host's active dismissals, sent as the first snapshot page's `dismissed_notices`.
+    var dismissedNoticeKeys: [String] = []
+    func setDismissedNoticeKeys(_ keys: [String]) { dismissedNoticeKeys = keys }
     func handleCommands(_ handler: (@Sendable (String, ChatCommand) -> [ChatEvent])?) { onCommand = handler }
     func drop() { connected = false }
     func append(_ chat: String, _ events: [ChatEvent]) {
@@ -221,6 +227,7 @@ actor ChatTransport: RemoteTransport {
         case "chat.snapshot": return try await snapshot(params)
         case "tabs.list":
             guard tabsFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            if tabsListFailures > 0 { tabsListFailures -= 1; throw RemoteError.rpc(code: "cli_error", message: "the tab store is busy") }
             return try await held(method, tabsReply())
         case "tabs.open":
             guard tabsFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
@@ -301,6 +308,10 @@ actor ChatTransport: RemoteTransport {
     func truncate(_ id: String, to count: Int) { log[id] = Array((log[id] ?? []).prefix(count)) }
     func enableSnapshots(_ on: Bool = true) { snapshotsEnabled = on }
     func gateSnapshots(_ on: Bool) { snapshotGated = on }
+    static func optsIn(_ params: [String: JSONValue]) -> Bool {
+        if case .array(let names)? = params["features"] { return names.contains(.string("rate_limits")) }
+        return false
+    }
     private func snapshot(_ params: [String: JSONValue]) async throws -> JSONValue {
         guard snapshotsEnabled else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
         while snapshotGated || (historyGated && params["before"] != nil) { try await Task.sleep(for: .milliseconds(5)) }
@@ -328,12 +339,15 @@ actor ChatTransport: RemoteTransport {
             if let info = transcript.info { controls.append(.info(info)) }
             controls.append(.state(transcript.state)); controls.append(.models(transcript.models))
             if let usage = transcript.usage { controls.append(.usage(usage)) }
+            // As the relay does: usage windows only for a request that opts in (`features: ["rate_limits"]`).
+            if !transcript.rateLimits.isEmpty, Self.optsIn(params) { controls.append(.rateLimits(transcript.rateLimits)) }
             if let turn = transcript.turnID { controls.append(.turnStarted(turnID: turn)) }
             controls += transcript.approvals.map { .approvalRequested($0) }
             controls += transcript.questions.map { .questionRequested($0) }
         }
         let page = ChatSnapshotReply(chatID: id, cursor: String(next), next: UInt64(next), before: items.first.map { orders[$0.id]! } ?? 0,
-            more: requested == nil && rows.count > items.count, items: items.map { ChatSnapshotRow(order: orders[$0.id]!, item: $0) }, controls: controls)
+            more: requested == nil && rows.count > items.count, items: items.map { ChatSnapshotRow(order: orders[$0.id]!, item: $0) }, controls: controls,
+            dismissedNotices: params["cursor"] == nil ? dismissedNoticeKeys : [])
         let encoded = try JSONEncoder().encode(page)
         if resourceLimits, encoded.count > 120_000 { throw RemoteError.rpc(code: "snapshot_limit", message: "snapshot response limit exceeded") }
         return try JSONDecoder().decode(JSONValue.self, from: encoded)
@@ -371,9 +385,15 @@ actor ChatTransport: RemoteTransport {
             guard connected else { throw RemoteError.disconnected }
             let all = log[chat] ?? []
             if all.count > since {
-                var values: [JSONValue] = [], bytes = 0
-                for value in all[since..<min(all.count, since + limit)] {
+                var values: [(seq: Int, value: JSONValue)] = [], bytes = 0, consumed = 0
+                let replay = params["complete"] == .bool(true) || params["bounded"] == .bool(true)
+                for (offset, value) in all[since..<min(all.count, since + limit)].enumerated() {
                     var represented = value
+                    // As the relay does: a usage-windows event is withheld from a request that does not opt in; a replay that counts
+                    // sequence numbers gets a no-op in its place, an ordinary page skips it and still advances.
+                    if value["event"].string == "rate_limits", !Self.optsIn(params) {
+                        if replay { represented = .object(["event": .string("question_resolved"), "request_id": .string("")]) } else { consumed = offset + 1; continue }
+                    }
                     if resourceLimits, try JSONEncoder().encode(value).count > 120_000 {
                         if !values.isEmpty { break }
                         if params["bounded"] == .bool(true), value["event"].string == "item_completed" || value["event"].string == "item_started" {
@@ -387,12 +407,11 @@ actor ChatTransport: RemoteTransport {
                     }
                     let size = try JSONEncoder().encode(represented).count
                     if resourceLimits, bytes + size > 120_000, !values.isEmpty { break }
-                    values.append(represented); bytes += size
+                    values.append((since + offset + 1, represented)); bytes += size; consumed = offset + 1
                 }
-                let page = Array(values.enumerated())
-                let more = since + page.count < all.count
-                return .object(["chat_id": .string(chat), "events": .array(page.map { .object(["seq": .number(Double(since + $0.offset + 1)), "event": $0.element]) }),
-                                "next": .number(Double(since + page.count)), "more": .bool(more)])
+                let more = since + consumed < all.count
+                return .object(["chat_id": .string(chat), "events": .array(values.map { .object(["seq": .number(Double($0.seq)), "event": $0.value]) }),
+                                "next": .number(Double(since + consumed)), "more": .bool(more)])
             }
             if ContinuousClock.now >= deadline {
                 return .object(["chat_id": .string(chat), "events": .array([]), "next": .number(Double(since)), "more": .bool(false)])

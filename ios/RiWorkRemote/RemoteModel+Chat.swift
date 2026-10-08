@@ -42,6 +42,9 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     }
     /// The provider notices (transcript items) the person closed; one comes back only when the provider says it again.
     var dismissedNotices: Set<String> = []
+    /// Counts requests to show the usage windows (a usage limit's banner asks; the chip in the chat's row answers).
+    private(set) var usageDetailRequests = 0
+    func showUsageDetail() { usageDetailRequests &+= 1 }
     /// The read error the person closed; it comes back when another one, or the same one after a successful read, is said.
     var dismissedReadError: String?
     /// Reading the events failed; shown (and retried) while the link is up.
@@ -222,6 +225,7 @@ extension RemoteModel {
         guard tabs.contains(where: { $0.chatInfo?.id == id }) else { return }
         _ = conversation(id)
         selectedChatID = id; selectedBlockedID = nil
+        rememberTab("chat:\(id)")
     }
     func deselectChat() { selectedChatID = nil }
 
@@ -609,6 +613,17 @@ extension RemoteModel {
     func interruptChat(_ chatID: String) async -> ChatControlError? {
         let failure = await sendChatCommand(chatID, .interrupt)
         conversation(chatID).notice = failure?.message
+        return failure
+    }
+    /// Closes a provider notice. It goes from this screen at once; a sticky one (a reached usage limit, a sign-in) is also dismissed on
+    /// the host, so it stays closed on every device (`dismiss_notice`, docs/chat-notices.md). A refusal is said; the line stays closed here.
+    @discardableResult
+    func dismissChatNotice(_ chatID: String, _ notice: ChatProviderNotice) async -> ChatControlError? {
+        let conversation = conversation(chatID)
+        conversation.dismissedNotices.insert(notice.id)
+        guard notice.isSticky else { return nil }
+        let failure = await sendChatCommand(chatID, .dismissNotice(itemID: notice.id))
+        if let failure { conversation.notice = failure.message }
         return failure
     }
     @discardableResult
