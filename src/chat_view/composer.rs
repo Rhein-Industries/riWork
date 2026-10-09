@@ -77,18 +77,19 @@ pub const CARD_PADDING: f32 = 8.0;
 /// padding under its control row.
 pub const CARD_TEXT_TOP: f32 = 10.0;
 pub const CARD_GAP: f32 = 6.0;
-/// Inset, padding and gap in a pane narrower than `NARROW_PANE`, in pixels: these do not
-/// grow with the text, so a big text size leaves the box its room.
+/// The card's inset from a pane narrower than `NARROW_PANE`, in pixels: it does not grow with
+/// the text, so a big text size leaves the box its room.
 pub const NARROW_SPACE: f32 = 4.0;
-/// Below this width (in design points) the card gives up its usual insets and its controls
-/// take a row of their own.
+/// Below this width (in design points) the card gives up its usual inset and its controls
+/// fold to keep one row: Fast to its symbol, the pickers to tighter padding, their labels
+/// elided before anything wraps.
 pub const NARROW_PANE: f32 = 360.0;
 
 /// How the message box card is laid out in a pane of a given width: in pixels, as drawn. The
 /// same in every design; a design only chooses how the card and its buttons look.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {
-    /// A pane too narrow for the usual insets: the controls take a row of their own.
+    /// A pane too narrow for the usual inset: the controls fold (see `NARROW_PANE`).
     pub narrow: bool,
     /// The card's inset from the pane (also the bars' above it), its padding, and the gap
     /// between its pieces.
@@ -108,7 +109,7 @@ pub fn layout(pane: f32, scale: f32, actions: usize) -> Layout {
     let space = |base: f32| (base * scale.max(1.0)).round();
     let narrow = pane > 0.0 && pane < space(NARROW_PANE);
     let (inset, padding, gap) = if narrow {
-        (NARROW_SPACE, NARROW_SPACE, NARROW_SPACE)
+        (NARROW_SPACE, space(CARD_PADDING), space(CARD_GAP))
     } else {
         (space(CARD_INSET), space(CARD_PADDING), space(CARD_GAP))
     };

@@ -1752,11 +1752,13 @@ impl ChatView {
     /// Same-provider choices stay with the retained chat and its authoritative model list.
     /// The model and effort pickers and Fast are one family of quiet controls as tall as the
     /// round buttons beside them (`side`), `gap` apart as every control of the box is.
+    #[allow(clippy::too_many_arguments)]
     fn composer_choices(
         &self,
         look: Look,
         gap: gpui::Pixels,
         side: gpui::Pixels,
+        narrow: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1772,7 +1774,6 @@ impl ChatView {
             .max_w(relative(1.0))
             .debug_selector(|| "composer-model-choices".into())
             .flex()
-            .flex_wrap()
             .items_center()
             .justify_end()
             .gap(gap)
@@ -1782,6 +1783,7 @@ impl ChatView {
                 Menu::Model,
                 look,
                 side,
+                narrow,
                 window,
                 cx,
             ))
@@ -1792,6 +1794,7 @@ impl ChatView {
                     Menu::Effort,
                     look,
                     side,
+                    narrow,
                     window,
                     cx,
                 )
@@ -1814,7 +1817,8 @@ impl ChatView {
                             10.0,
                             None,
                         ))
-                        .child("Fast");
+                        // A narrow pane keeps the symbol; the name is in its label and tip.
+                        .when(!narrow, |content| content.child("Fast"));
                     quiet_control(
                         crate::behavior_controls::toggle_content(
                             "chat-fast",
@@ -1827,6 +1831,7 @@ impl ChatView {
                         fast.then_some(on),
                         look,
                     )
+                    .when(narrow, |toggle| toggle.px(ui_text::space(6.0)))
                 } else {
                     widgets::toggle_button(
                         "chat-fast",
@@ -1864,6 +1869,7 @@ impl ChatView {
         menu: Menu,
         look: Look,
         side: gpui::Pixels,
+        narrow: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1896,6 +1902,9 @@ impl ChatView {
             look,
         )
         .debug_selector(move || format!("composer-picker-{name}"))
+        // It gives way first when the row is short: its label elides.
+        .flex_shrink(1.0)
+        .when(narrow, |trigger| trigger.px(ui_text::space(6.0)))
         .min_w_0()
         .max_w(relative(1.0))
         .aria_expanded(open)
@@ -1936,6 +1945,7 @@ impl ChatView {
             }),
         );
         crate::behavior_controls::popup(format!("{name}-popup"), trigger)
+            .min_w_0()
             .max_w(relative(1.0))
             // Above the box, its trailing edge on the picker's, so it never leaves the pane.
             .anchor(gpui::Anchor::BottomRight)
@@ -2624,11 +2634,11 @@ impl ChatView {
                     .size(side)
                     .child(action),
             );
+        // One row at every width: the pickers' labels elide before anything wraps.
         let controls = div()
             .flex_1()
             .min_w_0()
             .flex()
-            .flex_wrap()
             .items_center()
             .justify_end()
             .gap(gap)
@@ -2636,7 +2646,7 @@ impl ChatView {
                 div()
                     .max_w(relative(1.0))
                     .min_w_0()
-                    .child(self.composer_choices(look, gap, side, window, cx)),
+                    .child(self.composer_choices(look, gap, side, layout.narrow, window, cx)),
             )
             .child(actions);
         // The text rows over one row of controls: Attach at the leading edge, the rest at the
@@ -2651,18 +2661,13 @@ impl ChatView {
                 div()
                     .w_full()
                     .flex()
-                    .flex_wrap()
                     .items_center()
                     .gap(gap)
                     .child(attach)
-                    .child(controls.when(layout.narrow, |controls| controls.flex_none().w_full())),
+                    .child(controls),
             );
         let text_lead = f32::from(glyph_inset);
-        let top = if layout.narrow {
-            px(layout.padding)
-        } else {
-            ui_text::space(composer::CARD_TEXT_TOP)
-        };
+        let top = ui_text::space(composer::CARD_TEXT_TOP);
         // A little more room above the first line of text than below the control row: the
         // letters `CARD_TEXT_TOP` under the card's edge (less the half-leading their line box
         // keeps above them), the controls the card's padding above its bottom.
@@ -3257,7 +3262,7 @@ mod tests {
             (ui_text::Face::Hermes, theme::ThemeChoice::Hermes),
         ] {
             let previous = ui_text::set_for_tests(1.0, face);
-            for width in [760.0, 520.0] {
+            for width in [760.0, 520.0, 300.0] {
                 let (handle, view, _) = composer_fixture(cx, width, design, ChatState::Idle);
                 let at_rest = composer_frames(cx, handle, "chat-send");
                 let (_, frames) = &at_rest;
@@ -3292,9 +3297,12 @@ mod tests {
                     // Attach sits at the card's padding (the card is inset from the pane,
                     // which spans the window, and edged by a hairline), the text column
                     // starts with it, and the control row is one gap under the text.
-                    let padding = ui_text::space(composer::CARD_INSET)
-                        + px(1.0)
-                        + ui_text::space(composer::CARD_PADDING);
+                    let inset = if width < composer::NARROW_PANE {
+                        px(composer::NARROW_SPACE)
+                    } else {
+                        ui_text::space(composer::CARD_INSET)
+                    };
+                    let padding = inset + px(1.0) + ui_text::space(composer::CARD_PADDING);
                     assert!(
                         (attach.left() - padding).abs() < px(0.5),
                         "{design:?} {width}: Attach is at {:?}, not the card's padding",
@@ -3313,6 +3321,12 @@ mod tests {
                     );
                     // The card's padding under the control row, at the window's bottom.
                     let send = window.find("chat-send").bounds();
+                    // One row in the card at every width.
+                    assert!(
+                        send.right() <= px(width) - padding + px(0.5),
+                        "{design:?} {width}: Send ends at {:?}, past the card's padding",
+                        send.right()
+                    );
                     assert!(
                         (send.bottom() - (px(900.0) - padding)).abs() < px(0.5),
                         "{design:?} {width}: {:?} under the control row",
@@ -3664,6 +3678,93 @@ mod tests {
         // Its repeats after the menu closed do not send the draft.
         key_event(cx, handle, "enter", Some(true));
         assert_eq!(draft(cx), "keep me");
+        assert!(recording.try_recv().is_err());
+
+        // A request waits and nothing is drafted, so ⏎ in the box would answer it. In a menu
+        // opened without a key coming up, a held ⏎ answers nothing; a held ↑ moves once.
+        set_draft(cx, handle, &view, "");
+        let reopen = |cx: &mut gpui::TestAppContext, menu| {
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |view, cx| {
+                    view.menu = None;
+                    view.menu_closed = None;
+                    view.enter_down = false;
+                    view.toggle_menu(menu, window, cx);
+                })
+            })
+            .unwrap();
+            draw_hermes(cx, handle);
+        };
+        update_info(cx, handle, &view, |view| {
+            view.model.transcript.approvals = vec![crate::chat::model::Approval {
+                request_id: "approval".into(),
+                item_id: None,
+                kind: ApprovalKind::Command,
+                title: "approve?".into(),
+                detail: String::new(),
+                choices: vec![Decision::Accept, Decision::Decline],
+            }];
+        });
+        reopen(cx, super::super::Menu::Effort);
+        key_event(cx, handle, "enter", Some(true));
+        key_event(cx, handle, "enter", Some(true));
+        assert_eq!(open(cx), Some(super::super::Menu::Effort));
+        assert!(
+            recording.try_recv().is_err(),
+            "a held ⏎ answered the request"
+        );
+        key_event(cx, handle, "enter", None);
+        key_event(cx, handle, "up", Some(false));
+        key_event(cx, handle, "up", Some(true));
+        key_event(cx, handle, "up", Some(true));
+        assert_eq!(cursor(cx).as_deref(), Some("effort-high"));
+        key_event(cx, handle, "up", None);
+        // ⏎ chooses; held on, it neither chooses again nor answers the request.
+        key_event(cx, handle, "enter", Some(false));
+        key_event(cx, handle, "enter", Some(true));
+        key_event(cx, handle, "enter", Some(true));
+        assert_eq!(open(cx), None);
+        assert!(matches!(
+            recording.try_recv(),
+            Ok(super::super::feed::Delivery::Command(
+                ChatCommand::Configure { .. }
+            ))
+        ));
+        assert!(
+            recording.try_recv().is_err(),
+            "a held ⏎ answered the request"
+        );
+        assert!(!view.read_with(cx, |view, _| view.answered.contains("approval")));
+        key_event(cx, handle, "enter", None);
+
+        // A driver without a model list: ⏎ in the field names the model typed, under the
+        // same guards.
+        update_info(cx, handle, &view, |view| {
+            view.model.transcript.approvals.clear();
+            view.model.transcript.models.clear();
+        });
+        reopen(cx, super::super::Menu::Model);
+        // The field starts with the chat's model, ready to be replaced.
+        set_search(cx, handle, &view, "my-model");
+        key_event(cx, handle, "enter", Some(true));
+        assert_eq!(open(cx), Some(super::super::Menu::Model));
+        assert!(recording.try_recv().is_err(), "a held ⏎ named the model");
+        key_event(cx, handle, "enter", None);
+        key_event(cx, handle, "enter", Some(false));
+        assert_eq!(open(cx), None);
+        match recording.try_recv() {
+            Ok(super::super::feed::Delivery::Command(command)) => assert_eq!(
+                command,
+                ChatCommand::Configure {
+                    model: Some("my-model".into()),
+                    effort: None,
+                    approval_mode: None,
+                    fast: None,
+                }
+            ),
+            _ => panic!("⏎ did not name the model"),
+        }
+        key_event(cx, handle, "enter", Some(true));
         assert!(recording.try_recv().is_err());
         ui_text::set_for_tests(previous.0, previous.1);
     }

@@ -484,9 +484,8 @@ pub(super) const BODY_LINE: f32 = 17.8;
 /// A round button's side.
 pub(super) const ROUND_BUTTON: f32 = 26.0;
 
-/// The design size of the text in an input box, and the space above and below it.
+/// The design size of the text in an input box.
 pub(super) const FIELD_TEXT: f32 = 12.0;
-pub(super) const FIELD_PAD_Y: f32 = 6.0;
 
 /// The line box of an input box's text (GPUI's default line height, φ times the text size,
 /// rounded as GPUI rounds it), which the box sets explicitly.

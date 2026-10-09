@@ -189,7 +189,7 @@ impl ChatView {
 
     pub(super) fn model_event(
         &mut self,
-        state: &Entity<InputState>,
+        _: &Entity<InputState>,
         event: &InputEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -201,15 +201,6 @@ impl ChatView {
             // A new search starts with nothing highlighted; ⏎ takes its first match.
             self.menu_cursor = None;
             cx.notify();
-        }
-        if text_input::is_submit(event, EnterBehavior::Submit)
-            && self.menu == Some(super::Menu::Model)
-            && self.model.transcript.models.is_empty()
-        {
-            let model = state.read(cx).value().trim().to_owned();
-            if !model.is_empty() {
-                self.configure(Some(model), None, None, None, cx);
-            }
         }
     }
     /// ↑, ↓ and ⏎ belong to the open model or effort menu while the focus is in the model
@@ -261,8 +252,9 @@ impl ChatView {
 
     /// While the model or effort menu is open it owns ⏎: the highlighted row (or a search's
     /// first match) is chosen, and with none the menu stays as it is; the draft is never
-    /// sent nor a request answered. A driver without a model list keeps its field's own ⏎,
-    /// which names the model typed. An ⏎ held through the menu's opening chooses nothing.
+    /// sent nor a request answered. For a driver without a model list, ⏎ in the field names
+    /// the model typed. An ⏎ held through the menu's opening, or held after it chose,
+    /// does nothing.
     pub(super) fn menu_enter(
         &mut self,
         enter: &Enter,
@@ -280,15 +272,20 @@ impl ChatView {
                 .read(cx)
                 .focus_handle(cx)
                 .is_focused(window);
-        if typed {
-            return;
-        }
         cx.stop_propagation();
-        // The press is held until its key comes up: a repeat must not send the draft or
-        // answer a request once the menu has closed.
+        // The press is held until its key comes up: a repeat must not choose again, send
+        // the draft or answer a request once the menu has closed.
         let repeat = self.enter_down;
         self.enter_down = true;
-        if self.menu_armed && !repeat {
+        if !self.menu_armed || repeat {
+            return;
+        }
+        if typed {
+            let model = self.model_input.read(cx).value().trim().to_owned();
+            if !model.is_empty() {
+                self.configure(Some(model), None, None, None, cx);
+            }
+        } else {
             self.choose_highlighted(cx);
         }
     }
