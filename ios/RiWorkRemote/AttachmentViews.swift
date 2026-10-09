@@ -277,6 +277,8 @@ struct ChatAttachmentStrip: View {
     let images: ChatAttachmentImages
     let remove: (String) -> Void
     var cancelPending: () -> Void = {}
+    /// Where the first card starts: where the composer's text does.
+    var leadingInset: CGFloat = 0
     @State private var previewing: StagedAttachment?
     private var count: Int { attachments.count + pending.count }
 
@@ -285,6 +287,7 @@ struct ChatAttachmentStrip: View {
             HStack(spacing: style.pt(10)) {
                 ForEach(Array(attachments.enumerated()), id: \.element.id) { index, card in
                     ChatAttachmentCard(card: card, images: images, open: { previewing = card }, remove: { remove(card.id) })
+                        .chatLayoutProbe("card-\(index)")
                         // An earlier card's × reaches over the next card's edge: it stays on top there.
                         .zIndex(Double(count - index))
                         .transition(.scale(scale: 0.8).combined(with: .opacity))
@@ -299,6 +302,7 @@ struct ChatAttachmentStrip: View {
             .padding(.top, style.pt(8)).padding(.trailing, style.pt(8)).padding(.bottom, 2)
         }
         .scrollIndicators(.hidden)
+        .contentMargins(.leading, leadingInset, for: .scrollContent)
         .scrollClipDisabled()
         .accessibilityElement(children: .contain)
         .accessibilityLabel(count == 1 ? "1 attachment" : "\(count) attachments")

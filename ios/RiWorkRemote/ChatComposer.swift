@@ -97,6 +97,8 @@ struct ChatComposerField: UIViewRepresentable {
 
     /// Space above and below the text inside the field.
     static let verticalInset: CGFloat = 12
+    /// Space between the field's text and its ends (the paperclip, the buttons); there is no container inset beside it.
+    static let lineFragmentPadding: CGFloat = 4
     /// The text's font, at the text size `traits` ask for (the current one when nil).
     static func font(_ style: DesktopStyle, _ traits: UITraitCollection? = nil) -> UIFont {
         UIFontMetrics(forTextStyle: .body).scaledFont(for: .systemFont(ofSize: 17 * CGFloat(style.scale)), compatibleWith: traits)
@@ -112,7 +114,7 @@ struct ChatComposerField: UIViewRepresentable {
         view.delegate = context.coordinator
         view.backgroundColor = .clear
         view.textContainerInset = UIEdgeInsets(top: 12, left: 8, bottom: 12, right: 8)
-        view.textContainer.lineFragmentPadding = 4
+        view.textContainer.lineFragmentPadding = Self.lineFragmentPadding
         view.isScrollEnabled = false
         view.adjustsFontForContentSizeCategory = true
         // Prompts carry code and flags: no smart punctuation, no corrections.
@@ -137,9 +139,9 @@ struct ChatComposerField: UIViewRepresentable {
         if coordinator.appliedStyle != style || coordinator.appliedTypeSize != category {
             coordinator.appliedStyle = style
             coordinator.appliedTypeSize = category
-            // The field's rounded ends hold the paperclip and the buttons; the text needs no more room of its own beside them.
-            let side: CGFloat = 4
-            view.textContainerInset = UIEdgeInsets(top: Self.verticalInset, left: side, bottom: Self.verticalInset, right: side)
+            // The field's rounded ends hold the paperclip and the buttons; the text needs no room of its own beside them beyond the
+            // line fragment's padding.
+            view.textContainerInset = UIEdgeInsets(top: Self.verticalInset, left: 0, bottom: Self.verticalInset, right: 0)
             view.font = Self.font(style, view.traitCollection)
             view.textColor = style.textUI
             view.tintColor = style.accentUI
@@ -229,7 +231,7 @@ struct ChatComposer: View {
             let actions = actions
             if let attachmentImages, !conversation.attachments.isEmpty || !pending.isEmpty {
                 ChatAttachmentStrip(attachments: conversation.attachments, pending: pending, images: attachmentImages, remove: { removeAttachment?($0) },
-                                    cancelPending: { cancelPending?() })
+                                    cancelPending: { cancelPending?() }, leadingInset: textLeading)
                     .chatLayoutProbe("attachments")
             }
             HStack(alignment: .composerLine, spacing: 0) {
@@ -245,7 +247,7 @@ struct ChatComposer: View {
                 if actions.mic { DictationButton(owner: .chat(conversation.id), insertion: insertion, compact: true, alerts: false).chatLayoutProbe("mic") }
                 if actions.send { sendButton }
             }
-            .padding(.leading, attach == nil ? 6 : 0).padding(.trailing, 0)
+            .padding(.leading, attach == nil ? style.pt(4) : 0).padding(.trailing, 0)
             .modifier(ComposerFieldSurface(focused: focused))
             .animation(.easeInOut(duration: 0.12), value: actions)
             .chatLayoutProbe("composer")
@@ -258,14 +260,20 @@ struct ChatComposer: View {
         .padding(.bottom, BottomBarGeometry.composerInsets(glass: style.glass).bottom)
     }
 
-    /// A filled circle in a 44-point target.
+    /// Where the field's text begins, from the field's leading edge: past the paperclip's slot, or the field's own small inset. The card
+    /// row above the field starts there too.
+    private var textLeading: CGFloat { (attach == nil ? style.pt(4) : ComposerPaperclip.slot(style)) + ChatComposerField.lineFragmentPadding }
+    /// A button's column at the field's trailing end: its 30-point circle and 8 points after it. Its target is the field's height and
+    /// runs to the screen edge, where the field ends.
+    static func buttonColumn(_ style: DesktopStyle) -> CGFloat { style.pt(30) + style.pt(8) }
+    /// A filled circle in its column at the field's trailing end.
     private func circle(_ symbol: String, fill: Color, glyph: Color, size: CGFloat = 15) -> some View {
         Image(systemName: symbol).font(.system(size: style.pt(size), weight: .bold)).foregroundStyle(glyph)
             .frame(width: style.pt(30), height: style.pt(30)).background(fill, in: Circle())
     }
     private var sendButton: some View {
         Button(action: send) { circle("arrow.up", fill: canSend ? style.accent : style.active, glyph: canSend ? style.background : style.muted) }
-            .buttonStyle(TargetButtonStyle(dims: false))
+            .buttonStyle(TargetButtonStyle(dims: false, alignment: .leading, minWidth: Self.buttonColumn(style)))
             .disabled(!canSend)
             .transition(.scale(scale: 0.6).combined(with: .opacity))
             .chatLayoutProbe("send")
@@ -273,7 +281,7 @@ struct ChatComposer: View {
     }
     private var stopButton: some View {
         Button(action: interrupt) { circle("stop.fill", fill: style.gold.opacity(0.16), glyph: style.gold, size: 12) }
-            .buttonStyle(TargetButtonStyle(dims: false))
+            .buttonStyle(TargetButtonStyle(dims: false, alignment: .leading, minWidth: Self.buttonColumn(style)))
             .disabled(!connected)
             .transition(.opacity)
             .chatLayoutProbe("stop")
@@ -308,12 +316,15 @@ private struct ComposerPaperclip: View, Equatable {
     let connected: Bool
     let choose: (AttachmentChoice) -> Void
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.connected == rhs.connected }
+    /// The paperclip's slot: the glyph's ink 8 points in from the field's edge (6 and its side bearing), and the text 8 points after it. Its target is the field's height and
+    /// runs to the screen edge, where the field begins.
+    static func slot(_ style: DesktopStyle) -> CGFloat { style.pt(29) }
     var body: some View {
         AttachMenu(choose: choose) {
             Image(systemName: "paperclip").font(.system(size: style.pt(18))).foregroundStyle(connected ? style.muted : style.muted.opacity(0.5))
-                .frame(width: style.target, height: style.target).contentShape(Rectangle())
+                .padding(.leading, style.pt(6)).frame(width: Self.slot(style), height: style.target, alignment: .leading).contentShape(Rectangle())
         }
-        // No padding of the menu's own around the 44-point target: the paperclip sits in the field's rounded leading end.
+        // No padding of the menu's own around the target: the paperclip sits in the field's rounded leading end.
         .menuStyle(.button).buttonStyle(.plain)
         .disabled(!connected)
         .accessibilityHint("Sends it to the Mac and puts its path in the message")

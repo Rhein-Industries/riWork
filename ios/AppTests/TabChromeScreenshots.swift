@@ -500,7 +500,7 @@ import RiWorkCore
     }
     /// `RIWORK_TAB_SCREENSHOTS_ONLY=testComposerEdges scripts/tab-chrome-screenshots.sh <dir> <udid>`: where the bottom bars meet the
     /// screen's sides: a shell's key bar over the software keyboard, and a chat's composer empty, with text and the keyboard up, and with
-    /// cards; in Native light and dark and the terminal look.
+    /// cards, the keyboard up and down; in Native light and dark and the terminal look.
     func testComposerEdges() async throws {
         guard ProcessInfo.processInfo.environment["RIWORK_TAB_SCREENSHOTS_ONLY"] == "testComposerEdges" else { throw XCTSkip("Set RIWORK_TAB_SCREENSHOTS_ONLY=testComposerEdges") }
         for look in [Look.nativeLight, .nativeDark, .terminal] {
@@ -562,6 +562,8 @@ import RiWorkCore
             conversation.attachments = [photo, pdf]
             try await shot(window, prefix + "-4-kb-cards")
             window.endEditing(true)
+            try await Task.sleep(for: .milliseconds(700))
+            try await shot(window, prefix + "-5-cards")
             await model.disconnect()
             window.isHidden = true
             try? keychain.delete()
@@ -704,7 +706,7 @@ import RiWorkCore
             try await Task.sleep(for: .milliseconds(600))
             window.endEditing(true)
             try await Task.sleep(for: .milliseconds(500))
-            if let strip = layout.frames["tab-strip"] { print("TAB_ROW_SPACE look=\(look.rawValue) width=\(window.bounds.width) strip=\(strip)") }
+            if let strip = layout.frames["row-strip"] { print("TAB_ROW_SPACE look=\(look.rawValue) width=\(window.bounds.width) strip=\(strip)") }
             try await shot(window, "tab-row-space-" + look.rawValue)
             // ⋯: New terminal and Open a worker or shell… at the top of the Tab section.
             if await openMenu(at: CGPoint(x: window.bounds.maxX - 22, y: layout.frames["navigation"]?.midY ?? 84), in: window) {

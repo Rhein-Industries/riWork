@@ -23,6 +23,29 @@ import RiWorkCore
     func refresh() { isAttached = probe() }
 }
 
+/// Whether the software keyboard is on screen, from the keyboard's frame notifications. GameController can report a keyboard (one that
+/// is paired, a keyboard case) while the on-screen keyboard is up all the same: what can be put away is what is shown, not what is
+/// attached. With a hardware keyboard in use only the shortcut bar shows, well under `shownHeight`.
+@MainActor @Observable final class SoftwareKeyboardMonitor {
+    static let shownHeight: CGFloat = 120
+    private(set) var isShown = false
+    @ObservationIgnored private var observers: [any NSObjectProtocol] = []
+
+    init() {
+        for name in [UIResponder.keyboardWillChangeFrameNotification, UIResponder.keyboardWillHideNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let hiding = note.name == UIResponder.keyboardWillHideNotification
+                let end = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue ?? .zero
+                MainActor.assumeIsolated { self?.update(hiding: hiding, end: end) }
+            })
+        }
+    }
+    func update(hiding: Bool, end: CGRect) {
+        let screen = UIScreen.main.bounds
+        isShown = !hiding && screen.intersection(end).height >= Self.shownHeight
+    }
+}
+
 /// The last key events the app received, for the readout that shows what a key (the Clicks button, say) really sends.
 @MainActor @Observable final class KeyEventLog {
     private(set) var last: KeyEventRecord?
@@ -36,6 +59,7 @@ import RiWorkCore
     private(set) var focusSetting: KeyboardFocusSetting
     private(set) var showKeyEvents: Bool
     let hardware: HardwareKeyboardMonitor
+    let software = SoftwareKeyboardMonitor()
     let events = KeyEventLog()
     @ObservationIgnored private let defaults: UserDefaults
 

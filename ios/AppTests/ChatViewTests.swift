@@ -683,11 +683,11 @@ import RiWorkCore
         let rig = try await makeRig(chats: chats, width: 390)
         await rig.transport.append(chatID, [.info(chats[0]), .usage(ChatUsage(inputTokens: 120_000, contextWindow: 200_000, contextUsed: 124_000))])
         _ = try await openChat(rig)
-        await eventually("the row and the ring are laid out") { rig.layout.frames["more-options"] != nil && rig.layout.frames["usage-number"] != nil && rig.layout.frames["tab-strip"] != nil }
+        await eventually("the row and the ring are laid out") { rig.layout.frames["more-options"] != nil && rig.layout.frames["usage-number"] != nil && rig.layout.frames["row-strip"] != nil }
         try await Task.sleep(for: .milliseconds(300))
         rig.window.layoutIfNeeded()
         let width = rig.window.bounds.width
-        let strip = try XCTUnwrap(rig.layout.frames["tab-strip"]), back = try XCTUnwrap(rig.layout.frames["back"]), more = try XCTUnwrap(rig.layout.frames["more-options"])
+        let strip = try XCTUnwrap(rig.layout.frames["row-strip"]), back = try XCTUnwrap(rig.layout.frames["back"]), more = try XCTUnwrap(rig.layout.frames["more-options"])
         let reach = back.maxX - strip.minX
         print("TAB_ROW width=\(width) strip=\(strip.width) stripAtRest=\(strip.width - 2 * reach) oldStrip=250 back=\(back) more=\(more)")
         XCTAssertEqual(width, 390)
@@ -1147,13 +1147,86 @@ import RiWorkCore
         let surface = try XCTUnwrap(rig.layout.frames["composer"])
         XCTAssertEqual(surface.minX, 0, accuracy: 0.5, "the field has no gutter")
         XCTAssertEqual(surface.maxX, rig.window.bounds.width, accuracy: 0.5, "the field spans the width")
-        XCTAssertEqual(row.minX, surface.minX, accuracy: 0.5, "the cards start at the field's edge")
+        XCTAssertEqual(row.minX, surface.minX, accuracy: 0.5, "the card row spans the field's width (its first card is inset to the text)")
         XCTAssertGreaterThan(field.minX, surface.minX, "the paperclip sits inside the field, before the text")
         rig.model.removeStagedAttachment(staged(2, "notes.pdf").id, from: chatID)
         XCTAssertEqual(conversation.attachments.map(\.name), ["photo.jpg", "build.log"])
         conversation.attachments = []
         await eventually("the row is gone") { rig.layout.frames["attachments"] == nil }
         await finish(rig)
+    }
+
+    /// At 390 pt the field's text has the field's width but for the paperclip's slot (its glyph 8 pt in from the edge, the text about
+    /// 8 pt after it) and one 38-point column of buttons (the 30-point circle and 8 pt): a text column of at least 290 pt, where the
+    /// 44-point paperclip and buttons and the text's own insets left about 270. The cards above start where the text does.
+    func testTheComposerTextHasTheFieldsWidthAndTheCardsLineUpWithIt() async throws {
+        let rig = try await makeRig(width: 390)
+        let field = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        conversation.draft = "currently also i cant seem to close the keyboard again and the spacing inside the input bubble loses a lot of space"
+        conversation.attachments = [staged(1, "photo.jpg"), staged(2, "notes.pdf")]
+        await eventually("the field, Send and the cards are laid out") { rig.layout.frames["send"] != nil && rig.layout.frames["card-0"] != nil }
+        try await Task.sleep(for: .milliseconds(300))
+        rig.window.layoutIfNeeded()
+        let surface = try XCTUnwrap(rig.layout.frames["composer"]), send = try XCTUnwrap(rig.layout.frames["send"]), card = try XCTUnwrap(rig.layout.frames["card-0"])
+        let fieldFrame = field.convert(field.bounds, to: rig.window)
+        let padding = field.textContainer.lineFragmentPadding
+        let textStart = fieldFrame.minX + field.textContainerInset.left + padding
+        let textColumn = field.textContainer.size.width - 2 * padding
+        print("COMPOSER width=\(rig.window.bounds.width) textStart=\(textStart) textColumn=\(textColumn) send=\(send) card0=\(card)")
+        XCTAssertGreaterThanOrEqual(textColumn, 290, "the text wraps at nearly the field's width")
+        // The paperclip's glyph 8 pt in, the text about 8 pt after it.
+        // (Past the field's own stroke, which the terminal look draws at its edge.)
+        let clip = try inkRuns(rig, in: CGRect(x: surface.minX, y: fieldFrame.maxY - 40, width: textStart - surface.minX - 1, height: 36)).filter { $0.upperBound > surface.minX + 3 }
+        XCTAssertEqual(clip.count, 1, "the paperclip: \(clip)")
+        if let clip = clip.first {
+            XCTAssertEqual(clip.lowerBound - surface.minX, 8, accuracy: 2, "the paperclip 8 pt from the field's edge")
+            XCTAssertEqual(textStart - clip.upperBound, 8, accuracy: 3, "the text about 8 pt after the paperclip")
+        }
+        // Send: its circle and 8 pt to the field's end, the target the field's height.
+        XCTAssertEqual(send.maxX, surface.maxX, accuracy: 0.5); XCTAssertEqual(send.width, 38, accuracy: 0.5); XCTAssertGreaterThanOrEqual(send.height, 44)
+        XCTAssertLessThanOrEqual(send.minX - (fieldFrame.maxX - field.textContainerInset.right - padding), padding + 0.5, "the text runs to Send's column")
+        // The first card's left edge is the text's.
+        XCTAssertEqual(card.minX, textStart, accuracy: 1, "the cards start where the text does")
+        try snapshot(rig, name: "composer-tight")
+        await finish(rig)
+    }
+
+    /// The software keyboard goes away by dragging the transcript down (interactive dismissal) and by a tap on the transcript, whenever
+    /// it is on screen, also with a hardware keyboard reported attached (a paired keyboard, a keyboard case). Typing on a hardware
+    /// keyboard with no software one shown, neither takes the composer's focus.
+    func testTheSoftwareKeyboardGoesAwayByDragOrTapOnTheTranscript() async throws {
+        let rig = try await makeRig(hardwareKeyboard: true)
+        let field = try await openChat(rig)
+        await eventually("the composer has the keyboard") { field.isFirstResponder }
+        let scroll = try XCTUnwrap(transcriptScroll(rig))
+        func post(_ name: Notification.Name, height: CGFloat) {
+            let screen = UIScreen.main.bounds
+            NotificationCenter.default.post(name: name, object: nil, userInfo: [UIResponder.keyboardFrameEndUserInfoKey: NSValue(cgRect: CGRect(x: 0, y: screen.maxY - height, width: screen.width, height: height))])
+        }
+        let interactive: [UIScrollView.KeyboardDismissMode] = [.interactive, .interactiveWithAccessory]
+        // A hardware keyboard and only its shortcut bar: the transcript keeps the composer's focus.
+        post(UIResponder.keyboardWillChangeFrameNotification, height: 55)
+        await eventually("no dismissal with only the shortcut bar") { scroll.keyboardDismissMode == .none && rig.layout.visible["transcript-tap"] == false }
+        XCTAssertTrue(field.isFirstResponder)
+        // The software keyboard up, a keyboard reported attached all the same: a drag takes it with the finger, a tap puts it away.
+        post(UIResponder.keyboardWillChangeFrameNotification, height: 336)
+        await eventually("interactive dismissal with the software keyboard up") { interactive.contains(scroll.keyboardDismissMode) && rig.layout.visible["transcript-tap"] == true }
+        rig.layout.actions["transcript-tap"]?()
+        await eventually("a tap on the transcript puts the keyboard away") { !field.isFirstResponder }
+        // The drag path is UIKit's interactive dismissal, which resigns the first responder as the drag takes the keyboard down; a
+        // hosted test cannot drive that drag, so it checks the transcript's scroll view is set for it.
+        field.becomeFirstResponder()
+        await eventually("the composer has the keyboard again") { field.isFirstResponder }
+        post(UIResponder.keyboardWillHideNotification, height: 0)
+        await eventually("hidden: no dismissal") { scroll.keyboardDismissMode == .none }
+        await finish(rig)
+        // Without a hardware keyboard the transcript always dismisses.
+        let soft = try await makeRig(hardwareKeyboard: false)
+        _ = try await openChat(soft)
+        let softScroll = try XCTUnwrap(transcriptScroll(soft))
+        await eventually("interactive dismissal without a hardware keyboard") { interactive.contains(softScroll.keyboardDismissMode) }
+        await finish(soft)
     }
 
     /// Send puts the cards' paths after the text, as the draft used to hold them, and the cards leave with the text.
@@ -2854,7 +2927,9 @@ import RiWorkCore
             // With nothing typed the mic takes Send's slot: the field keeps its width.
             await eventually("\(look): the mic is there") { rig.layout.frames["mic"] != nil && rig.layout.frames["send"] == nil }
             XCTAssertEqual(try XCTUnwrap(width(of: ChatComposerTextView.self, in: rig)), off, accuracy: 1, "\(look): in the same slot")
-            XCTAssertGreaterThanOrEqual(rig.layout.frames["mic"]?.width ?? 0, 44, "\(look): a full target")
+            // The buttons' column: the 30-point circle and 8 pt to the field's end at the screen edge, the field's height tall.
+            XCTAssertGreaterThanOrEqual(rig.layout.frames["mic"]?.width ?? 0, 38, "\(look): the buttons' column")
+            XCTAssertGreaterThanOrEqual(rig.layout.frames["mic"]?.height ?? 0, 44, "\(look): a full-height target")
             rig.model.conversation(chatID).draft = "typed"
             await eventually("\(look): typing brings Send back in its place") { rig.layout.frames["mic"] == nil && rig.layout.frames["send"] != nil }
             rig.model.conversation(chatID).draft = ""

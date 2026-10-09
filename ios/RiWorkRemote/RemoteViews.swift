@@ -430,7 +430,7 @@ struct TerminalTabsView: View {
                     tabStrip(margins: reach)
                 }
             }
-            .chatLayoutProbe("tab-strip")
+            .chatLayoutProbe("row-strip")
             Color.clear.frame(width: slot, height: 0)
         }
         .overlay(alignment: .leading) {

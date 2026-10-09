@@ -264,8 +264,9 @@ struct DictationButton: View {
     let insertion: TextInsertion
     var controller = DictationController.shared
     var isEnabled = true
-    /// Inside the chat composer's field: a smaller glyph in the same 44-point target.
+    /// Inside the chat composer's field: a smaller glyph, in the column of the field's buttons (a 30-point circle and 8 points).
     var compact = false
+    private var column: CGFloat { style.pt(30) + style.pt(8) }
     /// Says a failure in an alert of its own; off where the screen says it in its banner row (the chat).
     var alerts = true
 
@@ -275,13 +276,14 @@ struct DictationButton: View {
             if phase.isActive {
                 Button { controller.cancel() } label: {
                     Image(systemName: "xmark.circle").font(.system(size: style.pt(compact ? 17 : 20))).foregroundStyle(style.muted)
+                        .frame(width: compact ? style.pt(30) : nil)
                 }
-                .buttonStyle(TargetButtonStyle(dims: false))
+                .buttonStyle(TargetButtonStyle(dims: false, alignment: compact ? .leading : .center, minWidth: compact ? column : nil))
                 .accessibilityLabel("Cancel dictation").accessibilityHint("Takes out what was dictated")
                 .transition(.opacity)
             }
-            Button(action: toggle) { DictationGlyph(phase: phase, level: controller.level, size: compact ? 20 : 24) }
-                .buttonStyle(TargetButtonStyle(dims: false))
+            Button(action: toggle) { DictationGlyph(phase: phase, level: controller.level, size: compact ? 20 : 24).frame(width: compact ? style.pt(30) : nil) }
+                .buttonStyle(TargetButtonStyle(dims: false, alignment: compact ? .leading : .center, minWidth: compact ? column : nil))
                 .disabled(!isEnabled && !phase.isActive)
                 .accessibilityLabel(phase.isActive ? "Stop dictation" : "Dictate")
                 .accessibilityValue(phase.isActive ? "Listening" : "")

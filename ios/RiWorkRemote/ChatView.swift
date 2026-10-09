@@ -44,7 +44,7 @@ struct ChatScreen: View {
         let elidedRequests = conversation.transcript.elidedRequests
         VStack(spacing: 0) {
             ChatToolbar(model: model, chat: info, conversation: conversation, state: state, showModels: $showModels)
-            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) }, viewportChanged: { transcriptChanged($0, barShown: !approvals.isEmpty || !questions.isEmpty || !elidedRequests.isEmpty) })
+            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, dismissesKeyboard: !model.keyboard.hardware.isAttached || model.keyboard.software.isShown, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) }, viewportChanged: { transcriptChanged($0, barShown: !approvals.isEmpty || !questions.isEmpty || !elidedRequests.isEmpty) })
                 .id(chat.id)
             if let approval = approvals.first {
                 BoundedScroll(maxHeight: max(110, height * 0.52 - squeeze)) {
@@ -561,7 +561,8 @@ private struct ChatTranscriptList: View {
     let conversation: ChatConversation
     let provider: ChatProvider
     let state: ChatState
-    let hardwareKeyboard: Bool
+    /// The software keyboard is up (or no hardware keyboard is attached): dragging or tapping the transcript puts it away.
+    let dismissesKeyboard: Bool
     var loadOlder: @MainActor (@MainActor () async -> Void) async -> Void = { _ in }
     var viewportChanged: (CGFloat) -> Void = { _ in }
     @State private var paging: Task<Void, Never>?
@@ -571,6 +572,8 @@ private struct ChatTranscriptList: View {
     @State private var sticky = StickyBottom()
     @State private var userDriven = false
     @State private var bottomCorrection: Task<Void, Never>?
+
+    static func putKeyboardAway() { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
 
     var body: some View {
         let transcript = conversation.transcript
@@ -611,9 +614,13 @@ private struct ChatTranscriptList: View {
         .scrollPosition($position)
         .defaultScrollAnchor(.bottom, for: .initialOffset)
         .defaultScrollAnchor(.top, for: .sizeChanges)
-        // Dragging the list puts the software keyboard away, as in a chat; a hardware keyboard has none to put away, and must not lose
-        // the composer to a scroll.
-        .scrollDismissesKeyboard(hardwareKeyboard ? .never : .interactively)
+        // Dragging the list down takes the software keyboard with the finger, as in a chat, and a tap on the list puts it away. Typing
+        // on a hardware keyboard there is none to put away, and the composer must not lose it to a scroll. That goes by the keyboard on
+        // screen, not by what GameController reports attached: a paired keyboard or a keyboard case leaves the software one up too.
+        .scrollDismissesKeyboard(dismissesKeyboard ? .interactively : .never)
+        .simultaneousGesture(TapGesture().onEnded { if dismissesKeyboard { Self.putKeyboardAway() } })
+        // Hosted tests: whether a tap dismisses now (`visible`), and the tap's effect.
+        .chatLayoutProbe("transcript-tap", visible: dismissesKeyboard, action: { Self.putKeyboardAway() })
         .onScrollPhaseChange { _, phase in
             userDriven = phase == .interacting || phase == .decelerating
             if userDriven {
