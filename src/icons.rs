@@ -332,8 +332,8 @@ fn device_square(bounds: Bounds<gpui::Pixels>, scale: f32) -> Bounds<gpui::Pixel
 /// SF Symbol `name` at `points` (a design size, grown with the interface text like the text
 /// beside it), centered in a box a little larger than the symbol so it never clips. `color`
 /// None takes the text color its element has at that moment, so a button that brightens its
-/// text on hover brightens the symbol with it. Native's own controls use it; elsewhere, or on
-/// a macOS without the symbol, the box stays empty.
+/// text on hover brightens the symbol with it. Controls in Native and Hermes request these
+/// explicitly; on a macOS without the symbol, the box stays empty.
 pub fn symbol(name: &'static str, points: f32, color: Option<u32>) -> AnyElement {
     symbol_with_limit(name, points, color, None)
 }
@@ -362,14 +362,11 @@ fn symbol_with_limit(
 ) -> AnyElement {
     let scale = ui_text::scale();
     let (points, side) = fitted_symbol_size(points, scale, limit);
-    let native = ui_text::is_native();
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
-            if native {
-                let tint = color.unwrap_or_else(|| text_color(window));
-                paint_symbol(name, points, Weight::Regular, tint, bounds, window);
-            }
+            let tint = color.unwrap_or_else(|| text_color(window));
+            paint_symbol(name, points, Weight::Regular, tint, bounds, window);
         },
     )
     .size(px(side))
