@@ -211,6 +211,8 @@ struct ChatComposer: View {
     /// Files on their way to the Mac, as cards with their progress; × cancels them. Send waits for them.
     var pending: [PendingAttachment] = []
     var cancelPending: (() -> Void)?
+    /// A request's bar stands right above: it ends on its own padding, and the room goes to the bar, whose answers matter more.
+    var barAbove = false
     var dictation = DictationController.shared
     @State private var focused = false
     @State private var insertion = TextInsertion()
@@ -259,10 +261,10 @@ struct ChatComposer: View {
             .padding(.horizontal, Self.fieldMargin)
         }
         .animation(.easeInOut(duration: 0.15), value: conversation.attachments)
-        // The card row spans the horizontal safe-area edges, its first card at the transcript's margin, and the field stands as close
-        // above the keyboard as the terminal's key bar's capsule (`BottomBarGeometry.composerInsets`). Nothing is drawn behind them: the
-        // field's own shape is on the screen's background.
-        .padding(.horizontal, BottomBarGeometry.composerInsets(glass: style.glass).horizontal).padding(.top, 6)
+        // The card row spans the horizontal safe-area edges, its first card at the transcript's margin, and the field stands a little
+        // above the keyboard (`BottomBarGeometry.composerInsets`). Nothing is drawn behind them: the composer floats over the transcript,
+        // which shows through the glass field and around it.
+        .padding(.horizontal, BottomBarGeometry.composerInsets(glass: style.glass).horizontal).padding(.top, barAbove ? 0 : 6)
         .padding(.bottom, BottomBarGeometry.composerInsets(glass: style.glass).bottom)
     }
 

@@ -999,7 +999,7 @@ import RiWorkCore
             try await Task.sleep(for: .milliseconds(100))
             try assertLatestOverTranscriptBottom(rig, scroll: scroll)
             await rig.transport.append(chatID, [.itemCompleted(ChatItem(id: "layout-live", status: .completed, body: .agentMessage("One new live message.")))])
-            await eventually("only the live row counts as new") { (try? self.renderedText(rig, in: rig.layout.frames["latest"] ?? .zero).contains("1 new")) == true }
+            await eventually("only the live row counts as new") { (try? self.renderedPill(rig, scroll: scroll).contains("1 new")) == true }
             try assertLatestOverTranscriptBottom(rig, scroll: scroll)
             if category == .accessibilityExtraLarge { try compactSnapshot(rig, name: "compact-large-text-reader") }
             await rig.transport.append(chatID, [approval("layout-approval"), .state(.waiting)])
@@ -1018,10 +1018,11 @@ import RiWorkCore
             let allow = try XCTUnwrap(rig.layout.frames["approval-accept"])
             XCTAssertLessThanOrEqual(allow.maxY, composerFrame.minY + 2)
             XCTAssertGreaterThan(allow.height, 40)
-            XCTAssertTrue(try renderedText(rig, in: CGRect(x: 0, y: scroll.convert(scroll.bounds, to: rig.window).maxY, width: screen.width, height: composerFrame.minY - scroll.convert(scroll.bounds, to: rig.window).maxY)).contains("Allow"), "approval action is visible above the keyboard")
-            XCTAssertGreaterThan(scroll.bounds.height, 24, "conversation retains visible room above approvals")
+            let seen = seenTranscript(scroll, rig)
+            XCTAssertTrue(try renderedText(rig, in: CGRect(x: 0, y: seen.maxY, width: screen.width, height: composerFrame.minY - seen.maxY)).contains("Allow"), "approval action is visible above the keyboard")
+            XCTAssertGreaterThan(seen.height, 24, "conversation retains visible room above approvals")
             try assertLatestOverTranscriptBottom(rig, scroll: scroll)
-            print("COMPACT_LAYOUT category=\(category.rawValue) size=\(screen) navigation=\(navigation.height) model=\(modelFrame.height) transcript=\(scroll.convert(scroll.bounds, to: rig.window)) latest=\(rig.layout.frames["latest"] ?? .zero) approval=\(allow) draft=\(composerFrame) keyboardTop=\(keyboardTop)")
+            print("COMPACT_LAYOUT category=\(category.rawValue) size=\(screen) navigation=\(navigation.height) model=\(modelFrame.height) transcript=\(seen) latest=\(rig.layout.frames["latest"] ?? .zero) approval=\(allow) draft=\(composerFrame) keyboardTop=\(keyboardTop)")
             if category == .accessibilityExtraLarge { try compactSnapshot(rig, name: "compact-large-text-approval-keyboard") }
             await rig.transport.append(chatID, [.approvalResolved(requestID: "layout-approval", decision: .accept), .questionRequested(ChatQuestion(requestID: "layout-question", questions: [ChatQuestionPrompt(header: "Scope", question: "Which tests?", options: [ChatQuestionOption(label: "Changed", description: "Focused checks")], multiSelect: false)]))])
             await eventually("question displayed") { conversation.openQuestions.count == 1 }
@@ -1033,8 +1034,9 @@ import RiWorkCore
         }
     }
 
-    /// The transcript reaches down to the composer, with the software keyboard up and down: no band between them (Latest used to keep
-    /// a row of its own there), no keyboard inset left inside the transcript, and Latest over the transcript's bottom edge.
+    /// The transcript reaches down to the composer, with the software keyboard up and down: what is seen of it ends where the composer
+    /// starts, with no band between them (Latest used to keep a row of its own there), it scrolls on under the composer, and Latest is
+    /// over the bottom edge of what is seen.
     func testTranscriptReachesTheComposerWithTheKeyboardUpAndDown() async throws {
         let screen = UIScreen.main.bounds.size
         for look in [Look.nativeDark, .terminal] {
@@ -1048,11 +1050,11 @@ import RiWorkCore
             try await Task.sleep(for: .milliseconds(350))
             func assertReaches(_ when: String) throws {
                 let scroll = try XCTUnwrap(transcriptScroll(rig), when)
-                let transcript = scroll.convert(scroll.bounds, to: rig.window)
+                let transcript = seenTranscript(scroll, rig)
                 let fieldFrame = field.convert(field.bounds, to: rig.window)
                 XCTAssertLessThanOrEqual(fieldFrame.minY - transcript.maxY, 14, "\(look) \(when): the transcript reaches the composer")
                 XCTAssertGreaterThanOrEqual(fieldFrame.minY, transcript.maxY, "\(look) \(when): the composer is under the transcript")
-                XCTAssertLessThanOrEqual(scroll.adjustedContentInset.bottom, 1, "\(look) \(when): no keyboard or bar inset counted inside the transcript")
+                XCTAssertGreaterThanOrEqual(scroll.convert(scroll.bounds, to: rig.window).maxY, fieldFrame.maxY, "\(look) \(when): the transcript scrolls on under the composer")
             }
             try assertReaches("keyboard down")
             var keyboardTop = screen.height
@@ -2047,7 +2049,7 @@ import RiWorkCore
         XCTAssertFalse(try renderedTranscriptText(rig, scroll: scroll).contains("Reconnecting"), "not a transcript row")
         let banners = try XCTUnwrap(rig.layout.frames["banners"])
         XCTAssertLessThanOrEqual(banners.maxY, field.convert(field.bounds, to: rig.window).minY + 1, "directly above the composer")
-        XCTAssertGreaterThanOrEqual(banners.minY, scroll.convert(scroll.bounds, to: rig.window).maxY - 1, "under the transcript")
+        XCTAssertGreaterThanOrEqual(banners.minY, seenTranscript(scroll, rig).maxY - 1, "under what is seen of the transcript")
         // It recurs: the same line says the new text.
         await rig.transport.append(chatID, [notice("n3", "Reconnecting… 2/5", "reconnecting")])
         await eventually("replaced in place") { (try? self.renderedText(rig, in: rig.layout.frames.first { $0.key == "banner-notice-kind:reconnecting" }?.value ?? .zero).contains("2/5")) == true }
@@ -2238,7 +2240,7 @@ import RiWorkCore
     private func assertLatestOverTranscriptBottom(_ rig: Rig, scroll: UIScrollView, file: StaticString = #filePath, line: UInt = #line) throws {
         let latest = try XCTUnwrap(rig.layout.frames["latest"], file: file, line: line)
         XCTAssertEqual(rig.layout.visible["latest"], true, file: file, line: line)
-        let transcript = scroll.convert(scroll.bounds, to: rig.window)
+        let transcript = seenTranscript(scroll, rig)
         XCTAssertGreaterThanOrEqual(latest.minY, transcript.minY, "Latest is over the transcript", file: file, line: line)
         XCTAssertLessThanOrEqual(latest.maxY, transcript.maxY + 0.5, "Latest stays inside the transcript", file: file, line: line)
         XCTAssertLessThanOrEqual(transcript.maxY - latest.maxY, 12, "Latest sits on the transcript's bottom edge", file: file, line: line)
@@ -2295,6 +2297,13 @@ import RiWorkCore
         await finish(rig)
     }
 
+    /// What is seen of the transcript, in the window: its scroll view less the bottom inset of what floats over it (the bars and the
+    /// composer, which the transcript scrolls on under).
+    private func seenTranscript(_ scroll: UIScrollView, _ rig: Rig) -> CGRect {
+        var frame = scroll.convert(scroll.bounds, to: rig.window)
+        frame.size.height = max(0, frame.height - scroll.adjustedContentInset.bottom)
+        return frame
+    }
     private func bottomOffset(_ scroll: UIScrollView) -> CGFloat {
         max(-scroll.adjustedContentInset.top, scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)
     }
@@ -2318,7 +2327,7 @@ import RiWorkCore
     /// OCR the actual viewport pixels, not the model or off-screen accessibility nodes: blank content cannot pass this check.
     private func renderedMessageTop(_ message: String, rig: Rig, scroll: UIScrollView) throws -> CGFloat {
         rig.window.layoutIfNeeded()
-        let visible = scroll.convert(scroll.bounds, to: rig.window).intersection(rig.window.bounds)
+        let visible = seenTranscript(scroll, rig).intersection(rig.window.bounds)
         let image = UIGraphicsImageRenderer(size: visible.size).image { context in
             context.cgContext.translateBy(x: -visible.minX, y: -visible.minY)
             rig.window.drawHierarchy(in: rig.window.bounds, afterScreenUpdates: true)
@@ -2333,9 +2342,17 @@ import RiWorkCore
 
     private func renderedTranscriptText(_ rig: Rig, scroll: UIScrollView) throws -> String {
         rig.window.layoutIfNeeded()
-        let visible = scroll.convert(scroll.bounds, to: rig.window).intersection(rig.window.bounds)
+        let visible = seenTranscript(scroll, rig).intersection(rig.window.bounds)
         XCTAssertFalse(visible.isEmpty, "transcript has a visible viewport")
         return try renderedText(rig, in: visible)
+    }
+    /// What the Latest pill says. The transcript runs on under the pill's glass, and large letters behind it defeat reading the pill's:
+    /// the transcript's rows are hidden while it is read (the pill is not among them).
+    private func renderedPill(_ rig: Rig, scroll: UIScrollView) throws -> String {
+        let rows = scroll.subviews.filter { !$0.isHidden }
+        rows.forEach { $0.isHidden = true }
+        defer { rows.forEach { $0.isHidden = false } }
+        return try renderedText(rig, in: rig.layout.frames["latest"] ?? .zero)
     }
     private func renderedText(_ rig: Rig, in rect: CGRect) throws -> String {
         rig.window.layoutIfNeeded()
@@ -2688,10 +2705,69 @@ import RiWorkCore
             let rig = try await questionAndStatusLines(look, height: 874 - 336, name: "chat-question-failed-keyboard")
             if look != .terminal {
                 let transcript = try XCTUnwrap(transcriptScroll(rig))
-                XCTAssertGreaterThanOrEqual(transcript.bounds.height, 47, "\(look): the transcript keeps room for its last message")
+                // The bars and the composer stand over the transcript's bottom: what is seen of it is its height less that inset.
+                XCTAssertGreaterThanOrEqual(transcript.bounds.height - transcript.adjustedContentInset.bottom, 47, "\(look): the transcript keeps room for its last message")
                 XCTAssertLessThanOrEqual(transcript.contentSize.height - (transcript.contentOffset.y + transcript.bounds.height - transcript.adjustedContentInset.bottom), 1,
                                          "\(look): and is at its bottom")
             }
+            await finish(rig)
+        }
+    }
+    /// The composer floats over the transcript: the transcript's scroll view reaches down under the field (seen through its glass and
+    /// around it), and its bottom inset is the composer's height, so at the bottom the last message ends above the field, with the card
+    /// row up too. The field stands 8 pt above the keyboard (or the bottom safe area).
+    func testTheTranscriptScrollsOnUnderTheComposer() async throws {
+        for look in Look.allCases {
+            let rig = try await makeRig(chats: [chat(state: .idle)], look: look)
+            let messages = (1...14).map { ChatItem(id: "m\($0)", turnID: "t0", status: .completed, body: $0 % 2 == 0 ? .agentMessage("Answer \($0), a line or two of it, long enough to wrap onto a second line here.") : .userMessage("Question \($0)")) }
+            await rig.transport.append(chatID, [.info(chat(state: .idle))] + messages.map { .itemCompleted($0) })
+            _ = try await openChat(rig)
+            await eventually("the transcript is in") { rig.model.conversation(self.chatID).transcript.items.count == 14 }
+            func atBottom() -> Bool {
+                guard let list = self.transcriptScroll(rig) else { return false }
+                return abs(list.contentSize.height - (list.contentOffset.y + list.bounds.height - list.adjustedContentInset.bottom)) <= 1
+            }
+            for cards in [false, true] {
+                if cards {
+                    rig.model.conversation(chatID).attachments = [staged(1, "photo.jpg"), staged(2, "notes.pdf")]
+                    await eventually("\(look): the card row is up") { rig.layout.frames["attachments"] != nil }
+                }
+                try await Task.sleep(for: .milliseconds(400))
+                rig.window.layoutIfNeeded()
+                await eventually("\(look): at the bottom") { atBottom() }
+                let list = try XCTUnwrap(transcriptScroll(rig)), surface = try XCTUnwrap(rig.layout.frames["composer"])
+                let frame = list.convert(list.bounds, to: rig.window)
+                let top = cards ? try XCTUnwrap(rig.layout.frames["attachments"]).minY : surface.minY
+                XCTAssertGreaterThanOrEqual(frame.maxY, surface.maxY, "\(look) cards \(cards): the transcript reaches down under the field")
+                XCTAssertEqual(frame.maxY - list.adjustedContentInset.bottom, top - 6, accuracy: 1.5, "\(look) cards \(cards): its content ends just above the composer")
+                // The keyboard's top, or the home indicator's safe area with no keyboard.
+                XCTAssertEqual(rig.host.view.keyboardLayoutGuide.layoutFrame.minY - surface.maxY, 8, accuracy: 1, "\(look): 8 pt under the field")
+                // The last message, scrolled to, is seen whole above the field.
+                let lastRow = list.contentSize.height - 6 + frame.minY - list.contentOffset.y
+                XCTAssertLessThanOrEqual(lastRow, top, "\(look) cards \(cards): the last message ends above the composer")
+            }
+            // The field grows with a draft of several lines: the inset grows with it and the last message stays above the composer.
+            let before = try XCTUnwrap(transcriptScroll(rig)).adjustedContentInset.bottom, shortField = try XCTUnwrap(rig.layout.frames["composer"]).height
+            rig.model.conversation(chatID).draft = "First line of a longer draft\nsecond line\nthird line\nfourth line"
+            await eventually("\(look): the field grew") { (rig.layout.frames["composer"]?.height ?? 0) > shortField + 40 }
+            try await Task.sleep(for: .milliseconds(400))
+            rig.window.layoutIfNeeded()
+            await eventually("\(look): at the bottom with the taller field") { atBottom() }
+            do {
+                let list = try XCTUnwrap(transcriptScroll(rig)), surface = try XCTUnwrap(rig.layout.frames["composer"])
+                let grown = surface.height - shortField
+                print("FLOAT-INSETS \(look) top=\(list.adjustedContentInset.top) bottom \(before) -> \(list.adjustedContentInset.bottom) field +\(grown)")
+                XCTAssertEqual(list.adjustedContentInset.bottom - before, grown, accuracy: 1.5, "\(look): the inset grows with the field")
+                let frame = list.convert(list.bounds, to: rig.window), cards = try XCTUnwrap(rig.layout.frames["attachments"])
+                XCTAssertLessThanOrEqual(list.contentSize.height - 6 + frame.minY - list.contentOffset.y, cards.minY, "\(look): the last message still ends above the composer")
+            }
+            // The keyboard down: the field stands 8 pt above the home indicator's safe area, the transcript still under it.
+            rig.window.endEditing(true)
+            try await Task.sleep(for: .milliseconds(700))
+            rig.window.layoutIfNeeded()
+            let list = try XCTUnwrap(transcriptScroll(rig)), surface = try XCTUnwrap(rig.layout.frames["composer"])
+            XCTAssertEqual(rig.window.bounds.height - rig.window.safeAreaInsets.bottom - surface.maxY, 8, accuracy: 1, "\(look): 8 pt over the home indicator")
+            XCTAssertGreaterThanOrEqual(list.convert(list.bounds, to: rig.window).maxY, surface.maxY, "\(look): the transcript under the field")
             await finish(rig)
         }
     }

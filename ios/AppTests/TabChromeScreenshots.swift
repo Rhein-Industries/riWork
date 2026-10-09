@@ -581,6 +581,87 @@ import RiWorkCore
             try? keychain.delete()
         }
     }
+    /// `RIWORK_TAB_SCREENSHOTS_ONLY=testComposerFloats scripts/tab-chrome-screenshots.sh <dir> <udid>`: the composer floating over the
+    /// transcript. The transcript at its bottom with a long tool call (open) just above the field, and scrolled up a little so messages
+    /// pass under the field, the keyboard down and up; and a request waiting over the composer. In Native light and dark and the
+    /// terminal look.
+    func testComposerFloats() async throws {
+        guard ProcessInfo.processInfo.environment["RIWORK_TAB_SCREENSHOTS_ONLY"] == "testComposerFloats" else { throw XCTSkip("Set RIWORK_TAB_SCREENSHOTS_ONLY=testComposerFloats") }
+        for look in [Look.nativeLight, .nativeDark, .terminal] {
+            guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene") }
+            let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
+            let pairing = try Pairing.parse("""
+            {"v":1,"relay_url":"wss://example.com/v1/ws","desktop_id":"11111111-1111-4111-8111-111111111111","device_id":"22222222-2222-4222-8222-222222222222","route_id":"33333333-3333-4333-8333-333333333333","device_name":"Test","pairing_secret":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","relay_token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}
+            """)
+            var desktop = SavedDesktop(name: "Fixture", pairing: pairing, allowLocalDevelopment: false)
+            desktop.selectedProjectID = project; desktop.selectedSessionID = ChatTransport.shell
+            try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
+            let suite = "com.riwork.tests.tabchrome.\(UUID().uuidString)"
+            defaultsNames.append(suite)
+            let info = ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Fix the build", createdAtUnix: 10, approvalMode: .supervised, state: .idle)
+            let transport = ChatTransport(chats: [info], appearance: appearance(look, mic: true))
+            var events: [ChatEvent] = [.info(info)]
+            for index in 0..<8 {
+                events.append(.itemCompleted(ChatItem(id: "m\(index)", status: .completed, body: index % 2 == 0
+                    ? .userMessage("Question \(index): why does the transcript stop above the composer?")
+                    : .agentMessage("Message \(index). A readable paragraph in this fixture conversation, long enough to wrap onto a few lines so it passes under the field."))))
+            }
+            events.append(.itemCompleted(ChatItem(id: "read", status: .completed, body: .toolCall(server: nil, tool: "Read", input: .object(["file_path": .string("/fixture/ios/RiWorkRemote/ChatComposer.swift")]),
+                                                                                                  output: (1...14).map { "\($0)\tline \($0) of the composer, a long line of Swift that runs past the screen's edge" }.joined(separator: "\n")))))
+            await transport.append(chatID, events)
+            let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: suite)!, chatWaitMilliseconds: 300,
+                                    chatIdleInterval: .milliseconds(20), hardwareKeyboard: HardwareKeyboardMonitor(probe: { false }))
+            await model.connect()
+            if look != .terminal { await eventually("Native look") { model.theme.style.native } }
+            let projectValue = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}".utf8))
+            let host = UIHostingController(rootView: AnyView(ThemedTabs(model: model, project: projectValue, navigation: true)))
+            let window = UIWindow(windowScene: scene)
+            window.frame = scene.coordinateSpace.bounds
+            window.windowLevel = .alert + 1
+            window.rootViewController = host
+            window.overrideUserInterfaceStyle = look == .nativeDark ? .dark : .light
+            window.makeKeyAndVisible()
+            windows.forEach { $0.isHidden = true }
+            windows.append(window)
+            model.selectChat(chatID)
+            let conversation = model.conversation(chatID)
+            await eventually("chat up") { conversation.following && conversation.transcript.items.count > 8 }
+            conversation.expanded.insert("read")
+            window.endEditing(true)
+            try await Task.sleep(for: .milliseconds(1200))
+            let prefix = look.rawValue
+            func transcript() -> UIScrollView? {
+                views(UIScrollView.self, in: window).filter { !($0 is UITextView) && $0.bounds.width >= window.bounds.width - 1 }.max { $0.bounds.height < $1.bounds.height }
+            }
+            /// Scrolls the transcript up from its bottom by `points`, so rows pass under the field.
+            func scrollUp(_ points: CGFloat) async throws {
+                guard let list = transcript() else { return XCTFail("no transcript") }
+                let bottom = list.contentSize.height - list.bounds.height + list.adjustedContentInset.bottom
+                list.setContentOffset(CGPoint(x: 0, y: bottom - points), animated: false)
+                try await Task.sleep(for: .milliseconds(500))
+            }
+            try await shot(window, prefix + "-1-bottom")
+            try await scrollUp(70)
+            try await shot(window, prefix + "-2-under")
+            guard let field = views(ChatComposerTextView.self, in: window).first else { XCTFail("no composer"); continue }
+            field.becomeFirstResponder()
+            conversation.jumpToEnd()
+            try await Task.sleep(for: .milliseconds(1200))
+            try await shot(window, prefix + "-3-kb-bottom")
+            try await scrollUp(70)
+            try await shot(window, prefix + "-4-kb-under")
+            window.endEditing(true)
+            await transport.append(chatID, [.state(.waiting), .approvalRequested(ChatApproval(requestID: "r1", kind: .command, title: "cargo test --all-features",
+                                                                                                 detail: "Run the whole test suite in /fixture.", choices: [.accept, .acceptForSession, .decline, .cancel]))])
+            await eventually("the request") { conversation.openApprovals.count == 1 }
+            conversation.jumpToEnd()
+            try await Task.sleep(for: .milliseconds(1200))
+            try await shot(window, prefix + "-5-request")
+            await model.disconnect()
+            window.isHidden = true
+            try? keychain.delete()
+        }
+    }
     /// `RIWORK_TAB_SCREENSHOTS_ONLY=testSharedTabs scripts/tab-chrome-screenshots.sh <dir> <udid>`: the row on the desktop's shared tab
     /// list (the project orchestrator, sent as pinned by an older desktop, and a user chat), the open-worker picker, the close sheet, a
     /// reorder in progress (the drop bar and the Edit tabs sheet), the setting row, the orchestrator's close sheet (Detach and Exit, as

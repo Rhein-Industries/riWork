@@ -394,8 +394,8 @@ symbols that are awkward on the iOS keyboard (`` | / \ ~ - _ ` * & $ > < { } [ ]
 hotkey editor. Hide keyboard stays at the right end. Every key is at least 44 pt wide and as tall as the bar. The ends of the row are padded so the first and last key clear
 the display's rounded corners (about 20-28 pt derived from the safe area, not from a device model). The row is clipped to the
 bar's shape (on glass its capsule, so a scrolled key never draws over the rounded ends), and an end that keys were scrolled past
-fades out (`BottomBarGeometry`). A chat's composer lines up with the same numbers: its field's ends sit where the bar's capsule does,
-as close above the keyboard as the capsule. Focus mode uses
+fades out (`BottomBarGeometry`). A chat's composer floats over the transcript, which scrolls on underneath it and shows through its
+glass field and around it; its field has the transcript's 16 pt margins and stands 8 pt above the keyboard. Focus mode uses
 the same strip. The iPhone is portrait only.
 
 **Hotkeys** send a fixed sequence of text and special keys, validated against the `shell.keys` contract (text without

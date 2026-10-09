@@ -3,7 +3,8 @@ import Foundation
 /// What the terminal's scroll view reports, in points (SwiftUI's `ScrollGeometry`).
 ///
 /// `offset` is `contentOffset.y`, which is negative by the top inset at rest. `viewportHeight` is the height of the view inside its
-/// insets (`containerSize`): what is visible runs from `offset + topInset` for that height.
+/// insets (the bounds, `containerSize`, less both insets: `init(…boundsHeight:…)`): what is visible runs from `offset + topInset` for
+/// that height.
 public struct ScrollMetrics: Sendable, Equatable {
     public var offset: Double
     public var contentHeight: Double
@@ -14,6 +15,17 @@ public struct ScrollMetrics: Sendable, Equatable {
         self.offset = offset; self.contentHeight = contentHeight; self.viewportHeight = viewportHeight
         self.topInset = topInset; self.bottomInset = bottomInset
     }
+    /// From the scroll view's whole height (`ScrollGeometry.containerSize`, its bounds) and the insets over its ends (a bar over the
+    /// top, the composer floating over the bottom): what is visible is the height less each inset, counted once.
+    public init(offset: Double, contentHeight: Double, boundsHeight: Double, topInset: Double, bottomInset: Double) {
+        self.init(offset: offset, contentHeight: contentHeight, viewportHeight: max(0, boundsHeight - topInset - bottomInset),
+                  topInset: topInset, bottomInset: bottomInset)
+    }
+    /// The scroll view's whole height: the visible part and both insets.
+    public var boundsHeight: Double { viewportHeight + topInset + bottomInset }
+    /// The offset at the very bottom (the last line's bottom edge at the bottom of the visible part), or at the top when the contents
+    /// fit.
+    public var bottomOffset: Double { max(-topInset, contentHeight + bottomInset - boundsHeight) }
     /// How far the last line's bottom edge is below the bottom of the visible part; zero at the bottom, negative while overscrolled.
     public var distanceFromBottom: Double { contentHeight - (offset + topInset + viewportHeight) }
     /// How far the first line's top edge is above the top of the visible part; zero at the top.
@@ -64,7 +76,8 @@ public struct StickyBottom: Sendable, Equatable {
     public mutating func metricsChanged(from old: ScrollMetrics?, to new: ScrollMetrics, lineHeight: Double, userDriven: Bool) -> Response {
         let slack = max(1, lineHeight) * Self.slackLines
         let resized = old.map { new.resized(since: $0) } ?? true
-        let moved = old.map { $0.offset != new.offset } ?? false
+        // Less than a point is layout rounding (a bar settling under the view), not a scroll.
+        let moved = old.map { abs($0.offset - new.offset) >= 1 } ?? false
         far = new.distanceFromBottom > new.viewportHeight
         if new.distanceFromBottom <= slack {
             following = true; newLines = 0; far = false

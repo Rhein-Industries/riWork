@@ -25,6 +25,27 @@ final class StickyBottomTests: XCTestCase {
         XCTAssertEqual(ScrollMetrics(offset: 1400, contentHeight: 2000, viewportHeight: 600).distanceFromBottom, 0)
         XCTAssertLessThan(ScrollMetrics(offset: 1460, contentHeight: 2000, viewportHeight: 600).distanceFromBottom, 0, "overscrolled past the bottom")
     }
+    /// A view 700 tall with a 40-point bar over its top and a 160-point composer over its bottom: 500 is visible, each inset counted
+    /// once, and at the bottom offset the last line ends at the bottom of the visible part.
+    func testBothInsetsAreCountedOnceFromTheBoundsHeight() {
+        let top = 40.0, bottom = 160.0
+        let atBottom = ScrollMetrics(offset: 2000 + bottom - 700, contentHeight: 2000, boundsHeight: 700, topInset: top, bottomInset: bottom)
+        XCTAssertEqual(atBottom.viewportHeight, 500)
+        XCTAssertEqual(atBottom.boundsHeight, 700)
+        XCTAssertEqual(atBottom.bottomOffset, 1460)
+        XCTAssertEqual(atBottom.distanceFromBottom, 0)
+        let up = ScrollMetrics(offset: atBottom.bottomOffset - 120, contentHeight: 2000, boundsHeight: 700, topInset: top, bottomInset: bottom)
+        XCTAssertEqual(up.distanceFromBottom, 120, "scrolled up 120 is 120 from the bottom, whatever floats over it")
+        XCTAssertEqual(ScrollMetrics(offset: -top, contentHeight: 2000, boundsHeight: 700, topInset: top, bottomInset: bottom).distanceFromTop, 0)
+        // Contents shorter than what is visible: the bottom is the top.
+        let short = ScrollMetrics(offset: -top, contentHeight: 300, boundsHeight: 700, topInset: top, bottomInset: bottom)
+        XCTAssertEqual(short.bottomOffset, -top)
+        XCTAssertLessThan(short.distanceFromBottom, 0)
+        // Following: a view scrolled up by less than the composer's height is not at the bottom.
+        var sticky = StickyBottom()
+        _ = sticky.metricsChanged(from: atBottom, to: up, lineHeight: line, userDriven: true)
+        XCTAssertFalse(sticky.following)
+    }
     func testWithinOneLineOfTheBottomStillFollows() {
         var sticky = StickyBottom()
         let old = metrics(away: 0)
@@ -34,6 +55,16 @@ final class StickyBottomTests: XCTestCase {
         XCTAssertTrue(sticky.following, "exactly one line")
         _ = sticky.metricsChanged(from: old, to: metrics(away: 15), lineHeight: line, userDriven: true)
         XCTAssertFalse(sticky.following, "more than a line")
+    }
+    /// Layout nudging the position by a fraction of a point, away from the bottom while the view waits to be put back there (a bar
+    /// came up over it), is not the reader leaving.
+    func testAMoveOfLessThanAPointIsNotAScroll() {
+        var sticky = StickyBottom()
+        let old = metrics(away: 58)
+        XCTAssertEqual(sticky.metricsChanged(from: old, to: metrics(away: 57.67), lineHeight: line, userDriven: false), .none)
+        XCTAssertTrue(sticky.following)
+        _ = sticky.metricsChanged(from: old, to: metrics(away: 56), lineHeight: line, userDriven: false)
+        XCTAssertFalse(sticky.following, "two points is a scroll")
     }
     func testScrollingUpStopsFollowingAndCountsNewLines() {
         var sticky = StickyBottom()

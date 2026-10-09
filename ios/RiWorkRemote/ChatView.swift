@@ -31,6 +31,11 @@ struct ChatScreen: View {
     @State private var picking: AttachmentChoice?
     /// Scrolling room the bar over the composer gives up so the transcript keeps its last message in view (`transcriptChanged`).
     @State private var squeeze: CGFloat = 0
+    /// The tops of the transcript and of what floats over its bottom (the bars and the composer), in the window: what is seen of the
+    /// transcript is between them.
+    @State private var transcriptTop: CGFloat = 0
+    @State private var bottomTop: CGFloat = 0
+    @State private var squeezeCheck: Task<Void, Never>?
 
     private var conversation: ChatConversation { model.chatConversations[chat.id] ?? ChatConversation(id: chat.id) }
     private var state: ChatState { model.chatState(chat) }
@@ -42,31 +47,45 @@ struct ChatScreen: View {
         let approvals = conversation.openApprovals
         let questions = conversation.openQuestions
         let elidedRequests = conversation.transcript.elidedRequests
+        let barShown = !approvals.isEmpty || !questions.isEmpty || !elidedRequests.isEmpty
         VStack(spacing: 0) {
             ChatToolbar(model: model, chat: info, conversation: conversation, state: state, showModels: $showModels)
-            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, dismissesKeyboard: !model.keyboard.hardware.isAttached || model.keyboard.software.isShown, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) }, viewportChanged: { transcriptChanged($0, barShown: !approvals.isEmpty || !questions.isEmpty || !elidedRequests.isEmpty) })
+            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, dismissesKeyboard: !model.keyboard.hardware.isAttached || model.keyboard.software.isShown, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) })
                 .id(chat.id)
-            if let approval = approvals.first {
-                BoundedScroll(maxHeight: max(110, height * 0.52 - squeeze)) {
-                    ChatApprovalBar(approval: approval, count: approvals.count, keyHints: model.keyboard.hardware.isAttached, detailHeight: max(70, height * 0.2 - squeeze),
-                                    busy: !connected || conversation.answered.contains(approval.requestID)) { decision in decide(approval, decision) }
-                        .id(approval.requestID)
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { transcriptTop = $0; transcriptChanged(barShown: barShown) }
+                // The composer floats over the transcript: the transcript scrolls on underneath it, seen through its glass field and
+                // around it, and is inset by the height of all that stands over it, so its last message still ends above the field. The
+                // bars and banner lines above the composer stand on the screen's background, as before.
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    VStack(spacing: 0) {
+                        VStack(spacing: 0) {
+                            if let approval = approvals.first {
+                                BoundedScroll(maxHeight: max(110, height * 0.52 - squeeze)) {
+                                    ChatApprovalBar(approval: approval, count: approvals.count, keyHints: model.keyboard.hardware.isAttached, detailHeight: max(70, height * 0.2 - squeeze),
+                                                    busy: !connected || conversation.answered.contains(approval.requestID)) { decision in decide(approval, decision) }
+                                        .id(approval.requestID)
+                                }
+                            } else if let question = questions.first {
+                                ChatQuestionBar(question: question, scrollHeight: max(leastQuestionScroll, height * 0.3 - squeeze), busy: !connected || conversation.answered.contains(question.requestID)) { form in
+                                    Task { await model.answerChatQuestion(chat.id, form) }
+                                }
+                                .id(question.requestID)
+                            } else if let request = elidedRequests.first {
+                                ChatElidedRequestBar(request: request, count: elidedRequests.count).id(request.requestID)
+                            }
+                            // Every message of the moment, in one place: the link, the chat's state, what went wrong, the provider's notices.
+                            ChatNoticeBanners(model: model, chat: info, conversation: conversation, state: state, showHistory: { showNotices = true })
+                        }
+                        .background(style.background)
+                        ChatComposer(conversation: conversation, provider: info.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
+                                     send: { Task { await model.sendChatDraft(chat.id) } }, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } },
+                                     attach: { picking = $0 }, pasteFiles: pasteFiles,
+                                     attachmentImages: model.chatAttachmentImages, removeAttachment: { model.removeStagedAttachment($0, from: chat.id) },
+                                     pending: model.pendingAttachments(for: chat.id), cancelPending: model.cancelUpload,
+                                     barAbove: barShown)
+                    }
+                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { bottomTop = $0; transcriptChanged(barShown: barShown) }
                 }
-            } else if let question = questions.first {
-                ChatQuestionBar(question: question, scrollHeight: max(leastQuestionScroll, height * 0.3 - squeeze), busy: !connected || conversation.answered.contains(question.requestID)) { form in
-                    Task { await model.answerChatQuestion(chat.id, form) }
-                }
-                .id(question.requestID)
-            } else if let request = elidedRequests.first {
-                ChatElidedRequestBar(request: request, count: elidedRequests.count).id(request.requestID)
-            }
-            // Every message of the moment, in one place: the link, the chat's state, what went wrong, the provider's notices.
-            ChatNoticeBanners(model: model, chat: info, conversation: conversation, state: state, showHistory: { showNotices = true })
-            ChatComposer(conversation: conversation, provider: info.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
-                         send: { Task { await model.sendChatDraft(chat.id) } }, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } },
-                         attach: { picking = $0 }, pasteFiles: pasteFiles,
-                         attachmentImages: model.chatAttachmentImages, removeAttachment: { model.removeStagedAttachment($0, from: chat.id) },
-                         pending: model.pendingAttachments(for: chat.id), cancelPending: model.cancelUpload)
         }
         .frame(maxWidth: 760)
         .frame(maxWidth: .infinity)
@@ -112,12 +131,19 @@ struct ChatScreen: View {
     /// In Native, where the bars are taller, a bar over a short screen (the keyboard up) gives up scrolling room until the transcript
     /// keeps `leastTranscript`; the terminal look keeps its bars as they were. It only ever gives more up, and starts over when the
     /// screen's height changes: a bar cuts its answers between rows, so its height moves in steps, and taking room back as the
-    /// transcript grows would swing between two steps without end.
-    private func transcriptChanged(_ transcript: CGFloat, barShown: Bool) {
-        guard style.native, barShown else { if squeeze != 0 { squeeze = 0 }; return }
-        guard transcript < leastTranscript - 0.5 else { return }
-        let next = min(squeeze + leastTranscript - transcript, height * 0.3)
-        if next - squeeze >= 1 { squeeze = next }
+    /// transcript grows would swing between two steps without end. It goes by the height once settled: the bars and the composer float
+    /// over the transcript, and while they come up their inset changes in steps, so what is seen dips for a moment.
+    private func transcriptChanged(barShown: Bool) {
+        guard style.native, barShown else { if squeeze != 0 { squeeze = 0 }; squeezeCheck?.cancel(); squeezeCheck = nil; return }
+        guard squeezeCheck == nil else { return }
+        squeezeCheck = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(120))
+            squeezeCheck = nil
+            let seen = bottomTop - transcriptTop
+            guard !Task.isCancelled, seen < leastTranscript - 0.5 else { return }
+            let next = min(squeeze + leastTranscript - seen, height * 0.3)
+            if next - squeeze >= 1 { squeeze = next }
+        }
     }
     private func decide(_ approval: ChatApproval, _ decision: ChatDecision) {
         Task { await model.decideChatApproval(chat.id, approval, decision) }
@@ -597,7 +623,6 @@ private struct ChatTranscriptList: View {
     /// The software keyboard is up (or no hardware keyboard is attached): dragging or tapping the transcript puts it away.
     let dismissesKeyboard: Bool
     var loadOlder: @MainActor (@MainActor () async -> Void) async -> Void = { _ in }
-    var viewportChanged: (CGFloat) -> Void = { _ in }
     @State private var paging: Task<Void, Never>?
     @State private var preservingHistory = false
     @State private var viewport = ChatHistoryViewport()
@@ -605,6 +630,7 @@ private struct ChatTranscriptList: View {
     @State private var sticky = StickyBottom()
     @State private var userDriven = false
     @State private var bottomCorrection: Task<Void, Never>?
+    @State private var bottomCorrectionAgain = false
 
     var body: some View {
         let transcript = conversation.transcript
@@ -641,7 +667,6 @@ private struct ChatTranscriptList: View {
             .background(TranscriptKeyboardTap(enabled: dismissesKeyboard))
         }
         .chatLayoutProbe("transcript")
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewportChanged($0) }
         .coordinateSpace(name: Self.space)
         .scrollPosition($position)
         .defaultScrollAnchor(.bottom, for: .initialOffset)
@@ -658,7 +683,9 @@ private struct ChatTranscriptList: View {
             }
         }
         .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
-            ScrollMetrics(offset: geometry.contentOffset.y, contentHeight: geometry.contentSize.height, viewportHeight: geometry.containerSize.height,
+            // The viewport is what is seen: the composer and the bars float over the bottom inset, so the reader is at the bottom when
+            // the last line ends above them.
+            ScrollMetrics(offset: geometry.contentOffset.y, contentHeight: geometry.contentSize.height, boundsHeight: geometry.containerSize.height,
                           topInset: geometry.contentInsets.top, bottomInset: geometry.contentInsets.bottom)
         } action: { old, new in
             viewport.metrics = new
@@ -670,10 +697,10 @@ private struct ChatTranscriptList: View {
             let response = sticky.metricsChanged(from: !userDriven && bottomCorrection != nil ? nil : old, to: new, lineHeight: 24, userDriven: userDriven)
             // An animated jump can finish against a lazy stack's previous height while the approval/composer resizes.
             // StickyBottom treats overscroll as following; it still needs correction to the newly measured content end.
-            let bottom = max(-new.topInset, new.contentHeight - new.viewportHeight + new.bottomInset)
+            let bottom = new.bottomOffset
             let settle = sticky.following && !userDriven && new.resized(since: old) && new.distanceFromBottom > 0.5
             if response == .scrollToBottom || settle || (sticky.following && !userDriven && new.offset > bottom + 2) {
-                scheduleBottomCorrection { proxy.scrollTo(Self.end, anchor: .bottom) }
+                scheduleBottomCorrection(again: new.resized(since: old)) { proxy.scrollTo(Self.end, anchor: .bottom) }
             }
         }
         .onChange(of: conversation.feed.itemArrivals) { _, count in sticky.contentChanged(end: count, epoch: 0) }
@@ -721,7 +748,7 @@ private struct ChatTranscriptList: View {
     }
 
     private func captureHistoryAnchor() {
-        let height = CGFloat(viewport.metrics?.viewportHeight ?? 0)
+        let height = CGFloat(viewport.metrics?.boundsHeight ?? 0)
         viewport.anchor = viewport.frames.filter { $0.value.maxY > 0 && $0.value.minY < height }
             .min { $0.value.minY < $1.value.minY }.map { (id: $0.key, y: $0.value.minY) }
         preservingHistory = viewport.anchor != nil
@@ -739,7 +766,7 @@ private struct ChatTranscriptList: View {
             defer { if viewport.correctionToken == token { viewport.correction = nil; viewport.correctionToken = nil } }
             guard !Task.isCancelled, preservingHistory, viewport.pageInstalled || viewport.waitingForPage, !userDriven,
                   let metrics = viewport.metrics, let anchor = viewport.anchor else { return }
-            guard let frame = viewport.frames[anchor.id], frame.maxY > 0, frame.minY < CGFloat(metrics.viewportHeight) else {
+            guard let frame = viewport.frames[anchor.id], frame.maxY > 0, frame.minY < CGFloat(metrics.boundsHeight) else {
                 proxy.scrollTo(anchor.id, anchor: .top); return
             }
             let delta = frame.minY - anchor.y
@@ -749,8 +776,11 @@ private struct ChatTranscriptList: View {
 
     /// Lazy rows can change their measured height during layout (especially with accessibility text). Scroll after that pass,
     /// rather than feeding a new scroll position back into the geometry callback. A reader's gesture cancels the pending correction.
-    private func scheduleBottomCorrection(_ scroll: @escaping @MainActor () -> Void) {
-        guard bottomCorrection == nil else { return }
+    private func scheduleBottomCorrection(again: Bool = true, _ scroll: @escaping @MainActor () -> Void) {
+        // One already on its way goes once more when it is done if the content or what floats over the bottom grew again meanwhile (a
+        // position change alone is no reason).
+        guard bottomCorrection == nil else { if again { bottomCorrectionAgain = true }; return }
+        bottomCorrectionAgain = false
         bottomCorrection = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(16))
             guard !Task.isCancelled else { return }
@@ -764,6 +794,7 @@ private struct ChatTranscriptList: View {
                 position.scrollTo(edge: .bottom)
             }
             bottomCorrection = nil
+            if bottomCorrectionAgain { scheduleBottomCorrection(scroll) }
         }
     }
     private static let end = "chat-transcript-end"

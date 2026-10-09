@@ -113,7 +113,8 @@ final class BottomBarGeometryTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(insets.horizontal, 0)
             XCTAssertEqual(insets.horizontal, 0, "no gutter: the key bar spans the safe area's width")
             XCTAssertEqual(insets.horizontal, BottomBarGeometry.rowClip(barWidth: 402, barHeight: 44, glass: glass).x, "the key bar's edges")
-            XCTAssertEqual(insets.bottom, BottomBarGeometry.capsuleEndInset)
+            XCTAssertEqual(insets.bottom, 8, "a margin under the field, above the keyboard or the home indicator")
+            XCTAssertGreaterThan(insets.bottom, BottomBarGeometry.capsuleEndInset, "more room than the key bar's capsule has")
         }
         XCTAssertEqual(BottomBarGeometry.minimumTarget, 44)
     }
