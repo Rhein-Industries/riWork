@@ -47,6 +47,8 @@ mod dictate;
 mod diff;
 mod display;
 #[cfg(test)]
+mod display_tests;
+#[cfg(test)]
 mod draft_tests;
 #[cfg(test)]
 mod editor_tests;
@@ -265,6 +267,9 @@ impl ChatView {
         let mut view = Self::blank(config, window, cx);
         view.chat_id = Some(chat_id);
         view.inventory_info = info;
+        // A restored or phone-opened tab shows the chat's own Normal/Verbose choice from
+        // the start, not the default it was made with.
+        view.follow_display_setting(cx);
         view
     }
 
@@ -716,12 +721,23 @@ impl ChatView {
     }
 
     fn choose_display(&mut self, mode: DisplayMode, cx: &mut Context<Self>) {
+        self.choose_display_in(crate::settings::SettingsStore::open_default, mode, cx);
+    }
+
+    /// Saves `mode` as this chat's own choice in the settings `store` opens; the
+    /// setting's `chat_display` stays the default for every other chat.
+    fn choose_display_in(
+        &mut self,
+        store: impl FnOnce() -> Result<crate::settings::SettingsStore, String>,
+        mode: DisplayMode,
+        cx: &mut Context<Self>,
+    ) {
         let Some(chat_id) = self.chat_id.clone() else {
             self.pending_display = Some(mode);
             self.apply_display_mode(mode, cx);
             return;
         };
-        match crate::settings::SettingsStore::open_default().and_then(|store| {
+        match store().and_then(|store| {
             store.update(|settings| {
                 settings.chat_display_modes.insert(chat_id, mode);
             })
