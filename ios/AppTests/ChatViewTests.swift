@@ -1167,9 +1167,9 @@ import RiWorkCore
         await finish(rig)
     }
 
-    /// At 390 pt the field stands 16 pt in from each edge, as the transcript's text does, and its text has the field's width but for the
+    /// At 390 pt the field stands 10 pt in from each edge (the Latest pill's margin; the transcript's text is at 16), and its text has the field's width but for the
     /// paperclip's slot (its glyph 8 pt in from the field's edge, the text about 8 pt after it) and one 38-point column of buttons (the
-    /// 30-point circle and 8 pt): a text column of about 283 pt. The paperclip's and Send's targets reach out over the margin to the
+    /// 30-point circle and 8 pt): a text column of about 295 pt. The paperclip's and Send's targets reach out over the margin to the
     /// screen's edges. The cards above start where the field does.
     func testTheComposerTextHasTheFieldsWidthAndTheCardsLineUpWithIt() async throws {
         let rig = try await makeRig(width: 390)
@@ -1186,8 +1186,8 @@ import RiWorkCore
         let textStart = fieldFrame.minX + field.textContainerInset.left + padding
         let textColumn = field.textContainer.size.width - 2 * padding
         print("COMPOSER width=\(rig.window.bounds.width) textStart=\(textStart) textColumn=\(textColumn) send=\(send) paperclip=\(rig.layout.frames["paperclip"] ?? .zero) card0=\(card)")
-        XCTAssertEqual(surface.minX, ChatItemRow.horizontalInset, accuracy: 0.5, "the field at the transcript's margin")
-        XCTAssertEqual(rig.window.bounds.width - surface.maxX, ChatItemRow.horizontalInset, accuracy: 0.5, "on both sides")
+        XCTAssertEqual(surface.minX, ChatComposer.fieldMargin, accuracy: 0.5, "the field 10 pt in from the edge")
+        XCTAssertEqual(rig.window.bounds.width - surface.maxX, ChatComposer.fieldMargin, accuracy: 0.5, "on both sides")
         XCTAssertGreaterThanOrEqual(textColumn, 280, "the text wraps at nearly the field's width")
         // The paperclip's glyph 8 pt in, the text about 8 pt after it.
         // (Past the field's own stroke, which the terminal look draws at its edge.)

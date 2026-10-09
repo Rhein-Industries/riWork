@@ -268,8 +268,8 @@ struct ChatComposer: View {
         .padding(.bottom, BottomBarGeometry.composerInsets(glass: style.glass).bottom)
     }
 
-    /// The field's margin on either side: the transcript's (`ChatItemRow.horizontalInset`), so the field lines up with the messages.
-    static let fieldMargin = ChatItemRow.horizontalInset
+    /// The field's margin on either side: 10 pt, the Latest pill's, a little wider than the transcript's text (16 pt).
+    static let fieldMargin: CGFloat = 10
     /// A button's column at the field's trailing end: its 30-point circle and 8 points after it. Its target is 44 points, from the
     /// column's start out to the screen's edge for the last button (`reach`), else back over the text's end. (It cannot reach over the
     /// text further: the text view, a UIKit view, takes the touches over it.)
