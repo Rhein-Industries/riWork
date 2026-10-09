@@ -44,7 +44,7 @@ struct ChatScreen: View {
         let elidedRequests = conversation.transcript.elidedRequests
         VStack(spacing: 0) {
             ChatToolbar(model: model, chat: info, conversation: conversation, state: state, showModels: $showModels)
-            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) }, viewportChanged: { transcriptChanged($0, barShown: !approvals.isEmpty || !questions.isEmpty || !elidedRequests.isEmpty) })
+            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, dismissesKeyboard: !model.keyboard.hardware.isAttached || model.keyboard.software.isShown, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) }, viewportChanged: { transcriptChanged($0, barShown: !approvals.isEmpty || !questions.isEmpty || !elidedRequests.isEmpty) })
                 .id(chat.id)
             if let approval = approvals.first {
                 BoundedScroll(maxHeight: max(110, height * 0.52 - squeeze)) {
@@ -555,13 +555,47 @@ struct StatusLineSurface: ViewModifier {
     }
 }
 
+/// A tap on the transcript puts the software keyboard away: a tap recognizer on the transcript's scroll view (the one this view is
+/// inside), alongside its own gestures and the rows' buttons, which still get their touches.
+private struct TranscriptKeyboardTap: UIViewRepresentable {
+    let enabled: Bool
+    func makeUIView(context: Context) -> Installer { Installer() }
+    func updateUIView(_ view: Installer, context: Context) { view.tap.isEnabled = enabled; view.install() }
+
+    final class Installer: UIView {
+        let tap = KeyboardDismissTap()
+        override init(frame: CGRect) { super.init(frame: frame); isUserInteractionEnabled = false }
+        required init?(coder: NSCoder) { fatalError() }
+        override func didMoveToWindow() { super.didMoveToWindow(); install() }
+        func install() {
+            var view = superview
+            while let current = view, !(current is UIScrollView) { view = current.superview }
+            guard let scroll = view as? UIScrollView, tap.view !== scroll else { return }
+            tap.view?.removeGestureRecognizer(tap)
+            scroll.addGestureRecognizer(tap)
+        }
+    }
+}
+
+final class KeyboardDismissTap: UITapGestureRecognizer, UIGestureRecognizerDelegate {
+    init() {
+        super.init(target: nil, action: nil)
+        addTarget(self, action: #selector(dismiss))
+        cancelsTouchesInView = false
+        delegate = self
+    }
+    @objc private func dismiss() { view?.window?.endEditing(true) }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+}
+
 private struct ChatTranscriptList: View {
     @Environment(\.desktopStyle) private var style
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let conversation: ChatConversation
     let provider: ChatProvider
     let state: ChatState
-    let hardwareKeyboard: Bool
+    /// The software keyboard is up (or no hardware keyboard is attached): dragging or tapping the transcript puts it away.
+    let dismissesKeyboard: Bool
     var loadOlder: @MainActor (@MainActor () async -> Void) async -> Void = { _ in }
     var viewportChanged: (CGFloat) -> Void = { _ in }
     @State private var paging: Task<Void, Never>?
@@ -604,6 +638,7 @@ private struct ChatTranscriptList: View {
                 Color.clear.frame(height: 6).id(Self.end)
             }
             .padding(.top, 12)
+            .background(TranscriptKeyboardTap(enabled: dismissesKeyboard))
         }
         .chatLayoutProbe("transcript")
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewportChanged($0) }
@@ -611,9 +646,10 @@ private struct ChatTranscriptList: View {
         .scrollPosition($position)
         .defaultScrollAnchor(.bottom, for: .initialOffset)
         .defaultScrollAnchor(.top, for: .sizeChanges)
-        // Dragging the list puts the software keyboard away, as in a chat; a hardware keyboard has none to put away, and must not lose
-        // the composer to a scroll.
-        .scrollDismissesKeyboard(hardwareKeyboard ? .never : .interactively)
+        // Dragging the list down takes the software keyboard with the finger, as in a chat, and a tap on the list puts it away. Typing
+        // on a hardware keyboard there is none to put away, and the composer must not lose it to a scroll. That goes by the keyboard on
+        // screen, not by what GameController reports attached: a paired keyboard or a keyboard case leaves the software one up too.
+        .scrollDismissesKeyboard(dismissesKeyboard ? .interactively : .never)
         .onScrollPhaseChange { _, phase in
             userDriven = phase == .interacting || phase == .decelerating
             if userDriven {

@@ -40,9 +40,11 @@ struct ChatItemRow: View, Equatable {
 
     nonisolated static func == (lhs: ChatItemRow, rhs: ChatItemRow) -> Bool { lhs.item == rhs.item && lhs.provider == rhs.provider && lhs.open == rhs.open }
 
+    /// The transcript's text margin: where its messages begin (and the composer's cards).
+    static let horizontalInset: CGFloat = 16
     var body: some View {
         content
-            .padding(.horizontal, 16).padding(.vertical, rowSpacing)
+            .padding(.horizontal, Self.horizontalInset).padding(.vertical, rowSpacing)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 

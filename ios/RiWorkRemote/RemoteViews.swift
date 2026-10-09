@@ -411,25 +411,30 @@ struct TerminalTabsView: View {
         .onChange(of: model.projectID) { _, _ in openRequestedNewTerminal() }
         .onChange(of: model.state) { _, _ in openRequestedNewTerminal() }
     }
-    /// Back, the tab strip, New terminal and the menu: the same row, at the same height, over a terminal and over a chat. With no tab
-    /// open the project’s name stands where the strip would be.
+    /// Back, the tab strip and the menu: the same row, at the same height, over a terminal and over a chat. With no tab open the
+    /// project’s name stands where the strip would be. New terminal and Open a worker or shell… are in the menu's Tab section.
+    ///
+    /// Back and ⋯ match: each is a 44-point target from its screen edge with its glyph centred in it (12 pt from the edge to a 20-point
+    /// glyph, 12 pt from it to the strip), and the strip has everything in between. No target reaches over the strip, so a tab scrolled
+    /// to either end is still the tab's.
     private func navigationRow(_ chrome: TabScreenChrome) -> some View {
-        HStack(spacing: 4) {
-            Button("Back to projects", systemImage: "chevron.left", action: onBack).labelStyle(.iconOnly).buttonStyle(TargetButtonStyle())
-            if model.tabs.isEmpty {
-                Text(project.name).font(style.face(13, bold: true, relativeTo: .headline)).lineLimit(1).accessibilityAddTraits(.isHeader)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                tabStrip
+        HStack(spacing: 0) {
+            Button { onBack() } label: { Image(systemName: "chevron.left") }
+                .accessibilityLabel("Back to projects")
+                .buttonStyle(TargetButtonStyle()).frame(width: style.target)
+                .chatLayoutProbe("back")
+            Group {
+                if model.tabs.isEmpty {
+                    Text(project.name).font(style.face(13, bold: true, relativeTo: .headline)).lineLimit(1).accessibilityAddTraits(.isHeader)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    tabStrip
+                }
             }
-            // ＋ and ⋯ about 8 pt apart, as the key bar's icons are. Each keeps a 44-point target of its own, reaching outward from the
-            // gap: ＋'s toward the tabs, ⋯'s to the row's end. The targets touch, with each glyph 4 pt in from where they meet, so
-            // every point of the row's end is one target's, never both and never neither.
-            HStack(spacing: 0) {
-                newTabButton.chatLayoutProbe("new-tab")
-                screenMenu(chrome).chatLayoutProbe("more-options")
-            }
+            .chatLayoutProbe("row-strip")
+            screenMenu(chrome).chatLayoutProbe("more-options")
         }
+        .accessibilityElement(children: .contain)
         .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
         .chatLayoutProbe("navigation")
         // Hosted tests and the screenshot harness open what a person reaches through menus (inert outside DEBUG).
@@ -443,30 +448,6 @@ struct TerminalTabsView: View {
                 // The terminal's own Close confirmation, as its menu presents it and as its Close button confirms it.
                 .chatLayoutProbe("legacy-close-confirmation", visible: closing != nil, action: { if let session = model.session, model.legacyCloseAvailable(session) { closing = session } })
                 .chatLayoutProbe("legacy-close-confirm", action: { if let session = closing { close(session) } })
-        }
-    }
-    /// ＋: a new terminal; with the desktop's shared tabs also "Open shell/worker…", the hidden chats and shells (workers first).
-    @ViewBuilder private var newTabButton: some View {
-        if model.desktopFeatures.tabs, model.sharedTabs != nil {
-            let hidden = SharedTabStrip.openable(model.sharedTabs).count
-            Menu {
-                Button("New terminal…", systemImage: "plus") { openNewTerminal() }
-                    .disabled(model.state != .connected || model.projectID != project.id)
-                Button(hidden > 0 ? "Open shell/worker… (\(hidden))" : "Open shell/worker…", systemImage: "rectangle.stack.badge.plus") { showingWorkers = true }
-                    .disabled(model.state != .connected)
-                Button("Edit tabs…", systemImage: "arrow.up.arrow.down") { showingEditTabs = true }
-            } label: {
-                Image(systemName: "plus").padding(.trailing, style.pt(4)).frame(minWidth: style.target, minHeight: style.target, alignment: .trailing).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("New tab").accessibilityHint("A new terminal, or a hidden shell or worker")
-        } else {
-            Button { openNewTerminal() } label: { Image(systemName: "plus").padding(.trailing, style.pt(4)) }
-                .accessibilityLabel("New terminal")
-                .buttonStyle(TargetButtonStyle(alignment: .trailing)).disabled(model.state != .connected || model.projectID != project.id)
-                // A desktop that is too old still answers a tap, with the reason.
-                .opacity(model.terminalControl == .unsupported ? 0.45 : 1)
-                .accessibilityHint(model.terminalControl == .unsupported ? TerminalControlError.unsupportedMessage : "Opens a shell or an agent on your Mac")
         }
     }
     /// The shared entry of the tab on screen, if the desktop shares its tabs.
@@ -540,6 +521,15 @@ struct TerminalTabsView: View {
             }
             // The tab: what it is and, for a terminal, closing it. (Closing any tab, and detaching a worker's, belong here too.)
             Section("Tab") {
+                // A new tab: the New terminal sheet (a shell, Claude or Codex); with the desktop's shared tabs also the hidden chats and
+                // shells (workers first).
+                Button("New terminal", systemImage: "plus") { openNewTerminal() }
+                    .disabled(model.state != .connected || model.projectID != project.id)
+                if model.desktopFeatures.tabs, model.sharedTabs != nil {
+                    let hidden = SharedTabStrip.openable(model.sharedTabs).count
+                    Button(hidden > 0 ? "Open a worker or shell… (\(hidden))" : "Open a worker or shell…", systemImage: "rectangle.stack.badge.plus") { showingWorkers = true }
+                        .disabled(model.state != .connected)
+                }
                 Button("Session info", systemImage: "info.circle") { showSessionInfo() }.disabled(content == .none)
                 if let entry = currentEntry { sharedTabItems(entry) }
                 // Without shared tabs only: with them, closing goes by the tab (a worker detaches; Ask / Detach / Exit; Hide before Exit).
@@ -558,8 +548,8 @@ struct TerminalTabsView: View {
                 else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
             }
         } label: {
-            Label("More options", systemImage: "ellipsis").labelStyle(.iconOnly).padding(.leading, style.pt(4))
-                .frame(minWidth: style.target, minHeight: style.target, alignment: .leading).contentShape(Rectangle())
+            Label("More options", systemImage: "ellipsis").labelStyle(.iconOnly)
+                .frame(width: style.target, height: style.target).contentShape(Rectangle())
         }
             .buttonStyle(.plain)
     }
