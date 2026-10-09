@@ -39,6 +39,9 @@ pub const EVENTS_DEFAULT: u64 = 500;
 /// What a reply holds besides events (the envelope, the ids, `next`, `more` and `server_ms`),
 /// with room to spare: the CLI gets the reply limit less this as the size of its page.
 const REPLY_SLACK: usize = 1024;
+/// Bounded CLI input allowance, independent of the sealed reply size. Large original
+/// events must reach recovery before a transport-size check can reject them.
+const CHAT_READ_MAX: usize = 8 * 1024 * 1024;
 /// A chat is started (and its agent with it), or resumed by a message: the same allowance
 /// as starting a terminal.
 const COMMAND_TIMEOUT: Duration = CREATE_TIMEOUT;
@@ -726,54 +729,14 @@ impl Page {
             .and_then(Value::as_u64)
     }
 }
-/// The smallest a string is cut to when an event alone is more than a frame.
-const MIN_CUT: usize = 128;
-/// What a sealed frame keeps free beyond what the check sees: `server_ms` is added with its
-/// real digits only when the reply is sealed.
+#[path = "../../../src/chat/remote_payload.rs"]
+mod remote_payload;
+#[cfg(test)]
+use remote_payload::cut_strings;
+use remote_payload::{MIN_CUT, elide_event, shorten_body};
+/// Reserve space for server_ms added at sealing time.
 const FRAME_MARGIN: usize = 64;
 
-/// Cuts every string longer than `cap` bytes down to it, at a character boundary, and marks
-/// the cut with an ellipsis. The same cut the CLI makes of an event too big for a page.
-fn cut_strings(value: &mut Value, cap: usize) {
-    if value["kind"].as_str() == Some("data")
-        && value["base64"]
-            .as_str()
-            .is_some_and(|data| data.len() > cap)
-    {
-        *value = serde_json::json!({"kind": "unavailable", "reason": "Image omitted to fit the remote response limit"});
-        return;
-    }
-    match value {
-        Value::String(text) if text.len() > cap => {
-            let mut end = cap;
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            text.truncate(end);
-            text.push('\u{2026}');
-        }
-        Value::Array(items) => items.iter_mut().for_each(|item| cut_strings(item, cap)),
-        Value::Object(fields) => fields.values_mut().for_each(|item| cut_strings(item, cap)),
-        _ => {}
-    }
-}
-/// Bounded recovery keeps all non-body state exact. An unrepresentable control fails closed.
-fn shorten_body(event: &mut Value, cap: usize) -> bool {
-    match event["event"].as_str() {
-        Some("item_started" | "item_completed") => {
-            cut_strings(&mut event["item"]["body"], cap);
-            if cap == MIN_CUT {
-                event["item"]["body"] = json!({"type":"agent_message", "text":"This message is too long to show here. Full text is on your Mac."});
-            }
-            true
-        }
-        Some("item_delta") => {
-            cut_strings(&mut event["delta"], cap);
-            true
-        }
-        _ => false,
-    }
-}
 fn fit_bounded_page(
     request: &str,
     mut page: Page,
@@ -802,11 +765,15 @@ fn fit_bounded_page(
                 }
                 cap /= 2;
             }
+            page.events[0] = entry;
         }
-        return Err(Fault::new(
-            "response_too_large",
-            "This update is too large to show safely without leaving out a request or its details. Open this chat on your Mac.",
-        ));
+        if let Some(entry) = page.events.first_mut() {
+            entry["event"] = elide_event(&entry["event"]);
+            if let Some(result) = sealed(request, &page, compress)? {
+                return Ok(result);
+            }
+        }
+        return Err(cli_fault("chat reply metadata exceeds frame limit"));
     }
 }
 
@@ -832,67 +799,46 @@ fn sealed(request: &str, page: &Page, compress: bool) -> std::result::Result<Opt
         Err(link::EncodeError::Other(e)) => Err(cli_fault(e)),
     }
 }
-/// Lossless mode cuts whole trailing events, never fields or state. An oversized
-/// single event fails explicitly and leaves the phone's live cursor unchanged.
+/// All modes preserve sequence slots, recovering oversized single events identically.
 fn fit_complete_page(
     request: &str,
-    mut page: Page,
+    page: Page,
     compress: bool,
 ) -> std::result::Result<Value, Fault> {
-    loop {
-        if let Some(result) = sealed(request, &page, compress)? {
-            return Ok(result);
-        }
-        if page.events.len() <= 1 {
-            return Err(Fault::new(
-                "response_too_large",
-                "a complete event exceeds the encrypted frame limit",
-            ));
-        }
-        page.events.truncate(page.events.len() / 2);
-        page.next = page.events.last().unwrap()["seq"].as_u64().unwrap();
-        page.more = true;
-    }
+    fit_bounded_page(request, page, compress)
+}
+fn fit_page(request: &str, page: Page, compress: bool) -> std::result::Result<Value, Fault> {
+    fit_bounded_page(request, page, compress)
 }
 
-/// The `chat.events` result for `page`, cut until it fits one sealed frame (see `sealed`).
-///
-/// - A page that is too big loses its last half, and says `more`; `next` is the last event it
-///   keeps. A phone never gets `response_too_large` because of how many events there were.
-/// - One event that is more than a frame by itself (the CLI only keeps a page within the
-///   size of a *reply*, which a session that deflates puts at 2 MiB, and noise does not
-///   deflate) has its long strings cut, as the CLI cuts them for a page, until it fits. If
-///   no cut helps it is passed over: the page is empty and `next` is beyond it, so the phone
-///   goes on.
-fn fit_page(request: &str, mut page: Page, compress: bool) -> std::result::Result<Value, Fault> {
-    loop {
-        if let Some(result) = sealed(request, &page, compress)? {
-            return Ok(result);
-        }
-        if page.events.len() > 1 {
-            page.events.truncate(page.events.len() / 2);
-            page.next = page.last_seq().unwrap_or(page.next);
-            page.more = true;
-            continue;
-        }
-        let Some(entry) = page.events.pop() else {
-            return Err(Fault::new(
-                "response_too_large",
-                "the reply exceeds the encrypted response limit",
-            ));
-        };
-        let mut cap = 64 * 1024;
-        while cap >= MIN_CUT {
-            let mut shrunk = entry.clone();
-            cut_strings(&mut shrunk["event"], cap);
-            page.events.push(shrunk);
-            if let Some(result) = sealed(request, &page, compress)? {
-                return Ok(result);
-            }
-            page.events.pop();
-            cap /= 2;
-        }
-    }
+/// Keep snapshot pagination and row identity while recovering oversized payloads.
+fn fit_snapshot(
+    request: &str,
+    result: Value,
+    compress: bool,
+    paginate: bool,
+) -> std::result::Result<Value, Fault> {
+    remote_payload::fit_snapshot(
+        result,
+        MAX_PLAINTEXT - REPLY_SLACK - FRAME_MARGIN,
+        paginate,
+        |result| match link::encode_reply(
+            &success(request, result.clone()),
+            std::time::Instant::now(),
+            compress,
+            MAX_PLAINTEXT - FRAME_MARGIN,
+        ) {
+            Ok(_) => Ok(true),
+            Err(link::EncodeError::TooLarge) => Ok(false),
+            Err(link::EncodeError::Other(e)) => Err(cli_fault(e)),
+        },
+    )?
+    .ok_or_else(|| {
+        Fault::new(
+            "snapshot_limit",
+            "snapshot metadata or requested rows exceed frame limit",
+        )
+    })
 }
 
 // ---- The methods -------------------------------------------------------------------------------
@@ -1104,7 +1050,7 @@ impl Rpc {
             ));
         }
         let mut result = self
-            .read_capped(args, CLI_TIMEOUT, budget + REPLY_SLACK)
+            .read_capped(args, CLI_TIMEOUT, CHAT_READ_MAX)
             .await
             .map_err(|fault| {
                 if fault.message.contains("Unknown chat command")
@@ -1164,14 +1110,17 @@ impl Rpc {
         }
         // Also guard replies from an older CLI that emitted quota controls by default.
         negotiate_snapshot_rate_limits(&mut result, spec.rate_limits);
-        link::encode_reply(
-            &success(request, result.clone()),
-            std::time::Instant::now(),
-            reply_limit > MAX_PLAINTEXT,
-            MAX_PLAINTEXT - FRAME_MARGIN,
-        )
-        .map_err(|_| Fault::new("response_too_large", "snapshot exceeds frame limit"))?;
-        Ok(result)
+        let request = request.to_owned();
+        tokio::task::spawn_blocking(move || {
+            fit_snapshot(
+                &request,
+                result,
+                reply_limit > MAX_PLAINTEXT,
+                spec.items.is_empty(),
+            )
+        })
+        .await
+        .map_err(|e| cli_fault(format!("fitting the snapshot was interrupted: {e}")))?
     }
 
     /// A page of a chat's events after `since`, as `riwork chat events` collects it. `request`
@@ -1207,7 +1156,7 @@ impl Rpc {
             args.push("--bounded".into());
         }
         let cli = self
-            .read_capped(args, events_limit(spec.wait_ms), reply_limit)
+            .read_capped(args, events_limit(spec.wait_ms), CHAT_READ_MAX)
             .await
             .map_err(|fault| {
                 if fault.code == "response_too_large" {
@@ -1430,11 +1379,14 @@ mod tests {
                 (Some(1), json!(false))
             );
         }
-        // One that cannot be cut small enough (its weight is not in strings) is passed over.
+        // One that cannot be cut small enough keeps its sequence slot as a control placeholder.
         let wide = json!({"seq": 1, "event": {"event": "x",
             "numbers": (0..60_000).map(|n| n * 7919).collect::<Vec<u64>>()}});
-        let passed = fit_page(request, page(vec![wide]), false).unwrap();
-        assert_eq!(passed["events"], json!([]));
+        let passed = fit_page(request, page(vec![wide.clone()]), false).unwrap();
+        assert_eq!(
+            passed["events"][0]["event"],
+            json!({"event":"control_elided","of":"x","reason":"too_large","bytes":wide["event"].to_string().len(),"elided":true})
+        );
         assert_eq!(passed["next"], 1);
     }
 

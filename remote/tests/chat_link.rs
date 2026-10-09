@@ -511,11 +511,16 @@ async fn a_page_is_sealed_as_the_session_asked_and_always_fits_one_frame() {
     let mut phone = Phone::connect(&rig.pairing).await;
     let params = json!({"chat_id":rig.chat,"since":0,"wait_ms":0});
     // A phone that never opted in cannot be sent more than a frame of plain JSON, and the
-    // CLI is told so: the page it is asked for is a margin short of a frame. (This stand-in
-    // prints its whole page, which is over the cap: the connector refuses it.)
+    // CLI is told so: the page it is asked for is a margin short of a frame. This stand-in
+    // prints its whole page, so the connector trims it to a valid prefix.
     let plain = phone.call("chat.events", params.clone()).await;
     assert!(!plain.deflated());
-    assert_eq!(plain.code(), "response_too_large", "{}", plain.value);
+    assert_eq!(plain.value["ok"], true);
+    let held = plain.value["result"]["events"].as_array().unwrap();
+    assert!(!held.is_empty() && held.len() < 300);
+    assert_eq!(plain.value["result"]["next"], held.last().unwrap()["seq"]);
+    assert_eq!(plain.value["result"]["more"], true);
+    assert!(plain.value.to_string().len() <= MAX_PLAINTEXT);
     let asked = std::fs::read_to_string(rig.dir.path().join("calls.log")).unwrap();
     let budget = (MAX_PLAINTEXT - 1024).to_string();
     assert!(

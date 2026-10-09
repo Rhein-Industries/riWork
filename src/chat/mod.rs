@@ -36,6 +36,7 @@ pub mod media;
 pub mod model;
 mod notice_dismissals;
 mod rate_limits;
+pub(crate) mod remote_payload;
 #[cfg(test)]
 pub(crate) mod testing;
 #[cfg(test)]

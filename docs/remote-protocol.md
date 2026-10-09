@@ -1353,9 +1353,11 @@ The installed CLI implements this through `chat snapshot`, a read-only disk read
 it neither calls `chat ensure` nor writes/repairs the log. Updating this path does
 not require restarting an already-running chat host. Each request scans at most
 128 MiB, one million events, 8 MiB per record, with a five-second scan budget.
-The response fits an encrypted plain frame even when compression is negotiated;
-only whole oldest rows can be omitted to fit. One oversized row or controls fail
-explicitly; nothing is truncated. `snapshot_limit` reports a bounded read failure;
+The CLI's normal output budget fits a plain encrypted frame even when compression
+is negotiated; whole oldest rows page out with `more` and remain available to history
+reads. An individually oversized row/control uses response-only shortening or the
+placeholder contract below. `snapshot_limit` reports a bounded read failure or an
+aggregate targeted read that cannot fit;
 `snapshot_expired` reports replacement/truncation or a changed prefix. The latter
 requires a new recent snapshot, with drafts retained. History reads scan their
 pinned prefix again; this version does not maintain a persistent derived cache.
@@ -1367,20 +1369,34 @@ do not silently select full replay. A resource failure (`snapshot_limit` or
 `response_too_large`) selects one explicit degraded replay per connection. The
 phone retains its draft and authoritative controls through the prior live
 checkpoint while reconstructing bodies. Recovery asks `chat.events bounded:true`
-(1–100 events per phone page): identity, order and every non-body control remain
-exact; only item bodies/delta payloads may be shortened, with a visible notice.
-Whole events are still accounted for gaplessly. A control or identity that cannot
-fit is an explicit error, never skipped or shortened; recovery stops without an
-unchanged retry or advancing its cursor. Malformed represented pages are
-`invalid_reply` (distinct from transient `cli_error` failures); degraded replay
-stops for this typed refusal or local decoder rejection and retains its cursor,
-controls and draft through same-connection reopening. `bounded` and `complete` are mutually
-exclusive and both are absent for legacy clients. Ordinary opens remain recent-first.
-A client using snapshot v1 also sends
-`complete:true` on `chat.events`: complete events are paged without truncating
-fields or skipping oversized events; an oversized single event is
-`response_too_large` and the client cursor remains unchanged. The optional boolean
-is absent for legacy clients; their existing fitting behavior is unchanged.
+(1–100 events per phone page): sequence slots and identity are preserved. Item
+bodies, deltas and presentation payloads may be shortened with a visible notice.
+An individual payload that still cannot fit is represented by `item_elided` or
+`control_elided`, as documented in [chat-events.md](chat-events.md); controls are
+never emitted as partial actionable approvals/questions under their old names.
+`item_elided` carries the original tag in `of`, original item status when known,
+item identity, kind when known, reason and original JSON byte count. Missing
+identity is omitted. `control_elided` carries the original tag in `of` and nested
+request/item identities; older clients skip both new names while advancing.
+Malformed represented pages are `invalid_reply` (distinct from transient
+`cli_error` failures); degraded replay stops for this typed refusal or local
+decoder rejection and retains its cursor, controls and draft through
+same-connection reopening. `bounded` and `complete` are mutually exclusive and
+both are absent for legacy clients. Ordinary opens remain recent-first. A client
+using snapshot v1 sends `complete:true` on `chat.events`; full payloads remain
+exact when they fit, with the same response-only recovery for an oversized
+single event. No mode skips a sequence slot merely because its payload is large.
+
+Snapshot CLI `--max-bytes` retains the frame budget (128 KiB less 1 KiB and the
+64-byte sealing margin); the connector's read allowance alone is raised to
+8 MiB. Ordinary snapshot rows still page by removing oldest rows and setting
+`before`/`more`, without turning them into omitted-message placeholders. Only
+rows too large on their own are shortened or elided. The CLI can retry an
+unrepresentable read internally under its existing resource cap, recovering
+payloads before printing within the requested budget. Snapshot item placeholders
+retain the ordinary Item schema and body note, with metadata under `item.elided`;
+controls use the new `control_elided` name. Targeted reads never drop requested
+rows; oversized targeted aggregates retain the existing resource-limit error.
 
 **`chat.events`** is how the phone follows a chat. Params (all but `max_events`
 required):
@@ -1394,8 +1410,10 @@ required):
   the chat produced them. `since` is the last `seq` the phone has (0 for none) and the
   call returns events with a greater `seq`, oldest first. A chat's whole history is
   therefore `since` 0, then `next` of each page, and a phone that reconnects loses
-  nothing. (A page can skip an event that is too big to send at all, below, so a phone
-  does not insist on consecutive `seq`s within a page, only on rising ones.)
+  no sequence slot solely because its payload is oversized. Such events occupy
+  their original slot with an explicit placeholder (below). Legacy feature
+  negotiation can still filter unsupported optional controls; `complete` and
+  `bounded` preserve contiguous represented slots.
 - `wait_ms` (0 to 25 000): if the chat has events after `since` the call does not wait
   for `wait_ms`: it returns them, after about 50 ms in which it collects what follows.
   Otherwise it waits up to `wait_ms` for the first new event, then returns what arrived
@@ -1428,13 +1446,23 @@ a frame (it halves the page until the sealed reply fits) and sets `more` and `ne
 accordingly, so a reply is never `response_too_large` because of how many events there
 were. An event that is bigger than a frame by itself (a huge diff or command output; noise
 does not deflate) arrives with its long strings cut and `…` (U+2026) appended, so a phone can
-always go on past it; one that cannot be cut small enough is skipped, and `next` passes it.
-Events do not change after they are numbered, so a cut event is cut every time it is read.
+always go on past it. Nested identities, paths, URLs and names are never cut;
+encoded image/binary sources become unavailable markers rather than partial base64.
+If shortening cannot fit the event, `item_elided` (with `of`, status when known,
+identity, kind, `reason:"too_large"`, and original `bytes`) or `control_elided`
+(with `of` and original nested identities) retains that sequence slot. The existing
+Mac-text truncation note remains the final body fallback. Events do not change
+after they are numbered; recovery affects responses, never the durable log.
+See [chat-events.md](chat-events.md) for exact shapes and older-client behavior.
+The CLI's event collectors now share this recovery in all modes, with its original
+256-byte minimum cut; connector recovery uses a 128-byte minimum.
 
 Errors: `invalid_request` for any validation failure, for a `since` after the chat's last
 event, and `unsupported RPC method`; `not_found` for an unknown chat; `cli_error` for
 anything else (the chat host cannot be started, a CLI page that does not match the request);
-`response_too_large` only from a CLI that prints a page bigger than it was asked for.
+`response_too_large` for CLI JSON exceeding the 8 MiB bounded read allowance.
+A single representable oversized payload is recovered before the sealed-frame
+check rather than failing the whole page.
 The chat host is started if it is not running (it ends after fifteen idle minutes): a
 stopped chat's history can always be read.
 
