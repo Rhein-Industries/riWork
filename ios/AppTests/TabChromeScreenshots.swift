@@ -660,6 +660,58 @@ import RiWorkCore
         }
     }
 
+    /// `RIWORK_TAB_SCREENSHOTS_ONLY=testTabRowSpace scripts/tab-chrome-screenshots.sh <dir> <udid>`: the row with two long tab titles
+    /// (the project orchestrator and a user chat), Back, ＋ and ⋯ in their narrow slots, Native light and dark.
+    func testTabRowSpace() async throws {
+        guard ProcessInfo.processInfo.environment["RIWORK_TAB_SCREENSHOTS_ONLY"] == "testTabRowSpace" else { throw XCTSkip("Set RIWORK_TAB_SCREENSHOTS_ONLY=testTabRowSpace") }
+        let user = "dddddddd-3333-4333-8333-333333333333"
+        for look in [Look.nativeLight, .nativeDark] {
+            guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene") }
+            let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
+            let pairing = try Pairing.parse("""
+            {"v":1,"relay_url":"wss://example.com/v1/ws","desktop_id":"11111111-1111-4111-8111-111111111111","device_id":"22222222-2222-4222-8222-222222222222","route_id":"33333333-3333-4333-8333-333333333333","device_name":"Test","pairing_secret":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","relay_token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}
+            """)
+            var desktop = SavedDesktop(name: "Fixture", pairing: pairing, allowLocalDevelopment: false)
+            desktop.selectedProjectID = project; desktop.selectedSessionID = ChatTransport.shell
+            try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
+            let suite = "com.riwork.tests.tabchrome.\(UUID().uuidString)"
+            defaultsNames.append(suite)
+            let chats = [ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Project orchestrator", createdAtUnix: 10, state: .idle),
+                         ChatInfo(id: user, provider: .claude, projectID: project, cwd: "/fixture", title: "wheres the app icon on the home screen", createdAtUnix: 20, state: .idle)]
+            let transport = ChatTransport(chats: chats, appearance: appearance(look))
+            await transport.setSharedTabs([.init(key: "chat:\(chatID)", kind: "chat", title: "Project orchestrator"),
+                                           .init(key: "chat:\(user)", kind: "chat", title: "wheres the app icon on the home screen")])
+            await transport.append(chatID, [.info(chats[0]), .itemCompleted(ChatItem(id: "m", status: .completed, body: .agentMessage("The orchestrator coordinates the workers of this project.")))])
+            await transport.append(user, [.info(chats[1]), .itemCompleted(ChatItem(id: "u", status: .completed, body: .userMessage("wheres the app icon on the home screen")))])
+            let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: suite)!, chatWaitMilliseconds: 300,
+                                    chatIdleInterval: .milliseconds(20), hardwareKeyboard: HardwareKeyboardMonitor(probe: { true }))
+            await model.connect()
+            await eventually("Native look") { model.theme.style.native }
+            let projectValue = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}".utf8))
+            let layout = ChatLayoutInspection()
+            let host = UIHostingController(rootView: AnyView(ThemedTabs(model: model, project: projectValue).environment(\.chatLayoutInspection, layout)))
+            let window = UIWindow(windowScene: scene)
+            window.frame = scene.coordinateSpace.bounds
+            window.windowLevel = .alert + 1
+            window.rootViewController = host
+            window.overrideUserInterfaceStyle = look == .nativeDark ? .dark : .light
+            window.makeKeyAndVisible()
+            windows.forEach { $0.isHidden = true }
+            windows.append(window)
+            await eventually("shared row") { model.sharedTabs != nil && model.tabs.count == 2 }
+            model.selectChat(chatID)
+            await eventually("chat up") { model.conversation(self.chatID).following }
+            try await Task.sleep(for: .milliseconds(600))
+            window.endEditing(true)
+            try await Task.sleep(for: .milliseconds(500))
+            if let strip = layout.frames["tab-strip"] { print("TAB_ROW_SPACE look=\(look.rawValue) width=\(window.bounds.width) strip=\(strip)") }
+            try await shot(window, "tab-row-space-" + look.rawValue)
+            await model.disconnect()
+            window.isHidden = true
+            try? keychain.delete()
+        }
+    }
+
     /// `RIWORK_TAB_SCREENSHOTS_ONLY=testUsageLimits scripts/tab-chrome-screenshots.sh <dir> <udid>`: the one-line header ([model ⌄]
     /// [ring] … [mode ⌄], no usage chip) with a reached 5-hour limit's blocking banner, then the ring's detail with the usage windows
     /// (weekly at 92 %, bold), Native dark and light.

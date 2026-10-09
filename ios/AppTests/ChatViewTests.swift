@@ -672,25 +672,47 @@ import RiWorkCore
         await finish(rig)
     }
 
-    /// ＋ and ⋯ sit about 8 pt apart, as the key bar's icons do, and each has a 44-point target of its own that reaches outward from the
-    /// gap (＋ toward the tabs, ⋯ to the row's end): a tap anywhere in the strip where the targets used to overlap reaches exactly one,
-    /// the one on its side of the gap. The context ring and its number have about 6 pt between them.
-    func testTheTabRowButtonsAreCloseAndTheRingHasRoomBeforeItsNumber() async throws {
-        let rig = try await makeRig()
-        await rig.transport.append(chatID, [.info(chat()), .usage(ChatUsage(inputTokens: 120_000, contextWindow: 200_000, contextUsed: 124_000))])
+    /// At 390 pt with two long tab titles, Back, ＋ and ⋯ each show in a 28-point slot (＋'s and ⋯'s 4 pt apart) and the strip has the
+    /// rest: 302 pt where the old 44-point slots left 250 (390 − 44 − 4 − 4 − 44 − 44). Back and ＋ keep 44-point targets laid over the
+    /// strip's end padding, which no tab is under at rest; ⋯'s runs from the middle of the gap to the screen edge, the row tall. A tap
+    /// around the gap reaches exactly one of ＋ and ⋯, the one on its side. The context ring and its number have about 6 pt between them.
+    func testTheTabRowControlsTakeLittleWidthAndKeepTheirTargets() async throws {
+        let second = "cccccccc-2222-4222-8222-222222222222"
+        let chats = [ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Project orchestrator of the fixture", createdAtUnix: 10, state: .idle),
+                     ChatInfo(id: second, provider: .codex, projectID: project, cwd: "/fixture", title: "wheres the app icon on the home screen", createdAtUnix: 20, state: .idle)]
+        let rig = try await makeRig(chats: chats, width: 390)
+        await rig.transport.append(chatID, [.info(chats[0]), .usage(ChatUsage(inputTokens: 120_000, contextWindow: 200_000, contextUsed: 124_000))])
         _ = try await openChat(rig)
-        await eventually("the row and the ring are laid out") { rig.layout.frames["more-options"] != nil && rig.layout.frames["usage-number"] != nil }
+        await eventually("the row and the ring are laid out") { rig.layout.frames["more-options"] != nil && rig.layout.frames["usage-number"] != nil && rig.layout.frames["tab-strip"] != nil }
+        try await Task.sleep(for: .milliseconds(300))
         rig.window.layoutIfNeeded()
+        let width = rig.window.bounds.width
+        let strip = try XCTUnwrap(rig.layout.frames["tab-strip"]), back = try XCTUnwrap(rig.layout.frames["back"])
         let plus = try XCTUnwrap(rig.layout.frames["new-tab"]), more = try XCTUnwrap(rig.layout.frames["more-options"])
+        let reach = back.maxX - strip.minX
+        print("TAB_ROW width=\(width) strip=\(strip.width) stripAtRest=\(strip.width - 2 * reach) oldStrip=250 back=\(back) plus=\(plus) more=\(more)")
+        XCTAssertEqual(width, 390)
+        // The visual slots: 28 pt for Back, 28 + 4 + 28 for ＋ and ⋯; the strip between them.
+        XCTAssertEqual(strip.minX, 28, accuracy: 0.5, "Back's slot")
+        XCTAssertEqual(width - strip.maxX, 60, accuracy: 0.5, "＋'s and ⋯'s slots")
+        XCTAssertGreaterThanOrEqual(strip.width - 250, 50, "the strip gains the controls' old slots")
+        // The targets: 44 pt for Back and ＋, reaching over the strip's end padding only; ⋯ to the screen edge.
+        XCTAssertEqual(back.minX, 0, accuracy: 0.5); XCTAssertGreaterThanOrEqual(back.width, 44); XCTAssertGreaterThanOrEqual(back.height, 44)
         XCTAssertGreaterThanOrEqual(plus.width, 44); XCTAssertGreaterThanOrEqual(plus.height, 44)
-        XCTAssertGreaterThanOrEqual(more.width, 44); XCTAssertGreaterThanOrEqual(more.height, 44)
+        XCTAssertGreaterThanOrEqual(more.height, 44); XCTAssertEqual(more.maxX, width, accuracy: 0.5, "⋯ reaches the screen edge")
+        XCTAssertEqual(reach, 16, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(plus.minX, strip.maxX - reach - 0.5, "＋ reaches only over the strip's trailing padding")
         XCTAssertEqual(plus.maxX, more.minX, accuracy: 0.5, "the targets meet: no overlap, and no strip that is neither's")
-        XCTAssertEqual(more.maxX, rig.window.bounds.maxX, accuracy: 20, "⋯ still at the row's end")
-        // The glyphs as drawn: two runs of ink in the row, about 8 pt apart.
-        let ink = try inkRuns(rig, in: plus.union(more))
+        // The glyphs as drawn: the chevron in Back's slot; ＋ and ⋯ in theirs, about 8 pt of ink apart.
+        let chevron = try inkRuns(rig, in: CGRect(x: 0, y: back.minY, width: strip.minX, height: back.height))
+        XCTAssertEqual(chevron.count, 1, "the chevron: \(chevron)")
+        let ink = try inkRuns(rig, in: CGRect(x: strip.maxX, y: plus.minY, width: width - strip.maxX, height: plus.height))
         XCTAssertEqual(ink.count, 2, "＋ and ⋯: \(ink)")
         if ink.count == 2 { XCTAssertEqual(ink[1].lowerBound - ink[0].upperBound, 8, accuracy: 2.5, "about 8 pt between the icons: \(ink)") }
-        // The strip where the old 44-point targets overlapped (18 pt around the gap): each point is in one target only, on its side.
+        // The strip's end padding is the targets' reach: scrolled to either end, no tab is under Back or ＋.
+        let scroll = try XCTUnwrap(descendants(UIScrollView.self, in: rig.host.view).first { abs($0.convert($0.bounds, to: nil).minX - strip.minX) < 0.5 && $0.bounds.width == strip.width })
+        XCTAssertEqual(scroll.adjustedContentInset.left, reach, accuracy: 0.5); XCTAssertEqual(scroll.adjustedContentInset.right, reach, accuracy: 0.5)
+        // Around the gap each point is in one target only, on its side.
         let gap = ink.count == 2 ? (ink[0].upperBound + ink[1].lowerBound) / 2 : plus.maxX
         for x in stride(from: gap - 9, through: gap + 9, by: 1.5) {
             let point = CGPoint(x: x, y: plus.midY)
@@ -700,6 +722,10 @@ import RiWorkCore
             if let label = element?.accessibilityLabel, label == "New tab" || label == "More options" || label == "New terminal" {
                 XCTAssertEqual(label == "More options", x >= plus.maxX, "the accessibility hit at x=\(x) is \(label)")
             }
+        }
+        // Over the strip's leading padding a tap is Back's.
+        if let label = (rig.window.accessibilityHitTest(CGPoint(x: back.maxX - 4, y: back.midY), event: nil) as? NSObject)?.accessibilityLabel {
+            XCTAssertEqual(label, "Back to projects")
         }
         let ring = try XCTUnwrap(rig.layout.frames["usage-ring"]), number = try XCTUnwrap(rig.layout.frames["usage-number"])
         XCTAssertEqual(number.minX - ring.maxX - 1.25, 6, accuracy: 0.5, "about 6 pt between the ring's stroke and the number")
