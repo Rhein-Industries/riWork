@@ -33,7 +33,7 @@ pub(super) const REPLAY_GRACE: Duration = Duration::from_millis(100);
 /// there is more.
 const PEEK: Duration = Duration::from_millis(2);
 /// The smallest a string is cut to when an event is too big for a page alone.
-const MIN_CUT: usize = 256;
+use crate::chat::remote_payload::{MIN_CUT, elide_event, shorten_body};
 /// The longest message `chat command` sends, in bytes.
 pub(super) const MAX_TEXT: usize = 64 * 1024;
 const MAX_MODEL_CHARS: usize = 100;
@@ -259,31 +259,7 @@ fn entry_bytes(entry: &Entry) -> usize {
     serde_json::to_string(entry).map_or(usize::MAX, |text| text.len() + 1)
 }
 
-/// Cuts every string longer than `cap` bytes down to it, at a character
-/// boundary, and marks the cut with an ellipsis.
-pub(super) fn cut_strings(value: &mut Value, cap: usize) {
-    if value["kind"].as_str() == Some("data")
-        && value["base64"]
-            .as_str()
-            .is_some_and(|data| data.len() > cap)
-    {
-        *value = serde_json::json!({"kind": "unavailable", "reason": "Image omitted to fit the remote response limit"});
-        return;
-    }
-    match value {
-        Value::String(text) if text.len() > cap => {
-            let mut end = cap;
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            text.truncate(end);
-            text.push('\u{2026}');
-        }
-        Value::Array(items) => items.iter_mut().for_each(|item| cut_strings(item, cap)),
-        Value::Object(fields) => fields.values_mut().for_each(|item| cut_strings(item, cap)),
-        _ => {}
-    }
-}
+pub(super) use crate::chat::remote_payload::cut_strings;
 
 /// An event that is too big for a page alone, with its strings cut until it
 /// fits; `None` when no cut makes it fit.
@@ -306,23 +282,6 @@ pub(super) fn shrink(entry: &Entry, budget: usize) -> Option<Entry> {
     }
 }
 
-/// Exceptional recovery may shorten bodies, never identity, order or actionable controls.
-fn shorten_body(event: &mut Value, cap: usize) -> bool {
-    match event["event"].as_str() {
-        Some("item_started" | "item_completed") => {
-            cut_strings(&mut event["item"]["body"], cap);
-            if cap == MIN_CUT {
-                event["item"]["body"] = serde_json::json!({"type":"agent_message", "text":"This message is too long to show here. Full text is on your Mac."});
-            }
-            true
-        }
-        Some("item_delta") => {
-            cut_strings(&mut event["delta"], cap);
-            true
-        }
-        _ => false,
-    }
-}
 fn shrink_body(entry: &Entry, budget: usize) -> Option<Entry> {
     let mut cap = (budget / 4).max(MIN_CUT);
     loop {
@@ -348,24 +307,18 @@ fn shrink_body(entry: &Entry, budget: usize) -> Option<Entry> {
 ///   travels together. A page stops early when it holds `plan.max` events or
 ///   the next one would push the printed line past `plan.max_bytes`; that event
 ///   is left unread, and `more` says so.
-/// - An event that alone is bigger than the page is shrunk (see `shrink`), or
-///   dropped when nothing helps, so the page can always move on: it counts
-///   as read.
+/// - An event that alone is bigger than the page has its bodies shortened, or
+///   is replaced by an identity-preserving placeholder, keeping its sequence slot.
 pub(super) fn collect(source: &mut impl Source, plan: &Plan) -> Result<Page, String> {
-    collect_page(source, plan, false, false)
+    collect_page(source, plan)
 }
 pub(super) fn collect_complete(source: &mut impl Source, plan: &Plan) -> Result<Page, String> {
-    collect_page(source, plan, true, false)
+    collect_page(source, plan)
 }
 pub(super) fn collect_bounded(source: &mut impl Source, plan: &Plan) -> Result<Page, String> {
-    collect_page(source, plan, false, true)
+    collect_page(source, plan)
 }
-fn collect_page(
-    source: &mut impl Source,
-    plan: &Plan,
-    complete: bool,
-    bounded: bool,
-) -> Result<Page, String> {
+fn collect_page(source: &mut impl Source, plan: &Plan) -> Result<Page, String> {
     let budget = plan.max_bytes.saturating_sub(fixed_bytes(&plan.chat_id));
     let mut page = Page {
         chat_id: plan.chat_id.clone(),
@@ -412,30 +365,11 @@ fn collect_page(
                         page.more = true;
                         break;
                     }
-                    if complete {
-                        return Err(
-                            "response_too_large: a complete event exceeds the response limit"
-                                .into(),
-                        );
-                    }
-                    let fitted = if bounded {
-                        shrink_body(&entry, budget)
-                    } else {
-                        shrink(&entry, budget)
-                    };
-                    match fitted {
-                        Some(shrunk) => entry = shrunk,
-                        None => {
-                            if bounded {
-                                return Err("response_too_large: event cannot be represented without losing identity or controls".into());
-                            }
-                            // Hopeless: read past it.
-                            window_end.get_or_insert(Instant::now() + BATCH_WINDOW);
-                            read += 1;
-                            page.next = seq;
-                            continue;
-                        }
-                    }
+                    let fitted = shrink_body(&entry, budget);
+                    entry = fitted.unwrap_or_else(|| Entry {
+                        seq,
+                        event: elide_event(&entry.event),
+                    });
                 }
                 window_end.get_or_insert(Instant::now() + BATCH_WINDOW);
                 used += entry_bytes(&entry);

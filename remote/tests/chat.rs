@@ -1594,7 +1594,7 @@ async fn a_page_is_cut_to_the_events_that_fit_the_reply() {
 #[tokio::test]
 async fn a_cli_that_prints_more_than_a_reply_may_hold_is_too_large() {
     let f = Fixture::new();
-    f.set("events.json", &" ".repeat(MAX_PLAINTEXT + 10));
+    f.set("events.json", &" ".repeat(8 * 1024 * 1024 + 10));
     let response = f
         .call(
             "chat.events",
@@ -2035,7 +2035,7 @@ async fn snapshots_validate_before_cli_and_preserve_complete_rows_with_bounded_a
 }
 
 #[tokio::test]
-async fn lossless_events_are_additive_and_do_not_truncate_or_skip_state() {
+async fn complete_events_recover_oversized_bodies_without_skipping_sequence_slots() {
     let f = Fixture::new();
     let event = json!({"seq":1,"event":{"event":"item_completed","item":{"id":"big","status":"completed","body":{"type":"agent_message","text":noise(300_000,42)}}}});
     f.says("events.json", &f.page(&[event], 1, false));
@@ -2045,7 +2045,8 @@ async fn lossless_events_are_additive_and_do_not_truncate_or_skip_state() {
             json!({"chat_id":f.chat,"since":0,"wait_ms":0,"complete":true}),
         )
         .await;
-    assert_eq!(code(&response), "response_too_large");
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(response["result"]["events"][0]["seq"], 1);
     assert!(f.calls_of("chat", "events")[0].contains(&"--complete".into()));
     let response = f
         .call_deflating(
@@ -2091,7 +2092,7 @@ async fn complete_pages_reject_missing_events_and_unrepresented_cursor_advances(
 }
 
 #[tokio::test]
-async fn bounded_recovery_keeps_identity_and_controls_and_refuses_unrepresented_state() {
+async fn bounded_recovery_keeps_identity_and_elides_oversized_controls() {
     let f = Fixture::new();
     let body = json!({"seq":1,"event":{"event":"item_completed","item":{"id":"stable","turn_id":"turn","status":"completed","body":{"type":"agent_message","text":noise(300_000,42)}}}});
     f.says("events.json", &f.page(&[body], 1, true));
@@ -2117,7 +2118,11 @@ async fn bounded_recovery_keeps_identity_and_controls_and_refuses_unrepresented_
             json!({"chat_id":f.chat,"since":1,"wait_ms":0,"bounded":true}),
         )
         .await;
-    assert_eq!(code(&reply), "response_too_large", "{reply}");
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(
+        reply["result"]["events"][0],
+        json!({"seq":2,"event":{"event":"approval_requested","approval":{"request_id":"exact-request","elided":true},"elided":true}})
+    );
     f.says("events.json", &f.page(&[json!({"seq":2,"event":{"event":"approval_requested","approval":{"request_id":"exact-request","choices":["accept","decline"],"title":"complete control"}}})], 2, false));
     let reply = f
         .call(
@@ -2164,4 +2169,102 @@ async fn bounded_placeholder_uses_product_copy_without_changing_cursor_or_identi
         item["body"]["text"],
         "This message is too long to show here. Full text is on your Mac."
     );
+}
+
+#[tokio::test]
+async fn oversized_inline_item_keeps_its_sequence_and_identity_in_every_mode() {
+    let f = Fixture::new();
+    // A future tool payload outside the known body fields cannot be shortened safely.
+    let event = json!({"seq":7,"event":{"event":"item_completed","item":{
+        "id":"inline-tool","status":"completed","body":{"type":"tool_call","tool":"binary","input":null},
+        "inline_payload":"x".repeat(2 * 1024 * 1024)}}});
+    let expected = json!({"seq":7,"event":{"event":"item_elided","item_id":"inline-tool",
+        "kind":"tool_call","reason":"too_large","bytes":serde_json::to_vec(&event["event"]).unwrap().len()}});
+    f.says("events.json", &f.page(&[event], 7, false));
+    for mode in [None, Some("bounded"), Some("complete")] {
+        let mut params = json!({"chat_id":f.chat,"since":6,"wait_ms":0});
+        if let Some(mode) = mode {
+            params[mode] = json!(true);
+        }
+        let reply = f.call("chat.events", params).await;
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["events"], json!([expected]));
+        assert_eq!(reply["result"]["next"], 7);
+        assert_eq!(reply["result"]["more"], false);
+        link::encode_reply(&reply, std::time::Instant::now(), false, MAX_PLAINTEXT).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn several_events_with_one_oversized_control_keep_following_the_chat() {
+    let f = Fixture::new();
+    let events = vec![
+        Fixture::event(1, "before"),
+        json!({"seq":2,"event":{"event":"approval_requested","approval":{
+            "request_id":"approval-2","item_id":"tool-2","detail":"x".repeat(2 * 1024 * 1024)}}}),
+        Fixture::event(3, "after"),
+    ];
+    let mut since = 0;
+    let mut received = Vec::new();
+    while since < 3 {
+        f.says("events.json", &f.page(&events[since as usize..], 3, false));
+        let reply = f
+            .call(
+                "chat.events",
+                json!({"chat_id":f.chat,"since":since,"wait_ms":0,"bounded":true}),
+            )
+            .await;
+        assert_eq!(reply["ok"], true, "{reply}");
+        let next = reply["result"]["next"].as_u64().unwrap();
+        assert!(next > since);
+        received.extend(
+            reply["result"]["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+        );
+        since = next;
+    }
+    assert_eq!(received.len(), 3);
+    assert_eq!(received[0], events[0]);
+    assert_eq!(
+        received[1],
+        json!({"seq":2,"event":{"event":"approval_requested","elided":true,
+        "approval":{"request_id":"approval-2","item_id":"tool-2","elided":true}}})
+    );
+    assert_eq!(received[2], events[2]);
+}
+
+#[tokio::test]
+async fn snapshot_recovers_oversized_item_and_control_without_changing_its_window() {
+    let f = Fixture::new();
+    let item = json!({"id":"inline-tool","turn_id":"turn-3","status":"completed",
+        "body":{"type":"tool_call","tool":"binary","input":null},"inline_payload":"x".repeat(2 * 1024 * 1024)});
+    let normal = json!({"order":8,"item":{"id":"normal","status":"completed","body":{"type":"agent_message","text":"after"}}});
+    let snapshot = json!({"v":1,"chat_id":f.chat,"cursor":"1234-99-abcdef","next":99,
+        "before":7,"more":false,"items":[{"order":7,"item":item},normal],
+        "controls":[{"event":"approval_requested","approval":{"request_id":"r","detail":"x".repeat(2 * 1024 * 1024)}}]});
+    f.says("snapshot.json", &snapshot);
+    let reply = f.call("chat.snapshot", json!({"chat_id":f.chat})).await;
+    assert_eq!(reply["ok"], true, "{reply}");
+    let result = &reply["result"];
+    for field in ["cursor", "next", "before", "more"] {
+        assert_eq!(result[field], snapshot[field]);
+    }
+    assert_eq!(result["items"][1], normal);
+    assert_eq!(result["items"][0]["order"], 7);
+    let held = &result["items"][0]["item"];
+    assert_eq!(held["id"], "inline-tool");
+    assert_eq!(held["turn_id"], "turn-3");
+    assert_eq!(held["status"], "completed");
+    assert_eq!(
+        held["elided"],
+        json!({"event":"item_elided","item_id":"inline-tool","kind":"tool_call","reason":"too_large","bytes":serde_json::to_vec(&item).unwrap().len()})
+    );
+    assert_eq!(
+        result["controls"],
+        json!([{"event":"approval_requested","elided":true,"approval":{"request_id":"r","elided":true}}])
+    );
+    link::encode_reply(&reply, std::time::Instant::now(), false, MAX_PLAINTEXT).unwrap();
 }

@@ -466,7 +466,7 @@ fn a_page_stops_at_the_bytes_it_may_print_and_leaves_the_rest_for_the_next() {
 }
 
 #[test]
-fn an_event_too_big_for_a_page_has_its_strings_cut_and_one_that_cannot_fit_is_passed_over() {
+fn an_event_too_big_for_a_page_keeps_a_sequence_slot_with_cut_text_or_the_existing_note() {
     let host = TestHost::new();
     let (chat, count) = idle_chat(&host);
     let since = count.to_string();
@@ -515,7 +515,12 @@ fn an_event_too_big_for_a_page_has_its_strings_cut_and_one_that_cannot_fit_is_pa
         &chat.id,
         &["--since", &(before - 1).to_string(), "--max-bytes", "4096"],
     );
-    assert_eq!(dropped["events"], json!([]), "{dropped}");
+    assert_eq!(dropped["events"][0]["seq"], before);
+    assert_eq!(dropped["events"][0]["event"]["item"]["id"], "tool-1");
+    assert_eq!(
+        dropped["events"][0]["event"]["item"]["body"]["text"],
+        crate::chat::remote_payload::TRUNCATION_NOTE
+    );
     assert_eq!(
         (dropped["next"].as_u64(), dropped["more"].as_bool()),
         (Some(before), Some(false))
@@ -526,7 +531,7 @@ fn an_event_too_big_for_a_page_has_its_strings_cut_and_one_that_cannot_fit_is_pa
         &chat.id,
         &["--since", &before.to_string(), "--max-bytes", "4096"],
     );
-    assert_eq!(seqs(&across), vec![total]);
+    assert_eq!(seqs(&across), vec![total - 1, total]);
     assert_eq!(across["next"], total);
 }
 
@@ -1023,7 +1028,7 @@ fn remote_shrink_preserves_small_images_and_marks_large_images_unavailable() {
 }
 
 #[test]
-fn complete_event_pages_never_cut_strings_or_advance_past_an_oversized_event() {
+fn complete_event_pages_elide_oversized_events_and_keep_sequence_slots() {
     let event = ChatEvent::ItemCompleted {
         item: crate::chat::model::Item {
             id: "large".into(),
@@ -1039,10 +1044,14 @@ fn complete_event_pages_never_cut_strings_or_advance_past_an_oversized_event() {
     script
         .steps
         .push_back(Ok(Poll::Event(envelope(8, event.clone()))));
+    let recovered = collect_complete(&mut script, &plan(7, 10, 1024)).unwrap();
+    assert_eq!(recovered.next, 8);
+    assert_eq!(recovered.events[0].event["item"]["id"], "large");
     assert!(
-        collect_complete(&mut script, &plan(7, 10, 1024))
-            .unwrap_err()
-            .starts_with("response_too_large:")
+        recovered.events[0].event["item"]["body"]["text"]
+            .as_str()
+            .unwrap()
+            .ends_with('…')
     );
     let mut script = Script::of([8]);
     script.steps.push_back(Ok(Poll::Event(envelope(9, event))));
@@ -1117,10 +1126,11 @@ fn bounded_recovery_represents_bodies_and_never_shortens_or_skips_controls() {
             },
         },
     ))));
-    assert!(
-        collect_bounded(&mut source, &plan(0, 10, 120_000))
-            .unwrap_err()
-            .starts_with("response_too_large:")
+    let recovered = collect_bounded(&mut source, &plan(0, 10, 120_000)).unwrap();
+    assert_eq!(recovered.next, 1);
+    assert_eq!(
+        recovered.events[0].event,
+        json!({"event":"state","elided":true})
     );
 }
 
