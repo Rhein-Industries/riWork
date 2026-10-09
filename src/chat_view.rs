@@ -228,6 +228,13 @@ pub struct ChatView {
     /// The menu that a click outside just closed, and when. The click that closes an open
     /// menu on its own button must not open it again.
     menu_closed: Option<(Menu, Instant)>,
+    /// The row of the model or effort menu that ⏎ chooses, by name: the one the pointer or
+    /// ↑ and ↓ last highlighted.
+    menu_cursor: Option<String>,
+    /// That menu's scroll, and the name of the row each of its children is (empty for the
+    /// others), as last drawn, for keeping the highlight in sight.
+    menu_scroll: gpui::ScrollHandle,
+    menu_children: RefCell<Vec<String>>,
     /// When the last message was sent: an Enter right after it is not an answer to a request.
     sent_at: Option<Instant>,
     /// Item ids (and `item#n` for the files of a change) that are expanded.
@@ -431,6 +438,9 @@ impl ChatView {
             answer_failures: HashMap::new(),
             menu: None,
             menu_closed: None,
+            menu_cursor: None,
+            menu_scroll: Default::default(),
+            menu_children: Default::default(),
             sent_at: None,
             open: HashSet::new(),
             answered: HashSet::new(),
@@ -1128,6 +1138,7 @@ impl ChatView {
     }
 
     fn close_menu(&mut self, cx: &mut Context<Self>) {
+        self.menu_cursor = None;
         if let Some(menu) = self.menu.take() {
             self.menu_closed = Some((menu, Instant::now()));
             self.focus_composer = true;
@@ -1136,6 +1147,7 @@ impl ChatView {
     }
 
     fn toggle_menu(&mut self, menu: Menu, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu_cursor = None;
         // The press that closed this menu is the one that is now a click on its button.
         if self.menu.is_none()
             && self.menu_closed.take().is_some_and(|(closed, at)| {
@@ -1357,6 +1369,9 @@ impl Render for ChatView {
                 }
             }))
             .capture_action(cx.listener(Self::escape_action))
+            .capture_action(cx.listener(Self::menu_up))
+            .capture_action(cx.listener(Self::menu_down))
+            .capture_action(cx.listener(Self::menu_enter))
             // Scope ownership only: Base's window layer handles every gesture.
             .capture_any_mouse_down(cx.listener(
                 |view, event: &gpui::MouseDownEvent, window, cx| {

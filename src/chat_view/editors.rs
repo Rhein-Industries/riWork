@@ -12,7 +12,7 @@ use crate::{
     text_input::{self, EnterBehavior, InputEvent, InputState, TextareaState},
 };
 use gpui::{Context, Entity, EntityInputHandler, Focusable, Subscription, Window};
-use gpui_kit::base::input::{Enter, Escape};
+use gpui_kit::base::input::{Enter, Escape, MoveDown, MoveUp};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -198,6 +198,8 @@ impl ChatView {
             gpui_kit::base::TextSelection::clear(window, cx);
         }
         if matches!(event, InputEvent::Change) && self.menu == Some(super::Menu::Model) {
+            // A new search starts with nothing highlighted; ⏎ takes its first match.
+            self.menu_cursor = None;
             cx.notify();
         }
         if text_input::is_submit(event, EnterBehavior::Submit)
@@ -210,6 +212,27 @@ impl ChatView {
             }
         }
     }
+    /// ↑, ↓ and ⏎ step through and choose the rows of the open model or effort menu, wherever
+    /// the focus is (the model search field or the message box); otherwise they reach the
+    /// field as ever.
+    pub(super) fn menu_up(&mut self, _: &MoveUp, _: &mut Window, cx: &mut Context<Self>) {
+        if self.step_menu(false, cx) {
+            cx.stop_propagation();
+        }
+    }
+
+    pub(super) fn menu_down(&mut self, _: &MoveDown, _: &mut Window, cx: &mut Context<Self>) {
+        if self.step_menu(true, cx) {
+            cx.stop_propagation();
+        }
+    }
+
+    pub(super) fn menu_enter(&mut self, enter: &Enter, _: &mut Window, cx: &mut Context<Self>) {
+        if !enter.secondary && !enter.shift && self.choose_highlighted(cx) {
+            cx.stop_propagation();
+        }
+    }
+
     /// Observe Enter only to distinguish a held key from a new approval gesture.
     /// Submission remains in the one InputEvent subscription. KeyUp rearms this guard.
     pub(super) fn capture_enter(&mut self, _: &Enter, _: &mut Window, _: &mut Context<Self>) {
