@@ -31,6 +31,7 @@ public struct ChatTranscript: Sendable, Equatable {
             // counts its own usage.
             if let before = self.info, before.provider != info.provider {
                 models = []
+                rateLimits = []
                 usage = nil
             }
             state = info.state

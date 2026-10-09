@@ -38,6 +38,7 @@ pub(super) const ATTACHMENT_MENU_KEY: &str = "composer-attachment-menu";
 const SLOT_DISPLAY: usize = 0;
 const SLOT_THREAD: usize = 6;
 const SLOT_MORE: usize = 7;
+const SLOT_BILLING: usize = 8;
 
 /// A header control that folds into ⋯ when row 1 has no room for it, last first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -610,18 +611,24 @@ impl ChatView {
                 ))
         });
         // Row 1 never wraps: what does not fit beside ⋯ goes into its menu, from the row's end
-        // (Compact, Fast, Effort, Model, Mode). The usage and the session id share it, before ⋯,
+        // (Compact, Mode; model choices live in the composer). The usage and the session id share it, before ⋯,
         // when they fit; otherwise they take a row of their own, the session id at its far end
         // under ⋯. Each piece's width is
         // its own, not the layout's, so this settles after one redraw. A folded one keeps the
         // width it was last drawn at while it shows the same; one whose value has changed since
         // counts as narrow, comes back and is measured again.
         let widths = self.header_widths.clone();
-        let keys: [u64; 8] = {
+        let keys: [u64; 9] = {
             use std::hash::{Hash, Hasher};
             let key = |shows: &str| {
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                (shows, ui_text::scale().to_bits(), look.native).hash(&mut hasher);
+                (
+                    shows,
+                    ui_text::scale().to_bits(),
+                    look.native,
+                    look.hermes(),
+                )
+                    .hash(&mut hasher);
                 hasher.finish()
             };
             [
@@ -639,11 +646,15 @@ impl ChatView {
                     .and_then(|info| info.provider_thread_id.as_deref())
                     .unwrap_or("")),
                 key(""),
+                key(
+                    toolbar::api_key_badge(self.model.transcript.account.as_ref())
+                        .map_or("", |(label, _)| label),
+                ),
             ]
         };
         let last = {
             let measured = widths.get();
-            std::array::from_fn::<f32, 8, _>(|slot| {
+            std::array::from_fn::<f32, 9, _>(|slot| {
                 let (width, key) = measured[slot];
                 if key == keys[slot] { width } else { 0. }
             })
@@ -674,15 +685,29 @@ impl ChatView {
             0.
         };
         let more_room = gap + last[SLOT_MORE];
-        // Keep the context ring and thread copy on the upper line in every design.
-        // Only header actions fold into More; model controls live in the composer.
-        let billing_room = if toolbar::api_key_badge(self.model.transcript.account.as_ref()).is_some() { space(60.) } else { 0. };
-        let meter_room = self.usage_width(Detail::Ring, window).unwrap_or(0.) + billing_room;
-        let one_line = inner <= 0. || row_width(0) + more_room + thread_room + meter_room + gap <= inner + 0.5;
-        let kept = (0..=foldable.len()).rev()
-            .find(|count| row_width(*count) + if one_line { more_room + thread_room + meter_room + gap } else { 0. } <= inner + 0.5)
-            .unwrap_or(0);
-        let usage_room = inner - (if one_line { row_width(kept) + gap } else { 0. }) - more_room - thread_room - billing_room - gap;
+        // Keep every control beside More when all pieces fit. Otherwise the usage,
+        // billing badge and thread ID move below; only then fold controls from the end.
+        let billing_room =
+            if toolbar::api_key_badge(self.model.transcript.account.as_ref()).is_some() {
+                last[SLOT_BILLING] + gap
+            } else {
+                0.
+            };
+        let beside_usage = row_width(foldable.len()) + gap + thread_room + more_room + billing_room;
+        let usage_room = inner - beside_usage - gap;
+        let one_line = inner <= 0.
+            || match self.usage_width(Detail::NoCost, window) {
+                Some(usage) => usage <= usage_room + 0.5,
+                None => beside_usage <= inner + 0.5,
+            };
+        let kept = if one_line {
+            foldable.len()
+        } else {
+            (0..=foldable.len())
+                .rev()
+                .find(|count| row_width(*count) + more_room <= inner + 0.5)
+                .unwrap_or(0)
+        };
         let folded = foldable[kept..].to_vec();
         // A folded picker's menu opens from ⋯, as the rest of its menu does.
         let from_more = |menu: Menu| match menu {
@@ -781,19 +806,47 @@ impl ChatView {
                 if one_line {
                     (inner > 0.).then_some(usage_room + 0.5)
                 } else {
-                    Some(usage_room)
+                    Some(inner - thread_room - billing_room)
                 },
                 look,
                 window,
                 cx,
             )
             .map(|usage| div().flex_none().child(usage));
-        let usage = Some(div().flex().items_center().gap(ui_text::space(BAR_GAP))
-            .children(toolbar::api_key_badge(self.model.transcript.account.as_ref()).map(|(label, hint)| {
-                div().relative().flex_none().child(widgets::badge("chat-api-key", &cards::Badge {
-                    label: label.into(), tone: cards::Tone::Warning, live: false,
-                }, look)).child(tooltip::anchor(hint, TipLook::Control))
-            })).children(usage));
+        let usage = Some(
+            div()
+                .flex()
+                .items_center()
+                .gap(ui_text::space(BAR_GAP))
+                .children(
+                    toolbar::api_key_badge(self.model.transcript.account.as_ref()).map(
+                        |(label, hint)| {
+                            measured(
+                                SLOT_BILLING,
+                                div()
+                                    .relative()
+                                    .flex_none()
+                                    .child(
+                                        div()
+                                            .id("chat-api-key")
+                                            .child(widgets::badge(
+                                                "chat-api-key-symbol",
+                                                &cards::Badge {
+                                                    label: label.into(),
+                                                    tone: cards::Tone::Warning,
+                                                    live: false,
+                                                },
+                                                look,
+                                            ))
+                                            .test_support(),
+                                    )
+                                    .child(tooltip::anchor(hint, TipLook::Control)),
+                            )
+                        },
+                    ),
+                )
+                .children(usage),
+        );
         let thread = thread.map(|thread| measured(SLOT_THREAD, thread.flex_none()));
         let more = measured(SLOT_MORE, more);
 
@@ -816,10 +869,29 @@ impl ChatView {
                 .child(more)
                 .into_any_element()
         } else {
-            bar.flex().flex_col().gap(ui_text::space(BAR_GAP))
-                .child(div().w_full().flex().items_center().gap(ui_text::space(BAR_GAP))
-                    .children(usage).child(div().flex_1()).children(thread).child(more))
-                .child(controls.flex_initial().min_w_0().overflow_hidden())
+            bar.flex()
+                .flex_col()
+                .gap(ui_text::space(BAR_GAP))
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(ui_text::space(BAR_GAP))
+                        .child(controls.flex_initial().min_w_0().overflow_hidden())
+                        .child(div().flex_1())
+                        .child(more),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(ui_text::space(BAR_GAP))
+                        .children(usage)
+                        .child(div().flex_1())
+                        .children(thread),
+                )
                 .into_any_element()
         }
     }
@@ -2240,7 +2312,15 @@ impl ChatView {
                 .max_h(ui_text::space(280.0))
                 .flex_none()
                 .overflow_y_scroll()
-                .child(self.attachment_chips(look, Some(self.composer_width.get() - 2. * (layout.inset + layout.padding)).filter(|_| self.composer_width.get() > 0.), window, cx))
+                .child(
+                    self.attachment_chips(
+                        look,
+                        Some(self.composer_width.get() - 2. * (layout.inset + layout.padding))
+                            .filter(|_| self.composer_width.get() > 0.),
+                        window,
+                        cx,
+                    ),
+                )
                 .test_support()
         }))
         .child(content)
@@ -2387,7 +2467,11 @@ impl ChatView {
                 weak.update(cx, |view, cx| match item {
                     Ok(item) => view.paste_attachments(item, window, cx),
                     Err(error) => {
-                        view.notices.set(super::notices::LocalKey::Attachment, crate::chat::model::NoticeLevel::Error, format!("Clipboard attachment: {error}"));
+                        view.notices.set(
+                            super::notices::LocalKey::Attachment,
+                            crate::chat::model::NoticeLevel::Error,
+                            format!("Clipboard attachment: {error}"),
+                        );
                         cx.notify();
                         true
                     }
@@ -2545,7 +2629,10 @@ mod tests {
             let (handle, view) = hermes_fixture(cx, 720.0);
             let (feed, recording) = super::super::feed::Feed::recording();
             let info = ChatInfo {
-                parent_id: None, user_title: None, first_user_message: None, provider_title: None,
+                parent_id: None,
+                user_title: None,
+                first_user_message: None,
+                provider_title: None,
                 id: uuid::Uuid::from_u128(1).to_string(),
                 provider: Provider::Codex,
                 project_id: Some("fixture-project".into()),

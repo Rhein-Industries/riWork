@@ -2144,6 +2144,42 @@ import RiWorkCore
         return labels
     }
 
+    func testProviderSwitchRetiresStickyNoticesAndUsageWindowsInTheRingDetail() async throws {
+        let accessibility = AppAccessibility.enable()
+        defer { accessibility.restore() }
+        let rig = try await makeRig(look: .nativeDark)
+        let resets = UInt64(Date().timeIntervalSince1970) + 3600
+        let limit = { (resolved: Bool) in ChatEvent.itemCompleted(ChatItem(id: "old-limit", status: .completed,
+            body: .notice(level: .error, text: "Old weekly limit", kind: "rate_limit:weekly", resolved: resolved, resetsAt: resets))) }
+        await rig.transport.append(chatID, [.info(chat()), limit(false),
+            .usage(ChatUsage(inputTokens: 90, contextWindow: 100, contextUsed: 90)),
+            .rateLimits([ChatRateWindow(id: "weekly", label: "Old weekly", usedPercent: 100, resetsAt: resets)])])
+        _ = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        await eventually("old provider banner and limits") { rig.layout.frames["banner-notice-kind:rate_limit:weekly"] != nil && conversation.transcript.rateLimits.count == 1 }
+        conversation.showUsageDetail()
+        await eventually("old ring detail") { rig.host.presentedViewController != nil }
+        await eventually("old window rendered") { self.accessibilityLabels(in: rig.host.presentedViewController!.view).contains { $0.contains("Old weekly") } }
+        rig.host.presentedViewController?.dismiss(animated: false)
+        try await Task.sleep(for: .milliseconds(300))
+        var moved = chat(); moved.provider = .codex
+        // The host resolves its old items before publishing the new provider's Info.
+        await rig.transport.append(chatID, [limit(true), .info(moved),
+            .usage(ChatUsage(inputTokens: 10, contextWindow: 100, contextUsed: 10))])
+        await eventually("new provider, no old banner or windows") {
+            conversation.transcript.info?.provider == .codex && conversation.transcript.rateLimits.isEmpty &&
+            rig.layout.frames["banner-notice-kind:rate_limit:weekly"] == nil
+        }
+        conversation.showUsageDetail()
+        await eventually("new ring detail") { rig.host.presentedViewController != nil }
+        try await Task.sleep(for: .milliseconds(300))
+        let labels = accessibilityLabels(in: rig.host.presentedViewController!.view)
+        XCTAssertFalse(labels.contains { $0.contains("Old weekly") || $0.contains("Usage limits") }, "old provider windows do not survive: \(labels)")
+        XCTAssertTrue(labels.contains { $0.contains("10%") }, "new provider's context is visible: \(labels)")
+        rig.host.presentedViewController?.dismiss(animated: false)
+        await finish(rig)
+    }
+
     /// A reached usage limit is a sticky banner (from an earlier turn too) with its reset time; closing it sends `dismiss_notice` once and
     /// it stays closed when the host re-emits it dismissed, and after a fresh snapshot. A sign-in the host dismissed elsewhere (its key in
     /// the snapshot) never shows. A usage warning is no banner and no chip: the windows are in the ring's detail, which the limit's

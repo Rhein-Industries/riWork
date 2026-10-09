@@ -812,6 +812,8 @@ import RiWorkCore
             return [.info(moved), .itemCompleted(ChatItem(id: "switch-3", status: .completed, body: .notice(level: .info, text: "Continued with Claude (opus), which has the conversation so far.")))]
         }
         await withModels(rig)
+        await rig.transport.append(chatID, [.rateLimits([ChatRateWindow(id: "old-weekly", label: "Old weekly", usedPercent: 100, resetsAt: UInt64.max)])])
+        await eventually("old windows arrived") { rig.model.conversation(self.chatID).transcript.rateLimits.count == 1 }
         await rig.model.loadSwitchCatalogue(chat())
         let conversation = rig.model.conversation(chatID)
         XCTAssertEqual(conversation.switchCatalogue, [opus]); XCTAssertEqual(conversation.switchCatalogueSource, .live)
@@ -828,6 +830,7 @@ import RiWorkCore
         XCTAssertEqual(conversation.transcript.item("switch-3")?.body, .notice(level: .info, text: "Continued with Claude (opus), which has the conversation so far."))
         XCTAssertTrue(conversation.transcript.models.isEmpty, "Codex's list is not Claude's")
         XCTAssertFalse(conversation.modelCatalogue.contains(gpt), "the picker shows Claude's models, not Codex's")
+        XCTAssertTrue(conversation.transcript.rateLimits.isEmpty, "switch command clears the old provider’s windows")
         XCTAssertNil(conversation.pendingModel)
         XCTAssertEqual(rig.model.chats.first { $0.id == chatID }?.provider, .claude, "the tab shows Claude at once")
         XCTAssertEqual(conversation.modelChoices(fallback: chat(), switchable: true).switching?.provider, .codex, "and the way back is Codex")

@@ -260,22 +260,25 @@ final class ChatTranscriptTests: XCTestCase {
     }
     // MARK: One chat for both providers
 
-    func testAChatThatGoesOnWithTheOtherProviderDropsTheModelsAndUsageOfTheLast() {
+    func testAChatThatGoesOnWithTheOtherProviderDropsModelsUsageAndRateLimits() {
         var t = ChatTranscript()
         t.apply(.info(chat()))
         t.apply(.models([ChatModelOption(id: "gpt-5.5", name: "GPT-5.5")]))
         t.apply(.usage(ChatUsage(inputTokens: 10, contextWindow: 100, contextUsed: 40)))
+        t.apply(.rateLimits([ChatRateWindow(id: "old-weekly", label: "Old weekly", usedPercent: 100, resetsAt: UInt64.max)]))
         t.apply(.itemCompleted(agent("a", "Done.", .completed)))
         // Another info for the same provider (a model was chosen) keeps them.
         var same = chat(); same.model = "gpt-5.5"
         t.apply(.info(same))
         XCTAssertEqual(t.models.count, 1); XCTAssertNotNil(t.usage)
+        XCTAssertEqual(t.rateLimits.count, 1)
         // The switch: an info with the other provider, then the notice that reads as a divider.
         var moved = chat(); moved.provider = .claude; moved.model = "opus"
         moved.carriedOver = ChatCarriedOver(document: "/c/context.md", from: "Codex chat \"t\" (c)")
         t.apply(.info(moved))
         XCTAssertTrue(t.models.isEmpty, "the new agent lists its own models")
         XCTAssertNil(t.usage, "and counts its own usage")
+        XCTAssertTrue(t.rateLimits.isEmpty, "the ring detail must not show the previous provider’s windows")
         XCTAssertEqual(t.info?.provider, .claude)
         t.apply(.itemCompleted(ChatItem(id: "switch-7", status: .completed, body: .notice(level: .info, text: "Continued with Claude (opus), which has the conversation so far."))))
         XCTAssertEqual(t.items.map(\.id), ["a", "switch-7"], "the conversation stays")

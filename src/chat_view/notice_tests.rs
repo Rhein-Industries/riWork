@@ -520,9 +520,11 @@ fn the_meter_fits_a_narrow_chat_by_leaving_out_its_cost(cx: &mut TestAppContext)
         })
         .unwrap();
     }
-    // The compact upper row may gain room when header actions move below it.
-    // Even the narrowest pane retains the context ring, without a quota chip.
-    assert!(widths.iter().all(|width| *width > px(0.)));
+    // Narrower chats leave out more: the group never grows as the chat shrinks.
+    assert!(
+        widths.windows(2).all(|pair| pair[1] <= pair[0]),
+        "{widths:?}"
+    );
     assert!(widths[3] < widths[0], "{widths:?}");
     notices::TEST_NOW.with(|now| now.set(None));
 }
@@ -535,9 +537,20 @@ struct Header {
     more: gpui::Bounds<gpui::Pixels>,
     usage: gpui::Bounds<gpui::Pixels>,
     thread: gpui::Bounds<gpui::Pixels>,
+    billing: Option<gpui::Bounds<gpui::Pixels>>,
+    controls: Vec<gpui::Bounds<gpui::Pixels>>,
 }
 
 fn header_at(cx: &mut TestAppContext, width: f32) -> Header {
+    header_with(cx, width, crate::theme::ThemeChoice::RiWork, false)
+}
+
+fn header_with(
+    cx: &mut TestAppContext,
+    width: f32,
+    theme: crate::theme::ThemeChoice,
+    billing: bool,
+) -> Header {
     let (handle, view, _recording) = super::editor_tests::mount_sized(
         cx,
         HostConfig {
@@ -545,6 +558,9 @@ fn header_at(cx: &mut TestAppContext, width: f32) -> Header {
         },
         width,
     );
+    cx.update(|cx| {
+        cx.global_mut::<crate::theme::Appearance>().selected = theme;
+    });
     view.update(cx, |view, cx| {
         view.model.link = state::Link::Live;
         let mut info = super::testing::info("chat");
@@ -570,12 +586,17 @@ fn header_at(cx: &mut TestAppContext, width: f32) -> Header {
                 cost_usd: Some(1.25),
             },
         });
+        if billing {
+            view.model.transcript.apply(&ChatEvent::Account {
+                account: crate::chat::model::Account {
+                    api_key_source: Some("ANTHROPIC_API_KEY".into()),
+                    plan: None,
+                },
+            });
+        }
         cx.notify();
     });
-    let controls = [
-        ("chat-mode", "more-mode"),
-        ("chat-compact", "more-compact"),
-    ];
+    let controls = [("chat-mode", "more-mode"), ("chat-compact", "more-compact")];
     let header = cx
         .update_window(handle.into(), |_, window, cx| {
             for _ in 0..4 {
@@ -593,6 +614,11 @@ fn header_at(cx: &mut TestAppContext, width: f32) -> Header {
                 more: window.find("chat-more").bounds(),
                 usage: window.find("chat-usage-group").bounds(),
                 thread: window.find("chat-thread").bounds(),
+                billing: window.try_find("chat-api-key").map(|badge| badge.bounds()),
+                controls: controls
+                    .iter()
+                    .filter_map(|(id, _)| window.try_find(*id).map(|control| control.bounds()))
+                    .collect(),
             }
         })
         .unwrap();
@@ -618,13 +644,13 @@ fn header_at(cx: &mut TestAppContext, width: f32) -> Header {
         })
         .unwrap();
     // A folded picker opens its menu from ⋯, and pressing ⋯ again closes it.
-    if folded.contains(&"more-model") {
+    if folded.contains(&"more-mode") {
         cx.update_window(handle.into(), |_, window, cx| {
-            window.click("more-model", cx);
+            window.click("more-mode", cx);
             window.render_frame(cx);
         })
         .unwrap();
-        view.read_with(cx, |view, _| assert_eq!(view.menu, Some(Menu::Model)));
+        view.read_with(cx, |view, _| assert_eq!(view.menu, Some(Menu::Mode)));
         cx.update_window(handle.into(), |_, window, cx| {
             window.click("chat-more", cx);
             window.render_frame(cx);
@@ -636,21 +662,225 @@ fn header_at(cx: &mut TestAppContext, width: f32) -> Header {
 }
 
 #[gpui::test]
-fn the_header_is_one_row_of_controls_ending_in_more_and_folds_the_rest_into_it(
+fn the_shared_header_keeps_controls_and_more_on_row_one_and_wraps_usage_below(
     cx: &mut TestAppContext,
 ) {
     let middle = |b: gpui::Bounds<gpui::Pixels>| b.top() + b.size.height / 2.;
+    let order = ["mode", "compact"];
+    let mut folds = Vec::new();
     for width in [900.0_f32, 760.0, 520.0, 330.0, 230.0] {
         let header = header_at(cx, width);
-        let Header { first, more, usage, thread, .. } = header;
-        assert_eq!(header.shown.len() + header.folded.len(), 2);
-        assert!((more.right() - (px(width) - ui_text::space(composer::BAR_INSET))).abs() <= px(1.), "{width}: {more:?}");
-        assert!((middle(usage) - middle(more)).abs() <= px(1.), "{width}: ring stays in upper row");
-        assert!((middle(thread) - middle(more)).abs() <= px(1.), "{width}: ID stays in upper row");
-        assert!(more.top() <= first.bottom(), "More never drops below the controls");
-        assert!(usage.right() <= thread.left());
-        assert!(usage.left() >= px(0.) && thread.right() <= more.left());
+        let Header {
+            first,
+            more,
+            usage,
+            thread,
+            ..
+        } = header;
+        let what = format!(
+            "{width} px: shown {:?}, folded {:?}, more {more:?}, usage {usage:?}",
+            header.shown, header.folded
+        );
+        // Each control is either on row 1 or in ⋯, and the folded ones are the row's end:
+        // Compact first, then Mode. The model controls live in the composer.
+        assert_eq!(
+            header.shown.len() + header.folded.len(),
+            order.len(),
+            "{what}"
+        );
+        let kept = header.shown.len();
+        assert!(
+            header
+                .shown
+                .iter()
+                .zip(order)
+                .all(|(id, name)| id.ends_with(name)),
+            "{what}"
+        );
+        assert!(
+            header
+                .folded
+                .iter()
+                .zip(&order[kept..])
+                .all(|(id, name)| id.ends_with(name)),
+            "{what}"
+        );
+        for control in &header.controls {
+            assert!(
+                (middle(*control) - middle(first)).abs() <= px(1.),
+                "{what}: control left row one"
+            );
+            assert!(
+                control.right() + ui_text::space(composer::BAR_GAP) <= more.left() + px(1.),
+                "{what}: control overlaps More"
+            );
+        }
+        // ⋯ ends row 1, level with its first control, at the trailing inset.
+        assert!((middle(more) - middle(first)).abs() <= px(1.), "{what}");
+        assert!(
+            (more.right() - (px(width) - ui_text::space(composer::BAR_INSET))).abs() <= px(1.),
+            "{what}"
+        );
+        // At most two rows: the usage shares row 1 or is the one row below it, the session
+        // id flush under ⋯.
+        let two_rows = usage.top() > first.bottom();
+        if two_rows {
+            let gap = ui_text::space(composer::BAR_GAP);
+            assert!(
+                (thread.top() - more.bottom() - gap).abs() <= px(1.),
+                "{what}: row two follows row one directly"
+            );
+            assert!((middle(usage) - middle(thread)).abs() <= px(1.), "{what}");
+            assert!((usage.left() - first.left()).abs() <= px(1.), "{what}");
+            assert!((thread.right() - more.right()).abs() <= px(1.), "{what}");
+        } else {
+            // Right-aligned before ⋯: … Compact, the usage, the session id, ⋯.
+            assert!(header.folded.is_empty(), "{what}");
+            assert!((middle(usage) - middle(first)).abs() <= px(1.), "{what}");
+            assert!((middle(thread) - middle(first)).abs() <= px(1.), "{what}");
+            let gap = ui_text::space(composer::BAR_GAP) + px(1.);
+            assert!(usage.right() <= thread.left(), "{what}");
+            assert!(thread.left() - usage.right() <= gap, "{what}");
+            assert!(more.left() - thread.right() <= gap, "{what}");
+        }
+        folds.push((two_rows, header.folded.len(), usage.size.width));
     }
+    // Wide: nothing folded. Medium: usage and ID below. Narrow: Compact then Mode fold.
+    let counts = folds
+        .iter()
+        .map(|(two, folded, _)| (*two, *folded))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        counts,
+        [(false, 0), (false, 0), (true, 0), (true, 1), (true, 2)],
+        "{folds:?}"
+    );
+}
+
+#[gpui::test]
+fn the_billing_badge_is_measured_and_the_two_row_contract_holds_in_every_design(
+    cx: &mut TestAppContext,
+) {
+    let middle = |b: gpui::Bounds<gpui::Pixels>| b.top() + b.size.height / 2.;
+    for theme in crate::theme::ThemeChoice::ALL {
+        let face = match theme {
+            crate::theme::ThemeChoice::Native => ui_text::Face::SystemMono,
+            crate::theme::ThemeChoice::Hermes => ui_text::Face::Hermes,
+            _ => ui_text::Face::Menlo,
+        };
+        let before = ui_text::set_for_tests(1., face);
+        for width in [900., 520., 330.] {
+            let h = header_with(cx, width, theme, true);
+            let badge = h.billing.expect("API billing badge is visible");
+            let what = format!(
+                "{theme:?} at {width}: badge {badge:?}, ring {:?}, more {:?}",
+                h.usage, h.more
+            );
+            assert!((middle(h.more) - middle(h.first)).abs() <= px(1.), "{what}");
+            for control in h.controls {
+                assert!(
+                    (middle(control) - middle(h.first)).abs() <= px(1.),
+                    "{what}"
+                );
+            }
+            assert!(badge.size.width > px(0.), "{what}");
+            assert!(
+                badge.right() + ui_text::space(composer::BAR_GAP) <= h.usage.left() + px(1.),
+                "{what}"
+            );
+            assert!(h.usage.right() <= h.thread.left(), "{what}");
+            assert!((middle(badge) - middle(h.usage)).abs() <= px(1.), "{what}");
+            assert!(
+                (middle(h.usage) - middle(h.thread)).abs() <= px(1.),
+                "{what}"
+            );
+            assert!(
+                (h.more.right() - (px(width) - ui_text::space(composer::BAR_INSET))).abs()
+                    <= px(1.),
+                "{what}"
+            );
+            if h.thread.top() > h.more.bottom() {
+                assert!(
+                    (h.thread.top() - h.more.bottom() - ui_text::space(composer::BAR_GAP)).abs()
+                        <= px(1.),
+                    "{what}: no third row"
+                );
+            } else {
+                assert!(h.folded.is_empty(), "{what}");
+                assert!(
+                    (middle(h.usage) - middle(h.first)).abs() <= px(1.),
+                    "{what}"
+                );
+                assert!(h.thread.right() <= h.more.left(), "{what}");
+            }
+        }
+        ui_text::set_for_tests(before.0, before.1);
+    }
+}
+
+#[gpui::test]
+fn a_provider_switch_clears_the_old_limit_banner_and_meter_windows(cx: &mut TestAppContext) {
+    let (handle, view, _) = mount(cx);
+    let old = super::testing::info("chat");
+    let mut resolved = ItemBody::notice(
+        NoticeLevel::Error,
+        "Old weekly limit reached",
+        Some("rate_limit:weekly"),
+    );
+    view.update(cx, |view, _| {
+        view.model
+            .transcript
+            .apply(&ChatEvent::Info { info: old.clone() });
+        view.model.transcript.apply(&ChatEvent::RateLimits {
+            windows: vec![crate::chat::model::RateWindow {
+                id: "weekly".into(),
+                label: "Old weekly".into(),
+                used_percent: 100.,
+                resets_at: Some(u64::MAX),
+                warn_at: 70.,
+            }],
+        });
+    });
+    push(&view, cx, "old-limit", resolved.clone());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(shown(window, "old-limit"));
+    })
+    .unwrap();
+    if let ItemBody::Notice { resolved, .. } = &mut resolved {
+        *resolved = true;
+    }
+    push(&view, cx, "old-limit", resolved);
+    view.update(cx, |view, cx| {
+        let mut next = old;
+        next.provider = match next.provider {
+            Provider::Claude => Provider::Codex,
+            Provider::Codex => Provider::Claude,
+        };
+        view.model.transcript.apply(&ChatEvent::Info { info: next });
+        view.model.transcript.apply(&ChatEvent::Usage {
+            usage: crate::chat::model::Usage {
+                context_used: Some(10),
+                context_window: Some(100),
+                ..Default::default()
+            },
+        });
+        assert!(view.model.transcript.rate_limits.is_empty());
+        assert!(
+            usage_chip::chip_details(&view.model.transcript.rate_limits, 0).is_empty(),
+            "no old windows in the meter tooltip"
+        );
+        cx.notify();
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!shown(window, "old-limit"));
+        assert!(
+            window.try_find("chat-context-meter").is_some(),
+            "new provider has its own meter"
+        );
+    })
+    .unwrap();
 }
 
 #[gpui::test]

@@ -752,6 +752,7 @@ impl Transcript {
                     .is_some_and(|before| before.provider != info.provider)
                 {
                     self.models.clear();
+                    self.rate_limits.clear();
                     self.usage = None;
                     self.account = None;
                 }
@@ -1150,9 +1151,12 @@ mod tests {
     }
 
     #[test]
-    fn info_with_another_provider_drops_the_models_and_usage_of_the_last() {
+    fn info_with_another_provider_drops_models_usage_account_and_rate_limits() {
         let info = |provider| ChatInfo {
-            parent_id: None, user_title: None, first_user_message: None, provider_title: None,
+            parent_id: None,
+            user_title: None,
+            first_user_message: None,
+            provider_title: None,
             id: "i".into(),
             provider,
             project_id: None,
@@ -1186,6 +1190,15 @@ mod tests {
                 plan: None,
             },
         });
+        t.apply(&ChatEvent::RateLimits {
+            windows: vec![RateWindow {
+                id: "old-weekly".into(),
+                label: "old weekly".into(),
+                used_percent: 100.,
+                resets_at: Some(u64::MAX),
+                warn_at: 70.,
+            }],
+        });
         // The same provider again (a model change, a thread learned) keeps them.
         t.apply(&ChatEvent::Info {
             info: info(Provider::Codex),
@@ -1193,6 +1206,7 @@ mod tests {
         assert_eq!(t.models, [model_option()]);
         assert!(t.usage.is_some());
         assert!(t.account.is_some());
+        assert_eq!(t.rate_limits.len(), 1);
         t.apply(&ChatEvent::Info {
             info: info(Provider::Claude),
         });
@@ -1200,6 +1214,7 @@ mod tests {
         assert_eq!(t.usage, None);
         // A badge for how the old agent signed in would be wrong for the new one.
         assert_eq!(t.account, None);
+        assert!(t.rate_limits.is_empty());
         assert_eq!(t.info.unwrap().provider, Provider::Claude);
     }
 

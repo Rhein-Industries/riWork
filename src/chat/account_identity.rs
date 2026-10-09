@@ -38,6 +38,9 @@ pub(super) fn valid(identity: &str) -> bool {
 /// Contains only hashes. Aliases are evidence for one-way migration, never new scopes.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Identity {
+    /// Absent in legacy files; an untagged identity cannot seed another login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<Provider>,
     pub scope: String,
     pub account_id: Option<String>,
     pub email: Option<String>,
@@ -48,6 +51,7 @@ pub struct Identity {
 impl From<String> for Identity {
     fn from(scope: String) -> Self {
         Self {
+            provider: None,
             scope,
             account_id: None,
             email: None,
@@ -71,6 +75,7 @@ impl Identity {
     #[cfg(test)]
     pub(super) fn fixture(scope: String) -> Self {
         Self {
+            provider: None,
             account_id: Some(scope.clone()),
             email: None,
             aliases: vec![],
@@ -162,9 +167,11 @@ pub(super) fn canonical(
     let mut id = live_id.or_else(|| if conflicting_files { None } else { file_id });
     let email = live_email.or_else(|| if conflicting_files { None } else { file_email });
     let same_previous = previous.is_some_and(|old| {
-        !id.as_ref()
-            .zip(old.account_id.as_ref())
-            .is_some_and(|(a, b)| a != b)
+        old.provider == Some(provider)
+            && !id
+                .as_ref()
+                .zip(old.account_id.as_ref())
+                .is_some_and(|(a, b)| a != b)
             && !email
                 .as_ref()
                 .zip(old.email.as_ref())
@@ -275,6 +282,7 @@ pub(super) fn canonical(
     aliases.sort();
     aliases.dedup();
     Some(Identity {
+        provider: Some(provider),
         scope,
         account_id: id,
         email: email.or_else(|| {
@@ -409,7 +417,11 @@ pub(super) fn known(home: &Path, provider: Provider) -> Vec<Identity> {
             if info.provider != provider {
                 return vec![];
             }
-            records(&entry.path()).1
+            records(&entry.path())
+                .1
+                .into_iter()
+                .filter(|id| id.provider.is_none_or(|p| p == provider))
+                .collect()
         })
         .collect()
 }
@@ -515,7 +527,11 @@ pub(super) fn managed_aliases(home: &Path) -> Vec<(String, Option<Identity>)> {
             let Some(alias) = info.codex_account_id else {
                 return vec![];
             };
-            let identities = records(&entry.path()).1;
+            let identities: Vec<_> = records(&entry.path())
+                .1
+                .into_iter()
+                .filter(|id| id.provider.is_none_or(|p| p == Provider::Codex))
+                .collect();
             if identities.is_empty() {
                 vec![(alias, None)]
             } else {
@@ -611,6 +627,34 @@ mod tests {
     }
 
     #[test]
+    fn email_only_fallback_requires_known_matching_provider_provenance() {
+        let fake = Fake::new(&[]);
+        let config = fake.config(Provider::Codex);
+        let email = json!({"account":{"email":"a@example.test"}});
+        let fresh = canonical(&config, Some(&email), None).unwrap();
+        // A stale/legacy mixed identity must not turn a matching email into proof that
+        // its opaque account id belongs to the provider we are starting now.
+        for provider in [Some(Provider::Claude), None] {
+            let mut old = Identity::fixture(hash("Claude:old-account"));
+            old.provider = provider;
+            old.email = fresh.email.clone();
+            let new = canonical(&config, Some(&email), Some(&old)).unwrap();
+            assert_eq!(new.scope, fresh.scope);
+            assert_eq!(new.account_id, None);
+            assert!(!new.aliases.contains(&old.scope));
+        }
+        let claude = canonical(&fake.config(Provider::Claude), Some(&email), None).unwrap();
+        assert_ne!(
+            claude.scope, fresh.scope,
+            "same email is scoped to its provider"
+        );
+        assert_eq!(
+            canonical(&config, Some(&email), Some(&claude)).unwrap(),
+            fresh
+        );
+    }
+
+    #[test]
     fn conflicting_live_account_never_inherits_other_accounts_aliases() {
         let fake = Fake::new(&[]);
         let config = fake.config(Provider::Codex);
@@ -640,6 +684,7 @@ mod alias_graph_tests {
         let token = hash("Claude:credential:old-token");
         let email_scope = hash("Claude:a@example.test");
         let email = Identity {
+            provider: None,
             scope: email_scope.clone(),
             account_id: None,
             email: Some(email_scope.clone()),
@@ -665,12 +710,14 @@ mod alias_graph_tests {
         let b = hash("Claude:b@example.test");
         let known = vec![
             Identity {
+                provider: None,
                 scope: a.clone(),
                 account_id: None,
                 email: Some(a.clone()),
                 aliases: vec![b.clone()],
             },
             Identity {
+                provider: None,
                 scope: b.clone(),
                 account_id: None,
                 email: Some(b.clone()),

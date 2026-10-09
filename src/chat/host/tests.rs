@@ -1909,7 +1909,7 @@ fn a_verified_codex_email_to_id_mapping_survives_logout_and_restart() {
     assert_eq!(
         snapshot.dismissed_notices,
         [format!("codex:{}|rate_limit:codex@{reset}", account.scope)]
-);
+    );
 }
 
 // ---- Switching provider -------------------------------------------------------------------------
@@ -2176,5 +2176,141 @@ fn a_switched_chat_resumes_on_its_new_provider_and_is_told_the_conversation_agai
     let document = fs::read_to_string(back.carried_over.unwrap().document).unwrap();
     for said in ["echo: one", "echo: two", "echo: three"] {
         assert!(document.contains(said), "{said}: {document}");
+    }
+}
+
+#[test]
+fn switching_retires_notices_limits_and_login_scope_even_when_start_fails() {
+    use crate::chat::{
+        account_identity::{self, Identity},
+        model::RateWindow,
+    };
+    for stage in ["config-fails", "driver-fails", "ready"] {
+        for (from, to) in [
+            (Provider::Claude, Provider::Codex),
+            (Provider::Codex, Provider::Claude),
+        ] {
+            let mut host = NoticeHost::new();
+            let chat = host.create(from);
+            let reset = super::super::notice_dismissals::now() + 3600;
+            // Poison the combination of the NEW provider and OLD login with a dismissal.
+            // Reusing that login during a failed start would incorrectly hide its banner.
+            let other = host.create(to);
+            host.emit(
+                &other,
+                dismissal_notice("other", "rate_limit:weekly", Some(reset)),
+            );
+            host.dismiss(&other, "other");
+            for (id, kind) in [
+                ("limit", "rate_limit:weekly"),
+                ("auth", "auth_required"),
+                ("retry", "api_retry"),
+            ] {
+                let mut item = dismissal_notice(id, kind, Some(reset));
+                if let ItemBody::Notice { level, .. } = &mut item.body {
+                    *level = NoticeLevel::Error;
+                }
+                host.emit(&chat, item);
+            }
+            host.emit(
+                &chat,
+                dismissal_notice("dismissed", "rate_limit:daily", Some(reset)),
+            );
+            host.dismiss(&chat, "dismissed");
+            lock(&chat.inner).take_driver_event(ChatEvent::RateLimits {
+                windows: vec![RateWindow {
+                    id: "weekly".into(),
+                    label: "old weekly".into(),
+                    used_percent: 100.,
+                    resets_at: Some(reset),
+                    warn_at: 70.,
+                }],
+            });
+            if stage == "config-fails" {
+                host.shared.providers.config =
+                    |_, _, _| Err("fixture configuration refused".into());
+            } else if stage == "driver-fails" {
+                *fake_for(&host.home).fail_start.lock().unwrap() =
+                    Some("fixture start refused".into());
+            }
+            super::switch(&host.shared, &chat, to, None, None, None).unwrap();
+            if stage == "ready" {
+                stop_locked(&chat);
+            }
+            let inner = lock(&chat.inner);
+            assert_eq!(inner.info.provider, to);
+            if stage != "ready" {
+                assert!(matches!(inner.info.state, ChatState::Failed { .. }));
+            }
+            assert!(
+                inner.provider_account_identity.is_none(),
+                "{stage}: no old login in memory"
+            );
+            assert!(
+                account_identity::read(&chat.dir).is_none(),
+                "{stage}: no old login on disk"
+            );
+            drop(inner);
+            let saved: serde_json::Value =
+                serde_json::from_slice(&fs::read(chat.dir.join("account-identity.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                saved["known"],
+                serde_json::json!([]),
+                "old binding cannot seed new-provider migrations"
+            );
+            let t = log::read_notice_transcript(&chat.dir).unwrap();
+            for id in ["limit", "auth", "retry", "dismissed"] {
+                assert!(
+                    matches!(
+                        t.item(id).unwrap().body,
+                        ItemBody::Notice { resolved: true, .. }
+                    ),
+                    "{stage}: {id}"
+                );
+            }
+            assert!(outstanding_sticky_notices(&t).is_empty());
+            if stage == "ready" {
+                let fake = fake_for(&host.home);
+                let starts = fake.starts.lock().unwrap();
+                assert!(
+                    starts.last().unwrap().outstanding_notices.is_empty(),
+                    "no old banners handed to new driver"
+                );
+            }
+            let snapshot = log::read_snapshot_with_features(
+                &host.home,
+                &chat.info().id,
+                None,
+                u64::MAX,
+                50,
+                1 << 20,
+                &[],
+                true,
+            )
+            .unwrap();
+            assert!(
+                !snapshot
+                    .controls
+                    .iter()
+                    .any(|event| matches!(event, ChatEvent::RateLimits { .. }))
+            );
+            host.emit(
+                &chat,
+                dismissal_notice("new-limit", "rate_limit:weekly", Some(reset)),
+            );
+            assert!(
+                !host.dismissed(&chat, "new-limit"),
+                "{stage}: old login's dismissal cannot match"
+            );
+            lock(&chat.inner)
+                .set_account_identity(Some(Identity::fixture(account_identity::hash("new-login"))));
+            assert!(!host.dismissed(&chat, "new-limit"));
+            host.dismiss(&chat, "new-limit");
+            assert!(
+                host.dismissed(&chat, "new-limit"),
+                "new login can dismiss its own banner"
+            );
+        }
     }
 }

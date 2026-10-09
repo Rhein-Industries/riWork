@@ -249,7 +249,7 @@ pub struct ChatView {
     /// The chat header's pieces as last laid out: its controls, the session id and ⋯, which
     /// decide what row 1 keeps and whether the usage shares it (see `toolbar`).
     /// Each with what it showed then.
-    header_widths: std::rc::Rc<std::cell::Cell<[(f32, u64); 8]>>,
+    header_widths: std::rc::Rc<std::cell::Cell<[(f32, u64); 9]>>,
     /// Base participants for the visible, styled transcript; Base owns selection.
     transcript_selection: select::TranscriptSelection,
     /// What the window was last told, so it hears of changes only.
@@ -878,7 +878,11 @@ impl ChatView {
             }
             // The host's own reason (a turn is running, an account is gone) is the message.
             ChatCommand::Switch { .. } => {
-                self.notices.set(notices::LocalKey::Settings, crate::chat::model::NoticeLevel::Error, switch_failure(&error));
+                self.notices.set(
+                    notices::LocalKey::Settings,
+                    crate::chat::model::NoticeLevel::Error,
+                    switch_failure(&error),
+                );
                 return;
             }
             _ => {}

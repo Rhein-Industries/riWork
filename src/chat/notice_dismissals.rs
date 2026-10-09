@@ -768,6 +768,7 @@ mod alias_graph_migration_tests {
         let token = hash("Claude:credential:old-token");
         let email_scope = hash("Claude:a@example.test");
         let email = Identity {
+            provider: None,
             scope: email_scope.clone(),
             account_id: None,
             email: Some(email_scope.clone()),
@@ -833,6 +834,7 @@ mod alias_graph_migration_tests {
                 account.aliases = vec![email_scope.clone()];
                 let other = if agrees {
                     Identity {
+                        provider: None,
                         scope: email_scope.clone(),
                         account_id: None,
                         email: Some(email_scope),

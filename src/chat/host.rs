@@ -43,7 +43,8 @@ use super::driver::{Driver, DriverConfig, StartDriver};
 use super::log::{self, ChatLog};
 use super::model::{
     CarriedOver, ChatCommand, ChatEvent, ChatInfo, ChatState, Decision, Item, ItemBody, ItemStatus,
-    NewChat, NoticeLevel, ORCHESTRATOR_EXISTS, OrchestratorScope, Provider, Transcript, TurnOutcome, notice_kind,
+    NewChat, NoticeLevel, ORCHESTRATOR_EXISTS, OrchestratorScope, Provider, Transcript,
+    TurnOutcome, notice_kind,
 };
 use super::wire::{Envelope, Request, Response};
 use fs2::FileExt;
@@ -1964,6 +1965,22 @@ fn switch(
             return Err("this chat cannot go on".into());
         }
         let path = inner.log.save_context(&document)?;
+        // Retire the old provider's banners in the durable log before the new driver
+        // can inherit outstanding notices or a client sees its Info. Keep them in history.
+        let notices = log::read_notice_transcript(inner.log.dir())?;
+        for mut item in notices.items {
+            if let ItemBody::Notice { resolved, .. } = &mut item.body {
+                if !*resolved {
+                    *resolved = true;
+                    inner.append(ChatEvent::ItemCompleted { item });
+                }
+            }
+        }
+        // Clear both memory and disk before changing provider. Even a configuration or
+        // driver-start failure must leave no old login scope under the new provider.
+        inner.log.reset_account_identity()?;
+        inner.provider_account_identity = None;
+
         let info = &mut inner.info;
         info.provider = provider;
         info.provider_thread_id = None;
