@@ -14,15 +14,17 @@ use crate::{
 
 use super::{ChatView, ChatViewEvent, notices, toolbar, widgets::Look};
 
-/// What the context meter leaves out to fit its row: the cost.
+/// What the context meter leaves out to fit its row: the cost, then the counts, keeping the
+/// ring and its percent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Detail {
     Full,
     NoCost,
+    Ring,
 }
 
 impl Detail {
-    const ALL: [Self; 2] = [Self::Full, Self::NoCost];
+    const ALL: [Self; 3] = [Self::Full, Self::NoCost, Self::Ring];
 }
 
 /// The most the meter can show in `available` px, given what each step needs.
@@ -30,11 +32,8 @@ pub(super) fn fit(available: f32, need: impl Fn(Detail) -> f32) -> Detail {
     Detail::ALL
         .into_iter()
         .find(|detail| need(*detail) <= available)
-        .unwrap_or(Detail::NoCost)
+        .unwrap_or(Detail::Ring)
 }
-
-/// What else shares the meter's line with it at the least: the ⋯ button, the row's padding.
-const RESERVE: f32 = 64.0;
 /// The gaps, and the meter's ring.
 const METER_GAP: f32 = 6.0;
 const RING: f32 = 12.0;
@@ -79,40 +78,49 @@ pub(super) fn chip_details(windows: &[RateWindow], now: u64) -> String {
 }
 
 impl ChatView {
-    /// The context meter, leaving out its cost (`Detail`) until it fits the chat's width, and
-    /// never wider than its row.
+    /// What the context meter takes at `detail`, as it draws it.
+    pub(super) fn usage_width(&self, detail: Detail, window: &Window) -> Option<f32> {
+        let usage = self.model.transcript.usage.as_ref()?;
+        let space = |base: f32| f32::from(ui_text::space(base));
+        let mono = |text: &str| {
+            ui_text::line_width(
+                text,
+                ui_text::mono_family(),
+                ui_text::text(10.0),
+                false,
+                window,
+            )
+        };
+        let ring = toolbar::percent_text(usage)
+            .map(|percent| space(RING) + space(METER_GAP / 2.0) + mono(&percent));
+        let counts =
+            ring.map_or(0.0, |ring| ring + space(METER_GAP)) + mono(&toolbar::usage_text(usage));
+        let cost = usage.cost_usd.map_or(0.0, |cost| {
+            space(METER_GAP) + mono(&toolbar::cost_text(cost))
+        });
+        Some(match detail {
+            Detail::Full => counts + cost,
+            Detail::NoCost => counts,
+            // Without a known context there is no ring: the counts stay.
+            Detail::Ring => ring.unwrap_or(counts),
+        })
+    }
+
+    /// The context meter, leaving out its cost and then its counts (`Detail`) until it fits
+    /// `available` px (all of it when `None`), and never wider than its row.
     pub(super) fn usage_group(
         &self,
+        available: Option<f32>,
         look: Look,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let usage = self.model.transcript.usage.as_ref()?;
-        let measured = self.composer_width.get();
-        let detail = if measured <= 0.0 {
-            Detail::Full
-        } else {
-            let space = |base: f32| f32::from(ui_text::space(base));
-            let mono = |text: &str| {
-                ui_text::line_width(
-                    text,
-                    ui_text::mono_family(),
-                    ui_text::text(10.0),
-                    false,
-                    window,
-                )
-            };
-            let ring = toolbar::percent_text(usage).map_or(0.0, |percent| {
-                space(RING) + space(METER_GAP / 2.0) + mono(&percent) + space(METER_GAP)
-            });
-            let counts = ring + mono(&toolbar::usage_text(usage));
-            let cost = usage.cost_usd.map_or(0.0, |cost| {
-                space(METER_GAP) + mono(&toolbar::cost_text(cost))
-            });
-            fit(measured - space(RESERVE), |detail| match detail {
-                Detail::Full => counts + cost,
-                Detail::NoCost => counts,
-            })
+        let detail = match available {
+            Some(available) => fit(available, |detail| {
+                self.usage_width(detail, window).unwrap_or(0.0)
+            }),
+            None => Detail::Full,
         };
         Some(
             div()
@@ -185,7 +193,10 @@ impl ChatView {
                     .child(ring(fraction, colors.divider, fill))
                     .children(toolbar::percent_text(usage))
             }))
-            .child(div().min_w_0().truncate().child(toolbar::usage_text(usage)))
+            .children(
+                (detail != Detail::Ring || fraction.is_none())
+                    .then(|| div().min_w_0().truncate().child(toolbar::usage_text(usage))),
+            )
             .children(
                 usage
                     .cost_usd
@@ -294,15 +305,17 @@ mod tests {
     }
 
     #[test]
-    fn the_meter_leaves_out_the_cost_to_fit() {
+    fn the_meter_leaves_out_the_cost_then_the_counts_to_fit() {
         let need = |detail: Detail| match detail {
             Detail::Full => 300.0,
             Detail::NoCost => 200.0,
+            Detail::Ring => 60.0,
         };
         assert_eq!(fit(400.0, need), Detail::Full);
         assert_eq!(fit(299.0, need), Detail::NoCost);
+        assert_eq!(fit(199.0, need), Detail::Ring);
         // Narrower still, the least there is (and the row clips it).
-        assert_eq!(fit(50.0, need), Detail::NoCost);
+        assert_eq!(fit(50.0, need), Detail::Ring);
     }
 
     #[test]
