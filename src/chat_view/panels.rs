@@ -2591,7 +2591,10 @@ impl ChatView {
             .flex_1()
             .min_w_0()
             .debug_selector(|| "composer-field".into())
-            .child(self.composer_editor(look, window, cx).test_support());
+            .child(
+                self.composer_editor(look, layout.compact, window, cx)
+                    .test_support(),
+            );
         // Send and Stop share one slot, so neither moves the controls: Stop while a turn runs
         // (⏎ still steers it with a draft), Send otherwise.
         let action = if self.running() {
@@ -2664,6 +2667,13 @@ impl ChatView {
                         ),
                 )
         };
+        // Where the text starts in the card's content: one gap after Attach beside it, the
+        // field's inset over the control row.
+        let text_lead = if layout.compact {
+            layout.button + layout.gap
+        } else {
+            f32::from(ui_text::space(widgets::FIELD_PAD_Y))
+        };
         let active = self.composer.read(cx).focus_handle(cx).is_focused(window);
         let card = composer_card(
             div()
@@ -2687,15 +2697,17 @@ impl ChatView {
                 .max_h(ui_text::space(280.0))
                 .flex_none()
                 .overflow_y_scroll()
-                .px(ui_text::space(widgets::FIELD_PAD_Y))
+                // The cards start where the text does.
+                .pl(px(text_lead))
+                .pr(ui_text::space(widgets::FIELD_PAD_Y))
                 .child(
                     self.attachment_chips(
                         look,
                         Some(
                             self.composer_width.get()
-                                - 2. * (layout.inset
-                                    + layout.padding
-                                    + f32::from(ui_text::space(widgets::FIELD_PAD_Y))),
+                                - 2. * (layout.inset + layout.padding)
+                                - text_lead
+                                - f32::from(ui_text::space(widgets::FIELD_PAD_Y)),
                         )
                         .filter(|_| self.composer_width.get() > 0.),
                         window,
@@ -2837,6 +2849,7 @@ impl ChatView {
     fn composer_editor(
         &self,
         look: Look,
+        inline: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Stateful<gpui::Div> {
@@ -2872,9 +2885,15 @@ impl ChatView {
                     .bg(transparent_black())
             })
         })
-        // The same inset on every side: the text starts as far from the card's edge as it
-        // does from its top, and Attach and the attachments line up with it.
-        .p(ui_text::space(widgets::FIELD_PAD_Y))
+        // Beside Attach (`inline`) the text starts one gap after it, as every control of the
+        // box is one gap from the next; over the control row it is inset as far from the
+        // card's edge as from its top.
+        .py(ui_text::space(widgets::FIELD_PAD_Y))
+        .px(if inline {
+            px(0.0)
+        } else {
+            ui_text::space(widgets::FIELD_PAD_Y)
+        })
         .text_size(ui_text::text(widgets::FIELD_TEXT))
         .line_height(widgets::field_line())
         .font_family(look.chat_family())
@@ -2893,7 +2912,7 @@ impl ChatView {
             .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
                 composer.read(cx).focus_handle(cx).focus(window, cx);
             })
-            .border_1()
+            .border_y_1()
             .bg(transparent_black())
             .border_color(transparent_black())
             .child(editor)
@@ -3288,6 +3307,27 @@ mod tests {
                 }
                 assert!(gap > px(0.0));
                 if width > 700.0 {
+                    // The text starts one gap after Attach, which sits at the card's padding.
+                    cx.update_window(handle.into(), |_, window, _| {
+                        let attach = window.find("chat-attach").bounds();
+                        let text = window.find("chat-composer").bounds();
+                        assert!(
+                            (text.left() - attach.right() - gap).abs() < px(0.5),
+                            "{design:?}: text starts {:?} after Attach, gap {gap:?}",
+                            text.left() - attach.right()
+                        );
+                        // The card is inset from the pane, which spans the window, and
+                        // edged by a hairline.
+                        let padding = ui_text::space(composer::CARD_INSET)
+                            + px(1.0)
+                            + ui_text::space(composer::CARD_PADDING);
+                        assert!(
+                            (attach.left() - padding).abs() < px(0.5),
+                            "{design:?}: Attach is at {:?}, not the card's padding",
+                            attach.left()
+                        );
+                    })
+                    .unwrap();
                     // Beside the field the controls sit on its last line of text, inside its
                     // hairline.
                     let line =
