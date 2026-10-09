@@ -35,9 +35,6 @@ pub(super) const ATTACHMENT_MENU_KEY: &str = "composer-attachment-menu";
 /// The padding inside the message box's menus and the height of their rows, in design
 /// points.
 const CHOICE_MENU_PADDING: f32 = 7.0;
-/// The message field's own padding above and below its text, in design points: with the
-/// card's padding it leaves the control row about 8 points from the card's edge.
-const COMPOSER_PAD_Y: f32 = 2.0;
 const CHOICE_ROW: f32 = 27.0;
 
 /// What a row of the model or effort menu does when it is clicked or chosen with ⏎.
@@ -2568,26 +2565,25 @@ impl ChatView {
     }
 
     /// The message box: one card in every design, inset from the pane's sides and bottom
-    /// (see `composer::layout`). In a wide pane the box shares one row with Attach and the
-    /// controls (the model choices, then the mic and the Send/Stop slot), which sit on its
-    /// last line (the box is never less than two lines tall, so they start on its second); otherwise the box takes the card's whole width and Attach and the controls
-    /// wrap in a row under it, and a narrow pane gives the controls a row of their own. The
-    /// arrangement follows the pane alone, so the controls never move while the user types. Every design lays it out
-    /// the same; each draws the card and its buttons its own way (`composer_card`,
-    /// `composer_send`, `composer_stop`).
+    /// (see `composer::layout`). Its text rows (one at least, the text and the placeholder
+    /// starting where the ＋ glyph does) sit over one row of controls: Attach at the leading
+    /// edge, then the model choices, the mic and the Send/Stop slot at the trailing one; a
+    /// narrow pane wraps the controls. The rows grow upward and the control row never moves
+    /// while the user types. Every design lays it out the same; each draws the card and its
+    /// buttons its own way (`composer_card`, `composer_send`, `composer_stop`).
     fn composer_box(&self, look: Look, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
         let layout = self.composer_layout(cx);
         let gap = px(layout.gap);
         let side = px(layout.button);
         let mic = dictate::mic_shown(cx);
-        // One line of the box: its text's line box, its padding and its hairline. Beside the
-        // box the controls are lifted to sit centered on its last line, however many lines
-        // the draft has.
-        let line = ui_text::space(COMPOSER_PAD_Y) * 2. + widgets::field_line() + px(2.);
-        // Negative when the controls are taller than a line: they reach a little into the
-        // card's padding rather than push the field taller.
-        let lift = (line - side) / 2.;
+        // The text starts where the ＋ glyph does: inset in its button by half the room the
+        // symbol leaves (the colorful themes' bordered mark starts at its edge).
+        let glyph_inset = if look.native || look.hermes() {
+            ((side - ui_text::space(controls::TOOLBAR_SYMBOL)) / 2.).max(px(0.))
+        } else {
+            px(0.)
+        };
         let attach = div()
             .flex_none()
             .debug_selector(|| "composer-attach".into())
@@ -2597,7 +2593,7 @@ impl ChatView {
             .min_w_0()
             .debug_selector(|| "composer-field".into())
             .child(
-                self.composer_editor(look, layout.compact, window, cx)
+                self.composer_editor(look, glyph_inset, window, cx)
                     .test_support(),
             );
         // Send and Stop share one slot, so neither moves the controls: Stop while a turn runs
@@ -2643,42 +2639,28 @@ impl ChatView {
                     .child(self.composer_choices(look, gap, side, window, cx)),
             )
             .child(actions);
-        let content = if layout.compact {
-            div()
-                .w_full()
-                .flex()
-                .items_end()
-                .gap(gap)
-                .child(attach.mb(lift))
-                .child(field)
-                .child(controls.flex_none().mb(lift))
-        } else {
-            div()
-                .w_full()
-                .flex()
-                .flex_col()
-                .gap(gap)
-                .child(div().w_full().flex().child(field))
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap(gap)
-                        .child(attach)
-                        .child(
-                            controls.when(layout.narrow, |controls| controls.flex_none().w_full()),
-                        ),
-                )
-        };
-        // Where the text starts in the card's content: one gap after Attach beside it, the
-        // field's inset over the control row.
-        let text_lead = if layout.compact {
-            layout.button + layout.gap
-        } else {
-            f32::from(ui_text::space(widgets::FIELD_PAD_Y))
-        };
+        // The text rows over one row of controls: Attach at the leading edge, the rest at the
+        // trailing one. The rows grow upward; the control row never moves.
+        let content = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(gap)
+            .child(div().w_full().flex().child(field))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(gap)
+                    .child(attach)
+                    .child(controls.when(layout.narrow, |controls| controls.flex_none().w_full())),
+            );
+        let text_lead = f32::from(glyph_inset);
+        // The same room above the first line of text as below the control row: the card's
+        // padding, less the half-leading the line box keeps above its letters.
+        let leading = (widgets::field_line() - ui_text::text(widgets::FIELD_TEXT)) / 2.;
         let active = self.composer.read(cx).focus_handle(cx).is_focused(window);
         let card = composer_card(
             div()
@@ -2688,7 +2670,9 @@ impl ChatView {
                 .flex()
                 .flex_col()
                 .gap(gap)
-                .p(px(layout.padding))
+                .px(px(layout.padding))
+                .pb(px(layout.padding))
+                .pt((px(layout.padding) - leading).max(px(0.)))
                 .font_family(look.chat_family()),
             look,
             active,
@@ -2704,15 +2688,13 @@ impl ChatView {
                 .overflow_y_scroll()
                 // The cards start where the text does.
                 .pl(px(text_lead))
-                .pr(ui_text::space(widgets::FIELD_PAD_Y))
+                .pr(px(text_lead))
                 .child(
                     self.attachment_chips(
                         look,
                         Some(
                             self.composer_width.get()
-                                - 2. * (layout.inset + layout.padding)
-                                - text_lead
-                                - f32::from(ui_text::space(widgets::FIELD_PAD_Y)),
+                                - 2. * (layout.inset + layout.padding + text_lead),
                         )
                         .filter(|_| self.composer_width.get() > 0.),
                         window,
@@ -2854,7 +2836,7 @@ impl ChatView {
     fn composer_editor(
         &self,
         look: Look,
-        inline: bool,
+        inset: gpui::Pixels,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Stateful<gpui::Div> {
@@ -2890,36 +2872,24 @@ impl ChatView {
                     .bg(transparent_black())
             })
         })
-        // Beside Attach (`inline`) the text starts one gap after it, as every control of the
-        // box is one gap from the next; over the control row it is inset as far from the
-        // card's edge as from its top.
-        .py(ui_text::space(COMPOSER_PAD_Y))
-        .px(if inline {
-            px(0.0)
-        } else {
-            ui_text::space(widgets::FIELD_PAD_Y)
-        })
+        // No padding of its own above and below (the card's is the field's), and inset from
+        // the side as far as the ＋ glyph under it.
+        .py(px(0.))
+        .px(inset)
         .text_size(ui_text::text(widgets::FIELD_TEXT))
         .line_height(widgets::field_line())
         .font_family(look.chat_family())
         .capture_action(cx.listener(Self::capture_enter));
-        // Never less than two lines: the text (and the placeholder) starts on the first, the
-        // controls beside the box sit on the second, and nothing moves when the first line
-        // wraps. From three lines up the box grows, the controls staying on its last line. A
-        // click below a short draft puts the cursor in it, as a click in the text does.
+        // A click beside a short draft puts the cursor in it, as a click in the text does.
         let composer = self.composer.clone();
         div()
             .id("chat-composer-shell")
             .relative()
             .w_full()
-            .min_h(ui_text::space(COMPOSER_PAD_Y) * 2. + widgets::field_line() * 2. + px(2.))
             .cursor_text()
             .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
                 composer.read(cx).focus_handle(cx).focus(window, cx);
             })
-            .border_y_1()
-            .bg(transparent_black())
-            .border_color(transparent_black())
             .child(editor)
     }
 }
@@ -3281,7 +3251,6 @@ mod tests {
             (ui_text::Face::Hermes, theme::ThemeChoice::Hermes),
         ] {
             let previous = ui_text::set_for_tests(1.0, face);
-            // One row beside the field, and the field over a row of controls.
             for width in [760.0, 520.0] {
                 let (handle, view, _) = composer_fixture(cx, width, design, ChatState::Idle);
                 let at_rest = composer_frames(cx, handle, "chat-send");
@@ -3311,66 +3280,64 @@ mod tests {
                     );
                 }
                 assert!(gap > px(0.0));
-                if width > 700.0 {
-                    // The text starts one gap after Attach, which sits at the card's padding.
-                    cx.update_window(handle.into(), |_, window, _| {
-                        let attach = window.find("chat-attach").bounds();
-                        let text = window.find("chat-composer").bounds();
-                        assert!(
-                            (text.left() - attach.right() - gap).abs() < px(0.5),
-                            "{design:?}: text starts {:?} after Attach, gap {gap:?}",
-                            text.left() - attach.right()
-                        );
-                        // The card is inset from the pane, which spans the window, and
-                        // edged by a hairline.
-                        let padding = ui_text::space(composer::CARD_INSET)
-                            + px(1.0)
-                            + ui_text::space(composer::CARD_PADDING);
-                        assert!(
-                            (attach.left() - padding).abs() < px(0.5),
-                            "{design:?}: Attach is at {:?}, not the card's padding",
-                            attach.left()
-                        );
-                    })
-                    .unwrap();
-                    // Beside the field the controls sit on its last line of text, inside its
-                    // hairline.
-                    let line =
-                        ui_text::space(COMPOSER_PAD_Y) + widgets::field_line() / 2. + px(1.0);
+                cx.update_window(handle.into(), |_, window, _| {
+                    let attach = window.find("chat-attach").bounds();
+                    let field = window.find("chat-composer-shell").bounds();
+                    // Attach sits at the card's padding (the card is inset from the pane,
+                    // which spans the window, and edged by a hairline), the text column
+                    // starts with it, and the control row is one gap under the text.
+                    let padding = ui_text::space(composer::CARD_INSET)
+                        + px(1.0)
+                        + ui_text::space(composer::CARD_PADDING);
                     assert!(
-                        (slot.center().y + line).abs() < px(1.0),
-                        "{design:?}: the controls are centered {:?} above the field's bottom",
-                        -slot.center().y
+                        (attach.left() - padding).abs() < px(0.5),
+                        "{design:?} {width}: Attach is at {:?}, not the card's padding",
+                        attach.left()
                     );
-                }
-                // At least two lines tall: empty, one line and two lines are the same box,
-                // its text on the first line and the controls on the second.
+                    assert!(
+                        (field.left() - attach.left()).abs() < px(0.5),
+                        "{design:?} {width}: the text column starts at {:?}, Attach at {:?}",
+                        field.left(),
+                        attach.left()
+                    );
+                    assert!(
+                        (attach.top() - field.bottom() - gap).abs() < px(0.5),
+                        "{design:?} {width}: the control row is {:?} under the text",
+                        attach.top() - field.bottom()
+                    );
+                    // The card's padding under the control row, at the window's bottom.
+                    let send = window.find("chat-send").bounds();
+                    assert!(
+                        (send.bottom() - (px(900.0) - padding)).abs() < px(0.5),
+                        "{design:?} {width}: {:?} under the control row",
+                        px(900.0) - send.bottom()
+                    );
+                })
+                .unwrap();
+                // One line of text at least, over the control row: empty and one line are
+                // the same box, and it grows upward from two lines.
                 let field = |cx: &mut gpui::TestAppContext| {
                     cx.update_window(handle.into(), |_, window, _| {
                         window.find("chat-composer-shell").bounds()
                     })
                     .unwrap()
                 };
-                let two_lines =
-                    ui_text::space(COMPOSER_PAD_Y) * 2. + widgets::field_line() * 2. + px(2.0);
                 let empty = field(cx);
                 assert!(
-                    (empty.size.height - two_lines).abs() < px(0.5),
-                    "{design:?} {width}: the empty box is {:?} tall, not two lines",
+                    (empty.size.height - widgets::field_line()).abs() < px(0.5),
+                    "{design:?} {width}: the empty box is {:?} tall, not one line",
                     empty.size.height
                 );
-                for draft in ["one line", "one\ntwo"] {
-                    set_draft(cx, handle, &view, draft);
-                    assert_eq!(
-                        field(cx),
-                        empty,
-                        "{design:?} {width}: {draft:?} resized the box"
-                    );
-                }
-                set_draft(cx, handle, &view, "one\ntwo\nthree");
+                set_draft(cx, handle, &view, "one line");
+                assert_eq!(
+                    field(cx),
+                    empty,
+                    "{design:?} {width}: one line resized the box"
+                );
+                set_draft(cx, handle, &view, "one\ntwo");
                 assert!(
                     field(cx).size.height > empty.size.height + widgets::field_line() / 2.,
-                    "{design:?} {width}: three lines do not grow the box"
+                    "{design:?} {width}: two lines do not grow the box"
                 );
                 for draft in [
                     "one line",
@@ -3505,7 +3472,9 @@ mod tests {
                     if close == "escape" {
                         window.press("escape", cx);
                     } else {
-                        window.click("chat-composer", cx);
+                        // The menu covers the field above the control row; the header is
+                        // outside it.
+                        window.click("chat-display-normal", cx);
                     }
                 })
                 .unwrap();

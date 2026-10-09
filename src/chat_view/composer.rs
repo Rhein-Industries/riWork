@@ -72,7 +72,7 @@ pub const BAR_GAP: f32 = 6.0;
 /// between its pieces, in design points. The bars above it (a notice, a request, a question)
 /// keep the same inset, so the bottom of the chat reads as one column of cards.
 pub const CARD_INSET: f32 = 14.0;
-pub const CARD_PADDING: f32 = 7.0;
+pub const CARD_PADDING: f32 = 8.0;
 pub const CARD_GAP: f32 = 6.0;
 /// Inset, padding and gap in a pane narrower than `NARROW_PANE`, in pixels: these do not
 /// grow with the text, so a big text size leaves the box its room.
@@ -80,18 +80,11 @@ pub const NARROW_SPACE: f32 = 4.0;
 /// Below this width (in design points) the card gives up its usual insets and its controls
 /// take a row of their own.
 pub const NARROW_PANE: f32 = 360.0;
-/// From this width (in design points) the box shares one row with its controls, whatever the
-/// draft holds, so typing never moves them.
-pub const COMPACT_PANE: f32 = 680.0;
 
 /// How the message box card is laid out in a pane of a given width: in pixels, as drawn. The
 /// same in every design; a design only chooses how the card and its buttons look.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {
-    /// The box shares one row with Attach and the controls. Otherwise the box takes the
-    /// card's whole width and Attach and the controls wrap in a row under it. It depends on
-    /// the pane only, never on the draft, so typing does not move the controls.
-    pub compact: bool,
     /// A pane too narrow for the usual insets: the controls take a row of their own.
     pub narrow: bool,
     /// The card's inset from the pane (also the bars' above it), its padding, and the gap
@@ -118,7 +111,7 @@ pub fn layout(pane: f32, scale: f32, actions: usize) -> Layout {
     };
     let actions = actions.max(1);
     let available = if pane <= 0.0 {
-        space(COMPACT_PANE)
+        f32::INFINITY
     } else {
         // The card's border takes a pixel on each side.
         (pane - 2.0 * (inset + padding) - 2.0).max(1.0)
@@ -126,7 +119,6 @@ pub fn layout(pane: f32, scale: f32, actions: usize) -> Layout {
     let button = space(super::widgets::ROUND_BUTTON)
         .min(((available - gap * (actions - 1) as f32) / actions as f32).max(1.0));
     Layout {
-        compact: pane >= space(COMPACT_PANE),
         narrow,
         inset,
         padding,
