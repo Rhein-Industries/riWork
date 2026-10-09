@@ -471,6 +471,33 @@ struct ChatApprovalBar: View {
     }
 }
 
+/// A request the relay could not send in full: it is waiting, its details are on the Mac, and nothing here answers it (no decisions,
+/// no keys), so a partial request is never taken for the whole one.
+struct ChatElidedRequestBar: View {
+    @Environment(\.desktopStyle) private var style
+    let request: ChatElidedRequest
+    /// How many are waiting, this one included.
+    let count: Int
+    private var title: String { request.question ? "A question is waiting" : "An approval is waiting" }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "macbook").foregroundStyle(style.gold).accessibilityHidden(true)
+                Text(title).font(style.system(.subheadline, weight: .semibold)).foregroundStyle(style.gold)
+                Spacer(minLength: 0)
+                if count > 1 { Text("1 of \(count)").font(style.system(.caption)).foregroundStyle(style.muted).monospacedDigit() }
+            }
+            Text("Details shown on your Mac. It was too large to send to the phone; answer it there.")
+                .font(style.system(.footnote)).foregroundStyle(style.muted).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
+        .chatRequestSurface(style, tint: style.gold, opacity: 0.12)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title). Details shown on your Mac; answer it there.")
+        .chatLayoutProbe("elided-request")
+    }
+}
+
 // MARK: - Questions
 
 /// The questions of a request: the options as buttons, a field for an answer of your own, and Send.

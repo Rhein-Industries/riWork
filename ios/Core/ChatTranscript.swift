@@ -11,6 +11,8 @@ public struct ChatTranscript: Sendable, Equatable {
     /// Requests still waiting for the user, in arrival order.
     public private(set) var approvals: [ChatApproval] = []
     public private(set) var questions: [ChatQuestion] = []
+    /// Requests the relay could not send in full: they wait on the Mac, where their details are, and nothing here can answer them.
+    public private(set) var elidedRequests: [ChatElidedRequest] = []
     public private(set) var usage: ChatUsage?
     /// The models the provider offers, empty until its driver has said (an older driver, or an older desktop, never does).
     public private(set) var models: [ChatModelOption] = []
@@ -45,6 +47,7 @@ public struct ChatTranscript: Sendable, Equatable {
             }
             approvals.removeAll()
             questions.removeAll()
+            elidedRequests.removeAll()
         case .itemStarted(let item), .itemCompleted(let item):
             if let at = index[item.id] {
                 items[at] = item
@@ -63,20 +66,36 @@ public struct ChatTranscript: Sendable, Equatable {
             }
         case .approvalRequested(let approval):
             approvals.removeAll { $0.requestID == approval.requestID }
+            elidedRequests.removeAll { $0.requestID == approval.requestID }
             approvals.append(approval)
         case .approvalResolved(let requestID, _):
             approvals.removeAll { $0.requestID == requestID }
+            elidedRequests.removeAll { $0.requestID == requestID }
         case .questionRequested(let question):
             questions.removeAll { $0.requestID == question.requestID }
+            elidedRequests.removeAll { $0.requestID == question.requestID }
             questions.append(question)
         case .questionResolved(let requestID):
             questions.removeAll { $0.requestID == requestID }
+            elidedRequests.removeAll { $0.requestID == requestID }
         case .usage(let usage):
             self.usage = usage
         case .models(let models):
             self.models = models
         case .rateLimits(let windows):
             rateLimits = windows
+        case .elided(let elided):
+            if let requestID = elided.requestID, elided.isRequest || elided.isResolution {
+                // Its details are gone, so whatever was shown for that request can no longer be answered here: it waits on the Mac.
+                approvals.removeAll { $0.requestID == requestID }
+                questions.removeAll { $0.requestID == requestID }
+                elidedRequests.removeAll { $0.requestID == requestID }
+                if elided.isRequest { elidedRequests.append(ChatElidedRequest(requestID: requestID, question: elided.of == "question_requested")) }
+                return
+            }
+            // The feed resolves these by sequence number; one that comes without (a snapshot's controls) is keyed by its place.
+            let row = event.resolved(seq: UInt64(items.count))
+            if row != event { apply(row) }
         }
     }
 
@@ -85,7 +104,7 @@ public struct ChatTranscript: Sendable, Equatable {
         var value = self; value.items = []; value.index = [:]; return value
     }
     fileprivate mutating func restoreControls(_ value: ChatTranscript) {
-        info = value.info; state = value.state; approvals = value.approvals; questions = value.questions
+        info = value.info; state = value.state; approvals = value.approvals; questions = value.questions; elidedRequests = value.elidedRequests
         usage = value.usage; models = value.models; rateLimits = value.rateLimits; turnID = value.turnID
     }
 
@@ -103,6 +122,13 @@ public struct ChatTranscript: Sendable, Equatable {
         for item in items.reversed() { if case .userMessage(let text) = item.body { return text } }
         return nil
     }
+}
+
+/// A request whose details the relay left out: shown as waiting on the Mac, with nothing to press.
+public struct ChatElidedRequest: Sendable, Equatable, Hashable {
+    public let requestID: String
+    public let question: Bool
+    public init(requestID: String, question: Bool) { self.requestID = requestID; self.question = question }
 }
 
 // MARK: - The reply of chat.events
@@ -233,6 +259,13 @@ public struct ChatFeed: Sendable, Equatable {
         if degraded { beginDegradedReplay() }
     }
 
+    /// An older relay could not send the event after `next` at all (`response_too_large` even for one event): it is passed over, with
+    /// a note in its place, so the events after it still arrive. The full content is on the Mac.
+    public mutating func skipOversized() {
+        let seq = next + 1
+        accept(ChatEventsReply(chatID: "", events: [ChatEnvelope(seq: seq, event: .elided(ChatElidedEvent(event: "update")))], next: seq, more: false), since: next)
+    }
+
     public enum Outcome: Sendable, Equatable {
         /// This many events were folded in.
         case applied(Int)
@@ -250,7 +283,7 @@ public struct ChatFeed: Sendable, Equatable {
         }
         var applied = 0
         for envelope in reply.events where envelope.seq > next {
-            if let event = envelope.event {
+            if let event = envelope.event?.resolved(seq: envelope.seq) {
                 let protectedControls = envelope.seq <= recoveryThrough ? transcript.controlsOnly() : nil
                 if historyCursor != nil {
                     switch event {

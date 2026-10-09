@@ -196,10 +196,12 @@ struct TargetButtonStyle: ButtonStyle {
     var tinted = false
     /// Dims while disabled; off for a button whose label already draws its disabled look.
     var dims = true
+    /// Where the label sits in its target: off center when the target reaches out past it (the tab row's ＋).
+    var alignment: Alignment = .center
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(tinted ? AnyShapeStyle(.tint) : AnyShapeStyle(.foreground))
-            .frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
+            .frame(minWidth: style.target, minHeight: style.target, alignment: alignment).contentShape(Rectangle())
             .opacity((isEnabled || !dims ? 1 : 0.45) * (configuration.isPressed ? 0.6 : 1))
     }
 }

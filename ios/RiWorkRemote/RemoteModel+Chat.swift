@@ -61,15 +61,30 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     @ObservationIgnored var snapshotUnavailableGeneration: UUID?
     @ObservationIgnored var resourceFallbackGeneration: UUID?
     @ObservationIgnored var resourceBlockedGeneration: UUID?
+    /// The first `response_too_large` (or `snapshot_limit`) of a connection starts the bounded replay; false once it is running.
     func recoverResourceLimit(_ error: ChatControlError, connection: UUID) -> Bool {
-        guard case .resourceLimit = error else { return false }
-        guard resourceFallbackGeneration != connection, !feed.degradedReplay else {
-            resourceBlockedGeneration = connection; readError = error; return false
-        }
+        guard case .resourceLimit = error, resourceFallbackGeneration != connection, !feed.degradedReplay else { return false }
         resourceFallbackGeneration = connection; snapshotUnavailableGeneration = connection
         feed.beginDegradedReplay(); readError = nil; legacyLoading = true
-        alerts.show(.desktop, "Long messages are shortened here; full text is on your Mac.", level: .info)
+        sayOnce("shortened", .desktop, "Long messages are shortened here; full text is on your Mac.", level: .info)
         return true
+    }
+    /// Events per page while an older relay refuses even a bounded page as too large: halved on each refusal down to one, and a
+    /// single event it still refuses is passed over (`ChatFeed.skipOversized`), so the chat never stops at it. Nil: the usual page.
+    @ObservationIgnored var oversizeCap: Int?
+    func passOversized() {
+        readError = nil
+        let cap = oversizeCap ?? Self.boundedPage
+        if cap > 1 { oversizeCap = cap / 2; return }
+        oversizeCap = nil
+        feed.skipOversized()
+        sayOnce("oversized", .read, "An update was too large to show here; it is on your Mac. Later messages keep arriving.")
+    }
+    static let boundedPage = 100
+    /// Says a note in the banner row once per chat in this run: closed or cleared, it does not come back with the next page.
+    @ObservationIgnored var noteSaid: (String) -> Bool = { _ in false }
+    func sayOnce(_ note: String, _ source: ChatAlert.Source, _ text: String, level: ChatNoticeLevel = .warning) {
+        if !noteSaid(note) { alerts.show(source, text, level: level) }
     }
     func install(_ snapshot: ChatSnapshotReply) {
         feed.install(snapshot)
@@ -108,7 +123,7 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
         if let pending = pendingMode, transcript.info?.approvalMode == pending { pendingMode = nil }
         settleModelChoice()
         // A request the desktop has resolved needs no hiding any more; one it has asked again does.
-        let waiting = Set(transcript.approvals.map(\.requestID) + transcript.questions.map(\.requestID))
+        let waiting = Set(transcript.approvals.map(\.requestID) + transcript.questions.map(\.requestID) + transcript.elidedRequests.map(\.requestID))
         answered.formIntersection(waiting)
         return outcome
     }
@@ -191,6 +206,7 @@ extension RemoteModel {
     func conversation(_ id: String) -> ChatConversation {
         if let known = chatConversations[id] { known.lastUsed = .now; return known }
         let made = ChatConversation(id: id)
+        made.noteSaid = { [weak self] note in !(self?.chatNotesSaid.insert("\(id)|\(note)").inserted ?? false) }
         restoreDraft(made)
         if chatConversations.count >= Self.keptConversations {
             // A conversation with a message on its way stays: its answer must land in it, not in one made again later.
@@ -376,8 +392,9 @@ extension RemoteModel {
                             await refreshChatsQuietly(); return
                         }
                         if case .resourceLimit = failure {
-                            if conversation.recoverResourceLimit(failure, connection: connection) { continue }
-                            return
+                            // Already replaying bounded: read the events instead of the snapshot for this connection.
+                            if !conversation.recoverResourceLimit(failure, connection: connection) { conversation.snapshotUnavailableGeneration = connection }
+                            continue
                         }
                         conversation.readError = failure
                         await noteLinkLossIfNeeded()
@@ -390,7 +407,7 @@ extension RemoteModel {
             let canWait = waitSlots.canWait(at: ProcessInfo.processInfo.systemUptime)
             let since = conversation.feed.next, pin = conversation.feed.historyCursor
             let request: ChatEventsRequest
-            do { request = try ChatEventsRequest(chatID: id, since: since, waitMilliseconds: canWait ? chatWaitMilliseconds : 0, maxEvents: conversation.feed.historyCursor == nil && !conversation.feed.degradedReplay ? nil : 100, complete: conversation.feed.historyCursor != nil, bounded: conversation.feed.degradedReplay) } catch { return }
+            do { request = try ChatEventsRequest(chatID: id, since: since, waitMilliseconds: canWait ? chatWaitMilliseconds : 0, maxEvents: conversation.oversizeCap ?? (conversation.feed.historyCursor == nil && !conversation.feed.degradedReplay ? nil : ChatConversation.boundedPage), complete: conversation.feed.historyCursor != nil, bounded: conversation.feed.degradedReplay) } catch { return }
             do {
                 let reply = try await chatEventsFlight(request)
                 guard !Task.isCancelled, conversation.follower == token, generation == connection,
@@ -401,6 +418,8 @@ extension RemoteModel {
                         switch envelope.event {
                         case .itemDelta(let id, _): if !conversation.feed.hasItem(id) { ids.insert(id) }
                         case .itemStarted(let item), .itemCompleted(let item): if !conversation.feed.hasItem(item.id) { ids.insert(item.id) }
+                        // An elided item keeps an older row's place: that row is hydrated first, as for any other change to it.
+                        case .elided(let elided): if elided.isItem, let id = elided.itemID, !conversation.feed.hasItem(id) { ids.insert(id) }
                         default: break
                         }
                     }
@@ -416,6 +435,7 @@ extension RemoteModel {
                       conversation.feed.next == since, conversation.feed.historyCursor == pin else { continue }
                 conversation.readError = nil
                 backoff.success()
+                if !reply.events.isEmpty { conversation.oversizeCap = nil }
                 conversation.accept(reply, since: since)
                 if !reply.more {
                     // The older desktop's history is in: the note about loading it has done its work.
@@ -453,8 +473,9 @@ extension RemoteModel {
                 if case ChatControlError.invalid(let reason) = error, reason.contains("cannot continue after") { conversation.reset(); continue }
                 let failure = ChatControlError.from(error, operation: .events)
                 if case .resourceLimit = failure {
-                    if conversation.recoverResourceLimit(failure, connection: connection) { continue }
-                    return
+                    // An older relay that cannot send a page even bounded: smaller pages, then past the one event it cannot send.
+                    if !conversation.recoverResourceLimit(failure, connection: connection) { conversation.passOversized() }
+                    continue
                 }
                 if conversation.feed.degradedReplay {
                     switch failure {
@@ -488,8 +509,8 @@ extension RemoteModel {
             guard !Task.isCancelled, generation == connection, conversation.follower == follower,
                   conversation.feed.historyCursor == cursor else { return }
             let failure = ChatControlError.from(error, operation: .events)
-            if case .resourceLimit = failure {
-                _ = conversation.recoverResourceLimit(failure, connection: connection)
+            if case .resourceLimit = failure, conversation.recoverResourceLimit(failure, connection: connection) {
+                // The bounded replay takes over from the snapshot pages.
             } else if case RemoteError.rpc(let code, _) = error, code == "snapshot_expired" {
                 conversation.reset(); conversation.alerts.show(.desktop, "History changed on the Mac. Loading the current recent messages again.", level: .info)
             } else { conversation.historyError = "Can’t load older messages. Try again." }

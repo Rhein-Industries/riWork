@@ -84,6 +84,7 @@ struct ChatItemRow: View, Equatable {
             }
             .accessibilityElement(children: .combine).accessibilityLabel("Context compacted")
         case .notice(let level, let text, _, _, _, _): NoticeBlock(level: level, text: text)
+        case .elided: if let elision = ChatElision(item.body) { ElidedBlock(elision: elision, isOpen: open.contains(item.id), toggle: { toggle(item.id) }) }
         }
     }
 }
@@ -156,6 +157,38 @@ private struct NoticeBlock: View {
         }
         .padding(12).background(color.opacity(level == .info ? 0 : 0.12), in: style.block(10))
         .accessibilityElement(children: .combine).accessibilityLabel("\(word): \(text)")
+    }
+}
+
+/// Content the relay left out as too large: one compact row ("Shown on your Mac · command · 1.9 MB", or a note for another event) that
+/// a tap opens to say why.
+private struct ElidedBlock: View {
+    @Environment(\.desktopStyle) private var style
+    let elision: ChatElision
+    let isOpen: Bool
+    let toggle: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button(action: toggle) {
+                HStack(spacing: 6) {
+                    Image(systemName: elision.isNote ? "exclamationmark.triangle" : "macbook").font(style.system(.caption))
+                        .foregroundStyle(elision.isNote ? style.gold : style.muted)
+                    Text(elision.line).font(style.face(11, relativeTo: .caption)).lineLimit(1)
+                    Image(systemName: "info.circle").font(style.system(.caption2))
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(style.muted).frame(minHeight: 44).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(elision.line)
+            .accessibilityHint(isOpen ? "Hides why" : "Explains why it is not shown here")
+            .accessibilityIdentifier("chat.elided")
+            if isOpen {
+                Text(ChatElision.explanation).font(style.system(.footnote)).foregroundStyle(style.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 10).overlay(alignment: .leading) { style.block(1).fill(style.divider).frame(width: 2) }
+            }
+        }
     }
 }
 

@@ -400,4 +400,123 @@ extension LatestFirstFeedTests {
         XCTAssertTrue(feed.transcript.approvals.isEmpty)
         XCTAssertEqual(feed.transcript.state, .running)
     }
+
+    // MARK: What the relay leaves out as too large
+
+    func testAnElidedItemIsARowThatSaysWhereItIsAndAnotherElidedEventANoteOfItsOwn() throws {
+        let reply = try ChatEventsReply.parse(JSONDecoder().decode(JSONValue.self, from: Data("""
+        {"chat_id":"c","next":4,"more":false,"events":[
+          {"seq":1,"event":{"event":"item_started","item":{"id":"big","status":"in_progress","body":{"type":"command","command":"cat log"}}}},
+          {"seq":2,"event":{"event":"item_elided","item_id":"big","kind":"command","reason":"too_large","bytes":1992294}},
+          {"seq":3,"event":{"event":"usage","elided":true,"reason":"too_large","bytes":300000}},
+          {"seq":4,"event":{"event":"item_completed","item":{"id":"after","status":"completed","body":{"type":"agent_message","text":"Done"}}}}]}
+        """.utf8)), chatID: "c")
+        XCTAssertEqual(reply.skipped, 0, "nothing elided is dropped as unreadable")
+        XCTAssertEqual(reply.events[1].event, .elided(ChatElidedEvent(event: "item_elided", itemID: "big", kind: "command", bytes: 1992294)))
+        XCTAssertEqual(reply.events[2].event, .elided(ChatElidedEvent(event: "usage", bytes: 300000)))
+        var feed = ChatFeed()
+        XCTAssertEqual(feed.accept(reply, since: 0), .applied(4))
+        XCTAssertEqual(feed.next, 4)
+        XCTAssertEqual(feed.transcript.items.map(\.id), ["big", "elided-3", "after"], "the item keeps its place; the note takes the event's")
+        XCTAssertEqual(feed.transcript.item("big")?.body, .elided(kind: "command", bytes: 1992294))
+        XCTAssertEqual(ChatElision(feed.transcript.item("big")!.body)?.line, "Shown on your Mac · command · 2 MB")
+        XCTAssertEqual(ChatElision(feed.transcript.item("elided-3")!.body)?.line, "Too large to show here · usage · 300 KB")
+        XCTAssertEqual(ChatElision(.elided(kind: nil, bytes: 300000, event: "approval_requested"))?.line, "Too large to show here · approval requested · 300 KB")
+        XCTAssertEqual(ChatElision(.elided(kind: "agent_message", bytes: nil))?.line, "Shown on your Mac · message")
+        XCTAssertEqual(ChatElision(.elided(kind: "agent_message", bytes: nil))?.isNote, false)
+        XCTAssertEqual(try JSONDecoder().decode(ChatEvent.self, from: Data(#"{"event":"item_elided","item_id":"x","bytes":1e100}"#.utf8)),
+                       .elided(ChatElidedEvent(event: "item_elided", itemID: "x")), "a size out of range is no size, never a crash")
+        // The same reply again changes nothing, and the elided body survives the snapshot's JSON.
+        XCTAssertEqual(feed.accept(reply, since: 0), .applied(0))
+        let item = try XCTUnwrap(feed.transcript.item("big"))
+        XCTAssertEqual(try JSONDecoder().decode(ChatItem.self, from: JSONEncoder().encode(item)), item)
+        for event in reply.events.compactMap(\.event) { XCTAssertEqual(try JSONDecoder().decode(ChatEvent.self, from: JSONEncoder().encode(event)), event) }
+    }
+
+    func testAnEventAnOlderRelayCannotSendIsPassedOverWithANote() {
+        var feed = ChatFeed()
+        feed.accept(ChatEventsReply(chatID: "c", events: [ChatEnvelope(seq: 1, event: .state(.running))], next: 1, more: false), since: 0)
+        feed.skipOversized()
+        XCTAssertEqual(feed.next, 2, "the next request asks after the event that could not be sent")
+        XCTAssertEqual(ChatElision(feed.transcript.item("elided-2")!.body)?.line, "Too large to show here")
+        feed.accept(ChatEventsReply(chatID: "c", events: [ChatEnvelope(seq: 3, event: .state(.idle))], next: 3, more: false), since: 2)
+        XCTAssertEqual(feed.transcript.state, .idle, "what comes after it still arrives")
+    }
+
+    /// The relay's documented shapes (`docs/chat-events.md`), written out here rather than produced by the app's own encoder.
+    private func events(_ json: String) throws -> ChatEventsReply {
+        try ChatEventsReply.parse(JSONDecoder().decode(JSONValue.self, from: Data(json.utf8)), chatID: "c")
+    }
+
+    func testAnElidedRequestCanNoLongerBeAnsweredHereAndAnElidedResolutionResolvesIt() throws {
+        var feed = ChatFeed()
+        feed.accept(try events("""
+        {"chat_id":"c","next":3,"more":false,"events":[
+          {"seq":1,"event":{"event":"approval_requested","approval":{"request_id":"req-9","item_id":"tool-7","kind":"command","title":"ls","detail":"","choices":["accept","decline"]}}},
+          {"seq":2,"event":{"event":"question_requested","question":{"request_id":"q-1","questions":[{"question":"Which?","options":[]}]}}},
+          {"seq":3,"event":{"event":"approval_requested","approval":{"request_id":"req-9","item_id":"tool-7","elided":true},"elided":true}}]}
+        """), since: 0)
+        XCTAssertEqual(feed.transcript.approvals, [], "the earlier details of req-9 are not left to be answered")
+        XCTAssertEqual(feed.transcript.elidedRequests, [ChatElidedRequest(requestID: "req-9", question: false)])
+        XCTAssertEqual(feed.transcript.items, [], "no row of its own, and the item it names is not replaced")
+        XCTAssertEqual(feed.transcript.questions.map(\.requestID), ["q-1"])
+        // The announced shape: control_elided naming what it stands for.
+        feed.accept(try events("""
+        {"chat_id":"c","next":4,"more":false,"events":[
+          {"seq":4,"event":{"event":"control_elided","of":"question_requested","question":{"request_id":"q-1","elided":true},"reason":"too_large","bytes":400000}}]}
+        """), since: 3)
+        XCTAssertEqual(feed.transcript.questions, [])
+        XCTAssertEqual(feed.transcript.elidedRequests.map(\.requestID), ["req-9", "q-1"])
+        // An elided resolution still resolves, in either shape.
+        feed.accept(try events("""
+        {"chat_id":"c","next":6,"more":false,"events":[
+          {"seq":5,"event":{"event":"approval_resolved","request_id":"req-9","elided":true}},
+          {"seq":6,"event":{"event":"control_elided","of":"question_resolved","request_id":"q-1"}}]}
+        """), since: 4)
+        XCTAssertEqual(feed.transcript.elidedRequests, [])
+        XCTAssertEqual(feed.transcript.items, [])
+        // Asked again in full, a request is answerable again; the end of a turn clears what waits on the Mac.
+        feed.accept(ChatEventsReply(chatID: "c", events: [ChatEnvelope(seq: 7, event: .elided(ChatElidedEvent(event: "approval_requested", requestID: "r")))], next: 7, more: false), since: 6)
+        XCTAssertEqual(feed.transcript.elidedRequests.count, 1)
+        feed.accept(ChatEventsReply(chatID: "c", events: [ChatEnvelope(seq: 8, event: .turnCompleted(turnID: "t", outcome: .completed))], next: 8, more: false), since: 7)
+        XCTAssertEqual(feed.transcript.elidedRequests, [])
+    }
+
+    func testTheAnnouncedItemElidedFieldsAreRead() throws {
+        var feed = ChatFeed()
+        feed.accept(try events("""
+        {"chat_id":"c","next":2,"more":false,"events":[
+          {"seq":1,"event":{"event":"item_elided","of":"item_completed","status":"failed","item_id":"cmd","kind":"command","reason":"too_large","bytes":2000000}},
+          {"seq":2,"event":{"event":"item_elided","of":"item_delta","item_id":"cmd","reason":"too_large","bytes":900000}}]}
+        """), since: 0)
+        XCTAssertEqual(feed.transcript.item("cmd")?.status, .failed)
+        XCTAssertEqual(feed.transcript.item("cmd")?.body, .elided(kind: "command", bytes: 2000000))
+        XCTAssertEqual(feed.transcript.items.map(\.id), ["cmd", "elided-2"], "a lost delta is a note; its item stays as it was")
+    }
+
+    func testAnElidedSnapshotRowIsTheCompactRowNotItsNote() throws {
+        // As documented: the row keeps an agent_message body for older phones and says what it was under item.elided.
+        let reply = try JSONDecoder().decode(ChatSnapshotReply.self, from: Data("""
+        {"v":1,"chat_id":"c","cursor":"9","next":42,"before":41,"more":false,"controls":[
+          {"event":"approval_requested","approval":{"request_id":"req-9","elided":true},"elided":true}],
+         "items":[
+          {"order":41,"item":{"id":"m","status":"completed","body":{"type":"agent_message","text":"Hello"}}},
+          {"order":42,"item":{"id":"tool-7","turn_id":"turn-3","status":"completed","body":{"type":"agent_message","text":"This message is too long to show here. Full text is on your Mac."},"elided":{"event":"item_elided","item_id":"tool-7","kind":"tool_call","reason":"too_large","bytes":2097260}}}]}
+        """.utf8))
+        XCTAssertEqual(reply.skipped, 0)
+        var feed = ChatFeed()
+        feed.install(reply)
+        let row = try XCTUnwrap(feed.transcript.item("tool-7"))
+        XCTAssertEqual(row.body, .elided(kind: "tool_call", bytes: 2097260))
+        XCTAssertEqual(row.turnID, "turn-3")
+        XCTAssertEqual(ChatElision(row.body)?.line, "Shown on your Mac · tool call · 2.1 MB")
+        XCTAssertEqual(feed.transcript.item("m")?.body, .agentMessage("Hello"))
+        XCTAssertEqual(feed.transcript.elidedRequests.map(\.requestID), ["req-9"], "a snapshot's elided control waits on the Mac too")
+        XCTAssertEqual(feed.transcript.approvals, [])
+        // Hydrating the same row (item_ids) gives the same compact row.
+        var hydrated = ChatFeed()
+        hydrated.install(ChatSnapshotReply(chatID: "c", cursor: "9", next: 42, before: 0, more: false, items: [], controls: []))
+        hydrated.hydrate(reply)
+        XCTAssertTrue(hydrated.hasItem("tool-7"))
+    }
 }

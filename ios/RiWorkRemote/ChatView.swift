@@ -41,9 +41,10 @@ struct ChatScreen: View {
         let conversation = conversation
         let approvals = conversation.openApprovals
         let questions = conversation.openQuestions
+        let elidedRequests = conversation.transcript.elidedRequests
         VStack(spacing: 0) {
             ChatToolbar(model: model, chat: info, conversation: conversation, state: state, showModels: $showModels)
-            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) }, viewportChanged: { transcriptChanged($0, barShown: !approvals.isEmpty || !questions.isEmpty) })
+            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) }, viewportChanged: { transcriptChanged($0, barShown: !approvals.isEmpty || !questions.isEmpty || !elidedRequests.isEmpty) })
                 .id(chat.id)
             if let approval = approvals.first {
                 BoundedScroll(maxHeight: max(110, height * 0.52 - squeeze)) {
@@ -56,6 +57,8 @@ struct ChatScreen: View {
                     Task { await model.answerChatQuestion(chat.id, form) }
                 }
                 .id(question.requestID)
+            } else if let request = elidedRequests.first {
+                ChatElidedRequestBar(request: request, count: elidedRequests.count).id(request.requestID)
             }
             // Every message of the moment, in one place: the link, the chat's state, what went wrong, the provider's notices.
             ChatNoticeBanners(model: model, chat: info, conversation: conversation, state: state, showHistory: { showNotices = true })
@@ -233,15 +236,18 @@ struct ChatUsageRing: View {
     var body: some View {
         Button { detail = true } label: {
             if let meter {
-                HStack(spacing: 5) {
+                // About 6 pt between the ring and the number: half the ring's stroke lies outside its frame.
+                HStack(spacing: style.pt(6) + 1.25) {
                     ZStack {
                         Circle().stroke(style.divider, lineWidth: 2.5)
                         Circle().trim(from: 0, to: meter.contextFraction ?? 0).stroke(tint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round)).rotationEffect(.degrees(-90))
                     }
                     .frame(width: style.pt(15), height: style.pt(15))
                     .animation(.easeOut(duration: 0.3), value: meter.contextFraction)
+                    .chatLayoutProbe("usage-ring")
                     Text(meter.percentText ?? meter.tokensText?.replacingOccurrences(of: " tokens", with: "") ?? "")
                         .font(style.system(.footnote, weight: .medium)).monospacedDigit().foregroundStyle(style.muted).lineLimit(1).fixedSize()
+                        .chatLayoutProbe("usage-number")
                 }
                 .padding(.horizontal, 6).frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
             } else {

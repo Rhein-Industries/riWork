@@ -422,8 +422,13 @@ struct TerminalTabsView: View {
             } else {
                 tabStrip
             }
-            newTabButton
-            screenMenu(chrome)
+            // ＋ and ⋯ about 8 pt apart, as the key bar's icons are. Each keeps a 44-point target of its own, reaching outward from the
+            // gap: ＋'s toward the tabs, ⋯'s to the row's end. The targets touch, with each glyph 4 pt in from where they meet, so
+            // every point of the row's end is one target's, never both and never neither.
+            HStack(spacing: 0) {
+                newTabButton.chatLayoutProbe("new-tab")
+                screenMenu(chrome).chatLayoutProbe("more-options")
+            }
         }
         .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
         .chatLayoutProbe("navigation")
@@ -451,13 +456,14 @@ struct TerminalTabsView: View {
                     .disabled(model.state != .connected)
                 Button("Edit tabs…", systemImage: "arrow.up.arrow.down") { showingEditTabs = true }
             } label: {
-                Image(systemName: "plus").frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
+                Image(systemName: "plus").padding(.trailing, style.pt(4)).frame(minWidth: style.target, minHeight: style.target, alignment: .trailing).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("New tab").accessibilityHint("A new terminal, or a hidden shell or worker")
         } else {
-            Button("New terminal", systemImage: "plus") { openNewTerminal() }.labelStyle(.iconOnly)
-                .buttonStyle(TargetButtonStyle()).disabled(model.state != .connected || model.projectID != project.id)
+            Button { openNewTerminal() } label: { Image(systemName: "plus").padding(.trailing, style.pt(4)) }
+                .accessibilityLabel("New terminal")
+                .buttonStyle(TargetButtonStyle(alignment: .trailing)).disabled(model.state != .connected || model.projectID != project.id)
                 // A desktop that is too old still answers a tap, with the reason.
                 .opacity(model.terminalControl == .unsupported ? 0.45 : 1)
                 .accessibilityHint(model.terminalControl == .unsupported ? TerminalControlError.unsupportedMessage : "Opens a shell or an agent on your Mac")
@@ -552,8 +558,8 @@ struct TerminalTabsView: View {
                 else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
             }
         } label: {
-            Label("More options", systemImage: "ellipsis").labelStyle(.iconOnly)
-                .frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
+            Label("More options", systemImage: "ellipsis").labelStyle(.iconOnly).padding(.leading, style.pt(4))
+                .frame(minWidth: style.target, minHeight: style.target, alignment: .leading).contentShape(Rectangle())
         }
             .buttonStyle(.plain)
     }

@@ -356,6 +356,36 @@ extension ChatItemBody {
         case .todo(let items): "To-do, \(items.filter { $0.status == .completed }.count) of \(items.count) done"
         case .compaction: "Context compacted"
         case .notice(_, let text, _, _, _, _): text
+        case .elided: ChatElision(self)?.line ?? "Shown on your Mac"
+        }
+    }
+}
+
+/// What a row says for content the relay left out as too large (`ChatItemBody.elided`).
+public struct ChatElision: Sendable, Equatable {
+    /// An item's content ("Shown on your Mac · command · 1.9 MB"), or a one-line note for another event.
+    public let isNote: Bool
+    public let line: String
+    public static let explanation = "This was too large to send to the phone, so the relay left it out. Open the chat on your Mac to see it in full; everything after it still arrives here."
+    public init?(_ body: ChatItemBody) {
+        guard case .elided(let kind, let bytes, let event) = body else { return nil }
+        let size = bytes.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) }
+        if let event {
+            isNote = true
+            let what = event == "update" ? nil : Self.words(event)
+            line = (["Too large to show here"] + [what, size].compactMap { $0 }).joined(separator: " · ")
+        } else {
+            isNote = false
+            line = (["Shown on your Mac"] + [kind.map(Self.words), size].compactMap { $0 }).joined(separator: " · ")
+        }
+    }
+    /// A wire word as a reader says it: "agent_message" is a message, "tool_call" a tool call.
+    static func words(_ word: String) -> String {
+        switch word {
+        case "agent_message": "message"
+        case "user_message": "your message"
+        case "file_change": "edit"
+        default: word.replacingOccurrences(of: "_", with: " ")
         }
     }
 }
