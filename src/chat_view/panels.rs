@@ -2658,8 +2658,14 @@ impl ChatView {
                     .child(controls.when(layout.narrow, |controls| controls.flex_none().w_full())),
             );
         let text_lead = f32::from(glyph_inset);
-        // The same room above the first line of text as below the control row: the card's
-        // padding, less the half-leading the line box keeps above its letters.
+        let top = if layout.narrow {
+            px(layout.padding)
+        } else {
+            ui_text::space(composer::CARD_TEXT_TOP)
+        };
+        // A little more room above the first line of text than below the control row: the
+        // letters `CARD_TEXT_TOP` under the card's edge (less the half-leading their line box
+        // keeps above them), the controls the card's padding above its bottom.
         let leading = (widgets::field_line() - ui_text::text(widgets::FIELD_TEXT)) / 2.;
         let active = self.composer.read(cx).focus_handle(cx).is_focused(window);
         let card = composer_card(
@@ -2672,7 +2678,7 @@ impl ChatView {
                 .gap(gap)
                 .px(px(layout.padding))
                 .pb(px(layout.padding))
-                .pt((px(layout.padding) - leading).max(px(0.)))
+                .pt((top - leading).max(px(0.)))
                 .font_family(look.chat_family()),
             look,
             active,

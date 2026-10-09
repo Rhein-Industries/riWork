@@ -73,6 +73,9 @@ pub const BAR_GAP: f32 = 6.0;
 /// keep the same inset, so the bottom of the chat reads as one column of cards.
 pub const CARD_INSET: f32 = 14.0;
 pub const CARD_PADDING: f32 = 8.0;
+/// From the card's edge to the letters of its first line of text: a little more than the
+/// padding under its control row.
+pub const CARD_TEXT_TOP: f32 = 10.0;
 pub const CARD_GAP: f32 = 6.0;
 /// Inset, padding and gap in a pane narrower than `NARROW_PANE`, in pixels: these do not
 /// grow with the text, so a big text size leaves the box its room.
