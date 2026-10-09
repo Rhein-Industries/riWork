@@ -1154,9 +1154,9 @@ import RiWorkCore
         let row = try XCTUnwrap(rig.layout.frames["attachments"]), field = try XCTUnwrap(rig.layout.frames["composer-field"])
         XCTAssertLessThanOrEqual(row.maxY, field.minY + 1, "above the field")
         let surface = try XCTUnwrap(rig.layout.frames["composer"])
-        XCTAssertEqual(surface.minX, 0, accuracy: 0.5, "the field has no gutter")
-        XCTAssertEqual(surface.maxX, rig.window.bounds.width, accuracy: 0.5, "the field spans the width")
-        XCTAssertEqual(row.minX, surface.minX, accuracy: 0.5, "the card row spans the field's width (its first card is inset to the text)")
+        XCTAssertEqual(surface.minX, ChatItemRow.horizontalInset, accuracy: 0.5, "the field has the transcript's margin")
+        XCTAssertEqual(surface.maxX, rig.window.bounds.width - ChatItemRow.horizontalInset, accuracy: 0.5, "on both sides")
+        XCTAssertEqual(row.minX, 0, accuracy: 0.5, "the card row spans the width (its first card is inset to the margin)")
         XCTAssertGreaterThan(field.minX, surface.minX, "the paperclip sits inside the field, before the text")
         rig.model.removeStagedAttachment(staged(2, "notes.pdf").id, from: chatID)
         XCTAssertEqual(conversation.attachments.map(\.name), ["photo.jpg", "build.log"])
@@ -1165,9 +1165,10 @@ import RiWorkCore
         await finish(rig)
     }
 
-    /// At 390 pt the field's text has the field's width but for the paperclip's slot (its glyph 8 pt in from the edge, the text about
-    /// 8 pt after it) and one 38-point column of buttons (the 30-point circle and 8 pt): a text column of at least 290 pt, where the
-    /// 44-point paperclip and buttons and the text's own insets left about 270. The cards above start where the text does.
+    /// At 390 pt the field stands 16 pt in from each edge, as the transcript's text does, and its text has the field's width but for the
+    /// paperclip's slot (its glyph 8 pt in from the field's edge, the text about 8 pt after it) and one 38-point column of buttons (the
+    /// 30-point circle and 8 pt): a text column of about 283 pt. The paperclip's and Send's targets reach out over the margin to the
+    /// screen's edges. The cards above start where the field does.
     func testTheComposerTextHasTheFieldsWidthAndTheCardsLineUpWithIt() async throws {
         let rig = try await makeRig(width: 390)
         let field = try await openChat(rig)
@@ -1183,7 +1184,9 @@ import RiWorkCore
         let textStart = fieldFrame.minX + field.textContainerInset.left + padding
         let textColumn = field.textContainer.size.width - 2 * padding
         print("COMPOSER width=\(rig.window.bounds.width) textStart=\(textStart) textColumn=\(textColumn) send=\(send) paperclip=\(rig.layout.frames["paperclip"] ?? .zero) card0=\(card)")
-        XCTAssertGreaterThanOrEqual(textColumn, 300, "the text wraps at nearly the field's width")
+        XCTAssertEqual(surface.minX, ChatItemRow.horizontalInset, accuracy: 0.5, "the field at the transcript's margin")
+        XCTAssertEqual(rig.window.bounds.width - surface.maxX, ChatItemRow.horizontalInset, accuracy: 0.5, "on both sides")
+        XCTAssertGreaterThanOrEqual(textColumn, 280, "the text wraps at nearly the field's width")
         // The paperclip's glyph 8 pt in, the text about 8 pt after it.
         // (Past the field's own stroke, which the terminal look draws at its edge.)
         let clip = try inkRuns(rig, in: CGRect(x: surface.minX, y: fieldFrame.maxY - 40, width: textStart - surface.minX - 1, height: 36)).filter { $0.upperBound > surface.minX + 3 }
@@ -1192,14 +1195,16 @@ import RiWorkCore
             XCTAssertEqual(clip.lowerBound - surface.minX, 8, accuracy: 2, "the paperclip 8 pt from the field's edge")
             XCTAssertEqual(textStart - clip.upperBound, 8, accuracy: 3, "the text about 8 pt after the paperclip")
         }
-        // Send: its circle and 8 pt to the field's end, at the end of its 44-point target; the text runs to the target.
+        // Send: its circle and 8 pt to the field's end; its target from the column's start out to the screen's edge; the text runs to
+        // the target.
         let paperclip = try XCTUnwrap(rig.layout.frames["paperclip"])
-        XCTAssertEqual(send.maxX, surface.maxX, accuracy: 0.5); XCTAssertEqual(send.maxX, rig.window.bounds.width, accuracy: 0.5)
+        XCTAssertEqual(send.minX, surface.maxX - ChatComposer.buttonColumn(rig.model.theme.style), accuracy: 0.5)
+        XCTAssertEqual(send.maxX, rig.window.bounds.width, accuracy: 0.5)
         XCTAssertGreaterThanOrEqual(send.width, 44); XCTAssertGreaterThanOrEqual(send.height, 44)
         XCTAssertLessThanOrEqual(fieldFrame.maxX, send.minX + 0.5, "the text view ends where Send's target begins")
         let circle = try inkRuns(rig, in: CGRect(x: send.minX, y: send.minY, width: send.width, height: send.height)).filter { $0.lowerBound < surface.maxX - 3 }
         if let circle = circle.last { XCTAssertEqual(surface.maxX - circle.upperBound, 8, accuracy: 1.5, "the circle 8 pt from the field's end: \(circle)") }
-        // The paperclip: 44 by 44 from the screen edge, reaching over the text's leading padding; a tap there is its own.
+        // The paperclip: 44 by 44 at least from the screen edge, over the margin and its slot; a tap there is its own.
         XCTAssertEqual(paperclip.minX, 0, accuracy: 0.5); XCTAssertGreaterThanOrEqual(paperclip.width, 44); XCTAssertGreaterThanOrEqual(paperclip.height, 44)
         for point in [CGPoint(x: paperclip.maxX - 2, y: paperclip.midY), CGPoint(x: send.minX + 2, y: send.midY)] {
             var view = rig.window.hitTest(point, with: nil), isField = false
@@ -2954,8 +2959,8 @@ import RiWorkCore
             // With nothing typed the mic takes Send's slot: the field keeps its width.
             await eventually("\(look): the mic is there") { rig.layout.frames["mic"] != nil && rig.layout.frames["send"] == nil }
             XCTAssertEqual(try XCTUnwrap(width(of: ChatComposerTextView.self, in: rig)), off, accuracy: 1, "\(look): in the same slot")
-            // The buttons' column: the 30-point circle and 8 pt to the field's end at the screen edge, the field's height tall.
-            // A full target: 44 points, reaching back from the buttons' 38-point column.
+            // The buttons' column: the 30-point circle and 8 pt to the field's end, the field's height tall.
+            // A full target: 44 points at least, from the buttons' 38-point column out over the margin to the screen's edge.
             XCTAssertGreaterThanOrEqual(rig.layout.frames["dictation-target"]?.width ?? 0, 44, "\(look): a full target")
             XCTAssertGreaterThanOrEqual(rig.layout.frames["dictation-target"]?.height ?? 0, 44, "\(look): a full target")
             rig.model.conversation(chatID).draft = "typed"

@@ -65,7 +65,7 @@ final class KeyBarGeometryTests: XCTestCase {
 final class BottomBarGeometryTests: XCTestCase {
     func testGlassRowIsClippedToTheCapsule() {
         let clip = BottomBarGeometry.rowClip(barWidth: 402, barHeight: 44, glass: true)
-        XCTAssertEqual(clip, .init(x: 0, y: 2, width: 402, height: 40, cornerRadius: 20), "edge to edge, as the composer's field")
+        XCTAssertEqual(clip, .init(x: 0, y: 2, width: 402, height: 40, cornerRadius: 20), "edge to edge (the key bar, unlike the composer field, has no side margins)")
         XCTAssertGreaterThan(BottomBarGeometry.keysInset(glass: true), clip.x, "the first key rests inside the capsule")
         XCTAssertEqual(BottomBarGeometry.rowClip(barWidth: 402, barHeight: 44, glass: false), .init(x: 0, y: 0, width: 402, height: 44, cornerRadius: 0))
     }
@@ -111,7 +111,7 @@ final class BottomBarGeometryTests: XCTestCase {
         for glass in [true, false] {
             let insets = BottomBarGeometry.composerInsets(glass: glass)
             XCTAssertGreaterThanOrEqual(insets.horizontal, 0)
-            XCTAssertEqual(insets.horizontal, 0, "no gutter: the field spans the safe area's width")
+            XCTAssertEqual(insets.horizontal, 0, "no gutter: the key bar spans the safe area's width")
             XCTAssertEqual(insets.horizontal, BottomBarGeometry.rowClip(barWidth: 402, barHeight: 44, glass: glass).x, "the key bar's edges")
             XCTAssertEqual(insets.bottom, BottomBarGeometry.capsuleEndInset)
         }
