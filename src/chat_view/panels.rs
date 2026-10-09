@@ -1103,9 +1103,12 @@ impl ChatView {
                 let fast = info.is_some_and(|info| info.fast);
                 let idle = matches!(self.model.transcript.state, ChatState::Idle);
                 let open = |menu: Menu| {
-                    cx.listener(move |view: &mut Self, _: &gpui::ClickEvent, window, cx| {
-                        view.toggle_menu(menu, window, cx)
-                    })
+                    cx.listener(
+                        move |view: &mut Self, event: &gpui::ClickEvent, window, cx| {
+                            view.toggle_menu(menu, window, cx);
+                            view.menu_armed = !event.is_keyboard();
+                        },
+                    )
                 };
                 let mut rows = folded
                     .iter()
@@ -1902,19 +1905,25 @@ impl ChatView {
                 .text_color(rgb(look.colors.muted))
                 .child(icons::text_mark("⌄", 9.0)),
         )
-        .on_click(cx.listener(move |view, _, window, cx| {
-            view.open.remove(ATTACHMENT_MENU_KEY);
-            let opening = view.menu != Some(menu);
-            if menu == Menu::Model {
-                view.sync_model_placeholder(window, cx);
-            }
-            view.toggle_menu(menu, window, cx);
-            if opening && view.menu == Some(Menu::Model) && !view.model.transcript.models.is_empty()
-            {
-                view.model_seeded = false;
-                view.model_input.read(cx).focus_handle(cx).focus(window, cx);
-            }
-        }));
+        .on_click(
+            cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                view.open.remove(ATTACHMENT_MENU_KEY);
+                let opening = view.menu != Some(menu);
+                if menu == Menu::Model {
+                    view.sync_model_placeholder(window, cx);
+                }
+                view.toggle_menu(menu, window, cx);
+                // The pointer holds no ⏎; a key that opened it must come up first.
+                view.menu_armed = !event.is_keyboard();
+                if opening
+                    && view.menu == Some(Menu::Model)
+                    && !view.model.transcript.models.is_empty()
+                {
+                    view.model_seeded = false;
+                    view.model_input.read(cx).focus_handle(cx).focus(window, cx);
+                }
+            }),
+        );
         crate::behavior_controls::popup(format!("{name}-popup"), trigger)
             .max_w(relative(1.0))
             // Above the box, its trailing edge on the picker's, so it never leaves the pane.
@@ -2448,11 +2457,8 @@ impl ChatView {
     fn composer_send(&self, look: Look, side: gpui::Pixels, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
         let empty = self.draft_empty(cx) || self.pending_submission.is_some();
-        let tip = if self.running() {
-            "Send · ⏎ steers the turn · ⇧⏎ new line"
-        } else {
-            "Send · ⏎ · ⇧⏎ new line"
-        };
+        // While a turn runs Stop holds this slot, and its tooltip says ⏎ steers the turn.
+        let tip = "Send · ⏎ · ⇧⏎ new line";
         let send = if look.native {
             widgets::round_button_sized(
                 "chat-send",
@@ -3485,6 +3491,108 @@ mod tests {
             );
             ui_text::set_for_tests(previous.0, previous.1);
         }
+    }
+
+    /// A key going down (`held` for a repeat) or coming up, without its pair.
+    fn key_event(
+        cx: &mut gpui::TestAppContext,
+        handle: gpui::WindowHandle<gpui_kit::base::Root>,
+        key: &str,
+        down: Option<bool>,
+    ) {
+        use gpui::InputEvent as _;
+        let keystroke = gpui::Keystroke::parse(key).unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            let event = match down {
+                Some(is_held) => gpui::KeyDownEvent {
+                    keystroke,
+                    is_held,
+                    prefer_character_input: false,
+                }
+                .to_platform_input(),
+                None => gpui::KeyUpEvent { keystroke }.to_platform_input(),
+            };
+            window.dispatch_event(event, cx);
+        })
+        .unwrap();
+        draw_hermes(cx, handle);
+    }
+
+    #[gpui::test]
+    fn an_open_composer_menu_owns_enter_and_ignores_held_keys(cx: &mut gpui::TestAppContext) {
+        use crate::chat::model::ChatCommand;
+        let previous = ui_text::set_for_tests(1.0, ui_text::Face::System);
+        let (handle, view, recording) =
+            composer_fixture(cx, 760.0, theme::ThemeChoice::Native, ChatState::Idle);
+        let cursor =
+            |cx: &mut gpui::TestAppContext| view.read_with(cx, |view, _| view.menu_cursor.clone());
+        let open = |cx: &mut gpui::TestAppContext| view.read_with(cx, |view, _| view.menu);
+        let draft = |cx: &mut gpui::TestAppContext| {
+            view.read_with(cx, |view, cx| view.composer.read(cx).value().to_string())
+        };
+        set_draft(cx, handle, &view, "keep me");
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("chat-effort", cx)
+        })
+        .unwrap();
+        draw_hermes(cx, handle);
+        assert_eq!(open(cx), Some(super::super::Menu::Effort));
+
+        // ⏎ with nothing highlighted: the menu keeps it, the draft is not sent.
+        cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
+            .unwrap();
+        draw_hermes(cx, handle);
+        assert_eq!(open(cx), Some(super::super::Menu::Effort));
+        assert_eq!(draft(cx), "keep me");
+        assert!(recording.try_recv().is_err(), "⏎ reached the message box");
+
+        // A held ↓ moves the highlight once; the next press moves it again.
+        key_event(cx, handle, "down", Some(false));
+        key_event(cx, handle, "down", Some(true));
+        key_event(cx, handle, "down", Some(true));
+        assert_eq!(cursor(cx).as_deref(), Some("effort-medium"));
+        key_event(cx, handle, "down", None);
+        key_event(cx, handle, "down", Some(false));
+        key_event(cx, handle, "down", None);
+        assert_eq!(cursor(cx).as_deref(), Some("effort-high"));
+
+        // A menu opened by a key: an ⏎ held through the opening chooses nothing, and its
+        // repeats neither choose nor reach the message box; the next ⏎ chooses.
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.menu = None;
+                view.menu_closed = None;
+                view.toggle_menu(super::super::Menu::Effort, window, cx);
+                view.menu_cursor = Some("effort-high".into());
+            })
+        })
+        .unwrap();
+        draw_hermes(cx, handle);
+        key_event(cx, handle, "enter", Some(true));
+        key_event(cx, handle, "enter", Some(true));
+        assert_eq!(open(cx), Some(super::super::Menu::Effort));
+        assert_eq!(draft(cx), "keep me");
+        assert!(recording.try_recv().is_err());
+        key_event(cx, handle, "enter", None);
+        key_event(cx, handle, "enter", Some(false));
+        assert_eq!(open(cx), None);
+        match recording.try_recv() {
+            Ok(super::super::feed::Delivery::Command(command)) => assert_eq!(
+                command,
+                ChatCommand::Configure {
+                    model: None,
+                    effort: Some("high".into()),
+                    approval_mode: None,
+                    fast: None,
+                }
+            ),
+            _ => panic!("⏎ chose nothing"),
+        }
+        // Its repeats after the menu closed do not send the draft.
+        key_event(cx, handle, "enter", Some(true));
+        assert_eq!(draft(cx), "keep me");
+        assert!(recording.try_recv().is_err());
+        ui_text::set_for_tests(previous.0, previous.1);
     }
 
     fn prompt(question: &str, options: &[&str], multi_select: bool) -> QuestionPrompt {

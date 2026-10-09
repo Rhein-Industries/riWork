@@ -212,26 +212,22 @@ impl ChatView {
             }
         }
     }
-    /// ↑, ↓ and ⏎ step through and choose the rows of the open model or effort menu while the
-    /// focus is in the model search field or the message box and no text is being composed
-    /// (an input method's ⏎ confirms its text); anywhere else they reach the field as ever.
+    /// ↑, ↓ and ⏎ belong to the open model or effort menu while the focus is in the model
+    /// search field or the message box and no text is being composed (an input method's ⏎
+    /// confirms its text); anywhere else they reach the field as ever.
     fn menu_keys(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if !matches!(self.menu, Some(super::Menu::Model | super::Menu::Effort)) {
             return false;
         }
-        let composing =
-            |state: &Entity<InputState>, window: &mut Window, cx: &mut Context<Self>| {
-                state.update(cx, |state, cx| {
-                    state.marked_text_range(window, cx).is_some()
-                })
-            };
         if self
             .model_input
             .read(cx)
             .focus_handle(cx)
             .is_focused(window)
         {
-            !composing(&self.model_input, window, cx)
+            !self.model_input.update(cx, |state, cx| {
+                state.marked_text_range(window, cx).is_some()
+            })
         } else if self.composer.read(cx).focus_handle(cx).is_focused(window) {
             !self.composer.update(cx, |state, cx| {
                 state.marked_text_range(window, cx).is_some()
@@ -241,33 +237,59 @@ impl ChatView {
         }
     }
 
-    pub(super) fn menu_up(&mut self, _: &MoveUp, window: &mut Window, cx: &mut Context<Self>) {
-        if self.menu_keys(window, cx) && self.step_menu(false, cx) {
+    /// ↑ or ↓ in the open menu moves its highlight once per press: a held key's repeats
+    /// move nothing until it comes up.
+    fn menu_arrow(&mut self, down: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.menu_keys(window, cx) {
+            return;
+        }
+        if self.menu_arrow_held {
+            cx.stop_propagation();
+        } else if self.step_menu(down, cx) {
+            self.menu_arrow_held = true;
             cx.stop_propagation();
         }
+    }
+
+    pub(super) fn menu_up(&mut self, _: &MoveUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu_arrow(false, window, cx);
     }
 
     pub(super) fn menu_down(&mut self, _: &MoveDown, window: &mut Window, cx: &mut Context<Self>) {
-        if self.menu_keys(window, cx) && self.step_menu(true, cx) {
-            cx.stop_propagation();
-        }
+        self.menu_arrow(true, window, cx);
     }
 
+    /// While the model or effort menu is open it owns ⏎: the highlighted row (or a search's
+    /// first match) is chosen, and with none the menu stays as it is; the draft is never
+    /// sent nor a request answered. A driver without a model list keeps its field's own ⏎,
+    /// which names the model typed. An ⏎ held through the menu's opening chooses nothing.
     pub(super) fn menu_enter(
         &mut self,
         enter: &Enter,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !enter.secondary
-            && !enter.shift
-            && self.menu_keys(window, cx)
-            && self.choose_highlighted(cx)
-        {
-            // The press is held until its key comes up: a repeat must not send the draft or
-            // answer a request once the menu has closed.
-            self.enter_down = true;
-            cx.stop_propagation();
+        if enter.secondary || enter.shift || !self.menu_keys(window, cx) {
+            return;
+        }
+        let typed = self.menu == Some(super::Menu::Model)
+            && self.model.transcript.models.is_empty()
+            && self.menu_cursor.is_none()
+            && self
+                .model_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window);
+        if typed {
+            return;
+        }
+        cx.stop_propagation();
+        // The press is held until its key comes up: a repeat must not send the draft or
+        // answer a request once the menu has closed.
+        let repeat = self.enter_down;
+        self.enter_down = true;
+        if self.menu_armed && !repeat {
+            self.choose_highlighted(cx);
         }
     }
 

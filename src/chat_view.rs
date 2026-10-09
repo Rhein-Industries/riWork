@@ -235,6 +235,12 @@ pub struct ChatView {
     /// others), as last drawn, for keeping the highlight in sight.
     menu_scroll: gpui::ScrollHandle,
     menu_children: RefCell<Vec<String>>,
+    /// An ↑ or ↓ that moved the menu's highlight and has not come up yet: its repeats move
+    /// nothing.
+    menu_arrow_held: bool,
+    /// Whether ⏎ may choose in the open menu: once a key has come up since it opened, or at
+    /// once for a menu the pointer opened, so an ⏎ held through the opening chooses nothing.
+    menu_armed: bool,
     /// When the last message was sent: an Enter right after it is not an answer to a request.
     sent_at: Option<Instant>,
     /// Item ids (and `item#n` for the files of a change) that are expanded.
@@ -441,6 +447,8 @@ impl ChatView {
             menu_cursor: None,
             menu_scroll: Default::default(),
             menu_children: Default::default(),
+            menu_arrow_held: false,
+            menu_armed: false,
             sent_at: None,
             open: HashSet::new(),
             answered: HashSet::new(),
@@ -1148,6 +1156,7 @@ impl ChatView {
 
     fn toggle_menu(&mut self, menu: Menu, window: &mut Window, cx: &mut Context<Self>) {
         self.menu_cursor = None;
+        self.menu_armed = false;
         // The press that closed this menu is the one that is now a click on its button.
         if self.menu.is_none()
             && self.menu_closed.take().is_some_and(|(closed, at)| {
@@ -1360,6 +1369,10 @@ impl Render for ChatView {
             .on_action(cx.listener(Self::dictation_action))
             .on_action(cx.listener(Self::copy_transcript))
             .on_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, _| {
+                view.menu_armed = true;
+                if matches!(event.keystroke.key.as_str(), "up" | "down") {
+                    view.menu_arrow_held = false;
+                }
                 if matches!(event.keystroke.key.as_str(), "enter" | "return") {
                     view.enter_down = false;
                     view.enter_repeated = false;
