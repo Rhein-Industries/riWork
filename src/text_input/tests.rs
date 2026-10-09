@@ -1,10 +1,10 @@
 //! Headless macOS-linked smoke: real Base states, layout, and event dispatch.
 use super::*;
 use gpui::{
-    Bounds, ClipboardEntry, Context, ElementInputHandler, ExternalPaths, FocusHandle, InputHandler,
-    InputEvent as _, IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Render, Subscription,
-    TestAppContext, WindowBounds, WindowHandle, WindowOptions,
-    div, point, px, size,
+    Bounds, ClipboardEntry, Context, ElementInputHandler, ExternalPaths, FocusHandle,
+    InputEvent as _, InputHandler, IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Render, Subscription, TestAppContext, WindowBounds, WindowHandle, WindowOptions, div, point,
+    px, size,
 };
 use gpui_kit::test::TestWindowExt;
 use std::{cell::RefCell, rc::Rc};
@@ -279,7 +279,10 @@ fn composing_escape_cancels_only_composition_in_forms_and_chat(cx: &mut TestAppC
                     assert_marked(&state, false, window, cx);
                 }
                 let owner = fields.read(cx);
-                assert_eq!((owner.escape_actions, owner.raw_escapes, owner.cancels), (0, 0, 0));
+                assert_eq!(
+                    (owner.escape_actions, owner.raw_escapes, owner.cancels),
+                    (0, 0, 0)
+                );
                 assert_eq!((owner.submissions, owner.first_submissions), (0, 0));
                 assert_eq!(owner.changes, changes);
             })
@@ -448,8 +451,7 @@ fn composition_return_cannot_submit_edit_or_bubble(cx: &mut TestAppContext) {
     action_turn(cx, handle, |window, cx| {
         window.click("composer", cx);
         let state = fields.read(cx).composer.clone();
-        let mut handler =
-            ElementInputHandler::new(window.find("composer").bounds(), state.clone());
+        let mut handler = ElementInputHandler::new(window.find("composer").bounds(), state.clone());
         handler.replace_and_mark_text_in_range(None, "日本", Some(2..2), window, cx);
         window.render_frame(cx);
     });
@@ -469,18 +471,20 @@ fn composition_return_cannot_submit_edit_or_bubble(cx: &mut TestAppContext) {
     }
     action_turn(cx, handle, |window, cx| {
         let state = fields.read(cx).composer.clone();
-        let mut handler =
-            ElementInputHandler::new(window.find("composer").bounds(), state.clone());
+        let mut handler = ElementInputHandler::new(window.find("composer").bounds(), state.clone());
         // Native IME commits through its input handler, not an app submit path.
         handler.replace_text_in_range(None, "日本語", window, cx);
         window.render_frame(cx);
     });
     cx.update_window(handle.into(), |_, window, cx| {
         let state = fields.read(cx).composer.clone();
-        let mut handler =
-            ElementInputHandler::new(window.find("composer").bounds(), state.clone());
+        let mut handler = ElementInputHandler::new(window.find("composer").bounds(), state.clone());
         assert_eq!(handler.marked_text_range(window, cx), None);
-        assert_eq!(fields.read(cx).submissions, 0, "commit alone does not submit");
+        assert_eq!(
+            fields.read(cx).submissions,
+            0,
+            "commit alone does not submit"
+        );
     })
     .unwrap();
     action_turn(cx, handle, |window, cx| window.press("enter", cx));
@@ -687,4 +691,3 @@ fn frame_padding_keeps_focus_and_selection_after_pointer_down_and_up(cx: &mut Te
         }
     }
 }
-

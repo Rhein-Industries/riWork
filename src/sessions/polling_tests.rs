@@ -139,10 +139,9 @@ fi
         for call in calls {
             let args: Vec<_> = call.split_whitespace().collect();
             assert!(
-                !args.iter().any(|arg| matches!(
-                    *arg,
-                    "-C" | "-CC" | "attach" | "attach-session"
-                )),
+                !args
+                    .iter()
+                    .any(|arg| matches!(*arg, "-C" | "-CC" | "attach" | "attach-session")),
                 "{call}"
             );
             assert!(

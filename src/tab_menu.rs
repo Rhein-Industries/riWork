@@ -160,46 +160,42 @@ impl Render for TabMenu {
         };
         panel
             .children(
-                [
-                    "Rename…",
-                    "Move left",
-                    "Move right",
-                    "Close",
-                    "Cancel",
-                ]
-                .into_iter()
-                .enumerate()
-                .flat_map(|(index, label)| {
-                    let disabled = (index == 1 && self.left.is_none())
-                        || (index == 2 && self.right.is_none());
-                    let item = row(behavior::button_content(
-                        ("shared-tab-menu-action", index),
-                        label,
-                        label,
-                    ))
-                    .role(gpui::Role::MenuItem)
-                    .track_focus(&self.buttons[index])
-                    .disabled(disabled)
-                    .when(disabled, |item| item.text_color(rgb(colors.muted)))
-                    .on_click(cx.listener(move |menu, _, window, cx| match index {
-                        0 => {
-                            menu.rename = true;
-                            menu.input.read(cx).focus_handle(cx).focus(window, cx);
-                            cx.notify();
-                        }
-                        3 => cx.emit(Event::Close),
-                        1 | 2 => {
-                            if let Some(update) = if index == 1 { &menu.left } else { &menu.right }
-                            {
-                                cx.emit(Event::Update(update.clone()));
+                ["Rename…", "Move left", "Move right", "Close", "Cancel"]
+                    .into_iter()
+                    .enumerate()
+                    .flat_map(|(index, label)| {
+                        let disabled = (index == 1 && self.left.is_none())
+                            || (index == 2 && self.right.is_none());
+                        let item = row(behavior::button_content(
+                            ("shared-tab-menu-action", index),
+                            label,
+                            label,
+                        ))
+                        .role(gpui::Role::MenuItem)
+                        .track_focus(&self.buttons[index])
+                        .disabled(disabled)
+                        .when(disabled, |item| item.text_color(rgb(colors.muted)))
+                        .on_click(cx.listener(move |menu, _, window, cx| match index {
+                            0 => {
+                                menu.rename = true;
+                                menu.input.read(cx).focus_handle(cx).focus(window, cx);
+                                cx.notify();
                             }
-                        }
-                        _ => cx.emit(Event::Cancel),
-                    }))
-                    .into_any_element();
-                    let separator = matches!(index, 1 | 3 | 4).then(|| controls::menu_separator(colors));
-                    separator.into_iter().chain([item])
-                }),
+                            3 => cx.emit(Event::Close),
+                            1 | 2 => {
+                                if let Some(update) =
+                                    if index == 1 { &menu.left } else { &menu.right }
+                                {
+                                    cx.emit(Event::Update(update.clone()));
+                                }
+                            }
+                            _ => cx.emit(Event::Cancel),
+                        }))
+                        .into_any_element();
+                        let separator =
+                            matches!(index, 1 | 3 | 4).then(|| controls::menu_separator(colors));
+                        separator.into_iter().chain([item])
+                    }),
             )
             .into_any_element()
     }

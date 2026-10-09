@@ -68,7 +68,10 @@ pub enum PanelAction {
     SessionFilter(Filter),
     RefreshSessions,
     /// Open choices; rendering or filtering sessions never creates a chat.
-    NewChat { project: String, generation: u64 },
+    NewChat {
+        project: String,
+        generation: u64,
+    },
     Search,
     /// Empty the search field, from its clear button.
     ClearSearch,
@@ -1172,10 +1175,23 @@ pub fn render_panel<V: Render + 'static>(
         let project = data.project_id.to_owned();
         let generation = data.session_catalog_generation;
         toolbar = toolbar.child(
-            behavior::button("sessions-new-chat", "New chat…", controls::Button::Primary, colors)
-                .on_click(cx.listener(move |view, _, window, cx| {
-                    handler(view, PanelAction::NewChat { project: project.clone(), generation }, window, cx)
-                })),
+            behavior::button(
+                "sessions-new-chat",
+                "New chat…",
+                controls::Button::Primary,
+                colors,
+            )
+            .on_click(cx.listener(move |view, _, window, cx| {
+                handler(
+                    view,
+                    PanelAction::NewChat {
+                        project: project.clone(),
+                        generation,
+                    },
+                    window,
+                    cx,
+                )
+            })),
         );
         for filter in Filter::ALL {
             let handler = on_action.clone();

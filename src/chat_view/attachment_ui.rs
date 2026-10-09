@@ -8,8 +8,8 @@ use crate::{
     behavior_controls as behavior,
     chat::{
         attachments::{
-            Attachment, AttachmentKind, FILE_BYTES, Preview, RAW_TIFF_BYTES, SEND_COUNT, image_thumbnail,
-            normalize_clipboard_image,
+            Attachment, AttachmentKind, FILE_BYTES, Preview, RAW_TIFF_BYTES, SEND_COUNT,
+            image_thumbnail, normalize_clipboard_image,
         },
         client::Client,
     },
@@ -365,7 +365,11 @@ impl ChatView {
                         _ => None,
                     });
                 if let Err(error) = raw_image_admission(retained, image.bytes().len() as u64) {
-                    self.notices.set(super::notices::LocalKey::Attachment, crate::chat::model::NoticeLevel::Error, format!("Clipboard image was not added: {error}"));
+                    self.notices.set(
+                        super::notices::LocalKey::Attachment,
+                        crate::chat::model::NoticeLevel::Error,
+                        format!("Clipboard image was not added: {error}"),
+                    );
                     continue;
                 }
             }
@@ -428,9 +432,7 @@ impl ChatView {
         // Independent task: never waits for Ensure, a socket or host staging.
         let work = cx.background_executor().spawn(async move {
             let bytes = match local {
-                Local::Image(image) => {
-                    clipboard_image_bytes(&image).ok()?.into_owned()
-                }
+                Local::Image(image) => clipboard_image_bytes(&image).ok()?.into_owned(),
                 Local::File(path) => read_preview_bytes(&path)?,
             };
             image_thumbnail(&bytes).ok().map(|bytes| {

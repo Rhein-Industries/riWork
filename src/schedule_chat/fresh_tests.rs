@@ -45,7 +45,10 @@ fn accept_within(listener: &UnixListener) -> UnixStream {
                 return stream;
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(Instant::now() < end, "the scheduler never connected to the stand-in");
+                assert!(
+                    Instant::now() < end,
+                    "the scheduler never connected to the stand-in"
+                );
                 std::thread::sleep(Duration::from_millis(5));
             }
             Err(error) => panic!("stand-in accept failed: {error}"),

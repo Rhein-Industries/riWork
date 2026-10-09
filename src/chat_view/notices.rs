@@ -656,7 +656,10 @@ mod tests {
         assert_eq!(texts(&provider_banners(&t, &dismissed, 50)), ["close"]);
         assert!(provider_banners(&t, &dismissed, 100).is_empty());
         // The history keeps all of them, newest first.
-        assert_eq!(texts(&history(&t, usize::MAX)), ["close", "closed", "retrying"]);
+        assert_eq!(
+            texts(&history(&t, usize::MAX)),
+            ["close", "closed", "retrying"]
+        );
     }
 
     #[test]

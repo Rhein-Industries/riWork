@@ -371,4 +371,3 @@ fn the_flag_belongs_to_create_and_is_never_read_as_a_path() {
     ]);
     assert!(line.starts_with("riwork: already_exists: "), "{line}");
 }
-

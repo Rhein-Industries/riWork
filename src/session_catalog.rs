@@ -339,7 +339,10 @@ mod tests {
 
     pub fn chat(id: u128, provider: Provider, project: &str, state: ChatState) -> ChatInfo {
         ChatInfo {
-            parent_id: None, user_title: None, first_user_message: None, provider_title: None,
+            parent_id: None,
+            user_title: None,
+            first_user_message: None,
+            provider_title: None,
             id: uuid::Uuid::from_u128(id).to_string(),
             provider,
             project_id: Some(project.into()),

@@ -147,7 +147,13 @@ mod tests {
         let args = arguments(&request("tabs.open", json!({"project_id":"00000000-0000-4000-8000-000000000002","key":"shell:00000000-0000-4000-8000-000000000003"}))).unwrap();
         assert_eq!(&args[..2], &["tabs", "open"]);
         assert_eq!(args[4], "--key");
-        assert!(arguments(&request("tabs.open", json!({"project_id":"00000000-0000-4000-8000-000000000002","key":"invalid"}))).is_err());
+        assert!(
+            arguments(&request(
+                "tabs.open",
+                json!({"project_id":"00000000-0000-4000-8000-000000000002","key":"invalid"})
+            ))
+            .is_err()
+        );
     }
     #[test]
     fn tabs_update_arguments() {

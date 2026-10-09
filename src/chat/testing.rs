@@ -315,7 +315,10 @@ pub fn short_home() -> PathBuf {
 /// that `<root>/run/chat.sock` would exceed a Unix socket path's 103 bytes.
 pub fn private_socket_fixture_home() -> PathBuf {
     use std::os::unix::fs::DirBuilderExt;
-    let root = Path::new("/tmp").join(format!("rwcp-{}", &Uuid::new_v4().simple().to_string()[..12]));
+    let root = Path::new("/tmp").join(format!(
+        "rwcp-{}",
+        &Uuid::new_v4().simple().to_string()[..12]
+    ));
     std::fs::DirBuilder::new()
         .mode(0o700)
         .create(&root)

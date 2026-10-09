@@ -498,4 +498,3 @@ fn a_panicking_sync_does_not_block_the_project_forever() {
     assert!(outcome.is_err());
     assert!(gate.run("project", Duration::ZERO, || ()).is_some());
 }
-

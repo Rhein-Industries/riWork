@@ -42,16 +42,23 @@ pub(crate) struct StripShape {
 
 impl StripShape {
     fn same_place(&self, other: &Self) -> bool {
-        (self.width, self.tabs, self.selected, self.position, self.lead, self.own, self.fixed)
-            == (
-                other.width,
-                other.tabs,
-                other.selected,
-                other.position,
-                other.lead,
-                other.own,
-                other.fixed,
-            )
+        (
+            self.width,
+            self.tabs,
+            self.selected,
+            self.position,
+            self.lead,
+            self.own,
+            self.fixed,
+        ) == (
+            other.width,
+            other.tabs,
+            other.selected,
+            other.position,
+            other.lead,
+            other.own,
+            other.fixed,
+        )
     }
 }
 
@@ -532,7 +539,11 @@ impl Workspace {
                 selected: pane.tabs.get(pane.active).map(|tab| tab.id),
                 position,
                 lead: position.map_or(0, |at| {
-                    sessions[..at].iter().map(|i| width(*i)).sum::<f32>().round() as i32
+                    sessions[..at]
+                        .iter()
+                        .map(|i| width(*i))
+                        .sum::<f32>()
+                        .round() as i32
                 }),
                 own: position.map_or(0, |at| width(sessions[at]).round() as i32),
                 fixed: fixed.round() as i32,
