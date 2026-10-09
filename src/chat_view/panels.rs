@@ -35,6 +35,9 @@ pub(super) const ATTACHMENT_MENU_KEY: &str = "composer-attachment-menu";
 /// The padding inside the message box's menus and the height of their rows, in design
 /// points.
 const CHOICE_MENU_PADDING: f32 = 7.0;
+/// The message field's own padding above and below its text, in design points: with the
+/// card's padding it leaves the control row about 8 points from the card's edge.
+const COMPOSER_PAD_Y: f32 = 2.0;
 const CHOICE_ROW: f32 = 27.0;
 
 /// What a row of the model or effort menu does when it is clicked or chosen with ⏎.
@@ -2581,8 +2584,10 @@ impl ChatView {
         // One line of the box: its text's line box, its padding and its hairline. Beside the
         // box the controls are lifted to sit centered on its last line, however many lines
         // the draft has.
-        let line = ui_text::space(widgets::FIELD_PAD_Y) * 2. + widgets::field_line() + px(2.);
-        let lift = ((line - side) / 2.).max(px(0.));
+        let line = ui_text::space(COMPOSER_PAD_Y) * 2. + widgets::field_line() + px(2.);
+        // Negative when the controls are taller than a line: they reach a little into the
+        // card's padding rather than push the field taller.
+        let lift = (line - side) / 2.;
         let attach = div()
             .flex_none()
             .debug_selector(|| "composer-attach".into())
@@ -2888,7 +2893,7 @@ impl ChatView {
         // Beside Attach (`inline`) the text starts one gap after it, as every control of the
         // box is one gap from the next; over the control row it is inset as far from the
         // card's edge as from its top.
-        .py(ui_text::space(widgets::FIELD_PAD_Y))
+        .py(ui_text::space(COMPOSER_PAD_Y))
         .px(if inline {
             px(0.0)
         } else {
@@ -2907,7 +2912,7 @@ impl ChatView {
             .id("chat-composer-shell")
             .relative()
             .w_full()
-            .min_h(ui_text::space(widgets::FIELD_PAD_Y) * 2. + widgets::field_line() * 2. + px(2.))
+            .min_h(ui_text::space(COMPOSER_PAD_Y) * 2. + widgets::field_line() * 2. + px(2.))
             .cursor_text()
             .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
                 composer.read(cx).focus_handle(cx).focus(window, cx);
@@ -3331,7 +3336,7 @@ mod tests {
                     // Beside the field the controls sit on its last line of text, inside its
                     // hairline.
                     let line =
-                        ui_text::space(widgets::FIELD_PAD_Y) + widgets::field_line() / 2. + px(1.0);
+                        ui_text::space(COMPOSER_PAD_Y) + widgets::field_line() / 2. + px(1.0);
                     assert!(
                         (slot.center().y + line).abs() < px(1.0),
                         "{design:?}: the controls are centered {:?} above the field's bottom",
@@ -3346,9 +3351,8 @@ mod tests {
                     })
                     .unwrap()
                 };
-                let two_lines = ui_text::space(widgets::FIELD_PAD_Y) * 2.
-                    + widgets::field_line() * 2.
-                    + px(2.0);
+                let two_lines =
+                    ui_text::space(COMPOSER_PAD_Y) * 2. + widgets::field_line() * 2. + px(2.0);
                 let empty = field(cx);
                 assert!(
                     (empty.size.height - two_lines).abs() < px(0.5),
