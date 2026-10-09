@@ -29,8 +29,36 @@ use super::{
 
 /// The chat header's inset and control gap, shared with the message box (see `composer`).
 use super::composer::{BAR_GAP, BAR_INSET};
+use super::usage_chip::Detail;
 /// The space between the message box's edge and its text, clear of its round corners.
 const FIELD_INSET: f32 = 12.0;
+
+/// The chat header's measured pieces (see `toolbar`).
+const SLOT_DISPLAY: usize = 0;
+const SLOT_THREAD: usize = 6;
+const SLOT_MORE: usize = 7;
+
+/// A header control that folds into ⋯ when row 1 has no room for it, last first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Fold {
+    Mode,
+    Model,
+    Effort,
+    Fast,
+    Compact,
+}
+
+impl Fold {
+    fn slot(self) -> usize {
+        match self {
+            Fold::Mode => 1,
+            Fold::Model => 2,
+            Fold::Effort => 3,
+            Fold::Fast => 4,
+            Fold::Compact => 5,
+        }
+    }
+}
 
 fn id(parts: impl Into<String>) -> ElementId {
     ElementId::Name(SharedString::from(parts.into()))
@@ -422,227 +450,416 @@ impl ChatView {
                             view.toggle_menu(menu, window, cx)
                         })),
                 )
-                .children(open.then(|| self.menu_popover(menu, look, window, cx)))
+                .children(open.then(|| self.menu_popover(menu, &[], false, look, window, cx)))
         };
 
-        div()
-            .w_full()
+        let display = div().child(
+            widgets::segments("chat-display-mode", "Transcript display", look)
+                .children(
+                    [super::DisplayMode::Normal, super::DisplayMode::Verbose]
+                        .into_iter()
+                        .map(|mode| {
+                            widgets::segment(
+                                if mode == super::DisplayMode::Normal {
+                                    "chat-display-normal"
+                                } else {
+                                    "chat-display-verbose"
+                                },
+                                mode.label(),
+                                self.display_mode == mode,
+                                look,
+                            )
+                            .on_change({
+                                let owner = cx.weak_entity();
+                                move |_, _, _, cx| {
+                                    let _ =
+                                        owner.update(cx, |view, cx| view.choose_display(mode, cx));
+                                }
+                            })
+                        }),
+                )
+                .child(tooltip::anchor(
+                    "Normal shows results · Verbose shows all activity",
+                    TipLook::Control,
+                )),
+        );
+        let mode_picker = picker(
+            "chat-mode",
+            toolbar::mode_label(mode).to_owned(),
+            Menu::Mode,
+            cx,
+        );
+        let model_picker = picker(
+            "chat-model",
+            placeholder(toolbar::model_label(models, model.as_deref()), "model"),
+            Menu::Model,
+            cx,
+        );
+        let effort_picker =
+            toolbar::effort_available(models, model.as_deref(), provider).then(|| {
+                // An effort is a lowercase word; Native starts it with a capital.
+                picker(
+                    "chat-effort",
+                    widgets::sentence(
+                        &toolbar::effort_label(models, model.as_deref(), effort.as_deref()),
+                        look,
+                    ),
+                    Menu::Effort,
+                    cx,
+                )
+            });
+        let fast_toggle = toolbar::fast_available(models, model.as_deref()).then(|| {
+            // Native's is a capsule toggle with the bolt symbol: grey while off, and in
+            // the working color with the bolt filled while on, as the mic shows it listens.
+            let toggle = if look.native {
+                widgets::toggle_capsule("chat-fast", "Fast", fast, look)
+                    .pl(ui_text::space(8.0))
+                    .child(icons::symbol(
+                        if fast { "bolt.fill" } else { "bolt" },
+                        10.0,
+                        None,
+                    ))
+                    .flex_row_reverse()
+                    .when(fast, |toggle| {
+                        toggle
+                            .bg(rgb(look.tint(colors.working, 0.18)))
+                            .text_color(rgb(colors.working))
+                    })
+                    .when(!fast, |toggle| toggle.text_color(rgb(colors.muted)))
+                    .cursor_pointer()
+                    .hover(move |style| {
+                        style.bg(rgb(if fast {
+                            look.tint(colors.working, 0.28)
+                        } else {
+                            Button::Secondary.hover(colors)
+                        }))
+                    })
+            } else {
+                widgets::toggle_button(
+                    "chat-fast",
+                    toolbar::fast_label(fast),
+                    fast.then_some(colors.cyan),
+                    fast,
+                    look,
+                )
+            };
+            div()
+                .relative()
+                .child(toggle.on_change({
+                    let owner = cx.weak_entity();
+                    move |_, _, _, cx| {
+                        let _ = owner.update(cx, |view, cx| view.toggle_fast(cx));
+                    }
+                }))
+                .child(tooltip::anchor(
+                    "Fast mode answers sooner and uses more of your limits",
+                    TipLook::Control,
+                ))
+        });
+        let compact = div().child(if idle {
+            button("chat-compact", "Compact", None, look)
+                .on_click(cx.listener(|view, _, _, cx| view.compact(cx)))
+                .into_any_element()
+        } else {
+            dimmed("chat-compact", "Compact", look).into_any_element()
+        });
+        let thread = thread.map(|thread| {
+            let key = "thread".to_owned();
+            let copied = self.copied.as_deref() == Some("thread");
+            let whole = thread.clone();
+            // Native's is a capsule with the id in the monospace accent and a copy symbol.
+            let copy = if look.native {
+                let id = if copied {
+                    div().child("Copied")
+                } else {
+                    div()
+                        .font_family(ui_text::mono_family())
+                        .child(toolbar::short_thread_id(&thread))
+                };
+                controls::button(
+                    crate::behavior_controls::button_content(
+                        "chat-thread",
+                        "Copy provider thread ID",
+                        id,
+                    )
+                    .line_height(gpui::relative(1.618_034))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(4.0))
+                    .py(ui_text::space(3.0))
+                    .text_size(ui_text::text(10.0))
+                    .child(icons::symbol(
+                        if copied { "checkmark" } else { "doc.on.doc" },
+                        9.0,
+                        None,
+                    )),
+                    Button::Secondary,
+                    colors,
+                )
+                .cursor_pointer()
+                .hover(move |style| style.bg(rgb(Button::Secondary.hover(colors))))
+            } else {
+                button(
+                    "chat-thread",
+                    if copied {
+                        "copied".to_owned()
+                    } else {
+                        format!("# {} ⧉", toolbar::short_thread_id(&thread))
+                    },
+                    None,
+                    look,
+                )
+            };
+            div()
+                .relative()
+                .child(
+                    copy.accessibility_label(if copied {
+                        "Provider thread ID copied"
+                    } else {
+                        "Copy provider thread ID"
+                    })
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.copy(key.clone(), whole.clone(), cx);
+                    })),
+                )
+                .child(tooltip::anchor(
+                    format!("Copy thread id {thread}"),
+                    TipLook::Control,
+                ))
+        });
+        // Row 1 never wraps: what does not fit beside ⋯ goes into its menu, from the row's end
+        // (Compact, Fast, Effort, Model, Mode). The usage and the session id share it, before ⋯,
+        // when they fit; otherwise they take a row of their own, the session id at its far end
+        // under ⋯. Each piece's width is
+        // its own, not the layout's, so this settles after one redraw. A folded one keeps the
+        // width it was last drawn at while it shows the same; one whose value has changed since
+        // counts as narrow, comes back and is measured again.
+        let widths = self.header_widths.clone();
+        let keys: [u64; 8] = {
+            use std::hash::{Hash, Hasher};
+            let key = |shows: &str| {
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                (shows, ui_text::scale().to_bits(), look.native).hash(&mut hasher);
+                hasher.finish()
+            };
+            [
+                key(""),
+                key(toolbar::mode_label(mode)),
+                key(&toolbar::model_label(models, model.as_deref())),
+                key(&toolbar::effort_label(
+                    models,
+                    model.as_deref(),
+                    effort.as_deref(),
+                )),
+                key(toolbar::fast_label(fast)),
+                key(""),
+                key(info
+                    .and_then(|info| info.provider_thread_id.as_deref())
+                    .unwrap_or("")),
+                key(""),
+            ]
+        };
+        let last = {
+            let measured = widths.get();
+            std::array::from_fn::<f32, 8, _>(|slot| {
+                let (width, key) = measured[slot];
+                if key == keys[slot] { width } else { 0. }
+            })
+        };
+        let space = |base: f32| f32::from(ui_text::space(base));
+        let gap = space(BAR_GAP);
+        let inner = self.composer_width.get() - 2. * space(BAR_INSET);
+        let foldable = [
+            (Fold::Mode, true),
+            (Fold::Model, true),
+            (Fold::Effort, effort_picker.is_some()),
+            (Fold::Fast, fast_toggle.is_some()),
+            (Fold::Compact, true),
+        ]
+        .into_iter()
+        .filter_map(|(fold, shown)| shown.then_some(fold))
+        .collect::<Vec<_>>();
+        let row_width = |count: usize| {
+            last[SLOT_DISPLAY]
+                + foldable[..count]
+                    .iter()
+                    .map(|fold| gap + last[fold.slot()])
+                    .sum::<f32>()
+        };
+        let thread_room = if thread.is_some() {
+            gap + last[SLOT_THREAD]
+        } else {
+            0.
+        };
+        let more_room = gap + last[SLOT_MORE];
+        // On one line the usage has what the controls, the spacer, the session id and ⋯ leave;
+        // it leaves out its cost to stay there rather than take a row of its own.
+        let beside_usage = row_width(foldable.len()) + gap + thread_room + more_room;
+        let usage_room = inner - beside_usage - gap;
+        let one_line = inner <= 0.
+            || match self.usage_width(Detail::NoCost, window) {
+                Some(usage) => usage <= usage_room + 0.5,
+                None => beside_usage <= inner + 0.5,
+            };
+        let kept = if one_line {
+            foldable.len()
+        } else {
+            (0..=foldable.len())
+                .rev()
+                .find(|count| row_width(*count) + more_room <= inner + 0.5)
+                .unwrap_or(0)
+        };
+        let folded = foldable[kept..].to_vec();
+        // A folded picker's menu opens from ⋯, as the rest of its menu does.
+        let from_more = |menu: Menu| match menu {
+            Menu::Mode => folded.contains(&Fold::Mode),
+            Menu::Model => folded.contains(&Fold::Model),
+            Menu::Effort => folded.contains(&Fold::Effort),
+            Menu::More | Menu::ConfirmDelete => true,
+        };
+        let more_menu = self.menu.filter(|menu| from_more(*menu));
+        let folded_menus = [Menu::Mode, Menu::Model, Menu::Effort]
+            .into_iter()
+            .filter(|menu| from_more(*menu))
+            .collect::<Vec<_>>();
+        let more = div()
+            .flex_none()
+            .relative()
+            .child({
+                let open = more_menu.is_some();
+                if look.native {
+                    let more = widgets::symbol_button("chat-more", "ellipsis", "More", look);
+                    if open {
+                        more.text_color(rgb(colors.text)).bg(rgb(colors.divider))
+                    } else {
+                        more
+                    }
+                } else {
+                    button("chat-more", "⋯", open.then_some(colors.cyan), look)
+                        .accessibility_label("More chat actions")
+                }
+                .aria_expanded(open)
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    // A folded picker's menu hangs from ⋯ too: pressing ⋯ closes it rather
+                    // than opening the rest, also when the press outside it already has.
+                    let open = view.menu.is_some_and(|menu| folded_menus.contains(&menu));
+                    let just_closed = view.menu.is_none()
+                        && view.menu_closed.is_some_and(|(menu, at)| {
+                            folded_menus.contains(&menu)
+                                && at.elapsed() < Duration::from_millis(300)
+                        });
+                    if open || just_closed {
+                        view.menu_closed = None;
+                        view.close_menu(cx);
+                    } else {
+                        view.toggle_menu(Menu::More, window, cx);
+                    }
+                }))
+            })
+            .children(
+                more_menu.map(|menu| self.menu_popover(menu, &folded, true, look, window, cx)),
+            );
+
+        let measured = |slot: usize, piece: gpui::Div| {
+            let widths = widths.clone();
+            let key = keys[slot];
+            piece.relative().child(
+                canvas(
+                    move |bounds, window, _| {
+                        let mut all = widths.get();
+                        let width = f32::from(bounds.size.width);
+                        if (all[slot].0 - width).abs() >= 0.5 || all[slot].1 != key {
+                            all[slot] = (width, key);
+                            widths.set(all);
+                            window.refresh();
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .w_full()
+                .h(px(0.)),
+            )
+        };
+        let controls = div()
             .flex()
-            .flex_wrap()
             .items_center()
             .gap(ui_text::space(BAR_GAP))
+            .child(measured(SLOT_DISPLAY, display.flex_none()))
+            .children(
+                [
+                    (Fold::Mode, Some(mode_picker)),
+                    (Fold::Model, Some(model_picker)),
+                    (Fold::Effort, effort_picker),
+                    (Fold::Fast, fast_toggle),
+                    (Fold::Compact, Some(compact)),
+                ]
+                .into_iter()
+                .filter(|(fold, _)| !folded.contains(fold))
+                .filter_map(|(fold, piece)| {
+                    piece.map(|piece| measured(fold.slot(), piece.flex_none()))
+                }),
+            );
+        let usage = self
+            .usage_group(
+                if one_line {
+                    (inner > 0.).then_some(usage_room + 0.5)
+                } else {
+                    Some(inner - thread_room)
+                },
+                look,
+                window,
+                cx,
+            )
+            .map(|usage| div().flex_none().child(usage));
+        let thread = thread.map(|thread| measured(SLOT_THREAD, thread.flex_none()));
+        let more = measured(SLOT_MORE, more);
+
+        let bar = div()
+            .w_full()
             .px(ui_text::space(BAR_INSET))
             .py(ui_text::space(5.0))
             .border_b_1()
             .border_color(rgb(colors.divider))
-            .bg(rgb(colors.panel))
-            .child(
-                widgets::segments("chat-display-mode", "Transcript display", look)
-                    .children(
-                        [super::DisplayMode::Normal, super::DisplayMode::Verbose]
-                            .into_iter()
-                            .map(|mode| {
-                                widgets::segment(
-                                    if mode == super::DisplayMode::Normal {
-                                        "chat-display-normal"
-                                    } else {
-                                        "chat-display-verbose"
-                                    },
-                                    mode.label(),
-                                    self.display_mode == mode,
-                                    look,
-                                )
-                                .on_change({
-                                    let owner = cx.weak_entity();
-                                    move |_, _, _, cx| {
-                                        let _ = owner
-                                            .update(cx, |view, cx| view.choose_display(mode, cx));
-                                    }
-                                })
-                            }),
-                    )
-                    .child(tooltip::anchor(
-                        "Normal shows results · Verbose shows all activity",
-                        TipLook::Control,
-                    )),
-            )
-            .child(picker(
-                "chat-mode",
-                toolbar::mode_label(mode).to_owned(),
-                Menu::Mode,
-                cx,
-            ))
-            .child(picker(
-                "chat-model",
-                placeholder(toolbar::model_label(models, model.as_deref()), "model"),
-                Menu::Model,
-                cx,
-            ))
-            .children(
-                toolbar::effort_available(models, model.as_deref(), provider).then(|| {
-                    // An effort is a lowercase word; Native starts it with a capital.
-                    picker(
-                        "chat-effort",
-                        widgets::sentence(
-                            &toolbar::effort_label(models, model.as_deref(), effort.as_deref()),
-                            look,
-                        ),
-                        Menu::Effort,
-                        cx,
-                    )
-                }),
-            )
-            .children(toolbar::fast_available(models, model.as_deref()).then(|| {
-                // Native's is a capsule toggle with the bolt symbol: grey while off, and in
-                // the working color with the bolt filled while on, as the mic shows it listens.
-                let toggle = if look.native {
-                    widgets::toggle_capsule("chat-fast", "Fast", fast, look)
-                        .pl(ui_text::space(8.0))
-                        .child(icons::symbol(
-                            if fast { "bolt.fill" } else { "bolt" },
-                            10.0,
-                            None,
-                        ))
-                        .flex_row_reverse()
-                        .when(fast, |toggle| {
-                            toggle
-                                .bg(rgb(look.tint(colors.working, 0.18)))
-                                .text_color(rgb(colors.working))
-                        })
-                        .when(!fast, |toggle| toggle.text_color(rgb(colors.muted)))
-                        .cursor_pointer()
-                        .hover(move |style| {
-                            style.bg(rgb(if fast {
-                                look.tint(colors.working, 0.28)
-                            } else {
-                                Button::Secondary.hover(colors)
-                            }))
-                        })
-                } else {
-                    widgets::toggle_button(
-                        "chat-fast",
-                        toolbar::fast_label(fast),
-                        fast.then_some(colors.cyan),
-                        fast,
-                        look,
-                    )
-                };
+            .bg(rgb(colors.panel));
+        if one_line {
+            bar.flex()
+                .items_center()
+                .gap(ui_text::space(BAR_GAP))
+                .child(controls.flex_none())
+                .child(div().flex_1())
+                .children(usage)
+                .children(thread)
+                .child(more)
+                .into_any_element()
+        } else {
+            let second = (usage.is_some() || thread.is_some()).then(|| {
                 div()
-                    .relative()
-                    .child(toggle.on_change({
-                        let owner = cx.weak_entity();
-                        move |_, _, _, cx| {
-                            let _ = owner.update(cx, |view, cx| view.toggle_fast(cx));
-                        }
-                    }))
-                    .child(tooltip::anchor(
-                        "Fast mode answers sooner and uses more of your limits",
-                        TipLook::Control,
-                    ))
-            }))
-            .child(if idle {
-                button("chat-compact", "Compact", None, look)
-                    .on_click(cx.listener(|view, _, _, cx| view.compact(cx)))
-                    .into_any_element()
-            } else {
-                dimmed("chat-compact", "Compact", look).into_any_element()
-            })
-            .child(div().flex_1())
-            .children(self.usage_group(look, window, cx))
-            .children(thread.map(|thread| {
-                let key = "thread".to_owned();
-                let copied = self.copied.as_deref() == Some("thread");
-                let whole = thread.clone();
-                // Native's is a capsule with the id in the monospace accent and a copy symbol.
-                let copy = if look.native {
-                    let id = if copied {
-                        div().child("Copied")
-                    } else {
-                        div()
-                            .font_family(ui_text::mono_family())
-                            .child(toolbar::short_thread_id(&thread))
-                    };
-                    controls::button(
-                        crate::behavior_controls::button_content(
-                            "chat-thread",
-                            "Copy provider thread ID",
-                            id,
-                        )
-                        .line_height(gpui::relative(1.618_034))
-                        .flex_none()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(BAR_GAP))
+                    .children(usage.map(|usage| usage.flex_initial().min_w_0()))
+                    .children(thread.map(|thread| thread.ml_auto()))
+            });
+            bar.flex()
+                .flex_col()
+                .gap(ui_text::space(BAR_GAP))
+                .child(
+                    div()
+                        .w_full()
                         .flex()
                         .items_center()
-                        .gap(ui_text::space(4.0))
-                        .py(ui_text::space(3.0))
-                        .text_size(ui_text::text(10.0))
-                        .child(icons::symbol(
-                            if copied { "checkmark" } else { "doc.on.doc" },
-                            9.0,
-                            None,
-                        )),
-                        Button::Secondary,
-                        colors,
-                    )
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(rgb(Button::Secondary.hover(colors))))
-                } else {
-                    button(
-                        "chat-thread",
-                        if copied {
-                            "copied".to_owned()
-                        } else {
-                            format!("# {} ⧉", toolbar::short_thread_id(&thread))
-                        },
-                        None,
-                        look,
-                    )
-                };
-                div()
-                    .relative()
-                    .child(
-                        copy.accessibility_label(if copied {
-                            "Provider thread ID copied"
-                        } else {
-                            "Copy provider thread ID"
-                        })
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.copy(key.clone(), whole.clone(), cx);
-                        })),
-                    )
-                    .child(tooltip::anchor(
-                        format!("Copy thread id {thread}"),
-                        TipLook::Control,
-                    ))
-            }))
-            .child(
-                div()
-                    .relative()
-                    .child({
-                        let open = matches!(self.menu, Some(Menu::More | Menu::ConfirmDelete));
-                        if look.native {
-                            let more =
-                                widgets::symbol_button("chat-more", "ellipsis", "More", look);
-                            if open {
-                                more.text_color(rgb(colors.text)).bg(rgb(colors.divider))
-                            } else {
-                                more
-                            }
-                        } else {
-                            button("chat-more", "⋯", open.then_some(colors.cyan), look)
-                                .accessibility_label("More chat actions")
-                        }
-                        .aria_expanded(open)
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            view.toggle_menu(Menu::More, window, cx);
-                        }))
-                    })
-                    .children(
-                        matches!(self.menu, Some(Menu::More | Menu::ConfirmDelete)).then(|| {
-                            self.menu_popover(self.menu.unwrap_or(Menu::More), look, window, cx)
-                        }),
-                    ),
-            )
-            .into_any_element()
+                        .gap(ui_text::space(BAR_GAP))
+                        .child(controls.flex_initial().min_w_0().overflow_hidden())
+                        .child(more.ml_auto()),
+                )
+                .children(second)
+                .into_any_element()
+        }
     }
 
     /// The ⋯ menu's popover alone, for timing its build.
@@ -653,13 +870,16 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let look = Look::of(cx);
-        self.menu_popover(Menu::More, look, window, cx)
+        self.menu_popover(Menu::More, &[], true, look, window, cx)
     }
 
-    /// The popover under a toolbar button.
+    /// The popover under a toolbar button, or under ⋯ (`from_more`) with the controls the
+    /// header `folded` into it leading its menu.
     fn menu_popover(
         &self,
         menu: Menu,
+        folded: &[Fold],
+        from_more: bool,
         look: Look,
         window: &Window,
         cx: &mut Context<Self>,
@@ -822,50 +1042,139 @@ impl ChatView {
                 }));
                 rows
             }
-            Menu::More => vec![
-                row(
-                    "chat-notice-history".into(),
-                    format!("Notices ({})", self.notices.count(&self.model.transcript)),
-                    Some("Every notice of this chat, dismissed and resolved ones too"),
-                    self.notices.history,
-                )
-                .on_click(cx.listener(|view, _, _, cx| view.toggle_notice_history(cx)))
-                .into_any_element(),
-                row(
-                    "hand-off-chat".into(),
-                    "Hand off…".into(),
-                    Some("Continues this conversation in a new shell or chat"),
-                    false,
-                )
-                .on_click(cx.listener(|view, _, _, cx| {
-                    view.menu = None;
-                    view.hand_off(cx);
-                    cx.notify();
-                }))
-                .into_any_element(),
-                row(
-                    "stop-chat".into(),
-                    "Stop chat".into(),
-                    Some("Ends the agent's process; the next message resumes it"),
-                    false,
-                )
-                .on_click(cx.listener(|view, _, _, cx| {
-                    view.menu = None;
-                    view.stop_chat(cx);
-                }))
-                .into_any_element(),
-                row(
-                    "delete-chat".into(),
-                    "Delete chat…".into(),
-                    Some("Removes the chat and its history"),
-                    false,
-                )
-                .on_click(cx.listener(|view, _, _, cx| {
-                    view.menu = Some(Menu::ConfirmDelete);
-                    cx.notify();
-                }))
-                .into_any_element(),
-            ],
+            Menu::More => {
+                // What the header folded in, with its value: a picker opens its own menu
+                // here, Fast and Compact act at once.
+                let models = &self.model.transcript.models;
+                let model = info.and_then(|info| info.model.as_deref());
+                let effort = info.and_then(|info| info.effort.as_deref());
+                let fast = info.is_some_and(|info| info.fast);
+                let idle = matches!(self.model.transcript.state, ChatState::Idle);
+                let open = |menu: Menu| {
+                    cx.listener(move |view: &mut Self, _: &gpui::ClickEvent, window, cx| {
+                        view.toggle_menu(menu, window, cx)
+                    })
+                };
+                let mut rows = folded
+                    .iter()
+                    .map(|fold| match fold {
+                        Fold::Mode => row(
+                            "more-mode".into(),
+                            format!(
+                                "Approval mode: {}",
+                                toolbar::mode_label(
+                                    info.map(|info| info.approval_mode).unwrap_or_default()
+                                )
+                            ),
+                            None,
+                            false,
+                        )
+                        .aria_expanded(false)
+                        .on_click(open(Menu::Mode)),
+                        Fold::Model => row(
+                            "more-model".into(),
+                            format!("Model: {}", toolbar::model_label(models, model)),
+                            None,
+                            false,
+                        )
+                        .aria_expanded(false)
+                        .on_click(open(Menu::Model)),
+                        Fold::Effort => row(
+                            "more-effort".into(),
+                            format!(
+                                "Effort: {}",
+                                widgets::sentence(
+                                    &toolbar::effort_label(models, model, effort),
+                                    look
+                                )
+                            ),
+                            None,
+                            false,
+                        )
+                        .aria_expanded(false)
+                        .on_click(open(Menu::Effort)),
+                        Fold::Fast => row(
+                            "more-fast".into(),
+                            "Fast mode".into(),
+                            Some("Answers sooner and uses more of your limits"),
+                            fast,
+                        )
+                        .role(gpui::Role::MenuItemCheckBox)
+                        .aria_toggled(if fast {
+                            gpui::accesskit::Toggled::True
+                        } else {
+                            gpui::accesskit::Toggled::False
+                        })
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.menu = None;
+                            view.toggle_fast(cx);
+                            cx.notify();
+                        })),
+                        Fold::Compact => row(
+                            "more-compact".into(),
+                            "Compact".into(),
+                            (!idle).then_some("Once the agent has finished"),
+                            false,
+                        )
+                        .disabled(!idle)
+                        .when(!idle, |row| row.text_color(rgb(colors.muted)))
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.menu = None;
+                            view.compact(cx);
+                            cx.notify();
+                        })),
+                    })
+                    .map(IntoElement::into_any_element)
+                    .collect::<Vec<_>>();
+                if !rows.is_empty() {
+                    rows.push(controls::menu_separator(colors));
+                }
+                rows.extend([
+                    row(
+                        "chat-notice-history".into(),
+                        format!("Notices ({})", self.notices.count(&self.model.transcript)),
+                        Some("Every notice of this chat, dismissed and resolved ones too"),
+                        self.notices.history,
+                    )
+                    .on_click(cx.listener(|view, _, _, cx| view.toggle_notice_history(cx)))
+                    .into_any_element(),
+                    row(
+                        "hand-off-chat".into(),
+                        "Hand off…".into(),
+                        Some("Continues this conversation in a new shell or chat"),
+                        false,
+                    )
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.menu = None;
+                        view.hand_off(cx);
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+                    row(
+                        "stop-chat".into(),
+                        "Stop chat".into(),
+                        Some("Ends the agent's process; the next message resumes it"),
+                        false,
+                    )
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.menu = None;
+                        view.stop_chat(cx);
+                    }))
+                    .into_any_element(),
+                    row(
+                        "delete-chat".into(),
+                        "Delete chat…".into(),
+                        Some("Removes the chat and its history"),
+                        false,
+                    )
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.menu = Some(Menu::ConfirmDelete);
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+                ]);
+                rows
+            }
             Menu::ConfirmDelete => vec![
                 div()
                     .px(ui_text::space(10.0))
@@ -906,7 +1215,16 @@ impl ChatView {
             ],
         };
         // The last button of the toolbar opens its menu toward the left, into the window.
-        let toward_left = matches!(menu, Menu::More | Menu::ConfirmDelete);
+        let toward_left = from_more;
+        // Never wider than the chat's header, so in a narrow chat it stays inside it.
+        let room = px(self.composer_width.get() - 2. * f32::from(ui_text::space(BAR_INSET)));
+        let fits = |width: f32| {
+            if room > px(0.) {
+                ui_text::space(width).min(room)
+            } else {
+                ui_text::space(width)
+            }
+        };
         let popover = div()
             .id("chat-choices-popover")
             .absolute()
@@ -914,13 +1232,14 @@ impl ChatView {
             .when(toward_left, |menu| menu.right(px(0.0)))
             .when(!toward_left, |menu| menu.left(px(0.0)))
             .mt(ui_text::space(3.0))
-            .min_w(ui_text::space(220.0))
-            .max_w(ui_text::space(340.0))
+            .min_w(fits(220.0))
+            .max_w(fits(340.0))
             .py(ui_text::space(4.0))
             .rounded(px(4.0))
             .border_1()
             .border_color(rgb(colors.magenta))
-            .bg(rgb(colors.panel_active));
+            .bg(rgb(colors.panel_active))
+            .test_support();
         deferred(
             controls::native(popover, |menu| controls::menu(menu, colors))
                 .occlude()

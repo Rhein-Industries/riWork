@@ -467,7 +467,8 @@ fn the_meter_fits_a_narrow_chat_by_leaving_out_its_cost(cx: &mut TestAppContext)
     let start = 1_800_000_000;
     notices::TEST_NOW.with(|now| now.set(Some(start)));
     let mut widths = Vec::new();
-    for width in [900.0_f32, 520.0, 360.0, 200.0] {
+    // The usage has its own row in a narrow chat, beside no session id here.
+    for width in [900.0_f32, 360.0, 170.0, 120.0] {
         let (handle, view, _recording) = super::editor_tests::mount_sized(
             cx,
             HostConfig {
@@ -526,6 +527,207 @@ fn the_meter_fits_a_narrow_chat_by_leaving_out_its_cost(cx: &mut TestAppContext)
     );
     assert!(widths[3] < widths[0], "{widths:?}");
     notices::TEST_NOW.with(|now| now.set(None));
+}
+
+/// The header at `width`: what row 1 shows, what ⋯ holds, and the pieces' bounds.
+struct Header {
+    shown: Vec<&'static str>,
+    folded: Vec<&'static str>,
+    first: gpui::Bounds<gpui::Pixels>,
+    more: gpui::Bounds<gpui::Pixels>,
+    usage: gpui::Bounds<gpui::Pixels>,
+    thread: gpui::Bounds<gpui::Pixels>,
+}
+
+fn header_at(cx: &mut TestAppContext, width: f32) -> Header {
+    let (handle, view, _recording) = super::editor_tests::mount_sized(
+        cx,
+        HostConfig {
+            ensure: std::sync::Arc::new(|| Err("fixture staging is disabled".into())),
+        },
+        width,
+    );
+    view.update(cx, |view, cx| {
+        view.model.link = state::Link::Live;
+        let mut info = super::testing::info("chat");
+        info.provider_thread_id = Some("cc2091da-0000-4000-8000-feedfacecafe".into());
+        info.model = Some("sol".into());
+        view.model.transcript.apply(&ChatEvent::Info { info });
+        view.model.transcript.apply(&ChatEvent::Models {
+            models: vec![
+                serde_json::from_value(serde_json::json!({
+                    "id": "sol", "name": "gpt-5.5", "efforts": ["low", "high"],
+                    "default_effort": "high", "supports_fast": true
+                }))
+                .unwrap(),
+            ],
+        });
+        view.model.transcript.apply(&ChatEvent::Usage {
+            usage: crate::chat::model::Usage {
+                input_tokens: 150_000,
+                output_tokens: 20_000,
+                cached_input_tokens: 0,
+                context_window: Some(200_000),
+                context_used: Some(72_000),
+                cost_usd: Some(1.25),
+            },
+        });
+        cx.notify();
+    });
+    let controls = [
+        ("chat-mode", "more-mode"),
+        ("chat-model", "more-model"),
+        ("chat-effort", "more-effort"),
+        ("chat-fast", "more-fast"),
+        ("chat-compact", "more-compact"),
+    ];
+    let header = cx
+        .update_window(handle.into(), |_, window, cx| {
+            for _ in 0..4 {
+                window.render_frame(cx);
+            }
+            let shown = controls
+                .iter()
+                .filter(|(id, _)| window.try_find(*id).is_some())
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>();
+            Header {
+                shown,
+                folded: Vec::new(),
+                first: window.find("chat-display-normal").bounds(),
+                more: window.find("chat-more").bounds(),
+                usage: window.find("chat-usage-group").bounds(),
+                thread: window.find("chat-thread").bounds(),
+            }
+        })
+        .unwrap();
+    // The ones row 1 has no room for are in ⋯, with their values.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("chat-more", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let folded = cx
+        .update_window(handle.into(), |_, window, _| {
+            // The menu stays inside the chat, however narrow.
+            let menu = window.find("chat-choices-popover").bounds();
+            assert!(
+                menu.left() >= px(0.) && menu.right() <= px(width),
+                "{width}: {menu:?}"
+            );
+            controls
+                .iter()
+                .filter(|(_, row)| window.try_find(*row).is_some())
+                .map(|(_, row)| *row)
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+    // A folded picker opens its menu from ⋯, and pressing ⋯ again closes it.
+    if folded.contains(&"more-model") {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("more-model", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        view.read_with(cx, |view, _| assert_eq!(view.menu, Some(Menu::Model)));
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("chat-more", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        view.read_with(cx, |view, _| assert_eq!(view.menu, None));
+    }
+    Header { folded, ..header }
+}
+
+#[gpui::test]
+fn the_header_is_one_row_of_controls_ending_in_more_and_folds_the_rest_into_it(
+    cx: &mut TestAppContext,
+) {
+    let middle = |b: gpui::Bounds<gpui::Pixels>| b.top() + b.size.height / 2.;
+    let order = ["mode", "model", "effort", "fast", "compact"];
+    let mut folds = Vec::new();
+    for width in [900.0_f32, 760.0, 520.0, 330.0, 230.0] {
+        let header = header_at(cx, width);
+        let Header {
+            first,
+            more,
+            usage,
+            thread,
+            ..
+        } = header;
+        let what = format!(
+            "{width} px: shown {:?}, folded {:?}, more {more:?}, usage {usage:?}",
+            header.shown, header.folded
+        );
+        // Each control is either on row 1 or in ⋯, and the folded ones are the row's end:
+        // Compact first, then Fast, Effort, Model.
+        assert_eq!(
+            header.shown.len() + header.folded.len(),
+            order.len(),
+            "{what}"
+        );
+        let kept = header.shown.len();
+        assert!(
+            header
+                .shown
+                .iter()
+                .zip(order)
+                .all(|(id, name)| id.ends_with(name)),
+            "{what}"
+        );
+        assert!(
+            header
+                .folded
+                .iter()
+                .zip(&order[kept..])
+                .all(|(id, name)| id.ends_with(name)),
+            "{what}"
+        );
+        // ⋯ ends row 1, level with its first control, at the trailing inset.
+        assert!((middle(more) - middle(first)).abs() <= px(1.), "{what}");
+        assert!(
+            (more.right() - (px(width) - ui_text::space(composer::BAR_INSET))).abs() <= px(1.),
+            "{what}"
+        );
+        // At most two rows: the usage shares row 1 or is the one row below it, the session
+        // id flush under ⋯.
+        let two_rows = usage.top() > first.bottom();
+        if two_rows {
+            assert!(thread.top() >= more.bottom(), "{what}");
+            assert!((middle(usage) - middle(thread)).abs() <= px(1.), "{what}");
+            assert!((usage.left() - first.left()).abs() <= px(1.), "{what}");
+            assert!((thread.right() - more.right()).abs() <= px(1.), "{what}");
+        } else {
+            // Right-aligned before ⋯: … Compact, the usage, the session id, ⋯.
+            assert!(header.folded.is_empty(), "{what}");
+            assert!((middle(usage) - middle(first)).abs() <= px(1.), "{what}");
+            assert!((middle(thread) - middle(first)).abs() <= px(1.), "{what}");
+            let gap = ui_text::space(composer::BAR_GAP) + px(1.);
+            assert!(usage.right() <= thread.left(), "{what}");
+            assert!(thread.left() - usage.right() <= gap, "{what}");
+            assert!(more.left() - thread.right() <= gap, "{what}");
+        }
+        folds.push((two_rows, header.folded.len(), usage.size.width));
+    }
+    // Wide: one row, nothing folded, the whole usage before ⋯. A little narrower: still one
+    // row, the usage without its cost. Medium: the usage and session id on row 2, whole, and
+    // Compact in ⋯. Narrow: Compact, Fast, Effort and Model in ⋯. Narrower still, Mode too,
+    // and the usage leaves out its cost to keep its ring, percent and counts beside the
+    // session id.
+    let counts = folds
+        .iter()
+        .map(|(two, folded, _)| (*two, *folded))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        counts,
+        [(false, 0), (false, 0), (true, 1), (true, 4), (true, 5)],
+        "{folds:?}"
+    );
+    let whole = folds[0].2;
+    assert!(folds[1].2 < whole, "{folds:?}");
+    assert_eq!((folds[2].2, folds[3].2), (whole, whole), "{folds:?}");
+    assert!(folds[4].2 < whole, "{folds:?}");
 }
 
 #[gpui::test]

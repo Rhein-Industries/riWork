@@ -5867,7 +5867,9 @@ impl Workspace {
             self.shared_tab_error = Some(error);
         }
     }
-    /// Explicit child view, device-local; automatic adoption only opens roots.
+    /// Explicit child view, device-local; automatic adoption only opens roots. The strip's
+    /// worker picker that opened it went with its ＋.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn open_child_tab(
         &mut self,
         key: &str,
@@ -14437,11 +14439,11 @@ mod main_pane_tests {
         use gpui_kit::test::TestWindowExt;
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
-            // The scrolling tabs show between the panel segment and ＋.
+            // The scrolling tabs show between the panel segment and the scroller's end.
             let panels = window.find(("tab", 1u64)).bounds();
-            let plus = window.find(("strip-new", 1u64)).bounds();
+            let end = window.find(("tab-strip-scroll", 1u64)).bounds().right();
             let tab = window.find(("tab", tab)).bounds();
-            tab.left() >= panels.right() && tab.right() <= plus.left()
+            tab.left() >= panels.right() && tab.right() <= end
         })
         .unwrap()
     }
@@ -14454,10 +14456,10 @@ mod main_pane_tests {
         let (handle, workspace, _, _, _) = strip_workspace(cx, 2);
         crate::form_input::test_turn(cx, handle, |window, cx| {
             workspace.update(cx, |workspace, cx| {
-                workspace.toggle_strip_menu(1, tab_strip::StripMenuKind::New, window, cx);
+                workspace.toggle_strip_menu(1, tab_strip::StripMenuKind::AllTabs, window, cx);
             });
         });
-        // Four items: Down well past the last one wraps rather than leaving the menu.
+        // Two items: Down well past the last one wraps rather than leaving the menu.
         for _ in 0..7 {
             crate::form_input::test_turn(cx, handle, |window, cx| window.press("down", cx));
             cx.update_window(handle, |_, window, cx| {
@@ -14663,9 +14665,10 @@ mod main_pane_tests {
             assert!(first.bounds().right() <= second.bounds().left());
             // One row: every tab sits in the same strip.
             assert_eq!(moved.bounds().top(), first.bounds().top());
-            let plus = window.find(("strip-new", 1u64));
-            assert_eq!(plus.label(), Some("New tab or open a worker"));
-            assert!(second.bounds().right() <= plus.bounds().left());
+            // No ＋: the last tab is the strip's last cell, flush with the scroller's end.
+            assert!(window.try_find(("strip-new", 1u64)).is_none());
+            let end = window.find(("tab-strip-scroll", 1u64)).bounds();
+            assert!((second.bounds().right() - end.right()).abs() <= px(0.5));
         })
         .unwrap();
     }

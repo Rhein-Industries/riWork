@@ -215,6 +215,10 @@ pub struct ChatView {
     /// The message box row's width as last laid out, which decides where its buttons go
     /// (see `composer::fit`); zero until it is first drawn.
     composer_width: std::rc::Rc<std::cell::Cell<f32>>,
+    /// The chat header's pieces as last laid out: its controls, the session id and ⋯, which
+    /// decide what row 1 keeps and whether the usage shares it (see `toolbar`).
+    /// Each with what it showed then.
+    header_widths: std::rc::Rc<std::cell::Cell<[(f32, u64); 8]>>,
     /// Base participants for the visible, styled transcript; Base owns selection.
     transcript_selection: select::TranscriptSelection,
     /// What the window was last told, so it hears of changes only.
@@ -356,6 +360,7 @@ impl ChatView {
             model_seeded: false,
             focus_composer: false,
             composer_width: Default::default(),
+            header_widths: Default::default(),
             editor_generation: 0,
             programmatic_changes: 0,
             enter_down: false,

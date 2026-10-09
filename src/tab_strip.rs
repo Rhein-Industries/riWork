@@ -1,19 +1,17 @@
 //! The project's one tab strip. A local project's pane bar draws the shared tab list
 //! (see `project_tabs`): its built-in panels as a compact leading segment of symbols, then
-//! the session tabs in shared order, scrolling sideways when they do not fit, then ＋ and, when tabs are out of sight, All tabs. Each session tab is a Kit
-//! button with the tab role, a status dot, its canonical title and a close mark revealed on
-//! hover. Tabs are the pane bar's flat cells (`flat_cell`). Remote projects keep their own
+//! the session tabs in shared order, scrolling sideways when they do not fit, then All tabs
+//! while some are out of sight. There is no ＋: new tabs come from the shortcuts. Each session
+//! tab is a Kit button with the tab role, a status dot, its canonical title and a close mark
+//! revealed on hover. Tabs are the pane bar's flat cells (`flat_cell`). Remote projects keep their own
 //! pane bar.
 
 use super::*;
+use gpui_kit::base::TestSupportExt as _;
 
 /// What the strip's own menus show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StripMenuKind {
-    /// ＋: new terminal and chats, and the way into the worker picker.
-    New,
-    /// The hidden chats and shells of the project, to open as tabs.
-    Workers,
     /// Every session tab of the pane, including those scrolled out of sight.
     AllTabs,
 }
@@ -57,7 +55,7 @@ impl StripShape {
     }
 }
 
-/// Width of the strip's ＋ and All tabs cells.
+/// Width of the strip's All tabs cell.
 const STRIP_BUTTON: f32 = 28.0;
 const TITLE_MAX_WIDTH: f32 = 220.0;
 const DOT: f32 = 7.0;
@@ -507,7 +505,8 @@ impl Workspace {
                 + ui_text::space_f32(if tab_can_close { 6.0 + 16.0 + 4.0 } else { 8.0 })
         };
         let base = panels.len() as f32 * (ui_text::space_f32(NATIVE_ICON_TAB_FULL) + gap)
-            + 2.0 * (ui_text::space_f32(STRIP_BUTTON) + gap);
+            + ui_text::space_f32(STRIP_BUTTON)
+            + gap;
         let fixed = base;
         let all_open = self.strip_menu
             == Some(StripMenu {
@@ -575,33 +574,6 @@ impl Workspace {
                         .map(|index| self.strip_panel(pane_id, *index, cx)),
                 )
                 .into_any_element()
-        });
-        let new_open = self.strip_menu
-            == Some(StripMenu {
-                pane: pane_id,
-                kind: StripMenuKind::New,
-            })
-            || self.strip_menu
-                == Some(StripMenu {
-                    pane: pane_id,
-                    kind: StripMenuKind::Workers,
-                });
-        let plus = strip_host(behavior_controls::popup(
-            ("strip-new-popup", pane_id),
-            self.strip_button(
-                ("strip-new", pane_id),
-                "New tab or open a worker",
-                icons::text_icon(Icon::Add, 10.0, colors.muted),
-                new_open,
-                cx,
-            )
-            .on_click(cx.listener(move |workspace, _, window, cx| {
-                workspace.toggle_strip_menu(pane_id, StripMenuKind::New, window, cx);
-            })),
-        ))
-        .anchor(gpui::Anchor::TopLeft)
-        .when(new_open, |popup| {
-            popup.content(self.render_strip_menu(pane_id, cx))
         });
         let all_tabs = overflow.then(|| {
             strip_host(behavior_controls::popup(
@@ -676,9 +648,9 @@ impl Workspace {
                             .overflow_x_scroll()
                             .track_scroll(&scroll)
                             .children(sessions.iter().map(|index| tab(*index, cx)))
-                            .on_drop(cx.listener(append)),
+                            .on_drop(cx.listener(append))
+                            .test_support(),
                     )
-                    .child(plus)
                     .children(all_tabs)
                     .child(
                         div()
@@ -984,7 +956,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The open strip menu of `pane_id`, hung from its ＋ or All tabs button.
+    /// The open strip menu of `pane_id`, hung from its All tabs button.
     fn render_strip_menu(&self, pane_id: PaneId, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme::palette(cx);
         let Some(menu) = self.strip_menu.filter(|menu| menu.pane == pane_id) else {
@@ -992,123 +964,6 @@ impl Workspace {
         };
         let error = theme::diff_colors(cx).removed;
         let (name, rows): (&str, Vec<AnyElement>) = match menu.kind {
-            StripMenuKind::New => (
-                "New tab",
-                [
-                    ("New terminal", "⌘T", Some(Icon::Add), 0usize),
-                    ("New Claude chat", "⌘⌥⇧L", None, 1),
-                    ("New Codex chat", "⌘⌥⇧C", None, 2),
-                ]
-                .into_iter()
-                .map(|(label, shortcut, icon, action)| {
-                    self.strip_menu_row(
-                        format!("strip-menu-new-{action}"),
-                        label.to_owned(),
-                        None,
-                        icon.map(|icon| menu_icon(icon, colors)),
-                        shortcut,
-                        false,
-                        move |workspace, window, cx| {
-                            workspace.close_strip_menu(window, cx);
-                            workspace.active_pane = pane_id;
-                            match action {
-                                0 => workspace.add_tab(window, cx),
-                                1 => workspace.add_chat(Provider::Claude, false, window, cx),
-                                _ => workspace.add_chat(Provider::Codex, false, window, cx),
-                            }
-                        },
-                        cx,
-                    )
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .chain([
-                    controls::menu_separator(colors),
-                    self.strip_menu_row(
-                        "strip-menu-workers".to_owned(),
-                        "Open a worker or shell…".to_owned(),
-                        None,
-                        None,
-                        "",
-                        false,
-                        move |workspace, window, cx| {
-                            workspace.strip_menu = Some(StripMenu {
-                                pane: pane_id,
-                                kind: StripMenuKind::Workers,
-                            });
-                            workspace.menu_focus.focus(window, cx);
-                            cx.notify();
-                        },
-                        cx,
-                    ),
-                ])
-                .collect(),
-            ),
-            StripMenuKind::Workers => {
-                let entries = self.shared_tab_entries();
-                let hidden = entries
-                    .iter()
-                    .filter(|e| {
-                        e.hidden
-                            && !(e.kind == project_tabs::Kind::Shell
-                                && e.status == project_tabs::Status::Stopped)
-                    })
-                    .collect::<Vec<_>>();
-                let mut rows = vec![pane_menu_heading("Open a worker or shell", true, colors)];
-                if hidden.is_empty() {
-                    rows.push(
-                        div()
-                            .px(ui_text::space(8.0))
-                            .py(ui_text::space(5.0))
-                            .text_color(rgb(colors.muted))
-                            .child("No hidden workers or shells")
-                            .into_any_element(),
-                    );
-                }
-                rows.extend(hidden.into_iter().map(|entry| {
-                    let key = entry.key.clone();
-                    let kind = match entry.kind {
-                        project_tabs::Kind::Chat => "Chat",
-                        project_tabs::Kind::Shell => "Shell",
-                    };
-                    let parent = entry.parent.as_deref().and_then(|parent| {
-                        entries
-                            .iter()
-                            .find(|e| e.key == parent)
-                            .map(|e| e.title.clone())
-                    });
-                    let mut detail = if entry.worker {
-                        format!(
-                            "Worker {} · {}",
-                            kind.to_lowercase(),
-                            status_word(&entry.status)
-                        )
-                    } else {
-                        format!("{kind} · {}", status_word(&entry.status))
-                    };
-                    if let Some(parent) = parent {
-                        detail.push_str(&format!(" · from {parent}"));
-                    }
-                    self.strip_menu_row(
-                        format!("open-worker-{key}"),
-                        entry.title.clone(),
-                        Some(detail),
-                        Some(status_dot(&entry.status, colors, error)),
-                        "",
-                        false,
-                        move |workspace, window, cx| {
-                            workspace.close_strip_menu(window, cx);
-                            workspace.active_pane = pane_id;
-                            if let Err(error) = workspace.open_child_tab(&key, window, cx) {
-                                workspace.notice = Some(error);
-                            }
-                            cx.notify();
-                        },
-                        cx,
-                    )
-                }));
-                ("Open a worker or shell", rows)
-            }
             StripMenuKind::AllTabs => {
                 let pane = &self.panes[&pane_id];
                 let slots = self.strip_slots(pane);
