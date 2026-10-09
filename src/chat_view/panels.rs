@@ -1905,9 +1905,9 @@ impl ChatView {
         .child(if look.native || look.hermes() {
             icons::symbol_in_box(
                 "chevron.down",
-                8.0,
+                9.5,
                 Some(look.colors.muted),
-                ui_text::space(10.0),
+                ui_text::space(12.0),
             )
         } else {
             div()
