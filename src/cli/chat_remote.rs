@@ -33,7 +33,8 @@ pub(super) const REPLAY_GRACE: Duration = Duration::from_millis(100);
 /// there is more.
 const PEEK: Duration = Duration::from_millis(2);
 /// The smallest a string is cut to when an event is too big for a page alone.
-use crate::chat::remote_payload::{MIN_CUT, elide_event, shorten_body};
+const MIN_CUT: usize = 256;
+use crate::chat::remote_payload::{elide_event, shorten_body_at_min};
 /// The longest message `chat command` sends, in bytes.
 pub(super) const MAX_TEXT: usize = 64 * 1024;
 const MAX_MODEL_CHARS: usize = 100;
@@ -261,32 +262,11 @@ fn entry_bytes(entry: &Entry) -> usize {
 
 pub(super) use crate::chat::remote_payload::cut_strings;
 
-/// An event that is too big for a page alone, with its strings cut until it
-/// fits; `None` when no cut makes it fit.
-pub(super) fn shrink(entry: &Entry, budget: usize) -> Option<Entry> {
-    let mut cap = (budget / 4).max(MIN_CUT);
-    loop {
-        let mut event = entry.event.clone();
-        cut_strings(&mut event, cap);
-        let shrunk = Entry {
-            seq: entry.seq,
-            event,
-        };
-        if entry_bytes(&shrunk) <= budget {
-            return Some(shrunk);
-        }
-        if cap <= MIN_CUT {
-            return None;
-        }
-        cap = (cap / 2).max(MIN_CUT);
-    }
-}
-
-fn shrink_body(entry: &Entry, budget: usize) -> Option<Entry> {
+pub(super) fn shrink_body(entry: &Entry, budget: usize) -> Option<Entry> {
     let mut cap = (budget / 4).max(MIN_CUT);
     loop {
         let mut shrunk = entry.clone();
-        if !shorten_body(&mut shrunk.event, cap) {
+        if !shorten_body_at_min(&mut shrunk.event, cap, MIN_CUT) {
             return None;
         }
         if entry_bytes(&shrunk) <= budget {
@@ -310,12 +290,6 @@ fn shrink_body(entry: &Entry, budget: usize) -> Option<Entry> {
 /// - An event that alone is bigger than the page has its bodies shortened, or
 ///   is replaced by an identity-preserving placeholder, keeping its sequence slot.
 pub(super) fn collect(source: &mut impl Source, plan: &Plan) -> Result<Page, String> {
-    collect_page(source, plan)
-}
-pub(super) fn collect_complete(source: &mut impl Source, plan: &Plan) -> Result<Page, String> {
-    collect_page(source, plan)
-}
-pub(super) fn collect_bounded(source: &mut impl Source, plan: &Plan) -> Result<Page, String> {
     collect_page(source, plan)
 }
 fn collect_page(source: &mut impl Source, plan: &Plan) -> Result<Page, String> {

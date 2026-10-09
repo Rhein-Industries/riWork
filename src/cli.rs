@@ -148,9 +148,10 @@ the events with seq above --since (default 0), at most --max (500 by default, up
 waits up to --wait-ms (up to 25000) for the first, then collects for 50 ms; it
 returns at once for events that are already there. Pass `next` as --since to continue;
 `more` says the page was cut short. An event too big for a page alone has its long
-strings cut unless --complete requests lossless events (an oversized event is an error).
-For exceptional resource recovery, --bounded shortens item bodies only, preserves
-identity and controls, and fails without advancing past an unrepresentable event.
+body strings shortened with a visible note, or becomes an item_elided/control_elided
+placeholder preserving its sequence slot and identity. --complete and --bounded are
+mutually exclusive compatibility flags; all modes keep full payloads when they fit
+and share the same oversized-event recovery. Elided controls are never actionable.
 chat snapshot UUID --json reads current full items and controls directly from disk without
 starting a host. --max is 1–100 (default 50); --max-bytes bounds the complete response.
 Use its cursor and before with --cursor TOKEN --before ORDER to page older full items.
@@ -2086,7 +2087,33 @@ fn chat_client_command(
                 max_bytes as usize,
                 &item_ids,
                 rate_limits,
-            )?;
+            );
+            let snapshot = match snapshot {
+                Ok(snapshot) => serde_json::to_value(snapshot).map_err(|e| e.to_string())?,
+                // Keep frame-budget pagination as the normal path. Only an unrepresentable
+                // single row/control or targeted aggregate retries under the resource cap.
+                Err(error) if error == "snapshot response limit exceeded" => {
+                    let full = crate::chat::log::read_snapshot_with_features(
+                        home,
+                        &id,
+                        cursor.as_deref(),
+                        before,
+                        limit as usize,
+                        8 << 20,
+                        &item_ids,
+                        rate_limits,
+                    )?;
+                    let full = serde_json::to_value(full).map_err(|e| e.to_string())?;
+                    crate::chat::remote_payload::fit_snapshot(
+                        full,
+                        (max_bytes as usize).saturating_sub(1024),
+                        item_ids.is_empty(),
+                        |value| Ok::<_, String>(value.to_string().len() <= max_bytes as usize),
+                    )?
+                    .ok_or_else(|| "snapshot response limit exceeded".to_owned())?
+                }
+                Err(error) => return Err(error),
+            };
             json_text(&snapshot)
         }
         "events" => {
@@ -2107,14 +2134,7 @@ fn chat_client_command(
                 })?;
             // The wait counts from the start of this process, so a host that
             // took long to start does not stretch it.
-            let collect = if complete {
-                chat_remote::collect_complete
-            } else if bounded {
-                chat_remote::collect_bounded
-            } else {
-                chat_remote::collect
-            };
-            let page = collect(
+            let page = chat_remote::collect(
                 &mut subscription,
                 &chat_remote::Plan {
                     chat_id: id,

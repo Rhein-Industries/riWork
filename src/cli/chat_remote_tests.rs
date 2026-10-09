@@ -993,16 +993,21 @@ fn strings_are_cut_on_a_character_boundary_and_marked() {
 fn a_hopeless_entry_is_not_shrunk_and_a_long_one_is() {
     let long = Entry {
         seq: 1,
-        event: json!({"event": "x", "text": "t".repeat(50_000)}),
+        event: json!({"event":"item_delta","item_id":"long","delta":{"kind":"text","text":"t".repeat(50_000)}}),
     };
-    let shrunk = shrink(&long, 2000).unwrap();
+    let shrunk = shrink_body(&long, 2000).unwrap();
     assert!(serde_json::to_string(&shrunk).unwrap().len() < 2000);
-    assert!(shrunk.event["text"].as_str().unwrap().ends_with('\u{2026}'));
+    assert!(
+        shrunk.event["delta"]["text"]
+            .as_str()
+            .unwrap()
+            .ends_with('\u{2026}')
+    );
     let wide = Entry {
         seq: 1,
         event: Value::Array((0..5000).map(|n| json!(n)).collect()),
     };
-    assert!(shrink(&wide, 2000).is_none());
+    assert!(shrink_body(&wide, 2000).is_none());
 }
 
 #[test]
@@ -1044,18 +1049,16 @@ fn complete_event_pages_elide_oversized_events_and_keep_sequence_slots() {
     script
         .steps
         .push_back(Ok(Poll::Event(envelope(8, event.clone()))));
-    let recovered = collect_complete(&mut script, &plan(7, 10, 1024)).unwrap();
+    let recovered = collect(&mut script, &plan(7, 10, 1024)).unwrap();
     assert_eq!(recovered.next, 8);
     assert_eq!(recovered.events[0].event["item"]["id"], "large");
-    assert!(
-        recovered.events[0].event["item"]["body"]["text"]
-            .as_str()
-            .unwrap()
-            .ends_with('…')
+    assert_eq!(
+        recovered.events[0].event["item"]["body"]["text"],
+        crate::chat::remote_payload::TRUNCATION_NOTE
     );
     let mut script = Script::of([8]);
     script.steps.push_back(Ok(Poll::Event(envelope(9, event))));
-    let page = collect_complete(&mut script, &plan(7, 10, 1024)).unwrap();
+    let page = collect(&mut script, &plan(7, 10, 1024)).unwrap();
     assert_eq!(page.next, 8);
     assert!(page.more);
     assert_eq!(page.events.len(), 1);
@@ -1105,7 +1108,7 @@ fn bounded_recovery_represents_bodies_and_never_shortens_or_skips_controls() {
     source
         .steps
         .push_back(Ok(Poll::Event(envelope(2, usage_event(42)))));
-    let page = collect_bounded(&mut source, &plan(0, 10, 120_000)).unwrap();
+    let page = collect(&mut source, &plan(0, 10, 120_000)).unwrap();
     assert_eq!(page.next, 2);
     assert_eq!(page.events[0].event["item"]["id"], "stable");
     assert_eq!(page.events[0].event["item"]["turn_id"], "turn");
@@ -1126,12 +1129,11 @@ fn bounded_recovery_represents_bodies_and_never_shortens_or_skips_controls() {
             },
         },
     ))));
-    let recovered = collect_bounded(&mut source, &plan(0, 10, 120_000)).unwrap();
+    let recovered = collect(&mut source, &plan(0, 10, 120_000)).unwrap();
     assert_eq!(recovered.next, 1);
-    assert_eq!(
-        recovered.events[0].event,
-        json!({"event":"state","elided":true})
-    );
+    assert_eq!(recovered.events[0].event["event"], "control_elided");
+    assert_eq!(recovered.events[0].event["of"], "state");
+    assert_eq!(recovered.events[0].event["elided"], true);
 }
 
 #[test]
@@ -1153,7 +1155,7 @@ fn bounded_body_placeholder_says_full_text_is_on_the_mac_and_keeps_identity() {
         1,
         ChatEvent::ItemCompleted { item },
     ))));
-    let page = collect_bounded(&mut source, &plan(0, 1, 1024)).unwrap();
+    let page = collect(&mut source, &plan(0, 1, 1024)).unwrap();
     assert_eq!(page.next, 1);
     assert_eq!(page.events[0].event["item"]["id"], "large-structured-body");
     assert_eq!(page.events[0].event["item"]["turn_id"], "turn");
@@ -1180,4 +1182,107 @@ fn notice_dismiss_command_decodes_and_rejects_invalid_fields() {
     ] {
         assert!(super::chat_remote::parse_command(json).is_err(), "{json}");
     }
+}
+
+#[test]
+fn snapshot_cli_pages_normal_rows_and_recovers_a_single_payload_under_the_requested_budget() {
+    let home = std::env::temp_dir().join(format!(
+        "riwork-cli-snapshot-review-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let id = uuid::Uuid::new_v4().to_string();
+    let dir = crate::chat::log::chat_dir(&home, &id).unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    let write = |events: Vec<Value>| {
+        let log: String = events
+            .into_iter()
+            .enumerate()
+            .map(|(i, event)| {
+                json!({"v":1,"type":"event","chat_id":id,"seq":i + 1,"event":event}).to_string()
+                    + "\n"
+            })
+            .collect();
+        std::fs::write(dir.join("events.jsonl"), &log).unwrap();
+        log
+    };
+    let snapshot = || -> Value {
+        let text = chat_client_command(
+            &home,
+            vec![
+                "snapshot".into(),
+                id.clone(),
+                "--max".into(),
+                "100".into(),
+                "--max-bytes".into(),
+                "120000".into(),
+            ],
+            true,
+            &|_| panic!("snapshot must not start a host"),
+        )
+        .unwrap();
+        assert!(text.len() <= 120_000);
+        serde_json::from_str(&text).unwrap()
+    };
+    let rows: Vec<_> = (1..=100).map(|seq| json!({"event":"item_completed","item":{
+        "id":format!("normal-{seq}"),"status":"completed","body":{"type":"agent_message","text":"normal ".repeat(600)}}})).collect();
+    let log = write(rows);
+    let result = snapshot();
+    assert_eq!(result["more"], true);
+    assert!(result["items"].as_array().unwrap().len() < 100);
+    assert!(
+        result["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["item"].get("elided").is_none()
+                && row["item"]["body"]["text"] == "normal ".repeat(600))
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("events.jsonl")).unwrap(),
+        log
+    );
+
+    // The typed log reader refuses a single oversized control at 120 KiB; the
+    // CLI's exceptional response recovery handles it without widening its output.
+    let log = write(vec![
+        json!({"event":"approval_requested","approval":{"request_id":"huge","item_id":"tool",
+        "kind":"tool","title":"request","detail":"x".repeat(2 * 1024 * 1024),"choices":["accept","decline"]}}),
+    ]);
+    let result = snapshot();
+    assert_eq!(result["next"], 1);
+    let control = result["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["event"] == "control_elided")
+        .unwrap();
+    assert_eq!(control["of"], "approval_requested");
+    assert_eq!(control["approval"]["request_id"], "huge");
+    assert!(
+        result["controls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["event"] != "approval_requested")
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("events.jsonl")).unwrap(),
+        log
+    );
+    assert!(!home.join("run").exists());
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn cli_keeps_its_256_byte_minimum_cut() {
+    let mut event = json!({"event":"item_delta","item_id":"long","delta":{"kind":"text","text":"x".repeat(5000)}});
+    let entry = Entry {
+        seq: 1,
+        event: event.take(),
+    };
+    let shrunk = shrink_body(&entry, 450).unwrap();
+    assert_eq!(
+        shrunk.event["delta"]["text"].as_str().unwrap().len(),
+        256 + '…'.len_utf8()
+    );
 }

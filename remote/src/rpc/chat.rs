@@ -814,11 +814,15 @@ fn fit_page(request: &str, page: Page, compress: bool) -> std::result::Result<Va
 /// Keep snapshot pagination and row identity while recovering oversized payloads.
 fn fit_snapshot(
     request: &str,
-    mut result: Value,
+    result: Value,
     compress: bool,
+    paginate: bool,
 ) -> std::result::Result<Value, Fault> {
-    let fits = |result: &Value| -> std::result::Result<bool, Fault> {
-        match link::encode_reply(
+    remote_payload::fit_snapshot(
+        result,
+        MAX_PLAINTEXT - REPLY_SLACK - FRAME_MARGIN,
+        paginate,
+        |result| match link::encode_reply(
             &success(request, result.clone()),
             std::time::Instant::now(),
             compress,
@@ -827,72 +831,14 @@ fn fit_snapshot(
             Ok(_) => Ok(true),
             Err(link::EncodeError::TooLarge) => Ok(false),
             Err(link::EncodeError::Other(e)) => Err(cli_fault(e)),
-        }
-    };
-    if fits(&result)? {
-        return Ok(result);
-    }
-    // Recover each oversized row independently, retaining other rows unchanged.
-    for index in 0..result["items"].as_array().unwrap().len() {
-        let original = result["items"][index]["item"].clone();
-        let event = json!({"event":"item_completed","item":original});
-        let mut single = result.clone();
-        single["items"] = json!([result["items"][index]]);
-        single["controls"] = json!([]);
-        if fits(&single)? {
-            continue;
-        }
-        let mut recovered = None;
-        let mut cap = 64 * 1024;
-        while cap >= MIN_CUT {
-            let mut shrunk = event.clone();
-            shorten_body(&mut shrunk, cap);
-            single["items"][0]["item"] = shrunk["item"].clone();
-            if fits(&single)? {
-                recovered = Some(shrunk["item"].clone());
-                break;
-            }
-            cap /= 2;
-        }
-        result["items"][index]["item"] =
-            recovered.unwrap_or_else(|| remote_payload::elide_item(&original));
-    }
-    for index in 0..result["controls"].as_array().unwrap().len() {
-        let event = result["controls"][index].clone();
-        let mut single = result.clone();
-        single["items"] = json!([]);
-        single["controls"] = json!([event]);
-        if !fits(&single)? {
-            result["controls"][index] = elide_event(&event);
-        }
-    }
-    while !fits(&result)? {
-        // Aggregate controls can also exceed a frame: elide the largest remaining one.
-        let controls = result["controls"].as_array_mut().unwrap();
-        if let Some(index) = controls
-            .iter()
-            .enumerate()
-            .filter(|(_, v)| v["elided"] != true && v["event"] != "item_elided")
-            .max_by_key(|(_, v)| v.to_string().len())
-            .map(|(i, _)| i)
-        {
-            controls[index] = elide_event(&controls[index]);
-        } else {
-            let items = result["items"].as_array_mut().unwrap();
-            if let Some(index) = items
-                .iter()
-                .enumerate()
-                .filter(|(_, row)| row["item"].get("elided").is_none())
-                .max_by_key(|(_, row)| row.to_string().len())
-                .map(|(i, _)| i)
-            {
-                items[index]["item"] = remote_payload::elide_item(&items[index]["item"]);
-            } else {
-                return Err(cli_fault("snapshot reply metadata exceeds frame limit"));
-            }
-        }
-    }
-    Ok(result)
+        },
+    )?
+    .ok_or_else(|| {
+        Fault::new(
+            "snapshot_limit",
+            "snapshot metadata or requested rows exceed frame limit",
+        )
+    })
 }
 
 // ---- The methods -------------------------------------------------------------------------------
@@ -1076,7 +1022,7 @@ impl Rpc {
         spec: SnapshotSpec,
         reply_limit: usize,
     ) -> std::result::Result<Value, Fault> {
-        let budget = CHAT_READ_MAX - REPLY_SLACK;
+        let budget = (MAX_PLAINTEXT - REPLY_SLACK - FRAME_MARGIN).min(reply_limit - REPLY_SLACK);
         let mut args = vec![
             "chat".into(),
             "snapshot".into(),
@@ -1104,7 +1050,7 @@ impl Rpc {
             ));
         }
         let mut result = self
-            .read_capped(args, CLI_TIMEOUT, budget + REPLY_SLACK)
+            .read_capped(args, CLI_TIMEOUT, CHAT_READ_MAX)
             .await
             .map_err(|fault| {
                 if fault.message.contains("Unknown chat command")
@@ -1166,7 +1112,12 @@ impl Rpc {
         negotiate_snapshot_rate_limits(&mut result, spec.rate_limits);
         let request = request.to_owned();
         tokio::task::spawn_blocking(move || {
-            fit_snapshot(&request, result, reply_limit > MAX_PLAINTEXT)
+            fit_snapshot(
+                &request,
+                result,
+                reply_limit > MAX_PLAINTEXT,
+                spec.items.is_empty(),
+            )
         })
         .await
         .map_err(|e| cli_fault(format!("fitting the snapshot was interrupted: {e}")))?
@@ -1428,13 +1379,13 @@ mod tests {
                 (Some(1), json!(false))
             );
         }
-        // One that cannot be cut small enough (its weight is not in strings) is passed over.
+        // One that cannot be cut small enough keeps its sequence slot as a control placeholder.
         let wide = json!({"seq": 1, "event": {"event": "x",
             "numbers": (0..60_000).map(|n| n * 7919).collect::<Vec<u64>>()}});
-        let passed = fit_page(request, page(vec![wide]), false).unwrap();
+        let passed = fit_page(request, page(vec![wide.clone()]), false).unwrap();
         assert_eq!(
             passed["events"][0]["event"],
-            json!({"event":"x","elided":true})
+            json!({"event":"control_elided","of":"x","reason":"too_large","bytes":wide["event"].to_string().len(),"elided":true})
         );
         assert_eq!(passed["next"], 1);
     }

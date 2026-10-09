@@ -2121,7 +2121,8 @@ async fn bounded_recovery_keeps_identity_and_elides_oversized_controls() {
     assert_eq!(reply["ok"], true, "{reply}");
     assert_eq!(
         reply["result"]["events"][0],
-        json!({"seq":2,"event":{"event":"approval_requested","approval":{"request_id":"exact-request","elided":true},"elided":true}})
+        json!({"seq":2,"event":{"event":"control_elided","of":"approval_requested","reason":"too_large",
+            "bytes":control["event"].to_string().len(),"approval":{"request_id":"exact-request","elided":true},"elided":true}})
     );
     f.says("events.json", &f.page(&[json!({"seq":2,"event":{"event":"approval_requested","approval":{"request_id":"exact-request","choices":["accept","decline"],"title":"complete control"}}})], 2, false));
     let reply = f
@@ -2179,7 +2180,7 @@ async fn oversized_inline_item_keeps_its_sequence_and_identity_in_every_mode() {
         "id":"inline-tool","status":"completed","body":{"type":"tool_call","tool":"binary","input":null},
         "inline_payload":"x".repeat(2 * 1024 * 1024)}}});
     let expected = json!({"seq":7,"event":{"event":"item_elided","item_id":"inline-tool",
-        "kind":"tool_call","reason":"too_large","bytes":serde_json::to_vec(&event["event"]).unwrap().len()}});
+        "of":"item_completed","status":"completed","kind":"tool_call","reason":"too_large","bytes":serde_json::to_vec(&event["event"]).unwrap().len()}});
     f.says("events.json", &f.page(&[event], 7, false));
     for mode in [None, Some("bounded"), Some("complete")] {
         let mut params = json!({"chat_id":f.chat,"since":6,"wait_ms":0});
@@ -2230,7 +2231,7 @@ async fn several_events_with_one_oversized_control_keep_following_the_chat() {
     assert_eq!(received[0], events[0]);
     assert_eq!(
         received[1],
-        json!({"seq":2,"event":{"event":"approval_requested","elided":true,
+        json!({"seq":2,"event":{"event":"control_elided","of":"approval_requested","reason":"too_large","bytes":events[1]["event"].to_string().len(),"elided":true,
         "approval":{"request_id":"approval-2","item_id":"tool-2","elided":true}}})
     );
     assert_eq!(received[2], events[2]);
@@ -2260,11 +2261,57 @@ async fn snapshot_recovers_oversized_item_and_control_without_changing_its_windo
     assert_eq!(held["status"], "completed");
     assert_eq!(
         held["elided"],
-        json!({"event":"item_elided","item_id":"inline-tool","kind":"tool_call","reason":"too_large","bytes":serde_json::to_vec(&item).unwrap().len()})
+        json!({"event":"item_elided","item_id":"inline-tool","of":"item_completed","status":"completed","kind":"tool_call","reason":"too_large","bytes":serde_json::to_vec(&item).unwrap().len()})
     );
     assert_eq!(
         result["controls"],
-        json!([{"event":"approval_requested","elided":true,"approval":{"request_id":"r","elided":true}}])
+        json!([{"event":"control_elided","of":"approval_requested","reason":"too_large","bytes":snapshot["controls"][0].to_string().len(),"elided":true,"approval":{"request_id":"r","elided":true}}])
     );
     link::encode_reply(&reply, std::time::Instant::now(), false, MAX_PLAINTEXT).unwrap();
+}
+
+#[tokio::test]
+async fn plain_snapshot_pages_normal_rows_without_eliding_them() {
+    let f = Fixture::new();
+    let rows: Vec<_> = (1..=100).map(|order| json!({"order":order,"item":{
+        "id":format!("row-{order}"),"status":"completed","body":{"type":"agent_message","text":"normal ".repeat(600)}}})).collect();
+    let mut before = 101u64;
+    let mut seen = Vec::new();
+    while before > 1 {
+        let available: Vec<_> = rows
+            .iter()
+            .filter(|row| row["order"].as_u64().unwrap() < before)
+            .cloned()
+            .collect();
+        f.says(
+            "snapshot.json",
+            &json!({"v":1,"chat_id":f.chat,"cursor":"1234-100-abcdef","next":100,
+            "before":1,"more":false,"items":available,"controls":[]}),
+        );
+        let mut params = json!({"chat_id":f.chat,"limit":100});
+        if before != 101 {
+            params["cursor"] = json!("1234-100-abcdef");
+            params["before"] = json!(before);
+        }
+        let reply = f.call("chat.snapshot", params).await;
+        assert_eq!(reply["ok"], true, "{reply}");
+        let result = &reply["result"];
+        let held = result["items"].as_array().unwrap();
+        assert!(!held.is_empty());
+        for row in held {
+            let order = row["order"].as_u64().unwrap();
+            assert_eq!(*row, rows[order as usize - 1]);
+            seen.push(order);
+        }
+        let next_before = result["before"].as_u64().unwrap();
+        assert!(next_before < before);
+        assert_eq!(result["more"], next_before > 1);
+        assert_eq!(result["next"], 100);
+        before = next_before;
+    }
+    seen.sort_unstable();
+    assert_eq!(seen, (1..=100).collect::<Vec<_>>());
+    let args = &f.chat_calls()[0];
+    let at = args.iter().position(|arg| arg == "--max-bytes").unwrap();
+    assert_eq!(args[at + 1], (MAX_PLAINTEXT - 1024 - 64).to_string());
 }
