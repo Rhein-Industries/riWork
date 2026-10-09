@@ -661,7 +661,7 @@ import RiWorkCore
     }
 
     /// `RIWORK_TAB_SCREENSHOTS_ONLY=testTabRowSpace scripts/tab-chrome-screenshots.sh <dir> <udid>`: the row with two long tab titles
-    /// (the project orchestrator and a user chat), Back, ＋ and ⋯ in their narrow slots, Native light and dark.
+    /// (the project orchestrator and a user chat), Back and ⋯ in their narrow slots, and ⋯'s menu, Native light and dark.
     func testTabRowSpace() async throws {
         guard ProcessInfo.processInfo.environment["RIWORK_TAB_SCREENSHOTS_ONLY"] == "testTabRowSpace" else { throw XCTSkip("Set RIWORK_TAB_SCREENSHOTS_ONLY=testTabRowSpace") }
         let user = "dddddddd-3333-4333-8333-333333333333"
@@ -706,6 +706,11 @@ import RiWorkCore
             try await Task.sleep(for: .milliseconds(500))
             if let strip = layout.frames["tab-strip"] { print("TAB_ROW_SPACE look=\(look.rawValue) width=\(window.bounds.width) strip=\(strip)") }
             try await shot(window, "tab-row-space-" + look.rawValue)
+            // ⋯: New terminal and Open a worker or shell… at the top of the Tab section.
+            if await openMenu(at: CGPoint(x: window.bounds.maxX - 22, y: layout.frames["navigation"]?.midY ?? 84), in: window) {
+                try await shot(window, "tab-row-space-" + look.rawValue + "-menu")
+            } else { XCTFail("no ⋯ menu") }
+            await dismissMenus(window)
             await model.disconnect()
             window.isHidden = true
             try? keychain.delete()
