@@ -35,6 +35,16 @@ final class StickyBottomTests: XCTestCase {
         _ = sticky.metricsChanged(from: old, to: metrics(away: 15), lineHeight: line, userDriven: true)
         XCTAssertFalse(sticky.following, "more than a line")
     }
+    /// Layout nudging the position by a fraction of a point, away from the bottom while the view waits to be put back there (a bar
+    /// came up over it), is not the reader leaving.
+    func testAMoveOfLessThanAPointIsNotAScroll() {
+        var sticky = StickyBottom()
+        let old = metrics(away: 58)
+        XCTAssertEqual(sticky.metricsChanged(from: old, to: metrics(away: 57.67), lineHeight: line, userDriven: false), .none)
+        XCTAssertTrue(sticky.following)
+        _ = sticky.metricsChanged(from: old, to: metrics(away: 56), lineHeight: line, userDriven: false)
+        XCTAssertFalse(sticky.following, "two points is a scroll")
+    }
     func testScrollingUpStopsFollowingAndCountsNewLines() {
         var sticky = StickyBottom()
         sticky.contentChanged(end: 100, epoch: 1)

@@ -104,9 +104,11 @@ public enum BottomBarGeometry {
     }
 
     /// The chat composer's insets: its card row spans the screen between the horizontal safe-area edges, the same edges as the key bar's
-    /// capsule (the field is set in from them by the transcript's margin, in the app), and it stands as close above the keyboard as the
-    /// key bar's capsule does.
+    /// capsule (the field is set in from them by the transcript's margin, in the app), and the field stands `composerBottomInset` above
+    /// the keyboard or the home indicator's safe area, the transcript it floats over showing in the gap.
     public static func composerInsets(glass: Bool) -> (horizontal: Double, bottom: Double) {
-        (capsuleSideInset, capsuleEndInset)
+        (capsuleSideInset, composerBottomInset)
     }
+    /// The space under the chat composer's field, above the keyboard or the home indicator's safe area.
+    public static let composerBottomInset = 8.0
 }

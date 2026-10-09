@@ -64,7 +64,8 @@ public struct StickyBottom: Sendable, Equatable {
     public mutating func metricsChanged(from old: ScrollMetrics?, to new: ScrollMetrics, lineHeight: Double, userDriven: Bool) -> Response {
         let slack = max(1, lineHeight) * Self.slackLines
         let resized = old.map { new.resized(since: $0) } ?? true
-        let moved = old.map { $0.offset != new.offset } ?? false
+        // Less than a point is layout rounding (a bar settling under the view), not a scroll.
+        let moved = old.map { abs($0.offset - new.offset) >= 1 } ?? false
         far = new.distanceFromBottom > new.viewportHeight
         if new.distanceFromBottom <= slack {
             following = true; newLines = 0; far = false
