@@ -2556,7 +2556,7 @@ impl ChatView {
     /// The message box: one card in every design, inset from the pane's sides and bottom
     /// (see `composer::layout`). In a wide pane the box shares one row with Attach and the
     /// controls (the model choices, then the mic and the Send/Stop slot), which sit on its
-    /// last line; otherwise the box takes the card's whole width and Attach and the controls
+    /// last line (the box is never less than two lines tall, so they start on its second); otherwise the box takes the card's whole width and Attach and the controls
     /// wrap in a row under it, and a narrow pane gives the controls a row of their own. The
     /// arrangement follows the pane alone, so the controls never move while the user types. Every design lays it out
     /// the same; each draws the card and its buttons its own way (`composer_card`,
@@ -2580,7 +2580,7 @@ impl ChatView {
             .flex_1()
             .min_w_0()
             .debug_selector(|| "composer-field".into())
-            .child(self.composer_editor(look, window, cx));
+            .child(self.composer_editor(look, window, cx).test_support());
         // Send and Stop share one slot, so neither moves the controls: Stop while a turn runs
         // (⏎ still steers it with a draft), Send otherwise.
         let action = if self.running() {
@@ -2868,10 +2868,20 @@ impl ChatView {
         .line_height(widgets::field_line())
         .font_family(look.chat_family())
         .capture_action(cx.listener(Self::capture_enter));
+        // Never less than two lines: the text (and the placeholder) starts on the first, the
+        // controls beside the box sit on the second, and nothing moves when the first line
+        // wraps. From three lines up the box grows, the controls staying on its last line. A
+        // click below a short draft puts the cursor in it, as a click in the text does.
+        let composer = self.composer.clone();
         div()
             .id("chat-composer-shell")
             .relative()
             .w_full()
+            .min_h(ui_text::space(widgets::FIELD_PAD_Y) * 2. + widgets::field_line() * 2. + px(2.))
+            .cursor_text()
+            .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                composer.read(cx).focus_handle(cx).focus(window, cx);
+            })
             .border_1()
             .bg(transparent_black())
             .border_color(transparent_black())
@@ -3200,7 +3210,7 @@ mod tests {
         slot: &str,
     ) -> (f32, Vec<(&'static str, gpui::Bounds<gpui::Pixels>)>) {
         cx.update_window(handle.into(), |_, window, _| {
-            let field = window.find("chat-composer").bounds();
+            let field = window.find("chat-composer-shell").bounds();
             let bottom = field.bottom();
             let frames = [
                 "chat-attach",
@@ -3267,16 +3277,49 @@ mod tests {
                 }
                 assert!(gap > px(0.0));
                 if width > 700.0 {
-                    // Beside the field the controls sit on its last line of text (the
-                    // field's frame is inside its hairline).
-                    let line = ui_text::space(widgets::FIELD_PAD_Y) + widgets::field_line() / 2.;
+                    // Beside the field the controls sit on its last line of text, inside its
+                    // hairline.
+                    let line =
+                        ui_text::space(widgets::FIELD_PAD_Y) + widgets::field_line() / 2. + px(1.0);
                     assert!(
                         (slot.center().y + line).abs() < px(1.0),
                         "{design:?}: the controls are centered {:?} above the field's bottom",
                         -slot.center().y
                     );
                 }
+                // At least two lines tall: empty, one line and two lines are the same box,
+                // its text on the first line and the controls on the second.
+                let field = |cx: &mut gpui::TestAppContext| {
+                    cx.update_window(handle.into(), |_, window, _| {
+                        window.find("chat-composer-shell").bounds()
+                    })
+                    .unwrap()
+                };
+                let two_lines = ui_text::space(widgets::FIELD_PAD_Y) * 2.
+                    + widgets::field_line() * 2.
+                    + px(2.0);
+                let empty = field(cx);
+                assert!(
+                    (empty.size.height - two_lines).abs() < px(0.5),
+                    "{design:?} {width}: the empty box is {:?} tall, not two lines",
+                    empty.size.height
+                );
+                for draft in ["one line", "one\ntwo"] {
+                    set_draft(cx, handle, &view, draft);
+                    assert_eq!(
+                        field(cx),
+                        empty,
+                        "{design:?} {width}: {draft:?} resized the box"
+                    );
+                }
+                set_draft(cx, handle, &view, "one\ntwo\nthree");
+                assert!(
+                    field(cx).size.height > empty.size.height + widgets::field_line() / 2.,
+                    "{design:?} {width}: three lines do not grow the box"
+                );
                 for draft in [
+                    "one line",
+                    "one\ntwo",
                     "one\ntwo\nthree\nfour",
                     &"a long pasted line that wraps ".repeat(20),
                     "",
