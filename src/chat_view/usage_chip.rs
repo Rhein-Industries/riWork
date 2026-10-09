@@ -189,7 +189,7 @@ impl ChatView {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(ui_text::space(METER_GAP / 2.0))
+                    .gap(ui_text::space(METER_GAP))
                     .child(ring(fraction, colors.divider, fill))
                     .children(toolbar::percent_text(usage))
             }))
