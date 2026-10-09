@@ -582,28 +582,6 @@ pub(super) fn toggle_button_with_disabled(
     }
 }
 
-pub(super) fn toggle_capsule(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    pressed: bool,
-    look: Look,
-) -> behavior::Toggle {
-    let label = label.into();
-    let colors = look.colors;
-    controls::button(
-        behavior::toggle_content(id, label.clone(), label, pressed)
-            .line_height(gpui::relative(1.618_034))
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(ui_text::space(4.))
-            .py(ui_text::space(CAPSULE_PAD_Y))
-            .text_size(ui_text::text(10.)),
-        Button::Secondary,
-        colors,
-    )
-}
-
 /// Composite content retains its exact layout; the shared Base primitive is
 /// the sole activation/focus/AX owner and adds no visible label or glyph.
 pub(super) fn content_button(
