@@ -414,32 +414,26 @@ struct TerminalTabsView: View {
     /// Back, the tab strip and the menu: the same row, at the same height, over a terminal and over a chat. With no tab open the
     /// project’s name stands where the strip would be. New terminal and Open a worker or shell… are in the menu's Tab section.
     ///
-    /// Each glyph takes a narrow slot (`glyphSlot`): Back hugs the row's leading edge, ⋯ its trailing edge, and the strip has everything
-    /// in between. The 44-point targets are laid over the row rather than reserving width: Back's reaches from the screen edge over the
-    /// strip's leading padding, ⋯'s from the screen edge over its trailing padding. At rest no tab is under a target; a scrolled tab
-    /// passes under them and a tap there is the button's.
+    /// Back and ⋯ match: each is a 44-point target from its screen edge with its glyph centred in it (12 pt from the edge to a 20-point
+    /// glyph, 12 pt from it to the strip), and the strip has everything in between. No target reaches over the strip, so a tab scrolled
+    /// to either end is still the tab's.
     private func navigationRow(_ chrome: TabScreenChrome) -> some View {
-        let slot = glyphSlot, reach = style.target - glyphSlot
-        return HStack(spacing: 0) {
-            Color.clear.frame(width: slot, height: 0)
+        HStack(spacing: 0) {
+            Button { onBack() } label: { Image(systemName: "chevron.left") }
+                .accessibilityLabel("Back to projects")
+                .buttonStyle(TargetButtonStyle()).frame(width: style.target)
+                .chatLayoutProbe("back")
             Group {
                 if model.tabs.isEmpty {
                     Text(project.name).font(style.face(13, bold: true, relativeTo: .headline)).lineLimit(1).accessibilityAddTraits(.isHeader)
-                        .padding(.leading, reach).frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    tabStrip(margins: reach)
+                    tabStrip
                 }
             }
             .chatLayoutProbe("row-strip")
-            Color.clear.frame(width: slot, height: 0)
+            screenMenu(chrome).chatLayoutProbe("more-options")
         }
-        .overlay(alignment: .leading) {
-            Button { onBack() } label: { Image(systemName: "chevron.left").frame(width: slot) }
-                .accessibilityLabel("Back to projects")
-                .buttonStyle(TargetButtonStyle(alignment: .leading)).frame(width: style.target)
-                .chatLayoutProbe("back")
-        }
-        .overlay(alignment: .trailing) { screenMenu(chrome).chatLayoutProbe("more-options") }
         .accessibilityElement(children: .contain)
         .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
         .chatLayoutProbe("navigation")
@@ -554,8 +548,8 @@ struct TerminalTabsView: View {
                 else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
             }
         } label: {
-            Label("More options", systemImage: "ellipsis").labelStyle(.iconOnly).frame(width: glyphSlot)
-                .frame(minWidth: style.target, minHeight: style.target, alignment: .trailing).contentShape(Rectangle())
+            Label("More options", systemImage: "ellipsis").labelStyle(.iconOnly)
+                .frame(width: style.target, height: style.target).contentShape(Rectangle())
         }
             .buttonStyle(.plain)
     }
@@ -591,10 +585,7 @@ struct TerminalTabsView: View {
     private func close(_ session: RemoteSession) {
         Task { if let failure = await model.closeTerminal(session) { model.error = failure.message } }
     }
-    /// The width a tab-row glyph shows in (its target reaches past it).
-    private var glyphSlot: CGFloat { style.pt(28) }
-    /// `margins`: the padding at each end of the strip, under Back's and ⋯'s targets, that a tab at rest stays clear of.
-    private func tabStrip(margins: CGFloat) -> some View {
+    private var tabStrip: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {
@@ -618,7 +609,6 @@ struct TerminalTabsView: View {
                     }
                 }
             }.scrollIndicators(.hidden)
-                .contentMargins(.horizontal, margins, for: .scrollContent)
                 .onChange(of: model.sessionID) { _, id in if let id, !model.terminalCovered { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
                 .onChange(of: model.selectedChatID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
                 .onChange(of: model.selectedBlockedID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } } }

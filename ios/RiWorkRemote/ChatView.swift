@@ -555,6 +555,39 @@ struct StatusLineSurface: ViewModifier {
     }
 }
 
+/// A tap on the transcript puts the software keyboard away: a tap recognizer on the transcript's scroll view (the one this view is
+/// inside), alongside its own gestures and the rows' buttons, which still get their touches.
+private struct TranscriptKeyboardTap: UIViewRepresentable {
+    let enabled: Bool
+    func makeUIView(context: Context) -> Installer { Installer() }
+    func updateUIView(_ view: Installer, context: Context) { view.tap.isEnabled = enabled; view.install() }
+
+    final class Installer: UIView {
+        let tap = KeyboardDismissTap()
+        override init(frame: CGRect) { super.init(frame: frame); isUserInteractionEnabled = false }
+        required init?(coder: NSCoder) { fatalError() }
+        override func didMoveToWindow() { super.didMoveToWindow(); install() }
+        func install() {
+            var view = superview
+            while let current = view, !(current is UIScrollView) { view = current.superview }
+            guard let scroll = view as? UIScrollView, tap.view !== scroll else { return }
+            tap.view?.removeGestureRecognizer(tap)
+            scroll.addGestureRecognizer(tap)
+        }
+    }
+}
+
+final class KeyboardDismissTap: UITapGestureRecognizer, UIGestureRecognizerDelegate {
+    init() {
+        super.init(target: nil, action: nil)
+        addTarget(self, action: #selector(dismiss))
+        cancelsTouchesInView = false
+        delegate = self
+    }
+    @objc private func dismiss() { view?.window?.endEditing(true) }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+}
+
 private struct ChatTranscriptList: View {
     @Environment(\.desktopStyle) private var style
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -572,8 +605,6 @@ private struct ChatTranscriptList: View {
     @State private var sticky = StickyBottom()
     @State private var userDriven = false
     @State private var bottomCorrection: Task<Void, Never>?
-
-    static func putKeyboardAway() { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
 
     var body: some View {
         let transcript = conversation.transcript
@@ -607,6 +638,7 @@ private struct ChatTranscriptList: View {
                 Color.clear.frame(height: 6).id(Self.end)
             }
             .padding(.top, 12)
+            .background(TranscriptKeyboardTap(enabled: dismissesKeyboard))
         }
         .chatLayoutProbe("transcript")
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewportChanged($0) }
@@ -618,9 +650,6 @@ private struct ChatTranscriptList: View {
         // on a hardware keyboard there is none to put away, and the composer must not lose it to a scroll. That goes by the keyboard on
         // screen, not by what GameController reports attached: a paired keyboard or a keyboard case leaves the software one up too.
         .scrollDismissesKeyboard(dismissesKeyboard ? .interactively : .never)
-        .simultaneousGesture(TapGesture().onEnded { if dismissesKeyboard { Self.putKeyboardAway() } })
-        // Hosted tests: whether a tap dismisses now (`visible`), and the tap's effect.
-        .chatLayoutProbe("transcript-tap", visible: dismissesKeyboard, action: { Self.putKeyboardAway() })
         .onScrollPhaseChange { _, phase in
             userDriven = phase == .interacting || phase == .decelerating
             if userDriven {

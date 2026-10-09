@@ -198,13 +198,10 @@ struct TargetButtonStyle: ButtonStyle {
     var dims = true
     /// Where the label sits in its target: off center when the target reaches out past it (the tab row's ＋).
     var alignment: Alignment = .center
-    /// The target's least width; nil for the standard 44 points. Less only where the label already reaches a screen edge (the chat
-    /// composer's buttons, which run to it).
-    var minWidth: CGFloat?
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(tinted ? AnyShapeStyle(.tint) : AnyShapeStyle(.foreground))
-            .frame(minWidth: minWidth ?? style.target, minHeight: style.target, alignment: alignment).contentShape(Rectangle())
+            .frame(minWidth: style.target, minHeight: style.target, alignment: alignment).contentShape(Rectangle())
             .opacity((isEnabled || !dims ? 1 : 0.45) * (configuration.isPressed ? 0.6 : 1))
     }
 }

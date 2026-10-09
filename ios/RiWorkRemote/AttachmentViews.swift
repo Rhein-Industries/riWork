@@ -277,7 +277,7 @@ struct ChatAttachmentStrip: View {
     let images: ChatAttachmentImages
     let remove: (String) -> Void
     var cancelPending: () -> Void = {}
-    /// Where the first card starts: where the composer's text does.
+    /// Where the first card starts: at the transcript's text margin.
     var leadingInset: CGFloat = 0
     @State private var previewing: StagedAttachment?
     private var count: Int { attachments.count + pending.count }

@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
 import Vision
 import RiWorkCore
 @testable import RiWorkRemote
@@ -672,10 +673,11 @@ import RiWorkCore
         await finish(rig)
     }
 
-    /// At 390 pt with two long tab titles the row is Back · tabs · ⋯: Back and ⋯ each show in a 28-point slot at the row's ends and
-    /// the strip has the rest, 334 pt where the old row (44-point Back, ＋ and ⋯, 4 pt apart) left 250 (390 − 44 − 4 − 4 − 44 − 44).
-    /// Both keep 44-point targets from the screen edge, laid over the strip's end padding, which no tab is under at rest. There is no
-    /// ＋: ⋯'s Tab section begins with New terminal and Open a worker or shell…. The context ring and its number have about 6 pt between them.
+    /// At 390 pt with two long tab titles the row is Back · tabs · ⋯, balanced: Back and ⋯ are each a 44-point target from their screen
+    /// edge with the glyph centred in it, the same inset from the edge and the same gap to the strip on both sides, and the strip has
+    /// the rest, 302 pt where the old row (44-point Back, ＋ and ⋯, 4 pt apart) left 250. No target reaches over the strip: with the strip
+    /// scrolled, a tap at either end of it is the strip's. There is no ＋: ⋯'s Tab section begins with New terminal and Open a worker
+    /// or shell…. The context ring and its number have about 6 pt between them.
     func testTheTabRowIsBackTabsAndMoreWithTheStripTakingTheRest() async throws {
         let second = "cccccccc-2222-4222-8222-222222222222"
         let chats = [ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Project orchestrator of the fixture", createdAtUnix: 10, state: .idle),
@@ -688,29 +690,36 @@ import RiWorkCore
         rig.window.layoutIfNeeded()
         let width = rig.window.bounds.width
         let strip = try XCTUnwrap(rig.layout.frames["row-strip"]), back = try XCTUnwrap(rig.layout.frames["back"]), more = try XCTUnwrap(rig.layout.frames["more-options"])
-        let reach = back.maxX - strip.minX
-        print("TAB_ROW width=\(width) strip=\(strip.width) stripAtRest=\(strip.width - 2 * reach) oldStrip=250 back=\(back) more=\(more)")
+        print("TAB_ROW width=\(width) strip=\(strip.width) oldStrip=250 back=\(back) more=\(more)")
         XCTAssertEqual(width, 390)
         XCTAssertNil(rig.layout.frames["new-tab"], "no ＋ in the row")
-        // The visual slots: 28 pt at each end; the strip between them.
-        XCTAssertEqual(strip.minX, 28, accuracy: 0.5, "Back's slot")
-        XCTAssertEqual(width - strip.maxX, 28, accuracy: 0.5, "⋯'s slot")
-        XCTAssertGreaterThanOrEqual(strip.width - 250, 80, "the strip gains the controls' old slots")
-        // The targets: 44 pt from each screen edge, reaching over the strip's end padding only.
-        XCTAssertEqual(back.minX, 0, accuracy: 0.5); XCTAssertGreaterThanOrEqual(back.width, 44); XCTAssertGreaterThanOrEqual(back.height, 44)
-        XCTAssertEqual(more.maxX, width, accuracy: 0.5, "⋯ reaches the screen edge"); XCTAssertGreaterThanOrEqual(more.width, 44); XCTAssertGreaterThanOrEqual(more.height, 44)
-        XCTAssertEqual(reach, 16, accuracy: 0.5); XCTAssertEqual(strip.maxX - more.minX, reach, accuracy: 0.5)
-        let scroll = try XCTUnwrap(descendants(UIScrollView.self, in: rig.host.view).first { abs($0.convert($0.bounds, to: nil).minX - strip.minX) < 0.5 && $0.bounds.width == strip.width })
-        XCTAssertEqual(scroll.adjustedContentInset.left, reach, accuracy: 0.5); XCTAssertEqual(scroll.adjustedContentInset.right, reach, accuracy: 0.5)
-        // The glyphs as drawn: the chevron in Back's slot, ⋯ in its own.
-        let chevron = try inkRuns(rig, in: CGRect(x: 0, y: back.minY, width: strip.minX, height: back.height))
-        XCTAssertEqual(chevron.count, 1, "the chevron: \(chevron)")
-        let ellipsis = try inkRuns(rig, in: CGRect(x: strip.maxX, y: more.minY, width: width - strip.maxX, height: more.height))
-        XCTAssertEqual(ellipsis.count, 1, "⋯ alone: \(ellipsis)")
-        // Over the strip's end padding a tap is the button's.
-        for (point, label) in [(CGPoint(x: back.maxX - 4, y: back.midY), "Back to projects"), (CGPoint(x: more.minX + 4, y: more.midY), "More options")] {
+        // The targets: 44 by 44 from each screen edge; the strip between them, under neither.
+        XCTAssertEqual(back.minX, 0, accuracy: 0.5); XCTAssertEqual(back.width, 44, accuracy: 0.5); XCTAssertGreaterThanOrEqual(back.height, 44)
+        XCTAssertEqual(more.maxX, width, accuracy: 0.5); XCTAssertEqual(more.width, 44, accuracy: 0.5); XCTAssertGreaterThanOrEqual(more.height, 44)
+        XCTAssertEqual(strip.minX, back.maxX, accuracy: 0.5); XCTAssertEqual(strip.maxX, more.minX, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(strip.width - 250, 50, "the strip gains the controls' old slots")
+        // The glyphs, balanced: each centred in its target, the same inset from its edge.
+        let chevron = try inkRuns(rig, in: CGRect(x: 0, y: back.minY, width: back.width, height: back.height))
+        let ellipsis = try inkRuns(rig, in: CGRect(x: more.minX, y: more.minY, width: more.width, height: more.height))
+        XCTAssertEqual(chevron.count, 1, "the chevron: \(chevron)"); XCTAssertEqual(ellipsis.count, 1, "⋯ alone: \(ellipsis)")
+        if let chevron = chevron.first, let ellipsis = ellipsis.first {
+            XCTAssertEqual((chevron.lowerBound + chevron.upperBound) / 2, back.midX, accuracy: 1.5, "the chevron centred in its target")
+            XCTAssertEqual((ellipsis.lowerBound + ellipsis.upperBound) / 2, more.midX, accuracy: 1.5, "⋯ centred in its target")
+        }
+        // The strip scrolled to its middle: a tap at either end of it is the strip's (its tab's), not Back's or ⋯'s.
+        let scroll = try XCTUnwrap(descendants(UIScrollView.self, in: rig.host.view).first { abs($0.convert($0.bounds, to: nil).minX - strip.minX) < 0.5 && abs($0.bounds.width - strip.width) < 0.5 })
+        XCTAssertGreaterThan(scroll.contentSize.width, scroll.bounds.width, "two long tabs overflow the strip")
+        scroll.setContentOffset(CGPoint(x: (scroll.contentSize.width - scroll.bounds.width) / 2, y: 0), animated: false)
+        rig.window.layoutIfNeeded()
+        for x in [strip.minX + 2, strip.maxX - 2] {
+            var view = rig.window.hitTest(CGPoint(x: x, y: strip.midY), with: nil), inStrip = false
+            while let current = view { if current === scroll { inStrip = true }; view = current.superview }
+            XCTAssertTrue(inStrip, "a tap at x=\(x) on the scrolled strip is the strip's")
+        }
+        for (point, label) in [(CGPoint(x: back.maxX - 2, y: back.midY), "Back to projects"), (CGPoint(x: more.minX + 2, y: more.midY), "More options")] {
             if let hit = (rig.window.accessibilityHitTest(point, event: nil) as? NSObject)?.accessibilityLabel { XCTAssertEqual(hit, label) }
         }
+        scroll.setContentOffset(.zero, animated: false)
         // ⋯'s Tab section begins with the two ways to a new tab, above Session info.
         let titles = try await menuTitles(rig, at: CGPoint(x: more.midX, y: more.midY))
         let newTerminal = titles.firstIndex(of: "New terminal"), info = titles.firstIndex(of: "Session info")
@@ -1173,8 +1182,8 @@ import RiWorkCore
         let padding = field.textContainer.lineFragmentPadding
         let textStart = fieldFrame.minX + field.textContainerInset.left + padding
         let textColumn = field.textContainer.size.width - 2 * padding
-        print("COMPOSER width=\(rig.window.bounds.width) textStart=\(textStart) textColumn=\(textColumn) send=\(send) card0=\(card)")
-        XCTAssertGreaterThanOrEqual(textColumn, 290, "the text wraps at nearly the field's width")
+        print("COMPOSER width=\(rig.window.bounds.width) textStart=\(textStart) textColumn=\(textColumn) send=\(send) paperclip=\(rig.layout.frames["paperclip"] ?? .zero) card0=\(card)")
+        XCTAssertGreaterThanOrEqual(textColumn, 300, "the text wraps at nearly the field's width")
         // The paperclip's glyph 8 pt in, the text about 8 pt after it.
         // (Past the field's own stroke, which the terminal look draws at its edge.)
         let clip = try inkRuns(rig, in: CGRect(x: surface.minX, y: fieldFrame.maxY - 40, width: textStart - surface.minX - 1, height: 36)).filter { $0.upperBound > surface.minX + 3 }
@@ -1183,11 +1192,22 @@ import RiWorkCore
             XCTAssertEqual(clip.lowerBound - surface.minX, 8, accuracy: 2, "the paperclip 8 pt from the field's edge")
             XCTAssertEqual(textStart - clip.upperBound, 8, accuracy: 3, "the text about 8 pt after the paperclip")
         }
-        // Send: its circle and 8 pt to the field's end, the target the field's height.
-        XCTAssertEqual(send.maxX, surface.maxX, accuracy: 0.5); XCTAssertEqual(send.width, 38, accuracy: 0.5); XCTAssertGreaterThanOrEqual(send.height, 44)
-        XCTAssertLessThanOrEqual(send.minX - (fieldFrame.maxX - field.textContainerInset.right - padding), padding + 0.5, "the text runs to Send's column")
-        // The first card's left edge is the text's.
-        XCTAssertEqual(card.minX, textStart, accuracy: 1, "the cards start where the text does")
+        // Send: its circle and 8 pt to the field's end, at the end of its 44-point target; the text runs to the target.
+        let paperclip = try XCTUnwrap(rig.layout.frames["paperclip"])
+        XCTAssertEqual(send.maxX, surface.maxX, accuracy: 0.5); XCTAssertEqual(send.maxX, rig.window.bounds.width, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(send.width, 44); XCTAssertGreaterThanOrEqual(send.height, 44)
+        XCTAssertLessThanOrEqual(fieldFrame.maxX, send.minX + 0.5, "the text view ends where Send's target begins")
+        let circle = try inkRuns(rig, in: CGRect(x: send.minX, y: send.minY, width: send.width, height: send.height)).filter { $0.lowerBound < surface.maxX - 3 }
+        if let circle = circle.last { XCTAssertEqual(surface.maxX - circle.upperBound, 8, accuracy: 1.5, "the circle 8 pt from the field's end: \(circle)") }
+        // The paperclip: 44 by 44 from the screen edge, reaching over the text's leading padding; a tap there is its own.
+        XCTAssertEqual(paperclip.minX, 0, accuracy: 0.5); XCTAssertGreaterThanOrEqual(paperclip.width, 44); XCTAssertGreaterThanOrEqual(paperclip.height, 44)
+        for point in [CGPoint(x: paperclip.maxX - 2, y: paperclip.midY), CGPoint(x: send.minX + 2, y: send.midY)] {
+            var view = rig.window.hitTest(point, with: nil), isField = false
+            while let current = view { if current === field { isField = true }; view = current.superview }
+            XCTAssertFalse(isField, "a tap at \(point) is the button's, not the field's")
+        }
+        // The first card's left edge is the transcript's text margin, where its messages begin.
+        XCTAssertEqual(card.minX, ChatItemRow.horizontalInset, accuracy: 1, "the cards start at the transcript's margin")
         try snapshot(rig, name: "composer-tight")
         await finish(rig)
     }
@@ -1200,25 +1220,32 @@ import RiWorkCore
         let field = try await openChat(rig)
         await eventually("the composer has the keyboard") { field.isFirstResponder }
         let scroll = try XCTUnwrap(transcriptScroll(rig))
-        func post(_ name: Notification.Name, height: CGFloat) {
+        // The keyboard's frame as the monitor reads it from UIKit's notifications (not posted: UIKit's own keyboard tracking would
+        // take them too, for the tests after this one).
+        func keyboard(_ height: CGFloat) {
             let screen = UIScreen.main.bounds
-            NotificationCenter.default.post(name: name, object: nil, userInfo: [UIResponder.keyboardFrameEndUserInfoKey: NSValue(cgRect: CGRect(x: 0, y: screen.maxY - height, width: screen.width, height: height))])
+            rig.model.keyboard.software.update(hiding: height == 0, end: CGRect(x: 0, y: screen.maxY - height, width: screen.width, height: height))
         }
         let interactive: [UIScrollView.KeyboardDismissMode] = [.interactive, .interactiveWithAccessory]
+        // The tap: the transcript scroll view's own recognizer, fired as UIKit fires it once a tap is recognized.
+        let tap = try XCTUnwrap(scroll.gestureRecognizers?.compactMap { $0 as? KeyboardDismissTap }.first, "a tap recognizer on the transcript")
+        XCTAssertFalse(tap.cancelsTouchesInView, "the rows' buttons still get their taps")
         // A hardware keyboard and only its shortcut bar: the transcript keeps the composer's focus.
-        post(UIResponder.keyboardWillChangeFrameNotification, height: 55)
-        await eventually("no dismissal with only the shortcut bar") { scroll.keyboardDismissMode == .none && rig.layout.visible["transcript-tap"] == false }
+        try await Task.sleep(for: .milliseconds(800))
+        keyboard(55)
+        await eventually("no dismissal with only the shortcut bar") { scroll.keyboardDismissMode == .none && !tap.isEnabled }
         XCTAssertTrue(field.isFirstResponder)
         // The software keyboard up, a keyboard reported attached all the same: a drag takes it with the finger, a tap puts it away.
-        post(UIResponder.keyboardWillChangeFrameNotification, height: 336)
-        await eventually("interactive dismissal with the software keyboard up") { interactive.contains(scroll.keyboardDismissMode) && rig.layout.visible["transcript-tap"] == true }
-        rig.layout.actions["transcript-tap"]?()
+        keyboard(336)
+        await eventually("interactive dismissal with the software keyboard up") { interactive.contains(scroll.keyboardDismissMode) && tap.isEnabled }
+        tap.state = .ended
         await eventually("a tap on the transcript puts the keyboard away") { !field.isFirstResponder }
         // The drag path is UIKit's interactive dismissal, which resigns the first responder as the drag takes the keyboard down; a
         // hosted test cannot drive that drag, so it checks the transcript's scroll view is set for it.
         field.becomeFirstResponder()
         await eventually("the composer has the keyboard again") { field.isFirstResponder }
-        post(UIResponder.keyboardWillHideNotification, height: 0)
+        try await Task.sleep(for: .milliseconds(800))
+        keyboard(0)
         await eventually("hidden: no dismissal") { scroll.keyboardDismissMode == .none }
         await finish(rig)
         // Without a hardware keyboard the transcript always dismisses.
@@ -2928,8 +2955,9 @@ import RiWorkCore
             await eventually("\(look): the mic is there") { rig.layout.frames["mic"] != nil && rig.layout.frames["send"] == nil }
             XCTAssertEqual(try XCTUnwrap(width(of: ChatComposerTextView.self, in: rig)), off, accuracy: 1, "\(look): in the same slot")
             // The buttons' column: the 30-point circle and 8 pt to the field's end at the screen edge, the field's height tall.
-            XCTAssertGreaterThanOrEqual(rig.layout.frames["mic"]?.width ?? 0, 38, "\(look): the buttons' column")
-            XCTAssertGreaterThanOrEqual(rig.layout.frames["mic"]?.height ?? 0, 44, "\(look): a full-height target")
+            // A full target: 44 points, reaching back from the buttons' 38-point column.
+            XCTAssertGreaterThanOrEqual(rig.layout.frames["dictation-target"]?.width ?? 0, 44, "\(look): a full target")
+            XCTAssertGreaterThanOrEqual(rig.layout.frames["dictation-target"]?.height ?? 0, 44, "\(look): a full target")
             rig.model.conversation(chatID).draft = "typed"
             await eventually("\(look): typing brings Send back in its place") { rig.layout.frames["mic"] == nil && rig.layout.frames["send"] != nil }
             rig.model.conversation(chatID).draft = ""
