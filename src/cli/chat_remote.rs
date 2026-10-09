@@ -361,6 +361,8 @@ fn collect_page(source: &mut impl Source, plan: &Plan) -> Result<Page, String> {
 /// The fields of `Configure` that may be left out, and so may be `null`. No other field of
 /// any command may be `null`: that is a field the command does not have.
 const OPTIONAL_FIELDS: [&str; 4] = ["model", "effort", "approval_mode", "fast"];
+/// The same for `Switch`, whose `provider` is required.
+const SWITCH_OPTIONAL_FIELDS: [&str; 3] = ["model", "effort", "fast"];
 
 /// Whether everything in `input` was taken into `output`, the command serde made of it: a
 /// field serde does not know is not there, and one it had to ignore differs. A `null` is no
@@ -415,10 +417,10 @@ pub(super) fn parse_command(text: &str) -> Result<ChatCommand, String> {
     let command: ChatCommand =
         serde_json::from_value(value.clone()).map_err(|e| shape_error(&e))?;
     let taken = serde_json::to_value(&command).map_err(|error| error.to_string())?;
-    let nullable: &[&str] = if matches!(command, ChatCommand::Configure { .. }) {
-        &OPTIONAL_FIELDS
-    } else {
-        &[]
+    let nullable: &[&str] = match command {
+        ChatCommand::Configure { .. } => &OPTIONAL_FIELDS,
+        ChatCommand::Switch { .. } => &SWITCH_OPTIONAL_FIELDS,
+        _ => &[],
     };
     if !consumed(&value, &taken, nullable) {
         return Err(invalid(
@@ -454,6 +456,14 @@ pub(super) fn parse_command(text: &str) -> Result<ChatCommand, String> {
                     "configure needs a model, an effort, an approval_mode or fast",
                 ));
             }
+            if let Some(model) = model {
+                model_setting("model", model.clone()).map_err(invalid)?;
+            }
+            if let Some(effort) = effort {
+                effort_setting("effort", effort.clone()).map_err(invalid)?;
+            }
+        }
+        ChatCommand::Switch { model, effort, .. } => {
             if let Some(model) = model {
                 model_setting("model", model.clone()).map_err(invalid)?;
             }

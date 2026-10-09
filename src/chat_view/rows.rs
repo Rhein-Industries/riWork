@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use gpui::{AnyElement, Context, ElementId, SharedString, Window, div, prelude::*, px, rgb};
+use gpui_kit::base::TestSupportExt as _;
 
 use crate::{
     chat::model::{ChangeKind, FileChange, Item, ItemBody, NoticeLevel, Step, StepStatus},
@@ -21,6 +22,12 @@ use super::{
 /// Output lines and bytes a command card shows; the rest is counted and can be copied.
 const OUTPUT_LINES: usize = 200;
 const OUTPUT_BYTES: usize = 32 * 1024;
+
+/// Every design's transcript geometry, in design points: a row's inset from the pane's sides
+/// and from the rows around it, and the widest the reading column gets, centered in the pane.
+const ROW_INSET_X: f32 = 20.0;
+const ROW_INSET_Y: f32 = 8.0;
+const COLUMN_WIDTH: f32 = 1040.0;
 
 /// Makes the body of a card, which is made only for a card that is open.
 type BodyMaker<'a> = dyn Fn(&ChatView, &mut Context<ChatView>) -> AnyElement + 'a;
@@ -203,40 +210,55 @@ impl ChatView {
             None => self.footer(look),
         };
         div()
+            .id(id(format!("transcript-row:{ix}")))
             .w_full()
-            .px(ui_text::space(14.0))
-            .py(ui_text::space(4.0))
+            .min_w_0()
+            .px(ui_text::space(ROW_INSET_X))
+            .py(ui_text::space(ROW_INSET_Y))
             .child(
                 div()
+                    .id(id(format!("transcript-content:{ix}")))
                     .w_full()
-                    .max_w(ui_text::space(920.0))
+                    .min_w_0()
+                    .max_w(ui_text::space(COLUMN_WIDTH))
                     .mx_auto()
-                    .child(content),
+                    .child(content)
+                    .test_support(),
             )
+            .test_support()
             .into_any_element()
     }
 
     fn item(&self, ix: usize, item: &Item, look: Look, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
         match &item.body {
+            // What you sent is a block across the reading column, in every design; Native's
+            // is plain grey with its rounded corners, Hermes's a bordered panel, the colorful
+            // themes' tinted in their accent.
             ItemBody::UserMessage { text } => div()
                 .w_full()
                 .flex()
-                .justify_end()
                 .child(
                     div()
-                        .max_w(gpui::relative(0.85))
-                        .px(ui_text::space(10.0))
-                        .py(ui_text::space(6.0))
-                        // Native's is a plain grey bubble, as Messages draws one.
-                        .when(look.native, |bubble| {
-                            bubble
-                                .px(ui_text::space(12.0))
+                        .id(id(format!("user-message:{}", item.id)))
+                        .w_full()
+                        .min_w_0()
+                        .px(ui_text::space(12.0))
+                        .py(ui_text::space(8.0))
+                        .when(look.native, |block| {
+                            block
                                 .rounded(controls::radius(BUBBLE_RADIUS))
                                 .bg(rgb(colors.panel_active))
                         })
-                        .when(!look.native, |bubble| {
-                            bubble
+                        .when(look.hermes(), |block| {
+                            block
+                                .rounded(px(4.0))
+                                .border_1()
+                                .border_color(rgb(colors.divider))
+                                .bg(rgb(colors.panel))
+                        })
+                        .when(!look.native && !look.hermes(), |block| {
+                            block
                                 .rounded(px(6.0))
                                 .border_1()
                                 .border_color(rgb(look.tint(colors.cyan, 0.45)))
@@ -247,7 +269,8 @@ impl ChatView {
                             &format!("user:{}", item.id),
                             look,
                             cx,
-                        )),
+                        ))
+                        .test_support(),
                 )
                 .into_any_element(),
             ItemBody::AgentMessage { text } => self.agent_message(ix, item, text, look, cx),
@@ -380,9 +403,11 @@ impl ChatView {
         let message = item.id.clone();
         let group = SharedString::from(format!("agent-{ix}"));
         div()
+            .id(id(format!("agent-message:{}", item.id)))
             .group(group.clone())
             .relative()
             .w_full()
+            .min_w_0()
             .child(self.prose(&blocks, &item.id, look, cx))
             .child(
                 div()
@@ -399,6 +424,7 @@ impl ChatView {
                             })),
                     ),
             )
+            .test_support()
             .into_any_element()
     }
 
@@ -962,7 +988,7 @@ impl ChatView {
     }
 }
 
-/// A user message bubble's corner radius under Native.
+/// A user message block's corner radius under Native.
 const BUBBLE_RADIUS: f32 = 12.0;
 
 /// A card's surface: Native rounds it like its rows and lets the hairline be its edge.

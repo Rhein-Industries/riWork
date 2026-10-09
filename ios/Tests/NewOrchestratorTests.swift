@@ -192,14 +192,14 @@ final class NewOrchestratorTests: XCTestCase {
     private func target(branch: String = "main") -> NewTerminalTarget { .worktree(id: tree, projectID: project, projectName: "Alpha", branch: branch, isPrimary: true) }
 
     func testTheOrchestratorRowsAreOnlyOfferedWhereTheDesktopOpensThem() {
-        XCTAssertEqual(NewTerminalKind.allCases.count, 6, "the kinds that make a tab of their own are what they were")
+        XCTAssertEqual(NewTerminalKind.allCases.count, 5, "the kinds that make a tab of their own: four terminals and one chat")
         XCTAssertEqual(NewTerminalKind.offered(chats: false), NewTerminalKind.terminalKinds)
         XCTAssertEqual(NewTerminalKind.offered(chats: true), NewTerminalKind.allCases)
         XCTAssertEqual(NewTerminalKind.offered(chats: false, orchestrators: true), NewTerminalKind.terminalKinds + [.projectOrchestrator, .globalOrchestrator])
         XCTAssertEqual(NewTerminalKind.offered(chats: true, orchestrators: true).map(\.title),
-                       ["Shell", "Codex", "Claude", "Grok", "Codex chat", "Claude chat", "Project orchestrator", "Global orchestrator"])
+                       ["Shell", "Codex", "Claude", "Grok", "Chat", "Project orchestrator", "Global orchestrator"])
         XCTAssertEqual(NewTerminalKind.orchestratorKinds.map(\.isOrchestrator), [true, true])
-        XCTAssertEqual(NewTerminalKind.allCases.map(\.isOrchestrator), Array(repeating: false, count: 6))
+        XCTAssertEqual(NewTerminalKind.allCases.map(\.isOrchestrator), Array(repeating: false, count: 5))
     }
     func testAnOrchestratorHasNoUnrestrictedSwitchAndIsNeitherATerminalNorAChat() {
         for kind in NewTerminalKind.orchestratorKinds {
@@ -209,7 +209,7 @@ final class NewOrchestratorTests: XCTestCase {
                 XCTAssertEqual($0 as? NewTerminalValidationError, .unknownKind)
             }
         }
-        XCTAssertTrue(NewTerminalKind.codexChat.isAgent, "and the others are as they were")
+        XCTAssertTrue(NewTerminalKind.chat.isAgent, "and the others are as they were")
     }
     func testTheProjectOrchestratorIsOfTheProjectNotOfAWorktree() throws {
         var form = NewTerminalForm(targets: [target(), .worktree(id: other, projectID: project, projectName: "Alpha", branch: "feature", isPrimary: false)],
@@ -233,7 +233,7 @@ final class NewOrchestratorTests: XCTestCase {
         }
     }
     func testTheKeyboardStepsThroughTheOrchestratorRowsAndSkipsTheWorktreeRow() {
-        var form = NewTerminalForm(targets: [target()], kind: .claudeChat, kinds: NewTerminalKind.offered(chats: true, orchestrators: true))
+        var form = NewTerminalForm(targets: [target()], kind: .chat, kinds: NewTerminalKind.offered(chats: true, orchestrators: true), chatProvider: .claude)
         form.handle(.down)
         XCTAssertEqual(form.kind, .projectOrchestrator)
         XCTAssertEqual(form.fields, [.kind, .orchestratorMode, .create], "no worktree to choose, no switch")
@@ -280,7 +280,7 @@ final class NewOrchestratorTests: XCTestCase {
     }
 
     func testNewChatCarriesTheChosenModel() throws {
-        var form = NewTerminalForm(targets: [target()], kind: .codexChat, kinds: NewTerminalKind.offered(chats: true, orchestrators: true))
+        var form = NewTerminalForm(targets: [target()], kind: .chat, kinds: NewTerminalKind.offered(chats: true, orchestrators: true))
         // The model comes from the sheet's model choice (the picker), not typed text.
         form.chatChoices[.codex] = NewChatChoice(model: ChatModelOption(id: "custom-model", name: "Custom"), usesModel: true)
         guard case .chat(let request) = try form.submission() else { return XCTFail() }

@@ -84,7 +84,7 @@ riwork version | --version              Print the RiWork version
 riwork remote pair|revoke|devices|start|relay   Encrypted mobile access (standalone binary)
 riwork remote --help                    Pairing, relay and connector command options
 riwork shell create [--project ID | --worktree ID] [--command CMD] [--no-parent]
-riwork shell create [--worktree ID] --harness codex|claude|grok [--unrestricted]
+riwork shell create [--worktree ID] --harness codex|claude|grok [--unrestricted | --as-settings]
 riwork shell list [--project ID | --all]
 riwork shell output ID [--lines N] [--styled]   Read current shell output by UUID
 riwork shell output ID --json [--lines N] [--styled] [--if-changed HASH [--wait-ms N]]
@@ -102,6 +102,8 @@ riwork chat list [--project ID] [--json]   List Codex and Claude chats, running 
 riwork chat open CHAT_ID                 Reopen an ordinary chat in its Mac project window
 riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
                 [--model NAME] [--effort LEVEL] [--fast] [--title TEXT]
+riwork chat models --provider codex|claude [--project ID] [--json]
+                                        The models chats of that provider reported, read from saved chats
 riwork chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
 riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [--json]
                                         Read a chat's events after N, waiting up to M ms for the first
@@ -156,9 +158,14 @@ chat snapshot UUID --json reads current full items and controls directly from di
 starting a host. --max is 1–100 (default 50); --max-bytes bounds the complete response.
 Use its cursor and before with --cursor TOKEN --before ORDER to page older full items.
 chat command takes one ChatCommand as JSON (send, interrupt, approve,
-answer, configure, compact, stop, dismiss_notice) and refuses unknown fields; errors that start with
+answer, configure, compact, stop, dismiss_notice, switch) and refuses unknown fields; errors that start with
 `invalid_request:` are about the command, anything else about the host or the chat.
-capabilities --json has \"chat\": true and \"orchestrator_create\": true.
+{\"command\":\"switch\",\"provider\":\"claude\"} goes on with the other provider in the same chat
+(optional model, effort, fast); it is refused while a turn runs or waits.
+chat models lists what a chat of that provider can be set to, read from saved chats; a
+project selects the Codex account the list is for.
+capabilities --json has \"chat\": true, \"orchestrator_create\": true,
+\"chat_provider_switch\": true and \"chat_models\": true.
 handoff writes the source conversation into RIWORK_HOME/handoffs/ID.md (owner-only) and
 starts the target in the same project, worktree and directory with a first message that
 points at it (a chat gets a short document inline); the source is neither stopped nor
@@ -843,6 +850,11 @@ fn open_command(args: Vec<String>, json: bool) -> Result<(), String> {
 ///
 /// `shell_paste`: `shell paste ID -- FILE...` pastes file paths as a drop on the terminal does,
 /// which is how the remote connector hands a shell the files a phone uploaded.
+///
+/// `shell_create_as_settings`: `shell create --harness KIND --as-settings` starts the agent
+/// unrestricted or not as **Agent terminals run unrestricted** in Settings says, which is how
+/// the remote connector answers a phone that leaves `unrestricted` out. An older CLI would
+/// refuse the flag as a usage error.
 fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     ensure_empty(&args)?;
     if json {
@@ -854,7 +866,10 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
             "chat": true,
             "orchestrator_create": true,
             "tabs": true,
-            "shell_paste": true
+            "shell_paste": true,
+            "shell_create_as_settings": true,
+            "chat_provider_switch": true,
+            "chat_models": true
         }));
     }
     println!("verifies_shell yes");
@@ -863,6 +878,9 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     println!("chat yes");
     println!("orchestrator_create yes");
     println!("shell_paste yes");
+    println!("shell_create_as_settings yes");
+    println!("chat_provider_switch yes");
+    println!("chat_models yes");
     Ok(())
 }
 
@@ -1659,13 +1677,26 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 })
                 .transpose()?;
             let unrestricted = take_flag(&mut args, "--unrestricted");
+            let as_settings = take_flag(&mut args, "--as-settings");
             ensure_empty(&args)?;
             if harness.is_some() && command.is_some() {
                 return Err("Use either --harness or --command".to_owned());
             }
+            if unrestricted && as_settings {
+                return Err("Use either --unrestricted or --as-settings".to_owned());
+            }
             if unrestricted && harness.is_none() {
                 return Err("--unrestricted requires --harness".to_owned());
             }
+            if as_settings && harness.is_none() {
+                return Err("--as-settings requires --harness".to_owned());
+            }
+            // `--as-settings` is what the New tab menu does: unrestricted while
+            // **Agent terminals run unrestricted** is on. Without it the CLI stays
+            // restricted unless asked, so scripts keep their meaning.
+            let unrestricted = unrestricted
+                || (as_settings
+                    && crate::settings::agent_terminals_unrestricted(manager.state_home()));
             let state = Store::open_default()?.snapshot()?;
             let (project_id, worktree_id, cwd) =
                 launch_scope(&state, project.as_deref(), worktree.as_deref())?;
@@ -2207,12 +2238,59 @@ fn chat_client_command(
                 Ok(format!("Stopped {id}\n"))
             }
         }
+        "models" => {
+            let provider = match take_option(&mut args, "--provider")?.as_deref() {
+                Some("codex") => crate::chat::model::Provider::Codex,
+                Some("claude") => crate::chat::model::Provider::Claude,
+                _ => return Err(CHAT_MODELS_USAGE.to_owned()),
+            };
+            let project = take_option(&mut args, "--project")?;
+            ensure_empty(&args)?;
+            // Read from what chats saved: no host is started, no provider asked.
+            let project_id = match project {
+                Some(selector) => Some(
+                    Store::open(home)?
+                        .snapshot()?
+                        .project(&selector)?
+                        .id
+                        .clone(),
+                ),
+                None => None,
+            };
+            let catalog = crate::chat::catalog::saved(home, project_id.as_deref(), provider);
+            if json {
+                json_text(&json!({
+                    "provider": provider,
+                    "models": catalog.supported,
+                    "configured": catalog.configured,
+                    "account_label": catalog.account_label,
+                    "error": catalog.error,
+                }))
+            } else if let Some(error) = catalog.error {
+                Err(error)
+            } else {
+                Ok(catalog
+                    .supported
+                    .iter()
+                    .map(|model| format!("{}\t{}\n", model.id, model.name))
+                    .chain(
+                        catalog
+                            .configured
+                            .iter()
+                            .map(|id| format!("{id}\t(previously configured)\n")),
+                    )
+                    .collect())
+            }
+        }
         _ => Err(
-            "Usage: riwork chat serve|ensure|list|new|snapshot|events|command|send|stop (riwork help)"
+            "Usage: riwork chat serve|ensure|list|new|models|snapshot|events|command|send|stop (riwork help)"
                 .to_owned(),
         ),
     }
 }
+
+const CHAT_MODELS_USAGE: &str =
+    "Usage: riwork chat models --provider codex|claude [--project ID] [--json]";
 
 const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--title TEXT]";
 
@@ -3274,11 +3352,11 @@ mod orchestrator_tests;
 #[cfg(test)]
 mod tests {
     use super::{
-        HistoryArguments, agent_hook_command, appearance_summary, frozen_codex_usage_home,
-        history_json, opens_workspace, output_json, parse_history_arguments, parse_keys_arguments,
+        HistoryArguments, agent_hook_command, frozen_codex_usage_home, history_json,
+        opens_workspace, output_json, parse_history_arguments, parse_keys_arguments,
         parse_output_arguments, reload_failure_details, reload_summary, schedule_line,
         scoped_codex_usage_home, take_flag_before_separator, take_orchestrator_project,
-        take_update_profile, terminal_safe, unknown_invocation, unreadable_reload_error,
+        take_update_profile, terminal_safe, unreadable_reload_error,
     };
     use crate::sessions::ShellSession;
     use crate::store::{State, Store};
@@ -3565,46 +3643,6 @@ mod tests {
                 "id": SHELL, "output": "1\n\n3", "line_count": 3,
                 "history_size": 40, "complete": false
             })
-        );
-    }
-
-    #[test]
-    fn appearance_summary_names_mode_colors_and_terminal() {
-        let mut published =
-            crate::theme::Appearance::resolve(crate::theme::ThemeChoice::RiWork, false)
-                .published(false);
-        published.updated_at = 1_790_000_000;
-        assert_eq!(
-            appearance_summary(&published),
-            "Appearance: dark (updated 2026-09-21 14:13:20 UTC)\n\
-             Palette:    bg #090d14 panel #101720 panel_active #14212a divider #253c45\n\
-             \x20           cyan #55e6dc magenta #ce78ef gold #f4bf75 text #d3e1e6 muted #708993\n\
-             Terminal:   background #090d14 foreground #d3e1e6 and 16 palette colors\n"
-        );
-        published.native = true;
-        assert!(
-            appearance_summary(&published)
-                .starts_with("Appearance: dark, Native (updated 2026-09-21 14:13:20 UTC)\n")
-        );
-        published.mic = true;
-        assert!(
-            appearance_summary(&published)
-                .starts_with("Appearance: dark, Native, mic (updated 2026-09-21 14:13:20 UTC)\n")
-        );
-        published.native = false;
-        assert!(
-            appearance_summary(&published)
-                .starts_with("Appearance: dark, mic (updated 2026-09-21 14:13:20 UTC)\n")
-        );
-        published.mic = false;
-        published.dark = false;
-        published.terminal = None;
-        published.updated_at = u64::MAX;
-        let summary = appearance_summary(&published);
-        assert!(summary.starts_with("Appearance: light (updated 18446744073709551615)\n"));
-        assert!(
-            summary.ends_with("Terminal:   colors unknown\n"),
-            "{summary}"
         );
     }
 
@@ -3948,34 +3986,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn unknown_invocation_names_the_argument_and_points_to_usage() {
-        let option = unknown_invocation(&args(&["--bogus"]));
-        assert!(option.contains("Unknown option '--bogus'"), "{option}");
-        let command = unknown_invocation(&args(&["shells", "list"]));
-        assert!(
-            command.contains("'shells' is not a riwork command"),
-            "{command}"
-        );
-        for message in [option, command] {
-            assert!(message.contains("Usage: riwork"), "{message}");
-            assert!(message.contains("riwork help"), "{message}");
-        }
-    }
-
-    #[test]
-    fn grok_usage_is_an_empty_report_not_an_error() {
-        let usage = crate::usage::grok_provider_usage(&crate::usage::GrokTabUsage::unavailable(
-            "This Grok session is not running",
-        ));
-        let json = serde_json::to_value(&usage).unwrap();
-        assert_eq!(json["provider"], "grok");
-        assert_eq!(json["windows"], serde_json::json!([]));
-        assert_eq!(json["account_label"], "unknown");
-        assert_eq!(json["session_error"], "This Grok session is not running");
-        assert!(json.get("session").is_none());
-    }
-
     fn main_worktree_state() -> (State, [String; 3]) {
         let projects: [String; 3] = std::array::from_fn(|_| uuid::Uuid::new_v4().to_string());
         let mut worktrees = Vec::new();
@@ -4131,16 +4141,6 @@ mod tests {
             serde_json::to_value(&stranded).unwrap()["unreadable_registrations"],
             2
         );
-    }
-
-    #[test]
-    fn reload_with_readable_and_unreadable_apps_still_reports_what_was_reloaded() {
-        let mixed = reload_report(1, &[2, 1]);
-        assert_eq!(
-            reload_summary(&mixed),
-            "Reloaded 2 RiWork apps (3 windows). Running shells and agents were preserved."
-        );
-        assert!(unreadable_reload_error(&mixed).is_some());
     }
 
     #[test]

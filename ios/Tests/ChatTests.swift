@@ -38,7 +38,7 @@ final class ChatTests: XCTestCase {
     }
     func testEveryCommandWeSendEncodesToTheFormTheDesktopWrites() throws {
         let commands = try fixture()["commands"].array
-        XCTAssertEqual(commands.count, 13)
+        XCTAssertEqual(commands.count, 15)
         for original in commands {
             let command = try original.decode(ChatCommand.self)
             XCTAssertEqual(try wire(command), original, "\(original)")
@@ -56,6 +56,9 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual(try wire(ChatCommand.answer(requestID: "q", answers: [["A"], []])), try value(#"{"command":"answer","request_id":"q","answers":[["A"],[]]}"#))
         XCTAssertEqual(try wire(ChatCommand.send(text: "hi")), try value(#"{"command":"send","text":"hi"}"#))
         XCTAssertEqual(try wire(ChatCommand.interrupt), try value(#"{"command":"interrupt"}"#))
+        // A switch names its provider, and only what was chosen of the new one.
+        XCTAssertEqual(try wire(ChatCommand.switchProvider(provider: .claude)), try value(#"{"command":"switch","provider":"claude"}"#))
+        XCTAssertEqual(try wire(ChatCommand.switchProvider(provider: .codex, model: "gpt-5.5", fast: true)), try value(#"{"command":"switch","provider":"codex","model":"gpt-5.5","fast":true}"#))
     }
     func testChatInfosRoundTripWithOptionalFieldsAbsent() throws {
         let chats = try fixture()["chats"].array
@@ -77,6 +80,12 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual(minimal.state, .starting)
         XCTAssertNil(minimal.model); XCTAssertNil(minimal.providerThreadID)
         XCTAssertFalse(minimal.fast)
+        XCTAssertNil(full.carriedOver); XCTAssertNil(minimal.carriedOver)
+        // A chat that went on with the other provider: the same chat, the new provider, and who had the conversation.
+        let switched = try chats[2].decode(ChatInfo.self)
+        XCTAssertEqual(switched.id, full.id); XCTAssertEqual(switched.provider, .claude); XCTAssertEqual(switched.model, "opus")
+        XCTAssertEqual(switched.carriedOver?.from, #"Codex chat "Codex chat" (11111111)"#)
+        XCTAssertTrue(switched.carriedOver?.document.hasSuffix("/context.md") == true)
     }
     func testTheWordsOfTheEnumsAreTheDesktops() throws {
         let doc = try fixture()

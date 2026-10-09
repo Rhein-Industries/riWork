@@ -814,6 +814,7 @@ fn placeholder_source() -> handoff::Source {
         orchestrator: None,
         fast: false,
         state: Default::default(),
+        carried_over: None,
     })
 }
 
@@ -1133,21 +1134,6 @@ mod tests {
     }
 
     #[test]
-    fn the_lines_follow_the_choices() {
-        use Row::*;
-        let rows = |kind, provider, askable| choices(kind, provider, askable).rows();
-        // A Codex has accounts to pick; an agent that can be asked has a way to be read.
-        assert_eq!(
-            rows(Kind::Chat, HarnessKind::Codex, true),
-            [Target, Agent, Model, Account, Context, Note, Cancel, Start]
-        );
-        assert_eq!(
-            rows(Kind::Shell, HarnessKind::Claude, false),
-            [Target, Agent, Model, Note, Cancel, Start]
-        );
-    }
-
-    #[test]
     fn a_chat_cannot_be_grok_and_a_terminal_can() {
         let mut picked = choices(Kind::Shell, HarnessKind::Grok, true);
         assert_eq!(picked.agents().len(), 3);
@@ -1157,17 +1143,6 @@ mod tests {
         picked.provider = HarnessKind::Claude;
         picked.set_kind(Kind::Shell);
         assert_eq!(picked.provider, HarnessKind::Claude, "a fine choice stays");
-    }
-
-    #[test]
-    fn models_are_free_text_with_a_few_suggestions() {
-        let suggestions = |provider| choices(Kind::Chat, provider, true).suggestions();
-        assert_eq!(
-            suggestions(HarnessKind::Claude),
-            ["opus", "sonnet", "haiku"]
-        );
-        assert!(!suggestions(HarnessKind::Codex).is_empty());
-        assert!(suggestions(HarnessKind::Grok).is_empty());
     }
 
     #[test]

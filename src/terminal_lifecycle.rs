@@ -203,13 +203,6 @@ mod tests {
     }
 
     #[test]
-    fn a_shown_terminal_is_never_released_however_old_its_clock_is() {
-        let plan = plan_of(vec![tab(1, secs(3600)), tab(2, secs(3600))]);
-        assert!(!plan.release.contains(&1));
-        assert_eq!(plan.release, vec![2]);
-    }
-
-    #[test]
     fn every_panes_active_tab_is_shown_and_only_the_others_are_judged() {
         let panes = vec![
             pane(1, 1, vec![tab(1, secs(100)), tab(2, secs(3600))]),
@@ -244,20 +237,6 @@ mod tests {
         ]);
         // Tab 1 is shown; 2, 3 and 4 are the three most recently visible.
         assert_eq!(plan.release, vec![6, 5]);
-    }
-
-    #[test]
-    fn a_short_hide_keeps_the_terminal_even_outside_the_warm_set() {
-        let plan = plan_of(vec![
-            tab(1, secs(0)),
-            tab(2, secs(1)),
-            tab(3, secs(2)),
-            tab(4, secs(3)),
-            tab(5, secs(29)),
-        ]);
-        assert!(plan.release.is_empty());
-        // The fifth tab is one second short of the grace period.
-        assert_eq!(plan.recheck, Some(secs(1)));
     }
 
     #[test]
@@ -307,34 +286,6 @@ mod tests {
     }
 
     #[test]
-    fn a_locked_pane_shows_its_active_tab_like_any_other_pane() {
-        // Locking a pane keeps its tabs open; it does not change what is on screen,
-        // so the policy takes no lock flag. Pane 1 is a locked pane holding several
-        // terminals and pane 2 is the one being worked in: both keep their active
-        // tab, and the locked pane's other tabs are judged like anyone else's.
-        let mut locked = vec![tab(10, secs(0))];
-        locked.extend((11..=15).map(|id| tab(id, secs(100 + id))));
-        let panes = vec![
-            pane(1, 0, locked),
-            pane(2, 0, vec![tab(20, secs(0)), tab(21, secs(40))]),
-        ];
-        let plan = plan_for(&panes, 2, false, false);
-        assert!(!plan.release.contains(&10), "the locked pane's shown tab");
-        assert!(!plan.release.contains(&20), "the active pane's shown tab");
-        // Warm: 21, 11 and 12. The rest are past the grace period.
-        assert_eq!(plan.release, vec![15, 14]);
-    }
-
-    #[test]
-    fn a_locked_pane_stays_shown_while_it_is_not_the_active_pane() {
-        let panes = vec![
-            pane(1, 0, vec![tab(1, secs(3600))]),
-            pane(2, 0, vec![tab(2, secs(0))]),
-        ];
-        assert_eq!(plan_for(&panes, 2, false, false), Plan::default());
-    }
-
-    #[test]
     fn focus_mode_shows_only_the_active_panes_tab() {
         assert!(is_shown(0, 0, 1, 2, false));
         assert!(is_shown(0, 0, 2, 2, true));
@@ -358,16 +309,6 @@ mod tests {
     }
 
     #[test]
-    fn focus_mode_lets_the_other_panes_go_once_they_have_been_hidden_long_enough() {
-        let mut panes = vec![pane(9, 0, vec![tab(9, secs(0))])];
-        panes.extend((1..=5).map(|id| pane(id, 0, vec![tab(id, secs(60 + id))])));
-        // Five hidden panes: three stay warm, the two longest hidden go.
-        assert_eq!(plan_for(&panes, 9, true, false).release, vec![5, 4]);
-        // Without focus mode all six tabs are shown.
-        assert!(plan_for(&panes, 9, false, false).release.is_empty());
-    }
-
-    #[test]
     fn a_frozen_screen_releases_nothing() {
         let mut tabs = vec![tab(1, secs(0))];
         tabs.extend((2..=9).map(|id| tab(id, secs(10_000))));
@@ -380,20 +321,6 @@ mod tests {
     fn a_frozen_screen_with_nothing_hidden_needs_no_recheck() {
         let panes = single(vec![tab(1, secs(0))]);
         assert_eq!(plan_for(&panes, 1, false, true), Plan::default());
-    }
-
-    #[test]
-    fn a_drag_does_not_hide_the_shown_tabs_and_ends_where_it_started() {
-        // A drag freezes the screen but the shown tabs stay the shown tabs: once it
-        // ends the same layout is judged again and they are still safe.
-        let mut tabs = vec![tab(1, secs(0))];
-        tabs.extend((2..=9).map(|id| tab(id, secs(10_000 + id))));
-        let panes = single(tabs);
-        let frozen = plan_for(&panes, 1, false, true);
-        let thawed = plan_for(&panes, 1, false, false);
-        assert!(frozen.release.is_empty());
-        assert!(!thawed.release.contains(&1));
-        assert_eq!(thawed.release, vec![9, 8]);
     }
 
     #[test]

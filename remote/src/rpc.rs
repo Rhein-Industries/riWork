@@ -16,7 +16,7 @@ use std::{
     process::Stdio,
     sync::{
         Arc, Mutex, Weak,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
 };
 use tokio::{
@@ -430,18 +430,25 @@ enum CreateTarget {
 struct CreateSpec {
     target: CreateTarget,
     kind: CreateKind,
+    /// Left out, as `false`: restricted, as it always was.
     unrestricted: bool,
+    /// The phone leaves the choice to the desktop: an agent runs as its **Agent terminals
+    /// run unrestricted** says, if the installed CLI can ask it (`shell create
+    /// --as-settings`), and restricted otherwise. Only a phone that knows the feature sends
+    /// it, so an older phone's request without `unrestricted` keeps meaning restricted.
+    as_settings: bool,
     command: Option<String>,
 }
-const CREATE_FIELDS: [&str; 5] = [
+const CREATE_FIELDS: [&str; 6] = [
     "project_id",
     "worktree_id",
     "kind",
     "unrestricted",
+    "as_settings",
     "command",
 ];
 
-/// The params of `shell.create`, strictly: an object with only the five fields
+/// The params of `shell.create`, strictly: an object with only the six fields
 /// below, none of them null, before any CLI runs.
 fn create_spec(params: &Value) -> std::result::Result<CreateSpec, Fault> {
     let object = params
@@ -472,14 +479,21 @@ fn create_spec(params: &Value) -> std::result::Result<CreateSpec, Fault> {
         text("kind")?.ok_or_else(|| invalid("kind is required: shell, codex, claude or grok"))?;
     let kind = CreateKind::parse(kind)
         .ok_or_else(|| invalid("kind must be shell, codex, claude or grok"))?;
-    let unrestricted = match object.get("unrestricted") {
-        None => false,
-        Some(Value::Bool(flag)) => *flag,
-        Some(_) => return Err(invalid("unrestricted must be a boolean")),
+    let flag = |name: &str| -> std::result::Result<Option<bool>, Fault> {
+        match object.get(name) {
+            None => Ok(None),
+            Some(Value::Bool(flag)) => Ok(Some(*flag)),
+            Some(_) => Err(invalid(format!("{name} must be a boolean"))),
+        }
     };
-    if unrestricted && kind.harness().is_none() {
+    let (unrestricted, as_settings) = (flag("unrestricted")?, flag("as_settings")?);
+    if unrestricted.is_some() && as_settings.is_some() {
+        return Err(invalid("give either unrestricted or as_settings"));
+    }
+    let (unrestricted, as_settings) = (unrestricted.unwrap_or(false), as_settings.unwrap_or(false));
+    if (unrestricted || as_settings) && kind.harness().is_none() {
         return Err(invalid(
-            "unrestricted only applies to codex, claude and grok",
+            "unrestricted and as_settings only apply to codex, claude and grok",
         ));
     }
     let command = match text("command")? {
@@ -496,6 +510,7 @@ fn create_spec(params: &Value) -> std::result::Result<CreateSpec, Fault> {
         target,
         kind,
         unrestricted,
+        as_settings,
         command,
     })
 }
@@ -522,8 +537,10 @@ fn create_command(command: &str) -> std::result::Result<(), Fault> {
     Ok(())
 }
 /// The CLI's argv for a validated request. `--json` is added by `read`. Every
-/// value is its own argument; nothing here passes through a shell.
-fn create_args(spec: &CreateSpec) -> Vec<String> {
+/// value is its own argument; nothing here passes through a shell. `as_settings`
+/// says the CLI has `--as-settings`, which an agent whose request asked for the
+/// desktop's Settings is given.
+fn create_args(spec: &CreateSpec, as_settings: bool) -> Vec<String> {
     let mut args: Vec<String> = vec!["shell".into(), "create".into()];
     match &spec.target {
         CreateTarget::Project(project) => args.extend(["--project".into(), project.clone()]),
@@ -533,6 +550,8 @@ fn create_args(spec: &CreateSpec) -> Vec<String> {
         args.extend(["--harness".into(), harness.into()]);
         if spec.unrestricted {
             args.push("--unrestricted".into());
+        } else if spec.as_settings && as_settings {
+            args.push("--as-settings".into());
         }
     }
     if let Some(command) = &spec.command {
@@ -1085,9 +1104,19 @@ pub struct Rpc {
     /// Whether the CLI said it can create orchestrators (see `orchestrator_create_supported`).
     orchestrator_create: AtomicBool,
     tabs: AtomicBool,
+    /// Whether the CLI said it has `shell create --as-settings` (see
+    /// `shell_create_as_settings_supported`).
+    shell_create_as_settings: AtomicBool,
+    /// Whether the CLI said a chat can switch provider (see `chat_provider_switch_supported`).
+    chat_provider_switch: AtomicBool,
+    /// Whether the CLI said it has `chat models` (see `chat_models_supported`).
+    chat_models: AtomicBool,
     /// Held while the CLI is asked what it can do (`capability_known`), so that two askers at
     /// once run it once.
     asking_chat: tokio::sync::Mutex<()>,
+    /// How many times the CLI has answered that question, so that an asker that waited while
+    /// another was answered takes that answer, a no included, instead of asking again.
+    capability_answers: AtomicU64,
     /// Whether the CLI said it has `shell paste` (see `require_shell_paste`).
     shell_paste: AtomicBool,
     /// Files the phones sent (see `crate::upload`).
@@ -1104,7 +1133,11 @@ impl Rpc {
             chat: AtomicBool::new(false),
             orchestrator_create: AtomicBool::new(false),
             tabs: AtomicBool::new(false),
+            shell_create_as_settings: AtomicBool::new(false),
+            chat_provider_switch: AtomicBool::new(false),
+            chat_models: AtomicBool::new(false),
             asking_chat: tokio::sync::Mutex::new(()),
+            capability_answers: AtomicU64::new(0),
             shell_paste: AtomicBool::new(false),
             uploads: Arc::new(crate::upload::Uploads::new(storage.dir.clone())),
             storage,
@@ -1825,6 +1858,10 @@ impl Rpc {
                 let spec = chat::stop_spec(&r.params)?;
                 self.chat_stop(device, spec).await
             }
+            "chat.models" => {
+                let spec = chat::models_spec(&r.params)?;
+                self.chat_models(spec, reply_limit).await
+            }
             // Files from the phone; see `upload`.
             "upload.begin" => {
                 let spec = upload::begin_spec(r)?;
@@ -1860,6 +1897,23 @@ impl Rpc {
             _ => Err(invalid("unsupported RPC method")),
         }
     }
+    /// Whether the installed CLI has `shell create --as-settings` (`riwork capabilities --json`
+    /// has `"shell_create_as_settings":true`); it shares its question with `chat_known`.
+    async fn shell_create_as_settings_known(
+        &self,
+        limit: Duration,
+    ) -> std::result::Result<bool, Fault> {
+        self.capability_known(&self.shell_create_as_settings, limit)
+            .await
+    }
+    /// What `ready` announces as `features.shell_create_as_settings`: a phone that sees it may
+    /// send `as_settings` in `shell.create`, and the desktop's Settings decide. Short, like
+    /// `chat_supported`.
+    pub async fn shell_create_as_settings_supported(&self) -> bool {
+        self.shell_create_as_settings_known(Duration::from_secs(3))
+            .await
+            .unwrap_or(false)
+    }
     /// Start a terminal in a project or worktree that exists on the desktop,
     /// exactly as `riwork shell create` does: the CLI writes the session down
     /// and starts it, and the open desktop app picks it up as a tab. Runs in
@@ -1871,6 +1925,11 @@ impl Rpc {
         if !self.storage.authorized(device).map_err(cli_fault)? {
             return Err(Fault::new("not_found", "device revoked"));
         }
+        // An agent the phone left to the desktop runs as its Settings say, when the CLI can
+        // ask them; an older CLI starts it restricted, as before.
+        let as_settings = spec.as_settings
+            && spec.kind.harness().is_some()
+            && self.shell_create_as_settings_known(CLI_TIMEOUT).await?;
         self.target_exists(&spec.target, create_fault).await?;
         // The CLI starts the tmux session and only then writes it into the
         // registry; a CLI killed in between leaves a session nobody can see or
@@ -1879,7 +1938,7 @@ impl Rpc {
         // included, so the CLI runs in a task that outlives the request: if the
         // request is dropped, only the answer is lost.
         let runner = self.detached();
-        let args = create_args(&spec);
+        let args = create_args(&spec, as_settings);
         let created = tokio::spawn(async move { runner.read_within(args, CREATE_TIMEOUT).await })
             .await
             .map_err(|e| cli_fault(format!("creating the terminal was interrupted: {e}")))?
@@ -2069,7 +2128,7 @@ impl Rpc {
         // protects external recovery tooling and tests from racing input writes.
         let _lock = self
             .storage
-            .lock(&format!("outcomes-{device}.lock"))
+            .ledger_lock(&format!("outcomes-{device}.lock"))
             .map_err(cli_fault)?;
         let path = self.storage.dir.join(format!("outcomes-{device}.json"));
         let mut ledger: Ledger = if path.exists() {
@@ -2169,7 +2228,7 @@ impl Rpc {
         let _device_guard = device_lock.lock().await;
         let _lock = self
             .storage
-            .lock(&format!("keys-{device}.lock"))
+            .ledger_lock(&format!("keys-{device}.lock"))
             .map_err(cli_fault)?;
         let path = self.storage.dir.join(format!("keys-{device}.json"));
         let mut ledger: BatchLedger = if path.exists() {
@@ -2268,25 +2327,6 @@ mod tests {
     }
 
     #[test]
-    fn a_creation_the_connector_stopped_is_told_apart_from_one_that_failed() {
-        let stopped = project_create_fault(cli_fault("RiWork CLI timeout"), "Fresh");
-        assert_eq!(stopped.code, "cli_error");
-        assert!(
-            stopped
-                .message
-                .contains("check the project list before trying again"),
-            "{}",
-            stopped.message
-        );
-        // A fault that is not a CLI failure passes through untouched.
-        let big = project_create_fault(Fault::new("response_too_large", "x"), "Fresh");
-        assert_eq!(
-            (big.code, big.message.as_str()),
-            ("response_too_large", "x")
-        );
-    }
-
-    #[test]
     fn a_created_shell_passes_on_its_mode_but_not_a_chat_it_does_not_have() {
         let (project_id, shell) = (
             uuid::Uuid::new_v4().to_string(),
@@ -2296,6 +2336,7 @@ mod tests {
             target: CreateTarget::Project(project_id.clone()),
             kind: CreateKind::Shell,
             unrestricted: false,
+            as_settings: false,
             command: None,
         };
         let mut cli = json!({

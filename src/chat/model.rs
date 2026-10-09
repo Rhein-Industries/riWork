@@ -126,6 +126,19 @@ pub struct ChatInfo {
     /// written before orchestrators could be chats do not have it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrator: Option<OrchestratorScope>,
+    /// The conversation the chat had before it moved to its current provider (`Switch`),
+    /// which the agent is given at every start. A chat that never switched has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried_over: Option<CarriedOver>,
+}
+
+/// What a chat that switched provider passes on to its new agent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CarriedOver {
+    /// The conversation up to the switch, as a Markdown document in the chat's folder.
+    pub document: PathBuf,
+    /// Who had it, as the document names it: `Codex chat "Fix it" (1234abcd)`.
+    pub from: String,
 }
 
 /// What a new chat starts with.
@@ -522,6 +535,20 @@ pub struct Usage {
     pub cost_usd: Option<f64>,
 }
 
+/// How the agent says it signed in, from its own handshake: only what tells who is
+/// billed, never an email, an organization or a credential.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Account {
+    /// Set when the agent runs on an API key, which is billed instead of a subscription:
+    /// where the key came from, as the agent names it (Claude's `apiKeySource`, such as
+    /// `ANTHROPIC_API_KEY` or `apiKeyHelper`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_source: Option<String>,
+    /// The subscription it runs under, as the agent names it ("Claude Max").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum TurnOutcome {
@@ -594,6 +621,11 @@ pub enum ChatEvent {
     Models {
         models: Vec<ModelOption>,
     },
+    /// How the agent signed in. A driver sends it after its handshake and again if
+    /// that changes; each replaces the last.
+    Account {
+        account: Account,
+    },
 }
 
 /// What the user asks of a chat.
@@ -637,6 +669,19 @@ pub enum ChatCommand {
     Compact,
     /// Stop the provider process; the chat resumes with the next message.
     Stop,
+    /// Go on with another provider: the chat keeps its id, its log and its tab, and the
+    /// new agent starts on a thread of its own with the conversation so far as context.
+    /// Refused while a turn runs or waits. A host from before it refuses the command as
+    /// unreadable, so it is never taken for a `Configure`.
+    Switch {
+        provider: Provider,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fast: Option<bool>,
+    },
 }
 
 /// A chat's transcript as events build it: what a tab draws, and what the
@@ -654,6 +699,8 @@ pub struct Transcript {
     /// The models the provider offers, empty until its driver has said (an
     /// older driver never does).
     pub models: Vec<ModelOption>,
+    /// How the agent signed in, once its driver has said (an older driver never does).
+    pub account: Option<Account>,
     pub turn_id: Option<String>,
     index: HashMap<String, usize>,
     /// Bumped by every event applied, so what is derived from the transcript can be kept
@@ -696,6 +743,18 @@ impl Transcript {
         self.revision = self.revision.wrapping_add(1);
         match event {
             ChatEvent::Info { info } => {
+                // A chat that moved to another provider starts over with what belongs to
+                // one: the new agent lists its own models, counts its own usage and says
+                // how it signed in.
+                if self
+                    .info
+                    .as_ref()
+                    .is_some_and(|before| before.provider != info.provider)
+                {
+                    self.models.clear();
+                    self.usage = None;
+                    self.account = None;
+                }
                 self.state = info.state.clone();
                 self.info = Some(info.clone());
             }
@@ -770,6 +829,7 @@ impl Transcript {
             ChatEvent::Models { models } => self.models = models.clone(),
             ChatEvent::RateLimits { windows } => self.rate_limits = windows.clone(),
             ChatEvent::ProviderAccountIdentity { .. } => {}
+            ChatEvent::Account { account } => self.account = Some(account.clone()),
         }
     }
 }
@@ -1052,6 +1112,98 @@ mod tests {
     }
 
     #[test]
+    fn a_switch_command_and_carried_over_info_have_their_own_shape() {
+        let switch = ChatCommand::Switch {
+            provider: Provider::Claude,
+            model: Some("opus".into()),
+            effort: None,
+            fast: None,
+        };
+        let line = serde_json::to_string(&switch).unwrap();
+        assert_eq!(
+            line,
+            r#"{"command":"switch","provider":"claude","model":"opus"}"#
+        );
+        assert_eq!(serde_json::from_str::<ChatCommand>(&line).unwrap(), switch);
+        // A switch needs a provider; it is never a configure without one.
+        assert!(
+            serde_json::from_str::<ChatCommand>(r#"{"command":"switch","model":"o"}"#).is_err()
+        );
+
+        let text = r#"{"id":"i","provider":"claude","cwd":"/w","title":"t","created_at_unix":1,
+            "carried_over":{"document":"/home/chats/i/context.md","from":"Codex chat \"t\" (i)"}}"#;
+        let info: ChatInfo = serde_json::from_str(text).unwrap();
+        assert_eq!(
+            info.carried_over,
+            Some(CarriedOver {
+                document: "/home/chats/i/context.md".into(),
+                from: "Codex chat \"t\" (i)".into(),
+            })
+        );
+        let mut plain = info.clone();
+        plain.carried_over = None;
+        assert!(
+            !serde_json::to_string(&plain)
+                .unwrap()
+                .contains("carried_over")
+        );
+    }
+
+    #[test]
+    fn info_with_another_provider_drops_the_models_and_usage_of_the_last() {
+        let info = |provider| ChatInfo {
+            parent_id: None, user_title: None, first_user_message: None, provider_title: None,
+            id: "i".into(),
+            provider,
+            project_id: None,
+            worktree_id: None,
+            cwd: "/w".into(),
+            title: "t".into(),
+            created_at_unix: 1,
+            provider_thread_id: None,
+            model: None,
+            effort: None,
+            fast: false,
+            approval_mode: ApprovalMode::Supervised,
+            codex_account_id: None,
+            state: ChatState::Idle,
+            orchestrator: None,
+            carried_over: None,
+        };
+        let mut t = Transcript::default();
+        t.apply(&ChatEvent::Info {
+            info: info(Provider::Codex),
+        });
+        t.apply(&ChatEvent::Models {
+            models: vec![model_option()],
+        });
+        t.apply(&ChatEvent::Usage {
+            usage: Usage::default(),
+        });
+        t.apply(&ChatEvent::Account {
+            account: Account {
+                api_key_source: Some("ANTHROPIC_API_KEY".into()),
+                plan: None,
+            },
+        });
+        // The same provider again (a model change, a thread learned) keeps them.
+        t.apply(&ChatEvent::Info {
+            info: info(Provider::Codex),
+        });
+        assert_eq!(t.models, [model_option()]);
+        assert!(t.usage.is_some());
+        assert!(t.account.is_some());
+        t.apply(&ChatEvent::Info {
+            info: info(Provider::Claude),
+        });
+        assert!(t.models.is_empty());
+        assert_eq!(t.usage, None);
+        // A badge for how the old agent signed in would be wrong for the new one.
+        assert_eq!(t.account, None);
+        assert_eq!(t.info.unwrap().provider, Provider::Claude);
+    }
+
+    #[test]
     fn each_models_event_replaces_the_transcripts_list() {
         let mut t = Transcript::default();
         assert!(t.models.is_empty());
@@ -1061,6 +1213,35 @@ mod tests {
         assert_eq!(t.models, [model_option()]);
         t.apply(&ChatEvent::Models { models: Vec::new() });
         assert!(t.models.is_empty());
+    }
+
+    #[test]
+    fn each_account_event_replaces_the_last_and_its_wire_form_is_stable() {
+        let mut t = Transcript::default();
+        assert_eq!(t.account, None);
+        let key = Account {
+            api_key_source: Some("ANTHROPIC_API_KEY".into()),
+            plan: None,
+        };
+        let event = ChatEvent::Account {
+            account: key.clone(),
+        };
+        let line = serde_json::to_string(&event).unwrap();
+        assert_eq!(
+            line,
+            r#"{"event":"account","account":{"api_key_source":"ANTHROPIC_API_KEY"}}"#
+        );
+        assert_eq!(serde_json::from_str::<ChatEvent>(&line).unwrap(), event);
+        t.apply(&event);
+        assert_eq!(t.account.as_ref(), Some(&key));
+        let plan = Account {
+            api_key_source: None,
+            plan: Some("Claude Max".into()),
+        };
+        t.apply(&ChatEvent::Account {
+            account: plan.clone(),
+        });
+        assert_eq!(t.account, Some(plan));
     }
 }
 

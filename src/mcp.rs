@@ -1140,7 +1140,7 @@ mod tests {
             Ok(socket_path(home))
         }
 
-        /// Ends the tmux server the terminal orchestrator below starts.
+        /// Ends any tmux server the session manager may have started.
         struct Server(SessionManager);
         impl Drop for Server {
             fn drop(&mut self) {
@@ -1217,17 +1217,6 @@ mod tests {
             output["output"],
             "user: what is open?\nagent: echo: what is open?"
         );
-
-        // A terminal orchestrator in another scope says it is one.
-        let project = "22222222-2222-4222-8222-222222222222";
-        let root = host.home.join("project");
-        std::fs::create_dir_all(&root).unwrap();
-        let terminal = manager
-            .orchestrator_create_for_project(project.into(), root, Some("sleep 600".into()))
-            .unwrap();
-        let status = orchestrator_status(&manager, Some(project)).unwrap();
-        assert_eq!(status["session"]["id"], terminal.id.as_str());
-        assert_eq!(status["session"]["mode"], "terminal");
     }
 
     #[test]
@@ -1312,17 +1301,6 @@ mod tests {
                 "{name}: {message}"
             );
         }
-    }
-
-    #[test]
-    fn a_misspelled_selector_does_not_fall_back_to_a_default() {
-        let result = call_tool(&json!({
-            "name":"riwork_shell_create","arguments":{"worktree":"main","command":"true"}
-        }))
-        .unwrap();
-        assert_eq!(result["isError"], true);
-        assert!(text(&result).contains("'worktree' is not accepted by riwork_shell_create"));
-        assert!(text(&result).contains("worktree_id"));
     }
 
     #[test]

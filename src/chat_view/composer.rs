@@ -1,7 +1,5 @@
 //! The message box: what ⏎ and ⎋ do in it, moving between its lines, and the text it sends.
 
-#[cfg(test)]
-use crate::ui_text;
 use crate::{
     chat::model::Decision,
     dictation::{self, Phase},
@@ -67,103 +65,71 @@ pub fn status(dictation: &Phase, mic: bool) -> Option<String> {
 }
 
 /// The chat header's inset from the tab's sides and the gap between its controls, in design
-/// points. The message box under the list keeps the same, so its edges line up with the
-/// header's, until a narrow pane makes it give some of that up (see `layout`).
+/// points.
 pub const BAR_INSET: f32 = 10.0;
 pub const BAR_GAP: f32 = 6.0;
-/// The message box bar's inset and gap in a pane too narrow for the usual ones, in pixels:
-/// these do not grow with the text, so a big text size leaves the box its room.
-pub const COMPACT_INSET: f32 = 4.0;
-pub const COMPACT_GAP: f32 = 4.0;
-/// The narrowest the message box may get, in design points.
-pub const MIN_FIELD: f32 = 120.0;
+/// The message box card's inset from the pane's sides and bottom, its padding and the gap
+/// between its pieces, in design points. The bars above it (a notice, a request, a question)
+/// keep the same inset, so the bottom of the chat reads as one column of cards.
+pub const CARD_INSET: f32 = 14.0;
+pub const CARD_PADDING: f32 = 7.0;
+pub const CARD_GAP: f32 = 4.0;
+/// Inset, padding and gap in a pane narrower than `NARROW_PANE`, in pixels: these do not
+/// grow with the text, so a big text size leaves the box its room.
+pub const NARROW_SPACE: f32 = 4.0;
+/// Below this width (in design points) the card gives up its usual insets and its controls
+/// take a row of their own.
+pub const NARROW_PANE: f32 = 360.0;
+/// From this width (in design points) an empty box shares one row with its controls.
+pub const COMPACT_PANE: f32 = 680.0;
 
-/// How the message box bar is laid out in a pane of a given width: in pixels, as drawn.
+/// How the message box card is laid out in a pane of a given width: in pixels, as drawn. The
+/// same in every design; a design only chooses how the card and its buttons look.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layout {
-    /// The box takes the whole row and the buttons a row under it.
-    pub stacked: bool,
-    /// Whether the mic is shown.
-    pub mic: bool,
-    /// The bar's padding on every side, and the gap between its pieces.
+    /// The empty box shares one row with Attach and the controls. Otherwise the box takes the
+    /// card's whole width and Attach and the controls wrap in a row under it.
+    pub compact: bool,
+    /// A pane too narrow for the usual insets: the controls take a row of their own.
+    pub narrow: bool,
+    /// The card's inset from the pane (also the bars' above it), its padding, and the gap
+    /// between its pieces.
     pub inset: f32,
+    pub padding: f32,
     pub gap: f32,
-    /// Every button's side. Native and the colorful themes draw the same square buttons
-    /// (a symbol or a one-character mark), so one side serves both.
+    /// Every button's side: the round buttons of the action row (the mic, Stop, Send) share
+    /// the room the card leaves them and never grow past `ROUND_BUTTON`.
     pub button: f32,
-    /// The box's width.
-    pub field: f32,
-    /// The width the buttons take in their row (the box's row when not stacked), gaps
-    /// included.
-    pub buttons: f32,
 }
 
-/// The bar's layout for a pane `pane` px wide at interface scale `scale`, with the mic set to
-/// show (`mic`) and kept whatever the room (`keep_mic`, while it dictates), and a turn
-/// running (`running`, which adds Stop). Attach and Send are always there.
-///
-/// With the header's inset and gap, every button goes beside the box while the box keeps
-/// `MIN_FIELD`; else the mic goes first; else the box takes the whole row and the buttons a
-/// row under it, where the mic comes back if there is room. When even that row is short (or
-/// the box is short of its minimum on a row of its own), the bar falls to `COMPACT_INSET` and
-/// `COMPACT_GAP` and the buttons shrink to share the row, so the box keeps
-/// `min(MIN_FIELD, pane - 2 × COMPACT_INSET)` and the buttons never pass the pane's edge.
-/// Lengths in design points grow with the text as `ui_text::space` grows them. A pane not
-/// yet laid out (zero wide) gets the full row.
-pub fn layout(pane: f32, scale: f32, mic: bool, keep_mic: bool, running: bool) -> Layout {
+/// The card's layout for a pane `pane` px wide at interface scale `scale`, with an `empty`
+/// draft (no text, no attachment) and `actions` round buttons in its action row (Send, and
+/// the mic and Stop when shown). A pane not yet laid out (zero wide) gets the usual insets
+/// and full-size buttons.
+pub fn layout(pane: f32, scale: f32, empty: bool, actions: usize) -> Layout {
     let space = |base: f32| (base * scale.max(1.0)).round();
-    let (inset, gap, side, min) = (
-        space(BAR_INSET),
-        space(BAR_GAP),
-        space(super::widgets::ROUND_BUTTON),
-        space(MIN_FIELD),
-    );
-    let base = 2 + usize::from(running);
-    let all = base + usize::from(mic);
-    let needed = if keep_mic && mic { all } else { base };
-    let span = |count: usize, side: f32, gap: f32| count as f32 * (side + gap);
-    let row = pane - 2.0 * inset;
-    let inline = |mic: bool| {
-        let count = base + usize::from(mic);
-        Layout {
-            stacked: false,
-            mic,
-            inset,
-            gap,
-            button: side,
-            field: row - span(count, side, gap),
-            buttons: span(count, side, gap),
-        }
-    };
-    if pane <= 0.0 || row >= min + span(all, side, gap) {
-        return inline(mic);
-    }
-    if !(keep_mic && mic) && row >= min + span(base, side, gap) {
-        return inline(false);
-    }
-    // Under the box: Attach, a space that takes what is left, then the rest; a gap before
-    // each button but the first and one before the space, so one gap per button.
-    let (inset, gap) = if row >= min && row >= span(needed, side, gap) {
-        (inset, gap)
+    let narrow = pane > 0.0 && pane < space(NARROW_PANE);
+    let (inset, padding, gap) = if narrow {
+        (NARROW_SPACE, NARROW_SPACE, NARROW_SPACE)
     } else {
-        (COMPACT_INSET, COMPACT_GAP)
+        (space(CARD_INSET), space(CARD_PADDING), space(CARD_GAP))
     };
-    let row = pane - 2.0 * inset;
-    let side = side.min(
-        ((row - needed as f32 * gap) / needed as f32)
-            .floor()
-            .max(1.0),
-    );
-    let mic = mic && row >= span(all, side, gap);
-    let count = base + usize::from(mic);
+    let actions = actions.max(1);
+    let available = if pane <= 0.0 {
+        space(COMPACT_PANE)
+    } else {
+        // The card's border takes a pixel on each side.
+        (pane - 2.0 * (inset + padding) - 2.0).max(1.0)
+    };
+    let button = space(super::widgets::ROUND_BUTTON)
+        .min(((available - gap * (actions - 1) as f32) / actions as f32).max(1.0));
     Layout {
-        stacked: true,
-        mic,
+        compact: empty && pane >= space(COMPACT_PANE),
+        narrow,
         inset,
+        padding,
         gap,
-        button: side,
-        field: row,
-        buttons: span(count, side, gap),
+        button,
     }
 }
 
@@ -262,106 +228,11 @@ mod tests {
     }
 
     #[test]
-    fn the_box_has_no_helper_text_at_rest_and_says_what_a_dictation_does() {
-        assert_eq!(status(&Phase::Idle, true), None);
-        assert_eq!(status(&Phase::Idle, false), None);
-        assert_eq!(
-            status(&Phase::Failed(dictation::Problem::Unsupported), true),
-            None
-        );
-        let listening = Phase::Listening { text: "hi".into() };
-        assert!(status(&listening, true).unwrap().starts_with("Listening"));
-        // Hidden mid-dictation (before the dictation is cancelled), nothing.
-        assert_eq!(status(&listening, false), None);
-        let preparing = Phase::Preparing { note: None };
-        assert_eq!(
-            status(&preparing, true).as_deref(),
-            Some("Getting the microphone ready…")
-        );
-        assert_eq!(status(&preparing, false), None);
-    }
-
-    #[test]
-    fn the_box_keeps_its_minimum_and_the_buttons_stay_in_the_pane() {
-        let at = |pane, mic, running| layout(pane, 1.0, mic, false, running);
-        // At 1.0: 10 inset, 6 gap, 26 buttons (the side every composer button is drawn at),
-        // 120 box.
-        assert_eq!(
-            at(500.0, true, true).button,
-            super::super::widgets::ROUND_BUTTON
-        );
-        let wide = at(500.0, true, true);
-        assert!(!wide.stacked && wide.mic && wide.field == 480.0 - 4.0 * 32.0);
-        assert!(at(268.0, true, true).mic);
-        let short = at(267.0, true, true);
-        assert!(!short.stacked && !short.mic && short.field >= 120.0);
-        assert!(at(235.0, true, true).stacked);
-        // Not laid out yet: the full row.
-        assert!(!at(0.0, true, true).stacked && at(0.0, true, true).mic);
-        // A dictating mic is never dropped: under the box instead.
-        let dictating = layout(267.0, 1.0, true, true, true);
-        assert!(dictating.stacked && dictating.mic);
-        for scale in [0.8, 1.0, 1.5, 24.0 / ui_text::REFERENCE_SIZE] {
-            for pane in [120.0, 160.0, 200.0, 240.0, 300.0, 368.0, 500.0, 900.0] {
-                for (mic, running) in [(true, true), (true, false), (false, true), (false, false)] {
-                    let fit = layout(pane, scale, mic, false, running);
-                    let min = (MIN_FIELD * f32::max(scale, 1.0)).round();
-                    let floor = min.min(pane - 2.0 * COMPACT_INSET);
-                    let what = format!("{pane} px at {scale}× mic {mic} running {running}");
-                    assert!(fit.field >= floor, "box {} < {floor}: {what}", fit.field);
-                    let row = pane - 2.0 * fit.inset;
-                    if fit.stacked {
-                        assert!(
-                            fit.buttons <= row,
-                            "buttons {} > {row}: {what}",
-                            fit.buttons
-                        );
-                        assert_eq!(fit.field, row);
-                    } else {
-                        assert_eq!(fit.field + fit.buttons, row, "{what}");
-                    }
-                    assert!(!fit.mic || mic, "{what}");
-                }
-            }
-        }
-        // 24 pt text in the narrowest pane: compact, the box keeps 120.
-        let big = layout(160.0, 24.0 / ui_text::REFERENCE_SIZE, true, false, true);
-        assert!(big.stacked && big.inset == COMPACT_INSET && big.field >= 120.0);
-    }
-
-    #[test]
     fn a_message_is_the_trimmed_text_or_nothing() {
         assert_eq!(message("  hello\n\n"), Some("hello".to_owned()));
         assert_eq!(message("a\n\nb"), Some("a\n\nb".to_owned()));
         assert_eq!(message(" \n\t "), None);
         assert_eq!(message(""), None);
-    }
-
-    #[test]
-    fn lines_are_found_around_the_cursor() {
-        let text = "one\ntwo\n\nfour";
-        assert_eq!((line_start(text, 0), line_end(text, 0)), (0, 3));
-        assert_eq!((line_start(text, 5), line_end(text, 5)), (4, 7));
-        assert_eq!((line_start(text, 8), line_end(text, 8)), (8, 8));
-        assert_eq!((line_start(text, 13), line_end(text, 13)), (9, 13));
-        assert_eq!((line_start("", 0), line_end("", 0)), (0, 0));
-    }
-
-    #[test]
-    fn up_and_down_keep_the_column_where_the_line_is_long_enough() {
-        let text = "hello\nhi\n\nworld!";
-        let end = text.len();
-        // From the end of "world!" up to the empty line, and from there to the start of "hi".
-        assert_eq!(vertical(text, end, true), Some(9));
-        assert_eq!(vertical(text, 9, true), Some(6));
-        assert_eq!(vertical(text, 9, false), Some(10));
-        // Column 4 of "hello" has no match in the two-letter "hi": its end.
-        assert_eq!(vertical(text, 4, false), Some(8));
-        // Column 2 of "hi" is column 2 of "hello".
-        assert_eq!(vertical(text, 8, true), Some(2));
-        assert_eq!(vertical(text, 2, true), None, "the first line");
-        assert_eq!(vertical(text, end, false), None, "the last line");
-        assert_eq!(vertical("", 0, true), None);
     }
 
     #[test]

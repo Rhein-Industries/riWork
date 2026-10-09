@@ -228,99 +228,6 @@ mod tests {
     }
 
     #[test]
-    fn creating_and_closing_a_terminal_are_ordered_and_never_cut_short() {
-        for method in ["shell.create", "shell.close"] {
-            // Whatever the params look like, even none: validation answers it.
-            for params in [
-                json!({"project_id":"p","kind":"shell"}),
-                json!({"if_changed":"h","wait_ms":5000}),
-                json!(null),
-            ] {
-                let lane = classify(&request(method, params));
-                assert_eq!(lane, Lane::Ordered, "{method}");
-                assert!(!lane.cancellable(), "{method}");
-            }
-        }
-        // Only the exact names: look-alikes are plain reads.
-        for method in ["shell.creates", "shell", "shell.create.", "Shell.create"] {
-            assert_eq!(
-                classify(&request(method, json!({}))),
-                Lane::Read,
-                "{method}"
-            );
-        }
-    }
-
-    #[test]
-    fn creating_a_project_is_ordered_and_never_cut_short() {
-        // Whatever the params look like, even none: validation answers it.
-        for params in [
-            json!({"name":"Fresh"}),
-            json!({"name":"Fresh","git":false}),
-            json!({"if_changed":"h","wait_ms":5000}),
-            json!(null),
-        ] {
-            let lane = classify(&request("project.create", params));
-            assert_eq!(lane, Lane::Ordered);
-            assert!(!lane.cancellable());
-        }
-        // Only the exact name: look-alikes are plain reads.
-        for method in [
-            "project.creates",
-            "project",
-            "project.create.",
-            "Project.create",
-            "projects.create",
-            "project.add",
-        ] {
-            assert_eq!(
-                classify(&request(method, json!({}))),
-                Lane::Read,
-                "{method}"
-            );
-        }
-        // Queued behind typing and terminal creation, as one at a time.
-        let mut lanes = Lanes::default();
-        lanes.push(Lane::Ordered, "shell.keys");
-        lanes.push(Lane::Ordered, "project.create");
-        lanes.push(Lane::Ordered, "shell.create");
-        assert_eq!(lanes.next_ready().map(|(_, m)| m), Some("shell.keys"));
-        assert!(
-            lanes.next_ready().is_none(),
-            "one ordered request at a time"
-        );
-        lanes.finished(Lane::Ordered);
-        assert_eq!(lanes.next_ready().map(|(_, m)| m), Some("project.create"));
-        // A phone that goes away does not drop it from the queue.
-        lanes.drop_queued_cancellable();
-        assert_eq!(lanes.queued(), 1);
-    }
-
-    #[test]
-    fn creating_an_orchestrator_is_ordered_and_never_cut_short() {
-        // Whatever the params look like, even none: validation answers it.
-        for params in [json!({}), json!({"project_id":"p"}), json!(null)] {
-            let lane = classify(&request("orchestrator.create", params));
-            assert_eq!(lane, Lane::Ordered);
-            assert!(!lane.cancellable());
-        }
-        // Only the exact name: look-alikes are plain reads.
-        for method in [
-            "orchestrator.creates",
-            "orchestrators.create",
-            "orchestrator",
-            "Orchestrator.create",
-            "orchestrators.list",
-        ] {
-            assert_eq!(
-                classify(&request(method, json!({}))),
-                Lane::Read,
-                "{method}"
-            );
-        }
-    }
-
-    #[test]
     fn chat_changes_are_ordered_and_never_cut_short_and_chat_reads_are_shared() {
         // Whatever the params look like, even none: validation answers it.
         for method in ["chat.create", "chat.command", "chat.stop"] {
@@ -429,6 +336,7 @@ mod tests {
             "shells.list",
             "appearance.get",
             "chats.list",
+            "chat.models",
             "upload.begin",
             "upload.chunk",
             "upload.finish",

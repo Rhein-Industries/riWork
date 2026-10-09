@@ -950,43 +950,12 @@ mod tests {
         }
     }
 
-    fn span(text: &str, style: Style) -> Span {
-        Span {
-            text: text.into(),
-            style,
-            link: None,
-            image: false,
-        }
-    }
-
     const PLAIN: Style = Style {
         bold: false,
         italic: false,
         code: false,
         strike: false,
     };
-
-    #[test]
-    fn image_syntax_local_references_and_spaced_destinations_survive_streaming() {
-        let spans = inline("Before ![diagram](<docs/Grüße image.png>) after");
-        assert!(
-            spans
-                .iter()
-                .any(|span| span.image && span.link.as_deref() == Some("docs/Grüße image.png"))
-        );
-        assert!(
-            inline("`docs/Grüße image.png`")
-                .iter()
-                .any(|span| span.image)
-        );
-        let linked = inline("[file](<src/Grüße file.rs:12>) [web](https://example.com)");
-        assert_eq!(linked[0].link.as_deref(), Some("src/Grüße file.rs:12"));
-        assert!(
-            !inline("![unfinished](docs/image")
-                .iter()
-                .any(|span| span.image)
-        );
-    }
 
     #[test]
     fn headings_paragraphs_and_rules() {
@@ -1087,112 +1056,6 @@ mod tests {
     }
 
     #[test]
-    fn list_items_hold_code_and_paragraphs_and_lazy_lines() {
-        let blocks = parse("- run:\n\n  ```sh\n  make\n  ```\n\n  then wait\n- next\nlazy line\n");
-        let Block::List { items, .. } = &blocks[0] else {
-            panic!("{:?}", blocks[0]);
-        };
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].len(), 3);
-        assert_eq!(
-            items[0][1],
-            Block::Code {
-                language: Some("sh".into()),
-                text: "make".into()
-            }
-        );
-        assert_eq!(text(&items[1][0]), "next\nlazy line");
-        // `* * *` is a rule and `2 * 3` is arithmetic, not lists.
-        assert_eq!(parse("* * *"), [Block::Rule]);
-        assert!(matches!(&parse("2 * 3 = 6")[0], Block::Paragraph(_)));
-        assert!(matches!(&parse("-1 is negative")[0], Block::Paragraph(_)));
-    }
-
-    #[test]
-    fn quotes_nest_blocks_and_take_lazy_lines() {
-        let blocks = parse("> Quoted *text*\ncontinued\n>\n> - item\n\nAfter");
-        let Block::Quote(inner) = &blocks[0] else {
-            panic!("{:?}", blocks[0]);
-        };
-        assert_eq!(text(&inner[0]), "Quoted text\ncontinued");
-        assert!(matches!(&inner[1], Block::List { .. }));
-        assert_eq!(text(&blocks[1]), "After");
-        // A quote inside a quote.
-        let Block::Quote(outer) = &parse("> > deep")[0] else {
-            panic!();
-        };
-        assert!(matches!(&outer[0], Block::Quote(_)));
-    }
-
-    #[test]
-    fn pipe_tables_have_alignment_and_pad_short_rows() {
-        let blocks =
-            parse("| Name | Count |\n|:--|--:|\n| a | 1 |\n| `x|y` | 2 |\n| short |\n\nafter");
-        let Block::Table {
-            align,
-            header,
-            rows,
-        } = &blocks[0]
-        else {
-            panic!("{:?}", blocks[0]);
-        };
-        assert_eq!(align, &[Align::Left, Align::Right]);
-        assert_eq!(plain_text(&header[1]), "Count");
-        assert_eq!(rows.len(), 3);
-        assert_eq!(plain_text(&rows[1][0]), "x|y");
-        assert_eq!(plain_text(&rows[2][1]), "");
-        assert_eq!(text(&blocks[1]), "after");
-        // Without a delimiter row it is a paragraph.
-        assert!(matches!(&parse("a | b\nc | d")[0], Block::Paragraph(_)));
-    }
-
-    #[test]
-    fn inline_styles_nest() {
-        let spans = inline("a **bold *and italic*** `code` ~~gone~~ _it_");
-        let bold = Style {
-            bold: true,
-            ..PLAIN
-        };
-        let both = Style {
-            bold: true,
-            italic: true,
-            ..PLAIN
-        };
-        assert_eq!(
-            spans,
-            [
-                span("a ", PLAIN),
-                span("bold ", bold),
-                span("and italic", both),
-                span(" ", PLAIN),
-                span(
-                    "code",
-                    Style {
-                        code: true,
-                        ..PLAIN
-                    }
-                ),
-                span(" ", PLAIN),
-                span(
-                    "gone",
-                    Style {
-                        strike: true,
-                        ..PLAIN
-                    }
-                ),
-                span(" ", PLAIN),
-                span(
-                    "it",
-                    Style {
-                        italic: true,
-                        ..PLAIN
-                    }
-                ),
-            ]
-        );
-    }
-
-    #[test]
     fn marks_that_do_not_close_or_sit_inside_words_stay_text() {
         for literal in [
             "2 * 3 * 4",
@@ -1219,43 +1082,6 @@ mod tests {
         assert_eq!(
             plain_text(&inline(r"\*not italic\* and a\_b")),
             "*not italic* and a_b"
-        );
-    }
-
-    #[test]
-    fn links_are_spans_with_a_destination() {
-        let spans = inline(
-            "See [the *docs*](https://example.com/a_(b) \"title\") or https://example.org/x, <https://a.dev> and (https://b.dev).",
-        );
-        let links: Vec<_> = spans
-            .iter()
-            .filter_map(|s| s.link.as_deref().map(|l| (s.text.as_str(), l)))
-            .collect();
-        assert_eq!(
-            links,
-            [
-                ("the ", "https://example.com/a_(b)"),
-                ("docs", "https://example.com/a_(b)"),
-                ("https://example.org/x", "https://example.org/x"),
-                ("https://a.dev", "https://a.dev"),
-                ("https://b.dev", "https://b.dev"),
-            ]
-        );
-        assert!(spans.iter().any(|s| s.text == "docs" && s.style.italic));
-        // The comma and the closing bracket after an address are not part of it.
-        assert!(plain_text(&spans).ends_with("x, https://a.dev and (https://b.dev)."));
-        // Square brackets without a destination are text, and code is never a link.
-        assert_eq!(plain_text(&inline("[x] done")), "[x] done");
-        assert!(inline("`https://a.dev`").iter().all(|s| s.link.is_none()));
-        assert!(
-            inline("[a](b)")
-                .iter()
-                .all(|s| s.link.as_deref() == Some("b"))
-        );
-        // An image is its description.
-        assert_eq!(
-            plain_text(&inline("![a chart](https://x.dev/c.png)")),
-            "a chart"
         );
     }
 

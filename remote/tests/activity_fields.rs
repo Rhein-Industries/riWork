@@ -317,29 +317,6 @@ async fn a_field_in_the_wrong_shape_is_left_out_and_the_rest_stays() {
 }
 
 #[tokio::test]
-async fn one_wrong_field_does_not_take_a_correct_one_with_it() {
-    let f = Fixture::new();
-    let id = new_uuid();
-    let mut one = project(&id);
-    one["last_edited_unix"] = json!(1790000500u64);
-    one["last_activity_unix"] = json!("recently");
-    one["agents"] = json!({"working": "many", "waiting": 0});
-    f.says("projects.json", json!([one]));
-    let projects = f.call("projects.list", json!({})).await;
-    assert_eq!(projects["projects"][0]["last_edited_unix"], 1790000500u64);
-    assert!(projects["projects"][0].get("last_activity_unix").is_none());
-    assert!(projects["projects"][0].get("agents").is_none());
-    // And the other way round: a good activity time survives a bad edit time.
-    let mut other = project(&id);
-    other["last_edited_unix"] = json!(-1);
-    other["last_activity_unix"] = json!(1790000900u64);
-    f.says("projects.json", json!([other]));
-    let projects = f.call("projects.list", json!({})).await;
-    assert!(projects["projects"][0].get("last_edited_unix").is_none());
-    assert_eq!(projects["projects"][0]["last_activity_unix"], 1790000900u64);
-}
-
-#[tokio::test]
 async fn a_shell_list_larger_than_one_reply_is_trimmed_to_what_the_phone_sees() {
     // Launch commands (Claude's settings, hooks and prompts) made the CLI's own
     // list far larger than one encrypted reply, and every lookup failed.

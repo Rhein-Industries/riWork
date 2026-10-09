@@ -7,12 +7,19 @@ import RiWorkCore
 
 extension ChatConversation {
     /// What the picker shows for this chat: the transcript's models and the chat's own model, effort and Fast, with a choice that was
-    /// sent and has not come back yet laid over them. `fallback` is the tab list's entry, until the chat has told its own.
-    func modelChoices(fallback: ChatInfo?) -> ChatModelChoices {
+    /// sent and has not come back yet laid over them. `fallback` is the tab list's entry, until the chat has told its own. With `switchable`
+    /// (a desktop that lets a chat go on with the other provider) the other provider's rows come too.
+    func modelChoices(fallback: ChatInfo?, switchable: Bool = false) -> ChatModelChoices {
         let info = transcript.info ?? fallback
-        return ChatModelChoices(models: transcript.models.isEmpty ? modelCatalogue : transcript.models,
-                                model: pendingModel?.model ?? info?.model, effort: pendingModel?.effort ?? info?.effort,
-                                fast: pendingModel?.fast ?? info?.fast ?? false)
+        var choices = ChatModelChoices(models: transcript.models.isEmpty ? modelCatalogue : transcript.models,
+                                       model: pendingModel?.model ?? info?.model, effort: pendingModel?.effort ?? info?.effort,
+                                       fast: pendingModel?.fast ?? info?.fast ?? false)
+        if switchable, let provider = info?.provider {
+            choices.switching = switching
+                ? ChatProviderSwitch(provider: provider.other, models: switchCatalogue, blocked: "Going on with \(provider.other.title)…")
+                : ChatProviderSwitch(provider: provider.other, models: switchCatalogue, transcript: transcript)
+        }
+        return choices
     }
     /// The chat's own word (an `info` event) has what was asked for: the choice no longer needs showing from here.
     func settleModelChoice() {
@@ -52,7 +59,70 @@ extension RemoteModel {
         return nil
     }
 
+    // MARK: Going on with the other provider
+
+    /// Moves a chat to the other provider, on one of its models (nil: its default), in place: the chat keeps its tab and its conversation
+    /// (`switch`). Sent once. Refused here, as on the Mac, while a turn runs or waits; what went wrong is said above the composer.
+    @discardableResult
+    func switchChatProvider(_ chat: ChatInfo, model id: String?) async -> ChatControlError? {
+        let conversation = conversation(chat.id)
+        guard !conversation.switching else { return .busy }
+        guard let switching = conversation.modelChoices(fallback: chat, switchable: true).switching else { return .unsupported }
+        if let blocked = switching.blocked { conversation.notice = blocked; return .failed(blocked) }
+        guard let command = switching.command(model: id) else { return nil }
+        conversation.switching = true
+        defer { conversation.switching = false }
+        let failure = await sendChatCommand(chat.id, command)
+        conversation.notice = failure?.message
+        return failure
+    }
+
+    /// The other provider's rows of a chat's picker, from the phone's catalogue at once (`prepareSwitchCatalogue`) and then the desktop's
+    /// (`loadSwitchCatalogue`).
+    func prepareSwitchCatalogue(_ chat: ChatInfo) {
+        let conversation = conversation(chat.id)
+        guard conversation.switchCatalogue.isEmpty else { return }
+        let fallback = cachedOrBundledModels(provider: (conversation.transcript.info ?? chat).provider.other)
+        conversation.switchCatalogue = fallback.models
+        conversation.switchCatalogueSource = fallback.source
+    }
+    func loadSwitchCatalogue(_ chat: ChatInfo) async {
+        prepareSwitchCatalogue(chat)
+        let conversation = conversation(chat.id)
+        let other = (conversation.transcript.info ?? chat).provider.other
+        let token = generation
+        guard let models = try? await providerModels(other), generation == token,
+              (conversation.transcript.info ?? chat).provider.other == other else { return }
+        conversation.switchCatalogue = models
+        conversation.switchCatalogueSource = .live
+        rememberModelCatalogue(models, provider: other)
+    }
+
+    /// A provider's models for a chat that does not run it yet: `chat.models` on a desktop that has it (read from saved chats, starting
+    /// nothing), else what the chats of it the phone can read said.
+    func providerModels(_ provider: ChatProvider) async throws -> [ChatModelOption] {
+        guard desktopFeatures.chatModels else { return try await availableChatModels(provider: provider) }
+        guard state == .connected else { throw ChatControlError.notConnected }
+        let reply = try await client.chatModels(ChatModelsRequest(provider: provider, projectID: projectID))
+        // The Mac's own words, on one line and bounded.
+        if let error = reply.error { throw ChatControlError.failed(String(error.split(whereSeparator: \.isNewline).joined(separator: " ").prefix(240))) }
+        guard !reply.models.isEmpty else {
+            throw ChatControlError.failed("No \(provider.title) chat has listed its models yet. Its default is on offer; the list follows once one has.")
+        }
+        return reply.models
+    }
+
     // MARK: Remembered for the next chat
+
+    static let newChatProviderKey = "riwork.newChat.provider"
+    /// The provider of the last chat made from the phone; the chat kind an older version remembered per provider says it too.
+    var lastChatProvider: ChatProvider {
+        if let word = defaults.string(forKey: Self.newChatProviderKey), let provider = ChatProvider(rawValue: word) { return provider }
+        return defaults.string(forKey: Self.newTerminalKindKey).flatMap(NewTerminalKind.legacyChatProvider) ?? .codex
+    }
+    func rememberChatProvider(_ provider: ChatProvider) {
+        if defaults.string(forKey: Self.newChatProviderKey) != provider.rawValue { defaults.set(provider.rawValue, forKey: Self.newChatProviderKey) }
+    }
 
     static func newChatChoiceKey(_ provider: ChatProvider) -> String { "riwork.newChat.\(provider.rawValue)" }
 
@@ -72,8 +142,12 @@ extension RemoteModel {
 }
 
 extension NewTerminalSheetModel {
-    /// A tap on the default or the last model of a new chat, on an effort, or on Fast: the choice is made and the ring goes there, so touch
-    /// and keyboard agree.
+    /// A tap on a row of a new chat's model list (any provider's), on the default or the last model of the chosen provider, on an effort, or on
+    /// Fast: the choice is made and the ring goes there, so touch and keyboard agree.
+    func chooseChatRow(_ row: NewChatRow) {
+        guard !busy else { return }
+        touch(.chatModel) { $0.chooseChatRow(row) }
+    }
     func chooseChatModel(last: Bool) { touch(.chatModel) { $0.selectChatModel(last: last) } }
     func chooseChatEffort(_ effort: String) { touch(.chatEffort) { $0.selectChatEffort(effort) } }
     func setChatFast(_ on: Bool) { touch(.chatFast) { $0.setChatFast(on) } }
@@ -203,35 +277,46 @@ extension RemoteModel {
 }
 
 extension NewTerminalSheetModel {
-    func loadChatModels() async {
-        guard let provider = form.kind.chatProvider else { return }
+    /// Reads the models of a new chat, both providers' unless one is named. Each shows its fallback at once and its live list when that
+    /// comes; one provider's failure is said under its own rows and never touches the other's.
+    func loadChatModels(_ only: ChatProvider? = nil) async {
+        let providers = only.map { [$0] } ?? ChatProvider.allCases
+        // Side by side, so one slow provider does not hold the other's list back; leaving the sheet cancels both.
+        let loads = providers.map { provider in Task { await self.loadChatModels(of: provider) } }
+        await withTaskCancellationHandler {
+            for load in loads { await load.value }
+        } onCancel: {
+            for load in loads { load.cancel() }
+        }
+    }
+    private func loadChatModels(of provider: ChatProvider) async {
         let token = UUID()
         let generation = model.generation
         let project = model.projectID
-        catalogueRequest = token
+        catalogueRequests[provider] = token
         let fallback = model.cachedOrBundledModels(provider: provider)
         if form.chatModels[provider]?.isEmpty != false || chatModelsSources[provider] != .live {
             form.chatModels[provider] = fallback.models
             chatModelsSources[provider] = fallback.source
         }
-        loadingChatModels = true; chatModelsError = nil
+        loadingProviders.insert(provider); chatModelsErrors[provider] = nil
         let timeout = Task { [weak self] in
             try? await Task.sleep(for: RemoteModel.catalogueLoadingLimit)
-            guard !Task.isCancelled, let self, catalogueRequest == token, model.generation == generation, model.projectID == project else { return }
-            catalogueRequest = UUID(); loadingChatModels = false
-            chatModelsError = "Live model lookup took too long. Use the fallback list or Retry."
+            guard !Task.isCancelled, let self, catalogueRequests[provider] == token, model.generation == generation, model.projectID == project else { return }
+            catalogueRequests[provider] = UUID(); loadingProviders.remove(provider)
+            chatModelsErrors[provider] = "Live model lookup took too long. Use the fallback list or Retry."
         }
-        defer { timeout.cancel(); if catalogueRequest == token { loadingChatModels = false } }
+        defer { timeout.cancel(); if catalogueRequests[provider] == token { loadingProviders.remove(provider) } }
         do {
-            let models = try await model.availableChatModels(provider: provider)
-            guard catalogueRequest == token, form.kind.chatProvider == provider, model.generation == generation, model.projectID == project else { return }
+            let models = try await model.providerModels(provider)
+            guard catalogueRequests[provider] == token, form.kind.isChat, model.generation == generation, model.projectID == project else { return }
             form.chatModels[provider] = models
             chatModelsSources[provider] = .live
             model.rememberModelCatalogue(models, provider: provider)
         } catch is CancellationError { }
         catch {
-            guard catalogueRequest == token, form.kind.chatProvider == provider, model.generation == generation, model.projectID == project else { return }
-            chatModelsError = ChatControlError.from(error, operation: .list).message
+            guard catalogueRequests[provider] == token, form.kind.isChat, model.generation == generation, model.projectID == project else { return }
+            chatModelsErrors[provider] = ChatControlError.from(error, operation: .list).message
         }
     }
     func chooseChatModel(_ option: ChatModelOption) {

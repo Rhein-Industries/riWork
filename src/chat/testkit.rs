@@ -98,6 +98,7 @@ impl Fake {
             .into_iter()
             .map(Into::into)
             .collect(),
+            instructions: None,
         }
     }
 

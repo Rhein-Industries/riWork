@@ -16,6 +16,8 @@
 //!   and starts drivers with the configuration `launch` resolves.
 //! - `text` writes a transcript as plain text, for what reads a chat like a
 //!   terminal (`riwork orchestrator output`).
+//! - `catalog` reads the models each provider offers from what chats saved, for
+//!   a chat that is not running that provider yet.
 
 // The contract lands before the host and the tabs that use it.
 #![allow(dead_code)]
@@ -24,6 +26,7 @@ mod account_identity;
 #[cfg(test)]
 mod attachment_driver_tests;
 pub mod attachments;
+pub mod catalog;
 pub mod child;
 pub mod claude;
 pub mod client;

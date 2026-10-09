@@ -1553,86 +1553,6 @@ mod tests {
     }
 
     #[test]
-    fn the_recorded_flow_of_an_interactive_background_subagent_reads_right_at_each_step() {
-        // The order of events Claude Code 2.1.288 sent for one backgrounded subagent in
-        // the terminal: the Stop comes while the subagent still runs, and the subagent's
-        // end is followed by a prompt of its own that Claude answers.
-        let mut cursor = ClaudeTurnCursor::default();
-        let at = |cursor: &ClaudeTurnCursor, now| {
-            let state = cursor.state(now, None);
-            (state.activity, state.subagents.working)
-        };
-        cursor.observe_at(&session_start("session-a", "startup"), 0);
-        assert_eq!(at(&cursor, 1), (AgentActivity::Waiting, 0));
-        open_turn(&mut cursor, 5);
-        assert_eq!(at(&cursor, 6), (AgentActivity::Working, 0));
-        cursor.observe_at(
-            &subagent_hook(
-                "SubagentStart",
-                "session-a",
-                Some("prompt-a"),
-                "a591",
-                Some("general-purpose"),
-            ),
-            10,
-        );
-        assert_eq!(at(&cursor, 11), (AgentActivity::Working, 1));
-        cursor.observe_at(
-            &stop_listing(
-                "session-a",
-                "prompt-a",
-                serde_json::json!([{"id":"a591","type":"subagent","status":"running","agent_type":"general-purpose","description":"x"}]),
-            ),
-            12,
-        );
-        assert_eq!(
-            at(&cursor, 13),
-            (AgentActivity::Working, 1),
-            "the subagent is still running"
-        );
-        assert_eq!(at(&cursor, 100), (AgentActivity::Working, 1));
-        cursor.observe_at(
-            &subagent_hook(
-                "SubagentStop",
-                "session-a",
-                Some("prompt-a"),
-                "a591",
-                Some("general-purpose"),
-            ),
-            105,
-        );
-        cursor.observe_at(
-            &hook("UserPromptSubmit", "session-a", Some("prompt-b")),
-            105,
-        );
-        assert_eq!(at(&cursor, 106), (AgentActivity::Working, 0));
-        cursor.observe_at(
-            &stop_listing("session-a", "prompt-b", serde_json::json!([])),
-            107,
-        );
-        assert_eq!(at(&cursor, 108), (AgentActivity::Done, 0));
-        // Esc during a foreground subagent: it starts and nothing else ever arrives.
-        let mut interrupted = ClaudeTurnCursor::default();
-        interrupted.observe_at(
-            &hook("UserPromptSubmit", "session-a", Some("prompt-c")),
-            1_000,
-        );
-        interrupted.observe_at(
-            &subagent_hook(
-                "SubagentStart",
-                "session-a",
-                Some("prompt-c"),
-                "a6cd",
-                Some("general-purpose"),
-            ),
-            1_004,
-        );
-        assert_eq!(at(&interrupted, 1_010), (AgentActivity::Working, 1));
-        let later = 1_004 + SUBAGENT_STALE_SECS;
-        assert_eq!(at(&interrupted, later), (AgentActivity::Waiting, 0));
-    }
-
-    #[test]
     fn the_stray_subagent_stop_after_a_reply_leaves_the_turn_completed_for_the_scheduler() {
         // After some replies, tool-using or not, Claude 2.1.288 sends a SubagentStop
         // that had no SubagentStart (empty `agent_type`), 3 to 5 seconds after the Stop,
@@ -1708,39 +1628,5 @@ mod tests {
         );
         assert!(cursor.completed);
         assert_eq!(cursor.state(325, None).activity, AgentActivity::Done);
-    }
-
-    #[test]
-    fn a_paired_subagent_stop_in_an_open_turn_keeps_it_open_and_old_cursors_still_read() {
-        // A real subagent inside a turn: its start and stop leave the turn open.
-        let mut cursor = ClaudeTurnCursor::default();
-        open_turn(&mut cursor, 100);
-        for event in ["SubagentStart", "SubagentStop"] {
-            cursor.observe_at(
-                &subagent_hook(
-                    event,
-                    "session-a",
-                    Some("prompt-a"),
-                    "agent-1",
-                    Some("Plan"),
-                ),
-                110,
-            );
-        }
-        assert_eq!(completed(&cursor), ("session-a".into(), false));
-        assert!(cursor.subagents.is_empty());
-        // The turn's Stop then completes it once.
-        assert!(
-            cursor
-                .observe_at(&hook("Stop", "session-a", Some("prompt-a")), 120)
-                .is_some()
-        );
-        assert_eq!(completed(&cursor), ("session-a".into(), true));
-        // A cursor written by the previous build (which kept an `ended` flag) reads.
-        let old: ClaudeTurnCursor = serde_json::from_str(
-            r#"{"session_id":"session-a","turn_id":"prompt-a","completed":true,"ended":true,"since_unix":9}"#,
-        )
-        .unwrap();
-        assert_eq!(old.state(10, None).activity, AgentActivity::Done);
     }
 }

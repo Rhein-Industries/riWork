@@ -171,6 +171,22 @@ impl ChatView {
             _ => {}
         }
     }
+    /// Presentation follows live metadata; query/value and the retained editor stay intact.
+    pub(super) fn sync_model_placeholder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let placeholder = if self.model.transcript.models.is_empty() {
+            "model name, then ⏎"
+        } else {
+            "Search models"
+        };
+        let presentation = self.model_input.read(cx).presentation();
+        let current_placeholder: &str = presentation.placeholder().as_ref();
+        if current_placeholder != placeholder {
+            self.model_input.update(cx, |state, cx| {
+                state.set_placeholder(placeholder, window, cx);
+            });
+        }
+    }
+
     pub(super) fn model_event(
         &mut self,
         state: &Entity<InputState>,
@@ -180,6 +196,9 @@ impl ChatView {
     ) {
         if matches!(event, InputEvent::Focus) {
             gpui_kit::base::TextSelection::clear(window, cx);
+        }
+        if matches!(event, InputEvent::Change) && self.menu == Some(super::Menu::Model) {
+            cx.notify();
         }
         if text_input::is_submit(event, EnterBehavior::Submit)
             && self.menu == Some(super::Menu::Model)
@@ -235,6 +254,9 @@ impl ChatView {
             return;
         }
         let handled = if self.media.viewer.take().is_some() {
+            true
+        } else if self.open.remove(panels::ATTACHMENT_MENU_KEY) {
+            self.focus_composer = true;
             true
         } else if self.menu.is_some() {
             self.close_menu(cx);
@@ -561,11 +583,22 @@ impl ChatView {
             draft.prompts = question.questions;
         }
         let disabled = !self.accepts_input();
-        self.composer.update(cx, |state, cx| {
-            if state.presentation().is_disabled() != disabled {
-                state.set_disabled(disabled, cx);
-            }
-        });
+        let placeholder = "Message";
+        self.sync_model_placeholder(window, cx);
+        let presentation = self.composer.read(cx).presentation();
+        let current_placeholder: &str = presentation.placeholder().as_ref();
+        let placeholder_changed = current_placeholder != placeholder;
+        let disabled_changed = presentation.is_disabled() != disabled;
+        if placeholder_changed || disabled_changed {
+            self.composer.update(cx, |state, cx| {
+                if placeholder_changed {
+                    state.set_placeholder(placeholder, window, cx);
+                }
+                if disabled_changed {
+                    state.set_disabled(disabled, cx);
+                }
+            });
+        }
     }
     pub(super) fn typed_answers(&self, question: &Question, cx: &gpui::App) -> Vec<String> {
         (0..question.questions.len())

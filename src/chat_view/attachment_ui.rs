@@ -8,7 +8,8 @@ use crate::{
     behavior_controls as behavior,
     chat::{
         attachments::{
-            Attachment, AttachmentKind, FILE_BYTES, Preview, SEND_COUNT, image_thumbnail,
+            Attachment, AttachmentKind, FILE_BYTES, Preview, RAW_TIFF_BYTES, SEND_COUNT, image_thumbnail,
+            normalize_clipboard_image,
         },
         client::Client,
     },
@@ -38,6 +39,19 @@ pub(crate) fn init(cx: &mut gpui::App) {
     quick_look::init(cx);
     #[cfg(test)]
     let _ = cx;
+}
+
+#[cfg(target_os = "macos")]
+mod native_paste;
+
+pub(super) fn read_composer_clipboard(cx: &mut gpui::App) -> Result<Option<ClipboardItem>, String> {
+    // Headless test builds always use GPUI's injected clipboard. Native tests
+    // must pass an explicit private NSPasteboard to read_board instead.
+    #[cfg(all(target_os = "macos", not(test)))]
+    if let Some(item) = native_paste::read_general_attachments()? {
+        return Ok(Some(item));
+    }
+    Ok(cx.read_from_clipboard())
 }
 
 #[derive(Clone)]
@@ -134,6 +148,7 @@ pub(super) fn clipboard_sources(item: &ClipboardItem) -> Option<Vec<Source>> {
                 let extension = match image.format() {
                     ImageFormat::Png => "png",
                     ImageFormat::Jpeg => "jpg",
+                    ImageFormat::Tiff => "png",
                     _ => "unsupported",
                 };
                 Some(Source::Image {
@@ -147,27 +162,63 @@ pub(super) fn clipboard_sources(item: &ClipboardItem) -> Option<Vec<Source>> {
     (!images.is_empty()).then_some(images)
 }
 
+/// Failed/pending images still own retry bytes. Admission is independent of the
+/// staged-send quota; Ready chips have no Source and consume no raw-image budget.
+fn raw_image_admission(
+    retained_bytes: impl IntoIterator<Item = u64>,
+    incoming_bytes: u64,
+) -> Result<(), String> {
+    let (count, bytes) = retained_bytes
+        .into_iter()
+        .fold((0usize, 0u64), |(count, bytes), len| {
+            (count.saturating_add(1), bytes.saturating_add(len))
+        });
+    if count >= SEND_COUNT {
+        return Err(format!(
+            "at most {SEND_COUNT} clipboard images can retain retry data; remove an existing image before pasting another"
+        ));
+    }
+    if bytes
+        .checked_add(incoming_bytes)
+        .is_none_or(|total| total > RAW_TIFF_BYTES)
+    {
+        return Err("clipboard image retry data would exceed 64 MiB; remove an existing image before pasting another".into());
+    }
+    Ok(())
+}
+
+fn clipboard_image_bytes(image: &Image) -> Result<std::borrow::Cow<'_, [u8]>, String> {
+    if !matches!(
+        image.format(),
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Tiff
+    ) {
+        return Err("clipboard format is unsupported; use static PNG, JPEG or TIFF".into());
+    }
+    normalize_clipboard_image(image.bytes())
+}
+
 fn stage_source(
     ensure: &super::feed::Ensure,
     chat: &str,
     source: &Source,
 ) -> Result<Attachment, String> {
     let name = source.name();
+    // Normalize on this background worker before any host call. PNG/JPEG are
+    // borrowed unchanged; TIFF becomes bounded static PNG for host ownership.
+    let normalized = match source {
+        Source::Image { image, .. } => {
+            Some(clipboard_image_bytes(image).map_err(|e| format!("Attachment {name}: {e}"))?)
+        }
+        Source::File(_) => None,
+    };
     let socket = ensure().map_err(|e| format!("Attachment {name}: {e}"))?;
     let mut client = Client::connect(&socket).map_err(|e| format!("Attachment {name}: {e}"))?;
     match source {
         Source::File(path) => client
             .stage_attachment(chat, path)
             .map_err(|e| format!("Attachment {name}: {e}")),
-        Source::Image { name, image } => {
-            if !matches!(image.format(), ImageFormat::Png | ImageFormat::Jpeg) {
-                return Err(format!(
-                    "Attachment {name}: clipboard format is unsupported; use static PNG or JPEG"
-                ));
-            }
-            if image.bytes().len() as u64 > FILE_BYTES {
-                return Err(format!("Attachment {name}: exceeds 4 MiB"));
-            }
+        Source::Image { name, .. } => {
+            let bytes = normalized.as_ref().expect("image source was normalized");
             // Child-owned scratch storage, no inherited RIWORK_HOME or credential access.
             // Host copies/validates the bytes before this source is removed.
             let dir = std::env::temp_dir().join(format!("riwork-chat-paste-{}", Uuid::new_v4()));
@@ -184,7 +235,7 @@ fn stage_source(
                     .custom_flags(libc::O_NOFOLLOW)
                     .open(&path)
                     .map_err(|e| e.to_string())?;
-                file.write_all(image.bytes())
+                file.write_all(bytes)
                     .and_then(|()| file.sync_all())
                     .map_err(|e| e.to_string())?;
                 client
@@ -269,7 +320,6 @@ impl ChatView {
             .entries
             .iter()
             .any(|e| matches!(e, ClipboardEntry::String(text) if !text.text().is_empty()));
-        self.stage_sources(sources, window, cx);
         if mixed {
             self.notices.set(
                 super::notices::LocalKey::Attachment,
@@ -277,6 +327,8 @@ impl ChatView {
                 "Pasted attachments; clipboard text was not inserted.",
             );
         }
+        // Queue admission notices must take precedence over the mixed-paste notice.
+        self.stage_sources(sources, window, cx);
         true
     }
     pub(super) fn dropped_attachments(
@@ -304,6 +356,19 @@ impl ChatView {
             return;
         }
         for source in sources {
+            if let Source::Image { image, .. } = &source {
+                let retained = self
+                    .attachments
+                    .iter()
+                    .filter_map(|chip| match &chip.source {
+                        Some(Source::Image { image, .. }) => Some(image.bytes().len() as u64),
+                        _ => None,
+                    });
+                if let Err(error) = raw_image_admission(retained, image.bytes().len() as u64) {
+                    self.notices.set(super::notices::LocalKey::Attachment, crate::chat::model::NoticeLevel::Error, format!("Clipboard image was not added: {error}"));
+                    continue;
+                }
+            }
             let id = Uuid::new_v4().to_string();
             let name = source.name();
             let ready_or_pending = self
@@ -364,10 +429,7 @@ impl ChatView {
         let work = cx.background_executor().spawn(async move {
             let bytes = match local {
                 Local::Image(image) => {
-                    if !matches!(image.format(), ImageFormat::Png | ImageFormat::Jpeg) {
-                        return None;
-                    }
-                    image.bytes().to_vec()
+                    clipboard_image_bytes(&image).ok()?.into_owned()
                 }
                 Local::File(path) => read_preview_bytes(&path)?,
             };

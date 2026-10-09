@@ -23,6 +23,13 @@ actor ChatTransport: RemoteTransport {
     var chatFeature = true
     /// `ready.features.orchestrator_create`.
     var orchestratorFeature = false
+    /// `ready.features.chat_provider_switch`, `chat_models` and `shell_create_as_settings`.
+    var switchFeature = false
+    var modelsFeature = false
+    var asSettingsFeature = false
+    /// What `chat.models` lists per provider (nothing unless a test says), and the `error` it gives for each.
+    var providerModels: [ChatProvider: [ChatModelOption]] = [:]
+    var providerModelsErrors: [ChatProvider: String] = [:]
     var orchestratorMode = OrchestratorMode.ok
     /// A new orchestrator runs as a chat (`mode: "chat"` with a `chat_id`) rather than in a terminal.
     var newOrchestratorsAreChats = true
@@ -138,6 +145,10 @@ actor ChatTransport: RemoteTransport {
     func setAppearance(_ value: JSONValue?) { appearance = value }
     func setShellOutput(_ text: String) { shellOutput = text }
     func setOrchestratorFeature(_ on: Bool) { orchestratorFeature = on }
+    /// A desktop that lets a chat go on with the other provider and lists a provider's models.
+    func setSwitchFeatures(_ on: Bool) { switchFeature = on; modelsFeature = on }
+    func setAsSettingsFeature(_ on: Bool) { asSettingsFeature = on }
+    func setProviderModels(_ provider: ChatProvider, _ models: [ChatModelOption], error: String? = nil) { providerModels[provider] = models; providerModelsErrors[provider] = error }
     func setOrchestratorMode(_ mode: OrchestratorMode) { orchestratorMode = mode }
     func setNewOrchestratorsAreChats(_ on: Bool) { newOrchestratorsAreChats = on }
     func setCreateMode(_ mode: CreateMode) { createMode = mode }
@@ -184,6 +195,9 @@ actor ChatTransport: RemoteTransport {
         if chatFeature { features["chat"] = .bool(true) }
         if orchestratorFeature { features["orchestrator_create"] = .bool(true) }
         if tabsFeature { features["tabs"] = .bool(true) }
+        if switchFeature { features["chat_provider_switch"] = .bool(true) }
+        if modelsFeature { features["chat_models"] = .bool(true) }
+        if asSettingsFeature { features["shell_create_as_settings"] = .bool(true) }
         return features.isEmpty ? DesktopFeatures() : DesktopFeatures(ready: .object(["features": .object(features)]))
     }
 
@@ -247,6 +261,12 @@ actor ChatTransport: RemoteTransport {
             if let chat = params["chat_id"]?.string, let command = try? params["command"]?.decode(ChatCommand.self), let onCommand { append(chat, onCommand(chat, command)) }
             return .object(["status": .string("ok")])
         case "chat.stop": return .object(["status": .string("stopped")])
+        case "chat.models":
+            guard modelsFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            let provider = ChatProvider(rawValue: params["provider"]?.string ?? "") ?? .codex
+            let models = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(providerModels[provider] ?? []))
+            return .object(["provider": .string(provider.rawValue), "models": models, "configured": .array([]), "account_label": .null,
+                            "error": providerModelsErrors[provider].map { .string($0) } ?? .null])
         case "orchestrator.create":
             guard orchestratorFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
             return try await createOrchestrator(params)

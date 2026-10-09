@@ -256,9 +256,8 @@ Opted-in initial snapshot controls and live event pages use this shape:
 
 `ChatEvent::RateLimits { windows }` replaces `Transcript.rate_limits` wholesale,
 including an empty array. No such event in an older log means no known windows.
-Clients select a non-expired window at or above its own `warn_at` for a compact usage
-chip, prefer the highest percentage, use warning tone and bold at 90% or above,
-and list all windows in its tooltip. The chip is not dismissable. Do not turn these
+Clients expose these windows in the context meter’s tooltip and the Usage panel;
+they do not render a separate usage chip. Do not turn these
 windows or `allowed_warning` into notice banners, even at 30%: quota data is emitted
 whenever it changes, independently of thresholds. Expired windows are retained as
 provider data; clients hide them when `resets_at <= now`.

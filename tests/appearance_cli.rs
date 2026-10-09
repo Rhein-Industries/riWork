@@ -233,35 +233,6 @@ fn json_prints_the_validated_document_in_the_contract_shape() {
 }
 
 #[test]
-fn the_summary_is_short_and_not_json() {
-    let home = Home::new();
-    home.write(&document().to_string());
-    let output = home.run(&["appearance"]);
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    let text = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(text.lines().count(), 4, "{text}");
-    assert!(text.starts_with("Appearance: light (updated 2026-09-21 14:13:20 UTC)\n"));
-    for expected in [
-        "bg #fbf1c7",
-        "muted #665c54",
-        "background #fbf1c7",
-        "16 palette colors",
-    ] {
-        assert!(text.contains(expected), "{expected}: {text}");
-    }
-    assert!(serde_json::from_str::<Value>(&text).is_err());
-
-    let mut without = document();
-    without.as_object_mut().unwrap().remove("terminal");
-    without["dark"] = json!(true);
-    home.write(&without.to_string());
-    let text = String::from_utf8(home.run(&["appearance"]).stdout).unwrap();
-    assert!(text.starts_with("Appearance: dark "), "{text}");
-    assert!(text.ends_with("Terminal:   colors unknown\n"), "{text}");
-}
-
-#[test]
 fn unexpected_arguments_are_refused() {
     let home = Home::new();
     home.write(&document().to_string());

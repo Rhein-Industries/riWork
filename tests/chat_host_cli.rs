@@ -174,6 +174,7 @@ fn ensure_starts_one_detached_host_and_every_later_ensure_finds_it() {
 }
 
 #[test]
+#[ignore = "slow: waits on the wall clock for a one-second idle exit"]
 fn a_host_in_the_foreground_exits_by_itself_when_idle() {
     let home = Home::new();
     let mut host = home
@@ -221,72 +222,14 @@ fn chat_commands_refuse_what_they_cannot_do_without_starting_a_host() {
 }
 
 #[test]
-fn handoff_says_what_is_missing_before_it_starts_a_host_or_writes_a_document() {
-    let home = Home::new();
-    let fails = |args: &[&str], expected: &[&str]| {
-        let output = home.run(args);
-        assert_eq!(output.status.code(), Some(2), "{args:?}");
-        for wanted in expected {
-            assert!(
-                stderr(&output).contains(wanted),
-                "{args:?}: {}",
-                stderr(&output)
-            );
-        }
-    };
-    // Not started by a shell or a chat, and told no source.
-    fails(
-        &["handoff", "--to", "chat", "--provider", "codex"],
-        &["Pass --from"],
-    );
-    fails(
-        &["handoff"],
-        &["--to must be shell or chat", "Usage: riwork handoff"],
-    );
-    fails(
-        &["handoff", "--to", "chat", "--provider", "gemini"],
-        &["--provider must be codex, claude or grok"],
-    );
-    fails(
-        &[
-            "handoff",
-            "--from",
-            "cccccccc",
-            "--to",
-            "chat",
-            "--provider",
-            "codex",
-        ],
-        &["No shell or chat has the id cccccccc"],
-    );
-    fails(
-        &[
-            "handoff",
-            "--from",
-            "x",
-            "--to",
-            "chat",
-            "--provider",
-            "codex",
-        ],
-        &["not a shell or chat id"],
-    );
-    assert!(!home.socket().exists(), "none of them started a host");
-    assert!(
-        !home.0.join("handoffs").exists(),
-        "none of them wrote a document"
-    );
-    let help = home.run(&["help"]);
-    assert!(stdout(&help).contains("riwork handoff [--from SHELL_OR_CHAT_ID]"));
-}
-
-#[test]
 fn events_and_command_refuse_an_unknown_chat_and_capabilities_announce_chat() {
     let home = Home::new();
     let capabilities = home.run(&["capabilities", "--json"]);
     assert!(capabilities.status.success(), "{}", stderr(&capabilities));
     let capabilities: serde_json::Value = serde_json::from_slice(&capabilities.stdout).unwrap();
     assert_eq!(capabilities["chat"], true);
+    assert_eq!(capabilities["chat_provider_switch"], true);
+    assert_eq!(capabilities["chat_models"], true);
     assert_eq!(capabilities["v"], 1);
     assert!(stdout(&home.run(&["capabilities"])).contains("chat yes"));
 

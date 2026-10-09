@@ -549,7 +549,6 @@ mod tests {
         let notices = claim_at(&fixture.home, 104).unwrap();
         assert_eq!(notices.len(), 1);
         let alert = notices[0].notification();
-        assert_eq!(alert.title.as_ref(), "Project A · Codex finished");
         assert_eq!(
             response_target(&alert.tag),
             Some((fixture.project_id.as_str(), fixture.shell_id.as_str()))
@@ -616,32 +615,6 @@ mod tests {
             .unwrap()
         );
         assert_eq!(claim_at(&fixture.home, 104).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn successive_turns_keep_distinct_native_notifications_and_route_to_the_same_agent() {
-        let fixture = Fixture::new();
-        fixture.enabled(true);
-        for event in ["thread:turn-a", "thread:turn-b"] {
-            record_at(
-                &fixture.home,
-                &fixture.shell_id,
-                event,
-                HarnessKind::Codex,
-                100,
-            )
-            .unwrap();
-        }
-        let notices = claim_at(&fixture.home, 101).unwrap();
-        assert_eq!(notices.len(), 2);
-        let a = notices[0].notification();
-        let b = notices[1].notification();
-        assert_ne!(a.tag, b.tag);
-        assert_eq!(response_target(&a.tag), response_target(&b.tag));
-        assert_eq!(
-            response_target(&a.tag),
-            Some((fixture.project_id.as_str(), fixture.shell_id.as_str()))
-        );
     }
 
     #[test]

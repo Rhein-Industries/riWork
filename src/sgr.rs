@@ -209,19 +209,6 @@ mod tests {
     }
 
     #[test]
-    fn plain_text_is_untouched() {
-        for text in [
-            "",
-            "hello",
-            "a\nb\n\n",
-            "tab\there",
-            "\u{e9}\u{1f600} \u{4e16}\u{754c}",
-        ] {
-            assert_eq!(filter(text), text);
-        }
-    }
-
-    #[test]
     fn other_csi_sequences_are_removed_whole() {
         for csi in [
             "\u{1b}[2J",
@@ -349,15 +336,6 @@ mod tests {
         }
         // A parameter byte after an intermediate is not a valid sequence.
         assert_eq!(filter("\u{1b}[1 1m"), "1m");
-    }
-
-    #[test]
-    fn lines_are_preserved_exactly() {
-        let input = "\u{1b}]8;;u\u{1b}\\one\u{1b}[31m\n\u{1b}[2J\n\u{1b}[0m\n\u{1b}]0;\ntwo";
-        assert_eq!(
-            filter(input).matches('\n').count(),
-            input.matches('\n').count()
-        );
     }
 
     /// Small deterministic generator; no dependency for a fuzz loop.

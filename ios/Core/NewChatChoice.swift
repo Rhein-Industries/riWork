@@ -84,9 +84,30 @@ extension ChatCreateRequest {
 
 // MARK: - In the sheet
 
+/// One row of a new chat's model list, which offers both providers: a provider's default, the model last used with it (while its list is not
+/// known), or one of its models. Choosing one chooses the provider too.
+public enum NewChatRow: Sendable, Equatable, Identifiable {
+    case providerDefault(ChatProvider)
+    case last(ChatProvider, ChatModelOption)
+    case model(ChatProvider, ChatModelOption)
+
+    public var provider: ChatProvider {
+        switch self {
+        case .providerDefault(let provider), .last(let provider, _), .model(let provider, _): provider
+        }
+    }
+    public var id: String {
+        switch self {
+        case .providerDefault(let provider): "\(provider.rawValue):default"
+        case .last(let provider, let option): "\(provider.rawValue):last:\(option.id)"
+        case .model(let provider, let option): "\(provider.rawValue):model:\(option.id)"
+        }
+    }
+}
+
 extension NewTerminalForm {
-    /// The choice for the chat kind that is selected; nil for a terminal.
-    public var chatChoice: NewChatChoice? { kind.chatProvider.map { chatChoices[$0] ?? NewChatChoice() } }
+    /// The choice for the provider of a new chat; nil for a terminal.
+    public var chatChoice: NewChatChoice? { kind.isChat ? chatChoices[chatProvider] ?? NewChatChoice() : nil }
 
     /// Whether a control exists now: the model rows for a chat, its efforts when the chosen model has them, Fast when it has one.
     func chatFieldShown(_ field: Field) -> Bool {
@@ -98,11 +119,41 @@ extension NewTerminalForm {
         }
     }
 
-    /// Chooses the last model used (or the default) for the chat kind that is selected.
+    /// Every provider's rows, Codex first, each under its default: the models it is known to offer, or the one last used with it while
+    /// that is not known.
+    public var chatRows: [NewChatRow] {
+        ChatProvider.allCases.flatMap { provider -> [NewChatRow] in
+            let models = chatModels[provider] ?? []
+            var rows: [NewChatRow] = [.providerDefault(provider)]
+            if models.isEmpty, let last = chatChoices[provider]?.model { rows.append(.last(provider, last)) }
+            return rows + models.map { .model(provider, $0) }
+        }
+    }
+    /// The row that is chosen; nil for a terminal, and for a model the provider's list no longer names.
+    public var chosenChatRow: NewChatRow? {
+        guard let choice = chatChoice else { return nil }
+        guard let chosen = choice.chosen else { return .providerDefault(chatProvider) }
+        let models = chatModels[chatProvider] ?? []
+        if models.isEmpty { return .last(chatProvider, chosen) }
+        return models.first { $0.id == chosen.id }.map { .model(chatProvider, $0) }
+    }
+    /// A row was chosen: its provider, and its model (with what the model cannot keep dropped) or the provider's default.
+    public mutating func chooseChatRow(_ row: NewChatRow) {
+        guard kind.isChat else { return }
+        selectChatProvider(row.provider)
+        switch row {
+        case .providerDefault: selectChatModel(last: false)
+        case .last: selectChatModel(last: true)
+        case .model(_, let option): selectChatModel(option)
+        }
+    }
+
+    /// Chooses the last model used (or the default) for the provider of the chat.
     public mutating func selectChatModel(last: Bool) { change { if last { $0.useLastModel() } else { $0.useDefault() } } }
+    /// Chooses one of the models of the chat's provider.
     public mutating func selectChatModel(_ option: ChatModelOption) {
-        guard let provider = kind.chatProvider, chatModels[provider]?.contains(where: { $0.id == option.id }) == true else { return }
-        let models = chatModels[provider] ?? []
+        guard kind.isChat, chatModels[chatProvider]?.contains(where: { $0.id == option.id }) == true else { return }
+        let models = chatModels[chatProvider] ?? []
         change { choice in
             let choices = ChatModelChoices(models: models, model: choice.requestedModel, effort: choice.effort, fast: choice.fast)
             if let configuration = choices.configuration(for: .model(option.id)) {
@@ -116,27 +167,24 @@ extension NewTerminalForm {
     public mutating func setChatFast(_ on: Bool) { change { $0.setFast(on) } }
 
     private mutating func change(_ edit: (inout NewChatChoice) -> Void) {
-        guard let provider = kind.chatProvider else { return }
-        var choice = chatChoices[provider] ?? NewChatChoice()
+        guard kind.isChat else { return }
+        var choice = chatChoices[chatProvider] ?? NewChatChoice()
         edit(&choice)
-        chatChoices[provider] = choice
+        chatChoices[chatProvider] = choice
         if !fields.contains(focus) { focus = .kind }
     }
 
-    /// Up and down choose within the model rows and the efforts; space flips Fast. Left, right and tab still move the ring, and up and down on
-    /// Fast choose the kind as they do on the other toggle. True when the key was the chat controls'.
+    /// Up and down choose within the model rows (across both providers) and the efforts; space flips Fast. Left, right and tab still move the
+    /// ring, and up and down on Fast choose the kind as they do on the other toggle. True when the key was the chat controls'.
     mutating func handleChat(_ key: Key) -> Bool {
         guard let choice = chatChoice else { return false }
         switch (focus, key) {
         case (.chatModel, .up), (.chatModel, .down):
-            let models = kind.chatProvider.flatMap { chatModels[$0] } ?? []
-            guard !models.isEmpty else {
-                change { if key == .up { $0.useDefault() } else { $0.useLastModel() } }
-                return true
-            }
-            let index = choice.chosen.flatMap { chosen in models.firstIndex { $0.id == chosen.id } }.map { $0 + 1 } ?? 0
-            let next = (index + (key == .down ? 1 : -1) + models.count + 1) % (models.count + 1)
-            if next == 0 { change { $0.useDefault() } } else { selectChatModel(models[next - 1]) }
+            let rows = chatRows
+            guard !rows.isEmpty else { return true }
+            let at = chosenChatRow.flatMap { chosen in rows.firstIndex { $0.id == chosen.id } }
+                ?? rows.firstIndex { $0 == .providerDefault(chatProvider) } ?? 0
+            chooseChatRow(rows[(at + (key == .down ? 1 : -1) + rows.count) % rows.count])
             return true
         case (.chatEffort, .up), (.chatEffort, .down):
             let efforts = choice.efforts

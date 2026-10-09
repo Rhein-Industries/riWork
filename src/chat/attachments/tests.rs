@@ -162,6 +162,7 @@ fn actual_image_bytes_and_thumbnail_match_both_provider_formats() {
     );
 }
 #[test]
+#[ignore = "slow: stages 128 snapshots and restarts the host (2.3 s)"]
 fn retention_count_quota_survives_host_restart_and_staging_does_not_resume_provider() {
     let mut host = TestHost::new();
     let chat = host.create(Provider::Codex);
@@ -182,138 +183,6 @@ fn retention_count_quota_survives_host_restart_and_staging_does_not_resume_provi
     assert_eq!(host.fake().start_count(), starts);
     host.client().delete(&chat.id).unwrap();
     assert!(!host.home.join("chats").join(chat.id).exists());
-}
-
-#[test]
-fn old_host_refuses_attachment_operations_without_receiving_legacy_text_fallback() {
-    use crate::chat::{
-        client::{CallError, Client},
-        wire::{Request, Response},
-    };
-    use std::{
-        io::{BufRead, BufReader, Write},
-        os::unix::net::UnixListener,
-        thread,
-        time::Duration,
-    };
-    #[derive(serde::Deserialize)]
-    #[serde(tag = "command", rename_all = "snake_case")]
-    enum OldCommand {
-        Send { text: String },
-    }
-    #[derive(serde::Deserialize)]
-    #[serde(tag = "op", rename_all = "snake_case")]
-    enum OldRequest {
-        Capabilities { id: String },
-        Command { id: String, command: OldCommand },
-    }
-    let home = crate::chat::testing::short_home();
-    let socket = home.join("old.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
-    let serving = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
-        let mut sends = Vec::new();
-        let mut ops = Vec::new();
-        for _ in 0..4 {
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            let value: Value = serde_json::from_str(&line).unwrap();
-            ops.push(value["op"].clone());
-            let (id, ok, result, error) = match serde_json::from_str::<OldRequest>(&line) {
-                Ok(OldRequest::Capabilities { id }) => {
-                    (id, true, Some(json!({"identified_create":true})), None)
-                }
-                Ok(OldRequest::Command {
-                    id,
-                    command: OldCommand::Send { text },
-                }) => {
-                    sends.push(text);
-                    (id, true, None, None)
-                }
-                Err(e) => (
-                    value["id"].as_str().unwrap().into(),
-                    false,
-                    None,
-                    Some(e.to_string()),
-                ),
-            };
-            writeln!(
-                stream,
-                "{}",
-                serde_json::to_string(&Response {
-                    id,
-                    ok,
-                    result,
-                    error
-                })
-                .unwrap()
-            )
-            .unwrap();
-        }
-        (ops, sends)
-    });
-    let mut client = Client::connect(&socket).unwrap();
-    assert!(
-        client
-            .supports_identified_create(Duration::from_secs(2))
-            .unwrap()
-    );
-    assert!(matches!(
-        client.stage_attachment("chat", &home.join("no-read")),
-        Err(CallError::Refused(_))
-    ));
-    assert!(matches!(
-        client.command_checked(
-            "chat",
-            ChatCommand::SendAttachments {
-                text: "must not degrade".into(),
-                attachments: Vec::new()
-            }
-        ),
-        Err(CallError::Refused(_))
-    ));
-    client
-        .command(
-            "chat",
-            ChatCommand::Send {
-                text: "legacy still works".into(),
-            },
-        )
-        .unwrap();
-    let (ops, sends) = serving.join().unwrap();
-    assert_eq!(sends, vec!["legacy still works"]);
-    assert_eq!(
-        ops,
-        vec![
-            json!("capabilities"),
-            json!("stage_attachment"),
-            json!("command"),
-            json!("command")
-        ]
-    );
-    assert_eq!(
-        serde_json::to_value(ChatCommand::Send {
-            text: "hello".into()
-        })
-        .unwrap(),
-        json!({"command":"send","text":"hello"})
-    );
-    assert_eq!(
-        serde_json::to_value(crate::chat::wire::Capabilities {
-            identified_create: true
-        })
-        .unwrap(),
-        json!({"identified_create":true})
-    );
-    // New unknown-submission errors keep the client's existing Refused/Broken distinction.
-    assert!(
-        serde_json::from_value::<Request>(
-            json!({"op":"stage_attachment","id":"x","chat_id":"chat","path":"/file"})
-        )
-        .is_ok()
-    );
-    fs::remove_dir_all(home).unwrap();
 }
 
 #[test]

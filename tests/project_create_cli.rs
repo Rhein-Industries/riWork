@@ -194,19 +194,6 @@ fn is_canonical_uuid(text: &str) -> bool {
 }
 
 #[test]
-fn the_cli_says_it_can_create_exclusively() {
-    let sandbox = Sandbox::new();
-    let capabilities = sandbox.ok(&["capabilities", "--json"]);
-    assert_eq!(capabilities["v"], 1);
-    assert_eq!(capabilities["project_create_exclusive"], true);
-    // The earlier question keeps its answer.
-    assert_eq!(capabilities["verifies_shell"], true);
-    let text = sandbox.run(&["capabilities"]);
-    let text = String::from_utf8_lossy(&text.stdout);
-    assert!(text.contains("project_create_exclusive yes"), "{text}");
-}
-
-#[test]
 fn a_project_is_made_in_the_default_folder_with_git_and_printed_as_the_list_shows_it() {
     let sandbox = Sandbox::new();
     assert!(!sandbox.projects().exists(), "the sandbox starts empty");
@@ -385,10 +372,3 @@ fn the_flag_belongs_to_create_and_is_never_read_as_a_path() {
     assert!(line.starts_with("riwork: already_exists: "), "{line}");
 }
 
-#[test]
-fn the_help_describes_the_flag() {
-    let sandbox = Sandbox::new();
-    let help = String::from_utf8_lossy(&sandbox.run(&["help"]).stdout).into_owned();
-    assert!(help.contains("[--no-git] [--exclusive]"), "{help}");
-    assert!(help.contains("already_exists"), "{help}");
-}

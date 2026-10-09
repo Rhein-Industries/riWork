@@ -98,6 +98,8 @@ pub enum ChatViewEvent {
     Close,
     /// **Hand off…** was chosen: the window asks where the conversation goes.
     HandOff,
+    /// Open the new-chat chooser; the current conversation stays intact.
+    NewChat,
     OpenFile {
         target: String,
     },
@@ -106,6 +108,25 @@ pub enum ChatViewEvent {
 }
 
 impl EventEmitter<ChatViewEvent> for ChatView {}
+
+/// The provider a chat of `provider` can switch to.
+fn other_provider(provider: Provider) -> Provider {
+    match provider {
+        Provider::Codex => Provider::Claude,
+        Provider::Claude => Provider::Codex,
+    }
+}
+
+/// What a refused switch says. A host from before the switch does not know the command.
+fn switch_failure(error: &str) -> String {
+    if error.contains("unknown variant") && error.contains("switch") {
+        "The chat host that is running is from an older RiWork and cannot switch providers. \
+         It is replaced by this version once it has been idle for 15 minutes."
+            .to_owned()
+    } else {
+        format!("Could not switch: {error}")
+    }
+}
 
 /// A chat the host is still making, or could not make.
 enum Creation {
@@ -176,9 +197,17 @@ pub struct ChatView {
     preview_root: Option<std::path::PathBuf>,
     /// The interface text scale the list's rows were measured at.
     scale: f32,
+    /// Theme-specific fonts and spacing also change the measured row heights.
+    row_theme: Option<crate::theme::ThemeChoice>,
     focus: FocusHandle,
     composer: Entity<TextareaState>,
     model_input: Entity<InputState>,
+    /// The RiWork data directory, where saved chats tell the other provider's models.
+    catalog_home: Option<std::path::PathBuf>,
+    /// What the provider the chat does not run offers, read when the model menu opens: the
+    /// rows that move the chat to it.
+    others: Option<(Provider, crate::chat::catalog::Catalog)>,
+    others_task: Option<Task<()>>,
     answers: HashMap<editors::AnswerKey, editors::AnswerEditor>,
     subscriptions: Vec<Subscription>,
     model_seeded: bool,
@@ -240,6 +269,22 @@ impl ChatView {
     pub fn info(&self) -> Option<&ChatInfo> {
         self.model.transcript.info.as_ref()
     }
+    /// Browse an existing chat without starting its host on follow/reconnect. The normal
+    /// configuration remains available for explicit sends and attachment staging.
+    pub fn open_existing(
+        chat_id: String,
+        config: HostConfig,
+        home: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = Self::blank(config, window, cx);
+        view.chat_id = Some(chat_id.clone());
+        view.follow_display_setting(cx);
+        view.start_feed_with_follow(chat_id, 0, HostConfig::follow_existing(home), window, cx);
+        view
+    }
+
     /// The tab of a chat the host already has: it subscribes from the start and builds the
     /// transcript again.
     pub fn open(
@@ -357,9 +402,15 @@ impl ChatView {
             media: Default::default(),
             preview_root: None,
             scale: ui_text::scale(),
+            row_theme: cx
+                .try_global::<crate::theme::Appearance>()
+                .map(|a| a.selected),
             focus,
             composer,
             model_input,
+            catalog_home: None,
+            others: None,
+            others_task: None,
             subscriptions,
             answers: HashMap::new(),
             model_seeded: false,
@@ -433,6 +484,11 @@ impl ChatView {
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         gpui_kit::base::TextSelection::clear(window, cx);
         self.composer.read(cx).focus_handle(cx).focus(window, cx);
+    }
+
+    /// The RiWork data directory, whose saved chats say what the other provider offers.
+    pub fn set_catalog_home(&mut self, home: std::path::PathBuf) {
+        self.catalog_home = Some(home);
     }
 
     /// The names and folders around the chat that dictation should know: the project, its
@@ -525,10 +581,22 @@ impl ChatView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.start_feed_with_follow(chat_id, since, self.config.ensure.clone(), window, cx);
+    }
+
+    fn start_feed_with_follow(
+        &mut self,
+        chat_id: String,
+        since: u64,
+        follow: feed::Ensure,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.feed_started = true;
         let (sender, receiver) = async_channel::unbounded();
-        self.feed = Some(Feed::start(
+        self.feed = Some(Feed::start_with_follow(
             self.config.ensure.clone(),
+            follow,
             chat_id,
             since,
             sender,
@@ -774,12 +842,16 @@ impl ChatView {
         }
     }
 
-    /// The list's rows were measured at another text size.
+    /// The list's rows were measured with different typography.
     fn follow_text_size(&mut self, cx: &mut Context<Self>) {
         let scale = ui_text::scale();
-        if scale != self.scale {
+        let row_theme = cx
+            .try_global::<crate::theme::Appearance>()
+            .map(|a| a.selected);
+        if scale != self.scale || row_theme != self.row_theme {
             self.transcript_selection.clear(self.window_handle, cx);
             self.scale = scale;
+            self.row_theme = row_theme;
             self.list.remeasure();
         }
     }
@@ -804,6 +876,11 @@ impl ChatView {
             ChatCommand::Approve { request_id, .. } | ChatCommand::Answer { request_id, .. } => {
                 self.answered.remove(&request_id);
             }
+            // The host's own reason (a turn is running, an account is gone) is the message.
+            ChatCommand::Switch { .. } => {
+                self.notices.set(notices::LocalKey::Settings, crate::chat::model::NoticeLevel::Error, switch_failure(&error));
+                return;
+            }
             _ => {}
         }
         self.notices.set(
@@ -811,6 +888,50 @@ impl ChatView {
             NoticeLevel::Error,
             format!("Could not reach the chat: {error}"),
         );
+    }
+
+    /// Read what the provider the chat does not run offers, from saved chats, for the model
+    /// menu's rows that move the chat to it.
+    fn load_other_models(&mut self, cx: &mut Context<Self>) {
+        let (Some(home), Some(provider)) = (self.catalog_home.clone(), self.provider()) else {
+            return;
+        };
+        let other = other_provider(provider);
+        let project = self
+            .model
+            .transcript
+            .info
+            .as_ref()
+            .and_then(|info| info.project_id.clone());
+        let work = cx
+            .background_executor()
+            .spawn(async move { crate::chat::catalog::saved(&home, project.as_deref(), other) });
+        self.others_task = Some(cx.spawn(async move |this, cx| {
+            let catalog = work.await;
+            let _ = this.update(cx, |view, cx| {
+                view.others = Some((other, catalog));
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Go on with `provider` in this chat: the host stops the agent and starts the other one
+    /// with the conversation so far. `model` is `None` for the provider's own default.
+    fn switch_provider(
+        &mut self,
+        provider: Provider,
+        model: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = None;
+        self.focus_composer = true;
+        self.command(ChatCommand::Switch {
+            provider,
+            model,
+            effort: None,
+            fast: None,
+        });
+        cx.notify();
     }
 
     fn interrupt(&mut self, cx: &mut Context<Self>) {
@@ -1024,6 +1145,9 @@ impl ChatView {
             self.focus_composer = true;
         } else {
             self.menu = Some(menu);
+            if menu == Menu::Model {
+                self.load_other_models(cx);
+            }
             if menu == Menu::Model && self.model.transcript.models.is_empty() {
                 if !self.model_seeded {
                     let value = self
@@ -1053,6 +1177,15 @@ impl ChatView {
         self.model
             .provider()
             .or_else(|| self.creation.as_ref().map(|c| c.chat().provider))
+    }
+
+    /// The other provider's offer, once read for the provider the chat does not run now.
+    fn other_models(&self) -> Option<&crate::chat::catalog::Catalog> {
+        let provider = self.provider()?;
+        self.others
+            .as_ref()
+            .filter(|(other, _)| *other == other_provider(provider))
+            .map(|(_, catalog)| catalog)
     }
 
     fn running(&self) -> bool {

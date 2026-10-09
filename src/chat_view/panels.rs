@@ -21,17 +21,18 @@ use crate::{
 };
 
 use super::{
-    ChatView, ChatViewEvent, Creation, Draft, Menu, approval, composer, dictate,
+    ChatView, ChatViewEvent, Creation, Draft, Menu, approval, cards, composer, dictate,
     state::provider_name,
     toolbar,
     widgets::{self, Look, button, capsule, dimmed},
 };
 
-/// The chat header's inset and control gap, shared with the message box (see `composer`).
+/// The chat header's inset and control gap.
 use super::composer::{BAR_GAP, BAR_INSET};
 use super::usage_chip::Detail;
 /// The space between the message box's edge and its text, clear of its round corners.
 const FIELD_INSET: f32 = 12.0;
+pub(super) const ATTACHMENT_MENU_KEY: &str = "composer-attachment-menu";
 
 /// The chat header's measured pieces (see `toolbar`).
 const SLOT_DISPLAY: usize = 0;
@@ -100,6 +101,62 @@ fn composer_path(path: &mut PathBuilder, bounds: gpui::Bounds<gpui::Pixels>, rad
         point(left, top),
     );
     path.close();
+}
+
+/// The message box's card as the design draws it: Hermes's panel with a hairline edge and
+/// small corners; every other design keeps the message field it had, the window's background
+/// in a continuous-corner outline. The edge takes the focus color while the box has focus
+/// (the colorful themes' cyan). The geometry is the same in every design: a one-pixel edge
+/// around the card's padding.
+fn composer_card(card: Stateful<gpui::Div>, look: Look, active: bool) -> Stateful<gpui::Div> {
+    let colors = look.colors;
+    let radius = look.card_radius();
+    if look.hermes() {
+        return card
+            .rounded(radius)
+            .border_1()
+            .border_color(rgb(if active { colors.focus } else { colors.divider }))
+            .bg(rgb(colors.panel));
+    }
+    let outline = match (active, look.native) {
+        (false, _) => colors.divider,
+        (true, true) => colors.focus,
+        (true, false) => colors.cyan,
+    };
+    let surface = canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let bounds = bounds.inset(px(0.5));
+            if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
+                return;
+            }
+            for (mut path, color) in [
+                (PathBuilder::fill(), colors.bg),
+                (PathBuilder::stroke(px(1.)), outline),
+            ] {
+                composer_path(&mut path, bounds, radius);
+                if let Ok(path) = path.build() {
+                    window.paint_path(path, rgb(color));
+                }
+            }
+        },
+    )
+    .absolute()
+    .inset_0();
+    card.relative()
+        .border_1()
+        .border_color(transparent_black())
+        .child(surface)
+}
+
+/// A bar above the message box (a notice, a request, a question) as a card in the same column
+/// as the message box: its inset on the sides and above, the design's card corners.
+fn above_composer<E: Styled>(bar: E, inset: gpui::Pixels, look: Look) -> E {
+    bar.mx(inset)
+        .mt(inset)
+        .w_auto()
+        .border_1()
+        .rounded(look.card_radius())
 }
 
 /// A message box button in the colorful themes: a square of `side` with a one-character mark,
@@ -391,25 +448,15 @@ impl ChatView {
         let colors = look.colors;
         let info = self.model.transcript.info.as_ref();
         let mode = info.map(|info| info.approval_mode).unwrap_or_default();
+        let models = &self.model.transcript.models;
         let model = info.and_then(|info| info.model.clone());
         let effort = info.and_then(|info| info.effort.clone());
         let fast = info.is_some_and(|info| info.fast);
         let thread = info.and_then(|info| info.provider_thread_id.clone());
         let idle = matches!(self.model.transcript.state, ChatState::Idle);
-        // What the driver said it offers; empty for a driver that says nothing.
-        let models = &self.model.transcript.models;
-        let provider = self.provider().unwrap_or(Provider::Codex);
 
         // A pop-up button: its choice and an arrow. Native's is a grey capsule with a chevron,
         // a step darker while its menu is open.
-        // A picker with nothing chosen shows its name, a sentence in Native.
-        let placeholder = |label: String, name: &str| {
-            if label == name {
-                widgets::sentence(name, look)
-            } else {
-                label
-            }
-        };
         let picker = |name: &'static str, label: String, menu: Menu, cx: &mut Context<Self>| {
             let open = self.menu == Some(menu);
             let accessible = format!(
@@ -447,6 +494,7 @@ impl ChatView {
                         .accessibility_label(accessible)
                         .aria_expanded(open)
                         .on_click(cx.listener(move |view, _, window, cx| {
+                            view.open.remove(ATTACHMENT_MENU_KEY);
                             view.toggle_menu(menu, window, cx)
                         })),
                 )
@@ -489,73 +537,6 @@ impl ChatView {
             Menu::Mode,
             cx,
         );
-        let model_picker = picker(
-            "chat-model",
-            placeholder(toolbar::model_label(models, model.as_deref()), "model"),
-            Menu::Model,
-            cx,
-        );
-        let effort_picker =
-            toolbar::effort_available(models, model.as_deref(), provider).then(|| {
-                // An effort is a lowercase word; Native starts it with a capital.
-                picker(
-                    "chat-effort",
-                    widgets::sentence(
-                        &toolbar::effort_label(models, model.as_deref(), effort.as_deref()),
-                        look,
-                    ),
-                    Menu::Effort,
-                    cx,
-                )
-            });
-        let fast_toggle = toolbar::fast_available(models, model.as_deref()).then(|| {
-            // Native's is a capsule toggle with the bolt symbol: grey while off, and in
-            // the working color with the bolt filled while on, as the mic shows it listens.
-            let toggle = if look.native {
-                widgets::toggle_capsule("chat-fast", "Fast", fast, look)
-                    .pl(ui_text::space(8.0))
-                    .child(icons::symbol(
-                        if fast { "bolt.fill" } else { "bolt" },
-                        10.0,
-                        None,
-                    ))
-                    .flex_row_reverse()
-                    .when(fast, |toggle| {
-                        toggle
-                            .bg(rgb(look.tint(colors.working, 0.18)))
-                            .text_color(rgb(colors.working))
-                    })
-                    .when(!fast, |toggle| toggle.text_color(rgb(colors.muted)))
-                    .cursor_pointer()
-                    .hover(move |style| {
-                        style.bg(rgb(if fast {
-                            look.tint(colors.working, 0.28)
-                        } else {
-                            Button::Secondary.hover(colors)
-                        }))
-                    })
-            } else {
-                widgets::toggle_button(
-                    "chat-fast",
-                    toolbar::fast_label(fast),
-                    fast.then_some(colors.cyan),
-                    fast,
-                    look,
-                )
-            };
-            div()
-                .relative()
-                .child(toggle.on_change({
-                    let owner = cx.weak_entity();
-                    move |_, _, _, cx| {
-                        let _ = owner.update(cx, |view, cx| view.toggle_fast(cx));
-                    }
-                }))
-                .child(tooltip::anchor(
-                    "Fast mode answers sooner and uses more of your limits",
-                    TipLook::Control,
-                ))
-        });
         let compact = div().child(if idle {
             button("chat-compact", "Compact", None, look)
                 .on_click(cx.listener(|view, _, _, cx| view.compact(cx)))
@@ -672,9 +653,9 @@ impl ChatView {
         let inner = self.composer_width.get() - 2. * space(BAR_INSET);
         let foldable = [
             (Fold::Mode, true),
-            (Fold::Model, true),
-            (Fold::Effort, effort_picker.is_some()),
-            (Fold::Fast, fast_toggle.is_some()),
+            (Fold::Model, false),
+            (Fold::Effort, false),
+            (Fold::Fast, false),
             (Fold::Compact, true),
         ]
         .into_iter()
@@ -693,23 +674,15 @@ impl ChatView {
             0.
         };
         let more_room = gap + last[SLOT_MORE];
-        // On one line the usage has what the controls, the spacer, the session id and ⋯ leave;
-        // it leaves out its cost to stay there rather than take a row of its own.
-        let beside_usage = row_width(foldable.len()) + gap + thread_room + more_room;
-        let usage_room = inner - beside_usage - gap;
-        let one_line = inner <= 0.
-            || match self.usage_width(Detail::NoCost, window) {
-                Some(usage) => usage <= usage_room + 0.5,
-                None => beside_usage <= inner + 0.5,
-            };
-        let kept = if one_line {
-            foldable.len()
-        } else {
-            (0..=foldable.len())
-                .rev()
-                .find(|count| row_width(*count) + more_room <= inner + 0.5)
-                .unwrap_or(0)
-        };
+        // Keep the context ring and thread copy on the upper line in every design.
+        // Only header actions fold into More; model controls live in the composer.
+        let billing_room = if toolbar::api_key_badge(self.model.transcript.account.as_ref()).is_some() { space(60.) } else { 0. };
+        let meter_room = self.usage_width(Detail::Ring, window).unwrap_or(0.) + billing_room;
+        let one_line = inner <= 0. || row_width(0) + more_room + thread_room + meter_room + gap <= inner + 0.5;
+        let kept = (0..=foldable.len()).rev()
+            .find(|count| row_width(*count) + if one_line { more_room + thread_room + meter_room + gap } else { 0. } <= inner + 0.5)
+            .unwrap_or(0);
+        let usage_room = inner - (if one_line { row_width(kept) + gap } else { 0. }) - more_room - thread_room - billing_room - gap;
         let folded = foldable[kept..].to_vec();
         // A folded picker's menu opens from ⋯, as the rest of its menu does.
         let from_more = |menu: Menu| match menu {
@@ -792,9 +765,9 @@ impl ChatView {
             .children(
                 [
                     (Fold::Mode, Some(mode_picker)),
-                    (Fold::Model, Some(model_picker)),
-                    (Fold::Effort, effort_picker),
-                    (Fold::Fast, fast_toggle),
+                    (Fold::Model, None),
+                    (Fold::Effort, None),
+                    (Fold::Fast, None),
                     (Fold::Compact, Some(compact)),
                 ]
                 .into_iter()
@@ -808,17 +781,24 @@ impl ChatView {
                 if one_line {
                     (inner > 0.).then_some(usage_room + 0.5)
                 } else {
-                    Some(inner - thread_room)
+                    Some(usage_room)
                 },
                 look,
                 window,
                 cx,
             )
             .map(|usage| div().flex_none().child(usage));
+        let usage = Some(div().flex().items_center().gap(ui_text::space(BAR_GAP))
+            .children(toolbar::api_key_badge(self.model.transcript.account.as_ref()).map(|(label, hint)| {
+                div().relative().flex_none().child(widgets::badge("chat-api-key", &cards::Badge {
+                    label: label.into(), tone: cards::Tone::Warning, live: false,
+                }, look)).child(tooltip::anchor(hint, TipLook::Control))
+            })).children(usage));
         let thread = thread.map(|thread| measured(SLOT_THREAD, thread.flex_none()));
         let more = measured(SLOT_MORE, more);
 
         let bar = div()
+            .debug_selector(|| "chat-header".into())
             .w_full()
             .px(ui_text::space(BAR_INSET))
             .py(ui_text::space(5.0))
@@ -836,28 +816,10 @@ impl ChatView {
                 .child(more)
                 .into_any_element()
         } else {
-            let second = (usage.is_some() || thread.is_some()).then(|| {
-                div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .gap(ui_text::space(BAR_GAP))
-                    .children(usage.map(|usage| usage.flex_initial().min_w_0()))
-                    .children(thread.map(|thread| thread.ml_auto()))
-            });
-            bar.flex()
-                .flex_col()
-                .gap(ui_text::space(BAR_GAP))
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .gap(ui_text::space(BAR_GAP))
-                        .child(controls.flex_initial().min_w_0().overflow_hidden())
-                        .child(more.ml_auto()),
-                )
-                .children(second)
+            bar.flex().flex_col().gap(ui_text::space(BAR_GAP))
+                .child(div().w_full().flex().items_center().gap(ui_text::space(BAR_GAP))
+                    .children(usage).child(div().flex_1()).children(thread).child(more))
+                .child(controls.flex_initial().min_w_0().overflow_hidden())
                 .into_any_element()
         }
     }
@@ -952,7 +914,7 @@ impl ChatView {
                     })
                 })
         };
-        let content: Vec<AnyElement> = match menu {
+        let mut content: Vec<AnyElement> = match menu {
             Menu::Mode => {
                 let current = info.map(|info| info.approval_mode).unwrap_or_default();
                 toolbar::MODES
@@ -991,22 +953,45 @@ impl ChatView {
             }
             Menu::Model if !self.model.transcript.models.is_empty() => {
                 let current = info.and_then(|info| info.model.as_deref());
-                toolbar::model_rows(&self.model.transcript.models, current)
-                    .into_iter()
-                    .map(|line| {
-                        let id = line.id;
-                        row(
-                            format!("model-{id}"),
-                            line.label,
-                            line.detail.as_deref(),
-                            line.current,
+                let query = self.model_input.read(cx).value();
+                let rows =
+                    toolbar::filtered_model_rows(&self.model.transcript.models, current, &query);
+                let mut content = vec![
+                    div()
+                        .px(ui_text::space(10.0))
+                        .py(ui_text::space(6.0))
+                        .child(
+                            text_input::input("chat-model-search", &self.model_input, window, cx)
+                                .font_family(look.chat_family())
+                                .accessibility_label("Search models"),
                         )
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.choose_model(&id, cx);
-                        }))
-                        .into_any_element()
-                    })
-                    .collect()
+                        .into_any_element(),
+                ];
+                if rows.is_empty() {
+                    content.push(
+                        div()
+                            .px(ui_text::space(10.0))
+                            .py(ui_text::space(6.0))
+                            .text_size(ui_text::text(11.0))
+                            .text_color(rgb(colors.muted))
+                            .child("No matching models")
+                            .into_any_element(),
+                    );
+                }
+                content.extend(rows.into_iter().map(|line| {
+                    let id = line.id;
+                    row(
+                        format!("model-{id}"),
+                        line.label,
+                        line.detail.as_deref(),
+                        line.current,
+                    )
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.choose_model(&id, cx);
+                    }))
+                    .into_any_element()
+                }));
+                content
             }
             Menu::Model => {
                 // A driver that has not listed its models: type the name.
@@ -1019,12 +1004,10 @@ impl ChatView {
                     div()
                         .px(ui_text::space(10.0))
                         .py(ui_text::space(6.0))
-                        .child(text_input::input(
-                            "chat-model-input",
-                            &self.model_input,
-                            window,
-                            cx,
-                        ))
+                        .child(
+                            text_input::input("chat-model-input", &self.model_input, window, cx)
+                                .font_family(look.chat_family()),
+                        )
                         .into_any_element(),
                 ];
                 rows.extend(suggestions.iter().map(|model| {
@@ -1214,42 +1197,157 @@ impl ChatView {
                     .into_any_element(),
             ],
         };
-        // The last button of the toolbar opens its menu toward the left, into the window.
-        let toward_left = from_more;
-        // Never wider than the chat's header, so in a narrow chat it stays inside it.
-        let room = px(self.composer_width.get() - 2. * f32::from(ui_text::space(BAR_INSET)));
-        let fits = |width: f32| {
-            if room > px(0.) {
-                ui_text::space(width).min(room)
-            } else {
-                ui_text::space(width)
+        if menu == Menu::Model {
+            let heading = |text: String, rule: bool| {
+                div()
+                    .when(rule, |heading| {
+                        heading
+                            .mt(ui_text::space(4.0))
+                            .border_t_1()
+                            .border_color(rgb(colors.divider))
+                    })
+                    .px(ui_text::space(10.0))
+                    .py(ui_text::space(6.0))
+                    .text_size(ui_text::text(10.0))
+                    .text_color(rgb(colors.muted))
+                    .child(text)
+                    .into_any_element()
+            };
+            // One chat, every provider's models: the chat's own provider first, under the
+            // field, then the other one, whose models move the chat to it.
+            if let Some(provider) = self.provider() {
+                content.insert(1, heading(provider_name(provider).to_owned(), false));
+                let other = super::other_provider(provider);
+                let busy = self.running();
+                let detail = if busy {
+                    "Finish or interrupt the turn first".to_owned()
+                } else {
+                    format!("Continues this conversation with {}", provider_name(other))
+                };
+                content.push(heading(provider_name(other).to_owned(), true));
+                // Typing in the field names the chat's own provider's model; the field
+                // searches both lists only when it is a search.
+                let query = if self.model.transcript.models.is_empty() {
+                    String::new()
+                } else {
+                    self.model_input.read(cx).value().trim().to_lowercase()
+                };
+                let mut rows: Vec<(String, String, Option<String>)> = vec![(
+                    String::new(),
+                    format!("{} default", provider_name(other)),
+                    None,
+                )];
+                if let Some(catalog) = self.other_models() {
+                    rows.extend(catalog.supported.iter().map(|model| {
+                        (
+                            model.id.clone(),
+                            model.name.clone(),
+                            Some(model.description.clone()).filter(|text| !text.is_empty()),
+                        )
+                    }));
+                    rows.extend(catalog.configured.iter().map(|id| {
+                        (
+                            id.clone(),
+                            id.clone(),
+                            Some("Previously configured".to_owned()),
+                        )
+                    }));
+                }
+                content.extend(
+                    rows.into_iter()
+                        .filter(|(id, label, more)| {
+                            query.is_empty()
+                                || id.is_empty()
+                                || format!("{id} {label} {}", more.as_deref().unwrap_or(""))
+                                    .to_lowercase()
+                                    .contains(&query)
+                        })
+                        .map(|(id, label, more)| {
+                            let name = format!(
+                                "switch-{}-{}",
+                                provider_name(other).to_lowercase(),
+                                if id.is_empty() {
+                                    "default"
+                                } else {
+                                    id.as_str()
+                                }
+                            );
+                            let hint = match &more {
+                                Some(more) => format!("{more} · {detail}"),
+                                None => detail.clone(),
+                            };
+                            let item = row(name, label, Some(&hint), false);
+                            if busy {
+                                item.opacity(0.5).into_any_element()
+                            } else {
+                                let model = (!id.is_empty()).then_some(id);
+                                item.on_click(cx.listener(move |view, _, _, cx| {
+                                    view.switch_provider(other, model.clone(), cx);
+                                }))
+                                .into_any_element()
+                            }
+                        }),
+                );
             }
-        };
+            content.push(
+                button("chat-new", "New chat…", None, look)
+                    .w_full()
+                    .mt(ui_text::space(4.0))
+                    .border_0()
+                    .role(gpui::Role::MenuItem)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.close_menu(cx);
+                        // The new-chat chooser owns focus after this request.
+                        view.focus_composer = false;
+                        cx.emit(ChatViewEvent::NewChat);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        // Composer menus are positioned above their triggers by Base Popup. Header menus
+        // keep their original placement. Both cap their content to the available pane.
+        let in_composer = matches!(menu, Menu::Model | Menu::Effort) && !from_more;
+        let toward_left = from_more;
+        let available = (self.composer_width.get() - 32.0).max(1.0);
         let popover = div()
             .id("chat-choices-popover")
-            .absolute()
-            .top(relative(1.0))
-            .when(toward_left, |menu| menu.right(px(0.0)))
-            .when(!toward_left, |menu| menu.left(px(0.0)))
-            .mt(ui_text::space(3.0))
-            .min_w(fits(220.0))
-            .max_w(fits(340.0))
+            .debug_selector(|| "composer-choices-menu".into())
+            .when(!in_composer, |menu| {
+                menu.absolute()
+                    .top(relative(1.0))
+                    .mt(ui_text::space(3.0))
+                    .when(toward_left, |menu| menu.right(px(0.0)))
+                    .when(!toward_left, |menu| menu.left(px(0.0)))
+            })
+            .w(ui_text::space(340.0).min(px(available)))
+            .max_h(ui_text::space(320.0).min(window.viewport_size().height * 0.65))
+            .overflow_y_scroll()
             .py(ui_text::space(4.0))
             .rounded(px(4.0))
             .border_1()
-            .border_color(rgb(colors.magenta))
-            .bg(rgb(colors.panel_active))
+            .border_color(rgb(if look.hermes() {
+                colors.divider
+            } else {
+                colors.magenta
+            }))
+            .bg(rgb(if look.hermes() {
+                colors.panel
+            } else {
+                colors.panel_active
+            }))
+            .font_family(look.chat_family())
             .test_support();
-        deferred(
-            controls::native(popover, |menu| controls::menu(menu, colors))
-                .occlude()
-                .role(gpui::Role::Menu)
-                .aria_label("Chat choices")
-                .on_mouse_down_out(cx.listener(|view, _, _, cx| view.close_menu(cx)))
-                .children(content),
-        )
-        .with_priority(10)
-        .into_any_element()
+        let content = controls::native(popover, |menu| controls::menu(menu, colors))
+            .occlude()
+            .role(gpui::Role::Menu)
+            .aria_label("Chat choices")
+            .on_mouse_down_out(cx.listener(|view, _, _, cx| view.close_menu(cx)))
+            .children(content);
+        if in_composer {
+            content.into_any_element()
+        } else {
+            deferred(content).with_priority(10).into_any_element()
+        }
     }
 
     // -----------------------------------------------------------------------------------
@@ -1260,6 +1358,7 @@ impl ChatView {
     /// stopped. Notices and the tab's errors are in `notice_stack`, inside the message box's bar.
     fn banner(&self, look: Look, cx: &mut Context<Self>) -> Option<AnyElement> {
         let colors = look.colors;
+        let inset = px(self.composer_layout(cx).inset);
         // Native leads the line with a symbol of what it says, in the line's color.
         let line = |text: String, color: u32| {
             let symbol = if color == colors.muted {
@@ -1267,14 +1366,13 @@ impl ChatView {
             } else {
                 "exclamationmark.triangle"
             };
-            div()
-                .w_full()
+            above_composer(div(), inset, look)
+                .debug_selector(|| "chat-banner".into())
                 .flex()
                 .items_center()
                 .gap(ui_text::space(8.0))
                 .px(ui_text::space(12.0))
                 .py(ui_text::space(5.0))
-                .border_t_1()
                 .border_color(rgb(colors.divider))
                 .bg(rgb(colors.panel))
                 .text_size(ui_text::text(11.0))
@@ -1353,15 +1451,14 @@ impl ChatView {
         let request = pending.request_id.clone();
         // A command is shown as the code it is.
         let command = pending.kind == ApprovalKind::Command;
+        let inset = px(self.composer_layout(cx).inset);
         Some(
-            div()
-                .w_full()
+            above_composer(div(), inset, look)
                 .flex()
                 .flex_col()
                 .gap(ui_text::space(6.0))
                 .px(ui_text::space(12.0))
                 .py(ui_text::space(8.0))
-                .border_t_1()
                 // Native sets the request on the bar's grey under a hairline, and says it
                 // waits with its heading alone, in the signal color.
                 .when(look.native, |bar| {
@@ -1611,10 +1708,9 @@ impl ChatView {
                     )
             })
             .collect::<Vec<_>>();
+        let inset = px(self.composer_layout(cx).inset);
         Some(
-            div()
-                .id("chat-questions")
-                .w_full()
+            above_composer(div().id("chat-questions"), inset, look)
                 .max_h(relative(0.5))
                 .overflow_y_scroll()
                 .flex()
@@ -1622,7 +1718,6 @@ impl ChatView {
                 .gap(ui_text::space(8.0))
                 .px(ui_text::space(12.0))
                 .py(ui_text::space(8.0))
-                .border_t_1()
                 .border_color(rgb(if look.native {
                     colors.divider
                 } else {
@@ -1661,82 +1756,313 @@ impl ChatView {
     // The message box
     // -----------------------------------------------------------------------------------
 
-    fn composer_box(&self, look: Look, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    /// Same-provider choices stay with the retained chat and its authoritative model list.
+    fn composer_choices(&self, look: Look, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
-        let running = self.running();
-        let dictation = self.dictation.phase();
-        // The mic, its key and its status only while Settings shows it in chats.
-        let mic = dictate::mic_shown(cx);
-        // No helper text at rest: only a dictation at work says what it does.
-        let status = composer::status(dictation, mic);
-        // Where the buttons go and how big they are, for the pane's width as last drawn (see
-        // `composer::layout`): the box keeps its minimum and the buttons stay in the pane.
-        let layout = composer::layout(
-            self.composer_width.get(),
-            ui_text::scale(),
-            mic,
-            dictation.is_active(),
-            running,
-        );
-        let side = px(layout.button);
-        let gap = px(layout.gap);
-        // Every button is a square of `side`: Native's symbols, the colorful themes' marks,
-        // their names and keys in the tooltips. Attach shows its fill only under the pointer
-        // and its tooltip names the kinds and paste/drop.
-        let attach = if look.native {
-            widgets::symbol_button_sized(
-                "chat-attach",
-                "paperclip",
-                "Attach files · UTF-8 text, PNG or JPEG · or paste or drop them",
+        let info = self.model.transcript.info.as_ref();
+        let models = &self.model.transcript.models;
+        let model = info.and_then(|info| info.model.as_deref());
+        let effort = info.and_then(|info| info.effort.as_deref());
+        let fast = info.is_some_and(|info| info.fast);
+        let provider = self.provider().unwrap_or(Provider::Codex);
+        div()
+            .min_w_0()
+            .max_w(relative(1.0))
+            .debug_selector(|| "composer-model-choices".into())
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_end()
+            .gap(ui_text::space(4.0))
+            .child(self.composer_picker(
+                "chat-model",
+                toolbar::model_label(models, model),
+                Menu::Model,
                 look,
-                side,
-            )
-        } else {
-            mark_button(
-                "chat-attach",
-                "+",
-                "Attach files · UTF-8 text, PNG or JPEG · or paste or drop them",
-                None,
-                side,
-                look,
-            )
-        }
-        .on_click(cx.listener(|view, _, window, cx| view.attach_picker(window, cx)));
-        let stop = running.then(|| {
-            if look.native {
-                widgets::round_button_sized(
-                    "chat-interrupt",
-                    "stop.fill",
-                    "Interrupt · ⌘.",
-                    Button::Secondary,
+                window,
+                cx,
+            ))
+            .children(toolbar::effort_available(models, model, provider).then(|| {
+                self.composer_picker(
+                    "chat-effort",
+                    toolbar::effort_label(models, model, effort),
+                    Menu::Effort,
                     look,
-                    side,
+                    window,
+                    cx,
                 )
+            }))
+            .children(toolbar::fast_available(models, model).then(|| {
+                let toggle = if look.native {
+                    widgets::toggle_capsule("chat-fast", "Fast", fast, look)
+                        .pl(ui_text::space(8.0))
+                        .child(icons::symbol(
+                            if fast { "bolt.fill" } else { "bolt" },
+                            10.0,
+                            None,
+                        ))
+                        .flex_row_reverse()
+                        .when(fast, |toggle| {
+                            toggle
+                                .bg(rgb(look.tint(colors.working, 0.18)))
+                                .text_color(rgb(colors.working))
+                        })
+                        .when(!fast, |toggle| toggle.text_color(rgb(colors.muted)))
+                        .cursor_pointer()
+                        .hover(move |style| {
+                            style.bg(rgb(if fast {
+                                look.tint(colors.working, 0.28)
+                            } else {
+                                Button::Secondary.hover(colors)
+                            }))
+                        })
+                } else if look.hermes() {
+                    // This branch owns the hover style; the shared styled toggle already
+                    // registers one, so start from the behavior-only Kit primitive.
+                    let label = if fast { "✓ Fast" } else { "Fast" };
+                    crate::behavior_controls::toggle_content("chat-fast", label, label, fast)
+                        .line_height(relative(1.618_034))
+                        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+                        .flex_none()
+                        .px(px(4.0))
+                        .py(ui_text::space(widgets::CAPSULE_PAD_Y))
+                        .border_1()
+                        .border_color(rgb(if fast { colors.cyan } else { colors.panel }))
+                        .rounded(px(3.0))
+                        .bg(if fast {
+                            rgb(look.tint(colors.cyan, 0.18)).into()
+                        } else {
+                            transparent_black()
+                        })
+                        .text_size(ui_text::text(10.0))
+                        .text_color(rgb(if fast { colors.text } else { colors.muted }))
+                        .cursor_pointer()
+                        .hover(move |style| {
+                            style.bg(rgb(if fast {
+                                look.tint(colors.cyan, 0.28)
+                            } else {
+                                colors.panel_active
+                            }))
+                        })
+                } else {
+                    widgets::toggle_button(
+                        "chat-fast",
+                        toolbar::fast_label(fast),
+                        fast.then_some(colors.cyan),
+                        fast,
+                        look,
+                    )
+                };
+                toggle
+                    .accessibility_label(toolbar::fast_label(fast))
+                    .child(tooltip::anchor(
+                        "Fast mode answers sooner and uses more of your limits",
+                        TipLook::Control,
+                    ))
+                    .on_change({
+                        let owner = cx.weak_entity();
+                        move |_, _, _, cx| {
+                            let _ = owner.update(cx, |view, cx| view.toggle_fast(cx));
+                        }
+                    })
+            }))
+            .into_any_element()
+    }
+
+    fn composer_picker(
+        &self,
+        name: &'static str,
+        label: String,
+        menu: Menu,
+        look: Look,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.menu == Some(menu);
+        let accessible = format!(
+            "{}: {label}",
+            if menu == Menu::Model {
+                "Model"
             } else {
-                mark_button(
-                    "chat-interrupt",
-                    "■",
-                    "Interrupt · ⌘.",
-                    Some(look.diff.removed),
-                    side,
-                    look,
-                )
+                "Reasoning effort"
             }
-            .on_click(cx.listener(|view, _, _, cx| view.interrupt(cx)))
-        });
-        let send_tip = if running {
+        );
+        let trigger = crate::behavior_controls::button_content(
+            name,
+            accessible,
+            div()
+                .min_w_0()
+                .max_w(ui_text::space(if menu == Menu::Model {
+                    160.0
+                } else {
+                    85.0
+                }))
+                .truncate()
+                .child(label),
+        )
+        .flex()
+        .min_w_0()
+        .max_w(relative(1.0))
+        .items_center()
+        .gap(ui_text::space(4.0))
+        .px(ui_text::space(6.0))
+        .py(ui_text::space(3.0))
+        .text_size(ui_text::text(11.0))
+        .font_family(look.chat_family())
+        .text_color(rgb(look.colors.muted))
+        .border_1()
+        .border_color(transparent_black())
+        .rounded(ui_text::space(3.0))
+        .bg(rgb(if open {
+            look.colors.panel_active
+        } else {
+            look.colors.panel
+        }))
+        .hover(move |style| style.bg(rgb(look.colors.panel_active)))
+        .focus_visible(move |style| style.border_color(rgb(look.colors.focus)))
+        .cursor_pointer()
+        .aria_expanded(open)
+        .child(icons::text_mark("⌄", 9.0))
+        .on_click(cx.listener(move |view, _, window, cx| {
+            view.open.remove(ATTACHMENT_MENU_KEY);
+            let opening = view.menu != Some(menu);
+            if menu == Menu::Model {
+                view.sync_model_placeholder(window, cx);
+            }
+            view.toggle_menu(menu, window, cx);
+            if opening && view.menu == Some(Menu::Model) && !view.model.transcript.models.is_empty()
+            {
+                view.model_seeded = false;
+                view.model_input.read(cx).focus_handle(cx).focus(window, cx);
+            }
+        }));
+        crate::behavior_controls::popup(format!("{name}-popup"), trigger)
+            .max_w(relative(1.0))
+            .anchor(gpui::Anchor::BottomRight)
+            .when(open, |popup| {
+                popup.content(self.menu_popover(menu, &[], false, look, window, cx))
+            })
+            .into_any_element()
+    }
+
+    /// The card's layout for the pane as last drawn (see `composer::layout`), the draft as it
+    /// is and the buttons the action row shows now.
+    fn composer_layout(&self, cx: &gpui::App) -> composer::Layout {
+        let empty = self.composer.read(cx).value().is_empty() && self.attachments.is_empty();
+        let actions = 1 + usize::from(dictate::mic_shown(cx)) + usize::from(self.running());
+        composer::layout(self.composer_width.get(), ui_text::scale(), empty, actions)
+    }
+
+    /// The + menu: only actions backed by existing attachment staging. Its trigger is drawn
+    /// as the design draws the message box's other buttons.
+    fn composer_attachment_menu(
+        &self,
+        look: Look,
+        side: gpui::Pixels,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.open.contains(ATTACHMENT_MENU_KEY);
+        let trigger_bounds = std::rc::Rc::new(std::cell::Cell::new(gpui::Bounds::default()));
+        let positioned = trigger_bounds.clone();
+        let tip = "Attach files or paste an image · UTF-8 text, PNG or JPEG · or drop them";
+        let trigger = if look.native || look.hermes() {
+            widgets::symbol_button_sized("chat-attach", "plus", tip, look, side)
+        } else {
+            mark_button("chat-attach", "+", tip, None, side, look)
+        }
+        .aria_expanded(open)
+        .on_click(cx.listener(|view, _, _, cx| {
+            view.menu = None;
+            if !view.open.remove(ATTACHMENT_MENU_KEY) {
+                view.open.insert(ATTACHMENT_MENU_KEY.to_owned());
+            }
+            cx.notify();
+        }));
+        crate::behavior_controls::popup("chat-attachment-popup", trigger)
+            .anchor(gpui::Anchor::BottomLeft)
+            .on_position(move |_, bounds| positioned.set(bounds))
+            .on_key_down(cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
+                if open && event.keystroke.key == "escape" {
+                    view.open.remove(ATTACHMENT_MENU_KEY);
+                    view.focus(window, cx);
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
+            .when(open, |popup| {
+                let width = (self.composer_width.get() - 32.0).max(1.0);
+                popup.content(
+                    div()
+                        .id("chat-attachment-menu")
+                        .debug_selector(|| "composer-attachment-menu".into())
+                        .role(gpui::Role::Menu)
+                        .aria_label("Attach")
+                        .w(ui_text::space(260.0).min(px(width)))
+                        .flex()
+                        .flex_col()
+                        .p(ui_text::space(5.0))
+                        .rounded(ui_text::space(4.0))
+                        .border_1()
+                        .border_color(rgb(look.colors.divider))
+                        .bg(rgb(look.colors.panel))
+                        .font_family(look.chat_family())
+                        .on_mouse_down_out(cx.listener(move |view, event: &gpui::MouseDownEvent, _, cx| {
+                            if trigger_bounds.get().contains(&event.position) {
+                                return;
+                            }
+                            view.open.remove(ATTACHMENT_MENU_KEY);
+                            cx.notify();
+                        }))
+                        .child(div().px(ui_text::space(8.0)).py(ui_text::space(4.0))
+                            .text_size(ui_text::text(10.0)).text_color(rgb(look.colors.muted)).child(ui_text::cased("Attach")))
+                        .child(button("chat-attach-files", "Files and images…", None, look)
+                            .role(gpui::Role::MenuItem)
+                            .accessibility_label("Attach UTF-8 text, PNG or JPEG files")
+                            .border_color(transparent_black())
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.open.remove(ATTACHMENT_MENU_KEY);
+                                view.attach_picker(window, cx);
+                                cx.notify();
+                            })))
+                        .child(button("chat-attach-paste", "Paste image", None, look)
+                            .role(gpui::Role::MenuItem)
+                            .border_color(transparent_black())
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.open.remove(ATTACHMENT_MENU_KEY);
+                                match super::attachment_ui::read_composer_clipboard(cx) {
+                                    Ok(Some(item)) => {
+                                        if !view.paste_attachments(&item, window, cx) {
+                                            view.notices.set(super::notices::LocalKey::Attachment, crate::chat::model::NoticeLevel::Error, "The clipboard has no supported image or file attachment.");
+                                        }
+                                    }
+                                    Ok(None) => view.notices.set(super::notices::LocalKey::Attachment, crate::chat::model::NoticeLevel::Error, "The clipboard has no image or file attachment."),
+                                    Err(error) => view.notices.set(super::notices::LocalKey::Attachment, crate::chat::model::NoticeLevel::Error, format!("Clipboard attachment: {error}")),
+                                }
+                                view.focus(window, cx);
+                                cx.notify();
+                            }))),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// Send, drawn as the design draws a message field's send button: Native's filled round
+    /// symbol, Hermes's filled disc, the colorful themes' bordered mark. It waits until there
+    /// is something to send, taking no click or key meanwhile.
+    fn composer_send(&self, look: Look, side: gpui::Pixels, cx: &mut Context<Self>) -> AnyElement {
+        let colors = look.colors;
+        let empty = self.draft_empty(cx) || self.pending_submission.is_some();
+        let tip = if self.running() {
             "Send · ⏎ steers the turn · ⇧⏎ new line"
         } else {
             "Send · ⏎ · ⇧⏎ new line"
         };
-        // Send waits until there is something to send: Native's in grey, the colorful
-        // themes' as it is drawn, in every theme taking no click or key meanwhile.
-        let empty = self.draft_empty(cx) || self.pending_submission.is_some();
         let send = if look.native {
             widgets::round_button_sized(
                 "chat-send",
                 "arrow.up",
-                send_tip,
+                tip,
                 if empty {
                     Button::Disabled
                 } else {
@@ -1745,39 +2071,133 @@ impl ChatView {
                 look,
                 side,
             )
+        } else if look.hermes() {
+            crate::behavior_controls::button_content(
+                "chat-send",
+                tip,
+                icons::symbol_in_box("arrow.up", 14.0, None, (side - px(4.0)).max(px(1.0))),
+            )
+            .disabled(empty)
+            .size(side)
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .bg(rgb(colors.text))
+            .text_color(rgb(colors.bg))
+            .border_1()
+            .border_color(transparent_black())
+            .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+            .when(!empty, |button| {
+                button
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(rgb(colors.cyan)))
+            })
+            .child(tooltip::anchor(tip, TipLook::Control))
         } else {
-            mark_button("chat-send", "↑", send_tip, Some(colors.cyan), side, look).disabled(empty)
+            mark_button("chat-send", "↑", tip, Some(colors.cyan), side, look).disabled(empty)
+        };
+        send.on_click(cx.listener(|view, _, window, cx| view.send_message(window, cx)))
+            .into_any_element()
+    }
+
+    /// Stop, while a turn runs: Native's grey round symbol, Hermes's bare symbol, the colorful
+    /// themes' mark in the terminal's red.
+    fn composer_stop(&self, look: Look, side: gpui::Pixels, cx: &mut Context<Self>) -> AnyElement {
+        let tip = "Interrupt · ⌘.";
+        if look.native {
+            widgets::round_button_sized(
+                "chat-interrupt",
+                "stop.fill",
+                tip,
+                Button::Secondary,
+                look,
+                side,
+            )
+        } else if look.hermes() {
+            widgets::symbol_button_sized("chat-interrupt", "stop.fill", tip, look, side)
+        } else {
+            mark_button(
+                "chat-interrupt",
+                "■",
+                tip,
+                Some(look.diff.removed),
+                side,
+                look,
+            )
         }
-        .on_click(cx.listener(|view, _, window, cx| view.send_message(window, cx)));
-        let trailing: Vec<AnyElement> = [
-            layout.mic.then(|| {
-                widgets::beside_field(self.mic_button(look, side, cx))
-                    .debug_selector(|| "composer-mic".into())
-                    .into_any_element()
-            }),
-            stop.map(|stop| {
-                widgets::beside_field(stop)
-                    .debug_selector(|| "composer-stop".into())
-                    .into_any_element()
-            }),
-            Some(
-                widgets::beside_field(send)
-                    .debug_selector(|| "composer-send".into())
-                    .into_any_element(),
-            ),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        let attach = widgets::beside_field(attach).debug_selector(|| "composer-attach".into());
+        .on_click(cx.listener(|view, _, _, cx| view.interrupt(cx)))
+        .into_any_element()
+    }
+
+    /// The message box: one card in every design, inset from the pane's sides and bottom
+    /// (see `composer::layout`). At rest in a wide pane the empty box shares one row with
+    /// Attach and the controls (the model choices, then the mic, Stop and Send); with a draft
+    /// the box takes the card's whole width and Attach and the controls wrap in a row under
+    /// it, and a narrow pane gives the controls a row of their own. Every design lays it out
+    /// the same; each draws the card and its buttons its own way (`composer_card`,
+    /// `composer_send`, `composer_stop`).
+    fn composer_box(&self, look: Look, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let colors = look.colors;
+        let layout = self.composer_layout(cx);
+        let gap = px(layout.gap);
+        let side = px(layout.button);
+        let mic = dictate::mic_shown(cx);
+        let attach = div()
+            .flex_none()
+            .debug_selector(|| "composer-attach".into())
+            .child(self.composer_attachment_menu(look, side, cx));
         let field = div()
             .flex_1()
             .min_w_0()
             .debug_selector(|| "composer-field".into())
             .child(self.composer_editor(look, window, cx));
-        let buttons_and_field = if layout.stacked {
-            // The box on its own row; Attach at the start of the row under it and the rest at
-            // its end, as the row beside the box has them.
+        let actions = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(gap)
+            .children(mic.then(|| {
+                div()
+                    .debug_selector(|| "composer-mic".into())
+                    .child(self.mic_button(look, side, cx))
+            }))
+            .children(self.running().then(|| {
+                div()
+                    .debug_selector(|| "composer-stop".into())
+                    .child(self.composer_stop(look, side, cx))
+            }))
+            .child(
+                div()
+                    .debug_selector(|| "composer-send".into())
+                    .child(self.composer_send(look, side, cx)),
+            );
+        let controls = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_end()
+            .gap(gap)
+            .child(
+                div()
+                    .max_w(relative(1.0))
+                    .min_w_0()
+                    .child(self.composer_choices(look, window, cx)),
+            )
+            .child(actions);
+        let content = if layout.compact {
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(gap)
+                .child(attach)
+                .child(field)
+                .child(controls.flex_none())
+        } else {
             div()
                 .w_full()
                 .flex()
@@ -1788,56 +2208,69 @@ impl ChatView {
                     div()
                         .w_full()
                         .flex()
-                        .items_center()
+                        .flex_wrap()
+                        .items_end()
                         .gap(gap)
                         .child(attach)
-                        .child(div().flex_1())
-                        .children(trailing),
+                        .child(
+                            controls.when(layout.narrow, |controls| controls.flex_none().w_full()),
+                        ),
                 )
-        } else {
-            // The buttons keep to the bottom, each centered on the box's last line (see
-            // `widgets::beside_field`): on the box's center while it has one line, beside its
-            // last line once it grows, as a message field keeps them.
+        };
+        let active = self.composer.read(cx).focus_handle(cx).is_focused(window);
+        let card = composer_card(
             div()
+                .id("chat-composer-bar")
+                .debug_selector(|| "composer-card".into())
                 .w_full()
                 .flex()
-                .items_end()
+                .flex_col()
                 .gap(gap)
-                .child(attach)
-                .child(field)
-                .children(trailing)
-        };
+                .p(px(layout.padding))
+                .font_family(look.chat_family()),
+            look,
+            active,
+        )
+        // The draft's attachments above the box, a staged image as its thumbnail.
+        .children((!self.attachments.is_empty()).then(|| {
+            div()
+                .id("chat-attachment-queue")
+                .role(gpui::Role::Group)
+                .aria_label("Draft attachments")
+                .max_h(ui_text::space(280.0))
+                .flex_none()
+                .overflow_y_scroll()
+                .child(self.attachment_chips(look, Some(self.composer_width.get() - 2. * (layout.inset + layout.padding)).filter(|_| self.composer_width.get() > 0.), window, cx))
+                .test_support()
+        }))
+        .child(content)
+        // Saved submissions to review, below the box.
+        .children((!self.submissions.is_empty()).then(|| {
+            div()
+                .id("chat-submission-reviews")
+                .max_h(ui_text::space(280.0))
+                .overflow_y_scroll()
+                .child(self.submission_cards(look, cx))
+        }))
+        .children(composer::status(self.dictation.phase(), mic).map(|status| {
+            div()
+                .text_size(ui_text::text(10.0))
+                .text_color(rgb(colors.text))
+                .child(status)
+        }));
         // The pane's width as laid out, for the next frame's `layout`. It does not depend on
         // the layout, so it settles after one redraw.
         let measured = self.composer_width.clone();
-        let measure = canvas(
-            move |bounds, window, _| {
-                let width = f32::from(bounds.size.width);
-                if (measured.get() - width).abs() >= 0.5 {
-                    measured.set(width);
-                    window.refresh();
-                }
-            },
-            |_, _, _, _| {},
-        )
-        .absolute()
-        .top_0()
-        .left_0()
-        .w_full()
-        .h(px(0.));
-        let bar = div()
-            .id("chat-composer-bar")
-            .w_full()
+        div()
+            .id("chat-composer-pane")
             .flex()
             .flex_col()
             .gap(gap)
-            // The header's inset on the sides, so the field and the buttons line up with its
-            // controls, and the same above and below the field; less in a narrow pane.
+            .relative()
+            .w_full()
+            .debug_selector(|| "composer-pane".into())
             .p(px(layout.inset))
-            .border_t_1()
-            .border_color(rgb(colors.divider))
-            .bg(rgb(colors.panel))
-            // A drop target only while files are dragged over it.
+            // A drop target while files are dragged over the card or the space around it.
             .drag_over::<gpui::ExternalPaths>(move |style, _, _, _| {
                 style.bg(rgb(look.tint(colors.focus, 0.12)))
             })
@@ -1846,50 +2279,25 @@ impl ChatView {
                     view.dropped_attachments(paths, window, cx)
                 }),
             )
-            // The notices, inside the bar's inset at the box's width, right above it.
+            .child(
+                canvas(
+                    move |bounds, window, _| {
+                        let width = f32::from(bounds.size.width);
+                        if (measured.get() - width).abs() >= 0.5 {
+                            measured.set(width);
+                            window.refresh();
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .w_full()
+                .h(px(0.0)),
+            )
             .children(self.notice_stack(look, cx))
-            // The draft's attachments above the box, a staged image as its thumbnail, inside
-            // the bar's inset.
-            .children((!self.attachments.is_empty()).then(|| {
-                div()
-                    .id("chat-attachment-queue")
-                    .role(gpui::Role::Group)
-                    .aria_label("Draft attachments")
-                    .max_h(ui_text::space(280.))
-                    .flex_none()
-                    .overflow_y_scroll()
-                    .child(
-                        self.attachment_chips(
-                            look,
-                            Some(self.composer_width.get() - 2. * layout.inset)
-                                .filter(|_| self.composer_width.get() > 0.),
-                            window,
-                            cx,
-                        ),
-                    )
-                    .test_support()
-            }))
-            .child(buttons_and_field)
-            // Saved submissions to review, below the box.
-            .children((!self.submissions.is_empty()).then(|| {
-                div()
-                    .id("chat-submission-reviews")
-                    .max_h(ui_text::space(280.))
-                    .overflow_y_scroll()
-                    .child(self.submission_cards(look, cx))
-            }))
-            .children(status.map(|status| {
-                div()
-                    .text_size(ui_text::text(9.0))
-                    .text_color(rgb(colors.text))
-                    .child(status)
-            }));
-        div()
-            .relative()
-            .w_full()
-            .debug_selector(|| "composer-pane".into())
-            .child(measure)
-            .child(bar)
+            .child(card)
             .into_any_element()
     }
 
@@ -1910,7 +2318,7 @@ impl ChatView {
         };
         let busy = matches!(phase, Phase::Preparing { .. } | Phase::Finishing { .. });
         let listening = matches!(phase, Phase::Listening { .. });
-        let mic = if look.native {
+        let mic = if look.native || look.hermes() {
             let symbol = match phase {
                 Phase::Listening { .. } | Phase::Preparing { .. } | Phase::Finishing { .. } => {
                     "mic.fill"
@@ -1963,54 +2371,31 @@ impl ChatView {
         }
     }
 
-    /// Kit's transparent textarea inside the existing continuous-corner shell.
+    /// Kit's transparent textarea: the card around it (`composer_card`) draws its edge.
     fn composer_editor(
         &self,
         look: Look,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Stateful<gpui::Div> {
-        let colors = look.colors;
-        let active = self.composer.read(cx).focus_handle(cx).is_focused(window);
-        let radius = ui_text::space(16.);
-        let outline = if active {
-            if look.native {
-                colors.focus
-            } else {
-                colors.cyan
-            }
-        } else {
-            colors.divider
-        };
-        let surface = canvas(
-            |_, _, _| (),
-            move |bounds, _, window, _| {
-                let bounds = bounds.inset(px(0.5));
-                if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
-                    return;
-                }
-                for (mut path, color) in [
-                    (PathBuilder::fill(), colors.bg),
-                    (PathBuilder::stroke(px(1.)), outline),
-                ] {
-                    composer_path(&mut path, bounds, radius);
-                    if let Ok(path) = path.build() {
-                        window.paint_path(path, rgb(color));
-                    }
-                }
-            },
-        )
-        .absolute()
-        .inset_0();
         let weak = cx.weak_entity();
-        let editor = text_input::on_paste(
+        let editor = text_input::on_paste_with_reader(
             text_input::textarea("chat-composer", &self.composer, window, cx),
             &self.composer,
+            super::attachment_ui::read_composer_clipboard,
             move |item, window, cx| {
-                weak.update(cx, |view, cx| view.paste_attachments(item, window, cx))
-                    .unwrap_or(false)
+                weak.update(cx, |view, cx| match item {
+                    Ok(item) => view.paste_attachments(item, window, cx),
+                    Err(error) => {
+                        view.notices.set(super::notices::LocalKey::Attachment, crate::chat::model::NoticeLevel::Error, format!("Clipboard attachment: {error}"));
+                        cx.notify();
+                        true
+                    }
+                })
+                .unwrap_or(false)
             },
         )
+        .accessibility_label("Chat message")
         .border_0()
         .bg(transparent_black())
         .rounded(px(0.))
@@ -2025,7 +2410,7 @@ impl ChatView {
         .py(ui_text::space(widgets::FIELD_PAD_Y))
         .text_size(ui_text::text(widgets::FIELD_TEXT))
         .line_height(widgets::field_line())
-        .font_family(ui_text::ui_family())
+        .font_family(look.chat_family())
         .capture_action(cx.listener(Self::capture_enter));
         div()
             .id("chat-composer-shell")
@@ -2034,7 +2419,6 @@ impl ChatView {
             .border_1()
             .bg(transparent_black())
             .border_color(transparent_black())
-            .child(surface)
             .child(editor)
     }
 }
@@ -2043,33 +2427,206 @@ impl ChatView {
 mod tests {
     use super::*;
     use crate::chat::model::{QuestionOption, QuestionPrompt};
+    use gpui_kit::test::TestWindowExt;
 
-    #[test]
-    fn composer_corners_tessellate_within_resized_bounds() {
-        for (width, height, radius) in [
-            (500.0, 30.0, 16.0),
-            (180.0, 180.0, 16.0),
-            (240.0, 270.0, 24.0),
-            (12.0, 30.0, 24.0),
-        ] {
-            let bounds =
-                gpui::Bounds::new(point(px(40.0), px(60.0)), gpui::size(px(width), px(height)));
-            for mut builder in [PathBuilder::fill(), PathBuilder::stroke(px(1.0))] {
-                composer_path(&mut builder, bounds.inset(px(0.5)), px(radius));
-                let path = builder
-                    .build()
-                    .expect("continuous composer path tessellates");
-                assert!(!path.vertices.is_empty());
-                for vertex in path.vertices {
-                    let x = f32::from(vertex.xy_position.x);
-                    let y = f32::from(vertex.xy_position.y);
-                    assert!(x.is_finite() && y.is_finite());
-                    // Allow only tessellator floating-point error at the outer stroke edge.
-                    assert!((39.99..=40.01 + width).contains(&x));
-                    assert!((59.99..=60.01 + height).contains(&y));
+    fn hermes_fixture(
+        cx: &mut gpui::TestAppContext,
+        width: f32,
+    ) -> (
+        gpui::WindowHandle<gpui_kit::base::Root>,
+        gpui::Entity<ChatView>,
+    ) {
+        design_fixture(cx, width, theme::ThemeChoice::Hermes)
+    }
+
+    /// Recording-only fixture in `design`, at the scale the test set: no provider, host
+    /// staging, clipboard or socket access.
+    fn design_fixture(
+        cx: &mut gpui::TestAppContext,
+        width: f32,
+        design: theme::ThemeChoice,
+    ) -> (
+        gpui::WindowHandle<gpui_kit::base::Root>,
+        gpui::Entity<ChatView>,
+    ) {
+        cx.update(|cx| {
+            let mut settings = crate::settings::Settings {
+                theme: design,
+                ui_text_matches_terminal: false,
+                dictation_mic: true,
+                ..Default::default()
+            };
+            settings.ui_text_size = ui_text::TextPoints::new(
+                ui_text::scale() * ui_text::REFERENCE_SIZE
+                    - ui_text::Face::of(&settings).offset(false),
+            );
+            cx.set_global(settings);
+            cx.set_global(theme::Appearance {
+                selected: design,
+                palette: match design {
+                    theme::ThemeChoice::Native => theme::Palette::native(false),
+                    theme::ThemeChoice::RiWork => theme::Palette::RIWORK,
+                    theme::ThemeChoice::Hermes => theme::Palette::HERMES,
+                    _ => panic!("the chat layout fixture draws Native, RiWork and Hermes"),
+                },
+                terminal: None,
+                ghostty: None,
+                error: None,
+            });
+            text_input::init(cx);
+            ui_text::init(cx);
+            let (feed, _) = super::super::feed::Feed::recording();
+            let mut chat = None;
+            let handle = cx
+                .open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                            point(px(0.0), px(0.0)),
+                            gpui::size(px(width), px(900.0)),
+                        ))),
+                        ..Default::default()
+                    },
+                    |window, cx| {
+                        let view = cx.new(|cx| {
+                            let mut view = ChatView::blank(
+                                super::super::HostConfig {
+                                    ensure: std::sync::Arc::new(|| {
+                                        panic!("the fixture cannot stage or launch a provider")
+                                    }),
+                                },
+                                window,
+                                cx,
+                            );
+                            view.chat_id = Some("layout-fixture".into());
+                            view.feed = Some(feed);
+                            view.model.transcript.state = ChatState::Running;
+                            view.model.transcript.models = vec![crate::chat::model::ModelOption {
+                                id: "fixture-model".into(),
+                                name: "A deliberately long supported model label for wrapping"
+                                    .into(),
+                                efforts: vec!["medium".into(), "high".into()],
+                                default_effort: Some("medium".into()),
+                                supports_fast: true,
+                                is_default: true,
+                                ..Default::default()
+                            }];
+                            view
+                        });
+                        chat = Some(view.clone());
+                        cx.new(|cx| gpui_kit::base::Root::new(view, window, cx))
+                    },
+                )
+                .unwrap();
+            (handle, chat.unwrap())
+        })
+    }
+
+    fn draw_hermes(
+        cx: &mut gpui::TestAppContext,
+        handle: gpui::WindowHandle<gpui_kit::base::Root>,
+    ) {
+        for _ in 0..3 {
+            cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
+                .unwrap();
+            cx.run_until_parked();
+        }
+    }
+
+    #[gpui::test]
+    fn the_model_menu_offers_the_other_providers_models_and_moves_the_chat_to_one(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::chat::{
+            catalog::Catalog,
+            model::{ChatCommand, ChatInfo, ModelOption},
+        };
+        let previous = ui_text::set_for_tests(1.0, ui_text::Face::Hermes);
+        for state in [ChatState::Running, ChatState::Idle] {
+            let (handle, view) = hermes_fixture(cx, 720.0);
+            let (feed, recording) = super::super::feed::Feed::recording();
+            let info = ChatInfo {
+                parent_id: None, user_title: None, first_user_message: None, provider_title: None,
+                id: uuid::Uuid::from_u128(1).to_string(),
+                provider: Provider::Codex,
+                project_id: Some("fixture-project".into()),
+                worktree_id: None,
+                cwd: "/inert-fixture".into(),
+                title: "Existing conversation".into(),
+                created_at_unix: 1,
+                provider_thread_id: Some("existing-provider-thread".into()),
+                model: Some("fixture-model".into()),
+                effort: None,
+                fast: false,
+                approval_mode: ApprovalMode::Supervised,
+                codex_account_id: None,
+                state: state.clone(),
+                orchestrator: None,
+                carried_over: None,
+            };
+            cx.update_window(handle.into(), |_, _, cx| {
+                view.update(cx, |view, cx| {
+                    view.feed = Some(feed);
+                    view.chat_id = Some(info.id.clone());
+                    view.model.transcript.info = Some(info.clone());
+                    view.model.transcript.state = state.clone();
+                    // As the saved chats would tell it; the fixture reads no files.
+                    view.others = Some((
+                        Provider::Claude,
+                        Catalog {
+                            supported: vec![ModelOption {
+                                id: "opus".into(),
+                                name: "Opus".into(),
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        },
+                    ));
+                    cx.notify();
+                })
+            })
+            .unwrap();
+            draw_hermes(cx, handle);
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |view, cx| {
+                    view.menu = Some(super::super::Menu::Model);
+                    cx.notify();
+                });
+                let _ = window;
+            })
+            .unwrap();
+            draw_hermes(cx, handle);
+            cx.update_window(handle.into(), |_, window, cx| {
+                for (id, label) in [
+                    ("switch-claude-default", "Claude default"),
+                    ("switch-claude-opus", "Opus"),
+                ] {
+                    assert_eq!(window.find(id).label(), Some(label), "{id}");
                 }
+                window.click("switch-claude-opus", cx);
+            })
+            .unwrap();
+            draw_hermes(cx, handle);
+            match state {
+                // Nothing moves while a turn runs; the row says why.
+                ChatState::Running => assert!(matches!(
+                    recording.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                )),
+                _ => match recording.try_recv().unwrap() {
+                    super::super::feed::Delivery::Command(command) => assert_eq!(
+                        command,
+                        ChatCommand::Switch {
+                            provider: Provider::Claude,
+                            model: Some("opus".into()),
+                            effort: None,
+                            fast: None,
+                        }
+                    ),
+                    _ => panic!("a switch is an ordinary command"),
+                },
             }
         }
+        ui_text::set_for_tests(previous.0, previous.1);
     }
 
     fn prompt(question: &str, options: &[&str], multi_select: bool) -> QuestionPrompt {

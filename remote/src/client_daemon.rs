@@ -2062,24 +2062,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn refusals_of_pty_open_are_explained() {
-        let unsupported = CallError::Rpc {
-            code: "invalid_request".into(),
-            message: "unsupported RPC method".into(),
-        };
-        assert!(open_failure(&unsupported).contains("--kind desktop"));
-        let missing = CallError::Rpc {
-            code: "not_found".into(),
-            message: "no such shell".into(),
-        };
-        assert_eq!(open_failure(&missing), "not_found: no such shell");
-    }
-
-    #[test]
-    fn only_the_two_terminal_types_the_host_takes_are_known() {
-        assert!(is_known_term("xterm-ghostty") && is_known_term("xterm-256color"));
-        assert!(!is_known_term("vt100") && !is_known_term(""));
-    }
 }

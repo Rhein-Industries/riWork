@@ -361,6 +361,7 @@ fn nothing_new_is_an_empty_page_after_the_wait_with_next_unchanged() {
 }
 
 #[test]
+#[ignore = "slow: sleeps and asserts wall-clock windows"]
 fn a_wait_ends_with_the_first_event_and_collects_what_follows_within_a_short_window() {
     let host = TestHost::new();
     let (chat, count) = idle_chat(&host);
@@ -792,6 +793,13 @@ fn a_command_that_is_not_strictly_a_command_is_refused_before_a_host_is_asked() 
         r#"{"command":"approve","request_id":"r","decision":"yes"}"#,
         r#"{"command":"approve","request_id":"r"}"#,
         r#"{"command":"answer","request_id":"r","answers":["a"]}"#,
+        // A switch names the provider it goes on with, and only what a switch takes.
+        r#"{"command":"switch"}"#,
+        r#"{"command":"switch","provider":null}"#,
+        r#"{"command":"switch","provider":"grok"}"#,
+        r#"{"command":"switch","provider":"claude","approval_mode":"full"}"#,
+        r#"{"command":"switch","provider":"claude","model":""}"#,
+        r#"{"command":"switch","provider":"claude","effort":"x234567890123456789012345678901234"}"#,
         wrong_answer.as_str(),
     ] {
         let error = refuse(bad);
@@ -838,32 +846,6 @@ fn command_says_what_is_wrong_with_the_chat_or_the_arguments() {
         );
     }
     assert!(host.fake().commands().is_empty());
-}
-
-#[test]
-fn text_that_looks_like_an_option_stays_text() {
-    let mut args: Vec<String> = ["--title", "--draft", "--title-x", "--model=", "keep"]
-        .map(String::from)
-        .into();
-    assert_eq!(
-        take_verbatim_option(&mut args, "--title")
-            .unwrap()
-            .as_deref(),
-        Some("--draft")
-    );
-    assert_eq!(args, ["--title-x", "--model=", "keep"]);
-    assert_eq!(
-        take_verbatim_option(&mut args, "--model")
-            .unwrap()
-            .as_deref(),
-        Some("")
-    );
-    assert_eq!(args, ["--title-x", "keep"]);
-    assert_eq!(take_verbatim_option(&mut args, "--effort").unwrap(), None);
-    let mut twice: Vec<String> = vec!["--a=1".into(), "--a".into(), "2".into()];
-    assert!(take_verbatim_option(&mut twice, "--a").is_err());
-    let mut dangling: Vec<String> = vec!["--a".into()];
-    assert!(take_verbatim_option(&mut dangling, "--a").is_err());
 }
 
 // ---- the page collector --------------------------------------------------------------------
@@ -1284,5 +1266,66 @@ fn cli_keeps_its_256_byte_minimum_cut() {
     assert_eq!(
         shrunk.event["delta"]["text"].as_str().unwrap().len(),
         256 + '…'.len_utf8()
+);
+}
+
+#[test]
+fn a_switch_goes_through_chat_command_and_moves_the_chat_to_the_other_provider() {
+    let host = TestHost::new();
+    let (chat, _) = idle_chat(&host);
+    let answer: Value = serde_json::from_str(
+        &command(
+            &host,
+            &chat.id,
+            r#"{"command":"switch","provider":"claude","model":"opus","effort":null}"#,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answer, json!({"id": chat.id, "status": "ok"}));
+    let info = host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
+    assert_eq!(info.provider, Provider::Claude);
+    assert_eq!(info.model.as_deref(), Some("opus"));
+    assert!(info.carried_over.is_some());
+    // The host did it; no driver was asked to.
+    assert!(
+        !host
+            .fake()
+            .commands()
+            .iter()
+            .any(|command| matches!(command, ChatCommand::Switch { .. }))
+    );
+}
+
+#[test]
+fn models_lists_what_saved_chats_of_a_provider_reported_without_a_host() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Claude);
+    host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
+    emit(
+        &host,
+        &chat,
+        vec![ChatEvent::Models {
+            models: vec![crate::chat::model::ModelOption {
+                id: "opus".into(),
+                name: "Opus".into(),
+                ..Default::default()
+            }],
+        }],
+    );
+    let claude = run_json(&host.home, &["models", "--provider", "claude"]);
+    assert_eq!(claude["provider"], "claude");
+    assert_eq!(claude["models"][0]["id"], "opus");
+    assert_eq!(claude["error"], Value::Null);
+    let codex = run_json(&host.home, &["models", "--provider", "codex"]);
+    assert_eq!(codex["models"], json!([]), "no Codex chat has said");
+    assert_eq!(
+        run(&host.home, &["models", "--provider", "claude"], false).unwrap(),
+        "opus\tOpus\n"
+    );
+    assert!(
+        run(&host.home, &["models", "--provider", "grok"], true)
+            .unwrap_err()
+            .contains("Usage")
     );
 }

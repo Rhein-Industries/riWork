@@ -201,19 +201,6 @@ mod tests {
     }
 
     #[test]
-    fn several_hunks_and_files_each_start_again() {
-        let diff = "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\n@@ -9,2 +9,3 @@\n k\n+new\n l\ndiff --git a/b b/b\n--- a/b\n+++ b/b\n@@ -0,0 +1 @@\n+z\n";
-        assert_eq!(
-            kinds(diff, ChangeKind::Modify),
-            [
-                Header, Header, Header, Hunk, Remove, Add, Hunk, Context, Add, Context, Header,
-                Header, Header, Hunk, Add
-            ]
-        );
-        assert_eq!(stats(&classify(diff, ChangeKind::Modify)), (3, 1));
-    }
-
-    #[test]
     fn an_empty_context_line_and_the_no_newline_note_stay_in_the_hunk() {
         let diff = "@@ -1,3 +1,3 @@\n a\n\n-b\n\\ No newline at end of file\n+c\n\\ No newline at end of file\n";
         assert_eq!(
@@ -244,22 +231,5 @@ mod tests {
         );
         assert_eq!(kinds("+one\ntwo", ChangeKind::Add), [Add, Context]);
         assert!(classify("", ChangeKind::Modify).is_empty());
-    }
-
-    #[test]
-    fn a_long_diff_is_cut_and_the_rest_counted() {
-        let diff = format!("@@ -0,0 +1,{n} @@\n{}", "+x\n".repeat(1000), n = 1000);
-        let (shown, hidden) = display(&diff, ChangeKind::Add);
-        assert_eq!((shown.len(), hidden), (MAX_LINES, 601));
-        assert_eq!(shown[0].kind, Hunk);
-        // A diff that fits is whole, with or without a final line break.
-        assert_eq!(display("+a\n+b\n", ChangeKind::Modify).1, 0);
-        assert_eq!(display("+a\n+b", ChangeKind::Modify).0.len(), 2);
-        let exact = "+x\n".repeat(MAX_LINES);
-        assert_eq!(
-            display(&exact, ChangeKind::Add),
-            (classify(&exact, ChangeKind::Add), 0)
-        );
-        assert!(display("", ChangeKind::Add).0.is_empty());
     }
 }

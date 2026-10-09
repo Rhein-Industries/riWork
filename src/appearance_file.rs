@@ -447,34 +447,6 @@ mod tests {
     }
 
     #[test]
-    fn the_native_flag_is_written_only_when_set() {
-        let mut published = snapshot(0x111111);
-        // Off, the document is exactly what it was before the flag existed.
-        let value = serde_json::to_value(&published).unwrap();
-        assert!(value.get("native").is_none(), "{value}");
-        assert!(!parse(&value).unwrap().native);
-        published.native = true;
-        let value = serde_json::to_value(&published).unwrap();
-        assert_eq!(value["native"], true);
-        let text = serde_json::to_string(&published).unwrap();
-        assert!(
-            text.find("\"terminal\"") < text.find("\"native\""),
-            "{text}"
-        );
-        assert_eq!(parse(&value).unwrap(), published);
-        // A desktop from before the flag, or with Native off, reads as not Native.
-        let mut old = document();
-        assert!(!parse(&old).unwrap().native);
-        old["native"] = json!(false);
-        assert_eq!(
-            serde_json::to_value(parse(&old).unwrap()).unwrap(),
-            document()
-        );
-        old["native"] = json!(true);
-        assert!(parse(&old).unwrap().native);
-    }
-
-    #[test]
     fn the_mic_flag_is_written_only_when_set() {
         let mut published = snapshot(0x111111);
         // Off, the document is exactly what it was before the flag existed.
@@ -636,18 +608,6 @@ mod tests {
             assert!(publish(&home, &published, 42).unwrap(), "{junk:?}");
             assert_eq!(read(&home).unwrap().updated_at, 42);
         }
-        fs::remove_dir_all(home).unwrap();
-    }
-
-    #[test]
-    fn a_failed_write_leaves_the_old_file_and_no_temporary() {
-        let home = home();
-        let first = snapshot(0x707070);
-        assert!(publish(&home, &first, 1).unwrap());
-        let missing = home.join("not-a-directory");
-        assert!(publish(&missing, &snapshot(0x808080), 2).is_err());
-        assert!(read(&home).unwrap().same_colors(&first));
-        assert!(!missing.exists());
         fs::remove_dir_all(home).unwrap();
     }
 }

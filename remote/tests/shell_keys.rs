@@ -931,6 +931,7 @@ async fn the_rpc_validator_agrees_with_the_cli_validator() {
 /// tmux: text ending in `;` and `\;` arrives verbatim, keys arrive as bytes.
 #[cfg(unix)]
 #[test]
+#[ignore = "slow: drives a real private tmux server"]
 fn the_production_key_module_types_into_a_real_tmux() {
     use session_keys::{Item, Key};
     use std::{

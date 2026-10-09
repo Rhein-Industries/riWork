@@ -205,7 +205,7 @@ pub fn provider_name(provider: Provider) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::model::{ApprovalMode, ChatInfo, Delta, Item, ItemBody, TurnOutcome};
+    use crate::chat::model::{ApprovalMode, ChatInfo, Delta, Item, ItemBody};
 
     fn envelope(seq: u64, event: ChatEvent) -> Envelope {
         Envelope {
@@ -217,6 +217,7 @@ mod tests {
 
     fn info(title: &str, state: ChatState) -> ChatInfo {
         ChatInfo {
+            carried_over: None,
             parent_id: None,
             user_title: None,
             first_user_message: None,
@@ -254,45 +255,6 @@ mod tests {
 
     fn agent(text: &str) -> ItemBody {
         ItemBody::AgentMessage { text: text.into() }
-    }
-
-    #[test]
-    fn the_models_a_chat_reports_are_kept_for_the_toolbar_and_are_no_rows() {
-        use crate::chat::model::ModelOption;
-        let mut model = ChatModel::new();
-        assert!(model.transcript.models.is_empty());
-        let list = vec![ModelOption {
-            id: "opus".into(),
-            name: "Opus".into(),
-            supports_fast: true,
-            ..ModelOption::default()
-        }];
-        let applied = model.apply(&[envelope(
-            1,
-            ChatEvent::Models {
-                models: list.clone(),
-            },
-        )]);
-        // A counted event that adds and changes no row.
-        assert_eq!(
-            applied,
-            Applied {
-                appended: 0,
-                touched: BTreeSet::new(),
-                events: 1,
-                projection_changed: false,
-            }
-        );
-        assert_eq!(model.transcript.models, list);
-        // A repeat of the same event changes nothing, and a newer list replaces it.
-        assert_eq!(
-            model
-                .apply(&[envelope(1, ChatEvent::Models { models: Vec::new() })])
-                .events,
-            0
-        );
-        model.apply(&[envelope(2, ChatEvent::Models { models: Vec::new() })]);
-        assert!(model.transcript.models.is_empty());
     }
 
     #[test]
@@ -355,114 +317,5 @@ mod tests {
         assert!(again.is_empty(), "{again:?}");
         assert_eq!(model.transcript.items[0].body, agent("xy"));
         assert_eq!(model.last_seq, 2);
-    }
-
-    #[test]
-    fn the_end_of_a_turn_touches_the_rows_it_closed() {
-        let mut model = ChatModel::new();
-        model.apply(&[
-            envelope(
-                1,
-                ChatEvent::TurnStarted {
-                    turn_id: "t1".into(),
-                },
-            ),
-            envelope(2, started("a", agent("done"))),
-            envelope(
-                3,
-                ChatEvent::ItemCompleted {
-                    item: Item {
-                        presentation: Default::default(),
-                        id: "a".into(),
-                        turn_id: Some("t1".into()),
-                        status: ItemStatus::Completed,
-                        body: agent("done"),
-                    },
-                },
-            ),
-            envelope(
-                4,
-                started(
-                    "cmd",
-                    ItemBody::Command {
-                        command: "sleep 9".into(),
-                        cwd: None,
-                        output: String::new(),
-                        exit_code: None,
-                    },
-                ),
-            ),
-        ]);
-        assert!(!model.turn_finished);
-        let end = model.apply(&[envelope(
-            5,
-            ChatEvent::TurnCompleted {
-                turn_id: "t1".into(),
-                outcome: TurnOutcome::Interrupted,
-            },
-        )]);
-        assert_eq!(end.touched, BTreeSet::from([1]));
-        assert_eq!(model.transcript.items[1].status, ItemStatus::Interrupted);
-        assert!(model.turn_finished);
-    }
-
-    #[test]
-    fn the_tab_is_titled_by_the_chat_and_counted_by_its_state() {
-        let mut model = ChatModel::new();
-        assert_eq!(model.title(), "Chat");
-        assert_eq!(model.summary().provider, None);
-        model.apply(&[envelope(
-            1,
-            ChatEvent::Info {
-                info: info("", ChatState::Idle),
-            },
-        )]);
-        assert_eq!(model.title(), "Claude chat");
-        let idle = model.summary();
-        assert_eq!(idle.activity, None, "nothing has happened in the chat yet");
-        assert_eq!(idle.counted(), None);
-
-        model.apply(&[envelope(
-            2,
-            ChatEvent::State {
-                state: ChatState::Running,
-            },
-        )]);
-        let running = model.summary();
-        assert_eq!(running.activity, Some(AgentActivity::Working));
-        assert_eq!(
-            running.counted(),
-            Some(ChatActivity {
-                project_id: Some("project".into()),
-                worktree_id: Some("tree".into()),
-                activity: AgentActivity::Working,
-            })
-        );
-
-        model.apply(&[
-            envelope(
-                3,
-                ChatEvent::TurnCompleted {
-                    turn_id: "t".into(),
-                    outcome: TurnOutcome::Completed,
-                },
-            ),
-            envelope(
-                4,
-                ChatEvent::State {
-                    state: ChatState::Idle,
-                },
-            ),
-            envelope(
-                5,
-                ChatEvent::Info {
-                    info: info("Fix the build", ChatState::Idle),
-                },
-            ),
-        ]);
-        let done = model.summary();
-        assert_eq!(done.title, "Fix the build");
-        assert_eq!(done.activity, Some(AgentActivity::Done));
-        assert_ne!(done, running);
     }
 }

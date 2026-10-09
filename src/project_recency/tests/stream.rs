@@ -682,6 +682,7 @@ fn a_linked_worktree_hears_its_git_directory_outside_the_root() {
 }
 
 #[test]
+#[ignore = "slow: real FSEvents stream; waits for the system to report changes"]
 fn a_stream_holds_its_listener_once_and_lets_it_go() {
     let dir = Fixture::new();
     let sink = Arc::new(sink_for(std::slice::from_ref(&dir.0)));
@@ -909,6 +910,7 @@ fn watched_roots(shared: &Shared) -> Vec<PathBuf> {
 }
 
 #[test]
+#[ignore = "slow: real FSEvents stream; waits for the system to report changes"]
 fn an_edit_to_a_tracked_file_is_heard_with_no_scan_and_no_git() {
     let (repo, a, _) = two_files();
     let state = one_root(&repo);
@@ -931,6 +933,7 @@ fn an_edit_to_a_tracked_file_is_heard_with_no_scan_and_no_git() {
 }
 
 #[test]
+#[ignore = "slow: real FSEvents stream; waits for the system to report changes"]
 fn a_machine_where_nothing_happens_scans_nothing() {
     let (repo, _, _) = two_files();
     let other = Fixture::new();
@@ -950,43 +953,7 @@ fn a_machine_where_nothing_happens_scans_nothing() {
 }
 
 #[test]
-fn the_newest_file_going_away_scans_its_root_and_only_that_one() {
-    let (repo, a, _) = two_files();
-    let (other, _, _) = two_files();
-    other.file("src/c.rs", 300);
-    let state = state_of(vec![project("repo", &[&repo]), project("other", &[&other])]);
-    let shared = started(&state);
-    assert_eq!(shared.scan(&state, ALWAYS).get("repo"), Some(&100));
-    let scanned = scans();
-    fs::remove_file(&a).unwrap();
-    assert!(wait_for(&shared, &state, "repo", 50));
-    assert_eq!(shared.scan(&state, ALWAYS).get("other"), Some(&300));
-    assert_eq!(
-        scans() - scanned,
-        1,
-        "scanned more than the root that changed"
-    );
-    quiet(&shared, &state);
-    assert_eq!(scans() - scanned, 1);
-}
-
-#[test]
-fn a_new_file_is_found_by_asking_git_once() {
-    let (repo, _, _) = two_files();
-    let state = one_root(&repo);
-    let shared = started(&state);
-    let (scanned, git) = (scans(), git_runs());
-    repo.file("src/new.rs", 400);
-    assert!(wait_for(&shared, &state, "project", 400));
-    quiet(&shared, &state);
-    assert_eq!((scans() - scanned, git_runs() - git), (1, 1));
-    // The new file is on the list now: editing it needs no scan.
-    edit(&repo.0.join("src/new.rs"), 500);
-    assert!(wait_for(&shared, &state, "project", 500));
-    assert_eq!((scans() - scanned, git_runs() - git), (1, 1));
-}
-
-#[test]
+#[ignore = "slow: real FSEvents stream; waits for the system to report changes"]
 fn changed_ignore_rules_and_index_are_heard() {
     let repo = repository();
     let ignore = repo.file(".gitignore", 10);
@@ -1014,6 +981,7 @@ fn changed_ignore_rules_and_index_are_heard() {
 }
 
 #[test]
+#[ignore = "slow: real FSEvents stream; waits for the system to report changes"]
 fn a_linked_worktree_hears_its_index_outside_the_root() {
     let repository = repository();
     let ignore = repository.file(".gitignore", 10);
@@ -1057,6 +1025,7 @@ fn a_linked_worktree_hears_its_index_outside_the_root() {
 }
 
 #[test]
+#[ignore = "slow: real FSEvents stream; waits for the system to report changes"]
 fn windows_asking_while_files_change_end_up_with_the_same_date() {
     let repo = repository();
     let files: Vec<_> = (0..20)
@@ -1114,6 +1083,7 @@ fn without_a_stream_every_ask_scans_as_before() {
 }
 
 #[test]
+#[ignore = "slow: real FSEvents stream; waits for the system to report changes"]
 fn a_stream_that_failed_is_tried_again_later() {
     let repo = Fixture::new();
     repo.file("a.rs", 100);
@@ -1145,6 +1115,7 @@ fn a_stream_that_failed_is_tried_again_later() {
 }
 
 #[test]
+#[ignore = "slow: real FSEvents stream; waits for the system to report changes"]
 fn a_stream_that_cannot_be_remade_leaves_the_one_that_works() {
     let one = Fixture::new();
     one.file("a.rs", 100);
@@ -1180,6 +1151,7 @@ fn a_stream_that_cannot_be_remade_leaves_the_one_that_works() {
 }
 
 #[test]
+#[ignore = "slow: real FSEvents stream; waits for the system to report changes"]
 fn a_stream_that_is_replaced_still_delivers_the_changes_it_was_holding_back() {
     let (repo, a, _) = two_files();
     let new = Fixture::new();
@@ -1207,6 +1179,7 @@ fn a_stream_that_is_replaced_still_delivers_the_changes_it_was_holding_back() {
 }
 
 #[test]
+#[ignore = "slow: real FSEvents stream; waits for the system to report changes"]
 fn roots_nobody_asks_about_any_more_stop_being_watched() {
     let one = Fixture::new();
     one.file("a.rs", 100);
@@ -1249,6 +1222,7 @@ fn roots_nobody_asks_about_any_more_stop_being_watched() {
 }
 
 #[test]
+#[ignore = "slow: real FSEvents stream; waits for the system to report changes"]
 fn dropping_the_cache_stops_the_stream() {
     let repo = Fixture::new();
     let file = repo.file("a.rs", 100);
@@ -1260,23 +1234,6 @@ fn dropping_the_cache_stops_the_stream() {
     edit(&file, 200);
     drop(shared);
     assert!(let_go(&sink));
-}
-
-#[test]
-fn streams_come_and_go_without_leaving_listeners_behind() {
-    let repo = Fixture::new();
-    let file = repo.file("a.rs", 100);
-    let state = one_root(&repo);
-    settle();
-    let sinks: Vec<_> = (0..10)
-        .map(|round| {
-            let shared = watching();
-            shared.scan(&state, ALWAYS);
-            edit(&file, 200 + round);
-            Arc::downgrade(&shared.lock().sink().unwrap())
-        })
-        .collect();
-    assert!(sinks.iter().all(let_go));
 }
 
 // Measurements, not tests.

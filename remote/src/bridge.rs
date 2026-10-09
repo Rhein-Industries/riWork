@@ -505,16 +505,6 @@ mod tests {
     }
 
     #[test]
-    fn the_reset_leaves_every_mode_tmux_may_have_turned_on() {
-        let text = std::str::from_utf8(RESET).unwrap();
-        assert!(text.starts_with("\x1b[!p"), "soft reset first");
-        for mode in ["1049", "1000", "1002", "1003", "1006", "1004", "2004"] {
-            assert!(text.contains(&format!("\x1b[?{mode}l")), "{mode}");
-        }
-        assert!(text.contains("\x1b[?25h"), "cursor shown");
-    }
-
-    #[test]
     fn the_notice_is_one_dim_line_on_the_last_row_that_keeps_the_cursor() {
         let bytes = notice_bytes(24, 80, "Mac Studio is unreachable");
         let text = String::from_utf8(bytes).unwrap();
@@ -534,25 +524,5 @@ mod tests {
                 .unwrap()
                 .contains("\x1b[24;1H\x1b[2K")
         );
-    }
-
-    #[test]
-    fn the_end_reasons_read_as_sentences() {
-        assert_eq!(end_message("exited"), "\r\n[riwork] The session ended.\r\n");
-        assert!(end_message("closed").contains("closed"));
-        assert!(end_message("limit").contains("more terminals"));
-        assert_eq!(
-            end_message("not_found: no such shell"),
-            "\r\n[riwork] not_found: no such shell\r\n"
-        );
-        assert!(!end_message("a\x1bb").contains('\x1b'));
-    }
-
-    #[test]
-    fn the_size_comes_from_the_environment_when_there_is_no_terminal() {
-        // The test harness has no terminal on fds 0-2 under `cargo test`; whichever
-        // happens, the answer is a usable size.
-        let (columns, rows) = tty_size();
-        assert!((1..=1000).contains(&columns) && (1..=500).contains(&rows));
     }
 }

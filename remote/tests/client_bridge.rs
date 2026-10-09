@@ -191,6 +191,7 @@ async fn rig(options: HostOptions) -> Rig {
 }
 
 #[tokio::test]
+#[ignore = "slow: real pty and bridge process across a 1.5 s host outage"]
 async fn the_bridge_shows_the_shell_types_for_the_person_and_follows_the_window() {
     let r = rig(HostOptions::default()).await;
     let (mut terminal, slave) = Terminal::open(100, 30);

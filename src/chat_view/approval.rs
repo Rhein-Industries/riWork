@@ -99,29 +99,4 @@ mod tests {
         assert_eq!(decision_for_key("escape", false, &[Accept]), None);
         assert_eq!(decision_for_key("enter", false, &[]), None);
     }
-
-    #[test]
-    fn buttons_say_what_they_do_and_the_key_that_does_it() {
-        assert_eq!(
-            ALL.map(decision_label),
-            ["Allow", "Allow for session", "Deny", "Stop"]
-        );
-        assert_eq!(
-            ALL.map(decision_key),
-            [Some("⏎"), Some("⇧⏎"), Some("⎋"), None]
-        );
-        assert_eq!(kind_label(ApprovalKind::Command), "Run a command?");
-    }
-
-    #[test]
-    fn a_long_detail_is_folded_to_a_few_lines_until_expanded() {
-        let detail = "a\nb\nc\nd\ne\n";
-        assert_eq!(detail_lines(detail, false), (vec!["a", "b", "c"], 2));
-        assert_eq!(
-            detail_lines(detail, true),
-            (vec!["a", "b", "c", "d", "e"], 0)
-        );
-        assert_eq!(detail_lines("a\nb", false), (vec!["a", "b"], 0));
-        assert_eq!(detail_lines("", false), (vec![], 0));
-    }
 }

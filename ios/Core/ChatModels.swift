@@ -65,11 +65,13 @@ public struct ChatModelChoices: Sendable, Equatable {
     public let effort: String?
     /// Fast was asked for (`ChatInfo.fast`).
     public let fast: Bool
+    /// The other provider's models, on a desktop that lets a chat go on with it (`features.chat_provider_switch`); nil otherwise.
+    public var switching: ChatProviderSwitch?
 
-    public init(models: [ChatModelOption], model: String?, effort: String?, fast: Bool) {
+    public init(models: [ChatModelOption], model: String?, effort: String?, fast: Bool, switching: ChatProviderSwitch? = nil) {
         var seen = Set<String>()
         self.models = models.filter { seen.insert($0.id).inserted }
-        self.modelID = model; self.effort = effort; self.fast = fast
+        self.modelID = model; self.effort = effort; self.fast = fast; self.switching = switching
     }
     /// From a transcript, with a choice that has been sent and not yet confirmed by the desktop laid over what the chat says.
     public init(transcript: ChatTranscript, fallback: ChatInfo? = nil, pending: Configuration? = nil) {
@@ -133,6 +135,8 @@ public struct ChatModelChoices: Sendable, Equatable {
         case model(String)
         case effort(String)
         case fast(Bool)
+        /// Go on with the other provider, on this model of it (nil: its default). Not a `Configure`: see `ChatProviderSwitch.command`.
+        case provider(String?)
     }
 
     /// What one choice sends: one `Configure`. Each field is a change; a field left out stays as it is.
@@ -177,22 +181,68 @@ public struct ChatModelChoices: Sendable, Equatable {
         case .fast(let on):
             guard showsFast, on != fastIsOn else { return nil }
             return Configuration(fast: on)
+        case .provider: return nil
         }
     }
 
     /// The same chat with a choice made: what the picker shows at once, before the desktop has said so.
     public func applying(_ configuration: Configuration) -> ChatModelChoices {
-        ChatModelChoices(models: models, model: configuration.model ?? modelID, effort: configuration.effort ?? effort, fast: configuration.fast ?? fast)
+        ChatModelChoices(models: models, model: configuration.model ?? modelID, effort: configuration.effort ?? effort, fast: configuration.fast ?? fast, switching: switching)
+    }
+}
+
+// MARK: - Going on with the other provider
+
+/// The other provider's part of a chat's picker: its default and its models. Choosing one sends `switch`, which keeps the chat, its tab and its
+/// conversation and starts the other provider's agent with the conversation so far. Not while a turn runs or waits: the desktop refuses
+/// that, so the rows say why instead.
+public struct ChatProviderSwitch: Sendable, Equatable {
+    /// One row: the provider's default (`model` nil) or one of its models.
+    public struct Row: Sendable, Equatable, Identifiable {
+        public let model: ChatModelOption?
+        public var id: String { model?.id ?? "default" }
+        public var title: String { model?.name ?? "Default" }
+    }
+
+    /// The provider the chat would go on with.
+    public let provider: ChatProvider
+    /// Its models, as the desktop or the phone's catalogue knows them.
+    public let models: [ChatModelOption]
+    /// Why no row can be chosen now; nil when one can.
+    public let blocked: String?
+
+    public static let busyReason = "Finish or interrupt the turn first."
+
+    public init(provider: ChatProvider, models: [ChatModelOption], blocked: String? = nil) {
+        self.provider = provider; self.models = models; self.blocked = blocked
+    }
+    /// For a chat: blocked while its turn runs or waits for the person, as the desktop would refuse it then.
+    public init(provider: ChatProvider, models: [ChatModelOption], transcript: ChatTranscript) {
+        let busy = transcript.state.isBusy || transcript.turnID != nil || !transcript.approvals.isEmpty || !transcript.questions.isEmpty
+        self.init(provider: provider, models: models, blocked: busy ? Self.busyReason : nil)
+    }
+
+    /// The default first, then the models, one per id. A model whose id is `default` is the default row itself.
+    public var rows: [Row] {
+        var seen: Set<String> = ["default"]
+        return [Row(model: nil)] + models.filter { seen.insert($0.id).inserted }.map { Row(model: $0) }
+    }
+    /// What choosing `row` sends: the provider, and the model when one was chosen; the effort and Fast stay the new provider's defaults.
+    public func command(for row: Row) -> ChatCommand { .switchProvider(provider: provider, model: row.model?.id) }
+    public func command(model id: String?) -> ChatCommand? {
+        guard let row = rows.first(where: { $0.model?.id == id }) else { return nil }
+        return command(for: row)
     }
 }
 
 // MARK: - The keyboard
 
 /// Where the ring is in the picker, and what the arrows do. The picker is one column of stops: a row per model, then the effort row (when
-/// the model takes efforts), then Fast (when it has one). Up, down and tab move between them (and wrap), left and right move along the
-/// efforts, Return and space choose what the ring is on. Choosing sends one `Configure`; moving sends nothing.
+/// the model takes efforts), then Fast (when it has one), then the other provider's rows (when the chat can go on with it now). Up, down and
+/// tab move between them (and wrap), left and right move along the efforts, Return and space choose what the ring is on. Choosing sends one
+/// `Configure`, or a `switch` for the other provider's rows; moving sends nothing.
 public struct ChatModelCursor: Equatable, Sendable {
-    public enum Stop: Equatable, Sendable { case model(Int), effort, fast }
+    public enum Stop: Equatable, Sendable { case model(Int), effort, fast, other(Int) }
     public enum Key: Equatable, Sendable { case up, down, left, right, tab, backTab, space, `return` }
 
     public private(set) var stop: Stop
@@ -206,7 +256,8 @@ public struct ChatModelCursor: Equatable, Sendable {
     }
 
     public func stops(in choices: ChatModelChoices) -> [Stop] {
-        choices.models.indices.map(Stop.model) + (choices.efforts.isEmpty ? [] : [.effort]) + (choices.showsFast ? [.fast] : [])
+        let others = choices.switching.flatMap { $0.blocked == nil ? $0.rows.indices.map(Stop.other) : nil } ?? []
+        return choices.models.indices.map(Stop.model) + (choices.efforts.isEmpty ? [] : [.effort]) + (choices.showsFast ? [.fast] : []) + others
     }
 
     /// Puts the ring back on something that is still there after the rows changed (a model was chosen and its efforts are not the last's).
@@ -238,6 +289,9 @@ public struct ChatModelCursor: Equatable, Sendable {
             case .model(let index): return choices.models.indices.contains(index) ? .model(choices.models[index].id) : nil
             case .effort: return choices.efforts.indices.contains(effortIndex) ? .effort(choices.efforts[effortIndex]) : nil
             case .fast: return .fast(!choices.fastIsOn)
+            case .other(let index):
+                guard let rows = choices.switching?.rows, rows.indices.contains(index) else { return nil }
+                return .provider(rows[index].model?.id)
             }
         }
         return nil

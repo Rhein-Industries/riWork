@@ -941,6 +941,15 @@ impl Codex {
         if config.fast {
             params["serviceTier"] = json!(FAST_TIER);
         }
+        // The conversation a chat had before it switched to Codex, which no Codex thread
+        // holds. Sent on every start and resume, as a Claude chat's system prompt is.
+        if let Some(instructions) = config
+            .instructions
+            .as_ref()
+            .filter(|text| !text.trim().is_empty())
+        {
+            params["developerInstructions"] = json!(instructions);
+        }
         let mut replaced = None;
         let result = match &config.resume {
             Some(thread) => {
@@ -1119,6 +1128,8 @@ impl Codex {
             return Err("the Codex process is not running".into());
         }
         match command {
+            // Another provider is another process: the host does that.
+            ChatCommand::Switch { .. } => Err("the chat host switches providers".into()),
             ChatCommand::Send { text } => self.send_text(text),
             ChatCommand::SendAttachments { text, attachments } => {
                 let input = super::attachments::inputs(&text, &attachments, false)?;

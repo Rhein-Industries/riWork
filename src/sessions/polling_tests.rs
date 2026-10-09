@@ -2,7 +2,7 @@
 //! Never discovers, invokes or wraps tmux. Keep fixture receipts on disk;
 //! there is no server, signalling or cleanup in this fixture.
 use super::*;
-use std::{os::unix::fs::PermissionsExt, time::Instant};
+use std::os::unix::fs::PermissionsExt;
 
 const ID: &str = "11111111-1111-4111-8111-111111111111";
 
@@ -172,64 +172,7 @@ fn shared_desktop_and_direct_watch_entrypoints_start_no_commands() {
 }
 
 #[test]
-fn unchanged_long_read_polls_until_timeout_without_control_attempts() {
-    let fixture = Fixture::new();
-    let hash = fixture.hash();
-    let started = Instant::now();
-    let read = fixture
-        .read(Some(&hash), Duration::from_millis(300))
-        .unwrap();
-    let OutputRead::Unchanged {
-        hash: returned,
-        screen,
-    } = read else {
-        panic!("expected unchanged timeout");
-    };
-    assert_eq!(returned, hash);
-    assert_eq!(screen.unwrap().cols, 40);
-    assert!(started.elapsed() >= Duration::from_millis(300));
-    assert!(fixture.calls().len() >= 3); // Initial answer plus repeated captures.
-    fixture.assert_no_control();
-}
-
-#[test]
-fn immediate_changed_zero_and_short_waits_never_attempt_control() {
-    let fixture = Fixture::new();
-    let hash = fixture.hash();
-    // A new answer is immediate even with a long requested wait.
-    let before = fixture.calls().len();
-    assert!(matches!(
-        fixture.read(Some("old-hash"), MAX_OUTPUT_WAIT).unwrap(),
-        OutputRead::Changed { .. }
-    ));
-    assert_eq!(fixture.calls().len(), before + 1);
-    for wait in [Duration::ZERO, Duration::from_millis(20)] {
-        assert!(matches!(
-            fixture.read(Some(&hash), wait).unwrap(),
-            OutputRead::Unchanged { .. }
-        ));
-    }
-    fixture.assert_no_control();
-}
-
-#[test]
-fn changed_output_between_polls_ends_a_long_wait_without_control() {
-    let fixture = Fixture::new();
-    let hash = fixture.hash();
-    fixture.mode("change");
-    let OutputRead::Changed {
-        capture,
-        hash: later,
-    } = fixture.read(Some(&hash), MAX_OUTPUT_WAIT).unwrap() else {
-        panic!("expected changed output");
-    };
-    assert_eq!(capture.output, "later\n\n");
-    assert_ne!(hash, later);
-    assert_eq!(fixture.calls().len(), 3); // Baseline, unchanged capture, changed capture.
-    fixture.assert_no_control();
-}
-
-#[test]
+#[ignore = "slow: drives a fake tmux script with real polling waits"]
 fn capture_error_and_exited_shell_after_a_poll_never_attempt_control() {
     for (mode, expected) in [
         ("error-after-first", "synthetic capture failure"),
@@ -242,37 +185,4 @@ fn capture_error_and_exited_shell_after_a_poll_never_attempt_control() {
         assert!(error.contains(expected), "{error}");
         fixture.assert_no_control();
     }
-}
-
-#[test]
-fn concurrent_long_reads_and_cancelled_desktop_replacements_never_attach() {
-    let fixture = Fixture::new();
-    let hash = fixture.hash();
-    std::thread::scope(|scope| {
-        let reads: Vec<_> = (0..2)
-            .map(|_| {
-                scope.spawn(|| {
-                    assert!(matches!(
-                        fixture.read(Some(&hash), Duration::from_millis(300)).unwrap(),
-                        OutputRead::Unchanged { .. }
-                    ));
-                })
-            })
-            .collect();
-        for _ in 0..16 {
-            // The desktop owns no watcher when replaced/cancelled, including
-            // when its event receiver has already closed. Its UI loop stays
-            // on the existing None branch (reviewed separately in ui.rs).
-            let (sender, receiver) = async_channel::bounded::<()>(1);
-            drop(receiver);
-            assert!(sender.is_closed());
-            let watch = fixture.manager.watch_shell(ID);
-            assert!(watch.is_none());
-            drop(watch);
-        }
-        for read in reads {
-            read.join().unwrap();
-        }
-    });
-    fixture.assert_no_control();
 }

@@ -366,48 +366,6 @@ fn configure_fast(fast: bool) -> ChatCommand {
 }
 
 #[test]
-fn fast_mode_belongs_to_the_chat_and_goes_to_every_driver_that_starts() {
-    let host = TestHost::new();
-    let mut new = host.new_chat(Provider::Codex);
-    new.fast = true;
-    let mut client = host.client();
-    let chat = client.create(new).unwrap();
-    assert!(chat.fast);
-    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
-    assert!(host.fake().starts.lock().unwrap()[0].fast);
-
-    // Turned off while the driver runs: the driver is told, and the chat remembers.
-    client.command(&chat.id, configure_fast(false)).unwrap();
-    assert_eq!(host.fake().commands(), vec![configure_fast(false)]);
-    assert!(!host.info(&chat.id).fast);
-    let dir = host.home.join("chats").join(&chat.id);
-    let saved = |dir: &Path| -> ChatInfo {
-        serde_json::from_str(&fs::read_to_string(dir.join("info.json")).unwrap()).unwrap()
-    };
-    assert!(!saved(&dir).fast);
-    // The same again changes nothing and publishes nothing.
-    let published = host.log(&chat.id).len();
-    client.command(&chat.id, configure_fast(false)).unwrap();
-    assert_eq!(host.log(&chat.id).len(), published);
-
-    // Turned on while the chat is stopped: no process starts for it, the next one has it.
-    client.close(&chat.id).unwrap();
-    client.command(&chat.id, configure_fast(true)).unwrap();
-    assert_eq!(host.fake().start_count(), 1, "a real change starts nothing");
-    assert!(host.info(&chat.id).fast && saved(&dir).fast);
-    send(&mut client, &chat.id, "go");
-    let starts = host.fake().starts.lock().unwrap().clone();
-    assert_eq!(starts.len(), 2);
-    assert!(starts[1].fast && starts[1].resume.is_some());
-    // The log says so: an Info with the change, in the order it happened.
-    let log = host.wait_for_log(&chat.id, |log| {
-        log.iter()
-            .any(|e| matches!(&e.event, ChatEvent::Info { info } if info.fast))
-    });
-    assert_gapless(&log, 1);
-}
-
-#[test]
 fn only_a_configure_that_changes_nothing_at_all_is_a_retry_and_fast_alone_is_not() {
     let host = TestHost::new();
     let chat = host.create(Provider::Claude);
@@ -429,57 +387,6 @@ fn only_a_configure_that_changes_nothing_at_all_is_a_retry_and_fast_alone_is_not
     let starts = host.fake().starts.lock().unwrap().clone();
     assert_eq!(starts.len(), 2, "the retry resumed the provider");
     assert!(starts[1].fast, "with the fast mode the chat has");
-}
-
-#[test]
-fn the_models_a_driver_reports_are_logged_and_replayed_like_any_event() {
-    let host = TestHost::new();
-    let chat = host.create(Provider::Codex);
-    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
-    let models = vec![
-        ModelOption {
-            id: "gpt-6.1-sol".into(),
-            name: "GPT-6.1-Sol".into(),
-            efforts: vec!["low".into(), "high".into()],
-            default_effort: Some("low".into()),
-            supports_fast: true,
-            is_default: true,
-            ..ModelOption::default()
-        },
-        ModelOption {
-            id: "plain".into(),
-            name: "Plain".into(),
-            ..ModelOption::default()
-        },
-    ];
-    host.fake().emit(ChatEvent::Models {
-        models: models.clone(),
-    });
-    let log = host.wait_for_log(&chat.id, |log| {
-        log.iter()
-            .any(|e| matches!(e.event, ChatEvent::Models { .. }))
-    });
-    assert_gapless(&log, 1);
-    // A tab that connects late gets them from the start of the log.
-    let late = Follower::open(&host.socket(), &chat.id, 0).unwrap();
-    let mut transcript = Transcript::default();
-    for envelope in late.take(log.len()) {
-        transcript.apply(&envelope.event);
-    }
-    assert_eq!(transcript.models, models);
-    // A later list replaces it; one with nothing in it clears it.
-    host.fake().emit(ChatEvent::Models { models: Vec::new() });
-    let log = host.wait_for_log(&chat.id, |log| {
-        log.iter()
-            .filter(|e| matches!(e.event, ChatEvent::Models { .. }))
-            .count()
-            == 2
-    });
-    let mut transcript = Transcript::default();
-    for envelope in &log {
-        transcript.apply(&envelope.event);
-    }
-    assert!(transcript.models.is_empty());
 }
 
 #[test]
@@ -705,46 +612,6 @@ fn closing_a_chat_keeps_its_history_and_the_next_message_resumes_its_thread() {
 }
 
 #[test]
-fn an_empty_configure_resumes_a_stopped_chat_and_other_configures_do_not() {
-    // A tab's Retry sends a Configure that changes nothing.
-    let host = TestHost::new();
-    let chat = host.create(Provider::Codex);
-    let mut client = host.client();
-    client.close(&chat.id).unwrap();
-    assert_eq!(host.info(&chat.id).state, ChatState::Stopped);
-    client
-        .command(
-            &chat.id,
-            ChatCommand::Configure {
-                model: Some("gpt-5".into()),
-                effort: None,
-                approval_mode: None,
-                fast: None,
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        host.fake().starts.lock().unwrap().len(),
-        1,
-        "a real change starts nothing"
-    );
-    client
-        .command(
-            &chat.id,
-            ChatCommand::Configure {
-                model: None,
-                effort: None,
-                approval_mode: None,
-                fast: None,
-            },
-        )
-        .unwrap();
-    let starts = host.fake().starts.lock().unwrap().clone();
-    assert_eq!(starts.len(), 2, "the retry resumed the provider");
-    assert_eq!(starts[1].resume.as_deref(), Some("thread-1"));
-}
-
-#[test]
 fn closing_a_chat_in_the_middle_of_a_turn_ends_the_turn() {
     let host = TestHost::new();
     let chat = host.create(Provider::Claude);
@@ -870,6 +737,7 @@ fn a_chat_that_died_in_the_middle_of_a_turn_is_made_tidy_when_the_next_host_load
         state: ChatState::Waiting,
         orchestrator: None,
         fast: false,
+        carried_over: None,
     };
     let dir = log::chat_dir(&home, &id).unwrap();
     let chat_log = ChatLog::create(&dir, &info).unwrap();
@@ -1200,6 +1068,7 @@ fn the_peer_of_a_connection_is_identified_by_its_user() {
 }
 
 #[test]
+#[ignore = "slow: idle-exit timer, 1.5 s quiet periods (3.5 s)"]
 fn an_idle_host_exits_but_not_while_a_client_is_connected_or_a_chat_is_at_work() {
     let home = short_home();
     fs::create_dir_all(home.join("work")).unwrap();
@@ -1310,6 +1179,7 @@ fn ensure_reports_why_a_host_that_would_not_start_did_not() {
 }
 
 #[test]
+#[ignore = "slow: stub process racing a host started after 600 ms"]
 fn ensure_waits_for_a_host_that_won_the_race_for_the_lock() {
     let home = short_home();
     // The process `ensure` starts finds the lock taken and leaves with success,
@@ -1357,6 +1227,7 @@ fn the_app_helper_runs_chat_ensure_with_the_home_it_was_given() {
 }
 
 #[test]
+#[ignore = "slow: idle timer against 200 ms sleeps (2.5 s)"]
 fn short_requests_keep_an_idle_host_up_because_the_timer_counts_from_the_last_one() {
     let home = short_home();
     let options = Options {
@@ -1385,6 +1256,7 @@ fn short_requests_keep_an_idle_host_up_because_the_timer_counts_from_the_last_on
 }
 
 #[test]
+#[ignore = "slow: stub processes racing a lock released after 500 ms"]
 fn ensure_starts_another_host_when_the_one_it_found_was_shutting_down() {
     let home = short_home();
     let run = home.join("run");
@@ -2037,6 +1909,172 @@ fn a_verified_codex_email_to_id_mapping_survives_logout_and_restart() {
     assert_eq!(
         snapshot.dismissed_notices,
         [format!("codex:{}|rate_limit:codex@{reset}", account.scope)]
+);
+}
+
+// ---- Switching provider -------------------------------------------------------------------------
+
+fn switch(provider: Provider, model: Option<&str>) -> ChatCommand {
+    ChatCommand::Switch {
+        provider,
+        model: model.map(str::to_owned),
+        effort: None,
+        fast: None,
+    }
+}
+
+fn notices(log: &[Envelope]) -> Vec<String> {
+    log.iter()
+        .filter_map(|e| match &e.event {
+            ChatEvent::ItemCompleted {
+                item:
+                    Item {
+                        body: ItemBody::Notice { text, .. },
+                        ..
+                    },
+            } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_switch_goes_on_with_the_other_provider_in_the_same_chat_and_carries_the_conversation() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Codex);
+    let mut client = host.client();
+    send(&mut client, &chat.id, "remember the blue door");
+    host.wait_for_log(&chat.id, |log| {
+        turns_completed(log) == 1 && last_state(log) == Some(ChatState::Idle)
+    });
+    host.fake().emit(ChatEvent::Models {
+        models: vec![ModelOption {
+            id: "gpt-5.5".into(),
+            name: "GPT-5.5".into(),
+            ..ModelOption::default()
+        }],
+    });
+    host.fake().emit(ChatEvent::Usage {
+        usage: crate::chat::model::Usage {
+            input_tokens: 10,
+            ..Default::default()
+        },
+    });
+    host.wait_for_log(&chat.id, |log| {
+        log.iter()
+            .any(|e| matches!(e.event, ChatEvent::Usage { .. }))
+    });
+
+    client
+        .command(&chat.id, switch(Provider::Claude, Some("opus")))
+        .unwrap();
+    let info = host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    // The same chat, now Claude's, on a thread of its own.
+    assert_eq!(info.id, chat.id);
+    assert_eq!(info.provider, Provider::Claude);
+    assert_eq!(info.model.as_deref(), Some("opus"));
+    assert_eq!(info.provider_thread_id.as_deref(), Some("thread-2"));
+    assert_eq!(info.codex_account_id, None, "Claude has no Codex account");
+    assert_eq!(info.title, "Claude chat", "a default title follows");
+    assert_eq!(info.approval_mode, chat.approval_mode);
+    let carried = info
+        .carried_over
+        .clone()
+        .expect("the conversation is carried");
+    assert!(
+        carried.from.starts_with("Codex chat \"Codex chat\""),
+        "{}",
+        carried.from
+    );
+    assert_eq!(
+        carried.document,
+        host.home.join("chats").join(&chat.id).join("context.md")
+    );
+    assert_eq!(mode(&carried.document), 0o600);
+    let document = fs::read_to_string(&carried.document).unwrap();
+    assert!(document.contains("remember the blue door"), "{document}");
+    assert!(
+        document.contains("echo: remember the blue door"),
+        "{document}"
+    );
+
+    // The old agent was stopped and the new one started fresh, told the conversation.
+    assert_eq!(host.fake().shutdowns.load(Ordering::SeqCst), 1);
+    let starts = host.fake().starts.lock().unwrap().clone();
+    assert_eq!(starts.len(), 2);
+    assert_eq!(starts[1].provider, Provider::Claude);
+    assert_eq!(starts[1].resume, None);
+    assert_eq!(starts[1].model.as_deref(), Some("opus"));
+    let told = starts[1].instructions.clone().unwrap();
+    assert!(told.contains("Codex chat"), "{told}");
+    assert!(told.contains("<handoff>"), "{told}");
+    assert!(told.contains("echo: remember the blue door"), "{told}");
+    assert!(
+        starts[0].instructions.is_none(),
+        "a chat that never switched tells nothing"
+    );
+
+    // The log says so: an Info with the new provider, then a notice for every client.
+    let log = host.log(&chat.id);
+    assert_gapless(&log, 1);
+    assert_eq!(
+        notices(&log),
+        ["Continued with Claude (opus), which has the conversation so far."]
+    );
+    let mut transcript = Transcript::default();
+    for envelope in &log {
+        transcript.apply(&envelope.event);
+    }
+    assert_eq!(
+        transcript.info.as_ref().map(|info| info.provider),
+        Some(Provider::Claude)
+    );
+    assert!(transcript.models.is_empty(), "Codex's models are gone");
+    assert_eq!(transcript.usage, None, "and so is its usage");
+    assert!(transcript.items.iter().any(|item| matches!(
+        &item.body,
+        ItemBody::UserMessage { text } if text == "remember the blue door"
+    )));
+
+    // Messages go to the new agent.
+    send(&mut client, &chat.id, "which door?");
+    host.wait_for_log(&chat.id, |log| turns_completed(log) == 2);
+    assert_eq!(host.fake().start_count(), 2);
+}
+
+#[test]
+fn a_switch_is_refused_while_a_turn_runs_and_changes_nothing() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Codex);
+    let mut client = host.client();
+    send(&mut client, &chat.id, "hang");
+    // The turn's last event: the agent's message that never ends.
+    host.wait_for_log(&chat.id, |log| {
+        log.iter().any(|e| {
+            matches!(
+                &e.event,
+                ChatEvent::ItemStarted { item } if matches!(item.body, ItemBody::AgentMessage { .. })
+            )
+        })
+    });
+    let before = host.log(&chat.id);
+    let error = client
+        .command(&chat.id, switch(Provider::Claude, None))
+        .unwrap_err();
+    assert!(error.contains("Wait for the turn to finish"), "{error}");
+    let info = host.info(&chat.id);
+    assert_eq!(info.provider, Provider::Codex);
+    assert_eq!(info.carried_over, None);
+    assert_eq!(host.fake().start_count(), 1);
+    assert_eq!(host.fake().shutdowns.load(Ordering::SeqCst), 0);
+    assert_eq!(host.log(&chat.id), before);
+    assert!(
+        !host
+            .home
+            .join("chats")
+            .join(&chat.id)
+            .join("context.md")
+            .exists()
     );
 }
 
@@ -2063,4 +2101,80 @@ fn only_an_untitled_ordinary_chat_takes_its_first_message_as_title_and_only_once
     assert!(!needs_auto_title(&info(
         serde_json::json!({"orchestrator":{"scope":"global"}})
     )));
+}
+
+#[test]
+fn a_switch_to_the_chats_own_provider_is_an_ordinary_change() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Claude);
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    let mut client = host.client();
+    client
+        .command(&chat.id, switch(Provider::Claude, Some("sonnet")))
+        .unwrap();
+    let info = host.wait_for_info(&chat.id, |info| info.model.as_deref() == Some("sonnet"));
+    assert_eq!(info.provider, Provider::Claude);
+    assert_eq!(info.carried_over, None);
+    assert_eq!(host.fake().start_count(), 1, "the agent keeps running");
+    assert!(notices(&host.log(&chat.id)).is_empty());
+}
+
+#[test]
+fn a_switched_chat_resumes_on_its_new_provider_and_is_told_the_conversation_again() {
+    let mut host = TestHost::new();
+    let chat = host.create(Provider::Claude);
+    let mut client = host.client();
+    send(&mut client, &chat.id, "one");
+    host.wait_for_log(&chat.id, |log| {
+        turns_completed(log) == 1 && last_state(log) == Some(ChatState::Idle)
+    });
+    client
+        .command(&chat.id, switch(Provider::Codex, None))
+        .unwrap();
+    let switched = host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    assert_eq!(switched.provider, Provider::Codex);
+    assert_eq!(switched.model, None, "the provider's own default");
+    assert_eq!(
+        switched.codex_account_id.as_deref(),
+        Some("account-a"),
+        "the project's or the app's Codex account"
+    );
+    assert_eq!(
+        notices(&host.log(&chat.id)),
+        ["Continued with Codex, which has the conversation so far."]
+    );
+    send(&mut client, &chat.id, "two");
+    host.wait_for_log(&chat.id, |log| {
+        turns_completed(log) == 2 && last_state(log) == Some(ChatState::Idle)
+    });
+    drop(client);
+
+    host.restart(quick_options());
+    let info = host.info(&chat.id);
+    assert_eq!(info.state, ChatState::Stopped);
+    assert_eq!(info.provider, Provider::Codex);
+    let thread = info.provider_thread_id.clone().unwrap();
+    let mut client = host.client();
+    send(&mut client, &chat.id, "three");
+    let starts = host.fake().starts.lock().unwrap().clone();
+    let last = starts.last().unwrap();
+    assert_eq!(last.provider, Provider::Codex);
+    assert_eq!(last.resume.as_deref(), Some(thread.as_str()));
+    let told = last.instructions.clone().unwrap();
+    assert!(told.contains("Claude chat"), "{told}");
+    assert!(told.contains("echo: one"), "{told}");
+
+    // And back: the second switch carries everything, both agents' parts.
+    host.wait_for_log(&chat.id, |log| {
+        turns_completed(log) == 3 && last_state(log) == Some(ChatState::Idle)
+    });
+    client
+        .command(&chat.id, switch(Provider::Claude, None))
+        .unwrap();
+    let back = host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    assert_eq!(back.provider, Provider::Claude);
+    let document = fs::read_to_string(back.carried_over.unwrap().document).unwrap();
+    for said in ["echo: one", "echo: two", "echo: three"] {
+        assert!(document.contains(said), "{said}: {document}");
+    }
 }

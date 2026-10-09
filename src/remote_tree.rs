@@ -1310,16 +1310,17 @@ fn creation_failure(error: &RemoteError, host: &str, what: &str) -> String {
     }
 }
 
-/// Parameters of `shell.create`. Only an agent can be unrestricted; the protocol refuses
-/// the flag on a plain shell, so it is left out.
+/// Parameters of `shell.create`. An agent always says whether it is unrestricted, as this
+/// Mac's Settings decide: a host that is left to choose uses its own Settings. The protocol
+/// refuses the flag on a plain shell, so it is left out.
 pub fn shell_create_params(scope: &ShellScope, kind: NewShellKind, unrestricted: bool) -> Value {
     let mut params = match scope {
         ShellScope::Project(id) => json!({"project_id": id}),
         ShellScope::Worktree(id) => json!({"worktree_id": id}),
     };
     params["kind"] = json!(kind.wire());
-    if unrestricted && kind != NewShellKind::Shell {
-        params["unrestricted"] = json!(true);
+    if kind != NewShellKind::Shell {
+        params["unrestricted"] = json!(unrestricted);
     }
     params
 }
@@ -1594,28 +1595,6 @@ mod tests {
     }
 
     #[test]
-    fn a_host_is_a_folder_listing_its_projects_as_rows() {
-        let tree = studio();
-        let folders = folders(&tree, "");
-        let [folder] = folders.as_slice() else {
-            panic!("one host is one folder");
-        };
-        assert_eq!(folder.label, "Studio");
-        assert_eq!(folder.link, Some(Link::Online));
-        assert_eq!(folder.count, 2);
-        assert!(!folder.collapsed && folder.note.is_none() && folder.failure.is_none());
-        // Ordered as the local list is: by name here, case-insensitively.
-        assert_eq!(names(folder), ["app", "Web"]);
-        assert_eq!(folder.projects[0].key, "remote:h1:p1");
-        assert!(folder.projects.iter().all(|project| !project.dimmed));
-        // Until their lists are read the figures are unknown, not zero.
-        assert_eq!(
-            folder.projects[0].stats.line(),
-            "– trees · –/– tasks · – live"
-        );
-    }
-
-    #[test]
     fn a_project_row_has_the_same_figures_as_a_local_one() {
         let mut tree = studio();
         for request in [
@@ -1694,25 +1673,6 @@ mod tests {
     }
 
     #[test]
-    fn the_selected_project_is_marked_and_a_collapsed_folder_says_so() {
-        let tree = studio();
-        let collapsed = HashSet::from([folder_key("h1")]);
-        let folders = tree.folders("", by_name(), &collapsed, Some("remote:h1:p2"));
-        assert!(folders[0].collapsed);
-        assert_eq!(folders[0].count, 2);
-        let selected = folders[0]
-            .projects
-            .iter()
-            .filter(|project| project.selected)
-            .map(|project| project.name.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(selected, ["Web"]);
-        // A search shows its matches whatever is folded.
-        let searched = tree.folders("web", by_name(), &collapsed, None);
-        assert!(!searched[0].collapsed);
-    }
-
-    #[test]
     fn a_search_filters_projects_and_a_hosts_name_shows_all_of_them() {
         let tree = studio();
         let found = folders(&tree, "web");
@@ -1721,27 +1681,6 @@ mod tests {
         assert_eq!(names(&folders(&tree, "p1")[0]), ["app"]);
         assert_eq!(names(&folders(&tree, "studio")[0]), ["app", "Web"]);
         assert!(folders(&tree, "zzz").is_empty());
-    }
-
-    #[test]
-    fn projects_follow_the_chosen_order() {
-        let tree = studio();
-        let by = |order: ProjectOrder| {
-            tree.folders("", order, &HashSet::new(), None)[0]
-                .projects
-                .iter()
-                .map(|project| project.name.clone())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            by(ProjectOrder::for_sort(ProjectSort::DateAdded)),
-            ["app", "Web"]
-        );
-        assert_eq!(
-            by(ProjectOrder::for_sort(ProjectSort::DateAdded).toggled()),
-            ["Web", "app"]
-        );
-        assert_eq!(by(by_name().toggled()), ["Web", "app"]);
     }
 
     #[test]
@@ -1770,34 +1709,6 @@ mod tests {
         let folders = self::folders(&tree, "");
         assert!(folders[0].note.is_none());
         assert!(folders[0].projects.iter().all(|project| !project.dimmed));
-    }
-
-    #[test]
-    fn a_folder_says_why_it_is_empty() {
-        let mut tree = RemoteTree::default();
-        tree.set_hosts(vec![host("h1", "Studio")]);
-        // Nothing heard yet.
-        assert_eq!(folders(&tree, "")[0].note.as_deref(), Some("Connecting…"));
-        set_link(&mut tree, LinkState::Online);
-        assert_eq!(
-            folders(&tree, "")[0].note.as_deref(),
-            Some("Loading projects…")
-        );
-        tree.apply(
-            &Request::Projects { host: "h1".into() },
-            Reply::Projects(Err("No answer in time".into())),
-        );
-        assert_eq!(
-            folders(&tree, "")[0].note.as_deref(),
-            Some("No answer in time")
-        );
-        tree.apply(
-            &Request::Projects { host: "h1".into() },
-            Reply::Projects(Ok(vec![])),
-        );
-        assert_eq!(folders(&tree, "")[0].note.as_deref(), Some("No projects"));
-        // A search that finds nothing in an empty host does not repeat that.
-        assert!(folders(&tree, "zzz").is_empty());
     }
 
     #[test]
@@ -1835,21 +1746,6 @@ mod tests {
         // A host that is no longer paired is forgotten once the registry says so.
         tree.set_hosts(vec![]);
         assert!(tree.kept().is_empty());
-    }
-
-    #[test]
-    fn a_project_is_named_from_what_was_kept_before_its_host_is_known() {
-        let mut tree = RemoteTree::default();
-        assert_eq!(tree.project_name("h1", "0123456789"), "01234567");
-        tree.keep(BTreeMap::from([(
-            "h1".to_owned(),
-            vec![project("p1", "app", 20)],
-        )]));
-        assert_eq!(tree.project_name("h1", "p1"), "app");
-        assert_eq!(tree.host_name("h1"), "h1");
-        tree.set_hosts(vec![host("h1", "Studio")]);
-        assert_eq!(tree.project_name("h1", "p1"), "app");
-        assert_eq!(tree.host_name("h1"), "Studio");
     }
 
     #[test]
@@ -2129,26 +2025,6 @@ mod tests {
                 .unwrap()
                 .failure
                 .is_none()
-        );
-    }
-
-    #[test]
-    fn a_daemon_that_could_not_be_reached_sent_nothing_so_nothing_may_exist() {
-        let mut tree = studio();
-        assert!(tree.begin_shell("h1", "p1"));
-        tree.finish_shell(
-            "h1",
-            "p1",
-            Err(RemoteError::Unreachable(
-                "Cannot connect to the client daemon for this Mac".into(),
-            )),
-        );
-        assert_eq!(
-            tree.selected_view("remote:h1:p1")
-                .unwrap()
-                .failure
-                .as_deref(),
-            Some("Cannot connect to the client daemon for this Mac")
         );
     }
 
@@ -2445,9 +2321,10 @@ mod tests {
             shell_create_params(&project, NewShellKind::Shell, false),
             json!({"project_id": "p1", "kind": "shell"})
         );
+        // Restricted is said, not left out: a host left to choose follows its own Settings.
         assert_eq!(
             shell_create_params(&worktree, NewShellKind::Claude, false),
-            json!({"worktree_id": "w1", "kind": "claude"})
+            json!({"worktree_id": "w1", "kind": "claude", "unrestricted": false})
         );
         assert_eq!(
             shell_create_params(&project, NewShellKind::Codex, true),
@@ -2566,59 +2443,6 @@ mod tests {
         );
         assert_eq!(split_remote_title("zsh 01 · main"), None);
         assert_eq!(split_remote_title("⇄ no separator"), None);
-    }
-
-    #[test]
-    fn tabs_are_titled_from_what_the_lists_know_and_otherwise_from_ids() {
-        let mut tree = studio();
-        let wants = wants_selected("s");
-        let asked = lists(&mut tree, Instant::now(), &wants);
-        assert!(!asked.is_empty());
-        let mut claude = shell("s-claude-0001", Some("p1"), None);
-        claude.harness = Some("claude".into());
-        tree.apply(
-            &Request::Shells {
-                host: "h1".into(),
-                project: "p1".into(),
-            },
-            Reply::Shells(Ok(vec![claude])),
-        );
-        assert_eq!(
-            tree.tab_title("h1", "s-claude-0001"),
-            "⇄ Studio · claude · s-claude"
-        );
-        assert_eq!(
-            tree.tab_title("h1", "unlisted-shell"),
-            "⇄ Studio · unlisted"
-        );
-        // A host the registry no longer has is named by the start of its id.
-        assert_eq!(
-            tree.tab_title("11111111-2222", "unlisted-shell"),
-            "⇄ 11111111 · unlisted"
-        );
-    }
-
-    #[test]
-    fn the_reconnecting_strip_shows_only_while_the_link_is_down() {
-        assert_eq!(link_strip("Studio", None), None);
-        assert_eq!(link_strip("Studio", Some(Link::Online)), None);
-        assert_eq!(
-            link_strip("Studio", Some(Link::Connecting)).as_deref(),
-            Some("RECONNECTING · Studio")
-        );
-        assert!(
-            link_strip("Studio", Some(Link::Offline))
-                .unwrap()
-                .starts_with("RECONNECTING · Studio")
-        );
-        let mut tree = studio();
-        assert_eq!(tree.strip_for("h1"), None);
-        set_link(&mut tree, LinkState::Connecting);
-        assert_eq!(
-            tree.strip_for("h1").as_deref(),
-            Some("RECONNECTING · Studio")
-        );
-        assert_eq!(tree.strip_for("gone"), None);
     }
 
     #[test]

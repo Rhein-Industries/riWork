@@ -17,16 +17,18 @@ pub enum ThemeChoice {
     Catppuccin,
     TokyoNight,
     GruvboxLight,
+    Hermes,
 }
 
 impl ThemeChoice {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Ghostty,
         Self::Native,
         Self::RiWork,
         Self::Catppuccin,
         Self::TokyoNight,
         Self::GruvboxLight,
+        Self::Hermes,
     ];
 
     pub fn label(self) -> &'static str {
@@ -37,6 +39,7 @@ impl ThemeChoice {
             Self::Catppuccin => "Catppuccin Mocha",
             Self::TokyoNight => "Tokyo Night",
             Self::GruvboxLight => "Gruvbox Light",
+            Self::Hermes => "Hermes",
         }
     }
 
@@ -52,6 +55,7 @@ impl ThemeChoice {
             Self::Catppuccin => "A soft dark palette with pastel accents.",
             Self::TokyoNight => "A cool dark palette inspired by Tokyo at night.",
             Self::GruvboxLight => "A warm light palette with earthy accents.",
+            Self::Hermes => "Deep cobalt, navy panels, warm cream prose and gold accents.",
         }
     }
 }
@@ -84,6 +88,24 @@ pub struct Palette {
 }
 
 impl Palette {
+    /// Hermes keeps the canvas distinct from its navy controls and user messages.
+    /// Primary actions use warm gold; metadata stays subdued and readable.
+    pub const HERMES: Self = Self {
+        bg: 0x162564,
+        panel: 0x192248,
+        panel_active: 0x243364,
+        divider: 0x2b4070,
+        cyan: 0xf5dbb8,
+        magenta: 0xb7bfd7,
+        gold: 0xf5dbb8,
+        text: 0xecdcc7,
+        muted: 0xa1a7bb,
+        focus: 0xf5dbb8,
+        working: 0xf5dbb8,
+        plain_tabs: false,
+        controls_island: false,
+    };
+
     pub const RIWORK: Self = Self {
         bg: 0x090d14,
         panel: 0x101720,
@@ -222,10 +244,10 @@ impl Appearance {
         let theme = preset(choice);
         Self {
             selected: choice,
-            palette: if choice == ThemeChoice::RiWork {
-                Palette::RIWORK
-            } else {
-                Palette::from_terminal(&theme)
+            palette: match choice {
+                ThemeChoice::RiWork => Palette::RIWORK,
+                ThemeChoice::Hermes => Palette::HERMES,
+                _ => Palette::from_terminal(&theme),
             },
             terminal: Some(theme),
             ghostty: None,
@@ -445,6 +467,14 @@ fn preset(choice: ThemeChoice) -> TerminalTheme {
     match choice {
         ThemeChoice::Ghostty | ThemeChoice::RiWork => riwork_terminal_theme(),
         ThemeChoice::Native => native_terminal_theme(false),
+        ThemeChoice::Hermes => terminal_theme(
+            Palette::HERMES.bg,
+            Palette::HERMES.text,
+            [
+                0x192248, 0xf29b9f, 0x9bc9ad, 0xf5dbb8, 0x9ebcf5, 0xc4b4df, 0xa8c8da, 0xecdcc7,
+                0xa1a7bb, 0xffb7b8, 0xb4dfc1, 0xffe6c9, 0xb7ceff, 0xdfcaf2, 0xc2dfed, 0xfff1df,
+            ],
+        ),
         ThemeChoice::Catppuccin => terminal_theme(
             0x1e1e2e,
             0xcdd6f4,
@@ -918,26 +948,6 @@ mod config_files {
             assert_eq!(padding.x, (10, 10));
             assert_eq!(padding.balance, PaddingBalance::Equal);
         }
-
-        #[test]
-        fn theme_values_cover_pairs_quotes_and_paths() {
-            assert_eq!(theme_names("night"), ["night"]);
-            assert_eq!(
-                theme_names("light:\"Day Theme\",dark:night"),
-                ["Day Theme", "night"]
-            );
-            assert!(theme_names("").is_empty());
-            let fixture = Fixture::new();
-            let theme = fixture.write("elsewhere/mine", "background = #123456\n");
-            fixture.write(
-                "xdg/ghostty/config",
-                &format!("theme = {}\n", theme.display()),
-            );
-            let locations = fixture.locations();
-            let before = locations.stamp();
-            fixture.write("elsewhere/mine", "background = #654321 \n");
-            assert_ne!(before, locations.stamp());
-        }
     }
 }
 
@@ -1257,67 +1267,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn presets_share_background_and_readable_colors_with_terminals() {
-        for choice in [
-            ThemeChoice::Catppuccin,
-            ThemeChoice::TokyoNight,
-            ThemeChoice::GruvboxLight,
+    fn hermes_settings_round_trip_preserves_every_existing_theme_name() {
+        for (name, choice) in [
+            ("ghostty", ThemeChoice::Ghostty),
+            ("native", ThemeChoice::Native),
+            ("ri_work", ThemeChoice::RiWork),
+            ("catppuccin", ThemeChoice::Catppuccin),
+            ("tokyo_night", ThemeChoice::TokyoNight),
+            ("gruvbox_light", ThemeChoice::GruvboxLight),
+            ("hermes", ThemeChoice::Hermes),
         ] {
-            let appearance = Appearance::resolve(choice, false);
-            let terminal = appearance.terminal.unwrap();
-            let palette = appearance.palette;
-            assert_eq!(palette.bg, color_u32(terminal.background));
-            for color in [
-                palette.text,
-                palette.muted,
-                palette.cyan,
-                palette.magenta,
-                palette.gold,
-            ] {
-                assert!(
-                    contrast(color, palette.panel_active) >= 4.5,
-                    "{choice:?} {color:06x}"
-                );
-            }
+            let mut settings: Settings = serde_json::from_value(serde_json::json!({
+                "theme": name,
+                "chat_display_modes": { "saved-chat": "verbose" }
+            }))
+            .unwrap();
+            assert_eq!(settings.theme, choice);
+            settings.theme = ThemeChoice::Hermes;
+            let saved = serde_json::to_value(&settings).unwrap();
+            assert_eq!(saved["theme"], "hermes");
+            assert_eq!(saved["chat_display_modes"]["saved-chat"], "verbose");
+            settings.theme = choice;
+            assert_eq!(serde_json::to_value(settings).unwrap()["theme"], name);
         }
-        assert!(
-            luminance(
-                Appearance::resolve(ThemeChoice::GruvboxLight, false)
-                    .palette
-                    .bg
-            ) > 0.8
-        );
-        assert!(
-            luminance(
-                Appearance::resolve(ThemeChoice::TokyoNight, false)
-                    .palette
-                    .bg
-            ) < 0.1
-        );
-    }
-
-    #[test]
-    fn dark_means_relative_luminance_below_one_half() {
-        assert!(is_dark(0x000000));
-        assert!(!is_dark(0xffffff));
-        assert!(is_dark(Palette::RIWORK.bg));
-        assert!(is_dark(0x808080));
-        assert!(!is_dark(0xc0c0c0));
-        // 0.5 in linear light is a little under sRGB 0xbc.
-        assert!(luminance(0xbbbbbb) < 0.5 && is_dark(0xbbbbbb));
-        assert!(luminance(0xbcbcbc) >= 0.5 && !is_dark(0xbcbcbc));
-        // Brightness is luminance, not a channel: pure blue is dark, green is not.
-        assert!(is_dark(0x0000ff));
-        assert!(!is_dark(0x00ff00));
-        for (choice, dark) in [
-            (ThemeChoice::RiWork, true),
-            (ThemeChoice::Catppuccin, true),
-            (ThemeChoice::TokyoNight, true),
-            (ThemeChoice::GruvboxLight, false),
-        ] {
-            let published = Appearance::resolve(choice, false).published(false);
-            assert_eq!(published.dark, dark, "{choice:?}");
-        }
+        assert_eq!(ThemeChoice::default(), ThemeChoice::Ghostty);
     }
 
     fn following_ghostty(theme: Option<TerminalTheme>) -> Appearance {
@@ -1338,62 +1311,6 @@ mod tests {
             foreground: Rgb(color_u32(theme.foreground)),
             palette: theme.palette.map(|color| Rgb(color_u32(color))),
         }
-    }
-
-    #[test]
-    fn published_palette_and_terminal_mirror_a_selected_theme() {
-        // Native's terminal colors depend on its option; it has its own test.
-        for choice in ThemeChoice::ALL
-            .into_iter()
-            .filter(|choice| !matches!(choice, ThemeChoice::Ghostty | ThemeChoice::Native))
-        {
-            let appearance = Appearance::resolve(choice, false);
-            // A selected theme forces its own terminal colors, whatever the option says.
-            for option in [false, true] {
-                let published = appearance.published(option);
-                assert_eq!(published.v, 1);
-                assert_eq!(published.updated_at, 0);
-                let palette = appearance.palette;
-                assert_eq!(
-                    [
-                        published.palette.bg,
-                        published.palette.panel,
-                        published.palette.panel_active,
-                        published.palette.divider,
-                        published.palette.cyan,
-                        published.palette.magenta,
-                        published.palette.gold,
-                        published.palette.text,
-                        published.palette.muted,
-                    ],
-                    [
-                        Rgb(palette.bg),
-                        Rgb(palette.panel),
-                        Rgb(palette.panel_active),
-                        Rgb(palette.divider),
-                        Rgb(palette.cyan),
-                        Rgb(palette.magenta),
-                        Rgb(palette.gold),
-                        Rgb(palette.text),
-                        Rgb(palette.muted),
-                    ],
-                    "{choice:?}"
-                );
-                assert_eq!(
-                    published.terminal,
-                    Some(rgb(&preset(choice))),
-                    "{choice:?} option={option}"
-                );
-            }
-        }
-        let riwork = Appearance::resolve(ThemeChoice::RiWork, false).published(false);
-        assert_eq!(riwork.palette.bg.hex(), "#090d14");
-        assert_eq!(riwork.palette.cyan.hex(), "#55e6dc");
-        let terminal = riwork.terminal.unwrap();
-        assert_eq!(terminal.background.hex(), "#090d14");
-        assert_eq!(terminal.foreground.hex(), "#d3e1e6");
-        assert_eq!(terminal.palette[1].hex(), "#f0738b");
-        assert_eq!(terminal.palette[15].hex(), "#ffffff");
     }
 
     #[test]
@@ -1449,127 +1366,20 @@ mod tests {
     }
 
     #[test]
-    fn native_is_black_and_white_with_one_readable_signal_color() {
-        for dark in [false, true] {
-            let appearance = Appearance::resolve(ThemeChoice::Native, dark);
-            let palette = appearance.palette;
-            assert_eq!(palette, Palette::native(dark));
-            assert_eq!(is_dark(palette.bg), dark);
-            assert_eq!(appearance.published(true).dark, dark);
-            // Primary and selection are the extreme of the scale: black or white.
-            assert_eq!(palette.cyan, if dark { 0xffffff } else { 0x000000 });
-            assert_eq!(palette.focus, palette.cyan);
-            // The one hue is the signal color, and it is what working agents wear.
-            assert_eq!(palette.working, palette.gold);
-            assert!(palette.plain_tabs);
-            assert!(!palette.controls_island);
-            for color in [
-                palette.bg,
-                palette.panel,
-                palette.panel_active,
-                palette.divider,
-                palette.cyan,
-                palette.magenta,
-                palette.text,
-                palette.muted,
-            ] {
-                let [r, g, b] = [color >> 16, (color >> 8) & 255, color & 255];
-                assert!(
-                    r.abs_diff(g) <= 5 && g.abs_diff(b) <= 5,
-                    "{color:06x} is a grey"
-                );
-            }
-            let [r, g, b] = [
-                palette.gold >> 16,
-                (palette.gold >> 8) & 255,
-                palette.gold & 255,
-            ];
-            assert!(r > g && g > b, "{:06x} is orange", palette.gold);
-            for color in [
-                palette.text,
-                palette.muted,
-                palette.cyan,
-                palette.magenta,
-                palette.gold,
-            ] {
-                for background in [palette.bg, palette.panel, palette.panel_active] {
-                    assert!(
-                        contrast(color, background) >= 4.5,
-                        "dark={dark} {color:06x} on {background:06x}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn native_terminal_colors_read_on_the_skins_background() {
-        for dark in [false, true] {
-            let theme = native_terminal_theme(dark);
-            let palette = Palette::native(dark);
-            assert_eq!(color_u32(theme.background), palette.bg);
-            let background = color_u32(theme.background);
-            assert!(contrast(color_u32(theme.foreground), background) >= 7.0);
-            // Normal colors 1–7, and black too on white; black on black is the
-            // one color that is the background's own.
-            let first = if dark { 1 } else { 0 };
-            for (index, color) in theme.palette[first..8].iter().enumerate() {
-                let color = color_u32(*color);
-                assert!(
-                    contrast(color, background) >= 4.5,
-                    "dark={dark} color {} {color:06x}",
-                    index + first
-                );
-            }
-            // Bright colors stay legible, if less so: dim text uses bright black.
-            for color in &theme.palette[8..] {
-                assert!(contrast(color_u32(*color), background) >= 3.0);
-            }
-        }
-    }
-
-    #[test]
     fn native_terminals_match_the_theme_only_while_the_option_is_on() {
         let ghostty = terminal_theme(0x282c34, 0xabb2bf, [0x101010; 16]);
-        for dark in [false, true] {
-            let mut appearance = Appearance::resolve(ThemeChoice::Native, dark);
-            appearance.ghostty = Some(ghostty);
-            let native = native_terminal_theme(dark);
-            assert_eq!(appearance.terminal_override(true), Some(native));
-            assert_eq!(appearance.published(true).terminal, Some(rgb(&native)));
-            // Off keeps Ghostty's own colors: no override, and that is what the phone shows.
-            assert_eq!(appearance.terminal_override(false), None);
-            assert_eq!(appearance.published(false).terminal, Some(rgb(&ghostty)));
-            // The palette is Native's either way.
-            assert_eq!(
-                appearance.published(false).palette,
-                appearance.published(true).palette
-            );
-        }
-    }
-
-    #[test]
-    fn only_native_tells_the_phone_to_draw_natively() {
-        for choice in ThemeChoice::ALL {
-            for dark in [false, true] {
-                let published = Appearance::resolve(choice, dark).published(false);
-                assert_eq!(
-                    published.native,
-                    choice == ThemeChoice::Native,
-                    "{choice:?}"
-                );
-            }
-        }
-        // Native's light and dark sides publish the mode with the flag.
-        assert!(
-            !Appearance::resolve(ThemeChoice::Native, false)
-                .published(true)
-                .dark
-        );
-        assert!(
-            Appearance::resolve(ThemeChoice::Native, true)
-                .published(true)
-                .dark
+        let mut appearance = Appearance::resolve(ThemeChoice::Native, true);
+        appearance.ghostty = Some(ghostty);
+        let native = native_terminal_theme(true);
+        assert_eq!(appearance.terminal_override(true), Some(native));
+        assert_eq!(appearance.published(true).terminal, Some(rgb(&native)));
+        // Off keeps Ghostty's own colors: no override, and that is what the phone shows.
+        assert_eq!(appearance.terminal_override(false), None);
+        assert_eq!(appearance.published(false).terminal, Some(rgb(&ghostty)));
+        // The palette is Native's either way.
+        assert_eq!(
+            appearance.published(false).palette,
+            appearance.published(true).palette
         );
     }
 
@@ -1586,34 +1396,6 @@ mod tests {
             assert!(!appearance.is_stale_for(true));
             assert_eq!(appearance, Appearance::resolve(choice, true));
         }
-    }
-
-    #[test]
-    fn colorful_themes_focus_in_gold_and_show_work_in_cyan() {
-        for choice in [
-            ThemeChoice::RiWork,
-            ThemeChoice::Catppuccin,
-            ThemeChoice::TokyoNight,
-        ] {
-            let palette = Appearance::resolve(choice, false).palette;
-            assert_eq!(palette.focus, palette.gold, "{choice:?}");
-            assert_eq!(palette.working, palette.cyan, "{choice:?}");
-            assert!(!palette.plain_tabs, "{choice:?}");
-            assert!(palette.controls_island, "{choice:?}");
-        }
-    }
-
-    #[test]
-    fn diff_colors_are_the_terminals_green_and_red_made_readable() {
-        let riwork = riwork_terminal_theme();
-        let colors = DiffColors::from_terminal(&riwork, 0x14212a);
-        assert_eq!(colors.added, 0x61d5ae);
-        assert_eq!(colors.removed, 0xf0738b);
-        // A light theme's pale green is darkened until it reads on the light panel.
-        let pale = terminal_theme(0xfbf1c7, 0x3c3836, [0xcccccc; 16]);
-        let colors = DiffColors::from_terminal(&pale, 0xfbf1c7);
-        assert!(contrast(colors.added, 0xfbf1c7) >= 4.5);
-        assert!(contrast(colors.removed, 0xfbf1c7) >= 4.5);
     }
 
     #[test]

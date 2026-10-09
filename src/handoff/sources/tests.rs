@@ -520,6 +520,7 @@ fn a_file_of_records_is_read_in_order_and_a_damaged_line_is_skipped() {
 // ---- A terminal's scrollback ----------------------------------------------------------------------
 
 #[test]
+#[ignore = "slow: real tmux pane"]
 fn a_plain_shell_is_read_from_its_scrollback() {
     let Some(tmux) = Tmux::new() else {
         return;
@@ -540,6 +541,7 @@ fn a_plain_shell_is_read_from_its_scrollback() {
 }
 
 #[test]
+#[ignore = "slow: real tmux pane"]
 fn an_agent_whose_conversation_file_is_unknown_falls_back_to_the_scrollback_and_says_so() {
     let Some(tmux) = Tmux::new() else {
         return;

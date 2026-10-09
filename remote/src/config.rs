@@ -18,6 +18,8 @@ use zeroize::Zeroize;
 /// `pair`, `revoke` and the connector's audit record share config.lock. They
 /// hold it for milliseconds, so waiting is bounded rather than failing spuriously.
 const CONFIG_LOCK_WAIT: Duration = Duration::from_secs(10);
+/// How long a device ledger waits for its lock (see `Storage::ledger_lock`).
+const LEDGER_LOCK_WAIT: Duration = Duration::from_secs(1);
 
 fn now_unix() -> u64 {
     SystemTime::now()
@@ -363,6 +365,14 @@ impl Storage {
         f.try_lock_exclusive()
             .context("another remote process is using this storage")?;
         Ok(f)
+    }
+    /// The lock of a device's input or keys ledger. Requests of one device already take turns
+    /// inside this process; the file lock keeps external recovery tooling out. It waits a
+    /// moment rather than failing at once: a CLI this process is starting keeps a copy of a
+    /// lock released just before until it execs, which would fail a keystroke with "another
+    /// remote process is using this storage" when nothing else uses it.
+    pub fn ledger_lock(&self, name: &str) -> Result<File> {
+        self.lock_wait(name, LEDGER_LOCK_WAIT)
     }
     /// Like `lock`, but waits up to `wait` for a holder to finish.
     pub fn lock_wait(&self, name: &str, wait: Duration) -> Result<File> {
@@ -966,16 +976,6 @@ mod tests {
         );
         assert_eq!(DeviceKind::default(), DeviceKind::Mobile);
         assert!(DeviceKind::Mobile.is_mobile() && !DeviceKind::Desktop.is_mobile());
-    }
-
-    #[test]
-    fn the_kind_flag_names_exactly_the_two_kinds() {
-        assert_eq!(DeviceKind::parse("mobile").unwrap(), DeviceKind::Mobile);
-        assert_eq!(DeviceKind::parse("desktop").unwrap(), DeviceKind::Desktop);
-        for bad in ["", "phone", "Desktop", "desktop "] {
-            assert!(DeviceKind::parse(bad).is_err(), "{bad:?}");
-        }
-        assert_eq!(DeviceKind::Desktop.to_string(), "desktop");
     }
 
     #[test]

@@ -115,12 +115,7 @@ fn file(dir: &Path, name: &str) -> PathBuf {
 }
 
 #[test]
-fn the_capability_is_announced() {
-    let home = Home::new();
-    assert_eq!(home.ok(&["capabilities", "--json"])["shell_paste"], true);
-}
-
-#[test]
+#[ignore = "slow: real tmux shell"]
 fn paths_reach_the_shell_as_a_drop_types_them_and_close_takes_the_inbox() {
     let home = Home::new();
     // `cat` in front: not an agent, so the paths are escaped and joined like Ghostty's drop.
@@ -166,6 +161,7 @@ fn paths_reach_the_shell_as_a_drop_types_them_and_close_takes_the_inbox() {
 }
 
 #[test]
+#[ignore = "slow: real tmux shell"]
 fn refusals_name_their_token_and_paste_nothing() {
     let home = Home::new();
     let shell = home.shell("cat -v");

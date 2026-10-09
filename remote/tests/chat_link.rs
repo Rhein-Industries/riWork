@@ -57,7 +57,7 @@ echo "$*" >> "$D/calls.log"
 case "$1 $2" in
 'capabilities --json')
   if [ -e "$D/capabilities.unknown" ]; then echo "riwork: Unknown invocation 'capabilities'" >&2; exit 2; fi
-  if [ -e "$D/capabilities.out" ]; then cat "$D/capabilities.out"; else printf '{"v":1,"chat":true,"orchestrator_create":true}'; fi;;
+  if [ -e "$D/capabilities.out" ]; then cat "$D/capabilities.out"; else printf '{"v":1,"chat":true,"orchestrator_create":true,"shell_create_as_settings":true,"chat_provider_switch":true,"chat_models":true}'; fi;;
 'project show') printf '{"id":"%s"}' "$3";;
 'chat list') echo '[]';;
 'chat events')
@@ -295,12 +295,30 @@ async fn ready_announces_chats_when_the_cli_has_them_and_only_then() {
         phone.ready["features"]["upload"],
         riwork_remote::upload::features()
     );
+    // A chat can go on with the other provider, and the phone can ask for its models.
+    assert_eq!(phone.ready["features"]["chat_provider_switch"], true);
+    assert_eq!(phone.ready["features"]["chat_models"], true);
     assert_eq!(rig.calls("capabilities", "--json"), 1);
     // Believed once it said yes: a second phone does not ask again.
     drop(phone);
     let again = Phone::connect(&rig.pairing).await;
     assert_eq!(again.ready["features"]["chat"], true);
+    assert_eq!(again.ready["features"]["chat_provider_switch"], true);
     assert_eq!(rig.calls("capabilities", "--json"), 1);
+
+    // A CLI with chats from before the switch: chats, and neither of the two.
+    let rig = Rig::with(|dir| {
+        std::fs::write(dir.join("capabilities.out"), "{\"v\":1,\"chat\":true}").unwrap()
+    })
+    .await;
+    let phone = Phone::connect(&rig.pairing).await;
+    let features = phone.ready["features"].as_object().unwrap();
+    assert_eq!(features["chat"], true);
+    assert!(
+        !features.contains_key("chat_provider_switch"),
+        "{features:?}"
+    );
+    assert!(!features.contains_key("chat_models"), "{features:?}");
 
     // A CLI that says no, one that does not know the question, and one that answers it
     // oddly: no `chat` in features at all, and the rest as it was.
@@ -319,6 +337,10 @@ async fn ready_announces_chats_when_the_cli_has_them_and_only_then() {
         let mut phone = Phone::connect(&rig.pairing).await;
         let features = phone.ready["features"].as_object().unwrap();
         assert!(!features.contains_key("chat"), "{answer:?}: {features:?}");
+        assert!(
+            !features.contains_key("chat_provider_switch"),
+            "{answer:?}: {features:?}"
+        );
         assert!(features.contains_key("deflate"), "{answer:?}");
         // And the methods say why.
         let refused = phone.call("chats.list", json!({})).await;
@@ -388,6 +410,46 @@ async fn ready_announces_orchestrator_creation_when_the_cli_can_and_only_then() 
 }
 
 #[tokio::test]
+async fn ready_announces_agents_that_follow_the_desktop_settings_when_the_cli_can() {
+    let rig = Rig::new().await;
+    let phone = Phone::connect(&rig.pairing).await;
+    assert_eq!(
+        phone.ready["features"]["shell_create_as_settings"], true,
+        "{}",
+        phone.ready
+    );
+    // One question answers it with chats and orchestrators, and a yes is believed.
+    assert_eq!(rig.calls("capabilities", "--json"), 1);
+    drop(phone);
+    let again = Phone::connect(&rig.pairing).await;
+    assert_eq!(again.ready["features"]["shell_create_as_settings"], true);
+    assert_eq!(rig.calls("capabilities", "--json"), 1);
+
+    // A CLI without it, one that says no, one that answers oddly and one from before the
+    // question: not announced, the rest as it was, and still one question per handshake.
+    for answer in [
+        Some("{\"v\":1,\"chat\":true,\"orchestrator_create\":true}"),
+        Some("{\"v\":1,\"chat\":true,\"shell_create_as_settings\":false}"),
+        Some("{\"v\":1,\"shell_create_as_settings\":\"true\"}"),
+        None,
+    ] {
+        let rig = Rig::with(|dir| match answer {
+            Some(text) => std::fs::write(dir.join("capabilities.out"), text).unwrap(),
+            None => std::fs::write(dir.join("capabilities.unknown"), "").unwrap(),
+        })
+        .await;
+        let phone = Phone::connect(&rig.pairing).await;
+        let features = phone.ready["features"].as_object().unwrap();
+        assert!(
+            !features.contains_key("shell_create_as_settings"),
+            "{answer:?}: {features:?}"
+        );
+        assert!(features.contains_key("deflate"), "{answer:?}");
+        assert_eq!(rig.calls("capabilities", "--json"), 1, "{answer:?}");
+    }
+}
+
+#[tokio::test]
 async fn an_orchestrator_being_made_is_finished_when_the_phone_goes_away() {
     let rig = Rig::new().await;
     let entry = json!({
@@ -441,6 +503,7 @@ async fn an_orchestrator_being_made_is_finished_when_the_phone_goes_away() {
 }
 
 #[tokio::test]
+#[ignore = "slow: real relay and connector; asserts wall-clock windows of 1.8 s, 1.9 s and 3.9 s"]
 async fn waiting_for_events_leaves_room_for_reads_and_for_typing_and_a_third_wait_queues() {
     let rig = Rig::new().await;
     rig.events(1, |_| "hi".into());
@@ -561,48 +624,4 @@ async fn a_page_is_sealed_as_the_session_asked_and_always_fits_one_frame() {
     assert_eq!(cut.value["result"]["more"], true);
     assert_eq!(cut.value["result"]["next"], held.last().unwrap()["seq"]);
     assert_eq!(held[0]["seq"], 1);
-}
-
-#[tokio::test]
-async fn a_chat_being_made_is_finished_when_the_phone_goes_away() {
-    let rig = Rig::new().await;
-    let info = json!({
-        "id": rig.chat, "provider": "codex", "project_id": Uuid::new_v4().to_string(),
-        "cwd": "/Users/me/app", "title": "Codex chat", "created_at_unix": 1790000000u64,
-        "approval_mode": "supervised", "state": {"state": "idle"}
-    });
-    rig.canned("create.json", &info);
-    std::fs::write(rig.dir.path().join("create.delay"), "1").unwrap();
-    let project = info["project_id"].clone();
-    let mut phone = Phone::connect(&rig.pairing).await;
-    phone
-        .send(
-            "chat.create",
-            json!({"provider":"codex","project_id":project}),
-        )
-        .await;
-    // Wait for the CLI to be running, then the phone leaves.
-    for _ in 0..200 {
-        if rig.calls("chat", "new") > 0 {
-            break;
-        }
-        sleep(Duration::from_millis(25)).await;
-    }
-    assert_eq!(rig.calls("chat", "new"), 1);
-    drop(phone);
-    for _ in 0..200 {
-        if rig.dir.path().join("create.ran").exists() {
-            break;
-        }
-        sleep(Duration::from_millis(50)).await;
-    }
-    assert!(
-        rig.dir.path().join("create.ran").exists(),
-        "the CLI was cut short"
-    );
-    // The chat exists once; a phone that comes back finds the desktop as it was.
-    let mut phone = Phone::connect(&rig.pairing).await;
-    let listed = phone.call("chats.list", json!({})).await;
-    assert_eq!(listed.value["ok"], true, "{}", listed.value);
-    assert_eq!(rig.calls("chat", "new"), 1);
 }

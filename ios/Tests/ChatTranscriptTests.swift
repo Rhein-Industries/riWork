@@ -236,14 +236,17 @@ final class ChatTranscriptTests: XCTestCase {
         let url = try XCTUnwrap(bundle.url(forResource: "chat-serde", withExtension: "json", subdirectory: "Fixtures") ?? bundle.url(forResource: "chat-serde", withExtension: "json"))
         let events = try JSONDecoder().decode(JSONValue.self, from: Data(contentsOf: url))["events"].array.map { try $0.decode(ChatEvent.self) }
         let t = folded(events)
-        // The last info (the minimal chat) is the one that stands, with its state, and its numbers are those of the last usage event.
+        // The last info (the chat that went on with Claude) is the one that stands, with its state. The minimal chat's info before it
+        // already named another provider than the first, which drops the usage counted so far, as on the desktop.
         XCTAssertEqual(t.info?.provider, .claude)
-        XCTAssertEqual(t.state, .starting)
-        XCTAssertEqual(t.usage, ChatUsage())
+        XCTAssertEqual(t.info?.carriedOver?.from, #"Codex chat "Codex chat" (11111111)"#)
+        XCTAssertEqual(t.state, .idle)
+        XCTAssertNil(t.usage)
+        XCTAssertEqual(folded(Array(events.prefix(38))).usage, ChatUsage(), "before the provider changed, the last usage event's numbers")
         // The turn t1 started and ended three times before any item existed, so nothing was closed by it.
         XCTAssertNil(t.turnID)
         XCTAssertEqual(t.item("a")?.status, .inProgress)
-        XCTAssertEqual(t.items.map(\.id), ["u", "a", "r", "p", "p2", "c", "c2", "f", "t", "t2", "w", "d", "k", "n1", "n2", "n3"])
+        XCTAssertEqual(t.items.map(\.id), ["u", "a", "r", "p", "p2", "c", "c2", "f", "t", "t2", "w", "d", "k", "n1", "n2", "n3", "switch-58"])
         XCTAssertEqual(t.item("a")?.body, .agentMessage("Hel"), "the delta built the empty message")
         // The delta for “c” came before “c” itself: it is lost, as it is on the desktop, and the item starts empty.
         XCTAssertEqual(t.item("c")?.body, .command(command: "ls -la", cwd: "/tmp", output: "", exitCode: nil))
@@ -255,6 +258,31 @@ final class ChatTranscriptTests: XCTestCase {
         XCTAssertEqual(folded(Array(events.prefix(40))).models.map(\.id), ["gpt-5.5", "gpt-5.4-mini", "bare"])
         XCTAssertEqual(folded(Array(events.prefix(41))).models.map(\.id), ["bare"])
     }
+    // MARK: One chat for both providers
+
+    func testAChatThatGoesOnWithTheOtherProviderDropsTheModelsAndUsageOfTheLast() {
+        var t = ChatTranscript()
+        t.apply(.info(chat()))
+        t.apply(.models([ChatModelOption(id: "gpt-5.5", name: "GPT-5.5")]))
+        t.apply(.usage(ChatUsage(inputTokens: 10, contextWindow: 100, contextUsed: 40)))
+        t.apply(.itemCompleted(agent("a", "Done.", .completed)))
+        // Another info for the same provider (a model was chosen) keeps them.
+        var same = chat(); same.model = "gpt-5.5"
+        t.apply(.info(same))
+        XCTAssertEqual(t.models.count, 1); XCTAssertNotNil(t.usage)
+        // The switch: an info with the other provider, then the notice that reads as a divider.
+        var moved = chat(); moved.provider = .claude; moved.model = "opus"
+        moved.carriedOver = ChatCarriedOver(document: "/c/context.md", from: "Codex chat \"t\" (c)")
+        t.apply(.info(moved))
+        XCTAssertTrue(t.models.isEmpty, "the new agent lists its own models")
+        XCTAssertNil(t.usage, "and counts its own usage")
+        XCTAssertEqual(t.info?.provider, .claude)
+        t.apply(.itemCompleted(ChatItem(id: "switch-7", status: .completed, body: .notice(level: .info, text: "Continued with Claude (opus), which has the conversation so far."))))
+        XCTAssertEqual(t.items.map(\.id), ["a", "switch-7"], "the conversation stays")
+        t.apply(.models([ChatModelOption(id: "opus", name: "Opus")]))
+        XCTAssertEqual(t.models.map(\.id), ["opus"])
+    }
+
 }
 
 /// The cursor that keeps the phone's transcript in step with `chat.events`.

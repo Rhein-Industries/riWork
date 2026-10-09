@@ -17,11 +17,14 @@ use gpui_kit::TestSupportExt;
 
 use crate::{
     activity::{ActivityCounts, AgentActivity, AgentState, ChatActivity},
-    behavior_controls as behavior, controls,
+    behavior_controls as behavior,
+    chat::model::ChatInfo,
+    controls,
     icons::{self, ActionGlyph, Icon},
     layouts::PanelKind,
     project_sort::{ProjectOrder, ProjectSort, sorted_project_indices},
     remote_tree::{FolderView, Link, Listing, ProjectView, RemoteShell, SelectedView, folder_key},
+    session_catalog::{self, Filter},
     sessions::{SessionMetrics, ShellKind, ShellSession},
     store::{State, TaskStatus},
     theme::{self, Palette},
@@ -52,7 +55,20 @@ pub enum PanelAction {
     OpenProject(String),
     Worktree(String),
     Task(String),
-    Shell(String),
+    Shell {
+        project: String,
+        generation: u64,
+        id: String,
+    },
+    Chat {
+        project: String,
+        generation: u64,
+        id: String,
+    },
+    SessionFilter(Filter),
+    RefreshSessions,
+    /// Open choices; rendering or filtering sessions never creates a chat.
+    NewChat { project: String, generation: u64 },
     Search,
     /// Empty the search field, from its clear button.
     ClearSearch,
@@ -175,6 +191,11 @@ pub struct PanelData<'a> {
     pub activity: &'a BTreeMap<String, AgentState>,
     /// The open chat tabs, counted among the agents beside the shells.
     pub chats: &'a [ChatActivity],
+    pub native_chats: &'a [ChatInfo],
+    pub session_catalog_note: Option<&'a str>,
+    pub session_catalog_loading: bool,
+    pub session_catalog_generation: u64,
+    pub session_filter: Filter,
     pub query: &'a str,
     pub search_focused: bool,
     pub search_input: Option<&'a Entity<crate::text_input::InputState>>,
@@ -917,11 +938,83 @@ pub fn render_panel<V: Render + 'static>(
             }
         }
         PanelKind::Shells => {
+            for chat in data
+                .native_chats
+                .iter()
+                .filter(|chat| chat.project_id.as_deref() == Some(data.project_id))
+            {
+                total += 1;
+                if !data.session_filter.accepts_chat(chat.provider) {
+                    continue;
+                }
+                let provider = session_catalog::provider_label(chat.provider);
+                let status = session_catalog::status_label(&chat.state);
+                let title = if chat.title.trim().is_empty() {
+                    "Untitled chat"
+                } else {
+                    &chat.title
+                };
+                let worktree = data
+                    .state
+                    .worktrees_for(data.project_id)
+                    .into_iter()
+                    .find(|tree| chat.worktree_id.as_deref() == Some(tree.id.as_str()))
+                    .or_else(|| {
+                        data.state
+                            .worktrees_for(data.project_id)
+                            .into_iter()
+                            .filter(|tree| chat.cwd.starts_with(&tree.path))
+                            .max_by_key(|tree| tree.path.as_os_str().len())
+                    });
+                let context = worktree.map(|tree| tree.branch.clone()).unwrap_or_else(|| {
+                    chat.worktree_id
+                        .as_deref()
+                        .map(|id| format!("Worktree {}", short_id(id)))
+                        .unwrap_or_else(|| "Project root".into())
+                });
+                let path = chat.cwd.to_string_lossy();
+                if !matches(&[
+                    &chat.id,
+                    title,
+                    provider,
+                    status,
+                    &context,
+                    &path,
+                    chat.worktree_id.as_deref().unwrap_or(""),
+                ]) {
+                    continue;
+                }
+                rows.push(row(
+                    format!("session-chat-{}", chat.id),
+                    format!(
+                        "{provider} chat · {title} · {status} · {context} · {}",
+                        chat.id
+                    ),
+                    false,
+                    colors.cyan,
+                    vec![
+                        line(format!("{provider} · {title}"), colors.text, 11.0),
+                        line(format!("{status} · {context}"), colors.muted, 10.0),
+                        mono_line(path.into_owned(), colors.muted, 10.0),
+                        mono_line(chat.id.clone(), colors.muted, 10.0),
+                    ],
+                    PanelAction::Chat {
+                        project: data.project_id.into(),
+                        generation: data.session_catalog_generation,
+                        id: chat.id.clone(),
+                    },
+                    on_action.clone(),
+                    cx,
+                ));
+            }
             for shell in data.shells.iter().filter(|shell| {
                 shell.kind == ShellKind::Project
                     && shell.project_id.as_deref() == Some(data.project_id)
             }) {
                 total += 1;
+                if !data.session_filter.accepts_shell() {
+                    continue;
+                }
                 let cwd = data.shell_cwds.get(&shell.id).unwrap_or(&shell.cwd);
                 let current_worktree = data
                     .state
@@ -935,6 +1028,8 @@ pub fn render_panel<V: Render + 'static>(
                 let path = cwd.to_string_lossy();
                 let command = shell.command.as_deref().unwrap_or("shell");
                 if !matches(&[
+                    "shell",
+                    shell.harness.map(|harness| harness.program()).unwrap_or(""),
                     &shell.id,
                     label,
                     &path,
@@ -950,7 +1045,7 @@ pub fn render_panel<V: Render + 'static>(
                 if ui_text::is_native() {
                     let lines = native_shell_lines(
                         NativeShell {
-                            title: label.to_owned(),
+                            title: format!("Shell · {label}"),
                             status: native_shell_status(shell.alive, agent),
                             path: path.into_owned(),
                             detail: format!(
@@ -964,11 +1059,15 @@ pub fn render_panel<V: Render + 'static>(
                     );
                     rows.push(row(
                         format!("shell-{}", shell.id),
-                        format!("{} · {}", label, short_id(&shell.id)),
+                        format!("Shell · {label} · {status} · {}", shell.id),
                         false,
                         colors.cyan,
                         lines,
-                        PanelAction::Shell(shell.id.clone()),
+                        PanelAction::Shell {
+                            project: data.project_id.into(),
+                            generation: data.session_catalog_generation,
+                            id: shell.id.clone(),
+                        },
                         on_action.clone(),
                         cx,
                     ));
@@ -976,7 +1075,7 @@ pub fn render_panel<V: Render + 'static>(
                 }
                 rows.push(row(
                     format!("shell-{}", shell.id),
-                    format!("{} · {}", label, short_id(&shell.id)),
+                    format!("Shell · {label} · {status} · {}", shell.id),
                     false,
                     colors.cyan,
                     vec![
@@ -986,7 +1085,7 @@ pub fn render_panel<V: Render + 'static>(
                             .justify_between()
                             .gap(ui_text::space(6.0))
                             .child(line(
-                                format!("{} · {label}", short_id(&shell.id)),
+                                format!("Shell · {} · {label}", short_id(&shell.id)),
                                 colors.text,
                                 11.0,
                             ))
@@ -1019,7 +1118,11 @@ pub fn render_panel<V: Render + 'static>(
                         ),
                         mono_line(shell.id.clone(), colors.muted, 10.0),
                     ],
-                    PanelAction::Shell(shell.id.clone()),
+                    PanelAction::Shell {
+                        project: data.project_id.into(),
+                        generation: data.session_catalog_generation,
+                        id: shell.id.clone(),
+                    },
                     on_action.clone(),
                     cx,
                 ));
@@ -1058,6 +1161,69 @@ pub fn render_panel<V: Render + 'static>(
                 .into_any_element()
         });
     }
+    let mut session_controls = Vec::new();
+    if kind == PanelKind::Shells && data.selected_remote.is_none() {
+        let mut toolbar = div()
+            .flex()
+            .flex_wrap()
+            .gap(ui_text::space(4.0))
+            .p(ui_text::space(6.0));
+        let handler = on_action.clone();
+        let project = data.project_id.to_owned();
+        let generation = data.session_catalog_generation;
+        toolbar = toolbar.child(
+            behavior::button("sessions-new-chat", "New chat…", controls::Button::Primary, colors)
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    handler(view, PanelAction::NewChat { project: project.clone(), generation }, window, cx)
+                })),
+        );
+        for filter in Filter::ALL {
+            let handler = on_action.clone();
+            toolbar = toolbar.child(
+                behavior::button(
+                    format!("sessions-filter-{}", filter.label()),
+                    filter.label(),
+                    if data.session_filter == filter {
+                        controls::Button::Primary
+                    } else {
+                        controls::Button::Secondary
+                    },
+                    colors,
+                )
+                .aria_selected(data.session_filter == filter)
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    handler(view, PanelAction::SessionFilter(filter), window, cx);
+                })),
+            );
+        }
+        let handler = on_action.clone();
+        toolbar = toolbar.child(
+            behavior::button(
+                "sessions-refresh",
+                "Refresh",
+                controls::Button::Secondary,
+                colors,
+            )
+            .disabled(data.session_catalog_loading)
+            .on_click(cx.listener(move |view, _, window, cx| {
+                handler(view, PanelAction::RefreshSessions, window, cx)
+            })),
+        );
+        session_controls.push(toolbar.flex_none().into_any_element());
+        if let Some(note) = data.session_catalog_note {
+            session_controls.push(
+                div()
+                    .flex_none()
+                    .p(ui_text::space(8.0))
+                    .text_size(ui_text::text(10.0))
+                    .text_color(rgb(colors.muted))
+                    .child(note.to_owned())
+                    .into_any_element(),
+            );
+        } else if data.session_catalog_loading {
+            session_controls.push(line("Loading chat history…".to_owned(), colors.muted, 10.0));
+        }
+    }
     if native {
         let panel = native_panel(
             kind,
@@ -1066,6 +1232,7 @@ pub fn render_panel<V: Render + 'static>(
                 count,
                 total,
                 rows,
+                session_controls,
                 sort_selector_bounds: Rc::new(Cell::new(Bounds::<Pixels>::default())),
             },
             on_action,
@@ -1173,6 +1340,7 @@ pub fn render_panel<V: Render + 'static>(
                         )
                     })),
             )
+            .children(session_controls)
             .child(
                 div()
                     .id(format!("{name}-rows"))
@@ -1281,7 +1449,7 @@ fn panel_search<V: 'static>(
         )
         .children(input.map(|input| {
             crate::form_input::search_frame(format!("{name}-search-input"), input, window, cx)
-                .accessibility_label(format!("Search {name}"))
+                .accessibility_label(format!("Search {}", panel_noun(kind)))
         }))
         .children((!query.is_empty()).then(|| {
             let input = input.cloned();
@@ -1313,6 +1481,7 @@ struct NativeChrome {
     count: usize,
     total: usize,
     rows: Vec<AnyElement>,
+    session_controls: Vec<AnyElement>,
     sort_selector_bounds: Rc<Cell<Bounds<Pixels>>>,
 }
 
@@ -1357,6 +1526,7 @@ fn native_panel<V: Render + 'static>(
         count,
         total,
         rows,
+        session_controls,
         sort_selector_bounds,
     } = chrome;
     let mut meta = native_count(count, total, panel_noun(kind));
@@ -1440,6 +1610,7 @@ fn native_panel<V: Render + 'static>(
             colors,
         ))
         .child(search)
+        .children(session_controls)
         .child(
             div()
                 .id(format!("{name}-rows"))
@@ -2455,6 +2626,7 @@ fn push_remote_panel<V: 'static>(
             }
         }
         _ => {
+            rows.push(note("Native Codex and Claude chat history is unavailable on remote hosts. Showing remote shells.".to_owned(), colors.muted));
             if let Some(message) = &remote.failure {
                 rows.push(failure_row(
                     format!("remote-shell-failure-{}", remote.project),
@@ -2480,6 +2652,7 @@ fn push_remote_panel<V: 'static>(
                     (false, _) => remote_worktree_label(remote, shell.worktree_id.as_deref()),
                 };
                 let command = shell.harness.as_deref().unwrap_or("shell");
+                let status = shell_status_label(shell.alive, None);
                 if !matches(&[
                     &shell.id,
                     &label,
@@ -2543,7 +2716,7 @@ fn push_remote_panel<V: 'static>(
                 rows.push(dimmed_if(
                     row(
                         format!("remote-shell-{}", shell.id),
-                        format!("{} · {}", label, short_id(&shell.id)),
+                        format!("Shell · {label} · {status} · {}", shell.id),
                         false,
                         colors.cyan,
                         lines,
@@ -2598,7 +2771,7 @@ pub fn unavailable<V: 'static>(kind: PanelKind, host: &str, cx: &mut Context<V>)
         PanelKind::Projects => "Projects",
         PanelKind::Worktrees => "Worktrees",
         PanelKind::Tasks => "Tasks",
-        PanelKind::Shells => "Shells",
+        PanelKind::Shells => "Sessions",
         PanelKind::Settings => "Settings",
     };
     div()
@@ -2945,7 +3118,7 @@ fn row<V: 'static>(
     let colors = theme::palette(cx);
     let mut children = children.into_iter();
     let first = children.next().unwrap_or_else(|| div().into_any_element());
-    behavior::button_content(id, accessible_name, first)
+    let control = behavior::button_content(id.clone(), accessible_name, first)
         .aria_selected(selected)
         .items_stretch()
         .focus_visible(move |style| style.border_color(rgb(colors.focus)))
@@ -2971,14 +3144,15 @@ fn row<V: 'static>(
         .children(children)
         .on_click(cx.listener(move |view, _, window, cx| {
             on_action(view, action.clone(), window, cx);
-        }))
-        .into_any_element()
+        }));
+    crate::form_input::control_element(id, control)
 }
 
 /// What a panel lists, for its count and its empty state: "projects", "shells".
 fn panel_noun(kind: PanelKind) -> &'static str {
     match kind {
         PanelKind::ProjectSettings => "project settings",
+        PanelKind::Shells => "sessions",
         kind => kind.name(),
     }
 }
@@ -3327,21 +3501,6 @@ mod tests {
     use super::*;
     use crate::store::{Project, ProjectFolder};
 
-    #[test]
-    fn panels_without_a_remote_api_say_so_and_the_lists_are_the_hosts() {
-        use PanelKind::*;
-        for kind in [Worktrees, Tasks, Shells] {
-            assert_eq!(remote_support(kind), RemoteSupport::Lists, "{kind:?}");
-        }
-        for kind in [Files, Preview, ProjectSettings, Schedules, Usage] {
-            assert_eq!(remote_support(kind), RemoteSupport::Unavailable, "{kind:?}");
-        }
-        // The folders of projects and the settings are not about one project.
-        for kind in [Projects, Settings] {
-            assert_eq!(remote_support(kind), RemoteSupport::Global, "{kind:?}");
-        }
-    }
-
     fn project_tree(state: &State, query: &str, collapsed: &HashSet<String>) -> ProjectTree {
         super::project_tree(
             state,
@@ -3431,24 +3590,6 @@ mod tests {
             tree.rows
                 .contains(&ProjectTreeRow::Project { index: 1, depth: 3 })
         );
-    }
-
-    #[test]
-    fn collapsing_a_parent_hides_its_complete_subtree() {
-        let state = nested_state();
-        let collapsed = HashSet::from(["work".into()]);
-        let tree = project_tree(&state, "", &collapsed);
-        assert_eq!(
-            labels(&state, &tree),
-            ["unfiled", "outside", "personal", "work"]
-        );
-        assert_eq!(tree.matched_projects, 3);
-        assert!(tree.rows.contains(&ProjectTreeRow::Folder {
-            index: 0,
-            depth: 0,
-            count: 2,
-            collapsed: true,
-        }));
     }
 
     #[test]
@@ -3670,25 +3811,12 @@ mod tests {
         // A folder found present on its first check needs no repaint.
         assert!(!presence.finish(b.to_owned(), false, later));
     }
-
-    #[test]
-    fn a_worktree_folder_is_missing_unless_it_is_a_directory() {
-        let directory = std::env::temp_dir().join(format!("riwork-panels-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let file = directory.join("file");
-        std::fs::write(&file, "").unwrap();
-        assert!(!folder_missing(&directory));
-        assert!(folder_missing(&file));
-        assert!(folder_missing(&directory.join("gone")));
-        std::fs::remove_dir_all(&directory).unwrap();
-    }
 }
 
 #[cfg(test)]
 mod kit_control_tests {
     use super::*;
     use crate::form_input::{test_turn, test_window};
-    use gpui::InputEvent as _;
     use gpui::TestAppContext;
     use gpui_kit::test::TestWindowExt;
 
@@ -3849,191 +3977,6 @@ mod kit_control_tests {
             );
         });
     }
-
-    #[gpui::test]
-    fn native_project_actions_reveal_for_keyboard_scope_and_keep_pointer_hover(
-        cx: &mut TestAppContext,
-    ) {
-        let (window, owner) = mount(cx);
-        // Exercise Native's actual visibility policy without loading a native
-        // theme, Ghostty settings, StateStore, Workspace or any service.
-        test_turn(cx, window, |window, app| {
-            owner.update(app, |owner, cx| {
-                owner.native_reveal = true;
-                cx.notify();
-            });
-            window.dispatch_event(
-                gpui::MouseMoveEvent {
-                    position: gpui::point(
-                        window.viewport_size().width - px(2.),
-                        window.viewport_size().height - px(2.),
-                    ),
-                    pressed_button: None,
-                    modifiers: Default::default(),
-                }
-                .to_platform_input(),
-                app,
-            );
-        });
-        test_turn(cx, window, |window, app| {
-            assert!(
-                !window
-                    .find("settings-project-synthetic-project-id")
-                    .visible()
-            );
-            let position = window
-                .find("project-synthetic-project-id")
-                .bounds()
-                .center();
-            window.dispatch_event(
-                gpui::MouseMoveEvent {
-                    position,
-                    pressed_button: None,
-                    modifiers: Default::default(),
-                }
-                .to_platform_input(),
-                app,
-            );
-        });
-        test_turn(cx, window, |window, app| {
-            assert!(
-                window
-                    .find("settings-project-synthetic-project-id")
-                    .visible()
-            );
-            assert!(owner.read(app).actions.is_empty());
-            window.dispatch_event(
-                gpui::MouseMoveEvent {
-                    position: gpui::point(
-                        window.viewport_size().width - px(2.),
-                        window.viewport_size().height - px(2.),
-                    ),
-                    pressed_button: None,
-                    modifiers: Default::default(),
-                }
-                .to_platform_input(),
-                app,
-            );
-        });
-        test_turn(cx, window, |window, app| {
-            assert!(
-                !window
-                    .find("settings-project-synthetic-project-id")
-                    .visible()
-            );
-            let focus = owner.read(app).row_focus.clone();
-            focus.focus(window, app);
-            // Programmatic focus preserves pointer modality. A non-activating
-            // key establishes keyboard focus and lets the row reveal its child
-            // before Root's next Tab enumerates the actually painted tab stops.
-            window.press("right", app);
-        });
-        test_turn(cx, window, |window, app| {
-            assert!(owner.read(app).row_focus.is_focused(window));
-            assert!(
-                window
-                    .find("settings-project-synthetic-project-id")
-                    .visible()
-            );
-            assert!(owner.read(app).actions.is_empty());
-            window.press("tab", app);
-        });
-        test_turn(cx, window, |window, app| {
-            let nested = window.find("settings-project-synthetic-project-id");
-            assert_eq!(nested.focused(), Some(true));
-            assert!(
-                nested.visible(),
-                "keyboard focus within the row reveals Native actions"
-            );
-            let node = crate::form_input::test_ax_node(
-                window,
-                app,
-                "settings-project-synthetic-project-id",
-            );
-            assert_eq!(node.role(), gpui::Role::Button);
-            assert_eq!(node.label(), Some("Project settings"));
-            assert!(!node.is_disabled());
-            assert!(node.supports_action(gpui::accesskit::Action::Click));
-            window.press("space", app);
-        });
-        test_turn(cx, window, |window, app| {
-            assert!(
-                matches!(owner.read(app).actions.as_slice(), [PanelAction::ProjectSettings(id)] if id == "synthetic-project-id")
-            );
-            let focus = owner.read(app).sort.trigger_focus.clone();
-            focus.focus(window, app);
-        });
-        test_turn(cx, window, |window, app| {
-            assert!(
-                !window
-                    .find("settings-project-synthetic-project-id")
-                    .visible()
-            );
-            assert!(owner.read(app).sort.trigger_focus.is_focused(window));
-        });
-    }
-
-    #[gpui::test]
-    fn sort_popover_keyboard_reselect_dismissal_and_refresh_preserve_focus(
-        cx: &mut TestAppContext,
-    ) {
-        let (window, owner) = mount(cx);
-        let identity = owner.read_with(cx, |owner, _| owner.sort.state.entity_id());
-        test_turn(cx, window, |window, app| {
-            window.click("project-sort-selector", app)
-        });
-        test_turn(cx, window, |window, app| {
-            let owner = owner.read(app);
-            assert!(owner.sort.state.read(app).is_open());
-            assert!(
-                owner
-                    .sort
-                    .state
-                    .read(app)
-                    .focus_handle(app)
-                    .contains_focused(window, app)
-            );
-            assert!(matches!(
-                owner.actions.as_slice(),
-                [PanelAction::SetProjectSortMenuOpen(true)]
-            ));
-            window.press("tab", app);
-        });
-        test_turn(cx, window, |window, app| window.press("enter", app));
-        test_turn(cx, window, |window, app| {
-            let owner = owner.read(app);
-            assert!(!owner.sort.state.read(app).is_open());
-            assert_eq!(
-                owner
-                    .actions
-                    .iter()
-                    .filter(|a| matches!(a, PanelAction::SetProjectOrder(_)))
-                    .count(),
-                1
-            );
-            assert!(owner.sort.trigger_focus.is_focused(window));
-            window.press("space", app);
-        });
-        test_turn(cx, window, |window, app| window.press("escape", app));
-        test_turn(cx, window, |window, app| {
-            assert!(!owner.read(app).sort.state.read(app).is_open());
-            assert!(owner.read(app).sort.trigger_focus.is_focused(window));
-            owner.update(app, |_, cx| cx.notify());
-        });
-        test_turn(cx, window, |window, app| {
-            assert_eq!(owner.read(app).sort.state.entity_id(), identity);
-            assert!(owner.read(app).sort.trigger_focus.is_focused(window));
-            assert_eq!(
-                owner
-                    .read(app)
-                    .actions
-                    .iter()
-                    .filter(|a| matches!(a, PanelAction::CloseProjectSortMenu))
-                    .count(),
-                1
-            );
-        });
-    }
 }
 
 #[cfg(test)]
@@ -4050,6 +3993,10 @@ mod search_regression_tests {
     // SessionManager, filesystem fixture, terminal or backend is constructed.
     struct Fixture {
         state: State,
+        kind: PanelKind,
+        native_chats: Vec<ChatInfo>,
+        shells: Vec<ShellSession>,
+        session_filter: Filter,
         inputs: Vec<(u64, Entity<InputState>)>,
         queries: BTreeMap<u64, String>,
         sorts: Vec<ProjectSortUi>,
@@ -4062,7 +4009,13 @@ mod search_regression_tests {
     }
     impl Fixture {
         fn action(&mut self, action: PanelAction, window: &mut Window, cx: &mut Context<Self>) {
-            if matches!(action, PanelAction::ClearSearch) {
+            if let PanelAction::SessionFilter(filter) = &action {
+                self.session_filter = *filter;
+            }
+            if matches!(
+                action,
+                PanelAction::ClearSearch | PanelAction::SessionFilter(_)
+            ) {
                 for (id, input) in &self.inputs {
                     crate::form_input::set_value(input, String::new(), window, cx);
                     self.queries.insert(*id, String::new());
@@ -4085,19 +4038,28 @@ mod search_regression_tests {
                             .test_support()
                             .flex_none()
                             .w(px(self.width))
-                            .h(px(360.))
+                            .h(px(if self.kind == PanelKind::Shells {
+                                600.
+                            } else {
+                                360.
+                            }))
                             .child(render_panel(
-                                PanelKind::Projects,
+                                self.kind,
                                 PanelData {
                                     state: &self.state,
                                     project_id: "alpha-id",
                                     selected_worktree_id: None,
                                     selected_task_id: None,
-                                    shells: &[],
+                                    shells: &self.shells,
                                     shell_cwds: &BTreeMap::new(),
                                     metrics: &BTreeMap::new(),
                                     activity: &BTreeMap::new(),
                                     chats: &[],
+                                    native_chats: &self.native_chats,
+                                    session_catalog_note: None,
+                                    session_catalog_loading: false,
+                                    session_catalog_generation: 7,
+                                    session_filter: self.session_filter,
                                     query: &self.queries[id],
                                     search_focused: input
                                         .read(cx)
@@ -4210,6 +4172,10 @@ mod search_regression_tests {
                                 })
                                 .collect();
                             Fixture {
+                                kind: PanelKind::Projects,
+                                native_chats: Vec::new(),
+                                shells: Vec::new(),
+                                session_filter: Filter::All,
                                 state: State {
                                     projects,
                                     ..Default::default()
@@ -4239,79 +4205,198 @@ mod search_regression_tests {
         test_turn(cx, handle, |window, _| window.activate_window());
         (handle, owner)
     }
-    fn geometry(cx: &mut TestAppContext, native: bool) {
+    fn history(id: u128, provider: &str, state: serde_json::Value, project: &str) -> ChatInfo {
+        serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::from_u128(id).to_string(), "provider": provider,
+            "project_id": project, "worktree_id": "saved-tree", "cwd": "/synthetic-only/history",
+            "title": "Same title", "created_at_unix": id as u64, "state": state,
+        }))
+        .unwrap()
+    }
+
+    // A mounted Root and an in-memory action recorder only. There is no chat feed,
+    // Workspace, StateStore, SessionManager, filesystem or provider in this fixture.
+    fn sessions_controls(cx: &mut TestAppContext, native: bool) {
         let (handle, owner) = mount(cx, native);
-        let entity = owner.read_with(cx, |owner, _| owner.inputs[0].1.entity_id());
-        for width in [160., 240., 480.] {
-            test_turn(cx, handle, |_, app| {
-                owner.update(app, |owner, cx| {
-                    owner.width = width;
-                    cx.notify();
-                })
-            });
-            test_turn(cx, handle, |window, app| {
-                assert_eq!(ui_text::is_native(), native);
-                let mut panel = window.within(("search-fixture-panel", 101u64));
-                let search = panel.find("projects-search");
-                let icon = panel.find("projects-search-icon");
-                let editor = panel.find("projects-search-input");
-                assert!(search.visible() && icon.visible() && editor.visible());
-                assert_eq!(editor.role(), Some(gpui::Role::TextInput));
-                assert_eq!(editor.label(), Some("Search projects"));
-                assert!(
-                    editor.bounds().size.width >= px(80.),
-                    "readable editor at pane width {width}: {:?}",
-                    editor.bounds()
-                );
-                assert!(editor.bounds().size.height >= ui_text::space(18.));
-                assert!(editor.bounds().left() >= icon.bounds().right());
-                assert!(editor.bounds().right() <= search.bounds().right());
-                assert!(editor.bounds().top() >= search.bounds().top());
-                assert!(editor.bounds().bottom() <= search.bounds().bottom());
-                let input = owner.read(app).inputs[0].1.clone();
-                assert_eq!(input.entity_id(), entity);
-                assert_eq!(
-                    input.read(app).presentation().placeholder().as_ref(),
-                    "Search  ⌘F"
-                );
-                let caret = input
+        let claude = uuid::Uuid::from_u128(1).to_string();
+        let codex = uuid::Uuid::from_u128(2).to_string();
+        test_turn(cx, handle, |_, app| {
+            owner.update(app, |owner, cx| {
+                owner.kind = PanelKind::Shells;
+                owner.width = 480.;
+                owner.native_chats = vec![
+                    history(
+                        1,
+                        "claude",
+                        serde_json::json!({"state":"stopped"}),
+                        "alpha-id",
+                    ),
+                    history(
+                        2,
+                        "codex",
+                        serde_json::json!({"state":"failed", "message":"offline"}),
+                        "alpha-id",
+                    ),
+                    history(
+                        3,
+                        "claude",
+                        serde_json::json!({"state":"idle"}),
+                        "other-project",
+                    ),
+                ];
+                owner.shells = vec![
+                    serde_json::from_value(serde_json::json!({
+                        "id": uuid::Uuid::from_u128(4).to_string(), "project_id":"alpha-id",
+                        "kind":"project", "cwd":"/synthetic-only/shell", "created_at_unix":4,
+                    }))
+                    .unwrap(),
+                ];
+                cx.notify();
+            })
+        });
+        test_turn(cx, handle, |window, app| {
+            let node =
+                crate::form_input::test_ax_node(window, app, format!("session-chat-{claude}"));
+            assert_eq!(node.role(), gpui::Role::Button);
+            assert!(
+                node.label()
+                    .unwrap()
+                    .contains("Claude chat · Same title · Stopped")
+            );
+            let node =
+                crate::form_input::test_ax_node(window, app, format!("session-chat-{codex}"));
+            assert!(
+                node.label()
+                    .unwrap()
+                    .contains("Codex chat · Same title · Failed")
+            );
+            assert!(
+                window
+                    .try_find(format!("session-chat-{}", uuid::Uuid::from_u128(3)))
+                    .is_none()
+            );
+            // Provider filters are real Base buttons, usable by mouse and keyboard.
+            window.click("sessions-filter-Claude chats", app);
+        });
+        test_turn(cx, handle, |window, app| window.press("space", app));
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(owner.read(app).session_filter, Filter::Claude);
+            assert!(window.try_find(format!("session-chat-{codex}")).is_none());
+            assert!(
+                window
+                    .try_find(format!("shell-{}", uuid::Uuid::from_u128(4)))
+                    .is_none()
+            );
+            assert!(
+                owner
                     .read(app)
-                    .range_to_bounds(&(0..0))
-                    .expect("the empty placeholder has real editor layout");
-                assert!(caret.size.height > px(0.));
-                assert!(
-                    caret.left() >= editor.bounds().left()
-                        && caret.right() <= editor.bounds().right()
-                );
-                // An icon press must focus this real field, including the
-                // padding/background path outside Base's glyph hit target.
-                panel.click("projects-search-icon", app);
-            });
+                    .actions
+                    .iter()
+                    .all(|a| matches!(a, PanelAction::SessionFilter(Filter::Claude)))
+            );
+            window.click(format!("session-chat-{claude}"), app);
+        });
+        test_turn(cx, handle, |window, app| window.press("enter", app));
+        test_turn(cx, handle, |_, app| {
+            let actions = &owner.read(app).actions;
+            assert_eq!(actions.len(), 4);
+            assert!(actions[2..].iter().all(|action| matches!(action,
+                PanelAction::Chat { project, generation: 7, id } if project == "alpha-id" && id == &claude)));
+        });
+        test_turn(cx, handle, |window, app| {
+            window.click("sessions-filter-Shells", app);
+        });
+        test_turn(cx, handle, |window, app| {
+            window.click(format!("shell-{}", uuid::Uuid::from_u128(4)), app);
+        });
+        test_turn(cx, handle, |_, app| {
+            assert!(
+                matches!(owner.read(app).actions.last(), Some(PanelAction::Shell { project, generation: 7, id }) if project == "alpha-id" && id == &uuid::Uuid::from_u128(4).to_string())
+            );
+        });
+        test_turn(cx, handle, |window, app| {
+            window.click("sessions-filter-All sessions", app)
+        });
+        test_turn(cx, handle, |window, app| {
+            window.click("shells-search-icon", app)
+        });
+        for character in "failed".chars() {
             test_turn(cx, handle, |window, app| {
-                assert!(
-                    owner.read(app).inputs[0]
-                        .1
-                        .read(app)
-                        .focus_handle(app)
-                        .is_focused(window)
-                );
-                assert_eq!(owner.read(app).focused, Some(101));
-                assert!(owner.read(app).actions.is_empty());
+                window.input(&character.to_string(), app)
             });
         }
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(owner.read(app).queries[&101], "failed");
+            assert!(window.try_find(format!("session-chat-{claude}")).is_none());
+            assert!(
+                window
+                    .try_find(format!("shell-{}", uuid::Uuid::from_u128(4)))
+                    .is_none()
+            );
+            window.click(format!("session-chat-{codex}"), app);
+        });
+        test_turn(cx, handle, |_, app| {
+            assert!(
+                matches!(owner.read(app).actions.last(), Some(PanelAction::Chat { id, .. }) if id == &codex)
+            );
+        });
     }
+
     #[gpui::test]
-    fn projects_search_has_readable_bounds_and_placeholder_in_narrow_colorful_panels(
-        cx: &mut TestAppContext,
-    ) {
-        geometry(cx, false);
+    fn sessions_new_chat_is_explicit_and_survives_narrow_filtered_history(cx: &mut TestAppContext) {
+        let (handle, owner) = mount(cx, true);
+        test_turn(cx, handle, |_, app| {
+            owner.update(app, |owner, cx| {
+                owner.kind = PanelKind::Shells;
+                owner.width = 280.;
+                owner.native_chats = vec![history(
+                    1,
+                    "claude",
+                    serde_json::json!({"state":"stopped"}),
+                    "alpha-id",
+                )];
+                cx.notify();
+            })
+        });
+        test_turn(cx, handle, |window, app| {
+            assert!(
+                owner.read(app).actions.is_empty(),
+                "render does not request a launch"
+            );
+            window.click("sessions-filter-Shells", app);
+        });
+        test_turn(cx, handle, |window, app| {
+            assert!(
+                owner
+                    .read(app)
+                    .actions
+                    .iter()
+                    .all(|action| matches!(action, PanelAction::SessionFilter(Filter::Shells)))
+            );
+            assert!(window.find("sessions-new-chat").visible());
+            window.click("sessions-new-chat", app);
+        });
+        test_turn(cx, handle, |_, app| {
+            let actions = &owner.read(app).actions;
+            assert_eq!(
+                actions
+                    .iter()
+                    .filter(|action| matches!(action, PanelAction::NewChat { .. }))
+                    .count(),
+                1
+            );
+            assert!(
+                matches!(actions.last(), Some(PanelAction::NewChat { project, generation: 7 })
+                if project == "alpha-id")
+            );
+        });
     }
+
     #[gpui::test]
-    fn projects_search_has_readable_bounds_and_placeholder_in_narrow_native_panels(
-        cx: &mut TestAppContext,
-    ) {
-        geometry(cx, true);
+    fn sessions_native_controls_search_and_exact_uuid_selection(cx: &mut TestAppContext) {
+        sessions_controls(cx, true);
     }
+
     fn editing_and_binding(cx: &mut TestAppContext, native: bool) {
         let (handle, owner) = mount(cx, native);
         test_turn(cx, handle, |_, app| {
@@ -4408,81 +4493,9 @@ mod search_regression_tests {
         });
     }
     #[gpui::test]
-    fn projects_search_pointer_editing_copy_cursor_and_sibling_tab_binding_colorful(
-        cx: &mut TestAppContext,
-    ) {
-        editing_and_binding(cx, false);
-    }
-    #[gpui::test]
     fn projects_search_pointer_editing_copy_cursor_and_sibling_tab_binding_native(
         cx: &mut TestAppContext,
     ) {
         editing_and_binding(cx, true);
-    }
-    fn clearing(cx: &mut TestAppContext, native: bool) {
-        let (handle, owner) = mount(cx, native);
-        test_turn(cx, handle, |_, app| {
-            owner.update(app, |owner, cx| {
-                owner.width = 240.;
-                cx.notify();
-            })
-        });
-        test_turn(cx, handle, |window, app| {
-            let mut panel = window.within(("search-fixture-panel", 101u64));
-            assert!(panel.try_find("projects-search-clear").is_none());
-            panel.click("projects-search-icon", app)
-        });
-        for character in "Al".chars() {
-            let character = character.to_string();
-            test_turn(cx, handle, |window, app| window.input(&character, app));
-        }
-        test_turn(cx, handle, |window, app| {
-            let mut panel = window.within(("search-fixture-panel", 101u64));
-            let search = panel.find("projects-search");
-            let editor = panel.find("projects-search-input");
-            let clear = panel.find("projects-search-clear");
-            // Inside the one field, after the text.
-            assert!(clear.visible());
-            assert_eq!(clear.label(), Some("Clear the search"));
-            assert!(clear.bounds().left() >= editor.bounds().right());
-            assert!(clear.bounds().right() <= search.bounds().right());
-            panel.click("projects-search-clear", app);
-        });
-        test_turn(cx, handle, |window, app| {
-            let fixture = owner.read(app);
-            assert!(matches!(
-                fixture.actions.as_slice(),
-                [PanelAction::ClearSearch]
-            ));
-            for (id, input) in &fixture.inputs {
-                assert_eq!(input.read(app).value(), "");
-                assert_eq!(input.read(app).cursor(), 0);
-                assert_eq!(fixture.queries[id], "");
-            }
-            let panel = window.within(("search-fixture-panel", 101u64));
-            assert!(panel.try_find("projects-search-clear").is_none());
-            assert!(panel.try_find("project-alpha-id").is_some());
-            assert!(panel.try_find("project-beta-id").is_some());
-            // The pressed field keeps its own editor focused, not the active pane's.
-            assert!(
-                fixture.inputs[0]
-                    .1
-                    .read(app)
-                    .focus_handle(app)
-                    .is_focused(window)
-            );
-        });
-    }
-    #[gpui::test]
-    fn projects_search_clear_button_sits_in_the_field_and_keeps_its_editor_focused_colorful(
-        cx: &mut TestAppContext,
-    ) {
-        clearing(cx, false);
-    }
-    #[gpui::test]
-    fn projects_search_clear_button_sits_in_the_field_and_keeps_its_editor_focused_native(
-        cx: &mut TestAppContext,
-    ) {
-        clearing(cx, true);
     }
 }

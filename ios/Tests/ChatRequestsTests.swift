@@ -271,6 +271,59 @@ final class ChatRequestsTests: XCTestCase {
         XCTAssertTrue(ChatControlError.outcomeUnknown(.command).message.contains("may or may not have gone through"))
         XCTAssertEqual(ChatControlError.notFound(.create(.codex)).message, "That project or worktree no longer exists on the Mac. Refresh and try again.")
     }
+    // MARK: One chat for both providers
+
+    func testASwitchNamesTheProviderAndOnlyWhatWasChosen() throws {
+        let bare = try ChatCommandRequest(chatID: chat, command: .switchProvider(provider: .claude))
+        XCTAssertEqual(bare.params["command"], try value(#"{"command":"switch","provider":"claude"}"#), "its default: nothing else is sent")
+        let full = try ChatCommandRequest(chatID: chat, command: .switchProvider(provider: .codex, model: "gpt-5.5", effort: "high", fast: false))
+        XCTAssertEqual(full.params["command"], try value(#"{"command":"switch","provider":"codex","model":"gpt-5.5","effort":"high","fast":false}"#))
+        XCTAssertEqual(try ChatCommandRequest(params: full.params), full)
+        XCTAssertNoThrow(try RequestValidation.validate(method: "chat.command", params: bare.params, id: requestID))
+        // As the desktop: a provider is needed, and a model or an effort is one it would take.
+        XCTAssertThrowsError(try ChatCommandRequest(params: ["chat_id": .string(chat), "command": try value(#"{"command":"switch","model":"o"}"#)]))
+        XCTAssertThrowsError(try ChatCommandRequest(params: ["chat_id": .string(chat), "command": try value(#"{"command":"switch","provider":"grok"}"#)]))
+        XCTAssertThrowsError(try ChatCommandRequest(chatID: chat, command: .switchProvider(provider: .claude, model: " "))) { XCTAssertEqual($0 as? ChatValidationError, .blankSetting(field: "model")) }
+        XCTAssertThrowsError(try ChatCommandRequest(chatID: chat, command: .switchProvider(provider: .claude, effort: String(repeating: "e", count: 33)))) {
+            XCTAssertEqual($0 as? ChatValidationError, .textTooLong(field: "effort", limit: 32))
+        }
+        XCTAssertEqual(ChatProvider.codex.other, .claude); XCTAssertEqual(ChatProvider.claude.other, .codex)
+    }
+    func testAModelsRequestIsAProviderAndMaybeAProjectAndItsAnswerIsForThatProvider() throws {
+        let request = try ChatModelsRequest(provider: .claude, projectID: project)
+        XCTAssertEqual(request.params, ["provider": .string("claude"), "project_id": .string(project)])
+        XCTAssertEqual(try ChatModelsRequest(params: request.params), request)
+        XCTAssertEqual(try ChatModelsRequest(provider: .codex).params, ["provider": .string("codex")])
+        XCTAssertNoThrow(try RequestValidation.validate(method: "chat.models", params: request.params, id: requestID))
+        for bad: [String: JSONValue] in [[:], ["provider": .string("grok")], ["provider": .string("codex"), "project_id": .string("nope")], ["provider": .string("codex"), "extra": .null]] {
+            XCTAssertThrowsError(try RequestValidation.validate(method: "chat.models", params: bad, id: requestID), "\(bad)")
+        }
+        let reply = try request.parse(try value(#"{"provider":"claude","models":[{"id":"opus","name":"Opus","efforts":["low","high"],"supports_fast":true},{"name":"no id"}],"configured":["sonnet",3],"account_label":null,"error":null}"#))
+        XCTAssertEqual(reply.models, [ChatModelOption(id: "opus", name: "Opus", efforts: ["low", "high"], supportsFast: true)], "a model the phone cannot read is left out")
+        XCTAssertEqual(reply.configured, ["sonnet"]); XCTAssertNil(reply.accountLabel); XCTAssertNil(reply.error)
+        let empty = try ChatModelsRequest(provider: .codex).parse(try value(#"{"provider":"codex","models":[],"configured":[],"account_label":"Work","error":"The Codex account Work cannot be used."}"#))
+        XCTAssertTrue(empty.models.isEmpty); XCTAssertEqual(empty.accountLabel, "Work"); XCTAssertEqual(empty.error, "The Codex account Work cannot be used.")
+        for bad in [#"{"provider":"codex","models":[]}"#, #"{"provider":"claude"}"#, #"[]"#] { XCTAssertThrowsError(try request.parse(try value(bad)), bad) }
+    }
+    func testTheNewFeaturesAreReadOnlyWhenTheDesktopSaysTrue() throws {
+        let none = DesktopFeatures(ready: try value(#"{"features":{"chat":true}}"#))
+        XCTAssertFalse(none.shellCreateAsSettings); XCTAssertFalse(none.chatProviderSwitch); XCTAssertFalse(none.chatModels)
+        let all = DesktopFeatures(ready: try value(#"{"features":{"chat":true,"shell_create_as_settings":true,"chat_provider_switch":true,"chat_models":true}}"#))
+        XCTAssertTrue(all.shellCreateAsSettings); XCTAssertTrue(all.chatProviderSwitch); XCTAssertTrue(all.chatModels)
+        let odd = DesktopFeatures(ready: try value(#"{"features":{"shell_create_as_settings":"yes","chat_provider_switch":1,"chat_models":false}}"#))
+        XCTAssertFalse(odd.shellCreateAsSettings); XCTAssertFalse(odd.chatProviderSwitch); XCTAssertFalse(odd.chatModels)
+    }
+    func testACarriedOverInfoReadsAndOneWithoutIsUnchanged() throws {
+        let text = #"{"id":"\#(chat)","provider":"claude","cwd":"/w","title":"t","created_at_unix":1,"carried_over":{"document":"/home/chats/c/context.md","from":"Codex chat \"t\" (c)"}}"#
+        let info = try value(text).decode(ChatInfo.self)
+        XCTAssertEqual(info.carriedOver, ChatCarriedOver(document: "/home/chats/c/context.md", from: "Codex chat \"t\" (c)"))
+        XCTAssertEqual(try JSONDecoder().decode(ChatInfo.self, from: JSONEncoder().encode(info)), info)
+        // A field the phone cannot read is left out, never the chat.
+        let odd = try value(#"{"id":"\#(chat)","provider":"codex","cwd":"/w","title":"t","created_at_unix":1,"carried_over":"elsewhere"}"#).decode(ChatInfo.self)
+        XCTAssertNil(odd.carriedOver)
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(odd), as: UTF8.self).contains("carried_over"))
+    }
+
 }
 
 final class LatestFirstRequestTests: XCTestCase {
@@ -327,4 +380,5 @@ extension LatestFirstRequestTests {
         XCTAssertEqual(ChatControlError.from(RemoteError.rpc(code: "cli_error", message: "host unavailable"), operation: .events), .failed("host unavailable"))
         XCTAssertEqual(ChatControlError.from(RemoteError.timeout, operation: .events), .outcomeUnknown(.events))
     }
+
 }

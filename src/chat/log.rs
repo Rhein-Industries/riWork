@@ -21,6 +21,8 @@ use uuid::Uuid;
 
 const INFO: &str = "info.json";
 const EVENTS: &str = "events.jsonl";
+/// What a chat that switched provider passes on (`ChatLog::save_context`).
+const CONTEXT: &str = "context.md";
 
 /// Where all chats live.
 pub fn chats_dir(home: &Path) -> PathBuf {
@@ -104,11 +106,23 @@ impl ChatLog {
     /// a partial write.
     pub fn save_info(&self, info: &ChatInfo) -> Result<(), String> {
         let data = serde_json::to_vec_pretty(info).map_err(|error| error.to_string())?;
-        let path = self.dir.join(INFO);
-        let temporary = self.dir.join(format!(".info-{}.tmp", Uuid::new_v4()));
+        self.replace(INFO, &data).map(drop)
+    }
+
+    /// Writes the conversation a chat passes on when it switches provider
+    /// (`ChatInfo::carried_over`), replacing the one an earlier switch wrote, and returns
+    /// where it is. It goes with the chat when the chat is deleted.
+    pub fn save_context(&self, text: &str) -> Result<PathBuf, String> {
+        self.replace(CONTEXT, text.as_bytes())
+    }
+
+    /// Replaces the file `name` of the chat's folder whole, owner-only.
+    fn replace(&self, name: &str, data: &[u8]) -> Result<PathBuf, String> {
+        let path = self.dir.join(name);
+        let temporary = self.dir.join(format!(".{name}-{}.tmp", Uuid::new_v4()));
         let result = (|| {
             let mut file = private_options().create_new(true).open(&temporary)?;
-            file.write_all(&data)?;
+            file.write_all(data)?;
             file.sync_all()?;
             fs::rename(&temporary, &path)
         })();
@@ -116,7 +130,7 @@ impl ChatLog {
             let _ = fs::remove_file(&temporary);
             return Err(format!("Cannot write {}: {error}", path.display()));
         }
-        Ok(())
+        Ok(path)
     }
 }
 
@@ -507,6 +521,8 @@ pub fn read_snapshot_with_features(
         controls.push(ChatEvent::Models {
             models: transcript.models.clone(),
         });
+        // No `Account`: a phone reads the controls as one list and refuses a reply with
+        // an event it does not know. It follows the live events, which skip one alone.
     }
     let mut items: Vec<_> = transcript
         .items
@@ -724,6 +740,7 @@ mod tests {
             state: ChatState::Starting,
             orchestrator: None,
             fast: false,
+            carried_over: None,
         }
     }
 

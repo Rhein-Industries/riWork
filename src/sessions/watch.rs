@@ -246,6 +246,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow: real /bin/cat child and wall-clock settle timing"]
     fn a_wait_ends_at_a_change_settles_and_never_overruns_its_time() {
         let mut sender = None;
         let mut watch = watch(&mut sender);

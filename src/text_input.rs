@@ -11,7 +11,10 @@ use gpui::{
 pub use gpui_kit::base::input::{InputBase, InputEvent, InputState, TextareaState};
 use gpui_kit::base::{
     ColorTokens, Theme, ThemeAppearance,
-    input::{Enter, Escape, IndentInline, Input, InputBaseState, InputModeKind, OutdentInline, Paste, Textarea},
+    input::{
+        Enter, Escape, IndentInline, Input, InputBaseState, InputModeKind, OutdentInline, Paste,
+        Textarea,
+    },
 };
 
 use crate::{settings::Settings, theme, ui_text};
@@ -188,6 +191,31 @@ pub fn on_paste<M: InputModeKind>(
             && let Some(clipboard) = cx.read_from_clipboard()
             && handler(&clipboard, window, cx)
         {
+            cx.stop_propagation();
+        }
+    })
+}
+
+/// Composer-specific reader. Forms keep `on_paste` and Kit's ordinary text path.
+/// Read errors are offered to the owner so image failures cannot fall through to text.
+pub fn on_paste_with_reader<M: InputModeKind>(
+    frame: InputBase,
+    state: &Entity<InputBaseState<M>>,
+    reader: impl Fn(&mut App) -> Result<Option<ClipboardItem>, String> + 'static,
+    handler: impl Fn(Result<&ClipboardItem, &str>, &mut Window, &mut App) -> bool + 'static,
+) -> InputBase {
+    let state = state.clone();
+    frame.capture_action(move |_: &Paste, window, cx| {
+        if !state.read(cx).is_editable() || !state.read(cx).focus_handle(cx).is_focused(window) {
+            return;
+        }
+        let clipboard = reader(cx);
+        let consumed = match &clipboard {
+            Ok(Some(item)) => handler(Ok(item), window, cx),
+            Err(error) => handler(Err(error), window, cx),
+            Ok(None) => false,
+        };
+        if consumed {
             cx.stop_propagation();
         }
     })

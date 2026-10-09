@@ -42,8 +42,8 @@ use super::client;
 use super::driver::{Driver, DriverConfig, StartDriver};
 use super::log::{self, ChatLog};
 use super::model::{
-    ChatCommand, ChatEvent, ChatInfo, ChatState, Decision, Item, ItemBody, NewChat,
-    ORCHESTRATOR_EXISTS, OrchestratorScope, Provider, Transcript, TurnOutcome, notice_kind,
+    CarriedOver, ChatCommand, ChatEvent, ChatInfo, ChatState, Decision, Item, ItemBody, ItemStatus,
+    NewChat, NoticeLevel, ORCHESTRATOR_EXISTS, OrchestratorScope, Provider, Transcript, TurnOutcome, notice_kind,
 };
 use super::wire::{Envelope, Request, Response};
 use fs2::FileExt;
@@ -1328,10 +1328,7 @@ fn create_identified(
         })
         .map(|title| title.trim().to_owned())
         .filter(|title| !title.is_empty())
-        .unwrap_or_else(|| match new.provider {
-            Provider::Codex => "Codex chat".to_owned(),
-            Provider::Claude => "Claude chat".to_owned(),
-        });
+        .unwrap_or_else(|| default_title(new.provider).to_owned());
     let info = ChatInfo {
         parent_id: new.parent_id,
         user_title: new
@@ -1356,6 +1353,7 @@ fn create_identified(
         codex_account_id: account,
         state: ChatState::Starting,
         orchestrator: new.orchestrator,
+        carried_over: None,
     };
     let dir = log::chat_dir(&shared.home, &id).ok_or("invalid chat id")?;
     let log = ChatLog::create(&dir, &info)?;
@@ -1381,6 +1379,21 @@ fn create_identified(
     // message is in the chat, and the next message tries again.
     let _ = ensure_running(shared, &chat);
     Ok(chat.info())
+}
+
+/// The title of a chat that was given none.
+fn default_title(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Codex => "Codex chat",
+        Provider::Claude => "Claude chat",
+    }
+}
+
+fn provider_name(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Codex => "Codex",
+        Provider::Claude => "Claude",
+    }
 }
 
 /// An orchestrator chat belongs to its scope: the global orchestrator has no
@@ -1819,6 +1832,29 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
         stop(chat);
         return Ok(());
     }
+    let command = match command {
+        ChatCommand::Switch {
+            provider,
+            model,
+            effort,
+            fast,
+        } if provider != chat.info().provider => {
+            return switch(shared, chat, provider, model, effort, fast);
+        }
+        // The provider the chat has already: the rest is an ordinary change.
+        ChatCommand::Switch {
+            model,
+            effort,
+            fast,
+            ..
+        } => ChatCommand::Configure {
+            model,
+            effort,
+            approval_mode: None,
+            fast,
+        },
+        command => command,
+    };
     // A Configure that changes nothing is a tab's Retry: resume the provider.
     let retry = matches!(
         &command,
@@ -1871,6 +1907,100 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
     {
         configure(chat, model, effort, approval_mode, fast);
     }
+    Ok(())
+}
+
+/// Moves the chat to `provider`. The chat keeps its id, its log, its subscribers and its
+/// approval mode; its agent is stopped, the conversation so far is written down for the new
+/// one (`handoff::chat_document`, kept as `context.md` in the chat's folder and named by
+/// `ChatInfo::carried_over`), and the new agent starts on a thread of its own, with that
+/// conversation in its instructions (`launch`). The log says it twice: an `Info` with the new
+/// provider, which makes a `Transcript` drop the old provider's models and usage, and a
+/// notice item that reads as a divider in any client. Refused while a turn runs or waits for
+/// the user, and before anything changes when the new provider cannot have the chat (a Codex
+/// account that cannot be used). A new agent that cannot start leaves the chat failed with
+/// its reason, as a new chat does; the switch stands and the next message tries again.
+fn switch(
+    shared: &Shared,
+    chat: &Arc<Chat>,
+    provider: Provider,
+    model: Option<String>,
+    effort: Option<String>,
+    fast: Option<bool>,
+) -> Result<(), String> {
+    {
+        let _turn = lock(&chat.lifecycle);
+        let before = {
+            let inner = lock(&chat.inner);
+            if inner.deleted {
+                return Err("this chat was deleted".into());
+            }
+            if inner.broken {
+                return Err("this chat's event log cannot be written".into());
+            }
+            let at_work = matches!(inner.info.state, ChatState::Running | ChatState::Waiting)
+                || inner.open.turn.is_some()
+                || !inner.open.approvals.is_empty()
+                || !inner.open.questions.is_empty();
+            if at_work {
+                return Err(format!(
+                    "Wait for the turn to finish, or interrupt it, before going on with {}.",
+                    provider_name(provider)
+                ));
+            }
+            inner.info.clone()
+        };
+        if shared.quit.load(Ordering::SeqCst) {
+            return Err("the chat host is shutting down".into());
+        }
+        let account =
+            (shared.providers.account)(&shared.home, provider, before.project_id.as_deref(), None)?;
+        // Read before the agent stops, so a log that cannot be read leaves the chat as it was.
+        // No turn is open, so nothing the conversation says is still on its way.
+        let document = crate::handoff::chat_document(&shared.home, &before)?;
+        stop_locked(chat);
+        let mut inner = lock(&chat.inner);
+        if inner.deleted || inner.broken {
+            return Err("this chat cannot go on".into());
+        }
+        let path = inner.log.save_context(&document)?;
+        let info = &mut inner.info;
+        info.provider = provider;
+        info.provider_thread_id = None;
+        info.model = model.filter(|model| !model.is_empty());
+        info.effort = effort.filter(|effort| !effort.is_empty());
+        info.fast = fast.unwrap_or(false);
+        info.codex_account_id = account;
+        if info.title == default_title(before.provider) {
+            info.title = default_title(provider).to_owned();
+        }
+        info.carried_over = Some(CarriedOver {
+            document: path,
+            from: crate::handoff::chat_label(before.provider, &before.title, &before.id),
+        });
+        let text = match &info.model {
+            Some(model) => format!(
+                "Continued with {} ({model}), which has the conversation so far.",
+                provider_name(provider)
+            ),
+            None => format!(
+                "Continued with {}, which has the conversation so far.",
+                provider_name(provider)
+            ),
+        };
+        inner.publish_info();
+        let id = format!("switch-{}", inner.next_seq);
+        inner.append(ChatEvent::ItemCompleted {
+            item: Item {
+                presentation: Default::default(),
+                id,
+                turn_id: None,
+                status: ItemStatus::Completed,
+                body: ItemBody::notice(NoticeLevel::Info, text, None),
+            },
+        });
+    }
+    let _ = ensure_running(shared, chat);
     Ok(())
 }
 

@@ -118,8 +118,10 @@ impl Driver for FakeDriver {
             _ => return Ok(()),
         };
         self.turn += 1;
-        let turn = format!("turn-{}", self.turn);
-        let agent = format!("agent-{}", self.turn);
+        // Unique across runs, as a real provider's ids are: a resumed or switched chat
+        // folds the items of every run into one transcript.
+        let turn = format!("turn-{}-{}", self.number, self.turn);
+        let agent = format!("agent-{}-{}", self.number, self.turn);
         let fake = &self.fake;
         fake.emit(ChatEvent::State {
             state: ChatState::Running,
@@ -130,7 +132,7 @@ impl Driver for FakeDriver {
         fake.emit(ChatEvent::ItemStarted {
             item: Item {
                 presentation: Default::default(),
-                id: format!("user-{}", self.turn),
+                id: format!("user-{}-{}", self.number, self.turn),
                 turn_id: Some(turn.clone()),
                 status: ItemStatus::Completed,
                 body: ItemBody::UserMessage { text: text.clone() },
@@ -246,6 +248,7 @@ pub fn placeholder_info(config: &DriverConfig, thread_id: &str) -> ChatInfo {
         codex_account_id: None,
         state: ChatState::Idle,
         orchestrator: None,
+        carried_over: None,
     }
 }
 
@@ -265,6 +268,7 @@ fn fake_config(
         resume,
         outstanding_notices: Default::default(),
         extra_args: Vec::new(),
+        instructions: super::launch::instructions(info),
         env: Vec::new(),
         env_remove: Vec::new(),
     })
@@ -303,6 +307,50 @@ pub fn short_home() -> PathBuf {
     let home = std::env::temp_dir().join(format!("rwh-{}", &Uuid::new_v4().to_string()[..6]));
     std::fs::create_dir_all(&home).unwrap();
     home
+}
+
+/// An exclusively created private root for protocol-only socket fixtures.
+/// This helper never constructs a Host, provider or SessionManager. It lives
+/// under `/tmp`, not `$TMPDIR`: macOS's per-user temp directory is long enough
+/// that `<root>/run/chat.sock` would exceed a Unix socket path's 103 bytes.
+pub fn private_socket_fixture_home() -> PathBuf {
+    use std::os::unix::fs::DirBuilderExt;
+    let root = Path::new("/tmp").join(format!("rwcp-{}", &Uuid::new_v4().simple().to_string()[..12]));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&root)
+        .unwrap();
+    root.canonicalize().unwrap()
+}
+
+/// Fixture-only accept/read/write deadlines; no production host or socket.
+pub fn bounded_fixture_accept(
+    listener: &std::os::unix::net::UnixListener,
+) -> std::os::unix::net::UnixStream {
+    listener.set_nonblocking(true).unwrap();
+    let end = Instant::now() + Duration::from_secs(5);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // macOS can inherit O_NONBLOCK from the listener. The fixture
+                // reads bounded frames with SO_RCVTIMEO rather than polling.
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                return stream;
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < end =>
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("private fixture accept failed or timed out: {error}"),
+        }
+    }
 }
 
 /// Starts a host with fake drivers. Another test may fork a child (a stub

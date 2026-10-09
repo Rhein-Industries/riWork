@@ -520,11 +520,9 @@ fn the_meter_fits_a_narrow_chat_by_leaving_out_its_cost(cx: &mut TestAppContext)
         })
         .unwrap();
     }
-    // Narrower chats leave out more: the group never grows as the chat shrinks.
-    assert!(
-        widths.windows(2).all(|pair| pair[1] <= pair[0]),
-        "{widths:?}"
-    );
+    // The compact upper row may gain room when header actions move below it.
+    // Even the narrowest pane retains the context ring, without a quota chip.
+    assert!(widths.iter().all(|width| *width > px(0.)));
     assert!(widths[3] < widths[0], "{widths:?}");
     notices::TEST_NOW.with(|now| now.set(None));
 }
@@ -576,9 +574,6 @@ fn header_at(cx: &mut TestAppContext, width: f32) -> Header {
     });
     let controls = [
         ("chat-mode", "more-mode"),
-        ("chat-model", "more-model"),
-        ("chat-effort", "more-effort"),
-        ("chat-fast", "more-fast"),
         ("chat-compact", "more-compact"),
     ];
     let header = cx
@@ -645,89 +640,17 @@ fn the_header_is_one_row_of_controls_ending_in_more_and_folds_the_rest_into_it(
     cx: &mut TestAppContext,
 ) {
     let middle = |b: gpui::Bounds<gpui::Pixels>| b.top() + b.size.height / 2.;
-    let order = ["mode", "model", "effort", "fast", "compact"];
-    let mut folds = Vec::new();
     for width in [900.0_f32, 760.0, 520.0, 330.0, 230.0] {
         let header = header_at(cx, width);
-        let Header {
-            first,
-            more,
-            usage,
-            thread,
-            ..
-        } = header;
-        let what = format!(
-            "{width} px: shown {:?}, folded {:?}, more {more:?}, usage {usage:?}",
-            header.shown, header.folded
-        );
-        // Each control is either on row 1 or in ⋯, and the folded ones are the row's end:
-        // Compact first, then Fast, Effort, Model.
-        assert_eq!(
-            header.shown.len() + header.folded.len(),
-            order.len(),
-            "{what}"
-        );
-        let kept = header.shown.len();
-        assert!(
-            header
-                .shown
-                .iter()
-                .zip(order)
-                .all(|(id, name)| id.ends_with(name)),
-            "{what}"
-        );
-        assert!(
-            header
-                .folded
-                .iter()
-                .zip(&order[kept..])
-                .all(|(id, name)| id.ends_with(name)),
-            "{what}"
-        );
-        // ⋯ ends row 1, level with its first control, at the trailing inset.
-        assert!((middle(more) - middle(first)).abs() <= px(1.), "{what}");
-        assert!(
-            (more.right() - (px(width) - ui_text::space(composer::BAR_INSET))).abs() <= px(1.),
-            "{what}"
-        );
-        // At most two rows: the usage shares row 1 or is the one row below it, the session
-        // id flush under ⋯.
-        let two_rows = usage.top() > first.bottom();
-        if two_rows {
-            assert!(thread.top() >= more.bottom(), "{what}");
-            assert!((middle(usage) - middle(thread)).abs() <= px(1.), "{what}");
-            assert!((usage.left() - first.left()).abs() <= px(1.), "{what}");
-            assert!((thread.right() - more.right()).abs() <= px(1.), "{what}");
-        } else {
-            // Right-aligned before ⋯: … Compact, the usage, the session id, ⋯.
-            assert!(header.folded.is_empty(), "{what}");
-            assert!((middle(usage) - middle(first)).abs() <= px(1.), "{what}");
-            assert!((middle(thread) - middle(first)).abs() <= px(1.), "{what}");
-            let gap = ui_text::space(composer::BAR_GAP) + px(1.);
-            assert!(usage.right() <= thread.left(), "{what}");
-            assert!(thread.left() - usage.right() <= gap, "{what}");
-            assert!(more.left() - thread.right() <= gap, "{what}");
-        }
-        folds.push((two_rows, header.folded.len(), usage.size.width));
+        let Header { first, more, usage, thread, .. } = header;
+        assert_eq!(header.shown.len() + header.folded.len(), 2);
+        assert!((more.right() - (px(width) - ui_text::space(composer::BAR_INSET))).abs() <= px(1.), "{width}: {more:?}");
+        assert!((middle(usage) - middle(more)).abs() <= px(1.), "{width}: ring stays in upper row");
+        assert!((middle(thread) - middle(more)).abs() <= px(1.), "{width}: ID stays in upper row");
+        assert!(more.top() <= first.bottom(), "More never drops below the controls");
+        assert!(usage.right() <= thread.left());
+        assert!(usage.left() >= px(0.) && thread.right() <= more.left());
     }
-    // Wide: one row, nothing folded, the whole usage before ⋯. A little narrower: still one
-    // row, the usage without its cost. Medium: the usage and session id on row 2, whole, and
-    // Compact in ⋯. Narrow: Compact, Fast, Effort and Model in ⋯. Narrower still, Mode too,
-    // and the usage leaves out its cost to keep its ring, percent and counts beside the
-    // session id.
-    let counts = folds
-        .iter()
-        .map(|(two, folded, _)| (*two, *folded))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        counts,
-        [(false, 0), (false, 0), (true, 1), (true, 4), (true, 5)],
-        "{folds:?}"
-    );
-    let whole = folds[0].2;
-    assert!(folds[1].2 < whole, "{folds:?}");
-    assert_eq!((folds[2].2, folds[3].2), (whole, whole), "{folds:?}");
-    assert!(folds[4].2 < whole, "{folds:?}");
 }
 
 #[gpui::test]

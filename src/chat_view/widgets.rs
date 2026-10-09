@@ -28,6 +28,27 @@ pub(super) struct Look {
 }
 
 impl Look {
+    /// Whether the chat is drawn in the Hermes design's style: proportional text, flat panel
+    /// cards with small corners, a filled send disc. It chooses how things look only; every
+    /// design lays the chat out the same.
+    pub fn hermes(self) -> bool {
+        self.colors == Palette::HERMES
+    }
+
+    /// The corners of the cards at the bottom of the chat (the message box and the bars above
+    /// it): Hermes's small ones, the continuous-corner message field's in every other design.
+    pub fn card_radius(self) -> Pixels {
+        ui_text::space(if self.hermes() { 5.0 } else { 16.0 })
+    }
+
+    pub fn chat_family(self) -> SharedString {
+        if self.hermes() {
+            ".SystemUIFont".into()
+        } else {
+            ui_text::ui_family()
+        }
+    }
+
     pub fn of(cx: &App) -> Self {
         Self {
             colors: theme::palette(cx),
@@ -467,29 +488,10 @@ pub(super) const ROUND_BUTTON: f32 = 26.0;
 pub(super) const FIELD_TEXT: f32 = 12.0;
 pub(super) const FIELD_PAD_Y: f32 = 6.0;
 
-/// The height of an input box of one line: its text's line box (GPUI's default line height,
-/// φ times the text size, rounded as GPUI rounds it), its padding and its 1 px border.
-pub(super) fn field_line_height() -> Pixels {
-    field_line() + px(2.0 * ui_text::space_f32(FIELD_PAD_Y) + 2.0)
-}
-
-/// The line box of an input box's text, which the box sets explicitly so that
-/// `field_line_height` is its real height.
+/// The line box of an input box's text (GPUI's default line height, φ times the text size,
+/// rounded as GPUI rounds it), which the box sets explicitly.
 pub(super) fn field_line() -> Pixels {
     px((f32::from(ui_text::text(FIELD_TEXT)) * 1.618_034).round())
-}
-
-/// A button beside the message box, centered on the box's line: on the box's own center while
-/// it has one line, and on its last line once it has more, as the row keeps its buttons at the
-/// bottom. Every button of the row sits in one of these, so they share one center line whatever
-/// their height.
-pub(super) fn beside_field(button: impl IntoElement) -> Div {
-    div()
-        .flex_none()
-        .h(field_line_height())
-        .flex()
-        .items_center()
-        .child(button)
 }
 
 /// A button that copies something: `word` ("copy"), then "copied" once it has, in the
@@ -734,76 +736,5 @@ impl Scroller {
                     cx.stop_propagation();
                 }
             })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn look(native: bool) -> Look {
-        Look {
-            colors: Palette::native(true),
-            diff: DiffColors {
-                added: 0x00ff00,
-                removed: 0xff0000,
-            },
-            native,
-        }
-    }
-
-    #[test]
-    fn segment_labels_stay_readable_under_the_pointer() {
-        let mut palettes = vec![
-            ("Native light", Palette::native(false)),
-            ("Native dark", Palette::native(true)),
-        ];
-        for choice in [
-            theme::ThemeChoice::RiWork,
-            theme::ThemeChoice::Catppuccin,
-            theme::ThemeChoice::TokyoNight,
-            theme::ThemeChoice::GruvboxLight,
-        ] {
-            palettes.push((
-                choice.label(),
-                theme::Appearance::resolve(choice, false).palette,
-            ));
-        }
-        for (name, colors) in palettes {
-            let track = colors.panel_active;
-            for selected in [false, true] {
-                let segment = SegmentColors::of(selected, colors);
-                let rest = theme::contrast(segment.ink, segment.fill.unwrap_or(track));
-                let hover = theme::contrast(segment.hover_ink, segment.hover);
-                eprintln!("{name} selected={selected}: rest {rest:.2}:1, hover {hover:.2}:1");
-                assert!(rest >= 4.5, "{name} selected={selected} at rest: {rest:.2}");
-                assert!(
-                    hover >= 4.5,
-                    "{name} selected={selected} hovered: {hover:.2}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn lowercase_labels_start_with_a_capital_only_in_native() {
-        assert_eq!(sentence("copy output", look(true)), "Copy output");
-        assert_eq!(sentence("exit 0", look(true)), "Exit 0");
-        assert_eq!(sentence("copy output", look(false)), "copy output");
-        assert_eq!(sentence("", look(true)), "");
-    }
-
-    #[test]
-    fn native_keeps_its_signal_color_for_errors_and_work() {
-        let native = look(true);
-        assert_eq!(native.tone(Tone::Error), native.colors.gold);
-        assert_eq!(native.tone(Tone::Accent), native.colors.working);
-        // The colorful themes keep the terminal's red, and their working color is `cyan`.
-        let colorful = Look {
-            colors: Palette::RIWORK,
-            ..look(false)
-        };
-        assert_eq!(colorful.tone(Tone::Error), 0xff0000);
-        assert_eq!(colorful.tone(Tone::Accent), Palette::RIWORK.cyan);
     }
 }

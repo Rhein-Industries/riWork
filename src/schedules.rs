@@ -780,10 +780,8 @@ impl ScheduleStore {
         ) -> Result<Delivery, String>,
     ) -> Result<(), String> {
         let lock = self.lock()?;
-        match FileExt::try_lock_exclusive(&lock) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
-            Err(e) => return Err(e.to_string()),
+        if !tick_lock(&lock)? {
+            return Ok(());
         }
         let mut ledger = self.read()?;
         let mut changed = false;
@@ -1009,6 +1007,32 @@ pub fn start(home: PathBuf, cx: &mut gpui::App) {
     })
     .detach();
 }
+
+/// Whether this tick takes the dispatch lock. Another process that is ticking holds it, and
+/// this tick is skipped; the next one runs. In a test run, a child process that another test
+/// forks keeps a copy of an old lock descriptor until it execs, which would skip a tick the
+/// test is counting on, so a test waits that out instead.
+fn tick_lock(lock: &File) -> Result<bool, String> {
+    let patience = if cfg!(test) {
+        Duration::from_secs(2)
+    } else {
+        Duration::ZERO
+    };
+    let deadline = std::time::Instant::now() + patience;
+    loop {
+        match FileExt::try_lock_exclusive(lock) {
+            Ok(()) => return Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return Ok(false);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "schedules_tests.rs"]
 mod tests;

@@ -27,6 +27,12 @@ public struct ChatTranscript: Sendable, Equatable {
     public mutating func apply(_ event: ChatEvent) {
         switch event {
         case .info(let info):
+            // A chat that went on with another provider starts over with what belongs to one: the new agent lists its own models and
+            // counts its own usage.
+            if let before = self.info, before.provider != info.provider {
+                models = []
+                usage = nil
+            }
             state = info.state
             self.info = info
         case .state(let state):

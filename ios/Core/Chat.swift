@@ -35,6 +35,8 @@ public enum ChatProvider: String, Codable, Sendable, CaseIterable, Hashable {
     public var title: String { self == .codex ? "Codex" : "Claude" }
     /// "Codex chat", "Claude chat": what a tab or a row calls it. Never "Claude Code".
     public var chatTitle: String { title + " chat" }
+    /// The provider a chat of this one can go on with (`switch`).
+    public var other: ChatProvider { self == .codex ? .claude : .codex }
 }
 
 /// How much the agent may do without asking (`ApprovalMode`).
@@ -96,6 +98,16 @@ public enum ChatState: Sendable, Equatable, Hashable, Codable {
     public var isBusy: Bool { self == .running || self == .waiting }
 }
 
+/// What a chat that went on with another provider passed on to its new agent (`CarriedOver`): the conversation so far, as a document on
+/// the Mac, and who had it. Read leniently: a chat that never switched has none.
+public struct ChatCarriedOver: Codable, Sendable, Equatable, Hashable {
+    /// Where the document is on the Mac. The phone never opens it.
+    public var document: String
+    /// Who had the conversation, as the document names it: `Codex chat "Fix it" (1234abcd)`.
+    public var from: String
+    public init(document: String, from: String) { self.document = document; self.from = from }
+}
+
 /// One chat, as the host knows it (`ChatInfo`).
 public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
     public var id: String
@@ -115,21 +127,23 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
     public var approvalMode: ChatApprovalMode
     public var codexAccountID: String?
     public var state: ChatState
+    /// Set once the chat went on with another provider (`switch`); nil for one that never did, and from a desktop that predates it.
+    public var carriedOver: ChatCarriedOver?
 
     public init(id: String, provider: ChatProvider, parentID: String? = nil, projectID: String? = nil, worktreeID: String? = nil, cwd: String = "", title: String = "",
                 createdAtUnix: UInt64 = 0, providerThreadID: String? = nil, model: String? = nil, effort: String? = nil, fast: Bool = false,
-                approvalMode: ChatApprovalMode = .supervised, codexAccountID: String? = nil, state: ChatState = .starting) {
+                approvalMode: ChatApprovalMode = .supervised, codexAccountID: String? = nil, state: ChatState = .starting, carriedOver: ChatCarriedOver? = nil) {
         self.parentID = parentID
         self.id = id; self.provider = provider; self.projectID = projectID; self.worktreeID = worktreeID; self.cwd = cwd; self.title = title
         self.createdAtUnix = createdAtUnix; self.providerThreadID = providerThreadID; self.model = model; self.effort = effort; self.fast = fast
-        self.approvalMode = approvalMode; self.codexAccountID = codexAccountID; self.state = state
+        self.approvalMode = approvalMode; self.codexAccountID = codexAccountID; self.state = state; self.carriedOver = carriedOver
     }
 
     private enum Keys: String, CodingKey {
         case id, provider, cwd, title, model, effort, fast, state
         case parentID = "parent_id"
         case projectID = "project_id", worktreeID = "worktree_id", createdAtUnix = "created_at_unix", providerThreadID = "provider_thread_id"
-        case approvalMode = "approval_mode", codexAccountID = "codex_account_id"
+        case approvalMode = "approval_mode", codexAccountID = "codex_account_id", carriedOver = "carried_over"
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -148,6 +162,7 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
         approvalMode = c.lenient(ChatApprovalMode.self, forKey: .approvalMode, default: .supervised)
         codexAccountID = try c.decodeIfPresent(String.self, forKey: .codexAccountID)
         state = c.tolerant(ChatState.self, forKey: .state) ?? .starting
+        carriedOver = c.tolerant(ChatCarriedOver.self, forKey: .carriedOver)
     }
     public func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
@@ -166,6 +181,7 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
         try c.encode(approvalMode, forKey: .approvalMode)
         try c.encodeIfPresent(codexAccountID, forKey: .codexAccountID)
         try c.encode(state, forKey: .state)
+        try c.encodeIfPresent(carriedOver, forKey: .carriedOver)
     }
 }
 
@@ -761,8 +777,13 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
     /// Closes a sticky notice (a usage limit, a sign-in) on every device: the host records it and re-emits it `dismissed`.
     case dismissNotice(itemID: String)
 
+    /// Goes on with the other provider (`switch`, `features.chat_provider_switch`): the same chat, its log and its tab, a new agent that is
+    /// given the conversation so far. `model`, `effort` and `fast` are the new provider's; left out, its default. Refused while a turn runs or
+    /// waits. A desktop that predates it refuses the command, so it is never taken for a `configure`.
+    case switchProvider(provider: ChatProvider, model: String? = nil, effort: String? = nil, fast: Bool? = nil)
+
     private enum Keys: String, CodingKey {
-        case command, text, decision, answers, model, effort, fast
+        case command, text, decision, answers, model, effort, fast, provider
         case requestID = "request_id", approvalMode = "approval_mode", itemID = "item_id"
     }
     public init(from decoder: any Decoder) throws {
@@ -779,6 +800,9 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
         case "compact": self = .compact
         case "stop": self = .stop
         case "dismiss_notice": self = .dismissNotice(itemID: try c.decode(String.self, forKey: .itemID))
+        case "switch":
+            self = .switchProvider(provider: try c.decode(ChatProvider.self, forKey: .provider), model: try c.decodeIfPresent(String.self, forKey: .model),
+                                   effort: try c.decodeIfPresent(String.self, forKey: .effort), fast: try c.decodeIfPresent(Bool.self, forKey: .fast))
         default: throw DecodingError.dataCorruptedError(forKey: .command, in: c, debugDescription: "Unknown command \(word)")
         }
     }
@@ -796,6 +820,9 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
         case .compact: try c.encode("compact", forKey: .command)
         case .stop: try c.encode("stop", forKey: .command)
         case .dismissNotice(let itemID): try c.encode("dismiss_notice", forKey: .command); try c.encode(itemID, forKey: .itemID)
+        case .switchProvider(let provider, let model, let effort, let fast):
+            try c.encode("switch", forKey: .command); try c.encode(provider, forKey: .provider)
+            try c.encodeIfPresent(model, forKey: .model); try c.encodeIfPresent(effort, forKey: .effort); try c.encodeIfPresent(fast, forKey: .fast)
         }
     }
 }

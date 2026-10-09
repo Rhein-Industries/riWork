@@ -66,6 +66,7 @@ pub fn chat_info(model: Option<&str>) -> ChatInfo {
         orchestrator: None,
         fast: false,
         state: ChatState::Idle,
+        carried_over: None,
     }
 }
 

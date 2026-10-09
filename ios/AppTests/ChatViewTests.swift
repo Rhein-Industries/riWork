@@ -1156,8 +1156,8 @@ import RiWorkCore
         let row = try XCTUnwrap(rig.layout.frames["attachments"]), field = try XCTUnwrap(rig.layout.frames["composer-field"])
         XCTAssertLessThanOrEqual(row.maxY, field.minY + 1, "above the field")
         let surface = try XCTUnwrap(rig.layout.frames["composer"])
-        XCTAssertEqual(surface.minX, ChatItemRow.horizontalInset, accuracy: 0.5, "the field has the transcript's margin")
-        XCTAssertEqual(surface.maxX, rig.window.bounds.width - ChatItemRow.horizontalInset, accuracy: 0.5, "on both sides")
+        XCTAssertEqual(surface.minX, 10, accuracy: 0.5, "the field floats 10 points from the edge")
+        XCTAssertEqual(surface.maxX, rig.window.bounds.width - 10, accuracy: 0.5, "on both sides")
         XCTAssertEqual(row.minX, 0, accuracy: 0.5, "the card row spans the width (its first card is inset to the margin)")
         XCTAssertGreaterThan(field.minX, surface.minX, "the paperclip sits inside the field, before the text")
         rig.model.removeStagedAttachment(staged(2, "notes.pdf").id, from: chatID)
@@ -2836,7 +2836,7 @@ import RiWorkCore
         window.rootViewController = host
         window.makeKeyAndVisible()
         windows.append(window)
-        sheet.select(kind: .claudeChat)
+        sheet.selectChat(.claude)
         try await Task.sleep(for: .milliseconds(300))
         window.layoutIfNeeded()
         let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
@@ -2844,7 +2844,7 @@ import RiWorkCore
             try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
             try? data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("new-chat-sheet.png"))
         }
-        XCTAssertEqual(sheet.form.kinds.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Codex chat", "Claude chat"])
+        XCTAssertEqual(sheet.form.kinds.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Chat"], "one chat for both providers")
         await finish(rig)
     }
 
@@ -2906,7 +2906,7 @@ import RiWorkCore
             try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
             try? data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("new-orchestrator-sheet.png"))
         }
-        XCTAssertEqual(sheet.form.kinds.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Codex chat", "Claude chat", "Project orchestrator", "Global orchestrator"])
+        XCTAssertEqual(sheet.form.kinds.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Chat", "Project orchestrator", "Global orchestrator"])
         XCTAssertFalse(sheet.form.fields.contains(.target))
         // The keyboard reaches both rows from the kind list, and Return opens.
         sheet.press(.down)

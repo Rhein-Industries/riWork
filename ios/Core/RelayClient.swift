@@ -22,7 +22,7 @@ public enum RequestValidation {
         case "shell.keys": required = ["shell_id", "batch", "items"]; optional = []
         case "shell.resize": required = ["shell_id", "columns", "rows"]; optional = []
         case "shell.resize.clear": required = ["shell_id"]; optional = []
-        case "shell.create": required = ["kind"]; optional = ["project_id", "worktree_id", "unrestricted", "command"]
+        case "shell.create": required = ["kind"]; optional = ["project_id", "worktree_id", "unrestricted", "as_settings", "command"]
         case "shell.close": required = ["shell_id"]; optional = []
         case "project.create": required = ["name"]; optional = ["git"]
         case "orchestrator.create": required = []; optional = ["project_id"]
@@ -32,6 +32,7 @@ public enum RequestValidation {
         case "chat.events": required = ["chat_id", "since", "wait_ms"]; optional = ["max_events", "complete", "bounded", "features"]
         case "chat.command": required = ["chat_id", "command"]; optional = []
         case "chat.stop": required = ["chat_id"]; optional = []
+        case "chat.models": required = ["provider"]; optional = ["project_id"]
         case "upload.begin", "upload.chunk", "upload.finish", "upload.cancel", "shell.paste":
             (required, optional) = UploadRequests.methods[method] ?? ([], [])
         default: throw RemoteError.protocolViolation("Unsupported operation.")
@@ -87,6 +88,7 @@ public enum RequestValidation {
                 }
             case "chat.events": _ = try ChatEventsRequest(params: params)
             case "chat.command": _ = try ChatCommandRequest(params: params)
+            case "chat.models": _ = try ChatModelsRequest(params: params)
             default: break
             }
         } catch { throw RemoteError.protocolViolation(error.localizedDescription) }

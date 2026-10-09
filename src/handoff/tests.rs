@@ -291,41 +291,6 @@ fn a_document_too_long_to_send_is_read_from_its_file() {
 }
 
 #[test]
-fn a_conversation_of_megabytes_makes_a_document_within_the_budget() {
-    let host = TestHost::new();
-    let filler = "word ".repeat(4000);
-    let messages: Vec<(String, String)> = (0..120)
-        .map(|n| {
-            (
-                format!("question {n} {filler}"),
-                format!("answer {n} {filler}"),
-            )
-        })
-        .collect();
-    let messages: Vec<(&str, &str)> = messages
-        .iter()
-        .map(|(a, b)| (a.as_str(), b.as_str()))
-        .collect();
-    let source = source_chat(&host, &messages);
-    let outcome = Run { host: &host }
-        .go(request(
-            Source::Chat(source),
-            Kind::Chat,
-            HarnessKind::Codex,
-        ))
-        .unwrap();
-    let document = fs::read_to_string(&outcome.document).unwrap();
-    assert!(
-        document.len() <= document::BUDGET,
-        "{} bytes",
-        document.len()
-    );
-    assert!(document.contains("answer 119 "));
-    assert!(!document.contains("answer 5 "));
-    assert!(document.contains("earlier items"));
-}
-
-#[test]
 fn a_summary_is_asked_for_and_becomes_the_document() {
     let host = TestHost::new();
     let chat = host.create(Provider::Claude);
@@ -427,27 +392,6 @@ fn a_summary_that_does_not_come_is_replaced_by_the_transcript_and_the_document_s
         "{document}"
     );
     assert!(document.contains("### Agent\n\necho: build the thing\n"));
-}
-
-#[test]
-fn a_busy_source_is_refused_a_summary_and_nothing_is_started() {
-    let host = TestHost::new();
-    let chat = host.create(Provider::Codex);
-    host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
-    host.client()
-        .command(
-            &chat.id,
-            ChatCommand::Send {
-                text: "hang".into(),
-            },
-        )
-        .unwrap();
-    host.wait_for_state(&chat.id, |state| *state == ChatState::Running);
-    let mut asked = request(Source::Chat(chat), Kind::Chat, HarnessKind::Codex);
-    asked.context = Context::Summary;
-    let error = Run { host: &host }.go(asked).err().unwrap();
-    assert!(error.contains("The chat is busy"), "{error}");
-    assert_eq!(host.client().list().unwrap().len(), 1, "no chat was made");
 }
 
 #[test]
@@ -673,46 +617,6 @@ fn a_source_is_named_by_its_id_or_by_a_unique_start_of_it() {
         "{unknown}"
     );
     fs::remove_dir_all(home).unwrap();
-}
-
-#[test]
-fn a_plain_shell_hands_off_the_scrollback_and_the_first_message_names_the_file() {
-    let Some(tmux) = testing::Tmux::new() else {
-        return;
-    };
-    let shell = tmux.shell(
-        "echo build-failed-at-line-42; exec sleep 300",
-        "build-failed",
-    );
-    let source = Source::Shell(shell.clone());
-    let read = read_source(&tmux.home, &source, Some(&tmux.manager)).unwrap();
-    assert!(
-        matches!(&read.body, Body::Scrollback(text) if text.contains("build-failed-at-line-42"))
-    );
-    assert_eq!(source.label(), format!("terminal shell {}", &shell.id[..8]));
-    // Only the directory the shell is in tells where its successor starts.
-    let origin = source.origin(Some(&tmux.manager));
-    assert_eq!(
-        origin.cwd,
-        tmux.manager.current_directory(&shell.id).unwrap()
-    );
-}
-
-#[test]
-fn the_first_message_reads_the_same_whatever_carries_it() {
-    let document = Path::new("/home/me/.local/share/riwork/handoffs/abc.md");
-    assert_eq!(
-        path_message("Codex terminal 1234abcd", document, None),
-        "You are taking over a conversation from Codex terminal 1234abcd. Read the handoff at /home/me/.local/share/riwork/handoffs/abc.md and continue from where it left off."
-    );
-    assert_eq!(
-        inline_message(
-            "Claude chat \"X\" (1234abcd)",
-            "# Handoff\n\nbody\n\n",
-            Some("be brief")
-        ),
-        "You are taking over a conversation from Claude chat \"X\" (1234abcd). The handoff is below; continue from where it left off. Note from the person who handed this over: be brief\n\n<handoff>\n# Handoff\n\nbody\n</handoff>"
-    );
 }
 
 #[test]

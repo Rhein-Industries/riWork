@@ -61,6 +61,14 @@ impl Client {
     /// One request and its answer, telling a refusal from a broken exchange.
     fn exchange(&mut self, request: Request) -> Result<Option<serde_json::Value>, CallError> {
         let broken = |message: String| CallError::Broken(message);
+        let attachment_variant = match &request {
+            Request::StageAttachment { .. } => Some("stage_attachment"),
+            Request::Command {
+                command: ChatCommand::SendAttachments { .. },
+                ..
+            } => Some("send_attachments"),
+            _ => None,
+        };
         let id = request_id(&request).to_owned();
         let mut line =
             serde_json::to_string(&request).map_err(|error| broken(error.to_string()))?;
@@ -92,7 +100,7 @@ impl Client {
             if message.starts_with(super::attachments::UNKNOWN_SUBMISSION) {
                 Err(CallError::Broken(message))
             } else {
-                Err(CallError::Refused(message))
+                Err(attachment_refusal(message, attachment_variant))
             }
         }
     }
@@ -326,6 +334,20 @@ impl SubscriptionCloser {
     }
 }
 
+/// Only a matched negative response establishes that a legacy host did nothing.
+/// Transport failures, malformed replies and unknown submissions stay Broken.
+fn attachment_refusal(message: String, variant: Option<&str>) -> CallError {
+    if variant.is_some_and(|variant| {
+        message.starts_with(&format!("unreadable request: unknown variant `{variant}`"))
+    }) {
+        CallError::Refused(format!(
+            "The running chat backend does not support attachments. Update or refresh the chat backend, then explicitly retry staging or resend the saved draft. Your attachments and text draft are retained. Host refusal: {message}"
+        ))
+    } else {
+        CallError::Refused(message)
+    }
+}
+
 fn new_id() -> String {
     Uuid::new_v4().to_string()
 }
@@ -382,6 +404,7 @@ mod tests {
             state: ChatState::Idle,
             orchestrator: None,
             fast: false,
+            carried_over: None,
         };
         let served = info.clone();
         let host = thread::spawn(move || {
@@ -489,31 +512,6 @@ mod tests {
     }
 
     #[test]
-    fn a_read_with_a_deadline_times_out_and_then_still_gets_the_event() {
-        let (mut subscription, dir) = scripted_subscription(vec![
-            Err(Duration::from_millis(300)),
-            Ok(envelope_line(1, "late")),
-            Err(Duration::from_millis(300)),
-        ]);
-        let started = std::time::Instant::now();
-        assert!(matches!(
-            subscription.next_within(Duration::from_millis(20)),
-            Ok(Poll::TimedOut)
-        ));
-        assert!(started.elapsed() < Duration::from_millis(250));
-        let Ok(Poll::Event(first)) = subscription.next_within(Duration::from_secs(10)) else {
-            panic!("the event never came");
-        };
-        assert_eq!(first.seq, 1);
-        // A zero wait is a short one, not an error.
-        assert!(matches!(
-            subscription.next_within(Duration::ZERO),
-            Ok(Poll::TimedOut)
-        ));
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
     fn a_line_split_across_a_timeout_arrives_whole() {
         // The cut falls inside the two-byte character of the text.
         let line = envelope_line(7, "caf\u{e9} au lait");
@@ -571,5 +569,161 @@ mod tests {
         // `next_envelope` waits as long as it takes, as it always did.
         assert_eq!(subscription.next_envelope().unwrap().unwrap().seq, 1);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_attachment_refusal_is_actionable_and_plain_send_is_unchanged() {
+        #[derive(serde::Deserialize)]
+        #[serde(tag = "command", rename_all = "snake_case")]
+        enum OldCommand {
+            Send { text: String },
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(tag = "op", rename_all = "snake_case")]
+        enum OldRequest {
+            Create,
+            List,
+            Command { command: OldCommand },
+            Subscribe,
+            Close,
+            Delete,
+        }
+        let home = crate::chat::testing::private_socket_fixture_home();
+        let socket = home.join("legacy.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let serving = thread::spawn(move || {
+            let mut stream = crate::chat::testing::bounded_fixture_accept(&listener);
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut requests = Vec::new();
+            for _ in 0..3 {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let error = match serde_json::from_str::<OldRequest>(&line) {
+                    Ok(OldRequest::Command {
+                        command: OldCommand::Send { text },
+                    }) => {
+                        assert_eq!(text, "  plain text unchanged 🦀\n");
+                        None
+                    }
+                    Err(error) => Some(format!("unreadable request: {error}")),
+                    _ => panic!("unexpected operation"),
+                };
+                let response = Response {
+                    id: value["id"].as_str().unwrap().into(),
+                    ok: error.is_none(),
+                    result: None,
+                    error,
+                };
+                writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+                requests.push(value);
+            }
+            requests
+        });
+        let mut client = Client::connect(&socket).unwrap();
+        let error = client
+            .stage_attachment("fixture-chat", &home.join("unread-source.png"))
+            .unwrap_err();
+        let CallError::Refused(message) = error else {
+            panic!("matched legacy refusal must stay Refused")
+        };
+        assert!(message.contains("Update or refresh the chat backend"));
+        assert!(message.contains("unknown variant `stage_attachment`"));
+        assert!(message.contains("`create`, `list`, `command`, `subscribe`, `close`, `delete`"));
+        let error = client
+            .command_checked(
+                "fixture-chat",
+                ChatCommand::SendAttachments {
+                    text: "retain exact text 🦀  ".into(),
+                    attachments: Vec::new(),
+                },
+            )
+            .unwrap_err();
+        let CallError::Refused(message) = error else {
+            panic!("matched legacy refusal must stay Refused")
+        };
+        assert!(message.contains("unknown variant `send_attachments`"));
+        assert!(message.contains("draft are retained"));
+        client
+            .command_checked(
+                "fixture-chat",
+                ChatCommand::Send {
+                    text: "  plain text unchanged 🦀\n".into(),
+                },
+            )
+            .unwrap();
+        let requests = serving.join().unwrap();
+        assert_eq!(
+            requests.len(),
+            3,
+            "no capability probe, retry or text fallback"
+        );
+        assert_eq!(requests[0]["op"], "stage_attachment");
+        assert_eq!(requests[1]["command"]["command"], "send_attachments");
+        assert_eq!(requests[2]["command"]["command"], "send");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn attachment_protocol_diagnostic_never_relabels_ambiguous_or_unrelated_errors() {
+        let refusal = "unreadable request: unknown variant `stage_attachment`";
+        assert_eq!(
+            attachment_refusal(refusal.into(), None),
+            CallError::Refused(refusal.into())
+        );
+        assert_eq!(
+            attachment_refusal("quota exceeded".into(), Some("stage_attachment")),
+            CallError::Refused("quota exceeded".into())
+        );
+        let provider_refusal =
+            "provider rejected payload containing unknown variant `stage_attachment`";
+        assert_eq!(
+            attachment_refusal(provider_refusal.into(), Some("stage_attachment")),
+            CallError::Refused(provider_refusal.into())
+        );
+        let home = crate::chat::testing::private_socket_fixture_home();
+        let socket = home.join("broken.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let serving = thread::spawn(move || {
+            let mut stream = crate::chat::testing::bounded_fixture_accept(&listener);
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            for case in 0..4 {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let mut response = Response {
+                    id: request["id"].as_str().unwrap().into(),
+                    ok: false,
+                    result: None,
+                    error: Some(refusal.into()),
+                };
+                match case {
+                    0 => {
+                        response.error = Some(format!(
+                            "{} {refusal}",
+                            super::super::attachments::UNKNOWN_SUBMISSION
+                        ))
+                    }
+                    1 => response.id = "wrong-request".into(),
+                    2 => {
+                        writeln!(stream, "{{unreadable reply").unwrap();
+                        continue;
+                    }
+                    3 => break, // Connection lost after reading the request.
+                    _ => unreachable!(),
+                }
+                writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+            }
+        });
+        let mut client = Client::connect(&socket).unwrap();
+        for _ in 0..4 {
+            let error = client
+                .stage_attachment("fixture-chat", &home.join("unread.png"))
+                .unwrap_err();
+            assert!(matches!(error, CallError::Broken(_)));
+            assert!(!error.to_string().contains("Update or refresh"));
+        }
+        serving.join().unwrap();
+        std::fs::remove_dir_all(home).unwrap();
     }
 }

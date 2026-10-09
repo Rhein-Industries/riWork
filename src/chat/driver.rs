@@ -29,6 +29,11 @@ pub struct DriverConfig {
     pub outstanding_notices: HashMap<String, Item>,
     /// Extra arguments before the driver's own, e.g. Cua MCP configuration.
     pub extra_args: Vec<String>,
+    /// What the agent is told beside the provider's own instructions: the conversation a
+    /// chat had before it switched provider (`ChatInfo::carried_over`). Claude gets it
+    /// appended to its system prompt, Codex as the thread's developer instructions, at
+    /// every start and resume.
+    pub instructions: Option<String>,
     /// Environment to set and to remove (e.g. `CODEX_HOME`; `ANTHROPIC_API_KEY`
     /// is always removed for Claude so a stray key cannot switch billing).
     pub env: Vec<(OsString, OsString)>,
