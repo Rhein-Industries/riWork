@@ -660,9 +660,9 @@ import RiWorkCore
         }
     }
 
-    /// `RIWORK_TAB_SCREENSHOTS_ONLY=testUsageLimits scripts/tab-chrome-screenshots.sh <dir> <udid>`: the usage chip beside the context
-    /// ring (weekly 87 %) with a reached 5-hour limit's blocking banner, then the chip at 92 % (bold) and its usage detail, Native dark
-    /// and light.
+    /// `RIWORK_TAB_SCREENSHOTS_ONLY=testUsageLimits scripts/tab-chrome-screenshots.sh <dir> <udid>`: the one-line header ([model ⌄]
+    /// [ring] … [mode ⌄], no usage chip) with a reached 5-hour limit's blocking banner, then the ring's detail with the usage windows
+    /// (weekly at 92 %, bold), Native dark and light.
     func testUsageLimits() async throws {
         guard ProcessInfo.processInfo.environment["RIWORK_TAB_SCREENSHOTS_ONLY"] == "testUsageLimits" else { throw XCTSkip("Set RIWORK_TAB_SCREENSHOTS_ONLY=testUsageLimits") }
         for look in [Look.nativeDark, .nativeLight] {
@@ -676,11 +676,13 @@ import RiWorkCore
             try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
             let suite = "com.riwork.tests.tabchrome.\(UUID().uuidString)"
             defaultsNames.append(suite)
-            let info = ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Fix the build", createdAtUnix: 10, state: .idle)
+            let info = ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Fix the build", createdAtUnix: 10, providerThreadID: "thread-1",
+                                model: "claude-opus-4-1", effort: "high", state: .idle)
             let transport = ChatTransport(chats: [info], appearance: appearance(look))
             let now = UInt64(Date().timeIntervalSince1970)
             let fiveHour = now + 2 * 3600, weekly = now + 3 * 86400
-            await transport.append(chatID, [.info(info), .usage(ChatUsage(inputTokens: 84_000, outputTokens: 2_000, contextWindow: 200_000, contextUsed: 84_000)),
+            await transport.append(chatID, [.info(info), .models([ChatModelOption(id: "claude-opus-4-1", name: "Claude Opus 4.1", efforts: ["low", "medium", "high"], defaultEffort: "medium", isDefault: true)]),
+                .usage(ChatUsage(inputTokens: 112_000, outputTokens: 2_000, contextWindow: 200_000, contextUsed: 112_000)),
                 .itemCompleted(ChatItem(id: "u1", status: .completed, body: .userMessage("Run the full test suite"))),
                 .itemCompleted(ChatItem(id: "a1", status: .completed, body: .agentMessage("Running the tests now. The first package passed; the second one is building."))),
                 .itemCompleted(ChatItem(id: "lim", status: .completed, body: .notice(level: .error, text: "You've hit your 5-hour usage limit.", kind: "rate_limit:five_hour", resetsAt: fiveHour))),
@@ -706,15 +708,21 @@ import RiWorkCore
             window.endEditing(true)
             try await Task.sleep(for: .milliseconds(500))
             let prefix = "usage-" + look.rawValue
-            try await shot(window, prefix + "-1-chip-and-limit-banner")
-            // The limit's Usage action, and the chip at 92 % (bold) after the 5-hour window reset.
+            try await shot(window, prefix + "-1-header-and-limit-banner")
+            // The limit's Usage action: the ring's detail, the weekly window at 92 % (bold) after the 5-hour window reset.
             await transport.append(chatID, [.rateLimits([ChatRateWindow(id: "five_hour", label: "5h", usedPercent: 12, resetsAt: fiveHour), ChatRateWindow(id: "seven_day", label: "weekly", usedPercent: 92, resetsAt: weekly)])])
-            await eventually("92%") { ChatUsageLimits.chip(model.conversation(self.chatID).transcript.rateLimits)?.bold == true }
+            await eventually("92%") { model.conversation(self.chatID).transcript.rateLimits.contains { $0.usedPercent == 92 } }
             try await Task.sleep(for: .milliseconds(500))
             model.conversation(chatID).showUsageDetail()
             try await Task.sleep(for: .milliseconds(900))
             try await shot(window, prefix + "-2-usage-detail")
             host.presentedViewController?.dismiss(animated: false)
+            try await Task.sleep(for: .milliseconds(500))
+            // The ⋯ menu: the chat's actions, without the usage line or Change model.
+            if await openMenu(at: CGPoint(x: window.bounds.maxX - 24, y: layout.frames["navigation"]?.midY ?? 84), in: window) {
+                try await shot(window, prefix + "-3-chat-menu")
+            } else { XCTFail("no ⋯ menu") }
+            await dismissMenus(window)
             await model.disconnect()
             window.isHidden = true
             try? keychain.delete()

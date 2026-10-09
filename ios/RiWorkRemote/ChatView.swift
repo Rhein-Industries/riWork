@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 import RiWorkCore
 
-/// A chat, full screen under the tab strip: a compact toolbar (mode, Compact, usage), what the chat is doing when it is not simply
+/// A chat, full screen under the tab strip: a compact toolbar (model, context ring, mode), what the chat is doing when it is not simply
 /// ready, the transcript, the request or question that waits, and the composer.
 ///
 /// The screen follows the chat while it is on screen (`RemoteModel.followChat` runs in `.task`, so it ends with the screen), keeps the
@@ -17,8 +17,6 @@ struct ChatScreen: View {
     let chat: ChatInfo
     /// Counts times a sheet over the screen went away: the composer takes the keyboard back.
     var refocus = 0
-    /// Counts requests from the tab row's ⋯ menu to open the model picker.
-    var openModels = 0
     @State private var focusToken = 0
     /// The model picker is up.
     @State private var showModels = false
@@ -76,7 +74,6 @@ struct ChatScreen: View {
         .onAppear { requestFocus() }
         .onChange(of: chat.id) { _, _ in requestFocus() }
         .onChange(of: refocus) { _, _ in requestFocus() }
-        .onChange(of: openModels) { _, _ in if connected { showModels = true } }
         .onChange(of: openNotices) { _, _ in showNotices = true }
         .sheet(isPresented: $showNotices, onDismiss: requestFocus) {
             ChatNoticeHistory(notices: ChatNotices.all(conversation.transcript.items)) { showNotices = false }.desktopThemed(model.theme.style)
@@ -152,20 +149,13 @@ private struct ChatToolbar: View {
     private var choices: ChatModelChoices { conversation.modelChoices(fallback: chat) }
     private var connected: Bool { model.state == .connected }
     private var meter: ChatUsageMeter? { conversation.transcript.usage.map(ChatUsageMeter.init).flatMap { $0.tokensText == nil ? nil : $0 } }
-    private var limits: ChatUsageLimits.Chip? { ChatUsageLimits.chip(conversation.transcript.rateLimits) }
 
     var body: some View {
-        // The mode gives up its word before anything wraps; the model's name is cut last (`ChatModelChip` gives way first of all).
+        // One line, always: the mode gives up its word first, then the model's name is cut (`ChatModelChip` gives way first of all);
+        // the ring and the mode menu are never cut or moved to a second line.
         ViewThatFits(in: .horizontal) {
             row(modeTitle: true)
             row(modeTitle: false)
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 4) { modelButton; Spacer(minLength: 4); modeButton(title: false) }
-                HStack(spacing: 2) {
-                    if let meter { ChatUsageRing(meter: meter) }
-                    limitsChip
-                }
-            }
         }
         .padding(.horizontal, 8)
         .background(style.background)
@@ -174,17 +164,16 @@ private struct ChatToolbar: View {
     private func row(modeTitle: Bool) -> some View {
         HStack(spacing: 2) {
             modelButton
-            if let meter { ChatUsageRing(meter: meter) }
-            limitsChip
+            ring
             Spacer(minLength: 4)
             modeButton(title: modeTitle)
         }
     }
 
-    /// The provider's fullest usage window past its threshold, beside the context ring; always there for a usage limit's banner to open.
-    @ViewBuilder private var limitsChip: some View {
-        if limits != nil || !conversation.transcript.rateLimits.isEmpty {
-            ChatUsageLimitsChip(windows: conversation.transcript.rateLimits, requests: conversation.usageDetailRequests)
+    /// The context ring; with no context known yet but usage windows in, only the anchor for the detail a usage limit's banner opens.
+    @ViewBuilder private var ring: some View {
+        if meter != nil || !conversation.transcript.rateLimits.isEmpty {
+            ChatUsageRing(meter: meter, windows: conversation.transcript.rateLimits, requests: conversation.usageDetailRequests)
         }
     }
     private var modelButton: some View {
@@ -224,15 +213,18 @@ extension ChatApprovalMode {
     }
 }
 
-/// How full the chat's context is: a ring that fills with the share used, the percent beside it. A tap (or a long press) shows the
-/// tokens used of the window and Claude's cost estimate. It follows the chat's usage as it comes in.
+/// How full the chat's context is: a ring that fills with the share used, the percent beside it. A tap (or a long press, or a usage
+/// limit's banner) shows the tokens used of the window, Claude's cost estimate and the provider's usage windows (5-hour, weekly, …).
+/// It follows the chat's usage as it comes in. Without a context figure it draws nothing and is only that detail's anchor.
 struct ChatUsageRing: View {
     @Environment(\.desktopStyle) private var style
-    let meter: ChatUsageMeter
+    let meter: ChatUsageMeter?
+    var windows: [ChatRateWindow] = []
+    var requests = 0
     @State private var detail = false
     /// As the Mac's ring (`ChatUsageMeter.level`): the text color, the warning tint from 70 %, red from 90 %.
     private var tint: Color {
-        switch meter.level {
+        switch meter?.level ?? .normal {
         case .normal: style.text
         case .warning: style.warning
         case .critical: style.error
@@ -240,96 +232,69 @@ struct ChatUsageRing: View {
     }
     var body: some View {
         Button { detail = true } label: {
-            HStack(spacing: 5) {
-                ZStack {
-                    Circle().stroke(style.divider, lineWidth: 2.5)
-                    Circle().trim(from: 0, to: meter.contextFraction ?? 0).stroke(tint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round)).rotationEffect(.degrees(-90))
+            if let meter {
+                HStack(spacing: 5) {
+                    ZStack {
+                        Circle().stroke(style.divider, lineWidth: 2.5)
+                        Circle().trim(from: 0, to: meter.contextFraction ?? 0).stroke(tint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round)).rotationEffect(.degrees(-90))
+                    }
+                    .frame(width: style.pt(15), height: style.pt(15))
+                    .animation(.easeOut(duration: 0.3), value: meter.contextFraction)
+                    Text(meter.percentText ?? meter.tokensText?.replacingOccurrences(of: " tokens", with: "") ?? "")
+                        .font(style.system(.footnote, weight: .medium)).monospacedDigit().foregroundStyle(style.muted).lineLimit(1).fixedSize()
                 }
-                .frame(width: style.pt(15), height: style.pt(15))
-                .animation(.easeOut(duration: 0.3), value: meter.contextFraction)
-                Text(meter.percentText ?? meter.tokensText?.replacingOccurrences(of: " tokens", with: "") ?? "")
-                    .font(style.system(.footnote, weight: .medium)).monospacedDigit().foregroundStyle(style.muted).lineLimit(1).fixedSize()
-            }
-            .padding(.horizontal, 6).frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .simultaneousGesture(LongPressGesture(minimumDuration: 0.35).onEnded { _ in detail = true })
-        .popover(isPresented: $detail) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Context").font(style.system(.caption, weight: .semibold)).foregroundStyle(style.muted)
-                Text([meter.percentText, meter.tokensText].compactMap { $0 }.joined(separator: " · ")).font(style.system(.subheadline, weight: .semibold)).monospacedDigit().foregroundStyle(style.text)
-                if let cost = meter.costText { Text(cost).font(style.system(.footnote)).foregroundStyle(style.muted) }
-            }
-            .padding(14).fixedSize()
-            .presentationCompactAdaptation(.popover)
-            .accessibilityElement(children: .combine)
-        }
-        .chatLayoutProbe("usage", action: { detail = true })
-        .accessibilityIdentifier("chat-usage")
-        .accessibilityLabel("Context usage").accessibilityValue(meter.spoken ?? "")
-        .accessibilityHint("Shows the tokens used and the cost estimate")
-    }
-}
-
-/// The provider's usage windows: a compact chip for the fullest one at or past its threshold ("⚠ weekly 87% · resets Thu 14:00", in
-/// the warning tone, bold from 90 %), none below; a tap (or a usage limit's banner) lists every live window. Not dismissable.
-struct ChatUsageLimitsChip: View {
-    @Environment(\.desktopStyle) private var style
-    let windows: [ChatRateWindow]
-    let requests: Int
-    @State private var detail = false
-    var body: some View {
-        let chip = ChatUsageLimits.chip(windows)
-        Button { detail = true } label: {
-            if let chip {
-                HStack(spacing: 4) {
-                    Image(systemName: "exclamationmark.triangle.fill").font(style.system(.caption2)).accessibilityHidden(true)
-                    Text([chip.text, chip.resetText].compactMap { $0 }.joined(separator: " · "))
-                        .font(style.system(.footnote, weight: chip.bold ? .bold : .medium)).monospacedDigit().lineLimit(1)
-                }
-                .foregroundStyle(style.gold)
-                .padding(.horizontal, 6).frame(minHeight: style.target).contentShape(Rectangle())
+                .padding(.horizontal, 6).frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
             } else {
-                // Nothing worth a chip: only the anchor for the detail a usage limit's banner opens.
                 Color.clear.frame(width: 1, height: 1)
             }
         }
         .buttonStyle(.plain)
-        .disabled(chip == nil)
+        .disabled(meter == nil)
+        .fixedSize()
+        .simultaneousGesture(LongPressGesture(minimumDuration: 0.35).onEnded { _ in if meter != nil { detail = true } })
         .onChange(of: requests) { _, _ in detail = true }
         .popover(isPresented: $detail) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Usage limits").font(style.system(.caption, weight: .semibold)).foregroundStyle(style.muted)
-                ForEach(ChatUsageLimits.live(windows)) { window in
-                    HStack(spacing: 8) {
-                        Text(window.label).font(style.system(.subheadline)).foregroundStyle(style.text)
-                        Spacer(minLength: 12)
-                        Text(window.percentText).font(style.system(.subheadline, weight: window.usedPercent >= 90 ? .bold : .semibold)).monospacedDigit()
-                            .foregroundStyle(window.usedPercent >= window.warnAt ? style.gold : style.text)
-                        if let resets = window.resetsAt {
-                            Text("resets " + ChatUsageLimits.resetTime(resets)).font(style.system(.footnote)).foregroundStyle(style.muted)
+            VStack(alignment: .leading, spacing: 4) {
+                if let meter {
+                    Text("Context").font(style.system(.caption, weight: .semibold)).foregroundStyle(style.muted)
+                    Text([meter.percentText, meter.tokensText].compactMap { $0 }.joined(separator: " · ")).font(style.system(.subheadline, weight: .semibold)).monospacedDigit().foregroundStyle(style.text)
+                    if let cost = meter.costText { Text(cost).font(style.system(.footnote)).foregroundStyle(style.muted) }
+                }
+                let live = ChatUsageLimits.live(windows)
+                if !windows.isEmpty {
+                    Text("Usage limits").font(style.system(.caption, weight: .semibold)).foregroundStyle(style.muted).padding(.top, meter == nil ? 0 : 8)
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
+                        ForEach(live) { window in
+                            GridRow {
+                                Text(window.label).font(style.system(.subheadline)).foregroundStyle(style.text)
+                                Text(window.percentText).font(style.system(.subheadline, weight: window.usedPercent >= 90 ? .bold : .semibold)).monospacedDigit()
+                                    .foregroundStyle(window.usedPercent >= window.warnAt ? style.gold : style.text)
+                                    .gridColumnAlignment(.trailing)
+                                Text(window.resetsAt.map { "resets " + ChatUsageLimits.resetTime($0) } ?? "").font(style.system(.footnote)).foregroundStyle(style.muted)
+                            }
+                            .accessibilityElement(children: .combine)
                         }
                     }
-                    .accessibilityElement(children: .combine)
+                    if live.isEmpty { Text("No usage windows known.").font(style.system(.footnote)).foregroundStyle(style.muted) }
                 }
-                if ChatUsageLimits.live(windows).isEmpty { Text("No usage windows known.").font(style.system(.footnote)).foregroundStyle(style.muted) }
             }
-            .padding(14).frame(minWidth: 240)
+            .padding(14).fixedSize()
             .presentationCompactAdaptation(.popover)
+            .accessibilityElement(children: windows.isEmpty ? .combine : .contain)
         }
-        .chatLayoutProbe("usage-limits", action: { detail = true })
-        .accessibilityIdentifier("chat-usage-limits")
-        .accessibilityLabel("Usage limit").accessibilityValue(chip?.spoken ?? "")
-        .accessibilityHint("Shows every usage window")
-        .accessibilityHidden(chip == nil)
+        .chatLayoutProbe("usage", visible: meter != nil, action: { detail = true })
+        .accessibilityIdentifier("chat-usage")
+        .accessibilityLabel("Context usage").accessibilityValue(meter?.spoken ?? "")
+        .accessibilityHint(windows.isEmpty ? "Shows the tokens used and the cost estimate" : "Shows the tokens used, the cost estimate and the usage windows")
+        .accessibilityHidden(meter == nil)
     }
 }
 
-/// The chat's part of the tab row's ⋯ menu, first in it while a chat is on screen.
+/// The chat's part of the tab row's ⋯ menu, first in it while a chat is on screen. The model and the context/usage are not in it: they
+/// are the row under the tab row (`ChatToolbar`).
 struct ChatMenuSection: View {
     let model: RemoteModel
     let chat: ChatInfo
-    let changeModel: () -> Void
     var showNotices: () -> Void = {}
     var body: some View {
         let conversation = model.chatConversations[chat.id] ?? ChatConversation(id: chat.id)
@@ -337,10 +302,6 @@ struct ChatMenuSection: View {
         let state = model.chatState(info)
         let connected = model.state == .connected
         Section("Chat") {
-            if let meter = conversation.transcript.usage.map(ChatUsageMeter.init), let text = meter.text {
-                Text("Usage: \(text)").accessibilityLabel("Usage").accessibilityValue(meter.spoken ?? text)
-            }
-            Button("Change model…", systemImage: "cpu") { changeModel() }.disabled(!connected || state.isBusy || state == .starting)
             Button("Compact conversation", systemImage: "arrow.down.right.and.arrow.up.left") { Task { await model.compactChat(chat.id) } }
                 .disabled(!connected || state.isBusy || state == .starting)
             Button("Jump to latest", systemImage: "arrow.down.to.line") { conversation.jumpToEnd() }

@@ -1784,10 +1784,87 @@ import RiWorkCore
         await finish(rig)
     }
 
+    /// The chat's row is one line: [model ⌄] [ring 56%] … [mode ⌄], at 390 pt with default text and in every look, with usage windows
+    /// past their warning (once a chip of their own, now only in the ring's detail).
+    func testTheChatHeaderIsOneRowOfModelRingAndMode() async throws {
+        for look in Look.allCases {
+            for width: CGFloat in [390, 402] {
+                let rig = try await makeRig(chats: [modelChat(fast: true)], width: width, height: 844, look: look)
+                rig.host.traitOverrides.preferredContentSizeCategory = .large
+                let resets = UInt64(Date().timeIntervalSince1970) + 3 * 86400
+                await rig.transport.append(chatID, [.info(modelChat(fast: true)), .models(models),
+                    .usage(ChatUsage(inputTokens: 112_000, outputTokens: 900, contextWindow: 200_000, contextUsed: 112_000)),
+                    .rateLimits([ChatRateWindow(id: "seven_day", label: "weekly", usedPercent: 87, resetsAt: resets)])])
+                _ = try await openChat(rig)
+                let conversation = rig.model.conversation(chatID)
+                await eventually("usage and windows are in") { conversation.transcript.usage != nil && !conversation.transcript.rateLimits.isEmpty && rig.layout.frames["usage"] != nil }
+                try await Task.sleep(for: .milliseconds(300))
+                let what = "\(look) at \(Int(width)) pt"
+                let model = try XCTUnwrap(rig.layout.frames["model"], what), ring = try XCTUnwrap(rig.layout.frames["usage"], what)
+                let mode = try XCTUnwrap(rig.layout.frames["permissions"], what)
+                XCTAssertNil(rig.layout.frames["usage-limits"], "\(what): no usage-limit chip")
+                XCTAssertEqual(model.midY, ring.midY, accuracy: 2, "\(what): the ring is on the model's line")
+                XCTAssertEqual(model.midY, mode.midY, accuracy: 2, "\(what): the mode is on the model's line")
+                XCTAssertLessThanOrEqual(model.union(ring).union(mode).height, 48, "\(what): one row")
+                XCTAssertLessThanOrEqual(model.maxX, ring.minX + 1, "\(what): model, then ring")
+                XCTAssertLessThan(ring.maxX, mode.minX, "\(what): the ring before the mode")
+                XCTAssertGreaterThan(mode.maxX, width - 20, "\(what): the mode at the row's end")
+                XCTAssertEqual(ChatUsageMeter(conversation.transcript.usage!).percentText, "56%")
+                await finish(rig)
+            }
+        }
+    }
+
+    /// The chat's section of the ⋯ menu keeps its actions but not what the row holds: no usage line, no Change model.
+    func testTheChatMenuHasNoUsageOrModelEntries() async throws {
+        let accessibility = AppAccessibility.enable()
+        defer { accessibility.restore() }
+        let info = ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Fix the build", createdAtUnix: 10, providerThreadID: "thread-1",
+                            model: "claude-opus-4-1", effort: "high", approvalMode: .supervised, state: .idle)
+        let rig = try await makeRig(chats: [info])
+        await rig.transport.append(chatID, [.info(info), .models(models), .usage(ChatUsage(inputTokens: 42_000, contextWindow: 200_000, contextUsed: 42_000)),
+            .itemCompleted(ChatItem(id: "n1", status: .completed, body: .notice(level: .warning, text: "Retrying", kind: "api_retry")))])
+        _ = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        await eventually("usage is in") { conversation.transcript.usage != nil }
+        let host = UIHostingController(rootView: VStack(alignment: .leading) { ChatMenuSection(model: rig.model, chat: info) }.desktopThemed(rig.model.theme.style))
+        let window = UIWindow(windowScene: rig.window.windowScene!)
+        window.frame = CGRect(x: 0, y: 0, width: 402, height: 600)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        windows.append(window)
+        var labels: [String] = []
+        await eventually("the section is drawn") {
+            labels = self.accessibilityLabels(in: host.view)
+            return labels.contains("Stop agent")
+        }
+        for kept in ["Compact conversation", "Jump to latest", "Notices (1)…", "Copy session id", "Stop agent"] {
+            XCTAssertTrue(labels.contains(kept), "\(kept) stays in ⋯: \(labels)")
+        }
+        XCTAssertFalse(labels.contains { $0.hasPrefix("Usage") || $0.hasPrefix("Context") }, "no usage line: \(labels)")
+        XCTAssertFalse(labels.contains { $0.localizedCaseInsensitiveContains("model") }, "no Change model: \(labels)")
+        window.isHidden = true
+        await finish(rig)
+    }
+    private func accessibilityLabels(in view: UIView) -> [String] {
+        var seen = Set<ObjectIdentifier>(), budget = 4000, labels: [String] = []
+        func search(_ element: NSObject) {
+            guard budget > 0, seen.insert(ObjectIdentifier(element)).inserted else { return }
+            budget -= 1
+            if (element as? UIView)?.isHidden == true { return }
+            if let label = element.accessibilityLabel, !label.isEmpty { labels.append(label) }
+            ((element.accessibilityElements as? [NSObject]) ?? []).forEach(search)
+            (element as? UIView)?.subviews.forEach(search)
+        }
+        search(view)
+        return labels
+    }
+
     /// A reached usage limit is a sticky banner (from an earlier turn too) with its reset time; closing it sends `dismiss_notice` once and
     /// it stays closed when the host re-emits it dismissed, and after a fresh snapshot. A sign-in the host dismissed elsewhere (its key in
-    /// the snapshot) never shows. A usage warning is no banner: the chip beside the ring says it, bold from 90 %, and opens the windows.
-    func testUsageLimitsAChipForWindowsABannerOnlyForAReachedLimitDismissedOnTheHost() async throws {
+    /// the snapshot) never shows. A usage warning is no banner and no chip: the windows are in the ring's detail, which the limit's
+    /// Usage opens even before any context figure is in.
+    func testUsageLimitsABannerOnlyForAReachedLimitDismissedOnTheHost() async throws {
         let rig = try await makeRig(look: .nativeDark)
         await rig.transport.enableSnapshots()
         let resets = UInt64(Date().timeIntervalSince1970) + 3 * 3600
@@ -1803,9 +1880,14 @@ import RiWorkCore
         let conversation = rig.model.conversation(chatID)
         await eventually("the limit's banner and the windows") { rig.layout.frames["banner-notice-kind:rate_limit:five_hour"] != nil && conversation.transcript.rateLimits.count == 2 }
         XCTAssertNil(rig.layout.frames["banner-notice-kind:auth_required"], "dismissed on another device (the snapshot's key)")
-        XCTAssertNil(rig.layout.frames["banner-notice-kind:rate_limit:seven_day"], "a warning is the chip's, not a banner")
-        XCTAssertEqual(ChatUsageLimits.chip(conversation.transcript.rateLimits)?.text, "5h 100%")
-        XCTAssertEqual(ChatUsageLimits.chip(conversation.transcript.rateLimits)?.bold, true)
+        XCTAssertNil(rig.layout.frames["banner-notice-kind:rate_limit:seven_day"], "a warning is not a banner")
+        XCTAssertNil(rig.layout.frames["usage-limits"], "no usage-limit chip")
+        XCTAssertEqual(rig.layout.visible["usage"], false, "no context figure yet: the ring is only the detail's anchor")
+        // The limit's Usage opens the ring's detail with the windows.
+        conversation.showUsageDetail()
+        await eventually("the usage detail is up") { rig.host.presentedViewController != nil }
+        rig.host.presentedViewController?.dismiss(animated: false)
+        try await Task.sleep(for: .milliseconds(300))
         XCTAssertTrue(try renderedText(rig, in: rig.layout.frames["banner-notice-kind:rate_limit:five_hour"]!).contains("resets"), "says when it resets")
         // Live windows come by `chat.events` too, which opts in as the snapshot did (the fixture withholds them otherwise).
         await rig.transport.append(chatID, [.rateLimits([ChatRateWindow(id: "seven_day", label: "weekly", usedPercent: 91, resetsAt: resets + 86400)])])
@@ -2698,7 +2780,7 @@ import RiWorkCore
             try await Task.sleep(for: .milliseconds(500))
             try snapshot(rig, name: named("chat-model-toolbar", look))
             try await hold(named("chat-model-toolbar", look))
-            // The ⋯ menu, opened by hand on the held screen, has Change model.
+            // The ⋯ menu, opened by hand on the held screen: the chat's actions, without the model or the usage.
             try await hold(named("chat-options-menu", look))
             // ⌘M: the picker, Fast on and then off.
             try shortcut(rig, "m")

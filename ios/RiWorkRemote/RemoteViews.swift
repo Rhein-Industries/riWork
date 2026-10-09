@@ -309,8 +309,6 @@ struct TerminalTabsView: View {
     @State private var onScreen = false
     /// Counts times the New terminal sheet went away: a chat on screen takes the keyboard back for its composer.
     @State private var chatRefocus = 0
-    /// Counts requests from the ⋯ menu to open the chat's model picker (the picker belongs to the chat screen).
-    @State private var chatModels = 0
     /// Counts requests from the ⋯ menu to show the chat's notices.
     @State private var chatNotices = 0
     private var openSessions: [RemoteSession] { model.openSessions }
@@ -333,7 +331,7 @@ struct TerminalTabsView: View {
                 if let note = model.orchestratorNotice { NoteLine(text: note) { model.clearOrchestratorNotice() } }
             }
             if let chat = model.selectedChat {
-                ChatScreen(model: model, chat: chat, refocus: chatRefocus, openModels: chatModels, openNotices: chatNotices).id(chat.id)
+                ChatScreen(model: model, chat: chat, refocus: chatRefocus, openNotices: chatNotices).id(chat.id)
             } else if let blocked = model.selectedBlocked {
                 OrchestratorNotice(session: blocked.session, opening: blocked.opening)
             } else if model.sessionID == nil && openSessions.isEmpty {
@@ -513,7 +511,7 @@ struct TerminalTabsView: View {
     private func screenMenu(_ chrome: TabScreenChrome) -> some View {
         Menu {
             if let chat = model.selectedChat {
-                ChatMenuSection(model: model, chat: chat, changeModel: { chatModels += 1 }, showNotices: { chatNotices += 1 })
+                ChatMenuSection(model: model, chat: chat, showNotices: { chatNotices += 1 })
             }
             if chrome.terminalActions {
                 Section("Terminal") {
