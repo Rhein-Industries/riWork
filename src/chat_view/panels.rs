@@ -1899,12 +1899,23 @@ impl ChatView {
         .min_w_0()
         .max_w(relative(1.0))
         .aria_expanded(open)
-        .child(
+        // The header's pop-up chevron: Native's and Hermes's chevron.down at the label's
+        // x-height, the colorful themes' ▾, muted and centered on the label, the control's
+        // gap after it.
+        .child(if look.native || look.hermes() {
+            icons::symbol_in_box(
+                "chevron.down",
+                8.0,
+                Some(look.colors.muted),
+                ui_text::space(10.0),
+            )
+        } else {
             div()
                 .flex_none()
                 .text_color(rgb(look.colors.muted))
-                .child(icons::text_mark("⌄", 9.0)),
-        )
+                .child("▾")
+                .into_any_element()
+        })
         .on_click(
             cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
                 view.open.remove(ATTACHMENT_MENU_KEY);
