@@ -17,6 +17,16 @@ enum AttachmentSource: @unchecked Sendable {
     /// What a paste found on the pasteboard.
     case pasted(NSItemProvider)
 
+    /// What its card shows before the file is read: a photo is a picture; a file from Files or the pasteboard has its name.
+    var placeholder: (kind: StagedAttachment.Kind, name: String) {
+        switch self {
+        case .photo, .camera: (.image, "Photo")
+        case .file(let url): (StagedAttachment.kind(mediaType: nil, name: url.lastPathComponent), url.lastPathComponent)
+        case .pasted(let provider):
+            (PasteboardAttachments.fileType(of: provider)?.conforms(to: .image) == true ? .image : .file, provider.suggestedName ?? "Pasted item")
+        }
+    }
+
     /// The file as it should travel (`PhotoPreparation`): a photo upright, as JPEG and without its location unless it is a PNG or a GIF;
     /// a file from Files as it is, unless it is a picture no agent reads (HEIC).
     func load() async throws -> UploadFile {
@@ -251,5 +261,249 @@ struct AttachButton: View, Equatable {
         AttachMenu(choose: choose) { Image(systemName: "paperclip") }
             .menuStyle(.button).buttonStyle(DesktopButtonStyle(compact: compact))
             .accessibilityHint("Sends a photo or a file to the Mac and pastes its path")
+    }
+}
+
+// MARK: - Cards above a chat's composer
+
+/// The files staged for a chat's message, as cards in one row above the composer's field (as Claude and ChatGPT show them): an image as
+/// a rounded thumbnail, any other file as a small card with its kind, name and size. A file shows its card the moment it is picked,
+/// with its progress, until the Mac has it (`PendingAttachment`). × removes one (or cancels the files on their way); tapping an image
+/// shows it full screen. The row scrolls sideways when there are more than fit; the composer shows none of it while nothing is staged.
+struct ChatAttachmentStrip: View {
+    @Environment(\.desktopStyle) private var style
+    let attachments: [StagedAttachment]
+    var pending: [PendingAttachment] = []
+    let images: ChatAttachmentImages
+    let remove: (String) -> Void
+    var cancelPending: () -> Void = {}
+    @State private var previewing: StagedAttachment?
+    private var count: Int { attachments.count + pending.count }
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: style.pt(10)) {
+                ForEach(Array(attachments.enumerated()), id: \.element.id) { index, card in
+                    ChatAttachmentCard(card: card, images: images, open: { previewing = card }, remove: { remove(card.id) })
+                        // An earlier card's × reaches over the next card's edge: it stays on top there.
+                        .zIndex(Double(count - index))
+                        .transition(.scale(scale: 0.8).combined(with: .opacity))
+                }
+                ForEach(Array(pending.enumerated()), id: \.element.id) { index, card in
+                    ChatPendingAttachmentCard(card: card, cancel: cancelPending)
+                        .zIndex(Double(pending.count - index))
+                        .transition(.opacity)
+                }
+            }
+            // Room for the × badges, which stand out over the cards' corners.
+            .padding(.top, style.pt(8)).padding(.trailing, style.pt(8)).padding(.bottom, 2)
+        }
+        .scrollIndicators(.hidden)
+        .scrollClipDisabled()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(count == 1 ? "1 attachment" : "\(count) attachments")
+        .accessibilityIdentifier("attachment-strip")
+        .background {
+            // Installed only while wanted, as the pickers are: a presenter installed for good takes the keyboard from the composer.
+            if previewing != nil {
+                Color.clear.fullScreenCover(item: $previewing) { card in
+                    ChatAttachmentPreview(card: card, url: images.previewURL(card.id)) { previewing = nil }.desktopThemed(style)
+                }
+            }
+        }
+    }
+}
+
+/// One staged file: an image's thumbnail, or a file's kind, name and size; with its × in the top-trailing corner (a 44-point target).
+struct ChatAttachmentCard: View {
+    @Environment(\.desktopStyle) private var style
+    let card: StagedAttachment
+    let images: ChatAttachmentImages
+    let open: () -> Void
+    let remove: () -> Void
+
+    private var side: CGFloat { style.pt(64) }
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: style.native ? style.pt(12) : 4, style: .continuous) }
+
+    var body: some View {
+        let expired = card.isExpired()
+        content(expired: expired)
+            .opacity(expired ? 0.55 : 1)
+            .overlay(shape.strokeBorder(expired ? style.warning : style.divider, lineWidth: 1))
+            .overlay(alignment: .bottom) { if expired, card.kind == .image { expiredBadge } }
+            .overlay(alignment: .topTrailing) { ChatCardCloseButton(label: "Remove \(card.name)", action: remove) }
+            .accessibilityIdentifier(expired ? "attachment-card-expired" : "attachment-card")
+    }
+    /// The Mac no longer has the file (`StagedAttachment.isExpired`): said on the card, and its path is not sent.
+    private var expiredBadge: some View {
+        Text("Expired").font(style.face(10, bold: true, relativeTo: .caption2)).foregroundStyle(style.background)
+            .lineLimit(1).fixedSize()
+            .padding(.horizontal, 5).padding(.vertical, 2)
+            .background(style.warning, in: Capsule())
+            .padding(.bottom, 5)
+            .accessibilityHidden(true)
+    }
+    @ViewBuilder private func content(expired: Bool) -> some View {
+        let spoken = expired ? ", expired on the Mac, attach it again" : ""
+        if card.kind == .image, let thumbnail = ChatAttachmentImageCache.image(images.thumbnailURL(card.id)) {
+            Button(action: open) {
+                Image(uiImage: thumbnail).resizable().scaledToFill()
+                    .frame(width: side, height: side).clipShape(shape).contentShape(shape)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Image, \(card.name), \(card.sizeText)" + spoken).accessibilityHint("Shows it full screen")
+        } else {
+            HStack(spacing: style.pt(8)) {
+                Image(systemName: card.kind == .image ? "photo" : card.symbol)
+                    .font(.system(size: style.pt(17), weight: .medium)).foregroundStyle(style.accent)
+                    .frame(width: style.pt(38), height: style.pt(38))
+                    .background(style.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: style.native ? style.pt(9) : 3, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(card.name).font(style.face(13, relativeTo: .footnote)).foregroundStyle(style.text).lineLimit(1).truncationMode(.middle)
+                    Text(expired ? "Expired" : card.sizeText).font(style.face(11, relativeTo: .caption)).foregroundStyle(expired ? style.warning : style.muted).lineLimit(1)
+                }
+                .frame(maxWidth: style.pt(118), alignment: .leading)
+            }
+            .padding(.leading, style.pt(10)).padding(.trailing, style.pt(14))
+            .frame(height: side)
+            .background(style.panel, in: shape)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("File, \(card.name), \(card.sizeText)" + spoken)
+        }
+    }
+}
+
+/// A file on its way to the Mac: its card at once, with a ring that fills as it is sent, until its real card takes its place. × cancels
+/// the files on their way (one upload at a time).
+struct ChatPendingAttachmentCard: View {
+    @Environment(\.desktopStyle) private var style
+    let card: PendingAttachment
+    let cancel: () -> Void
+    private var side: CGFloat { style.pt(64) }
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: style.native ? style.pt(12) : 4, style: .continuous) }
+    private var status: String { card.size == nil ? "Preparing…" : "Sending · \(Int((card.fraction * 100).rounded()))%" }
+
+    var body: some View {
+        Group {
+            if card.kind == .image {
+                ring.frame(width: side, height: side)
+            } else {
+                HStack(spacing: style.pt(8)) {
+                    ring.frame(width: style.pt(38), height: style.pt(38))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(card.name).font(style.face(13, relativeTo: .footnote)).foregroundStyle(style.text).lineLimit(1).truncationMode(.middle)
+                        Text(status).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted).monospacedDigit().lineLimit(1)
+                    }
+                    .frame(maxWidth: style.pt(118), alignment: .leading)
+                }
+                .padding(.leading, style.pt(10)).padding(.trailing, style.pt(14))
+                .frame(height: side)
+            }
+        }
+        .background(style.panel, in: shape)
+        .overlay(shape.strokeBorder(style.divider, lineWidth: 1))
+        .overlay(alignment: .topTrailing) { ChatCardCloseButton(label: "Cancel sending \(card.name)", action: cancel) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(card.kind == .image ? "Image" : "File"), \(card.name), \(status)")
+        .accessibilityIdentifier("attachment-card-pending")
+    }
+    /// Indeterminate while the file is read, then how much the Mac has.
+    private var ring: some View {
+        ZStack {
+            if card.size == nil {
+                ProgressView().controlSize(.small).tint(style.muted)
+            } else {
+                Circle().stroke(style.divider, lineWidth: 2.5)
+                Circle().trim(from: 0, to: max(0.03, card.fraction)).stroke(style.accent, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .rotationEffect(.degrees(-90)).animation(.easeOut(duration: 0.2), value: card.fraction)
+            }
+        }
+        .frame(width: style.pt(22), height: style.pt(22))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// A card's ×: a small filled circle on its corner, in a 44-point target centred on it.
+struct ChatCardCloseButton: View {
+    @Environment(\.desktopStyle) private var style
+    let label: String
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark").font(.system(size: style.pt(9), weight: .bold)).foregroundStyle(style.background)
+                .frame(width: style.pt(20), height: style.pt(20))
+                .background(style.text.opacity(0.85), in: Circle())
+                .overlay(Circle().strokeBorder(style.background, lineWidth: 1.5))
+                .frame(width: style.target, height: style.target).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .offset(x: style.target / 2 - style.pt(6), y: -(style.target / 2 - style.pt(6)))
+        .accessibilityLabel(label)
+        .accessibilityIdentifier("attachment-remove")
+    }
+}
+
+/// The cards' thumbnails, read once from disk.
+@MainActor enum ChatAttachmentImageCache {
+    private static let cache = NSCache<NSURL, UIImage>()
+    static func image(_ url: URL) -> UIImage? {
+        if let known = cache.object(forKey: url as NSURL) { return known }
+        guard let image = UIImage(contentsOfFile: url.path) else { return nil }
+        cache.setObject(image, forKey: url as NSURL)
+        return image
+    }
+}
+
+/// A staged image full screen, on black as Photos shows one: pinch or double-tap to zoom, Done or a swipe down to close.
+struct ChatAttachmentPreview: View {
+    @Environment(\.desktopStyle) private var style
+    let card: StagedAttachment
+    let url: URL
+    let close: () -> Void
+    @State private var image: UIImage?
+    @State private var zoom: CGFloat = 1
+    @State private var settledZoom: CGFloat = 1
+    @State private var pan: CGSize = .zero
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            if let image {
+                Image(uiImage: image).resizable().scaledToFit()
+                    .scaleEffect(zoom)
+                    .offset(pan)
+                    .gesture(MagnifyGesture().onChanged { zoom = max(1, min(5, settledZoom * $0.magnification)) }.onEnded { _ in settledZoom = zoom })
+                    .simultaneousGesture(DragGesture().onChanged { value in
+                        pan = zoom > 1 ? value.translation : CGSize(width: 0, height: max(0, value.translation.height))
+                    }.onEnded { value in
+                        if zoom <= 1, value.translation.height > 120 { close() } else if zoom <= 1 { withAnimation(.spring) { pan = .zero } }
+                    })
+                    .onTapGesture(count: 2) { withAnimation(.spring) { zoom = zoom > 1 ? 1 : 2.5; settledZoom = zoom; pan = .zero } }
+                    .accessibilityLabel("Image, \(card.name)")
+            } else {
+                ProgressView().tint(.white)
+            }
+        }
+        .overlay(alignment: .top) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(card.name).font(style.face(15, bold: true, relativeTo: .headline)).lineLimit(1).truncationMode(.middle)
+                    Text(card.sizeText).font(style.face(12, relativeTo: .caption)).opacity(0.7)
+                }
+                Spacer(minLength: 8)
+                Button("Done", action: close).font(style.face(16, bold: true, relativeTo: .body))
+                    .frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
+                    .accessibilityIdentifier("attachment-preview-done")
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16).padding(.top, 4)
+            .background(LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom).ignoresSafeArea())
+        }
+        .statusBarHidden(false)
+        .preferredColorScheme(.dark)
+        .task(id: url) {
+            let url = url
+            image = await Task.detached(priority: .userInitiated) { UIImage(contentsOfFile: url.path) }.value
+        }
     }
 }

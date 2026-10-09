@@ -206,6 +206,12 @@ public struct ChatUsageMeter: Sendable, Equatable {
         let total = usage.inputTokens + usage.outputTokens
         return total > 0 ? "\(Self.tokens(total)) tokens" : nil
     }
+    /// How the header's ring is drawn, as the Mac's ring: the text color below 70 %, the warning tint from 70 %, red from 90 %.
+    public enum Level: Sendable, Equatable { case normal, warning, critical }
+    public var level: Level {
+        let fraction = contextFraction ?? 0
+        return fraction >= 0.9 ? .critical : fraction >= 0.7 ? .warning : .normal
+    }
     /// "42%", the number in the header's ring; nil when the window or what is in it is not known.
     public var percentText: String? { contextFraction.map { "\(Int(($0 * 100).rounded()))%" } }
     /// "84k / 200k tokens" when the window is known, otherwise the tokens spent ("13.3k tokens"); nil when there is nothing to say.

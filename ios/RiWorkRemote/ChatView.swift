@@ -59,15 +59,13 @@ struct ChatScreen: View {
                 }
                 .id(question.requestID)
             }
-            // A file on its way (with Cancel); one that failed is said in the banner row.
-            if let activity = model.uploadActivity(for: .chat(chat.id)), !activity.failed {
-                UploadStatusBar(activity: activity, cancel: model.cancelUpload, dismiss: model.dismissUploadFailure)
-            }
             // Every message of the moment, in one place: the link, the chat's state, what went wrong, the provider's notices.
             ChatNoticeBanners(model: model, chat: info, conversation: conversation, state: state, showHistory: { showNotices = true })
             ChatComposer(conversation: conversation, provider: info.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
                          send: { Task { await model.sendChatDraft(chat.id) } }, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } },
-                         attach: { picking = $0 }, pasteFiles: pasteFiles)
+                         attach: { picking = $0 }, pasteFiles: pasteFiles,
+                         attachmentImages: model.chatAttachmentImages, removeAttachment: { model.removeStagedAttachment($0, from: chat.id) },
+                         pending: model.pendingAttachments(for: chat.id), cancelPending: model.cancelUpload)
         }
         .frame(maxWidth: 760)
         .frame(maxWidth: .infinity)
@@ -232,10 +230,13 @@ struct ChatUsageRing: View {
     @Environment(\.desktopStyle) private var style
     let meter: ChatUsageMeter
     @State private var detail = false
-    /// Gold above 80 % and red above 95 %, as the meter always was: a context that is nearly full is about to be compacted.
+    /// As the Mac's ring (`ChatUsageMeter.level`): the text color, the warning tint from 70 %, red from 90 %.
     private var tint: Color {
-        let fraction = meter.contextFraction ?? 0
-        return fraction > 0.95 ? style.error : (fraction > 0.8 ? style.gold : style.text)
+        switch meter.level {
+        case .normal: style.text
+        case .warning: style.warning
+        case .critical: style.error
+        }
     }
     var body: some View {
         Button { detail = true } label: {

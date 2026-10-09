@@ -386,6 +386,187 @@ import RiWorkCore
             try? keychain.delete()
         }
     }
+    /// A picture to stage: a sky, a sun and hills, so a thumbnail reads as a photo.
+    private func fixturePhoto(_ hue: CGFloat, size: CGSize = CGSize(width: 1200, height: 900)) -> Data {
+        UIGraphicsImageRenderer(size: size).jpegData(withCompressionQuality: 0.9) { context in
+            let cg = context.cgContext
+            let colors = [UIColor(hue: hue, saturation: 0.55, brightness: 0.95, alpha: 1).cgColor, UIColor(hue: hue + 0.08, saturation: 0.35, brightness: 1, alpha: 1).cgColor]
+            cg.drawLinearGradient(CGGradient(colorsSpace: nil, colors: colors as CFArray, locations: [0, 1])!, start: .zero, end: CGPoint(x: 0, y: size.height), options: [])
+            UIColor(hue: 0.12, saturation: 0.7, brightness: 1, alpha: 1).setFill()
+            cg.fillEllipse(in: CGRect(x: size.width * 0.62, y: size.height * 0.16, width: size.width * 0.2, height: size.width * 0.2))
+            UIColor(hue: 0.33, saturation: 0.5, brightness: 0.45, alpha: 1).setFill()
+            let hills = UIBezierPath()
+            hills.move(to: CGPoint(x: 0, y: size.height * 0.7))
+            hills.addQuadCurve(to: CGPoint(x: size.width * 0.5, y: size.height * 0.66), controlPoint: CGPoint(x: size.width * 0.25, y: size.height * 0.45))
+            hills.addQuadCurve(to: CGPoint(x: size.width, y: size.height * 0.62), controlPoint: CGPoint(x: size.width * 0.78, y: size.height * 0.85))
+            hills.addLine(to: CGPoint(x: size.width, y: size.height)); hills.addLine(to: CGPoint(x: 0, y: size.height)); hills.close()
+            hills.fill()
+        }
+    }
+
+    /// `RIWORK_TAB_SCREENSHOTS_ONLY=testAttachmentPreviews scripts/tab-chrome-screenshots.sh <dir> <udid>`: the cards above a chat's
+    /// composer (one image; three mixed; three mixed with text and the keyboard up; Latest over them; an image full screen), in Native
+    /// light and dark.
+    func testAttachmentPreviews() async throws {
+        guard ProcessInfo.processInfo.environment["RIWORK_TAB_SCREENSHOTS_ONLY"] == "testAttachmentPreviews" else { throw XCTSkip("Set RIWORK_TAB_SCREENSHOTS_ONLY=testAttachmentPreviews") }
+        for look in [Look.nativeLight, .nativeDark] {
+            guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene") }
+            let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
+            let pairing = try Pairing.parse("""
+            {"v":1,"relay_url":"wss://example.com/v1/ws","desktop_id":"11111111-1111-4111-8111-111111111111","device_id":"22222222-2222-4222-8222-222222222222","route_id":"33333333-3333-4333-8333-333333333333","device_name":"Test","pairing_secret":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","relay_token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}
+            """)
+            var desktop = SavedDesktop(name: "Fixture", pairing: pairing, allowLocalDevelopment: false)
+            desktop.selectedProjectID = project; desktop.selectedSessionID = ChatTransport.shell
+            try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
+            let suite = "com.riwork.tests.tabchrome.\(UUID().uuidString)"
+            defaultsNames.append(suite)
+            let images = ChatAttachmentImages(directory: FileManager.default.temporaryDirectory.appendingPathComponent("shots-\(UUID().uuidString)"))
+            defer { try? FileManager.default.removeItem(at: images.directory) }
+            let info = ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Fix the build", createdAtUnix: 10, approvalMode: .supervised, state: .idle)
+            let transport = ChatTransport(chats: [info], appearance: appearance(look, mic: true))
+            await transport.setShellOutput("~/fixture $ ")
+            await transport.append(chatID, [.info(info)] + (0..<10).map { index in
+                .itemCompleted(ChatItem(id: "m\(index)", status: .completed, body: .agentMessage("Message \(index). A readable paragraph in this fixture conversation, long enough to wrap.")))
+            })
+            let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: suite)!, chatWaitMilliseconds: 300,
+                                    chatIdleInterval: .milliseconds(20), hardwareKeyboard: HardwareKeyboardMonitor(probe: { false }), attachmentImages: images)
+            await model.connect()
+            await eventually("Native look") { model.theme.style.native }
+            let projectValue = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}".utf8))
+            let host = UIHostingController(rootView: AnyView(ThemedTabs(model: model, project: projectValue)))
+            let window = UIWindow(windowScene: scene)
+            window.frame = scene.coordinateSpace.bounds
+            window.windowLevel = .alert + 1
+            window.rootViewController = host
+            window.overrideUserInterfaceStyle = look == .nativeDark ? .dark : .light
+            window.makeKeyAndVisible()
+            windows.forEach { $0.isHidden = true }
+            windows.append(window)
+            await eventually("terminal up") { model.terminalArea != nil }
+            model.selectChat(chatID)
+            let conversation = model.conversation(chatID)
+            await eventually("chat up") { conversation.following && conversation.transcript.items.count > 5 }
+            window.endEditing(true)
+            let photo = StagedAttachment(id: "aaaaaaaa-0000-4000-8000-000000000001", kind: .image, name: "IMG_0412.jpg", size: 842_311, path: "/Users/me/uploads/1/IMG_0412.jpg")
+            let screenshot = StagedAttachment(id: "aaaaaaaa-0000-4000-8000-000000000002", kind: .image, name: "Screenshot 2026-10-08 at 09.14.png", size: 1_204_000, path: "/Users/me/uploads/2/s.png")
+            let pdf = StagedAttachment(id: "aaaaaaaa-0000-4000-8000-000000000003", kind: .file, name: "quarterly-infrastructure-review-final.pdf", size: 2_431_000, path: "/Users/me/uploads/3/q.pdf")
+            images.save(photo.id, data: fixturePhoto(0.58))
+            images.save(screenshot.id, data: fixturePhoto(0.9, size: CGSize(width: 900, height: 1600)))
+            let prefix = look.rawValue
+            conversation.attachments = [photo]
+            try await shot(window, prefix + "-1-one-image")
+            conversation.attachments = [photo, pdf, screenshot]
+            try await shot(window, prefix + "-2-three-mixed")
+            // Picked a moment ago: a photo still being read and a file half sent beside a card the Mac has; then an expired card.
+            model.attachments.pending = [PendingAttachment(id: "p1", chat: chatID, kind: .image, name: "Photo"),
+                                         PendingAttachment(id: "p2", chat: chatID, kind: .file, name: "build-output.log", size: 2_000_000, fraction: 0.42)]
+            conversation.attachments = [photo]
+            try await shot(window, prefix + "-2b-uploading")
+            model.attachments.pending = []
+            var old = pdf; old.stagedAt = Date.now.addingTimeInterval(-25 * 3600)
+            var oldPhoto = screenshot; oldPhoto.stagedAt = old.stagedAt
+            conversation.attachments = [photo, old, oldPhoto]
+            try await shot(window, prefix + "-2c-expired")
+            conversation.attachments = [photo, pdf, screenshot]
+            guard let field = views(ChatComposerTextView.self, in: window).first else { XCTFail("no composer"); continue }
+            field.becomeFirstResponder()
+            conversation.draft = "What changed between these two?"
+            try await Task.sleep(for: .milliseconds(900))
+            try await shot(window, prefix + "-3-kb-three-mixed")
+            // Scrolled up with the keyboard up: Latest over the transcript's bottom edge, above the cards.
+            if let scroll = views(UIScrollView.self, in: window).filter({ $0.bounds.height > 60 && $0.contentSize.height > $0.bounds.height && $0.contentSize.width <= $0.bounds.width + 1 }).max(by: { $0.bounds.height < $1.bounds.height }) {
+                scroll.delegate?.scrollViewWillBeginDragging?(scroll)
+                scroll.setContentOffset(CGPoint(x: 0, y: max(0, scroll.contentSize.height - scroll.bounds.height - 400)), animated: false)
+                scroll.delegate?.scrollViewDidEndDragging?(scroll, willDecelerate: false)
+                try await Task.sleep(for: .milliseconds(500))
+                await transport.append(chatID, [.itemCompleted(ChatItem(id: "live", status: .completed, body: .agentMessage("One new live message.")))])
+                try await Task.sleep(for: .milliseconds(600))
+                try await shot(window, prefix + "-4-kb-latest")
+                conversation.jumpToEnd()
+            }
+            window.endEditing(true)
+            try await Task.sleep(for: .milliseconds(500))
+            // An image full screen: the preview's presenter is the row's own; open it as a tap would.
+            let preview = UIHostingController(rootView: AnyView(ChatAttachmentPreview(card: photo, url: images.previewURL(photo.id)) {}.desktopThemed(model.theme.style)))
+            preview.modalPresentationStyle = .fullScreen
+            host.present(preview, animated: false)
+            try await Task.sleep(for: .milliseconds(600))
+            try await shot(window, prefix + "-5-preview")
+            preview.dismiss(animated: false)
+            await model.disconnect()
+            window.isHidden = true
+            try? keychain.delete()
+        }
+    }
+    /// `RIWORK_TAB_SCREENSHOTS_ONLY=testComposerEdges scripts/tab-chrome-screenshots.sh <dir> <udid>`: where the bottom bars meet the
+    /// screen's sides: a shell's key bar over the software keyboard, and a chat's composer empty, with text and the keyboard up, and with
+    /// cards; in Native light and dark and the terminal look.
+    func testComposerEdges() async throws {
+        guard ProcessInfo.processInfo.environment["RIWORK_TAB_SCREENSHOTS_ONLY"] == "testComposerEdges" else { throw XCTSkip("Set RIWORK_TAB_SCREENSHOTS_ONLY=testComposerEdges") }
+        for look in [Look.nativeLight, .nativeDark, .terminal] {
+            guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene") }
+            let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
+            let pairing = try Pairing.parse("""
+            {"v":1,"relay_url":"wss://example.com/v1/ws","desktop_id":"11111111-1111-4111-8111-111111111111","device_id":"22222222-2222-4222-8222-222222222222","route_id":"33333333-3333-4333-8333-333333333333","device_name":"Test","pairing_secret":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","relay_token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}
+            """)
+            var desktop = SavedDesktop(name: "Fixture", pairing: pairing, allowLocalDevelopment: false)
+            desktop.selectedProjectID = project; desktop.selectedSessionID = ChatTransport.shell
+            try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
+            let suite = "com.riwork.tests.tabchrome.\(UUID().uuidString)"
+            defaultsNames.append(suite)
+            let images = ChatAttachmentImages(directory: FileManager.default.temporaryDirectory.appendingPathComponent("shots-\(UUID().uuidString)"))
+            defer { try? FileManager.default.removeItem(at: images.directory) }
+            let info = ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Fix the build", createdAtUnix: 10, approvalMode: .supervised, state: .idle)
+            let transport = ChatTransport(chats: [info], appearance: appearance(look, mic: true))
+            await transport.setShellOutput((0..<40).map { "\u{1b}[32m~/fixture\u{1b}[0m $ make test  # line \($0)" }.joined(separator: "\r\n"))
+            await transport.append(chatID, [.info(info)] + (0..<10).map { index in
+                .itemCompleted(ChatItem(id: "m\(index)", status: .completed, body: .agentMessage("Message \(index). A readable paragraph in this fixture conversation, long enough to wrap.")))
+            })
+            let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: suite)!, chatWaitMilliseconds: 300,
+                                    chatIdleInterval: .milliseconds(20), hardwareKeyboard: HardwareKeyboardMonitor(probe: { false }), attachmentImages: images)
+            await model.connect()
+            if look != .terminal { await eventually("Native look") { model.theme.style.native } }
+            let projectValue = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}".utf8))
+            let host = UIHostingController(rootView: AnyView(ThemedTabs(model: model, project: projectValue)))
+            let window = UIWindow(windowScene: scene)
+            window.frame = scene.coordinateSpace.bounds
+            window.windowLevel = .alert + 1
+            window.rootViewController = host
+            window.overrideUserInterfaceStyle = look == .nativeDark ? .dark : .light
+            window.makeKeyAndVisible()
+            windows.forEach { $0.isHidden = true }
+            windows.append(window)
+            await eventually("terminal up") { model.terminalArea != nil && model.hasOutput }
+            let prefix = look.rawValue
+            try await Task.sleep(for: .milliseconds(900))
+            if let keys = views(KeyCaptureView.self, in: window).first {
+                keys.becomeFirstResponder()
+                try await Task.sleep(for: .milliseconds(1200))
+            }
+            try await shot(window, prefix + "-1-shell-keybar")
+            window.endEditing(true)
+            try await Task.sleep(for: .milliseconds(500))
+            model.selectChat(chatID)
+            let conversation = model.conversation(chatID)
+            await eventually("chat up") { conversation.following && conversation.transcript.items.count > 5 }
+            window.endEditing(true)
+            try await shot(window, prefix + "-2-chat-empty")
+            guard let field = views(ChatComposerTextView.self, in: window).first else { XCTFail("no composer"); continue }
+            field.becomeFirstResponder()
+            conversation.draft = "Text starts right after the paperclip"
+            try await Task.sleep(for: .milliseconds(900))
+            try await shot(window, prefix + "-3-kb-text")
+            let photo = StagedAttachment(id: "aaaaaaaa-0000-4000-8000-000000000001", kind: .image, name: "IMG_0412.jpg", size: 842_311, path: "/Users/me/uploads/1/IMG_0412.jpg")
+            let pdf = StagedAttachment(id: "aaaaaaaa-0000-4000-8000-000000000003", kind: .file, name: "quarterly-infrastructure-review-final.pdf", size: 2_431_000, path: "/Users/me/uploads/3/q.pdf")
+            images.save(photo.id, data: fixturePhoto(0.58))
+            conversation.attachments = [photo, pdf]
+            try await shot(window, prefix + "-4-kb-cards")
+            window.endEditing(true)
+            await model.disconnect()
+            window.isHidden = true
+            try? keychain.delete()
+        }
+    }
     /// `RIWORK_TAB_SCREENSHOTS_ONLY=testSharedTabs scripts/tab-chrome-screenshots.sh <dir> <udid>`: the row on the desktop's shared tab
     /// list (the project orchestrator, sent as pinned by an older desktop, and a user chat), the open-worker picker, the close sheet, a
     /// reorder in progress (the drop bar and the Edit tabs sheet), the setting row, the orchestrator's close sheet (Detach and Exit, as

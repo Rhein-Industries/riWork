@@ -272,6 +272,8 @@ enum ConnectionState: Equatable {
     @ObservationIgnored let defaults: UserDefaults
     /// What was typed into each chat and not sent, saved (`RemoteModel+Chat.swift`, `restoreDraft`).
     @ObservationIgnored let chatDrafts: ChatDraftStore
+    /// The pictures of images staged in chats' composers (`ChatAttachments.swift`).
+    @ObservationIgnored let chatAttachmentImages: ChatAttachmentImages
     /// Chats whose message is on its way now (`sendChatMessage`), so a draft made again meanwhile is not taken for one never answered.
     @ObservationIgnored var chatSendsInFlight: Set<String> = []
     @ObservationIgnored let cellMetrics: @MainActor (Double) -> (width: Double, height: Double)
@@ -310,7 +312,7 @@ enum ConnectionState: Equatable {
          cellMetrics: @escaping @MainActor (Double) -> (width: Double, height: Double) = { TerminalFont.cell(size: $0) },
          keepAwake: @escaping @MainActor (Bool) -> Void = { UIApplication.shared.isIdleTimerDisabled = $0 },
          liveWaitMilliseconds: Int = LiveSync.waitMilliseconds, linkWatcher: (any LinkWatching)? = nil, prefetch: Bool = true,
-         hardwareKeyboard: HardwareKeyboardMonitor = HardwareKeyboardMonitor()) {
+         hardwareKeyboard: HardwareKeyboardMonitor = HardwareKeyboardMonitor(), attachmentImages: ChatAttachmentImages = .standard) {
         self.liveWaitMilliseconds = liveWaitMilliseconds
         self.linkWatcher = linkWatcher
         self.prefetchEnabled = prefetch
@@ -322,6 +324,12 @@ enum ConnectionState: Equatable {
         self.reconnectBackoff = reconnectBackoff
         self.defaults = defaults
         self.chatDrafts = ChatDraftStore(defaults: defaults)
+        self.chatAttachmentImages = attachmentImages
+        // Pictures of cards sent or removed while the app was not there to tidy up.
+        // Pictures of cards sent or removed while the app was not there to tidy up; never one written after this moment, which belongs to
+        // a card staged since.
+        let staged = chatDrafts.attachmentIDs, started = Date.now
+        Task.detached(priority: .utility) { attachmentImages.prune(keeping: staged, writtenBefore: started) }
         self.tabCloseBehavior = TabCloseBehavior(rawValue: defaults.string(forKey: TabCloseBehavior.settingKey) ?? "") ?? .ask
         self.themeRefreshInterval = themeRefreshInterval
         self.themeMinimumGap = themeMinimumGap

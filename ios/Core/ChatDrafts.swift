@@ -12,8 +12,11 @@ import Foundation
 public struct ChatDraft: Codable, Sendable, Equatable {
     /// What is in the composer.
     public var text: String
-    /// A message sent and not yet answered by the desktop.
+    /// The files staged for the message (`StagedAttachment`): cards above the composer.
+    public var attachments: [StagedAttachment]
+    /// A message sent and not yet answered by the desktop: its text, and the files that went with it.
     public var sending: String?
+    public var sendingAttachments: [StagedAttachment]
     /// Which send `sending` belongs to: only that send's answer may end it or bring it back.
     public var sendToken: String?
     /// The text holds a message that may have reached the desktop already: said again on every restore until the person sends or
@@ -21,25 +24,37 @@ public struct ChatDraft: Codable, Sendable, Equatable {
     public var uncertain: Bool
     /// When it last changed, so drafts of chats long gone can be let go.
     public var updatedAt: Date
-    public init(text: String = "", sending: String? = nil, sendToken: String? = nil, uncertain: Bool = false, updatedAt: Date = .now) {
-        self.text = text; self.sending = sending; self.sendToken = sendToken; self.uncertain = uncertain; self.updatedAt = updatedAt
+    public init(text: String = "", attachments: [StagedAttachment] = [], sending: String? = nil, sendingAttachments: [StagedAttachment] = [],
+                sendToken: String? = nil, uncertain: Bool = false, updatedAt: Date = .now) {
+        self.text = text; self.attachments = attachments; self.sending = sending; self.sendingAttachments = sendingAttachments
+        self.sendToken = sendToken; self.uncertain = uncertain; self.updatedAt = updatedAt
     }
-    private enum Keys: String, CodingKey { case text, sending, sendToken, uncertain, updatedAt }
+    private enum Keys: String, CodingKey { case text, attachments, sending, sendingAttachments, sendToken, uncertain, updatedAt }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
+        attachments = (try? c.decodeIfPresent([StagedAttachment].self, forKey: .attachments)) ?? []
         sending = try c.decodeIfPresent(String.self, forKey: .sending)
+        sendingAttachments = (try? c.decodeIfPresent([StagedAttachment].self, forKey: .sendingAttachments)) ?? []
         sendToken = try c.decodeIfPresent(String.self, forKey: .sendToken)
         uncertain = try c.decodeIfPresent(Bool.self, forKey: .uncertain) ?? false
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? .now
     }
-    public var isEmpty: Bool { text.isEmpty && (sending ?? "").isEmpty }
+    public var isEmpty: Bool { text.isEmpty && attachments.isEmpty && (sending ?? "").isEmpty && sendingAttachments.isEmpty }
+    /// Nothing in the composer: no text and no cards.
+    var composerIsEmpty: Bool { text.isEmpty && attachments.isEmpty }
 
-    /// What the composer shows when the chat is opened again after the app ended: the text, and before it a message whose sending was
-    /// never answered (`uncertain`), which the person decides about.
-    public var restored: (text: String, uncertain: Bool) {
-        guard let sending, !sending.isEmpty else { return (text, uncertain) }
-        return (text.isEmpty ? sending : sending + "\n" + text, true)
+    /// What the composer shows when the chat is opened again after the app ended: the text and cards, and before them a message whose
+    /// sending was never answered (`uncertain`), which the person decides about.
+    public var restored: (text: String, attachments: [StagedAttachment], uncertain: Bool) {
+        let sent = sending ?? ""
+        guard !sent.isEmpty || !sendingAttachments.isEmpty else { return (text, attachments, uncertain) }
+        return (sent.isEmpty ? text : text.isEmpty ? sent : sent + "\n" + text, Self.merged(sendingAttachments, attachments), true)
+    }
+    /// `first` then those of `then` not in it already.
+    public static func merged(_ first: [StagedAttachment], _ then: [StagedAttachment]) -> [StagedAttachment] {
+        let ids = Set(first.map(\.id))
+        return first + then.filter { !ids.contains($0.id) }
     }
 }
 
@@ -68,41 +83,52 @@ public struct ChatDraft: Codable, Sendable, Equatable {
 
     public func draft(_ chatID: String) -> ChatDraft? { drafts[chatID] }
     public var chatIDs: Set<String> { Set(drafts.keys) }
+    /// The upload ids of every card any draft holds, staged or on its way.
+    public var attachmentIDs: Set<String> { Set(drafts.values.flatMap { ($0.attachments + $0.sendingAttachments).map(\.id) }) }
 
     /// The composer's text changed.
     public func setText(_ text: String, for chatID: String) {
         update(chatID) { $0.text = Self.bounded(text) }
     }
+    /// The cards above the composer changed.
+    public func setAttachments(_ attachments: [StagedAttachment], for chatID: String) {
+        update(chatID) { $0.attachments = attachments }
+    }
     /// A message leaves the composer: held until its answer (`endSending` or `returnUnsent` with the token returned here). Sending is
     /// the person's decision about an uncertain one, too.
     @discardableResult
-    public func beginSending(_ text: String, for chatID: String) -> String {
+    public func beginSending(_ text: String, attachments: [StagedAttachment] = [], for chatID: String) -> String {
         let token = UUID().uuidString
-        update(chatID) { $0.sending = Self.bounded(text); $0.sendToken = token; $0.uncertain = false }
+        update(chatID) { $0.sending = Self.bounded(text); $0.sendingAttachments = attachments; $0.sendToken = token; $0.uncertain = false }
         return token
     }
     /// The desktop has the message: it is no longer on its way. Only the send `token` belongs to may say so.
     public func endSending(for chatID: String, token: String) {
         guard drafts[chatID]?.sendToken == token else { return }
-        update(chatID) { $0.sending = nil; $0.sendToken = nil }
+        update(chatID) { $0.sending = nil; $0.sendingAttachments = []; $0.sendToken = nil }
     }
     /// The message did not go through (or may not have): it comes back before whatever is in the draft now (typed since, in whichever
-    /// composer), flagged when its outcome is unknown. Returns the draft's text now, or nil when `token` is not the send in the draft
-    /// (a stale answer), which changes nothing.
+    /// composer), its cards before the ones staged since, flagged when its outcome is unknown. Returns the draft's text and cards now,
+    /// or nil when `token` is not the send in the draft (a stale answer), which changes nothing.
     @discardableResult
-    public func returnUnsent(_ text: String, token: String, uncertain: Bool, for chatID: String) -> String? {
+    public func returnUnsent(_ text: String, attachments: [StagedAttachment] = [], token: String, uncertain: Bool, for chatID: String) -> (text: String, attachments: [StagedAttachment])? {
         guard let draft = drafts[chatID], draft.sendToken == token else { return nil }
-        let back = draft.text.isEmpty ? text : text + "\n" + draft.text
-        update(chatID) { $0.text = Self.bounded(back); $0.sending = nil; $0.sendToken = nil; $0.uncertain = uncertain || $0.uncertain }
-        return back
+        let back = text.isEmpty ? draft.text : draft.text.isEmpty ? text : text + "\n" + draft.text
+        let cards = ChatDraft.merged(attachments, draft.attachments)
+        update(chatID) {
+            $0.text = Self.bounded(back); $0.attachments = cards; $0.sending = nil; $0.sendingAttachments = []; $0.sendToken = nil
+            $0.uncertain = uncertain || $0.uncertain
+        }
+        return (back, cards)
     }
-    /// A message never answered is back in the composer as `text`: an ordinary draft now, still flagged until sent or emptied.
-    public func restoreUncertain(_ text: String, for chatID: String) {
-        update(chatID) { $0.text = Self.bounded(text); $0.sending = nil; $0.sendToken = nil; $0.uncertain = true }
+    /// A message never answered is back in the composer as `text` and `attachments`: an ordinary draft now, still flagged until sent or
+    /// emptied.
+    public func restoreUncertain(_ text: String, attachments: [StagedAttachment] = [], for chatID: String) {
+        update(chatID) { $0.text = Self.bounded(text); $0.attachments = attachments; $0.sending = nil; $0.sendingAttachments = []; $0.sendToken = nil; $0.uncertain = true }
     }
     /// No longer on its way, whichever send it was (a draft restored after a relaunch).
     public func endSending(for chatID: String) {
-        update(chatID) { $0.sending = nil; $0.sendToken = nil }
+        update(chatID) { $0.sending = nil; $0.sendingAttachments = []; $0.sendToken = nil }
     }
     /// The person cleared it, or the chat is gone for good.
     public func remove(_ chatID: String) {
@@ -114,7 +140,7 @@ public struct ChatDraft: Codable, Sendable, Equatable {
         var draft = drafts[chatID] ?? ChatDraft()
         let before = draft
         change(&draft)
-        if draft.text.isEmpty { draft.uncertain = false }
+        if draft.composerIsEmpty { draft.uncertain = false }
         guard draft != before else { return }
         draft.updatedAt = now()
         if draft.isEmpty { drafts[chatID] = nil } else { drafts[chatID] = draft }

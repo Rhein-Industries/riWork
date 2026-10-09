@@ -169,6 +169,17 @@ final class ChatPresentationTests: XCTestCase {
         XCTAssertNil(ChatUsageMeter(ChatUsage(contextWindow: 0, contextUsed: 5)).contextFraction)
         XCTAssertNil(ChatUsageMeter(ChatUsage(contextWindow: 1000)).contextFraction, "the used part is not known")
     }
+    /// The ring's color, as the Mac's: the text color below 70 %, the warning tint from 70 %, red from 90 %.
+    func testTheRingWarnsFromSeventyAndTurnsRedFromNinetyPercent() {
+        func level(_ used: UInt64) -> ChatUsageMeter.Level { ChatUsageMeter(ChatUsage(contextWindow: 1000, contextUsed: used)).level }
+        XCTAssertEqual(level(0), .normal)
+        XCTAssertEqual(level(699), .normal)
+        XCTAssertEqual(level(700), .warning)
+        XCTAssertEqual(level(899), .warning)
+        XCTAssertEqual(level(900), .critical)
+        XCTAssertEqual(level(1000), .critical)
+        XCTAssertEqual(ChatUsageMeter(ChatUsage(contextWindow: 1000)).level, .normal, "unknown: the text color")
+    }
 
     // MARK: Tabs
 

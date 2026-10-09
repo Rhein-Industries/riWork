@@ -73,8 +73,9 @@ public enum BottomBarGeometry {
     /// A tap target at an interface scale: it grows with a larger interface and never shrinks below `minimumTarget`, so the 80 %
     /// size makes glyphs and text smaller but leaves every target at 44 points.
     public static func target(scale: Double) -> Double { max(minimumTarget, InterfaceScale.scaled(minimumTarget, by: scale)) }
-    /// On glass the key bar's row sits on a capsule set this far in from the bar's sides, and this far from its top and bottom.
-    public static let capsuleSideInset = 6.0, capsuleEndInset = 2.0
+    /// On glass the key bar's row sits on a capsule set this far in from the bar's sides (none: it spans the bar, between the screen's
+    /// horizontal safe-area edges, as the chat composer's field does), and this far from its top and bottom.
+    public static let capsuleSideInset = 0.0, capsuleEndInset = 2.0
     /// How far the first key (and, mirrored, Hide) sits in from the bar's sides, beyond the corner padding: on glass clear of the
     /// capsule's rounded ends, otherwise at the edge (the bar is a full-width band).
     public static func keysInset(glass: Bool) -> Double { glass ? 12 : 0 }
@@ -102,11 +103,10 @@ public enum BottomBarGeometry {
         return (strength(position), strength(hiddenTrailing))
     }
 
-    /// The chat composer's insets: its outermost buttons line up with the key bar's first key and Hide, and it stands as close above
-    /// the keyboard as the key bar's capsule does. `inner` is the padding of the row of buttons inside it.
-    public static let composerInnerInset = 6.0
+    /// The chat composer's insets: its field spans the screen between the horizontal safe-area edges, the same edges as the key bar's
+    /// capsule (the paperclip and the trailing button sit inside its ends; only the text's own insets remain), and it stands as close
+    /// above the keyboard as the key bar's capsule does.
     public static func composerInsets(glass: Bool) -> (horizontal: Double, bottom: Double) {
-        let aligned = max(keysInset(glass: glass), composerInnerInset) - composerInnerInset
-        return (aligned, capsuleEndInset)
+        (capsuleSideInset, capsuleEndInset)
     }
 }

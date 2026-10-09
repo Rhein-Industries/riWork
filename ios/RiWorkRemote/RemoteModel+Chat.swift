@@ -20,6 +20,12 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     /// (`ChatDraftStore`), so leaving the project, the background, a dropped link or a relaunch lose nothing either.
     var draft = "" { didSet { if draft != oldValue { onDraftChange?(draft) } } }
     @ObservationIgnored var onDraftChange: ((String) -> Void)?
+    /// The files staged for the message, shown as cards above the composer (`ChatAttachmentStrip`): on the Mac already, their paths go
+    /// into the message when it is sent. Saved with the draft.
+    var attachments: [StagedAttachment] = [] { didSet { if attachments != oldValue { onAttachmentsChange?(attachments) } } }
+    @ObservationIgnored var onAttachmentsChange: (([StagedAttachment]) -> Void)?
+    /// Something to send: text, or a card whose file the Mac still has (an expired one is not sent).
+    var hasMessage: Bool { attachments.contains { !$0.isExpired() } || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     /// The cards the person opened (command output, diffs, reasoning), by item id. Kept here because rows come and go as the list scrolls.
     var expanded: Set<String> = []
     /// The mode just chosen, shown until the desktop says so itself.
@@ -206,16 +212,25 @@ extension RemoteModel {
                 // Its message is on its way in this run (the conversation was let go meanwhile, with the desktop or the project): only
                 // the text is the composer's, and the guard goes with it, so a second message is not sent before the first is answered.
                 conversation.draft = saved.text
+                conversation.attachments = saved.attachments
             } else {
                 let restored = saved.restored
                 conversation.draft = restored.text
+                conversation.attachments = restored.attachments
+                // The Mac keeps an upload for a day; a draft lasts a month. Cards past that are marked on the card and never sent.
+                let expired = restored.attachments.filter { $0.isExpired() }.count
+                if expired > 0 {
+                    conversation.alerts.show(.action, expired == 1 ? "An attached file has expired on the Mac. Remove it and attach it again."
+                                                                   : "\(expired) attached files have expired on the Mac. Remove them and attach them again.")
+                }
                 if restored.uncertain {
-                    chatDrafts.restoreUncertain(restored.text, for: id)
+                    chatDrafts.restoreUncertain(restored.text, attachments: restored.attachments, for: id)
                     conversation.alerts.show(.action, "Your last message may not have reached the Mac. It is back in the composer: check the conversation before sending it again.")
                 }
             }
         }
         conversation.onDraftChange = { [weak self] text in self?.chatDrafts.setText(text, for: id) }
+        conversation.onAttachmentsChange = { [weak self] cards in self?.chatDrafts.setAttachments(cards, for: id) }
     }
 
     // MARK: Selecting
@@ -525,18 +540,21 @@ extension RemoteModel {
         }
     }
 
-    /// Sends the draft as a message. The text leaves the composer at once; if the message did not go through it comes back, so nothing the
-    /// person wrote is lost, and what happened is said above the composer.
+    /// Sends the draft as a message, with the paths of its cards after the text (`ChatAttachmentMessage`). The text and the cards leave the
+    /// composer at once; if the message did not go through they come back, so nothing the person wrote or attached is lost, and what
+    /// happened is said above the composer.
     @discardableResult
     func sendChatDraft(_ chatID: String) async -> ChatControlError? {
         let conversation = conversation(chatID)
-        let text = conversation.draft
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        return await sendChatMessage(chatID, text, restoring: true)
+        guard conversation.hasMessage else { return nil }
+        // Files on their way go with the next message once the Mac has them, not before.
+        guard pendingAttachments(for: chatID).isEmpty else { return .busy }
+        // The text exactly as typed: the message is byte for byte what it was when paths went into the draft.
+        return await sendChatMessage(chatID, conversation.draft, attachments: conversation.attachments, restoring: true)
     }
-    /// Sends `text` as a message (also Retry on a failed chat, which sends the last message again).
+    /// Sends `text` as a message (also Retry on a failed chat, which sends the last message again), with the paths of `attachments`.
     @discardableResult
-    func sendChatMessage(_ chatID: String, _ text: String, restoring: Bool = false) async -> ChatControlError? {
+    func sendChatMessage(_ chatID: String, _ text: String, attachments: [StagedAttachment] = [], restoring: Bool = false) async -> ChatControlError? {
         let conversation = conversation(chatID)
         // One message at a time per chat, also across a conversation let go and made again while the first is on its way.
         guard !conversation.sending, !chatSendsInFlight.contains(chatID) else { return .busy }
@@ -544,8 +562,8 @@ extension RemoteModel {
         chatSendsInFlight.insert(chatID)
         // The text is held until the desktop answers: if the app ends before that, it comes back into the composer. The token ties the
         // answer to this send in the saved draft.
-        let token = restoring ? chatDrafts.beginSending(text, for: chatID) : nil
-        if restoring { conversation.draft = "" }
+        let token = restoring ? chatDrafts.beginSending(text, attachments: attachments, for: chatID) : nil
+        if restoring { conversation.draft = ""; conversation.attachments = [] }
         // The conversation the person sees now, if any: the one this send started from may have been let go and made again (or let
         // go with nothing in its place). A conversation let go is never written to: its text may be older than the saved draft.
         var live: ChatConversation? { chatConversations[chatID] }
@@ -553,14 +571,15 @@ extension RemoteModel {
             conversation.sending = false; live?.sending = false
             chatSendsInFlight.remove(chatID)
         }
-        let failure = await sendChatCommand(chatID, .send(text: text))
+        let failure = await sendChatCommand(chatID, .send(text: ChatAttachmentMessage.compose(text, attachments)))
         if let failure {
             if let token {
                 // The saved draft has whatever was typed since, in whichever composer: the message comes back before it there, and the
                 // composer shown (if any) shows the same. A stale answer (another send owns the draft now) changes nothing.
                 let uncertain = failure.outcomeIsUncertain
-                if let back = chatDrafts.returnUnsent(text, token: token, uncertain: uncertain, for: chatID), let live {
-                    live.draft = back
+                if let back = chatDrafts.returnUnsent(text, attachments: attachments, token: token, uncertain: uncertain, for: chatID), let live {
+                    live.draft = back.text
+                    live.attachments = back.attachments
                 }
                 if uncertain {
                     // The Mac may have it (the link dropped, it timed out, or its answer could not be read): flagged in the saved draft
@@ -573,6 +592,8 @@ extension RemoteModel {
             return failure
         }
         if let token { chatDrafts.endSending(for: chatID, token: token) }
+        // Sent: the cards' pictures are no longer needed (the files stay on the Mac, where the message names them).
+        for card in attachments where !chatDrafts.attachmentIDs.contains(card.id) { chatAttachmentImages.remove(card.id) }
         live?.notice = nil
         live?.jumpToEnd()
         return nil
