@@ -252,10 +252,10 @@ struct ChatComposer: View {
         }
         .animation(.easeInOut(duration: 0.15), value: conversation.attachments)
         // Edge to edge between the horizontal safe-area edges, as the terminal's key bar's capsule is, and as close above the keyboard
-        // (`BottomBarGeometry.composerInsets`). The card row above the field keeps the same edges.
+        // (`BottomBarGeometry.composerInsets`). The card row above the field keeps the same edges. No bar behind them: the field's own
+        // shape is drawn on the screen's background.
         .padding(.horizontal, BottomBarGeometry.composerInsets(glass: style.glass).horizontal).padding(.top, 6)
         .padding(.bottom, BottomBarGeometry.composerInsets(glass: style.glass).bottom)
-        .background(style.glass ? style.surface : style.background)
     }
 
     /// A filled circle in a 44-point target.
