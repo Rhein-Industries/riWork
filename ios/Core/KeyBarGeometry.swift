@@ -103,9 +103,9 @@ public enum BottomBarGeometry {
         return (strength(position), strength(hiddenTrailing))
     }
 
-    /// The chat composer's insets: its field spans the screen between the horizontal safe-area edges, the same edges as the key bar's
-    /// capsule (the paperclip and the trailing button sit inside its ends; only the text's own insets remain), and it stands as close
-    /// above the keyboard as the key bar's capsule does.
+    /// The chat composer's insets: its card row spans the screen between the horizontal safe-area edges, the same edges as the key bar's
+    /// capsule (the field is set in from them by the transcript's margin, in the app), and it stands as close above the keyboard as the
+    /// key bar's capsule does.
     public static func composerInsets(glass: Bool) -> (horizontal: Double, bottom: Double) {
         (capsuleSideInset, capsuleEndInset)
     }

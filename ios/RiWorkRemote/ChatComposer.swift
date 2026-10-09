@@ -185,9 +185,10 @@ struct ChatComposerField: UIViewRepresentable {
 
 /// The text field, Send and Interrupt. (What went wrong is said in the banner row above it, `ChatNoticeBanners`.)
 ///
-/// One rounded field spans the row and holds everything: the paperclip at its leading end, the text, and one action at its trailing end
-/// that changes with what is useful now (`ComposerAction`): Send once something is typed, Stop while the agent works, the mic otherwise.
-/// Every button keeps a 44-point target inside the field; the glyphs stay small, so the text gets the width.
+/// One rounded field holds everything: the paperclip at its leading end, the text, and one action at its trailing end that changes with
+/// what is useful now (`ComposerAction`): Send once something is typed, Stop while the agent works, the mic otherwise. The field has the
+/// transcript's margins (`fieldMargin`); the glyphs stay small inside it, so the text gets the width, and the buttons at its ends keep a
+/// 44-point target that reaches out over the margin to the screen's edge.
 struct ChatComposer: View {
     @Environment(\.desktopStyle) private var style
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -236,55 +237,63 @@ struct ChatComposer: View {
             }
             HStack(alignment: .composerLine, spacing: 0) {
                 if let attach {
-                    // Its 44-point target reaches over the text's leading padding: drawn above the field (a menu's button is a UIKit view
-                    // of its own, above the text view).
-                    ComposerPaperclip(connected: connected, choose: attach).equatable().zIndex(1)
+                    // Its target reaches out over the margin to the screen's edge: drawn above the field.
+                    ComposerPaperclip(connected: connected, reach: Self.fieldMargin, choose: attach).equatable().zIndex(1)
                 }
                 ChatComposerField(text: Binding(get: { conversation.draft }, set: { conversation.draft = $0 }), placeholderLabel: "Message to \(provider.title)",
                                   isEnabled: true, answersApproval: approval != nil, focusToken: focusToken, maxLines: typeSize.isAccessibilitySize ? 3 : 6, onKey: handle, onFocusChange: { focused = $0 },
                                   insertion: insertion, onPasteFiles: pasteFiles)
                     .alignmentGuide(.composerLine) { [band = ChatComposerField.lineBand(style, typeSize)] d in d.height - band / 2 }
                     .chatLayoutProbe("composer-field")
-                if actions.stop { stopButton }
-                if actions.mic { DictationButton(owner: .chat(conversation.id), insertion: insertion, compact: true, alerts: false).chatLayoutProbe("mic") }
+                // The last button's target reaches out over the margin to the screen's edge.
+                if actions.stop { stopButton(reach: actions.mic || actions.send ? 0 : Self.fieldMargin) }
+                if actions.mic {
+                    DictationButton(owner: .chat(conversation.id), insertion: insertion, compact: true, reach: Self.fieldMargin, alerts: false).chatLayoutProbe("mic")
+                }
                 if actions.send { sendButton }
             }
             .padding(.leading, attach == nil ? style.pt(4) : 0).padding(.trailing, 0)
             .modifier(ComposerFieldSurface(focused: focused))
             .animation(.easeInOut(duration: 0.12), value: actions)
             .chatLayoutProbe("composer")
+            .padding(.horizontal, Self.fieldMargin)
         }
         .animation(.easeInOut(duration: 0.15), value: conversation.attachments)
-        // Edge to edge between the horizontal safe-area edges, as the terminal's key bar's capsule is, and as close above the keyboard
-        // (`BottomBarGeometry.composerInsets`). The card row above the field keeps the same edges. No bar behind them: the field's own
-        // shape is drawn on the screen's background.
+        // The card row spans the horizontal safe-area edges, its first card at the transcript's margin, and the field stands as close
+        // above the keyboard as the terminal's key bar's capsule (`BottomBarGeometry.composerInsets`). Nothing is drawn behind them: the
+        // field's own shape is on the screen's background.
         .padding(.horizontal, BottomBarGeometry.composerInsets(glass: style.glass).horizontal).padding(.top, 6)
         .padding(.bottom, BottomBarGeometry.composerInsets(glass: style.glass).bottom)
     }
 
-    /// A button's column at the field's trailing end: its 30-point circle and 8 points after it, at the trailing end of its 44-point
-    /// target. (The target cannot reach over the text instead: the text view, a UIKit view, takes the touches over it.)
+    /// The field's margin on either side: the transcript's (`ChatItemRow.horizontalInset`), so the field lines up with the messages.
+    static let fieldMargin = ChatItemRow.horizontalInset
+    /// A button's column at the field's trailing end: its 30-point circle and 8 points after it. Its target is 44 points, from the
+    /// column's start out to the screen's edge for the last button (`reach`), else back over the text's end. (It cannot reach over the
+    /// text further: the text view, a UIKit view, takes the touches over it.)
     static func buttonColumn(_ style: DesktopStyle) -> CGFloat { style.pt(30) + style.pt(8) }
-    /// A filled circle at the start of its column at the field's trailing end.
-    private func circle(_ symbol: String, fill: Color, glyph: Color, size: CGFloat = 15) -> some View {
+    /// A filled circle at the start of its column at the field's trailing end, `reach` more of target past the column.
+    private func circle(_ symbol: String, fill: Color, glyph: Color, size: CGFloat = 15, reach: CGFloat) -> some View {
         Image(systemName: symbol).font(.system(size: style.pt(size), weight: .bold)).foregroundStyle(glyph)
             .frame(width: style.pt(30), height: style.pt(30)).background(fill, in: Circle())
-            .frame(width: Self.buttonColumn(style), alignment: .leading)
+            .frame(width: Self.buttonColumn(style) + reach, alignment: .leading)
     }
     private var sendButton: some View {
-        Button(action: send) { circle("arrow.up", fill: canSend ? style.accent : style.active, glyph: canSend ? style.background : style.muted) }
+        Button(action: send) { circle("arrow.up", fill: canSend ? style.accent : style.active, glyph: canSend ? style.background : style.muted, reach: Self.fieldMargin) }
             .buttonStyle(TargetButtonStyle(dims: false, alignment: .trailing))
             .disabled(!canSend)
             .transition(.scale(scale: 0.6).combined(with: .opacity))
             .chatLayoutProbe("send")
+            .padding(.trailing, -Self.fieldMargin)
             .accessibilityLabel("Send").accessibilityHint(conversation.sending ? "Sending" : "Sends the message")
     }
-    private var stopButton: some View {
-        Button(action: interrupt) { circle("stop.fill", fill: style.gold.opacity(0.16), glyph: style.gold, size: 12) }
+    private func stopButton(reach: CGFloat) -> some View {
+        Button(action: interrupt) { circle("stop.fill", fill: style.gold.opacity(0.16), glyph: style.gold, size: 12, reach: reach) }
             .buttonStyle(TargetButtonStyle(dims: false, alignment: .trailing))
             .disabled(!connected)
             .transition(.opacity)
             .chatLayoutProbe("stop")
+            .padding(.trailing, -reach)
             .accessibilityLabel("Interrupt").accessibilityHint("Stops what \(provider.title) is doing now")
     }
 
@@ -314,37 +323,38 @@ extension VerticalAlignment {
 private struct ComposerPaperclip: View, Equatable {
     @Environment(\.desktopStyle) private var style
     let connected: Bool
+    /// How far the target reaches out past the field's edge: the field's margin, to the screen's edge.
+    let reach: CGFloat
     let choose: (AttachmentChoice) -> Void
-    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.connected == rhs.connected }
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.connected == rhs.connected && lhs.reach == rhs.reach }
     /// The paperclip's slot: the glyph's ink 8 points in from the field's edge (6 and its side bearing), and the text 8 points after it.
-    /// Its target is 44 points wide and the field's height: the field starts at the screen edge, so the rest reaches over the text's
-    /// leading padding on the field's last line.
+    /// Its target is the slot and the margin outside the field, from the screen's edge (44 points at least, past the slot over the text's
+    /// leading padding when the two are less), the field's height tall.
     static func slot(_ style: DesktopStyle) -> CGFloat { style.pt(29) }
     var body: some View {
+        let width = max(style.target, reach + Self.slot(style))
         AttachMenu(choose: choose) {
             Image(systemName: "paperclip").font(.system(size: style.pt(18))).foregroundStyle(connected ? style.muted : style.muted.opacity(0.5))
-                .padding(.leading, style.pt(6)).frame(width: style.target, height: style.target, alignment: .leading).contentShape(Rectangle())
+                .padding(.leading, reach + style.pt(6)).frame(width: width, height: style.target, alignment: .leading).contentShape(Rectangle())
         }
         // No padding of the menu's own around the target: the paperclip sits in the field's rounded leading end.
         .menuStyle(.button).buttonStyle(.plain)
         .disabled(!connected)
         .chatLayoutProbe("paperclip")
-        .padding(.trailing, Self.slot(style) - style.target)
+        .padding(.leading, -reach).padding(.trailing, Self.slot(style) + reach - width)
         .accessibilityHint("Sends it to the Mac and puts its path in the message")
     }
 }
 
 /// What the composer's field is drawn on: the whole row, paperclip and buttons included. The terminal look: the background in a hairline
-/// frame that turns the accent color with the keyboard. Native: a rounded field, as Messages draws one; on glass (iOS 26) of glass,
-/// otherwise filled and framed the same way.
+/// frame that turns the accent color with the keyboard. Native: a rounded field, as Messages draws one, filled with the background and
+/// framed the same way. Not of glass on iOS 26: glass casts a soft shadow well past the field's shape, a band behind the composer.
 private struct ComposerFieldSurface: ViewModifier {
     @Environment(\.desktopStyle) private var style
     let focused: Bool
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: style.pt(23), style: .continuous)
-        if style.glass {
-            content.nativeGlass(style, in: shape, interactive: false)
-        } else if style.native {
+        if style.native {
             content.background(style.background, in: shape).overlay(shape.stroke(focused ? style.accent : style.divider, lineWidth: 1))
         } else {
             content.background(style.background).overlay(RoundedRectangle(cornerRadius: 3).stroke(focused ? style.accent : style.divider, lineWidth: 1))

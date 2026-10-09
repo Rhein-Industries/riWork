@@ -267,6 +267,8 @@ struct DictationButton: View {
     /// Inside the chat composer's field: a smaller glyph, in the column of the field's buttons (a 30-point circle and 8 points) at the
     /// trailing end of its 44-point target.
     var compact = false
+    /// Compact: how far the mic's target reaches out past the column (and the field's edge), to the screen's edge.
+    var reach: CGFloat = 0
     private var column: CGFloat { style.pt(30) + style.pt(8) }
     /// Says a failure in an alert of its own; off where the screen says it in its banner row (the chat).
     var alerts = true
@@ -285,10 +287,11 @@ struct DictationButton: View {
             }
             Button(action: toggle) {
                 DictationGlyph(phase: phase, level: controller.level, size: compact ? 20 : 24).frame(width: compact ? style.pt(30) : nil)
-                    .frame(width: compact ? column : nil, alignment: .leading)
+                    .frame(width: compact ? column + reach : nil, alignment: .leading)
             }
                 .buttonStyle(TargetButtonStyle(dims: false, alignment: compact ? .trailing : .center))
                 .chatLayoutProbe("dictation-target")
+                .padding(.trailing, compact ? -reach : 0)
                 .disabled(!isEnabled && !phase.isActive)
                 .accessibilityLabel(phase.isActive ? "Stop dictation" : "Dictate")
                 .accessibilityValue(phase.isActive ? "Listening" : "")

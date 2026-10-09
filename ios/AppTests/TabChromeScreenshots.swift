@@ -42,7 +42,19 @@ import RiWorkCore
     private struct ThemedTabs: View {
         let model: RemoteModel
         let project: RemoteProject
-        var body: some View { TerminalTabsView(model: model, project: project, onBack: {}).desktopThemed(model.theme.style) }
+        /// In a navigation stack, as the app shows it (`RemoteRootView`): its bars and their backgrounds are the app's too.
+        var navigation = false
+        var body: some View {
+            if navigation {
+                NavigationStack {
+                    TerminalTabsView(model: model, project: project, onBack: {}).toolbar(.hidden, for: .navigationBar).edgeSwipeBack()
+                }
+                .background(model.theme.style.background.ignoresSafeArea())
+                .desktopThemed(model.theme.style)
+            } else {
+                TerminalTabsView(model: model, project: project, onBack: {}).desktopThemed(model.theme.style)
+            }
+        }
     }
     private func eventually(_ what: String, timeout: Double = 8, _ condition: () async -> Bool) async {
         let end = Date().addingTimeInterval(timeout)
@@ -527,7 +539,7 @@ import RiWorkCore
             await model.connect()
             if look != .terminal { await eventually("Native look") { model.theme.style.native } }
             let projectValue = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}".utf8))
-            let host = UIHostingController(rootView: AnyView(ThemedTabs(model: model, project: projectValue)))
+            let host = UIHostingController(rootView: AnyView(ThemedTabs(model: model, project: projectValue, navigation: true)))
             let window = UIWindow(windowScene: scene)
             window.frame = scene.coordinateSpace.bounds
             window.windowLevel = .alert + 1
