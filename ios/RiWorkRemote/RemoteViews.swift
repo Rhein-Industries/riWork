@@ -422,8 +422,11 @@ struct TerminalTabsView: View {
             } else {
                 tabStrip
             }
-            newTabButton
-            screenMenu(chrome)
+            // ＋ and ⋯ about 8 pt apart, as the key bar's icons are: their 44-point targets overlap rather than sit side by side.
+            HStack(spacing: style.pt(26) - style.target) {
+                newTabButton.chatLayoutProbe("new-tab")
+                screenMenu(chrome).chatLayoutProbe("more-options")
+            }
         }
         .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
         .chatLayoutProbe("navigation")

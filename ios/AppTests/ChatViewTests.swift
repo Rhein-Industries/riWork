@@ -619,6 +619,25 @@ import RiWorkCore
         await finish(rig)
     }
 
+    /// ＋ and ⋯ sit about 8 pt apart, as the key bar's icons do, each keeping a 44-point target; the context ring and its number have
+    /// about 6 pt between them.
+    func testTheTabRowButtonsAreCloseAndTheRingHasRoomBeforeItsNumber() async throws {
+        let rig = try await makeRig()
+        await rig.transport.append(chatID, [.info(chat()), .usage(ChatUsage(inputTokens: 120_000, contextWindow: 200_000, contextUsed: 124_000))])
+        _ = try await openChat(rig)
+        await eventually("the row and the ring are laid out") { rig.layout.frames["more-options"] != nil && rig.layout.frames["usage-number"] != nil }
+        rig.window.layoutIfNeeded()
+        let plus = try XCTUnwrap(rig.layout.frames["new-tab"]), more = try XCTUnwrap(rig.layout.frames["more-options"])
+        XCTAssertGreaterThanOrEqual(plus.width, 44); XCTAssertGreaterThanOrEqual(plus.height, 44)
+        XCTAssertGreaterThanOrEqual(more.width, 44); XCTAssertGreaterThanOrEqual(more.height, 44)
+        XCTAssertEqual(more.midX - plus.midX, 26, accuracy: 1, "glyph centers ~26 pt apart: an ~8 pt gap between the icons")
+        XCTAssertEqual(more.maxX, rig.window.bounds.maxX, accuracy: 20, "still at the row's end")
+        let ring = try XCTUnwrap(rig.layout.frames["usage-ring"]), number = try XCTUnwrap(rig.layout.frames["usage-number"])
+        XCTAssertEqual(number.minX - ring.maxX - 1.25, 6, accuracy: 0.5, "about 6 pt between the ring's stroke and the number")
+        try snapshot(rig, name: "tab-row-tight")
+        await finish(rig)
+    }
+
     func testLatestFirstMalformedDegradedRepliesBlockReopenButTransientFailuresRecover() async throws {
         for failure in [ChatTransport.BoundedReplyFailure.advancingEmptyPage, .connectorInvalidPage, .transientCLI, .transientNetwork] {
             let rig = try await makeRig()

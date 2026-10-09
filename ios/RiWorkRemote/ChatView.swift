@@ -233,15 +233,18 @@ struct ChatUsageRing: View {
     var body: some View {
         Button { detail = true } label: {
             if let meter {
-                HStack(spacing: 5) {
+                // About 6 pt between the ring and the number: half the ring's stroke lies outside its frame.
+                HStack(spacing: style.pt(6) + 1.25) {
                     ZStack {
                         Circle().stroke(style.divider, lineWidth: 2.5)
                         Circle().trim(from: 0, to: meter.contextFraction ?? 0).stroke(tint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round)).rotationEffect(.degrees(-90))
                     }
                     .frame(width: style.pt(15), height: style.pt(15))
                     .animation(.easeOut(duration: 0.3), value: meter.contextFraction)
+                    .chatLayoutProbe("usage-ring")
                     Text(meter.percentText ?? meter.tokensText?.replacingOccurrences(of: " tokens", with: "") ?? "")
                         .font(style.system(.footnote, weight: .medium)).monospacedDigit().foregroundStyle(style.muted).lineLimit(1).fixedSize()
+                        .chatLayoutProbe("usage-number")
                 }
                 .padding(.horizontal, 6).frame(minWidth: style.target, minHeight: style.target).contentShape(Rectangle())
             } else {
