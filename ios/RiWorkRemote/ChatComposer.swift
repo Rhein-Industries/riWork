@@ -347,14 +347,16 @@ private struct ComposerPaperclip: View, Equatable {
 }
 
 /// What the composer's field is drawn on: the whole row, paperclip and buttons included. The terminal look: the background in a hairline
-/// frame that turns the accent color with the keyboard. Native: a rounded field, as Messages draws one, filled with the background and
-/// framed the same way. Not of glass on iOS 26: glass casts a soft shadow well past the field's shape, a band behind the composer.
+/// frame that turns the accent color with the keyboard. Native: a rounded field, as Messages draws one; on glass (iOS 26) of glass,
+/// otherwise filled and framed the same way.
 private struct ComposerFieldSurface: ViewModifier {
     @Environment(\.desktopStyle) private var style
     let focused: Bool
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: style.pt(23), style: .continuous)
-        if style.native {
+        if style.glass {
+            content.nativeGlass(style, in: shape, interactive: false)
+        } else if style.native {
             content.background(style.background, in: shape).overlay(shape.stroke(focused ? style.accent : style.divider, lineWidth: 1))
         } else {
             content.background(style.background).overlay(RoundedRectangle(cornerRadius: 3).stroke(focused ? style.accent : style.divider, lineWidth: 1))
