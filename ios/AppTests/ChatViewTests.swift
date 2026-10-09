@@ -600,22 +600,75 @@ import RiWorkCore
             }
             await finish(rig)
         }
-        // An individually unrepresentable control stops once, preserving its cursor.
+        // An event an older relay cannot send even alone: the banner says so once, the event is passed over with a note in its
+        // place, and the chat keeps following, so what comes after it arrives.
         let rig = try await makeRig()
         await rig.transport.enableSnapshots(); await rig.transport.enforceResourceLimits()
         await rig.transport.append(chatID, [.info(chat()), .approvalRequested(ChatApproval(requestID: "unrepresented", kind: .command, title: String(repeating: "c", count: 200_000), choices: [.accept]))])
         _ = try await openChat(rig)
         let conversation = rig.model.conversation(chatID)
-        await eventually("bounded control failure stops its follower") { conversation.readError != nil && !conversation.following }
-        let count = await rig.transport.count("chat.events"), cursor = conversation.feed.next
-        try await Task.sleep(for: .milliseconds(350))
-        let afterWait = await rig.transport.count("chat.events")
-        XCTAssertEqual(afterWait, count)
-        XCTAssertEqual(cursor, 1, "never acknowledge the unrepresented approval")
-        rig.model.deselectChat(); rig.model.selectChat(chatID)
-        try await Task.sleep(for: .milliseconds(100))
-        let afterReopen = await rig.transport.count("chat.events")
-        XCTAssertEqual(afterReopen, count)
+        await eventually("the unsendable event is passed over") { conversation.feed.next == 2 }
+        XCTAssertTrue(conversation.following, "still following")
+        XCTAssertNil(conversation.readError)
+        XCTAssertEqual(conversation.alerts.items.filter { $0.source == .read }.count, 1)
+        XCTAssertTrue(conversation.alerts.text(.read)?.contains("too large") == true)
+        XCTAssertNotNil(conversation.transcript.item("elided-2"), "a note stands where the event was")
+        XCTAssertTrue(conversation.openApprovals.isEmpty)
+        let polls = await rig.transport.params(of: "chat.events")
+        let caps = polls.compactMap { poll -> Int? in if case .number(let n)? = poll["max_events"] { Int(n) } else { nil } }
+        XCTAssertTrue(caps.map(String.init).joined(separator: ",").contains("100,50,25,12,6,3,1"), "smaller pages before passing it over: \(caps)")
+        // Later events arrive; a second one it cannot send is passed over too, without saying it again.
+        conversation.alerts.clear(.read)
+        await rig.transport.append(chatID, [.state(.running), .approvalRequested(ChatApproval(requestID: "also-large", kind: .command, title: String(repeating: "d", count: 200_000), choices: [.accept])), .state(.waiting)])
+        await eventually("the chat follows past the second one") { conversation.feed.next == 5 && conversation.transcript.state == .waiting }
+        XCTAssertNotNil(conversation.transcript.item("elided-4"))
+        XCTAssertNil(conversation.alerts.text(.read), "the banner is said once per chat")
+        XCTAssertTrue(conversation.following)
+        await finish(rig)
+    }
+
+    /// The relay's placeholder for an item too large to send is a compact row that says where it is, and a tap says why; another
+    /// elided event is a one-line note. Neither stops the chat.
+    func testElidedItemsAndEventsAreCompactRowsAndTheChatCarriesOn() async throws {
+        let rig = try await makeRig()
+        await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "ask", status: .completed, body: .userMessage("Show me the build log")))])
+        await rig.transport.appendRaw(chatID, #"{"event":"item_elided","item_id":"big-log","kind":"command","reason":"too_large","bytes":1992294}"#)
+        await rig.transport.appendRaw(chatID, #"{"event":"usage","elided":true,"reason":"too_large","bytes":180000}"#)
+        await rig.transport.append(chatID, [.itemCompleted(ChatItem(id: "after", status: .completed, body: .agentMessage("The log is on your Mac; the build failed at step 3.")))])
+        _ = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        await eventually("everything after the elided events arrived") { conversation.transcript.item("after") != nil }
+        XCTAssertEqual(conversation.transcript.items.map(\.id), ["ask", "big-log", "elided-4", "after"])
+        XCTAssertNil(conversation.readError)
+        XCTAssertTrue(conversation.alerts.items.isEmpty, "a placeholder is no fault")
+        try await Task.sleep(for: .milliseconds(300))
+        try snapshot(rig, name: "elided-row")
+        conversation.expanded.insert("big-log")
+        try await Task.sleep(for: .milliseconds(300))
+        try snapshot(rig, name: "elided-row-explained")
+        await finish(rig)
+    }
+
+    /// "Long messages are shortened here" is said once per chat: not again with the next page, nor when the chat is opened again.
+    func testTheShortenedNoteIsSaidOncePerChat() async throws {
+        let rig = try await makeRig()
+        await rig.transport.append(chatID, [.info(chat())])
+        let first = rig.model.conversation(chatID)
+        XCTAssertTrue(first.recoverResourceLimit(.resourceLimit(.response, "large"), connection: UUID()))
+        XCTAssertEqual(first.alerts.text(.desktop)?.contains("shortened"), true)
+        first.alerts.clear(.desktop)
+        first.reset()
+        XCTAssertFalse(first.recoverResourceLimit(.resourceLimit(.response, "large"), connection: UUID()), "already replaying bounded")
+        XCTAssertNil(first.alerts.text(.desktop))
+        // The conversation let go and made again (another connection, a reopened chat): still not said again.
+        rig.model.chatConversations[chatID] = nil
+        let again = rig.model.conversation(chatID)
+        XCTAssertTrue(again.recoverResourceLimit(.resourceLimit(.response, "large"), connection: UUID()))
+        XCTAssertNil(again.alerts.text(.desktop))
+        // Another chat says it for itself.
+        let other = rig.model.conversation("another-chat")
+        XCTAssertTrue(other.recoverResourceLimit(.resourceLimit(.response, "large"), connection: UUID()))
+        XCTAssertNotNil(other.alerts.text(.desktop))
         await finish(rig)
     }
 

@@ -77,6 +77,9 @@ public struct ChatTranscript: Sendable, Equatable {
             self.models = models
         case .rateLimits(let windows):
             rateLimits = windows
+        case .elided:
+            // The feed resolves these by sequence number; one that comes without (a snapshot's controls) is keyed by its place.
+            apply(event.resolved(seq: UInt64(items.count)))
         }
     }
 
@@ -233,6 +236,13 @@ public struct ChatFeed: Sendable, Equatable {
         if degraded { beginDegradedReplay() }
     }
 
+    /// An older relay could not send the event after `next` at all (`response_too_large` even for one event): it is passed over, with
+    /// a note in its place, so the events after it still arrive. The full content is on the Mac.
+    public mutating func skipOversized() {
+        let seq = next + 1
+        accept(ChatEventsReply(chatID: "", events: [ChatEnvelope(seq: seq, event: .elided(event: "update", itemID: nil, kind: nil, bytes: nil))], next: seq, more: false), since: next)
+    }
+
     public enum Outcome: Sendable, Equatable {
         /// This many events were folded in.
         case applied(Int)
@@ -250,7 +260,7 @@ public struct ChatFeed: Sendable, Equatable {
         }
         var applied = 0
         for envelope in reply.events where envelope.seq > next {
-            if let event = envelope.event {
+            if let event = envelope.event?.resolved(seq: envelope.seq) {
                 let protectedControls = envelope.seq <= recoveryThrough ? transcript.controlsOnly() : nil
                 if historyCursor != nil {
                     switch event {

@@ -102,6 +102,8 @@ enum ConnectionState: Equatable {
     var selectedBlockedID: String?
     /// What has been read of the chats that were opened, by chat id.
     var chatConversations: [String: ChatConversation] = [:]
+    /// The one-time notes already said for a chat in this run ("chat id|note"), so a note survives its conversation being let go.
+    @ObservationIgnored var chatNotesSaid: Set<String> = []
     /// A `chat.create` is on its way: a second one is refused until it answers.
     var creatingChat = false
     // MARK: Opening orchestrators (pipeline in RemoteModel+Orchestrator.swift)

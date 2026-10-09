@@ -293,9 +293,13 @@ public enum ChatItemBody: Sendable, Equatable, Codable {
     /// the banner row. Older hosts send none. `resolved`: the cause went away; `resetsAt`: when the limit it is about resets (Unix
     /// seconds); `dismissed`: the host dismissed this sticky notice on some device (docs/chat-notices.md). All optional on the wire.
     case notice(level: ChatNoticeLevel, text: String, kind: String? = nil, resolved: Bool = false, resetsAt: UInt64? = nil, dismissed: Bool = false)
+    /// What the relay left out because it was too large to send (`item_elided`, or an event marked `elided`): `kind` is the item's type
+    /// ("command", "agent_message", …), `bytes` its size, and `event` the event's name when it was not an item (a one-line note then).
+    /// The full content is on the Mac.
+    case elided(kind: String?, bytes: Int?, event: String? = nil)
 
     private enum Keys: String, CodingKey {
-        case type, text, explanation, steps, command, cwd, output, changes, server, tool, input, query, items, level, kind, resolved, dismissed
+        case type, text, explanation, steps, command, cwd, output, changes, server, tool, input, query, items, level, kind, resolved, dismissed, bytes, event
         case exitCode = "exit_code", resetsAt = "resets_at"
     }
     public init(from decoder: any Decoder) throws {
@@ -323,6 +327,7 @@ public enum ChatItemBody: Sendable, Equatable, Codable {
             let resetsAt = c.tolerant(UInt64.self, forKey: .resetsAt) ?? c.tolerant(Double.self, forKey: .resetsAt).flatMap { $0 >= 0 && $0 < 1e15 ? UInt64($0) : nil }
             self = .notice(level: c.lenient(ChatNoticeLevel.self, forKey: .level, default: .info), text: try c.decode(String.self, forKey: .text), kind: kind,
                            resolved: c.tolerant(Bool.self, forKey: .resolved) ?? false, resetsAt: resetsAt, dismissed: c.tolerant(Bool.self, forKey: .dismissed) ?? false)
+        case "elided": self = .elided(kind: c.tolerant(String.self, forKey: .kind), bytes: c.tolerant(Int.self, forKey: .bytes), event: c.tolerant(String.self, forKey: .event))
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "Unknown item type \(type)")
         }
     }
@@ -349,6 +354,9 @@ public enum ChatItemBody: Sendable, Equatable, Codable {
             if resolved { try c.encode(true, forKey: .resolved) }
             try c.encodeIfPresent(resetsAt, forKey: .resetsAt)
             if dismissed { try c.encode(true, forKey: .dismissed) }
+        case .elided(let kind, let bytes, let event):
+            try c.encode("elided", forKey: .type); try c.encodeIfPresent(kind, forKey: .kind); try c.encodeIfPresent(bytes, forKey: .bytes)
+            try c.encodeIfPresent(event, forKey: .event)
         }
     }
 }
@@ -601,14 +609,22 @@ public enum ChatEvent: Sendable, Equatable, Codable {
     case models([ChatModelOption])
     /// The provider's usage windows (5h, weekly, …), each replacing the last wholesale; an empty list is no known windows.
     case rateLimits([ChatRateWindow])
+    /// The relay left this event out because it was too large to send: `item_elided` (`event` is "item_elided", `itemID` the item),
+    /// or any other event marked `"elided": true` (`event` is its name). The feed turns it into a row (`resolved(seq:)`).
+    case elided(event: String, itemID: String?, kind: String?, bytes: Int?)
 
     private enum Keys: String, CodingKey {
-        case event, info, state, outcome, item, delta, approval, decision, question, usage, models, windows
+        case event, info, state, outcome, item, delta, approval, decision, question, usage, models, windows, elided, kind, bytes, reason
         case turnID = "turn_id", itemID = "item_id", requestID = "request_id"
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         let word = try c.decode(String.self, forKey: .event)
+        if word == "item_elided" || c.tolerant(Bool.self, forKey: .elided) == true {
+            // Size and kind are optional and only shown.
+            self = .elided(event: word, itemID: c.tolerant(String.self, forKey: .itemID), kind: c.tolerant(String.self, forKey: .kind), bytes: c.tolerant(Int.self, forKey: .bytes) ?? c.tolerant(Double.self, forKey: .bytes).flatMap { $0 >= 0 && $0 < 1e15 ? Int($0) : nil })
+            return
+        }
         switch word {
         case "info": self = .info(try c.decode(ChatInfo.self, forKey: .info))
         case "state": self = .state(try c.decode(ChatState.self, forKey: .state))
@@ -650,7 +666,22 @@ public enum ChatEvent: Sendable, Equatable, Codable {
         case .usage(let usage): try c.encode("usage", forKey: .event); try c.encode(usage, forKey: .usage)
         case .models(let models): try c.encode("models", forKey: .event); try c.encode(models, forKey: .models)
         case .rateLimits(let windows): try c.encode("rate_limits", forKey: .event); try c.encode(windows, forKey: .windows)
+        case .elided(let event, let itemID, let kind, let bytes):
+            try c.encode(event, forKey: .event)
+            if event != "item_elided" { try c.encode(true, forKey: .elided) }
+            try c.encodeIfPresent(itemID, forKey: .itemID); try c.encodeIfPresent(kind, forKey: .kind); try c.encodeIfPresent(bytes, forKey: .bytes)
+            try c.encode("too_large", forKey: .reason)
         }
+    }
+
+    /// An elided event as the row the transcript shows for it: the item itself (its content left out) for `item_elided` and an elided
+    /// item event, otherwise a one-line note of its own, keyed by its sequence number. Every other event is itself.
+    public func resolved(seq: UInt64) -> ChatEvent {
+        guard case .elided(let event, let itemID, let kind, let bytes) = self else { return self }
+        if let itemID, ["item_elided", "item_started", "item_completed"].contains(event) {
+            return .itemCompleted(ChatItem(id: itemID, status: .completed, body: .elided(kind: kind, bytes: bytes)))
+        }
+        return .itemCompleted(ChatItem(id: "elided-\(seq)", status: .completed, body: .elided(kind: kind, bytes: bytes, event: event)))
     }
 }
 

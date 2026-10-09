@@ -30,7 +30,7 @@ extension RemoteModel {
         case .fileChange(let changes): changes.map(\.path).joined(separator: " ")
         case .toolCall(_, let tool, _, _): tool
         case .plan(_, let steps), .todo(let steps): steps.map(\.text).joined(separator: " ")
-        case .reasoning, .webSearch, .compaction, .notice: ""
+        case .reasoning, .webSearch, .compaction, .notice, .elided: ""
         }
     }
 }
