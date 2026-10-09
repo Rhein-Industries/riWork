@@ -629,8 +629,9 @@ impl ChatView {
                 ))
         });
         // Row 1 never wraps: what does not fit beside ⋯ goes into its menu, from the row's end
-        // (Compact, Fast, Effort, Model, Mode). The usage takes a row of its own unless
-        // everything fits on one, the session id at its far end under ⋯. Each piece's width is
+        // (Compact, Fast, Effort, Model, Mode). The usage and the session id share it, before ⋯,
+        // when they fit; otherwise they take a row of their own, the session id at its far end
+        // under ⋯. Each piece's width is
         // its own, not the layout's, so this settles after one redraw. A folded one keeps the
         // width it was last drawn at while it shows the same; one whose value has changed since
         // counts as narrow, comes back and is measured again.
@@ -692,16 +693,15 @@ impl ChatView {
             0.
         };
         let more_room = gap + last[SLOT_MORE];
+        // On one line the usage has what the controls, the spacer, the session id and ⋯ leave;
+        // it leaves out its cost to stay there rather than take a row of its own.
+        let beside_usage = row_width(foldable.len()) + gap + thread_room + more_room;
+        let usage_room = inner - beside_usage - gap;
         let one_line = inner <= 0.
-            || row_width(foldable.len())
-                // The spacer before the usage.
-                + gap
-                + self
-                    .usage_width(Detail::Full, window)
-                    .map_or(0., |usage| gap + usage)
-                + thread_room
-                + more_room
-                <= inner + 0.5;
+            || match self.usage_width(Detail::NoCost, window) {
+                Some(usage) => usage <= usage_room + 0.5,
+                None => beside_usage <= inner + 0.5,
+            };
         let kept = if one_line {
             foldable.len()
         } else {
@@ -804,7 +804,16 @@ impl ChatView {
                 }),
             );
         let usage = self
-            .usage_group((!one_line).then(|| inner - thread_room), look, window, cx)
+            .usage_group(
+                if one_line {
+                    (inner > 0.).then_some(usage_room + 0.5)
+                } else {
+                    Some(inner - thread_room)
+                },
+                look,
+                window,
+                cx,
+            )
             .map(|usage| div().flex_none().child(usage));
         let thread = thread.map(|thread| measured(SLOT_THREAD, thread.flex_none()));
         let more = measured(SLOT_MORE, more);

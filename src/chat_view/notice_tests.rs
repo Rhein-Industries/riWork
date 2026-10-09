@@ -647,7 +647,7 @@ fn the_header_is_one_row_of_controls_ending_in_more_and_folds_the_rest_into_it(
     let middle = |b: gpui::Bounds<gpui::Pixels>| b.top() + b.size.height / 2.;
     let order = ["mode", "model", "effort", "fast", "compact"];
     let mut folds = Vec::new();
-    for width in [900.0_f32, 520.0, 330.0, 230.0] {
+    for width in [900.0_f32, 760.0, 520.0, 330.0, 230.0] {
         let header = header_at(cx, width);
         let Header {
             first,
@@ -699,26 +699,35 @@ fn the_header_is_one_row_of_controls_ending_in_more_and_folds_the_rest_into_it(
             assert!((usage.left() - first.left()).abs() <= px(1.), "{what}");
             assert!((thread.right() - more.right()).abs() <= px(1.), "{what}");
         } else {
+            // Right-aligned before ⋯: … Compact, the usage, the session id, ⋯.
             assert!(header.folded.is_empty(), "{what}");
-            assert!(thread.right() <= more.left(), "{what}");
             assert!((middle(usage) - middle(first)).abs() <= px(1.), "{what}");
+            assert!((middle(thread) - middle(first)).abs() <= px(1.), "{what}");
+            let gap = ui_text::space(composer::BAR_GAP) + px(1.);
+            assert!(usage.right() <= thread.left(), "{what}");
+            assert!(thread.left() - usage.right() <= gap, "{what}");
+            assert!(more.left() - thread.right() <= gap, "{what}");
         }
         folds.push((two_rows, header.folded.len(), usage.size.width));
     }
-    // Wide: one row, nothing folded. Medium: the usage below and Compact in ⋯. Narrow:
-    // Compact, Fast, Effort and Model in ⋯. Narrower still, Mode too, and the usage leaves out
-    // its cost to keep its ring, percent and counts beside the session id.
+    // Wide: one row, nothing folded, the whole usage before ⋯. A little narrower: still one
+    // row, the usage without its cost. Medium: the usage and session id on row 2, whole, and
+    // Compact in ⋯. Narrow: Compact, Fast, Effort and Model in ⋯. Narrower still, Mode too,
+    // and the usage leaves out its cost to keep its ring, percent and counts beside the
+    // session id.
     let counts = folds
         .iter()
         .map(|(two, folded, _)| (*two, *folded))
         .collect::<Vec<_>>();
     assert_eq!(
         counts,
-        [(false, 0), (true, 1), (true, 4), (true, 5)],
+        [(false, 0), (false, 0), (true, 1), (true, 4), (true, 5)],
         "{folds:?}"
     );
-    assert_eq!(folds[0].2, folds[2].2, "{folds:?}");
-    assert!(folds[3].2 < folds[2].2, "{folds:?}");
+    let whole = folds[0].2;
+    assert!(folds[1].2 < whole, "{folds:?}");
+    assert_eq!((folds[2].2, folds[3].2), (whole, whole), "{folds:?}");
+    assert!(folds[4].2 < whole, "{folds:?}");
 }
 
 #[gpui::test]
