@@ -2,18 +2,21 @@
 use super::{
     ChatView,
     attachment_draft::Status,
-    widgets::{Look, button},
+    widgets::{self, Look, button},
 };
 use crate::{
+    behavior_controls as behavior,
     chat::{
-        attachments::{Attachment, FILE_BYTES, Preview, SEND_COUNT, image_thumbnail},
+        attachments::{
+            Attachment, AttachmentKind, FILE_BYTES, Preview, SEND_COUNT, image_thumbnail,
+        },
         client::Client,
     },
-    ui_text,
+    icons, ui_text,
 };
 use gpui::{
     AnyElement, ClipboardEntry, ClipboardItem, Context, ExternalPaths, Image, ImageFormat,
-    PathPromptOptions, Window, div, img, prelude::*, rgb,
+    PathPromptOptions, SharedString, Window, div, img, prelude::*, px, rgb,
 };
 use gpui_kit::base::TestSupportExt as _;
 use std::{
@@ -25,8 +28,17 @@ use std::{
 };
 use uuid::Uuid;
 
+mod quick_look;
 #[cfg(test)]
 mod tests;
+
+/// Sweep Quick Look copies an earlier run left behind, and close the panel on quit.
+pub(crate) fn init(cx: &mut gpui::App) {
+    #[cfg(not(test))]
+    quick_look::init(cx);
+    #[cfg(test)]
+    let _ = cx;
+}
 
 #[derive(Clone)]
 pub(super) enum Source {
@@ -186,6 +198,24 @@ fn stage_source(
     }
 }
 
+/// A regular file of at most `FILE_BYTES`, for its card's thumbnail. Nonblocking, so a
+/// FIFO in its place cannot hang the preview task.
+fn read_preview_bytes(path: &std::path::Path) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > FILE_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(FILE_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= FILE_BYTES).then_some(bytes)
+}
+
 impl ChatView {
     pub(super) fn attach_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.accepts_input() {
@@ -310,16 +340,38 @@ impl ChatView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Source::Image { image, .. } = source else {
-            return;
+        // A pasted image's bytes, or a dropped/picked PNG or JPEG file read for the card
+        // only: the host still stages from the path itself.
+        enum Local {
+            Image(Arc<Image>),
+            File(PathBuf),
+        }
+        let local = match source {
+            Source::Image { image, .. } => Local::Image(image.clone()),
+            Source::File(path)
+                if matches!(
+                    path.file_name()
+                        .and_then(|n| extension(&n.to_string_lossy()))
+                        .as_deref(),
+                    Some("png" | "jpg" | "jpeg")
+                ) =>
+            {
+                Local::File(path.clone())
+            }
+            Source::File(_) => return,
         };
-        let image = image.clone();
         // Independent task: never waits for Ensure, a socket or host staging.
         let work = cx.background_executor().spawn(async move {
-            if !matches!(image.format(), ImageFormat::Png | ImageFormat::Jpeg) {
-                return None;
-            }
-            image_thumbnail(image.bytes()).ok().map(|bytes| {
+            let bytes = match local {
+                Local::Image(image) => {
+                    if !matches!(image.format(), ImageFormat::Png | ImageFormat::Jpeg) {
+                        return None;
+                    }
+                    image.bytes().to_vec()
+                }
+                Local::File(path) => read_preview_bytes(&path)?,
+            };
+            image_thumbnail(&bytes).ok().map(|bytes| {
                 let mut preview = Image::from_bytes(ImageFormat::Png, bytes);
                 // Own this asset independently of identical images in other
                 // chips/windows, so retirement cannot evict their cache.
@@ -390,6 +442,8 @@ impl ChatView {
         chip.state = match result {
             Ok(attachment) => {
                 chip.source = None;
+                // Quick Look shows it from here on, not the inline preview.
+                chip.open = false;
                 chip.release_local_preview(cx);
                 Stage::Ready(attachment)
             }
@@ -443,142 +497,54 @@ impl ChatView {
             chip.release_local_preview(cx);
         }
     }
-    pub(super) fn attachment_chips(&self, look: Look, cx: &mut Context<Self>) -> AnyElement {
+    /// A card's click: Quick Look on the staged copy once the host has it; until then (or
+    /// if that copy is gone) the inline preview below the cards, as for a pasted image
+    /// still staging.
+    fn open_attachment(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(chip) = self.attachments.iter_mut().find(|c| c.id == id) else {
+            return;
+        };
+        if chip.attachment().is_some_and(quick_look) {
+            chip.open = false;
+        } else if chip.attachment().is_some() || chip.local_preview.is_some() {
+            chip.open = !chip.open;
+        }
+        cx.notify();
+    }
+    /// The draft's attachments as a wrapping row of cards above the message box, then the
+    /// inline previews of the ones opened without Quick Look.
+    /// `row` is the width the cards wrap in, when it is known.
+    pub(super) fn attachment_chips(
+        &self,
+        look: Look,
+        row: Option<f32>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let card_width = file_card_width(row);
         div()
             .w_full()
             .flex()
             .flex_col()
-            .gap(ui_text::space(4.))
-            .children(self.attachments.iter().map(|chip| {
-                let key = chip.id.clone();
-                let toggle = key.clone();
-                let remove = key.clone();
-                let retry = key.clone();
-                let status = match &chip.state {
-                    Stage::Pending => "Staging…".into(),
-                    Stage::Ready(a) => format!("{} bytes", a.bytes),
-                    Stage::Failed(error) => error.clone(),
-                };
-                let row = div()
-                    .id(format!("attachment-{key}"))
+            .gap(ui_text::space(6.))
+            .child(
+                div()
+                    .w_full()
                     .flex()
-                    .flex_col()
-                    .gap(ui_text::space(3.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap(ui_text::space(6.))
-                            .children(chip.preview_source().map(|source| {
-                                div()
-                                    .id(format!("attachment-thumbnail-{key}"))
-                                    .role(gpui::Role::Image)
-                                    .aria_label(format!("Image preview: {}", chip.name))
-                                    .size(ui_text::space(56.))
-                                    .flex_none()
-                                    .rounded(ui_text::space(4.))
-                                    .border_1()
-                                    .border_color(rgb(look.colors.divider))
-                                    .bg(rgb(look.colors.panel_active))
-                                    .overflow_hidden()
-                                    .child(
-                                        img(source)
-                                            .size_full()
-                                            .object_fit(gpui::ObjectFit::Contain),
-                                    )
-                                    .test_support()
-                            }))
-                            .child(
-                                button(
-                                    format!("attachment-preview-{key}"),
-                                    format!("{} {}", if chip.open { "▾" } else { "▸" }, chip.name),
-                                    Some(look.colors.cyan),
-                                    look,
-                                )
-                                .disabled(
-                                    chip.attachment().is_none() && chip.local_preview.is_none(),
-                                )
-                                .aria_expanded(chip.open)
-                                .accessibility_label(format!("Preview {}", chip.name))
-                                .on_click(cx.listener(
-                                    move |view, _, _, cx| {
-                                        if let Some(c) =
-                                            view.attachments.iter_mut().find(|c| c.id == toggle)
-                                        {
-                                            c.open = !c.open;
-                                        }
-                                        cx.notify();
-                                    },
-                                )),
-                            )
-                            .child(
-                                div()
-                                    .id(format!("attachment-status-{key}"))
-                                    .role(gpui::Role::Label)
-                                    .aria_label(status.clone())
-                                    .text_size(ui_text::text(10.))
-                                    .text_color(rgb(if matches!(chip.state, Stage::Failed(_)) {
-                                        look.colors.gold
-                                    } else {
-                                        look.colors.muted
-                                    }))
-                                    .child(status)
-                                    .test_support(),
-                            )
-                            .children(matches!(chip.state, Stage::Failed(_)).then(|| {
-                                button(
-                                    format!("attachment-retry-{key}"),
-                                    "Retry staging",
-                                    None,
-                                    look,
-                                )
-                                .accessibility_label(format!("Retry staging {}", chip.name))
-                                .on_click(cx.listener(
-                                    move |view, _, window, cx| {
-                                        view.retry_staging(&retry, window, cx)
-                                    },
-                                ))
-                            }))
-                            .child(
-                                button(format!("attachment-remove-{remove}"), "Remove", None, look)
-                                    .accessibility_label(format!("Remove {}", chip.name))
-                                    .on_click(cx.listener(move |view, _, _, cx| {
-                                        view.remove_attachment(&remove, cx)
-                                    })),
-                            ),
-                    );
-                row.children(chip.open.then(|| {
-                    match (chip.preview_source(), chip.attachment().map(|a| &a.preview)) {
-                        (None, Some(Preview::Text { excerpt })) => div()
-                            .max_h(ui_text::space(140.))
-                            .overflow_hidden()
-                            .font_family(ui_text::code_family())
-                            .text_size(ui_text::text(10.))
-                            .child(excerpt.clone())
-                            .into_any_element(),
-                        (Some(source), _) => div()
-                            .id(format!("attachment-expanded-{key}"))
-                            .role(gpui::Role::Image)
-                            .aria_label(format!("Expanded image preview: {}", chip.name))
-                            .max_w(ui_text::space(256.))
-                            .max_h(ui_text::space(256.))
-                            .overflow_hidden()
-                            .child(
-                                img(source)
-                                    .max_w(ui_text::space(256.))
-                                    .max_h(ui_text::space(256.))
-                                    .object_fit(gpui::ObjectFit::Contain),
-                            )
-                            .test_support()
-                            .into_any_element(),
-                        _ => div()
-                            .child("No preview until the file is staged.")
-                            .into_any_element(),
-                    }
-                }))
-                .into_any_element()
-            }))
+                    .flex_wrap()
+                    .gap(ui_text::space(8.))
+                    .children(
+                        self.attachments
+                            .iter()
+                            .map(|chip| attachment_card(chip, look, card_width, window, cx)),
+                    ),
+            )
+            .children(
+                self.attachments
+                    .iter()
+                    .filter(|chip| chip.open)
+                    .map(|chip| expanded_preview(chip, look)),
+            )
             .into_any_element()
     }
     pub(super) fn submission_cards(&self, look: Look, cx: &mut Context<Self>) -> AnyElement {
@@ -599,5 +565,549 @@ impl ChatView {
                     .child(button(format!("chat-restore-{id}"), "Replace current draft with saved", None, look).on_click(cx.listener(move |view, _, window, cx| view.restore_snapshot(id, window, cx))))
                 )).into_any_element()
         })).into_any_element()
+    }
+}
+
+/// A square image card's side, and a file card's height.
+const CARD_SIDE: f32 = 64.;
+/// A file card's widest; in a narrower row it takes the row's width.
+const FILE_CARD_MAX: f32 = 200.;
+/// From this width on a file card shows its type tile.
+const FILE_TILE_FROM: f32 = 150.;
+/// The name's size on a file card.
+const NAME_SIZE: f32 = 10.5;
+/// A file card's width in px for a row of `row` px (unknown: its widest).
+fn file_card_width(row: Option<f32>) -> f32 {
+    let widest = f32::from(ui_text::space(FILE_CARD_MAX));
+    row.filter(|row| *row > 0.)
+        .map_or(widest, |row| row.min(widest))
+}
+
+/// Whether a file card `width` px wide shows its type tile.
+fn shows_tile(width: f32) -> bool {
+    width >= f32::from(ui_text::space(FILE_TILE_FROM))
+}
+
+/// The room a file card `width` px wide leaves for its name, in px: less its border, its
+/// padding (the right one keeps the × clear), and the tile and its gap where it shows.
+pub(super) fn name_room(width: f32) -> f32 {
+    let space = |base: f32| f32::from(ui_text::space(base));
+    let tile = if shows_tile(width) {
+        space(32.) + space(8.)
+    } else {
+        0.
+    };
+    (width - 2. - space(8.) - space(26.) - tile).max(0.)
+}
+
+fn card_radius(look: Look) -> f32 {
+    if look.native { 10. } else { 4. }
+}
+
+/// One attachment: an image as its thumbnail filling a square card, any other file as a
+/// card with its type, name and size; a × in the corner on hover or keyboard focus.
+fn attachment_card(
+    chip: &Chip,
+    look: Look,
+    card_width: f32,
+    window: &Window,
+    cx: &mut Context<ChatView>,
+) -> AnyElement {
+    let colors = look.colors;
+    let key = chip.id.clone();
+    let failed = matches!(chip.state, Stage::Failed(_));
+    let error = look.error();
+    let radius = ui_text::space(card_radius(look));
+    let side = ui_text::space(CARD_SIDE);
+    let (status, tooltip) = match &chip.state {
+        Stage::Pending => ("Staging…".to_owned(), format!("{} · staging…", chip.name)),
+        Stage::Ready(a) => {
+            let size = size_text(a.bytes);
+            (size.clone(), format!("{} · {size}", chip.name))
+        }
+        Stage::Failed(e) => (e.clone(), e.clone()),
+    };
+    let previewable = chip.attachment().is_some() || chip.local_preview.is_some();
+    let label = if failed {
+        format!("Retry staging {}", chip.name)
+    } else {
+        format!("Preview {}", chip.name)
+    };
+    let thumbnail = chip.preview_source();
+    let image = thumbnail.is_some();
+    let content = match thumbnail {
+        Some(source) => div()
+            .relative()
+            .size_full()
+            .child(
+                div()
+                    .id(format!("attachment-thumbnail-{key}"))
+                    .role(gpui::Role::Image)
+                    .aria_label(format!("Image preview: {}", chip.name))
+                    .size_full()
+                    .overflow_hidden()
+                    .child(
+                        img(source)
+                            .size_full()
+                            .rounded(radius)
+                            .object_fit(gpui::ObjectFit::Cover),
+                    )
+                    .test_support(),
+            )
+            .children(
+                matches!(chip.state, Stage::Pending | Stage::Failed(_)).then(|| {
+                    // A scrim over the thumbnail while it stages, tinted when it failed.
+                    let scrim = if failed {
+                        (look.tint(error, 0.5) << 8) | 0x99
+                    } else {
+                        (colors.panel << 8) | 0x8c
+                    };
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(gpui::rgba(scrim))
+                        .child(
+                            status_label(&key, &status, status_mark(&chip.state, &key, look))
+                                .text_size(ui_text::text(14.))
+                                .text_color(rgb(colors.text))
+                                .test_support(),
+                        )
+                }),
+            )
+            .into_any_element(),
+        None => {
+            let visible = match &chip.state {
+                Stage::Pending => div()
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(4.))
+                    .child(widgets::pulse(
+                        format!("attachment-pulse-{key}"),
+                        colors.muted,
+                    ))
+                    .child(status.clone())
+                    .into_any_element(),
+                Stage::Failed(_) => "Failed · retry".into_any_element(),
+                Stage::Ready(_) => status.clone().into_any_element(),
+            };
+            // The stem is cut in the middle to the room its card leaves beside the extension,
+            // measured as drawn; the extension always shows whole, or to its own cap.
+            let (stem, ext) = split_name(&chip.name);
+            let measure = |text: &str| {
+                ui_text::line_width(
+                    text,
+                    ui_text::ui_family(),
+                    ui_text::text(NAME_SIZE),
+                    false,
+                    window,
+                )
+            };
+            let room = name_room(card_width) - ext.as_deref().map_or(0., measure);
+            let stem = fit_middle(&stem, room, measure);
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .gap(ui_text::space(8.))
+                .pl(ui_text::space(8.))
+                // Room for the × in the corner, so it never covers the name's end.
+                .pr(ui_text::space(26.))
+                .children(shows_tile(card_width).then(|| file_tile(&chip.name, look)))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(ui_text::space(2.))
+                        .child(
+                            div()
+                                .flex()
+                                .min_w_0()
+                                .font_family(ui_text::ui_family())
+                                .text_size(ui_text::text(NAME_SIZE))
+                                .text_color(rgb(colors.text))
+                                .whitespace_nowrap()
+                                .child(
+                                    div()
+                                        .id(format!("attachment-stem-{key}"))
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .child(stem)
+                                        .test_support(),
+                                )
+                                .children(ext.map(|ext| {
+                                    div()
+                                        .id(format!("attachment-ext-{key}"))
+                                        .flex_none()
+                                        .child(ext)
+                                        .test_support()
+                                })),
+                        )
+                        .child(
+                            status_label(&key, &status, visible)
+                                .text_size(ui_text::text(9.5))
+                                .text_color(rgb(if failed { error } else { colors.muted }))
+                                .truncate()
+                                .test_support(),
+                        ),
+                )
+                .into_any_element()
+        }
+    };
+    let action = key.clone();
+    let card = behavior::button_content(format!("attachment-card-{key}"), label, content)
+        .when(!failed && chip.attachment().is_none(), |card| {
+            card.aria_expanded(chip.open)
+        })
+        .disabled(!failed && !previewable)
+        .relative()
+        .flex_none()
+        .h(side)
+        .map(|card| {
+            if image {
+                card.w(side)
+            } else {
+                card.w(px(card_width))
+            }
+        })
+        .rounded(radius)
+        .overflow_hidden()
+        .border_1()
+        .border_color(rgb(if failed { error } else { colors.divider }))
+        .bg(rgb(if failed {
+            look.tint(error, 0.16)
+        } else {
+            colors.panel_active
+        }))
+        .cursor_pointer()
+        .hover(move |style| style.border_color(rgb(if failed { error } else { colors.muted })))
+        .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+        .child(crate::tooltip::anchor(
+            tooltip,
+            crate::tooltip::Look::Control,
+        ))
+        .on_click(cx.listener(move |view, _, window, cx| {
+            if view
+                .attachments
+                .iter()
+                .any(|c| c.id == action && matches!(c.state, Stage::Failed(_)))
+            {
+                view.retry_staging(&action, window, cx)
+            } else {
+                view.open_attachment(&action, cx)
+            }
+        }));
+    let remove = key.clone();
+    let group = SharedString::from(format!("attachment-group-{key}"));
+    let badge = behavior::button_content(
+        format!("attachment-remove-{key}"),
+        format!("Remove {}", chip.name),
+        icons::text_mark("×", 10.),
+    )
+    .flex_none()
+    .size(ui_text::space(18.))
+    .flex()
+    .items_center()
+    .justify_center()
+    .rounded_full()
+    .border_1()
+    .border_color(rgb(colors.divider))
+    .bg(rgb(colors.panel))
+    .text_size(ui_text::text(11.))
+    .text_color(rgb(colors.text))
+    .cursor_pointer()
+    .hover(move |style| style.bg(rgb(colors.panel_active)))
+    .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+    .on_click(cx.listener(move |view, _, _, cx| view.remove_attachment(&remove, cx)));
+    div()
+        .id(format!("attachment-{key}"))
+        .group(group.clone())
+        .relative()
+        .flex_none()
+        .child(card)
+        .child(
+            div()
+                .absolute()
+                .top(ui_text::space(4.))
+                .right(ui_text::space(4.))
+                .child(behavior::tab_close_boundary(
+                    format!("attachment-remove-boundary-{key}"),
+                    behavior::tab_close_reveal(badge, group),
+                )),
+        )
+        .into_any_element()
+}
+
+/// What a thumbnail's scrim shows: a pulse while it stages, a "!" when it failed.
+fn status_mark(state: &Stage, key: &str, look: Look) -> AnyElement {
+    match state {
+        Stage::Failed(_) => "!".into_any_element(),
+        _ => widgets::pulse(format!("attachment-pulse-{key}"), look.colors.text),
+    }
+}
+
+/// The card's state for assistive technology in full ("Staging…", the size, the error),
+/// whatever short form it shows.
+fn status_label(key: &str, status: &str, visible: AnyElement) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(format!("attachment-status-{key}"))
+        .role(gpui::Role::Label)
+        .aria_label(status.to_owned())
+        .child(visible)
+}
+
+/// The file's type on a small tile: its SF Symbol under Native, its extension elsewhere.
+fn file_tile(name: &str, look: Look) -> AnyElement {
+    let colors = look.colors;
+    let kind = FileKind::of(name);
+    let ink = match kind {
+        FileKind::Image => colors.cyan,
+        FileKind::Pdf => colors.magenta,
+        FileKind::Code => colors.cyan,
+        FileKind::Archive => colors.gold,
+        FileKind::Document | FileKind::Other => colors.muted,
+    };
+    let tile = div()
+        .flex_none()
+        .size(ui_text::space(32.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(ui_text::space(if look.native { 7. } else { 3. }))
+        .bg(rgb(look.tint(ink, 0.18)));
+    if look.native {
+        tile.child(icons::symbol(kind.symbol(), 14., Some(ink)))
+            .into_any_element()
+    } else {
+        tile.border_1()
+            .border_color(rgb(ink))
+            .text_size(ui_text::text(8.))
+            .text_color(rgb(ink))
+            .child(extension_label(name))
+            .into_any_element()
+    }
+}
+
+/// The inline preview of an opened card that Quick Look cannot show.
+fn expanded_preview(chip: &Chip, look: Look) -> AnyElement {
+    let key = &chip.id;
+    match (chip.preview_source(), chip.attachment().map(|a| &a.preview)) {
+        (None, Some(Preview::Text { excerpt })) => div()
+            .id(format!("attachment-expanded-{key}"))
+            .max_h(ui_text::space(140.))
+            .overflow_hidden()
+            .font_family(ui_text::code_family())
+            .text_size(ui_text::text(10.))
+            .child(excerpt.clone())
+            .test_support()
+            .into_any_element(),
+        (Some(source), _) => div()
+            .id(format!("attachment-expanded-{key}"))
+            .role(gpui::Role::Image)
+            .aria_label(format!("Expanded image preview: {}", chip.name))
+            .max_w(ui_text::space(256.))
+            .max_h(ui_text::space(256.))
+            .overflow_hidden()
+            .rounded(ui_text::space(card_radius(look)))
+            .child(
+                img(source)
+                    .max_w(ui_text::space(256.))
+                    .max_h(ui_text::space(256.))
+                    .object_fit(gpui::ObjectFit::Contain),
+            )
+            .test_support()
+            .into_any_element(),
+        _ => div()
+            .text_color(rgb(look.colors.muted))
+            .child("No preview until the file is staged.")
+            .into_any_element(),
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The staged copies and content types Quick Look was asked for; tests spawn nothing.
+    pub(super) static QUICK_LOOKS: std::cell::RefCell<Vec<(PathBuf, &'static str)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The Uniform Type Identifier Quick Look should read a staged copy as: the host stores it
+/// as `content`, without the name's extension.
+pub(super) fn content_type(kind: &AttachmentKind) -> &'static str {
+    match kind {
+        AttachmentKind::Image { mime } if mime == "image/jpeg" => "public.jpeg",
+        AttachmentKind::Image { .. } => "public.png",
+        AttachmentKind::Text => "public.plain-text",
+    }
+}
+
+/// Show the host's staged copy in the one Quick Look panel (see `quick_look`). False when
+/// there is no staged copy to show.
+fn quick_look(attachment: &Attachment) -> bool {
+    if !attachment.path.is_file() {
+        return false;
+    }
+    let content_type = content_type(&attachment.kind);
+    #[cfg(test)]
+    {
+        QUICK_LOOKS.with(|q| q.borrow_mut().push((attachment.path.clone(), content_type)));
+        true
+    }
+    #[cfg(not(test))]
+    {
+        quick_look::show(
+            &attachment.path,
+            &quick_look_name(&attachment.name),
+            content_type,
+        )
+    }
+}
+
+/// A file name safe to create in the Quick Look directory: the name's last component.
+pub(super) fn quick_look_name(name: &str) -> String {
+    std::path::Path::new(name)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "attachment".into())
+}
+
+/// What a file card shows a file as, by its name's extension.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FileKind {
+    Image,
+    Pdf,
+    Code,
+    Archive,
+    Document,
+    Other,
+}
+impl FileKind {
+    pub(super) fn of(name: &str) -> Self {
+        let Some(ext) = extension(name) else {
+            return Self::Other;
+        };
+        match ext.as_str() {
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "heic" | "tiff" | "bmp" | "svg" => {
+                Self::Image
+            }
+            "pdf" => Self::Pdf,
+            "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar" | "zst" => Self::Archive,
+            "txt" | "md" | "markdown" | "rtf" | "doc" | "docx" | "pages" | "csv" | "tsv"
+            | "log" | "odt" => Self::Document,
+            "rs" | "py" | "js" | "mjs" | "ts" | "tsx" | "jsx" | "swift" | "go" | "c" | "h"
+            | "cc" | "cpp" | "hpp" | "m" | "mm" | "java" | "kt" | "rb" | "php" | "sh" | "zsh"
+            | "bash" | "fish" | "json" | "toml" | "yaml" | "yml" | "xml" | "html" | "css"
+            | "scss" | "sql" | "lua" | "zig" | "nix" => Self::Code,
+            _ => Self::Other,
+        }
+    }
+    /// Its SF Symbol, for Native.
+    pub(super) fn symbol(self) -> &'static str {
+        match self {
+            Self::Image => "photo",
+            Self::Pdf => "doc.richtext",
+            Self::Code => "chevron.left.forwardslash.chevron.right",
+            Self::Archive => "doc.zipper",
+            Self::Document => "doc.text",
+            Self::Other => "doc",
+        }
+    }
+}
+
+/// The name's extension, lowercase: a short alphanumeric run after the last dot of a name
+/// that has something before it.
+pub(super) fn extension(name: &str) -> Option<String> {
+    let (stem, ext) = name.rsplit_once('.')?;
+    (!stem.is_empty()
+        && !ext.is_empty()
+        && ext.chars().count() <= 8
+        && ext.chars().all(|c| c.is_ascii_alphanumeric()))
+    .then(|| ext.to_ascii_lowercase())
+}
+
+/// The most characters of an extension a file card shows, its own "…" included.
+pub(super) const EXT_CHARS: usize = 12;
+
+/// A name as its stem and, as a file card shows it, its extension: the dot and whatever
+/// follows the last one, cut to `EXT_CHARS` with its own "…" ("archive.tar" and ".gz").
+/// A name without a stem before its dot (".env") or nothing after it has none.
+pub(super) fn split_name(name: &str) -> (String, Option<String>) {
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => {
+            let ext: String = if ext.chars().count() > EXT_CHARS {
+                ext.chars().take(EXT_CHARS - 1).chain(['…']).collect()
+            } else {
+                ext.to_owned()
+            };
+            (stem.to_owned(), Some(format!(".{ext}")))
+        }
+        _ => (name.to_owned(), None),
+    }
+}
+
+/// `text` as wide as `room` at most, as `measure` says: whole when it fits, else its start
+/// and its end around a "…", as much of both as fits.
+pub(super) fn fit_middle(text: &str, room: f32, measure: impl Fn(&str) -> f32) -> String {
+    if measure(text) <= room {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let cut = |keep: usize| {
+        let head = keep.div_ceil(2);
+        let tail = keep - head;
+        chars[..head]
+            .iter()
+            .chain(['…'].iter())
+            .chain(chars[chars.len() - tail..].iter())
+            .collect::<String>()
+    };
+    // The most characters kept that still fit: wider with each one kept.
+    let (mut fits, mut over) = (0, chars.len());
+    while over - fits > 1 {
+        let mid = (fits + over) / 2;
+        if measure(&cut(mid)) <= room {
+            fits = mid;
+        } else {
+            over = mid;
+        }
+    }
+    cut(fits)
+}
+
+/// The extension as the colorful themes' file tile shows it: "PNG", at most four letters,
+/// or "FILE".
+pub(super) fn extension_label(name: &str) -> String {
+    extension(name).map_or_else(
+        || "FILE".into(),
+        |ext| ext.to_ascii_uppercase().chars().take(4).collect(),
+    )
+}
+
+/// A size as a file card shows it: "512 B", "36 KB", "4.5 KB", "1.2 MB" (1024-based, one
+/// decimal under ten).
+pub(super) fn size_text(bytes: u64) -> String {
+    const KB: f64 = 1024.;
+    fn scaled(value: f64, unit: &str) -> String {
+        if value < 9.95 {
+            let text = format!("{value:.1}");
+            format!("{} {unit}", text.strip_suffix(".0").unwrap_or(&text))
+        } else {
+            format!("{} {unit}", value.round() as u64)
+        }
+    }
+    let bytes_f = bytes as f64;
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes_f / KB < 1023.5 {
+        scaled(bytes_f / KB, "KB")
+    } else if bytes_f / (KB * KB) < 1023.5 {
+        scaled(bytes_f / (KB * KB), "MB")
+    } else {
+        scaled(bytes_f / (KB * KB * KB), "GB")
     }
 }

@@ -10,7 +10,10 @@
 //! dismissed sticky occurrence stays away across clients and restarts. Local closes
 //! hide an item until a new id or a later reset arrives.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+};
 
 use crate::chat::model::{ItemBody, NoticeLevel, Transcript, notice_kind};
 
@@ -93,6 +96,25 @@ pub(super) struct Notices {
     pub history: bool,
     /// Banners whose chevron was pressed, by id: open (whole text) or closed (one line).
     pub opened: HashMap<String, bool>,
+    /// Bumped by every close, so the provider's banners are worked out again.
+    closes: u64,
+    /// The provider's banners and the notice count as last worked out, kept while the
+    /// transcript and the closes are the same and no shown banner's limit has reset: every
+    /// frame and every open of the ⋯ menu would otherwise go through the whole log.
+    derived: RefCell<Option<Derived>>,
+}
+
+/// What `Notices` keeps between frames (see `derived`).
+struct Derived {
+    /// The transcript's revision and length, and `closes`, when it was worked out.
+    key: (u64, usize, u64),
+    /// The provider's banners with their place in the transcript, newest first.
+    banners: Vec<(usize, Banner)>,
+    /// When they were worked out, and the soonest reset among them: before the one or from
+    /// the other on, they are worked out again.
+    at: u64,
+    expires: Option<u64>,
+    count: usize,
 }
 
 impl Notices {
@@ -122,6 +144,7 @@ impl Notices {
     }
 
     pub fn dismiss(&mut self, id: &str) {
+        self.closes += 1;
         if let Some(name) = id.strip_prefix("local:") {
             self.local.retain(|(key, ..)| key.name() != name);
         } else {
@@ -133,10 +156,10 @@ impl Notices {
     /// reset time or a higher level (the host decides for good; this is the quick hide).
     pub fn dismiss_occurrence(&mut self, id: &str, transcript: &Transcript) {
         self.dismiss(id);
-        if let Some(seen) = transcript.items.iter().find_map(|item| match &item.body {
+        if let Some(seen) = transcript.item(id).and_then(|item| match &item.body {
             ItemBody::Notice {
                 level, resets_at, ..
-            } if item.id == id => Some((*resets_at, rank(*level))),
+            } => Some((*resets_at, rank(*level))),
             _ => None,
         }) {
             self.dismissed_as.insert(id.to_owned(), seen);
@@ -150,11 +173,10 @@ impl Notices {
                 let Some((reset, level)) = self.dismissed_as.get(*id) else {
                     return true;
                 };
-                !transcript.items.iter().any(|item| {
-                    item.id == **id
-                        && matches!(&item.body, ItemBody::Notice {
-                            level: now, resets_at, ..
-                        } if resets_at != reset || rank(*now) > *level)
+                !transcript.item(id).is_some_and(|item| {
+                    matches!(&item.body, ItemBody::Notice {
+                        level: now, resets_at, ..
+                    } if resets_at != reset || rank(*now) > *level)
                 })
             })
             .cloned()
@@ -164,10 +186,38 @@ impl Notices {
     /// The soonest time a shown banner's limit resets, when it must go without anything
     /// else happening.
     pub fn next_expiry(&self, transcript: &Transcript, now: u64) -> Option<u64> {
-        provider_banners(transcript, &self.dismissed_for(transcript), now)
-            .iter()
-            .filter_map(|banner| banner.resets_at)
-            .min()
+        self.with_derived(transcript, now, |derived| derived.expires)
+    }
+
+    /// How many notices the chat has, resolved and dismissed ones too.
+    pub fn count(&self, transcript: &Transcript) -> usize {
+        self.with_derived(transcript, now_unix(), |derived| derived.count)
+    }
+
+    /// `f` of what is derived from `transcript` at `now`, worked out again only when the
+    /// transcript or the closes changed or a shown banner's limit has reset since.
+    fn with_derived<T>(
+        &self,
+        transcript: &Transcript,
+        now: u64,
+        f: impl FnOnce(&Derived) -> T,
+    ) -> T {
+        let key = (transcript.revision(), transcript.items.len(), self.closes);
+        let mut derived = self.derived.borrow_mut();
+        let fresh = derived
+            .as_ref()
+            .is_some_and(|d| d.key == key && d.at <= now && d.expires.is_none_or(|at| now < at));
+        if !fresh {
+            let banners = ranked_provider_banners(transcript, &self.dismissed_for(transcript), now);
+            *derived = Some(Derived {
+                key,
+                at: now,
+                expires: banners.iter().filter_map(|(_, b)| b.resets_at).min(),
+                count: count(transcript),
+                banners,
+            });
+        }
+        f(derived.as_ref().expect("worked out above"))
     }
 
     /// What shows, newest first, the tab's errors among the provider's notices by when
@@ -193,11 +243,14 @@ impl Notices {
                 )
             })
             .collect();
-        ranked.extend(
-            ranked_provider_banners(transcript, &self.dismissed_for(transcript), now)
-                .into_iter()
-                .map(|(at, banner)| ((2 * at + 1, 0), banner)),
-        );
+        self.with_derived(transcript, now, |derived| {
+            ranked.extend(
+                derived
+                    .banners
+                    .iter()
+                    .map(|(at, banner)| ((2 * at + 1, 0), banner.clone())),
+            );
+        });
         ranked.sort_by(|a, b| b.0.cmp(&a.0));
         ranked.into_iter().map(|(_, banner)| banner).collect()
     }
@@ -325,13 +378,18 @@ fn ranked_provider_banners(
         .collect()
 }
 
-/// Every notice of the chat, newest first, resolved and dismissed ones too.
-pub(super) fn history(transcript: &Transcript) -> Vec<Banner> {
+/// How many of the newest notices the history lists; the rest are counted, not drawn.
+pub(super) const HISTORY_SHOWN: usize = 200;
+
+/// The chat's newest notices, newest first, resolved and dismissed ones too, at most `limit`:
+/// the walk back through the log stops there.
+pub(super) fn history(transcript: &Transcript, limit: usize) -> Vec<Banner> {
     transcript
         .items
         .iter()
         .rev()
         .filter_map(|item| banner(&item.id, &item.body))
+        .take(limit)
         .collect()
 }
 
@@ -409,6 +467,55 @@ mod tests {
 
     fn texts(banners: &[Banner]) -> Vec<&str> {
         banners.iter().map(|b| b.text.as_str()).collect()
+    }
+
+    #[test]
+    fn kept_banners_follow_new_notices_closes_and_resets() {
+        let mut limit = notice(
+            "limit",
+            NoticeLevel::Error,
+            "weekly limit reached",
+            Some("rate_limit:seven_day"),
+        );
+        if let ItemBody::Notice { resets_at, .. } = &mut limit.body {
+            *resets_at = Some(100);
+        }
+        let mut t = transcript(vec![user("u"), limit]);
+        let mut notices = Notices::default();
+        assert_eq!(texts(&notices.banners(&t, 50)), ["weekly limit reached"]);
+        assert_eq!(notices.next_expiry(&t, 50), Some(100));
+        assert_eq!(notices.count(&t), 1);
+        // The same transcript, its limit reset: worked out again, not kept.
+        assert!(notices.banners(&t, 100).is_empty());
+        assert_eq!(notices.next_expiry(&t, 100), None);
+        // A new event is a new revision.
+        t.apply(&ChatEvent::ItemCompleted {
+            item: notice(
+                "fail",
+                NoticeLevel::Error,
+                "The turn failed",
+                Some("turn_failed"),
+            ),
+        });
+        assert_eq!(texts(&notices.banners(&t, 100)), ["The turn failed"]);
+        assert_eq!(notices.count(&t), 2);
+        // A close is seen at once.
+        notices.dismiss_occurrence("fail", &t);
+        assert!(notices.banners(&t, 100).is_empty());
+        // An earlier time than the kept one is worked out again too.
+        assert_eq!(texts(&notices.banners(&t, 50)), ["weekly limit reached"]);
+    }
+
+    #[test]
+    fn the_history_walks_back_only_as_far_as_it_shows() {
+        let t = transcript(
+            (0..10)
+                .map(|at| notice(&format!("n{at}"), NoticeLevel::Info, &format!("{at}"), None))
+                .collect(),
+        );
+        assert_eq!(texts(&history(&t, 3)), ["9", "8", "7"]);
+        assert_eq!(history(&t, usize::MAX).len(), 10);
+        assert_eq!(count(&t), 10);
     }
 
     #[test]
@@ -549,7 +656,7 @@ mod tests {
         assert_eq!(texts(&provider_banners(&t, &dismissed, 50)), ["close"]);
         assert!(provider_banners(&t, &dismissed, 100).is_empty());
         // The history keeps all of them, newest first.
-        assert_eq!(texts(&history(&t)), ["close", "closed", "retrying"]);
+        assert_eq!(texts(&history(&t, usize::MAX)), ["close", "closed", "retrying"]);
     }
 
     #[test]

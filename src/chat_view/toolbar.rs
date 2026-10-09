@@ -212,19 +212,19 @@ pub fn context_fraction(usage: &Usage) -> Option<f32> {
     (window > 0).then(|| (used as f64 / window as f64).clamp(0.0, 1.0) as f32)
 }
 
-/// The meter's words: the context in use, or what was spent when the window is not known.
+/// The number beside the meter's ring: how much of the context is in use, when it is known.
+pub fn percent_text(usage: &Usage) -> Option<String> {
+    context_fraction(usage).map(|fraction| format!("{}%", (fraction * 100.0).round() as u32))
+}
+
+/// The meter's counts: the context in use, or what was spent when the window is not known.
 pub fn usage_text(usage: &Usage) -> String {
     match (
         context_fraction(usage),
         usage.context_used,
         usage.context_window,
     ) {
-        (Some(fraction), Some(used), Some(window)) => format!(
-            "{}% · {} / {}",
-            (fraction * 100.0).round() as u32,
-            tokens(used),
-            tokens(window)
-        ),
+        (Some(_), Some(used), Some(window)) => format!("{} / {}", tokens(used), tokens(window)),
         _ => format!(
             "{} in · {} out",
             tokens(usage.input_tokens),
@@ -233,13 +233,53 @@ pub fn usage_text(usage: &Usage) -> String {
     }
 }
 
-/// Claude's own figure for what a chat cost. It is an estimate, never a bill.
+/// Claude's own figure for what a chat cost. It is an estimate, never a bill: the "≈" says
+/// so in the row, the hover hint in words.
 pub fn cost_text(cost_usd: f64) -> String {
     if cost_usd >= 0.01 {
-        format!("≈ ${cost_usd:.2} (estimate)")
+        format!("≈ ${cost_usd:.2}")
     } else {
-        format!("≈ ${cost_usd:.3} (estimate)")
+        format!("≈ ${cost_usd:.3}")
     }
+}
+
+/// How the ring warns: the text color below 70 % in use, the warning tint from 70 %, red
+/// from 90 %. The iPhone's ring uses the same thresholds, so both agree on a chat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RingTone {
+    Normal,
+    Warning,
+    Critical,
+}
+
+pub fn ring_tone(fraction: f32) -> RingTone {
+    if fraction >= 0.9 {
+        RingTone::Critical
+    } else if fraction >= 0.7 {
+        RingTone::Warning
+    } else {
+        RingTone::Normal
+    }
+}
+
+/// The points of the ring's filled arc, starting at the top and running clockwise for
+/// `fraction` of the circle, around `center` (y grows downward). No points for nothing in use.
+pub fn ring_arc(fraction: f32, center: (f32, f32), radius: f32) -> Vec<(f32, f32)> {
+    let fraction = fraction.clamp(0.0, 1.0);
+    if fraction <= 0.0 {
+        return Vec::new();
+    }
+    // Enough segments for a smooth curve at any size the row draws it.
+    let steps = ((fraction * 48.0).ceil() as usize).max(2);
+    (0..=steps)
+        .map(|step| {
+            let angle = std::f32::consts::TAU * fraction * step as f32 / steps as f32;
+            (
+                center.0 + radius * angle.sin(),
+                center.1 - radius * angle.cos(),
+            )
+        })
+        .collect()
 }
 
 /// Everything the meter knows, for its hover hint.
@@ -253,6 +293,9 @@ pub fn usage_details(usage: &Usage) -> String {
     }
     if let (Some(used), Some(window)) = (usage.context_used, usage.context_window) {
         parts.push(format!("Context {used} of {window}"));
+    }
+    if let Some(cost) = usage.cost_usd {
+        parts.push(format!("{} (estimate)", cost_text(cost)));
     }
     parts.join(" · ")
 }
@@ -289,13 +332,15 @@ mod tests {
             ..Usage::default()
         };
         assert_eq!(context_fraction(&known), Some(0.42));
-        assert_eq!(usage_text(&known), "42% · 84k / 200k");
+        assert_eq!(percent_text(&known).as_deref(), Some("42%"));
+        assert_eq!(usage_text(&known), "84k / 200k");
         let unknown = Usage {
             input_tokens: 12_300,
             output_tokens: 850,
             ..Usage::default()
         };
         assert_eq!(context_fraction(&unknown), None);
+        assert_eq!(percent_text(&unknown), None);
         assert_eq!(usage_text(&unknown), "12k in · 850 out");
         // A window that was overrun still fills the meter exactly once.
         let over = Usage {
@@ -313,10 +358,57 @@ mod tests {
     }
 
     #[test]
-    fn cost_is_always_called_an_estimate() {
-        assert_eq!(cost_text(0.4213), "≈ $0.42 (estimate)");
-        assert_eq!(cost_text(12.0), "≈ $12.00 (estimate)");
-        assert_eq!(cost_text(0.004), "≈ $0.004 (estimate)");
+    fn cost_is_approximate_in_the_row_and_called_an_estimate_in_the_hint() {
+        assert_eq!(cost_text(0.4213), "≈ $0.42");
+        assert_eq!(cost_text(344.31), "≈ $344.31");
+        assert_eq!(cost_text(0.004), "≈ $0.004");
+        let usage = Usage {
+            cost_usd: Some(344.31),
+            ..Usage::default()
+        };
+        assert!(usage_details(&usage).ends_with("≈ $344.31 (estimate)"));
+    }
+
+    #[test]
+    fn the_ring_warns_from_70_and_turns_red_from_90_percent() {
+        assert_eq!(
+            [0.0, 0.56, 0.699, 0.7, 0.89, 0.9, 1.0].map(ring_tone),
+            [
+                RingTone::Normal,
+                RingTone::Normal,
+                RingTone::Normal,
+                RingTone::Warning,
+                RingTone::Warning,
+                RingTone::Critical,
+                RingTone::Critical
+            ]
+        );
+    }
+
+    #[test]
+    fn the_ring_fills_clockwise_from_the_top_by_the_fraction_in_use() {
+        assert!(ring_arc(0.0, (7.0, 7.0), 5.0).is_empty());
+        let close = |(x, y): (f32, f32), (ex, ey): (f32, f32)| {
+            (x - ex).abs() < 1e-4 && (y - ey).abs() < 1e-4
+        };
+        let quarter = ring_arc(0.25, (7.0, 7.0), 5.0);
+        assert!(close(quarter[0], (7.0, 2.0)), "starts at the top");
+        assert!(
+            close(*quarter.last().unwrap(), (12.0, 7.0)),
+            "a quarter ends on the right"
+        );
+        let half = ring_arc(0.5, (7.0, 7.0), 5.0);
+        assert!(close(*half.last().unwrap(), (7.0, 12.0)));
+        // Overrun clamps to one full turn, back at the top.
+        let full = ring_arc(1.7, (7.0, 7.0), 5.0);
+        assert!(close(*full.last().unwrap(), (7.0, 2.0)));
+        assert!(full.len() > half.len());
+        // Every point lies on the circle.
+        assert!(
+            full.iter().all(|(x, y)| {
+                (((x - 7.0).powi(2) + (y - 7.0).powi(2)).sqrt() - 5.0).abs() < 1e-4
+            })
+        );
     }
 
     #[test]

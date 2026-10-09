@@ -127,7 +127,10 @@ fn two_banners_show_newest_first_the_rest_fold_and_each_closes(cx: &mut TestAppC
     })
     .unwrap();
     view.read_with(cx, |view, _| {
-        assert_eq!(notices::history(&view.model.transcript).len(), 3);
+        assert_eq!(
+            notices::history(&view.model.transcript, usize::MAX).len(),
+            3
+        );
     });
 }
 
@@ -407,43 +410,33 @@ fn host_dismissed_notice_has_no_banner_and_close_sends_the_host_command(cx: &mut
 }
 
 #[gpui::test]
-fn the_usage_chip_shows_the_most_used_window_past_its_warning_and_opens_usage(
-    cx: &mut TestAppContext,
-) {
+fn a_window_near_its_limit_is_no_chip_and_the_meter_opens_usage(cx: &mut TestAppContext) {
     let start = 1_800_000_000;
     notices::TEST_NOW.with(|now| now.set(Some(start)));
     let (handle, view, _recording) = mount(cx);
-    let window = |id: &str, label: &str, used: f64| crate::chat::model::RateWindow {
-        id: id.into(),
-        label: label.into(),
-        used_percent: used,
-        resets_at: Some(start + 30),
-        warn_at: 70.0,
-    };
-    let set = |view: &Entity<ChatView>, cx: &mut TestAppContext, windows| {
-        view.update(cx, |view, cx| {
-            view.model.link = state::Link::Live;
-            view.model
-                .transcript
-                .apply(&ChatEvent::RateLimits { windows });
-            view.schedule_notice_expiry(cx);
-            cx.notify();
-        })
-    };
-    set(&view, cx, vec![window("five_hour", "5h", 40.0)]);
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.try_find("chat-usage-chip").is_none(), "under 70%");
-    })
-    .unwrap();
-    set(
-        &view,
-        cx,
-        vec![
-            window("five_hour", "5h", 40.0),
-            window("seven_day", "weekly", 91.0),
-        ],
-    );
+    view.update(cx, |view, cx| {
+        view.model.link = state::Link::Live;
+        view.model.transcript.apply(&ChatEvent::RateLimits {
+            windows: vec![crate::chat::model::RateWindow {
+                id: "seven_day".into(),
+                label: "weekly".into(),
+                used_percent: 91.0,
+                resets_at: Some(start + 30),
+                warn_at: 70.0,
+            }],
+        });
+        view.model.transcript.apply(&ChatEvent::Usage {
+            usage: crate::chat::model::Usage {
+                input_tokens: 600_000,
+                output_tokens: 20_000,
+                cached_input_tokens: 0,
+                context_window: Some(1_000_000),
+                context_used: Some(563_000),
+                cost_usd: Some(344.31),
+            },
+        });
+        cx.notify();
+    });
     let opened = std::rc::Rc::new(std::cell::Cell::new(false));
     let seen = opened.clone();
     cx.update(|cx| {
@@ -456,39 +449,25 @@ fn the_usage_chip_shows_the_most_used_window_past_its_warning_and_opens_usage(
     });
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        let chip = window.find("chat-usage-chip");
-        assert!(chip.visible());
-        assert!(
-            chip.label()
-                .is_some_and(|label| label.starts_with("⚠ weekly 91% · resets")),
-            "{:?}",
-            chip.label()
-        );
-        // No banner: nearing a limit is the chip's.
+        assert!(window.try_find("chat-usage-chip").is_none(), "no chip");
+        // No banner either: nearing a limit is the Usage panel's.
         assert!(window.try_find("chat-notices").is_none());
-        window.click("chat-usage-chip", cx);
+        let meter = window.find("chat-context-meter");
+        assert_eq!(meter.role(), Some(gpui::Role::Button));
+        assert_eq!(meter.label(), Some("Context 56% used, open Usage"));
+        window.click("chat-context-meter", cx);
     })
     .unwrap();
-    assert!(opened.get(), "the chip opens the Usage panel");
-    // The reset passes with nothing else happening: the chip goes.
-    notices::TEST_NOW.with(|now| now.set(Some(start + 31)));
-    cx.executor()
-        .advance_clock(std::time::Duration::from_secs(31));
-    cx.run_until_parked();
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.try_find("chat-usage-chip").is_none());
-    })
-    .unwrap();
+    assert!(opened.get(), "the meter opens the Usage panel");
     notices::TEST_NOW.with(|now| now.set(None));
 }
 
 #[gpui::test]
-fn the_usage_chip_and_meter_fit_a_narrow_chat_by_leaving_out_detail(cx: &mut TestAppContext) {
+fn the_meter_fits_a_narrow_chat_by_leaving_out_its_cost(cx: &mut TestAppContext) {
     let start = 1_800_000_000;
     notices::TEST_NOW.with(|now| now.set(Some(start)));
     let mut widths = Vec::new();
-    for width in [900.0_f32, 520.0, 360.0, 260.0] {
+    for width in [900.0_f32, 520.0, 360.0, 200.0] {
         let (handle, view, _recording) = super::editor_tests::mount_sized(
             cx,
             HostConfig {
@@ -525,14 +504,14 @@ fn the_usage_chip_and_meter_fit_a_narrow_chat_by_leaving_out_detail(cx: &mut Tes
                 window.render_frame(cx);
             }
             let group = window.find("chat-usage-group").bounds();
-            let chip = window.find("chat-usage-chip").bounds();
+            assert!(window.try_find("chat-usage-chip").is_none());
             let meter = window.find("chat-context-meter").bounds();
             let what = format!("{width} px: group {group:?}");
             assert!(
                 group.left() >= px(0.) && group.right() <= px(width),
                 "{what}"
             );
-            for part in [chip, meter] {
+            for part in [meter] {
                 assert!(part.right() <= group.right() + px(0.5), "{what}: {part:?}");
                 assert!(part.size.width > px(0.), "{what}: {part:?} shown");
             }
@@ -547,4 +526,193 @@ fn the_usage_chip_and_meter_fit_a_narrow_chat_by_leaving_out_detail(cx: &mut Tes
     );
     assert!(widths[3] < widths[0], "{widths:?}");
     notices::TEST_NOW.with(|now| now.set(None));
+}
+
+#[gpui::test]
+fn the_session_id_card_stays_in_the_row_and_copies_the_whole_id(cx: &mut TestAppContext) {
+    let (handle, view, _recording) = mount(cx);
+    view.update(cx, |view, cx| {
+        view.model.link = state::Link::Live;
+        let mut info = super::testing::info("chat");
+        info.provider_thread_id = Some("cc2091da-0000-4000-8000-feedfacecafe".into());
+        view.model.transcript.apply(&ChatEvent::Info { info });
+        cx.notify();
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("chat-thread", cx);
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("cc2091da-0000-4000-8000-feedfacecafe")
+        );
+    })
+    .unwrap();
+}
+
+/// Times the ⋯ menu with a chat that has many notices. Run with
+/// `cargo test --bin riwork profile_more_menu -- --ignored --nocapture`.
+#[gpui::test]
+#[ignore]
+fn profile_more_menu(cx: &mut TestAppContext) {
+    use std::time::Instant;
+    let (handle, view, _recording) = mount(cx);
+    view.update(cx, |view, cx| {
+        view.model.link = state::Link::Live;
+        for at in 0..3_000 {
+            if at % 3 == 0 {
+                view.model.transcript.apply(&ChatEvent::ItemCompleted {
+                    item: Item {
+                        id: format!("u{at}"),
+                        turn_id: Some(format!("turn{at}")),
+                        status: ItemStatus::Completed,
+                        body: ItemBody::UserMessage {
+                            text: format!("message {at}"),
+                        },
+                        presentation: Default::default(),
+                    },
+                });
+            }
+            view.model.transcript.apply(&ChatEvent::ItemCompleted {
+                item: Item {
+                    id: format!("n{at}"),
+                    turn_id: Some(format!("turn{at}")),
+                    status: ItemStatus::Completed,
+                    body: ItemBody::notice(
+                        NoticeLevel::Warning,
+                        format!("Notice number {at} about something that happened"),
+                        Some(if at % 2 == 0 {
+                            "rate_limit:five_hour"
+                        } else {
+                            "turn_failed"
+                        }),
+                    ),
+                    presentation: Default::default(),
+                },
+            });
+        }
+        cx.notify();
+    });
+    let frames = 10;
+    let mut report =
+        |label: &str, cx: &mut TestAppContext, step: &dyn Fn(&mut Window, &mut gpui::App)| {
+            let (mut act, mut frame) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
+            for _ in 0..frames {
+                cx.update_window(handle.into(), |_, window, cx| {
+                    view.update(cx, |view, cx| {
+                        view.menu = None;
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                    let start = Instant::now();
+                    step(window, cx);
+                    act += start.elapsed();
+                    let start = Instant::now();
+                    window.render_frame(cx);
+                    frame += start.elapsed();
+                })
+                .unwrap();
+            }
+            eprintln!(
+                "{label}: action {:?}, next frame {:?}",
+                act / frames,
+                frame / frames
+            );
+        };
+    report("re-render, menu closed", cx, &|_, cx| {
+        view.update(cx, |_, cx| cx.notify())
+    });
+    report("menu = More, notify", cx, &|_, cx| {
+        view.update(cx, |view, cx| {
+            view.menu = Some(Menu::More);
+            cx.notify();
+        })
+    });
+    report("click ⋯", cx, &|window, cx| window.click("chat-more", cx));
+    report("toggle_menu(More) directly", cx, &|window, cx| {
+        view.update(cx, |view, cx| view.toggle_menu(Menu::More, window, cx))
+    });
+    report("focus the view", cx, &|window, cx| {
+        view.update(cx, |view, cx| view.focus(window, cx))
+    });
+    report("click Compact (another button)", cx, &|window, cx| {
+        window.click("chat-compact", cx)
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        let start = Instant::now();
+        for _ in 0..frames {
+            view.update(cx, |view, cx| {
+                let _ = view.menu_popover_for_profile(window, cx);
+            });
+        }
+        eprintln!("menu build alone: {:?}", start.elapsed() / frames);
+    })
+    .unwrap();
+    view.read_with(cx, |view, _| {
+        let t = &view.model.transcript;
+        let start = Instant::now();
+        for _ in 0..frames {
+            std::hint::black_box(view.notices.count(t));
+        }
+        eprintln!("count (cached): {:?}", start.elapsed() / frames);
+        let start = Instant::now();
+        for _ in 0..frames {
+            std::hint::black_box(notices::history(t, notices::HISTORY_SHOWN));
+        }
+        eprintln!(
+            "history (newest {}): {:?}",
+            notices::HISTORY_SHOWN,
+            start.elapsed() / frames
+        );
+        let start = Instant::now();
+        for _ in 0..frames {
+            std::hint::black_box(view.notices.banners(t, notices::now_unix()));
+        }
+        eprintln!("banners (cached): {:?}", start.elapsed() / frames);
+        eprintln!("items: {}", t.items.len());
+    });
+}
+
+#[gpui::test]
+fn a_long_history_draws_only_the_newest_and_says_how_many_there_are(cx: &mut TestAppContext) {
+    let (handle, view, _recording) = mount(cx);
+    let total = notices::HISTORY_SHOWN + 50;
+    view.update(cx, |view, cx| {
+        view.model.link = state::Link::Live;
+        for at in 0..total {
+            view.model.transcript.apply(&ChatEvent::ItemCompleted {
+                item: Item {
+                    id: format!("n{at}"),
+                    turn_id: Some("turn".into()),
+                    status: ItemStatus::Completed,
+                    body: ItemBody::notice(NoticeLevel::Info, format!("notice {at}"), None),
+                    presentation: Default::default(),
+                },
+            });
+        }
+        cx.notify();
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("chat-more", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("chat-notice-history").label(),
+            Some(format!("Notices ({total})").as_str())
+        );
+        window.click("chat-notice-history", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("chat-notice-history-older").is_some());
+    })
+    .unwrap();
+    view.read_with(cx, |view, _| {
+        let shown = notices::history(&view.model.transcript, notices::HISTORY_SHOWN);
+        assert_eq!(shown.len(), notices::HISTORY_SHOWN);
+        assert_eq!(
+            shown[0].text,
+            format!("notice {}", total - 1),
+            "newest first"
+        );
+    });
 }

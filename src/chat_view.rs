@@ -40,6 +40,7 @@ use crate::{
 mod approval;
 mod attachment_draft;
 mod attachment_ui;
+pub(crate) use attachment_ui::init as init_attachments;
 mod cards;
 mod composer;
 mod dictate;

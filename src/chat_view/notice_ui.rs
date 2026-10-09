@@ -383,7 +383,10 @@ impl ChatView {
     /// Every notice of the chat, newest first, with whether it was resolved.
     fn notice_history(&self, look: Look, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
-        let all = notices::history(&self.model.transcript);
+        // Built only while it is open, and only the newest: a long chat's log is not walked
+        // or drawn whole.
+        let all = notices::history(&self.model.transcript, notices::HISTORY_SHOWN);
+        let total = self.notices.count(&self.model.transcript);
         let close = |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
             view.notices.history = false;
             view.focus_composer = true;
@@ -415,7 +418,7 @@ impl ChatView {
                     .when(look.native, |head| {
                         head.font_weight(gpui::FontWeight::SEMIBOLD)
                     })
-                    .child(div().flex_1().child(format!("Notices ({})", all.len())))
+                    .child(div().flex_1().child(format!("Notices ({total})")))
                     .child(self.close_button(
                         "chat-notice-history-close".into(),
                         "Close notices",
@@ -465,6 +468,20 @@ impl ChatView {
                                     .text_color(rgb(colors.muted))
                                     .child(widgets::sentence("resolved", look))
                             }))
+                    }))
+                    .children((total > all.len()).then(|| {
+                        div()
+                            .id("chat-notice-history-older")
+                            .px(ui_text::space(10.0))
+                            .py(ui_text::space(6.0))
+                            .text_size(ui_text::text(10.0))
+                            .text_color(rgb(colors.muted))
+                            .role(gpui::Role::Label)
+                            .child(format!(
+                                "The newest {} of {total}; older ones are in the chat's log.",
+                                all.len()
+                            ))
+                            .test_support()
                     })),
             )
             .into_any_element()
