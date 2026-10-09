@@ -999,13 +999,7 @@ import RiWorkCore
             try await Task.sleep(for: .milliseconds(100))
             try assertLatestOverTranscriptBottom(rig, scroll: scroll)
             await rig.transport.append(chatID, [.itemCompleted(ChatItem(id: "layout-live", status: .completed, body: .agentMessage("One new live message.")))])
-            if category == .large {
-                await eventually("only the live row counts as new") { (try? self.renderedText(rig, in: rig.layout.frames["latest"] ?? .zero).contains("1 new")) == true }
-            } else {
-                // The transcript runs on under the pill's glass, and at this size its letters behind the pill defeat reading the pill's.
-                try await Task.sleep(for: .milliseconds(200))
-                XCTAssertEqual(rig.layout.visible["latest"], true, "Latest stays up with the live row")
-            }
+            await eventually("only the live row counts as new") { (try? self.renderedPill(rig, scroll: scroll).contains("1 new")) == true }
             try assertLatestOverTranscriptBottom(rig, scroll: scroll)
             if category == .accessibilityExtraLarge { try compactSnapshot(rig, name: "compact-large-text-reader") }
             await rig.transport.append(chatID, [approval("layout-approval"), .state(.waiting)])
@@ -2352,6 +2346,14 @@ import RiWorkCore
         XCTAssertFalse(visible.isEmpty, "transcript has a visible viewport")
         return try renderedText(rig, in: visible)
     }
+    /// What the Latest pill says. The transcript runs on under the pill's glass, and large letters behind it defeat reading the pill's:
+    /// the transcript's rows are hidden while it is read (the pill is not among them).
+    private func renderedPill(_ rig: Rig, scroll: UIScrollView) throws -> String {
+        let rows = scroll.subviews.filter { !$0.isHidden }
+        rows.forEach { $0.isHidden = true }
+        defer { rows.forEach { $0.isHidden = false } }
+        return try renderedText(rig, in: rig.layout.frames["latest"] ?? .zero)
+    }
     private func renderedText(_ rig: Rig, in rect: CGRect) throws -> String {
         rig.window.layoutIfNeeded()
         let visible = rect.intersection(rig.window.bounds)
@@ -2743,6 +2745,21 @@ import RiWorkCore
                 // The last message, scrolled to, is seen whole above the field.
                 let lastRow = list.contentSize.height - 6 + frame.minY - list.contentOffset.y
                 XCTAssertLessThanOrEqual(lastRow, top, "\(look) cards \(cards): the last message ends above the composer")
+            }
+            // The field grows with a draft of several lines: the inset grows with it and the last message stays above the composer.
+            let before = try XCTUnwrap(transcriptScroll(rig)).adjustedContentInset.bottom, shortField = try XCTUnwrap(rig.layout.frames["composer"]).height
+            rig.model.conversation(chatID).draft = "First line of a longer draft\nsecond line\nthird line\nfourth line"
+            await eventually("\(look): the field grew") { (rig.layout.frames["composer"]?.height ?? 0) > shortField + 40 }
+            try await Task.sleep(for: .milliseconds(400))
+            rig.window.layoutIfNeeded()
+            await eventually("\(look): at the bottom with the taller field") { atBottom() }
+            do {
+                let list = try XCTUnwrap(transcriptScroll(rig)), surface = try XCTUnwrap(rig.layout.frames["composer"])
+                let grown = surface.height - shortField
+                print("FLOAT-INSETS \(look) top=\(list.adjustedContentInset.top) bottom \(before) -> \(list.adjustedContentInset.bottom) field +\(grown)")
+                XCTAssertEqual(list.adjustedContentInset.bottom - before, grown, accuracy: 1.5, "\(look): the inset grows with the field")
+                let frame = list.convert(list.bounds, to: rig.window), cards = try XCTUnwrap(rig.layout.frames["attachments"])
+                XCTAssertLessThanOrEqual(list.contentSize.height - 6 + frame.minY - list.contentOffset.y, cards.minY, "\(look): the last message still ends above the composer")
             }
             // The keyboard down: the field stands 8 pt above the home indicator's safe area, the transcript still under it.
             rig.window.endEditing(true)

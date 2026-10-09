@@ -685,7 +685,7 @@ private struct ChatTranscriptList: View {
         .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
             // The viewport is what is seen: the composer and the bars float over the bottom inset, so the reader is at the bottom when
             // the last line ends above them.
-            ScrollMetrics(offset: geometry.contentOffset.y, contentHeight: geometry.contentSize.height, viewportHeight: geometry.containerSize.height - geometry.contentInsets.bottom,
+            ScrollMetrics(offset: geometry.contentOffset.y, contentHeight: geometry.contentSize.height, boundsHeight: geometry.containerSize.height,
                           topInset: geometry.contentInsets.top, bottomInset: geometry.contentInsets.bottom)
         } action: { old, new in
             viewport.metrics = new
@@ -697,7 +697,7 @@ private struct ChatTranscriptList: View {
             let response = sticky.metricsChanged(from: !userDriven && bottomCorrection != nil ? nil : old, to: new, lineHeight: 24, userDriven: userDriven)
             // An animated jump can finish against a lazy stack's previous height while the approval/composer resizes.
             // StickyBottom treats overscroll as following; it still needs correction to the newly measured content end.
-            let bottom = max(-new.topInset, new.contentHeight - new.viewportHeight)
+            let bottom = new.bottomOffset
             let settle = sticky.following && !userDriven && new.resized(since: old) && new.distanceFromBottom > 0.5
             if response == .scrollToBottom || settle || (sticky.following && !userDriven && new.offset > bottom + 2) {
                 scheduleBottomCorrection(again: new.resized(since: old)) { proxy.scrollTo(Self.end, anchor: .bottom) }
@@ -748,7 +748,7 @@ private struct ChatTranscriptList: View {
     }
 
     private func captureHistoryAnchor() {
-        let height = CGFloat(viewport.metrics.map { $0.viewportHeight + $0.bottomInset } ?? 0)
+        let height = CGFloat(viewport.metrics?.boundsHeight ?? 0)
         viewport.anchor = viewport.frames.filter { $0.value.maxY > 0 && $0.value.minY < height }
             .min { $0.value.minY < $1.value.minY }.map { (id: $0.key, y: $0.value.minY) }
         preservingHistory = viewport.anchor != nil
@@ -766,7 +766,7 @@ private struct ChatTranscriptList: View {
             defer { if viewport.correctionToken == token { viewport.correction = nil; viewport.correctionToken = nil } }
             guard !Task.isCancelled, preservingHistory, viewport.pageInstalled || viewport.waitingForPage, !userDriven,
                   let metrics = viewport.metrics, let anchor = viewport.anchor else { return }
-            guard let frame = viewport.frames[anchor.id], frame.maxY > 0, frame.minY < CGFloat(metrics.viewportHeight + metrics.bottomInset) else {
+            guard let frame = viewport.frames[anchor.id], frame.maxY > 0, frame.minY < CGFloat(metrics.boundsHeight) else {
                 proxy.scrollTo(anchor.id, anchor: .top); return
             }
             let delta = frame.minY - anchor.y
