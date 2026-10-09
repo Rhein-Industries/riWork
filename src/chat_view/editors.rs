@@ -212,23 +212,61 @@ impl ChatView {
             }
         }
     }
-    /// ↑, ↓ and ⏎ step through and choose the rows of the open model or effort menu, wherever
-    /// the focus is (the model search field or the message box); otherwise they reach the
-    /// field as ever.
-    pub(super) fn menu_up(&mut self, _: &MoveUp, _: &mut Window, cx: &mut Context<Self>) {
-        if self.step_menu(false, cx) {
+    /// ↑, ↓ and ⏎ step through and choose the rows of the open model or effort menu while the
+    /// focus is in the model search field or the message box and no text is being composed
+    /// (an input method's ⏎ confirms its text); anywhere else they reach the field as ever.
+    fn menu_keys(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !matches!(self.menu, Some(super::Menu::Model | super::Menu::Effort)) {
+            return false;
+        }
+        let composing =
+            |state: &Entity<InputState>, window: &mut Window, cx: &mut Context<Self>| {
+                state.update(cx, |state, cx| {
+                    state.marked_text_range(window, cx).is_some()
+                })
+            };
+        if self
+            .model_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+        {
+            !composing(&self.model_input, window, cx)
+        } else if self.composer.read(cx).focus_handle(cx).is_focused(window) {
+            !self.composer.update(cx, |state, cx| {
+                state.marked_text_range(window, cx).is_some()
+            })
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn menu_up(&mut self, _: &MoveUp, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu_keys(window, cx) && self.step_menu(false, cx) {
             cx.stop_propagation();
         }
     }
 
-    pub(super) fn menu_down(&mut self, _: &MoveDown, _: &mut Window, cx: &mut Context<Self>) {
-        if self.step_menu(true, cx) {
+    pub(super) fn menu_down(&mut self, _: &MoveDown, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu_keys(window, cx) && self.step_menu(true, cx) {
             cx.stop_propagation();
         }
     }
 
-    pub(super) fn menu_enter(&mut self, enter: &Enter, _: &mut Window, cx: &mut Context<Self>) {
-        if !enter.secondary && !enter.shift && self.choose_highlighted(cx) {
+    pub(super) fn menu_enter(
+        &mut self,
+        enter: &Enter,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !enter.secondary
+            && !enter.shift
+            && self.menu_keys(window, cx)
+            && self.choose_highlighted(cx)
+        {
+            // The press is held until its key comes up: a repeat must not send the draft or
+            // answer a request once the menu has closed.
+            self.enter_down = true;
             cx.stop_propagation();
         }
     }

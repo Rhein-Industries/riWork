@@ -2129,15 +2129,23 @@ impl ChatView {
     }
 
     /// ⏎ while the model or effort menu is open: the highlighted row is chosen, or, while
-    /// the model field searches, the first match. Otherwise ⏎ does what it does.
+    /// the model field searches, the chat's own provider's first match (never a row that
+    /// moves the chat to the other provider). Otherwise ⏎ does what it does.
     pub(super) fn choose_highlighted(&mut self, cx: &mut Context<Self>) -> bool {
-        let choices = self.menu_choices(cx);
         let searching = self.menu == Some(Menu::Model)
             && !self.model.transcript.models.is_empty()
             && !self.model_input.read(cx).value().trim().is_empty();
         let chosen = match &self.menu_cursor {
-            Some(name) => choices.into_iter().find(|(row, _)| row == name),
-            None if searching => choices.into_iter().next(),
+            Some(name) => self
+                .menu_choices(cx)
+                .into_iter()
+                .find(|(row, _)| row == name),
+            None if searching => self
+                .choice_groups(Menu::Model, cx)
+                .into_iter()
+                .next()
+                .and_then(|own| own.rows.into_iter().next())
+                .and_then(|row| row.choice.map(|choice| (row.name, choice))),
             None => None,
         };
         match chosen {
@@ -2489,11 +2497,11 @@ impl ChatView {
             .into_any_element()
     }
 
-    /// Stop, in Send's slot while a turn runs and there is nothing to send: Native and Hermes
+    /// Stop, in Send's slot while a turn runs: Native and Hermes
     /// draw it as the box's other quiet round buttons, its symbol and a tint in the warning
     /// color; the colorful themes their mark in the terminal's red.
     fn composer_stop(&self, look: Look, side: gpui::Pixels, cx: &mut Context<Self>) -> AnyElement {
-        let tip = "Interrupt · ⌘.";
+        let tip = "Interrupt · ⌘. · ⏎ steers the turn";
         if look.native || look.hermes() {
             let warning = look.tone(cards::Tone::Warning);
             let colors = look.colors;
@@ -2568,8 +2576,8 @@ impl ChatView {
             .debug_selector(|| "composer-field".into())
             .child(self.composer_editor(look, window, cx));
         // Send and Stop share one slot, so neither moves the controls: Stop while a turn runs
-        // and there is nothing to send, Send (which steers the turn) once there is.
-        let action = if self.running() && self.draft_empty(cx) {
+        // (⏎ still steers it with a draft), Send otherwise.
+        let action = if self.running() {
             div()
                 .debug_selector(|| "composer-stop".into())
                 .child(self.composer_stop(look, side, cx))
@@ -3145,6 +3153,23 @@ mod tests {
         draw_hermes(cx, handle);
     }
 
+    fn set_search(
+        cx: &mut gpui::TestAppContext,
+        handle: gpui::WindowHandle<gpui_kit::base::Root>,
+        view: &gpui::Entity<ChatView>,
+        text: &str,
+    ) {
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.model_input
+                    .update(cx, |state, cx| state.set_value(text.to_owned(), window, cx));
+                cx.notify();
+            })
+        })
+        .unwrap();
+        draw_hermes(cx, handle);
+    }
+
     fn update_info(
         cx: &mut gpui::TestAppContext,
         handle: gpui::WindowHandle<gpui_kit::base::Root>,
@@ -3267,8 +3292,8 @@ mod tests {
                     at_rest,
                     "{design:?} {width}: Fast moved the controls"
                 );
-                // While a turn runs Stop takes Send's slot, and Send takes it back for a
-                // draft that steers the turn.
+                // While a turn runs Stop takes Send's slot, and keeps it with a draft (⏎
+                // steers the turn), so Interrupt stays in reach.
                 update_info(cx, handle, &view, |view| {
                     view.model.transcript.state = ChatState::Running;
                 });
@@ -3278,9 +3303,9 @@ mod tests {
                     "{design:?} {width}: Stop is not in Send's slot"
                 );
                 set_draft(cx, handle, &view, "steer");
-                assert_eq!(composer_frames(cx, handle, "chat-send"), at_rest);
+                assert_eq!(composer_frames(cx, handle, "chat-interrupt"), at_rest);
                 cx.update_window(handle.into(), |_, window, _| {
-                    assert!(window.try_find("chat-interrupt").is_none());
+                    assert!(window.try_find("chat-send").is_none());
                 })
                 .unwrap();
             }
@@ -3417,6 +3442,36 @@ mod tests {
                 window.press("enter", cx);
             })
             .unwrap();
+            draw_hermes(cx, handle);
+            assert_eq!(open(cx), None);
+            update_info(cx, handle, &view, |view| view.menu_closed = None);
+            assert_eq!(
+                configured(&recording),
+                Some(ChatCommand::Configure {
+                    model: Some("fixture-model".into()),
+                    effort: None,
+                    approval_mode: None,
+                    fast: None,
+                })
+            );
+            // ⏎ on a search takes this provider's first match; with none it does nothing,
+            // never moving the chat to the other provider.
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.click("chat-model", cx);
+            })
+            .unwrap();
+            draw_hermes(cx, handle);
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.input("no such model", cx);
+                window.press("enter", cx);
+            })
+            .unwrap();
+            draw_hermes(cx, handle);
+            assert_eq!(open(cx), Some(super::super::Menu::Model));
+            assert!(configured(&recording).is_none());
+            set_search(cx, handle, &view, "fixture");
+            cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
+                .unwrap();
             draw_hermes(cx, handle);
             assert_eq!(open(cx), None);
             assert_eq!(
