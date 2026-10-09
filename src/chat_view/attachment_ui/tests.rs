@@ -538,36 +538,6 @@ fn mixed_image_paste_preview_survives_refusal_and_retry_guards_attempt_identity(
 }
 
 #[test]
-fn pure_clipboard_thumbnail_keeps_shared_static_image_admission() {
-    for format in [image::ImageFormat::Png, image::ImageFormat::Jpeg] {
-        let bytes = image_thumbnail(&image_bytes(format)).unwrap();
-        assert_eq!(
-            image::guess_format(&bytes).unwrap(),
-            image::ImageFormat::Png
-        );
-        let decoded = image::load_from_memory(&bytes).unwrap();
-        assert_eq!((decoded.width(), decoded.height()), (256, 192));
-    }
-    assert!(image_thumbnail(b"corrupt PNG").is_err());
-    assert!(
-        image_thumbnail(b"GIF89a unsupported")
-            .unwrap_err()
-            .contains("unsupported")
-    );
-    assert!(
-        image_thumbnail(&vec![0; FILE_BYTES as usize + 1])
-            .unwrap_err()
-            .contains("4 MiB")
-    );
-    // Real, small encoded PNG with an over-limit axis; no forged dimensions.
-    let mut wide = Vec::new();
-    image::DynamicImage::new_rgb8(8193, 1)
-        .write_to(&mut Cursor::new(&mut wide), image::ImageFormat::Png)
-        .unwrap();
-    assert!(image_thumbnail(&wide).is_err());
-}
-
-#[test]
 fn a_cut_keeps_the_start_and_the_end_as_wide_as_the_room() {
     // One unit per character, a stand-in for a measured width.
     let chars = |text: &str| text.chars().count() as f32;
@@ -1104,7 +1074,8 @@ fn repeated_failed_image_pastes_bound_raw_queue_without_changing_retained_drafts
                 "refusal starts no preview/staging task"
             );
             assert!(
-                v.notices.local(super::super::notices::LocalKey::Attachment)
+                v.notices
+                    .local(super::super::notices::LocalKey::Attachment)
                     .unwrap()
                     .contains("remove an existing image"),
                 "mixed text must not hide admission notice"

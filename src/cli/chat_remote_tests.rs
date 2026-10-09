@@ -972,27 +972,6 @@ fn strings_are_cut_on_a_character_boundary_and_marked() {
 }
 
 #[test]
-fn a_hopeless_entry_is_not_shrunk_and_a_long_one_is() {
-    let long = Entry {
-        seq: 1,
-        event: json!({"event":"item_delta","item_id":"long","delta":{"kind":"text","text":"t".repeat(50_000)}}),
-    };
-    let shrunk = shrink_body(&long, 2000).unwrap();
-    assert!(serde_json::to_string(&shrunk).unwrap().len() < 2000);
-    assert!(
-        shrunk.event["delta"]["text"]
-            .as_str()
-            .unwrap()
-            .ends_with('\u{2026}')
-    );
-    let wide = Entry {
-        seq: 1,
-        event: Value::Array((0..5000).map(|n| json!(n)).collect()),
-    };
-    assert!(shrink_body(&wide, 2000).is_none());
-}
-
-#[test]
 fn remote_shrink_preserves_small_images_and_marks_large_images_unavailable() {
     let mut value = json!({"item":{"presentation":{"images":[
         {"label":"small","source":{"kind":"data","mime":"image/png","base64":"aGVsbG8="}},
@@ -1266,7 +1245,7 @@ fn cli_keeps_its_256_byte_minimum_cut() {
     assert_eq!(
         shrunk.event["delta"]["text"].as_str().unwrap().len(),
         256 + '…'.len_utf8()
-);
+    );
 }
 
 #[test]

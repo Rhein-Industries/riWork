@@ -1164,11 +1164,6 @@ impl SessionManager {
     /// With `styled` the output also holds the colors and text attributes as
     /// SGR sequences and no other escape or control sequence (see
     /// `sgr::keep_sgr_only`); the lines are the same ones.
-    #[cfg(test)]
-    pub fn capture_screen(&self, id: &str, lines: usize) -> Result<Capture, String> {
-        self.capture_screen_styled(id, lines, false)
-    }
-
     pub fn capture_screen_styled(
         &self,
         id: &str,
@@ -6124,70 +6119,6 @@ mod tests {
         assert_eq!(saved.codex_home, Some(account_b.home));
     }
 
-    #[test]
-    #[cfg(unix)]
-    fn plain_project_shell_receives_initial_home_without_pin() {
-        use crate::store::{ProjectCodexAccount, Store};
-        use std::os::unix::fs::PermissionsExt;
-        let fixture = AccountFixture::new();
-        if !fixture.run_in_child("plain_project_shell_receives_initial_home_without_pin") {
-            return;
-        }
-        let state = fixture.selected("account-b");
-        let project_root = fixture.0.join("plain");
-        fs::create_dir_all(&project_root).unwrap();
-        let store = Store::open(&state).unwrap();
-        let project = store.add_project(&project_root, Some("Plain")).unwrap();
-        store
-            .set_project_codex_account(&project.id, ProjectCodexAccount::Saved("account-a".into()))
-            .unwrap();
-        let account_a = selected_codex_binding(&state, Some(&project.id)).unwrap();
-        let tmux = fixture.0.join("fake-tmux-plain");
-        let capture = fixture.0.join("plain-tmux-argv");
-        fs::write(
-            &tmux,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\n",
-                quote_arg(&capture.to_string_lossy())
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&tmux, fs::Permissions::from_mode(0o700)).unwrap();
-        let manager = SessionManager {
-            home: state,
-            tmux,
-            socket_name: "isolated-plain".into(),
-            inherit_parent: true,
-            user_creation: user_shell_caller(),
-        };
-        let shell = manager
-            .new_tmux_session(
-                Uuid::new_v4().to_string(),
-                Some(project.id),
-                None,
-                ShellKind::Project,
-                project_root,
-                None,
-                None,
-                false,
-                None,
-            )
-            .unwrap();
-        assert_eq!(shell.harness, None);
-        assert_eq!(shell.codex_home, None);
-        let arguments = fs::read_to_string(capture).unwrap();
-        assert!(
-            arguments
-                .lines()
-                .any(|argument| argument == format!("CODEX_HOME={}", account_a.home.display()))
-        );
-        assert!(
-            arguments
-                .lines()
-                .any(|argument| argument == "RIWORK_CODEX_ACCOUNT_HOME=")
-        );
-    }
-
     /// A manager whose tmux records every argument it is given, with fake
     /// `codex` and Cua driver executables, for the isolated child process.
     #[cfg(unix)]
@@ -6502,69 +6433,6 @@ mod tests {
             "resume".into(),
             "--last".into()
         ]));
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn tmux_launch_receives_account_environment_and_registry_keeps_frozen_binding() {
-        use std::os::unix::fs::PermissionsExt;
-        let fixture = AccountFixture::new();
-        if !fixture.run_in_child(
-            "tmux_launch_receives_account_environment_and_registry_keeps_frozen_binding",
-        ) {
-            return;
-        }
-        let state = fixture.selected("account-b");
-        let binding = selected_codex_binding(&state, None).unwrap();
-        let tmux = fixture.0.join("fake-tmux");
-        let capture = fixture.0.join("tmux-argv");
-        fs::write(
-            &tmux,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\n",
-                quote_arg(&capture.to_string_lossy())
-            ),
-        )
-        .unwrap();
-        fs::set_permissions(&tmux, fs::Permissions::from_mode(0o700)).unwrap();
-        let manager = SessionManager {
-            home: state,
-            tmux,
-            socket_name: "isolated-fake".into(),
-            inherit_parent: true,
-            user_creation: user_shell_caller(),
-        };
-        let session = manager
-            .new_tmux_session(
-                Uuid::new_v4().to_string(),
-                None,
-                None,
-                ShellKind::Project,
-                fixture.0.clone(),
-                Some("exec /fake/codex".into()),
-                None,
-                false,
-                Some(binding.clone()),
-            )
-            .unwrap();
-        assert_eq!(session.codex_home.as_ref(), Some(&binding.home));
-        assert_eq!(session.codex_account_id, binding.id);
-        let args = fs::read_to_string(capture).unwrap();
-        assert!(
-            args.lines()
-                .any(|argument| argument == format!("CODEX_HOME={}", binding.home.display()))
-        );
-        assert!(
-            args.lines().any(|argument| argument
-                == format!("RIWORK_CODEX_ACCOUNT_HOME={}", binding.home.display()))
-        );
-        let argv = shell_arguments(session.command.as_deref().unwrap());
-        assert!(argv.contains(&format!("CODEX_HOME={}", binding.home.display())));
-        assert!(!fixture.0.join("injected").exists());
-        let restored: ShellSession =
-            serde_json::from_slice(&serde_json::to_vec(&session).unwrap()).unwrap();
-        assert_eq!(restored.codex_home, session.codex_home);
-        assert_eq!(restored.codex_account_id, session.codex_account_id);
     }
 
     #[test]

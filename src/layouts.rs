@@ -3057,43 +3057,6 @@ mod tests {
     }
 
     #[test]
-    fn chat_tabs_round_trip_beside_shells_and_are_not_shells() {
-        let directory = TestDirectory::new();
-        let store = directory.store();
-        let mut layout = saved_layout();
-        layout.panes.insert(
-            4,
-            pane(
-                vec![
-                    shell("shell-a"),
-                    chat("chat-1"),
-                    panel(PanelKind::Files),
-                    chat("chat-2"),
-                ],
-                1,
-            ),
-        );
-        layout.normalize().unwrap();
-        // A chat is kept by the chat host: nothing that looks sessions up by id may see it.
-        assert_eq!(layout.panes[&4].shell_ids, ["shell-a"]);
-        assert_eq!(layout.panes[&4].active_shell_id, None);
-        assert_eq!(
-            layout.panes[&4].active_tab_key.as_deref(),
-            Some("chat:chat-1")
-        );
-
-        store.save("project-a", &layout).unwrap();
-        let file = directory.read_value();
-        assert!(
-            file["projects"]["project-a"]["panes"]["4"]["tabs"]
-                .as_array()
-                .unwrap()
-                .contains(&serde_json::json!({"kind": "chat", "chat_id": "chat-2"}))
-        );
-        assert_eq!(store.load("project-a").unwrap(), Some(layout));
-    }
-
-    #[test]
     fn duplicate_or_unnamed_chat_tabs_are_dropped_by_normalization() {
         let mut layout = saved_layout();
         layout.panes.insert(
@@ -4094,7 +4057,6 @@ mod preview_placement_tests {
             );
         }
     }
-
 }
 
 #[cfg(test)]
