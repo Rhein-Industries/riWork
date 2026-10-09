@@ -41,9 +41,10 @@ struct ChatScreen: View {
         let conversation = conversation
         let approvals = conversation.openApprovals
         let questions = conversation.openQuestions
+        let elidedRequests = conversation.transcript.elidedRequests
         VStack(spacing: 0) {
             ChatToolbar(model: model, chat: info, conversation: conversation, state: state, showModels: $showModels)
-            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) }, viewportChanged: { transcriptChanged($0, barShown: !approvals.isEmpty || !questions.isEmpty) })
+            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, hardwareKeyboard: model.keyboard.hardware.isAttached, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) }, viewportChanged: { transcriptChanged($0, barShown: !approvals.isEmpty || !questions.isEmpty || !elidedRequests.isEmpty) })
                 .id(chat.id)
             if let approval = approvals.first {
                 BoundedScroll(maxHeight: max(110, height * 0.52 - squeeze)) {
@@ -56,6 +57,8 @@ struct ChatScreen: View {
                     Task { await model.answerChatQuestion(chat.id, form) }
                 }
                 .id(question.requestID)
+            } else if let request = elidedRequests.first {
+                ChatElidedRequestBar(request: request, count: elidedRequests.count).id(request.requestID)
             }
             // Every message of the moment, in one place: the link, the chat's state, what went wrong, the provider's notices.
             ChatNoticeBanners(model: model, chat: info, conversation: conversation, state: state, showHistory: { showNotices = true })

@@ -371,13 +371,19 @@ public struct ChatItem: Codable, Sendable, Equatable, Identifiable {
     public init(id: String, turnID: String? = nil, status: ChatItemStatus = .inProgress, body: ChatItemBody) {
         self.id = id; self.turnID = turnID; self.status = status; self.body = body
     }
-    private enum Keys: String, CodingKey { case id, status, body; case turnID = "turn_id" }
+    private enum Keys: String, CodingKey { case id, status, body, elided; case turnID = "turn_id" }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         id = try c.decode(String.self, forKey: .id)
         turnID = try c.decodeIfPresent(String.self, forKey: .turnID)
         status = c.lenient(ChatItemStatus.self, forKey: .status, default: .completed)
-        body = try c.decode(ChatItemBody.self, forKey: .body)
+        // A snapshot row the relay elided keeps a note as its body, for older phones, and says what it was under `elided`: shown as
+        // the compact row, as `item_elided` is.
+        if let elided = c.tolerant(ChatElidedEvent.self, forKey: .elided) {
+            body = .elided(kind: elided.kind, bytes: elided.bytes)
+        } else {
+            body = try c.decode(ChatItemBody.self, forKey: .body)
+        }
     }
     public func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
@@ -609,20 +615,20 @@ public enum ChatEvent: Sendable, Equatable, Codable {
     case models([ChatModelOption])
     /// The provider's usage windows (5h, weekly, …), each replacing the last wholesale; an empty list is no known windows.
     case rateLimits([ChatRateWindow])
-    /// The relay left this event out because it was too large to send: `item_elided` (`event` is "item_elided", `itemID` the item),
-    /// or any other event marked `"elided": true` (`event` is its name). The feed turns it into a row (`resolved(seq:)`).
-    case elided(event: String, itemID: String?, kind: String?, bytes: Int?)
+    /// The relay left this event out because it was too large to send (`docs/chat-events.md`): `item_elided`, a control marked
+    /// `"elided": true` (or `control_elided`). An item becomes its row (`resolved(seq:)`); a request becomes one that waits on the
+    /// Mac and a resolution still resolves (`ChatTranscript`); anything else is a note.
+    case elided(ChatElidedEvent)
 
     private enum Keys: String, CodingKey {
-        case event, info, state, outcome, item, delta, approval, decision, question, usage, models, windows, elided, kind, bytes, reason
+        case event, info, state, outcome, item, delta, approval, decision, question, usage, models, windows, elided
         case turnID = "turn_id", itemID = "item_id", requestID = "request_id"
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         let word = try c.decode(String.self, forKey: .event)
-        if word == "item_elided" || c.tolerant(Bool.self, forKey: .elided) == true {
-            // Size and kind are optional and only shown.
-            self = .elided(event: word, itemID: c.tolerant(String.self, forKey: .itemID), kind: c.tolerant(String.self, forKey: .kind), bytes: c.tolerant(Int.self, forKey: .bytes) ?? c.tolerant(Double.self, forKey: .bytes).flatMap { $0 >= 0 && $0 < 1e15 ? Int($0) : nil })
+        if ChatElidedEvent.names.contains(word) || c.tolerant(Bool.self, forKey: .elided) == true {
+            self = .elided(try ChatElidedEvent(from: decoder))
             return
         }
         switch word {
@@ -666,22 +672,74 @@ public enum ChatEvent: Sendable, Equatable, Codable {
         case .usage(let usage): try c.encode("usage", forKey: .event); try c.encode(usage, forKey: .usage)
         case .models(let models): try c.encode("models", forKey: .event); try c.encode(models, forKey: .models)
         case .rateLimits(let windows): try c.encode("rate_limits", forKey: .event); try c.encode(windows, forKey: .windows)
-        case .elided(let event, let itemID, let kind, let bytes):
-            try c.encode(event, forKey: .event)
-            if event != "item_elided" { try c.encode(true, forKey: .elided) }
-            try c.encodeIfPresent(itemID, forKey: .itemID); try c.encodeIfPresent(kind, forKey: .kind); try c.encodeIfPresent(bytes, forKey: .bytes)
-            try c.encode("too_large", forKey: .reason)
+        case .elided(let elided): try elided.encode(to: encoder)
         }
     }
 
-    /// An elided event as the row the transcript shows for it: the item itself (its content left out) for `item_elided` and an elided
-    /// item event, otherwise a one-line note of its own, keyed by its sequence number. Every other event is itself.
+    /// An elided event as the row the transcript shows for it: the item itself (its content left out) for an elided item, nothing of
+    /// its own for a request or a resolution (the transcript keeps those), otherwise a one-line note keyed by its sequence number.
+    /// Every other event is itself.
     public func resolved(seq: UInt64) -> ChatEvent {
-        guard case .elided(let event, let itemID, let kind, let bytes) = self else { return self }
-        if let itemID, ["item_elided", "item_started", "item_completed"].contains(event) {
-            return .itemCompleted(ChatItem(id: itemID, status: .completed, body: .elided(kind: kind, bytes: bytes)))
+        guard case .elided(let elided) = self else { return self }
+        if let itemID = elided.itemID, elided.isItem {
+            return .itemCompleted(ChatItem(id: itemID, status: elided.status ?? .completed, body: .elided(kind: elided.kind, bytes: elided.bytes)))
         }
-        return .itemCompleted(ChatItem(id: "elided-\(seq)", status: .completed, body: .elided(kind: kind, bytes: bytes, event: event)))
+        if elided.requestID != nil, elided.isRequest || elided.isResolution { return self }
+        return .itemCompleted(ChatItem(id: "elided-\(seq)", status: .completed, body: .elided(kind: elided.kind, bytes: elided.bytes, event: elided.of)))
+    }
+}
+
+/// An event the relay left out as too large (`docs/chat-events.md`). Read tolerantly in each shape the relay has used or announced:
+/// `{"event":"item_elided","item_id","kind","bytes"}` (with `of` and `status` from newer relays), a control under its own name with
+/// `"elided": true` and its ids where they were (`approval.request_id`), or `{"event":"control_elided","of":"approval_requested",…}`.
+public struct ChatElidedEvent: Sendable, Equatable, Codable {
+    static let names: Set<String> = ["item_elided", "control_elided"]
+    static let itemEvents: Set<String> = ["item_elided", "item_started", "item_completed", "item_delta"]
+    /// The wire name: "item_elided", "control_elided", or the control's own.
+    public var event: String
+    /// The event it stands for ("item_completed", "approval_requested", …): `of` when given, else the wire name.
+    public var of: String
+    public var itemID: String?
+    public var requestID: String?
+    public var kind: String?
+    public var bytes: Int?
+    public var status: ChatItemStatus?
+    public init(event: String, of: String? = nil, itemID: String? = nil, requestID: String? = nil, kind: String? = nil, bytes: Int? = nil, status: ChatItemStatus? = nil) {
+        self.event = event; self.of = of ?? event; self.itemID = itemID; self.requestID = requestID; self.kind = kind; self.bytes = bytes; self.status = status
+    }
+    /// An item event, whose item keeps its place as a row. A delta's item is not replaced: a note stands for the lost delta.
+    public var isItem: Bool { Self.itemEvents.contains(of) && of != "item_delta" }
+    public var isRequest: Bool { of == "approval_requested" || of == "question_requested" }
+    public var isResolution: Bool { of == "approval_resolved" || of == "question_resolved" }
+
+    private enum Keys: String, CodingKey {
+        case event, of, kind, bytes, status, reason, elided, approval, question, item, delta
+        case itemID = "item_id", requestID = "request_id", id
+    }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        // A snapshot row's `elided` may leave out the name it would have had as an event.
+        event = c.tolerant(String.self, forKey: .event) ?? "item_elided"
+        of = c.tolerant(String.self, forKey: .of) ?? event
+        // Ids stay at their original paths: top level, or inside the approval, question or item they belonged to.
+        let nested = [Keys.approval, .question, .item].compactMap { try? c.nestedContainer(keyedBy: Keys.self, forKey: $0) }
+        requestID = c.tolerant(String.self, forKey: .requestID) ?? nested.lazy.compactMap { $0.tolerant(String.self, forKey: .requestID) }.first
+        itemID = c.tolerant(String.self, forKey: .itemID)
+            ?? (try? c.nestedContainer(keyedBy: Keys.self, forKey: .item))?.tolerant(String.self, forKey: .id)
+            ?? (isRequest ? nil : nested.lazy.compactMap { $0.tolerant(String.self, forKey: .itemID) }.first)
+        kind = c.tolerant(String.self, forKey: .kind)
+        // Size and status are only shown: one of the wrong type or out of range is none.
+        bytes = c.tolerant(Int.self, forKey: .bytes) ?? c.tolerant(Double.self, forKey: .bytes).flatMap { $0 >= 0 && $0 < 1e15 ? Int($0) : nil }
+        status = c.tolerant(String.self, forKey: .status).flatMap(ChatItemStatus.init(rawValue:))
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        try c.encode(event, forKey: .event)
+        if !Self.names.contains(event) { try c.encode(true, forKey: .elided) }
+        if of != event { try c.encode(of, forKey: .of) }
+        try c.encodeIfPresent(itemID, forKey: .itemID); try c.encodeIfPresent(requestID, forKey: .requestID)
+        try c.encodeIfPresent(kind, forKey: .kind); try c.encodeIfPresent(bytes, forKey: .bytes); try c.encodeIfPresent(status, forKey: .status)
+        try c.encode("too_large", forKey: .reason)
     }
 }
 

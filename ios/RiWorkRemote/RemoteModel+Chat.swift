@@ -123,7 +123,7 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
         if let pending = pendingMode, transcript.info?.approvalMode == pending { pendingMode = nil }
         settleModelChoice()
         // A request the desktop has resolved needs no hiding any more; one it has asked again does.
-        let waiting = Set(transcript.approvals.map(\.requestID) + transcript.questions.map(\.requestID))
+        let waiting = Set(transcript.approvals.map(\.requestID) + transcript.questions.map(\.requestID) + transcript.elidedRequests.map(\.requestID))
         answered.formIntersection(waiting)
         return outcome
     }
@@ -419,7 +419,7 @@ extension RemoteModel {
                         case .itemDelta(let id, _): if !conversation.feed.hasItem(id) { ids.insert(id) }
                         case .itemStarted(let item), .itemCompleted(let item): if !conversation.feed.hasItem(item.id) { ids.insert(item.id) }
                         // An elided item keeps an older row's place: that row is hydrated first, as for any other change to it.
-                        case .elided(_, let id?, _, _): if !conversation.feed.hasItem(id) { ids.insert(id) }
+                        case .elided(let elided): if elided.isItem, let id = elided.itemID, !conversation.feed.hasItem(id) { ids.insert(id) }
                         default: break
                         }
                     }

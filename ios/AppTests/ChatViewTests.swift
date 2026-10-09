@@ -672,8 +672,9 @@ import RiWorkCore
         await finish(rig)
     }
 
-    /// ＋ and ⋯ sit about 8 pt apart, as the key bar's icons do, each keeping a 44-point target; the context ring and its number have
-    /// about 6 pt between them.
+    /// ＋ and ⋯ sit about 8 pt apart, as the key bar's icons do, and each has a 44-point target of its own that reaches outward from the
+    /// gap (＋ toward the tabs, ⋯ to the row's end): a tap anywhere in the strip where the targets used to overlap reaches exactly one,
+    /// the one on its side of the gap. The context ring and its number have about 6 pt between them.
     func testTheTabRowButtonsAreCloseAndTheRingHasRoomBeforeItsNumber() async throws {
         let rig = try await makeRig()
         await rig.transport.append(chatID, [.info(chat()), .usage(ChatUsage(inputTokens: 120_000, contextWindow: 200_000, contextUsed: 124_000))])
@@ -683,11 +684,77 @@ import RiWorkCore
         let plus = try XCTUnwrap(rig.layout.frames["new-tab"]), more = try XCTUnwrap(rig.layout.frames["more-options"])
         XCTAssertGreaterThanOrEqual(plus.width, 44); XCTAssertGreaterThanOrEqual(plus.height, 44)
         XCTAssertGreaterThanOrEqual(more.width, 44); XCTAssertGreaterThanOrEqual(more.height, 44)
-        XCTAssertEqual(more.midX - plus.midX, 26, accuracy: 1, "glyph centers ~26 pt apart: an ~8 pt gap between the icons")
-        XCTAssertEqual(more.maxX, rig.window.bounds.maxX, accuracy: 20, "still at the row's end")
+        XCTAssertEqual(plus.maxX, more.minX, accuracy: 0.5, "the targets meet: no overlap, and no strip that is neither's")
+        XCTAssertEqual(more.maxX, rig.window.bounds.maxX, accuracy: 20, "⋯ still at the row's end")
+        // The glyphs as drawn: two runs of ink in the row, about 8 pt apart.
+        let ink = try inkRuns(rig, in: plus.union(more))
+        XCTAssertEqual(ink.count, 2, "＋ and ⋯: \(ink)")
+        if ink.count == 2 { XCTAssertEqual(ink[1].lowerBound - ink[0].upperBound, 8, accuracy: 2.5, "about 8 pt between the icons: \(ink)") }
+        // The strip where the old 44-point targets overlapped (18 pt around the gap): each point is in one target only, on its side.
+        let gap = ink.count == 2 ? (ink[0].upperBound + ink[1].lowerBound) / 2 : plus.maxX
+        for x in stride(from: gap - 9, through: gap + 9, by: 1.5) {
+            let point = CGPoint(x: x, y: plus.midY)
+            let hits = [("New tab", plus), ("More options", more)].filter { $0.1.minX <= point.x && point.x < $0.1.maxX }.map(\.0)
+            XCTAssertEqual(hits, [x < plus.maxX ? "New tab" : "More options"], "a tap at x=\(x)")
+            let element = rig.window.accessibilityHitTest(point, event: nil) as? NSObject
+            if let label = element?.accessibilityLabel, label == "New tab" || label == "More options" || label == "New terminal" {
+                XCTAssertEqual(label == "More options", x >= plus.maxX, "the accessibility hit at x=\(x) is \(label)")
+            }
+        }
         let ring = try XCTUnwrap(rig.layout.frames["usage-ring"]), number = try XCTUnwrap(rig.layout.frames["usage-number"])
         XCTAssertEqual(number.minX - ring.maxX - 1.25, 6, accuracy: 0.5, "about 6 pt between the ring's stroke and the number")
         try snapshot(rig, name: "tab-row-tight")
+        await finish(rig)
+    }
+    /// The horizontal runs, in points, of the columns of `rect` that hold something other than the background.
+    private func inkRuns(_ rig: Rig, in rect: CGRect) throws -> [ClosedRange<CGFloat>] {
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let image = UIGraphicsImageRenderer(bounds: rig.window.bounds, format: format).image { _ in rig.window.drawHierarchy(in: rig.window.bounds, afterScreenUpdates: true) }
+        let cg = try XCTUnwrap(image.cgImage)
+        let width = cg.width, height = cg.height
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let context = try XCTUnwrap(CGContext(data: &pixels, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                              space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
+        func pixel(_ x: Int, _ y: Int) -> (Int, Int, Int) { let i = (y * width + x) * 4; return (Int(pixels[i]), Int(pixels[i + 1]), Int(pixels[i + 2])) }
+        let background = pixel(Int(rect.minX) + 1, Int(rect.minY) + 1)
+        var runs: [ClosedRange<CGFloat>] = [], start: Int?
+        for x in Int(rect.minX)..<min(width, Int(rect.maxX)) {
+            let inked = (Int(rect.minY)..<min(height, Int(rect.maxY))).contains { y in
+                let p = pixel(x, y); return abs(p.0 - background.0) + abs(p.1 - background.1) + abs(p.2 - background.2) > 120
+            }
+            if inked, start == nil { start = x }
+            if !inked, let from = start { runs.append(CGFloat(from)...CGFloat(x)); start = nil }
+        }
+        if let from = start { runs.append(CGFloat(from)...rect.maxX) }
+        // Strokes of one glyph a point or two apart (the ⋯'s dots) are one glyph.
+        return runs.reduce(into: []) { merged, run in
+            if let last = merged.last, run.lowerBound - last.upperBound < 4 { merged[merged.count - 1] = last.lowerBound...run.upperBound } else { merged.append(run) }
+        }
+    }
+
+    /// A request the relay elided waits on the Mac: its earlier details and buttons are gone, the keys do not answer it, and an elided
+    /// resolution takes it away.
+    func testAnElidedRequestShowsNoDecisionsAndTheKeysDoNotAnswerIt() async throws {
+        let rig = try await makeRig()
+        await resolving(rig.transport)
+        let view = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        await rig.transport.append(chatID, [.turnStarted(turnID: "t1"), .state(.waiting), approval("req-9")])
+        await eventually("the request waits") { conversation.openApprovals.count == 1 && rig.layout.frames["approval-accept"] != nil }
+        await rig.transport.appendRaw(chatID, #"{"event":"approval_requested","approval":{"request_id":"req-9","item_id":"tool-7","elided":true},"elided":true}"#)
+        await eventually("it waits on the Mac") { conversation.transcript.elidedRequests.map(\.requestID) == ["req-9"] && rig.layout.frames["elided-request"] != nil }
+        XCTAssertTrue(conversation.openApprovals.isEmpty)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(rig.layout.frames["approval-accept"], "no decision buttons")
+        try snapshot(rig, name: "elided-request")
+        XCTAssertNil(command(view, UIKeyCommand.inputEscape), "the keys are the text's again")
+        if command(view, "\r") != nil { press(view, "\r") }
+        try await Task.sleep(for: .milliseconds(200))
+        let sent = await sentCommands(rig)
+        XCTAssertFalse(sent.contains { $0["command"].string == "approve" }, "nothing answered it: \(sent)")
+        await rig.transport.appendRaw(chatID, #"{"event":"approval_resolved","request_id":"req-9","elided":true}"#)
+        await eventually("the elided resolution resolves it") { conversation.transcript.elidedRequests.isEmpty && rig.layout.frames["elided-request"] == nil }
         await finish(rig)
     }
 
