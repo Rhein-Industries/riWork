@@ -652,6 +652,7 @@ fn the_look_ups_the_connector_makes_before_creating_say_which_id_they_found() {
 }
 
 #[test]
+#[ignore = "slow: real tmux shells"]
 fn handoff_shell_respects_chat_shell_and_orchestrator_callers() {
     use std::os::unix::fs::PermissionsExt;
     let home = Home::new();

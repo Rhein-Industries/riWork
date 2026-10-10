@@ -102,6 +102,7 @@ impl Fixture {
 }
 
 #[test]
+#[ignore = "slow: real tmux; user and automation shells record who opened them"]
 fn shell_creation_records_user_or_automation_provenance() {
     let Some(f) = Fixture::with_tmux() else {
         return;

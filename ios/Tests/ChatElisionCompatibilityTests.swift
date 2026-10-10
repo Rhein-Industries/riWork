@@ -1,9 +1,10 @@
 import XCTest
 @testable import RiWorkCore
 
-/// Verify the existing decoder against relay recovery without adding client behavior.
+/// The relay's elision shapes (`docs/chat-events.md`), as its own tests emit them, against the phone's decoder: a placeholder is read
+/// as `.elided`, never dropped as unreadable and never as the event it stands for.
 final class ChatElisionCompatibilityTests: XCTestCase {
-    func testUnknownElisionEventStillAdvancesTheLegacyCursor() throws {
+    func testElisionEventIsReadAndStillAdvancesTheCursor() throws {
         let raw = #"{"chat_id":"11111111-2222-4333-8444-555555555555","events":[{"seq":1,"event":{"event":"item_elided","of":"item_completed","status":"completed","item_id":"tool","kind":"tool_call","reason":"too_large","bytes":2097301}},{"seq":2,"event":{"event":"state","state":{"state":"idle"}}}],"next":2,"more":false}"#
         let value = try JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8))
         let request = try ChatEventsRequest(chatID: "11111111-2222-4333-8444-555555555555", since: 0, waitMilliseconds: 0)
@@ -11,11 +12,14 @@ final class ChatElisionCompatibilityTests: XCTestCase {
         XCTAssertEqual(page.next, 2)
         XCTAssertEqual(page.events.count, 2)
         XCTAssertEqual(page.events[0].seq, 1)
-        XCTAssertNil(page.events[0].event)
-        XCTAssertEqual(page.skipped, 1)
+        XCTAssertEqual(page.events[0].event, .elided(ChatElidedEvent(event: "item_elided", of: "item_completed", itemID: "tool", kind: "tool_call", bytes: 2097301, status: .completed)))
+        XCTAssertEqual(page.skipped, 0)
         var feed = ChatFeed()
         _ = feed.accept(page, since: 0)
         XCTAssertEqual(feed.next, 2)
+        XCTAssertEqual(feed.skipped, 0)
+        XCTAssertEqual(feed.transcript.item("tool")?.body, .elided(kind: "tool_call", bytes: 2097301))
+        XCTAssertEqual(feed.transcript.state, .idle, "the event after the placeholder still arrives")
     }
 
     func testSnapshotElisionRetainsTheLegacyItemSchema() throws {
@@ -30,23 +34,35 @@ final class ChatElisionCompatibilityTests: XCTestCase {
 }
 
 extension ChatElisionCompatibilityTests {
-    func testElidedControlsCannotBecomeLegacyApprovalsOrQuestions() throws {
+    func testElidedControlsCannotBecomeAnswerableApprovalsOrQuestions() throws {
         for original in ["approval_requested", "question_requested"] {
             let control = "{\"event\":\"control_elided\",\"of\":\"\(original)\",\"reason\":\"too_large\",\"bytes\":2097301,\"elided\":true,\"approval\":{\"request_id\":\"r\",\"item_id\":\"tool\",\"elided\":true},\"question\":{\"request_id\":\"q\",\"elided\":true}}"
             let raw = "{\"chat_id\":\"11111111-2222-4333-8444-555555555555\",\"events\":[{\"seq\":1,\"event\":\(control)}],\"next\":1,\"more\":false}"
             let value = try JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8))
             let request = try ChatEventsRequest(chatID: "11111111-2222-4333-8444-555555555555", since: 0, waitMilliseconds: 0)
             let reply = try request.parse(value)
-            XCTAssertNil(reply.events[0].event)
+            // Read as the placeholder, never as the request it stands for.
+            guard case .elided(let elided)? = reply.events[0].event else { XCTFail("\(original): \(String(describing: reply.events[0].event))"); continue }
+            XCTAssertEqual(elided.of, original)
+            XCTAssertTrue(elided.isRequest)
             XCTAssertEqual(reply.next, 1)
             var feed = ChatFeed()
             _ = feed.accept(reply, since: 0)
+            XCTAssertEqual(feed.next, 1)
             XCTAssertTrue(feed.transcript.approvals.isEmpty)
             XCTAssertTrue(feed.transcript.questions.isEmpty)
+            // It waits on the Mac, with nothing to answer here.
+            XCTAssertEqual(feed.transcript.elidedRequests.map(\.question), [original == "question_requested"])
             let snapshot = "{\"v\":1,\"chat_id\":\"11111111-2222-4333-8444-555555555555\",\"cursor\":\"1234-99-abcdef\",\"next\":99,\"before\":0,\"more\":false,\"items\":[],\"controls\":[\(control)]}"
             let decoded = try JSONDecoder().decode(ChatSnapshotReply.self, from: Data(snapshot.utf8))
-            XCTAssertTrue(decoded.controls.isEmpty)
-            XCTAssertEqual(decoded.skipped, 1)
+            XCTAssertEqual(decoded.skipped, 0)
+            guard decoded.controls.count == 1, case .elided(let kept) = decoded.controls[0] else { XCTFail("\(original): \(decoded.controls)"); continue }
+            XCTAssertEqual(kept.of, original)
+            var installed = ChatFeed()
+            installed.install(decoded)
+            XCTAssertTrue(installed.transcript.approvals.isEmpty)
+            XCTAssertTrue(installed.transcript.questions.isEmpty)
+            XCTAssertEqual(installed.transcript.elidedRequests.map(\.question), [original == "question_requested"])
         }
     }
 }
