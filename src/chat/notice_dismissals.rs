@@ -130,11 +130,13 @@ pub(super) fn snapshot_keys(
     };
     let account = super::account_identity::persisted_scope(home, info.provider, &identity);
     let prefix = prefix(info.provider, Some(&account));
+    // The account's fingerprint stays on this Mac: a snapshot can reach the phone.
+    let provider = prefix.split(':').next().unwrap_or_default();
     let entries = read_entries(&super::log::chats_dir(home).join("notice-dismissals.json"))?;
     let mut keys: Vec<_> = entries
         .into_iter()
-        .filter(|e| e.active(now()) && e.key.starts_with(&prefix))
-        .map(|e| e.key)
+        .filter(|e| e.active(now()))
+        .filter_map(|e| Some(format!("{provider}|{}", e.key.strip_prefix(&prefix)?)))
         .collect();
     keys.sort();
     keys.dedup();
@@ -151,10 +153,11 @@ impl Dismissals {
     pub fn open(home: &Path) -> Result<Self, String> {
         let path = super::log::chats_dir(home).join("notice-dismissals.json");
         let entries = read_entries(&path)?;
+        let saved = super::account_identity::saved(home);
         let identities = [Provider::Claude, Provider::Codex]
             .into_iter()
             .flat_map(|provider| {
-                super::account_identity::known(home, provider)
+                super::account_identity::known_in(&saved, provider)
                     .into_iter()
                     .map(move |identity| (provider, identity))
             })
@@ -235,20 +238,25 @@ impl Dismissals {
         if identity.rank() == 0 {
             return Ok(());
         }
-        let home = self
-            .path
-            .parent()
-            .and_then(Path::parent)
-            .expect("dismissals home");
-        for known in super::account_identity::known(home, provider)
-            .into_iter()
-            .chain(std::iter::once(identity.clone()))
-        {
-            if !self.identities.contains(&(provider, known.clone())) {
-                self.identities.push((provider, known));
-            }
+        // The rewrite reloads every saved login, so this one only needs adding.
+        if !self.identities.contains(&(provider, identity.clone())) {
+            self.identities.push((provider, identity.clone()));
         }
         self.rewrite(managed_alias.map(|alias| (provider, alias, identity.scope.as_str())))
+    }
+
+    /// Host startup: every saved chat's login in one rewrite. Each chat's managed
+    /// binding is already in its saved info and identity, so none is passed.
+    pub fn migrate_all(
+        &mut self,
+        identities: impl IntoIterator<Item = (Provider, super::account_identity::Identity)>,
+    ) -> Result<(), String> {
+        for (provider, identity) in identities {
+            if identity.rank() > 0 && !self.identities.contains(&(provider, identity.clone())) {
+                self.identities.push((provider, identity));
+            }
+        }
+        self.rewrite(None)
     }
 
     fn rewrite(&mut self, managed_alias: Option<(Provider, &str, &str)>) -> Result<(), String> {
@@ -257,11 +265,12 @@ impl Dismissals {
             .parent()
             .and_then(Path::parent)
             .expect("dismissals home");
-        let mut claims = super::account_identity::managed_aliases(home);
+        let saved = super::account_identity::saved(home);
+        let mut claims = super::account_identity::managed_aliases_in(&saved);
         // Reload committed identity metadata, including metadata written just before
         // a previously interrupted dismissal rewrite.
         for provider in [Provider::Claude, Provider::Codex] {
-            for identity in super::account_identity::known(home, provider) {
+            for identity in super::account_identity::known_in(&saved, provider) {
                 if !self.identities.contains(&(provider, identity.clone())) {
                     self.identities.push((provider, identity));
                 }
@@ -669,7 +678,7 @@ mod migration_tests {
     }
 
     #[test]
-    fn current_login_token_and_default_keys_migrate_atomically_and_idempotently() {
+    fn email_and_default_keys_migrate_atomically_and_tokens_are_never_fingerprinted() {
         let home = crate::chat::testing::short_home();
         fs::create_dir_all(home.join("chats")).unwrap();
         let fake = Fake::new(&[]);
@@ -679,11 +688,16 @@ mod migration_tests {
             json!({"oauthAccount":{"accountUuid":"a","emailAddress":"a@example.test"},"claudeAiOauth":{"refreshToken":"old-token"}}),
         );
         let identity = canonical(&config, None, None).unwrap();
+        assert!(
+            !identity
+                .aliases
+                .contains(&hash("Claude:credential:old-token"))
+        );
         let reset = now() + 3600;
         let path = home.join("chats/notice-dismissals.json");
-        let token = hash("Claude:credential:old-token");
+        let email = hash("Claude:a@example.test");
         fs::write(&path, serde_json::to_vec(&json!([
-            {"key":format!("claude:{token}|rate_limit:seven_day@{reset}"),"level":"warning","resets_at":reset},
+            {"key":format!("claude:{email}|rate_limit:seven_day@{reset}"),"level":"warning","resets_at":reset},
             {"key":format!("claude:default|rate_limit:seven_day@{reset}"),"level":"error","resets_at":reset}
         ])).unwrap()).unwrap();
         let mut store = Dismissals::open(&home).unwrap();
@@ -700,7 +714,6 @@ mod migration_tests {
         let bytes = fs::read(&path).unwrap();
         store.migrate(Provider::Claude, &identity, None).unwrap();
         assert_eq!(fs::read(&path).unwrap(), bytes);
-        assert!(!String::from_utf8(bytes).unwrap().contains("old-token"));
         fs::remove_dir_all(home).unwrap();
     }
 
@@ -808,11 +821,11 @@ mod alias_graph_migration_tests {
         let mut restarted = Dismissals::open(&home).unwrap();
         restarted.migrate(Provider::Claude, &id, None).unwrap();
         assert_eq!(fs::read(&path).unwrap(), final_bytes);
-        assert!(
+        // The email-scoped chat's snapshot finds the keys now under the id.
+        assert_eq!(
             super::super::notice_dismissals::snapshot_keys(&home, log_info(&home, 1).as_ref())
-                .unwrap()
-                .iter()
-                .all(|key| key.contains(&id.scope))
+                .unwrap(),
+            [format!("claude|rate_limit:seven_day@{reset}")]
         );
         fs::remove_dir_all(home).unwrap();
     }

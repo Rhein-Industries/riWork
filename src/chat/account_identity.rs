@@ -241,33 +241,6 @@ pub(super) fn canonical(
                 aliases.extend(old.clone());
             }
         }
-        // Reproduce token/API-key fingerprints ONLY to migrate this login's old keys.
-        for (value, (file_id, file_email, _)) in documents.iter().zip(&file_fields) {
-            if file_id
-                .as_ref()
-                .zip(id.as_ref())
-                .is_some_and(|(a, b)| a != b)
-                || file_email
-                    .as_ref()
-                    .zip(email.as_ref())
-                    .is_some_and(|(a, b)| a != b)
-            {
-                continue;
-            }
-            for path in [
-                "/claudeAiOauth/refreshToken",
-                "/claudeAiOauth/accessToken",
-                "/OPENAI_API_KEY",
-            ] {
-                if let Some(token) = value
-                    .pointer(path)
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.trim().is_empty())
-                {
-                    aliases.push(hash(&format!("{provider:?}:credential:{token}")));
-                }
-            }
-        }
     }
     if same_previous {
         if let Some(old) = previous {
@@ -346,6 +319,10 @@ fn credentials(config: &DriverConfig) -> Vec<Value> {
         .collect()
 }
 
+/// Files written before this version also kept fingerprints of login tokens and
+/// API keys as aliases, a new one with every token rotation.
+const RECORD_VERSION: u64 = 2;
+
 fn records(dir: &Path) -> (Option<Identity>, Vec<Identity>) {
     let Some(value) = fs::read(dir.join("account-identity.json"))
         .ok()
@@ -361,9 +338,10 @@ fn records(dir: &Path) -> (Option<Identity>, Vec<Identity>) {
         };
         identity.filter(Identity::valid)
     };
-    if value.get("active").is_some() {
+    let current = value.get("v").and_then(Value::as_u64) >= Some(RECORD_VERSION);
+    let (mut active, mut known) = if value.get("active").is_some() {
         let active = decode(value["active"].clone());
-        let known = value["known"]
+        let known: Vec<_> = value["known"]
             .as_array()
             .into_iter()
             .flatten()
@@ -375,7 +353,22 @@ fn records(dir: &Path) -> (Option<Identity>, Vec<Identity>) {
         let active = decode(value);
         let known = active.iter().filter(|id| id.rank() > 0).cloned().collect();
         (active, known)
+    };
+    if !current {
+        // An older file's aliases cannot tell an account's id or email from a
+        // token's fingerprint, so keep only what is some identity's own scope.
+        let own: BTreeSet<String> = active
+            .iter()
+            .chain(&known)
+            .flat_map(|id| [Some(&id.scope), id.account_id.as_ref(), id.email.as_ref()])
+            .flatten()
+            .cloned()
+            .collect();
+        for identity in active.iter_mut().chain(known.iter_mut()) {
+            identity.aliases.retain(|alias| own.contains(alias));
+        }
     }
+    (active, known)
 }
 
 pub(super) fn read(dir: &Path) -> Option<Identity> {
@@ -398,31 +391,50 @@ pub(super) fn record(dir: &Path, identity: Option<&Identity>) -> Value {
             known.push(identity.clone());
         }
     }
-    serde_json::json!({"active":identity,"known":known})
+    serde_json::json!({"v":RECORD_VERSION,"active":identity,"known":known})
 }
 
-pub(super) fn known(home: &Path, provider: Provider) -> Vec<Identity> {
+/// One saved chat's provider, managed Codex binding and verified accounts.
+pub(super) struct Saved {
+    provider: Provider,
+    codex_account_id: Option<String>,
+    known: Vec<Identity>,
+}
+
+/// Reads every saved chat's account metadata once.
+pub(super) fn saved(home: &Path) -> Vec<Saved> {
     let Ok(entries) = fs::read_dir(super::log::chats_dir(home)) else {
         return vec![];
     };
     entries
         .flatten()
-        .flat_map(|entry| {
-            let Some(info) = fs::read(entry.path().join("info.json"))
+        .filter_map(|entry| {
+            let info = fs::read(entry.path().join("info.json"))
                 .ok()
-                .and_then(|bytes| serde_json::from_slice::<super::model::ChatInfo>(&bytes).ok())
-            else {
-                return vec![];
-            };
-            if info.provider != provider {
-                return vec![];
-            }
-            records(&entry.path())
+                .and_then(|bytes| serde_json::from_slice::<super::model::ChatInfo>(&bytes).ok())?;
+            let known = records(&entry.path())
                 .1
                 .into_iter()
-                .filter(|id| id.provider.is_none_or(|p| p == provider))
-                .collect()
+                .filter(|id| id.provider.is_none_or(|p| p == info.provider))
+                .collect();
+            Some(Saved {
+                provider: info.provider,
+                codex_account_id: info.codex_account_id,
+                known,
+            })
         })
+        .collect()
+}
+
+pub(super) fn known(home: &Path, provider: Provider) -> Vec<Identity> {
+    known_in(&saved(home), provider)
+}
+
+pub(super) fn known_in(saved: &[Saved], provider: Provider) -> Vec<Identity> {
+    saved
+        .iter()
+        .filter(|chat| chat.provider == provider)
+        .flat_map(|chat| chat.known.iter().cloned())
         .collect()
 }
 
@@ -508,36 +520,20 @@ pub(super) fn scope(identity: &Identity, known: &[Identity]) -> String {
 
 /// Every saved chat contributes its binding's verified accounts, including history.
 /// Collect all claims before migration, so conflicting bindings cannot be first-wins.
-pub(super) fn managed_aliases(home: &Path) -> Vec<(String, Option<Identity>)> {
-    let Ok(entries) = fs::read_dir(super::log::chats_dir(home)) else {
-        return vec![];
-    };
-    entries
-        .flatten()
-        .flat_map(|entry| {
-            let Some(info) = fs::read(entry.path().join("info.json"))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<super::model::ChatInfo>(&bytes).ok())
-            else {
+pub(super) fn managed_aliases_in(saved: &[Saved]) -> Vec<(String, Option<Identity>)> {
+    saved
+        .iter()
+        .filter(|chat| chat.provider == Provider::Codex)
+        .flat_map(|chat| {
+            let Some(alias) = chat.codex_account_id.clone() else {
                 return vec![];
             };
-            if info.provider != Provider::Codex {
-                return vec![];
-            }
-            let Some(alias) = info.codex_account_id else {
-                return vec![];
-            };
-            let identities: Vec<_> = records(&entry.path())
-                .1
-                .into_iter()
-                .filter(|id| id.provider.is_none_or(|p| p == Provider::Codex))
-                .collect();
-            if identities.is_empty() {
+            if chat.known.is_empty() {
                 vec![(alias, None)]
             } else {
-                identities
-                    .into_iter()
-                    .map(|identity| (alias.clone(), Some(identity)))
+                chat.known
+                    .iter()
+                    .map(|identity| (alias.clone(), Some(identity.clone())))
                     .collect()
             }
         })
@@ -652,6 +648,33 @@ mod tests {
             canonical(&config, Some(&email), Some(&claude)).unwrap(),
             fresh
         );
+    }
+
+    #[test]
+    fn older_files_lose_token_fingerprints_and_current_files_keep_their_aliases() {
+        let dir = crate::chat::testing::short_home();
+        fs::create_dir_all(&dir).unwrap();
+        let mut identity = Identity::fixture(hash("Claude:account-a"));
+        identity.email = Some(hash("Claude:a@example.test"));
+        identity.aliases = vec![
+            identity.scope.clone(),
+            hash("Claude:a@example.test"),
+            hash("Claude:credential:token"),
+        ];
+        let write = |value: Value| {
+            fs::write(
+                dir.join("account-identity.json"),
+                serde_json::to_vec(&value).unwrap(),
+            )
+            .unwrap()
+        };
+        write(json!({"active": identity, "known": [identity]}));
+        let (active, known) = records(&dir);
+        assert_eq!(active.unwrap().aliases, identity.aliases[..2]);
+        assert_eq!(known[0].aliases, identity.aliases[..2]);
+        write(json!({"v": RECORD_VERSION, "active": identity, "known": [identity]}));
+        assert_eq!(records(&dir).0.unwrap().aliases, identity.aliases);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -50,7 +50,7 @@ impl ChatLog {
     /// A provider switch starts a new binding, including its alias history. Leaving the
     /// old history under the new ChatInfo would misattribute it during later migrations.
     pub(super) fn reset_account_identity(&self) -> Result<(), String> {
-        self.replace("account-identity.json", br#"{"active":null,"known":[]}"#)
+        self.replace("account-identity.json", br#"{"v":2,"active":null,"known":[]}"#)
             .map(drop)
     }
 

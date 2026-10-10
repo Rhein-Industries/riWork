@@ -1625,7 +1625,11 @@ fn account_notice_keys_persist_but_a_worsened_limit_and_another_account_show() {
         super::super::account_identity::hash("account-a")
     );
     let snapshot = log::read_snapshot(&host.home, &id, None, u64::MAX, 50, 1 << 20, &[]).unwrap();
-    assert_eq!(snapshot.dismissed_notices, [expected.clone()]);
+    // The account's fingerprint is kept on the Mac, out of what a phone receives.
+    assert_eq!(
+        snapshot.dismissed_notices,
+        [format!("codex|rate_limit:seven_day@{reset}")]
+    );
     assert!(
         log::read_snapshot(
             &host.home,
@@ -1810,10 +1814,7 @@ fn canonical_claude_dismissal_survives_rotated_tokens_and_host_restart() {
     let snapshot = log::read_snapshot(&host.home, &id, None, u64::MAX, 50, 1 << 20, &[]).unwrap();
     assert_eq!(
         snapshot.dismissed_notices,
-        [format!(
-            "claude:{}|rate_limit:seven_day@{reset}",
-            identity.scope
-        )]
+        [format!("claude|rate_limit:seven_day@{reset}")]
     );
     let persisted = fs::read_to_string(chat.dir.join("account-identity.json")).unwrap();
     assert!(!persisted.contains("private@example"));
@@ -1908,7 +1909,7 @@ fn a_verified_codex_email_to_id_mapping_survives_logout_and_restart() {
     let snapshot = log::read_snapshot(&host.home, &id, None, u64::MAX, 50, 1 << 20, &[]).unwrap();
     assert_eq!(
         snapshot.dismissed_notices,
-        [format!("codex:{}|rate_limit:codex@{reset}", account.scope)]
+        [format!("codex|rate_limit:codex@{reset}")]
     );
 }
 

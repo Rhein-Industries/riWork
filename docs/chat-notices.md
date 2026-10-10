@@ -161,7 +161,10 @@ therefore preserves dismissal. With no account fields, persistent dismissal is
 unavailable. No keychain access is required.
 
 The host atomically saves only hashes (canonical scope, account id/email hashes,
-and verified alias hashes) in each chat's owner-only `account-identity.json`.
+and verified alias hashes) in each chat's owner-only `account-identity.json`;
+tokens and API keys are never hashed or saved. A file from before version 2 (`"v"`)
+keeps only the aliases that are some identity's own scope, id or email, which drops
+the token fingerprints an earlier build kept.
 The file contains an `active` identity and hashed `known` account associations;
 logout clears `active` while preserving verified email-to-id mappings for later
 restarts. History alone never grants an active scope: it must match current
@@ -173,12 +176,12 @@ snapshots use the persisted canonical metadata and verified alias mapping, witho
 writing files. Raw identifiers, emails and tokens are never persisted here.
 
 Migration is one-way and atomic in `notice-dismissals.json`: old email/other-source
-fingerprints and the old Claude token fingerprint are recomputed from the current
-login's credentials and mapped to its canonical scope. Verified email-to-id
+fingerprints are recomputed from the current login's credentials and mapped to its
+canonical scope. Verified email-to-id
 upgrades migrate the existing keys and retain dismissal; ids never migrate back
 to email. Conflicting account identities do not inherit each other's aliases.
 Alias chains are resolved to their final canonical scopes before rewriting keys,
-so token → email → id upgrades take one atomic replacement, including after an
+so email → id upgrades take one atomic replacement, including after an
 interruption before the replacement. Repeating migration writes nothing.
 Previously used managed Codex binding scopes migrate only when every saved chat's
 verified claims converge to the same canonical account. Conflicting or unresolved
@@ -197,11 +200,12 @@ Project changes, tab close/reopen, window reloads and host/app restarts preserve
 
 `chat.snapshot` additionally includes optional `dismissed_notices: [key, ...]` for
 active dismissals in that chat's account scope (omitted when empty; default empty
-when decoding old snapshots). The per-item `dismissed` flag remains authoritative
+when decoding old snapshots). A snapshot key is `<provider>|<kind>@<resets_at>` or
+`<provider>|<kind>#<item id>`: the account's fingerprint stays on the Mac. The per-item `dismissed` flag remains authoritative
 for banner rendering. Reading a snapshot never writes or prunes the dismissal file.
 
-Entries with `resets_at <= now` no longer match and are pruned on host startup,
-dismissal commands and incoming item events. The host re-emits matching existing
+Entries with `resets_at <= now` no longer match and are pruned on host startup
+and dismissal commands. Incoming items never prune: that reads every saved chat. The host re-emits matching existing
 items as `ItemCompleted` with the same id and `dismissed: true`, across all chats,
 and marks matching incoming notices before logging/broadcasting them. Startup
 reconciles stored notice bodies with the dismissal file, including notices outside

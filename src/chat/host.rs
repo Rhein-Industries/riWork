@@ -472,11 +472,10 @@ impl Inner {
         if self.broken || self.deleted {
             return;
         }
+        // No pruning here: it reads every saved chat, and this runs for every item.
+        // Expired entries never match; startup and dismissals prune them.
         if let ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } = &mut event {
             let mut dismissals = lock(&self.dismissals);
-            if let Err(error) = dismissals.prune(super::notice_dismissals::now()) {
-                eprintln!("riwork chat: {error}");
-            }
             if let Err(error) =
                 dismissals.forget_worsened(self.info.provider, self.account_scope(), item)
             {
@@ -1454,13 +1453,11 @@ fn load_chats(
                 eprintln!("riwork chat: {error}");
                 continue;
             }
-            identities.push((info.provider, identity, info.codex_account_id));
+            identities.push((info.provider, identity));
         }
     }
-    for (provider, identity, managed) in identities {
-        if let Err(error) = lock(dismissals).migrate(provider, &identity, managed.as_deref()) {
-            eprintln!("riwork chat: {error}");
-        }
+    if let Err(error) = lock(dismissals).migrate_all(identities) {
+        eprintln!("riwork chat: {error}");
     }
     for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
