@@ -484,9 +484,8 @@ pub(super) const BODY_LINE: f32 = 17.8;
 /// A round button's side.
 pub(super) const ROUND_BUTTON: f32 = 26.0;
 
-/// The design size of the text in an input box, and the space above and below it.
+/// The design size of the text in an input box.
 pub(super) const FIELD_TEXT: f32 = 12.0;
-pub(super) const FIELD_PAD_Y: f32 = 6.0;
 
 /// The line box of an input box's text (GPUI's default line height, φ times the text size,
 /// rounded as GPUI rounds it), which the box sets explicitly.
@@ -580,28 +579,6 @@ pub(super) fn toggle_button_with_disabled(
                     .hover(move |style| style.bg(rgb(colors.panel_active)))
             })
     }
-}
-
-pub(super) fn toggle_capsule(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    pressed: bool,
-    look: Look,
-) -> behavior::Toggle {
-    let label = label.into();
-    let colors = look.colors;
-    controls::button(
-        behavior::toggle_content(id, label.clone(), label, pressed)
-            .line_height(gpui::relative(1.618_034))
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(ui_text::space(4.))
-            .py(ui_text::space(CAPSULE_PAD_Y))
-            .text_size(ui_text::text(10.)),
-        Button::Secondary,
-        colors,
-    )
 }
 
 /// Composite content retains its exact layout; the shared Base primitive is

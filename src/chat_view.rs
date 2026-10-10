@@ -228,6 +228,19 @@ pub struct ChatView {
     /// The menu that a click outside just closed, and when. The click that closes an open
     /// menu on its own button must not open it again.
     menu_closed: Option<(Menu, Instant)>,
+    /// The row of the model or effort menu that ⏎ chooses, by name: the one the pointer or
+    /// ↑ and ↓ last highlighted.
+    menu_cursor: Option<String>,
+    /// That menu's scroll, and the name of the row each of its children is (empty for the
+    /// others), as last drawn, for keeping the highlight in sight.
+    menu_scroll: gpui::ScrollHandle,
+    menu_children: RefCell<Vec<String>>,
+    /// An ↑ or ↓ that moved the menu's highlight and has not come up yet: its repeats move
+    /// nothing.
+    menu_arrow_held: bool,
+    /// Whether ⏎ may choose in the open menu: once a key has come up since it opened, or at
+    /// once for a menu the pointer opened, so an ⏎ held through the opening chooses nothing.
+    menu_armed: bool,
     /// When the last message was sent: an Enter right after it is not an answer to a request.
     sent_at: Option<Instant>,
     /// Item ids (and `item#n` for the files of a change) that are expanded.
@@ -431,6 +444,11 @@ impl ChatView {
             answer_failures: HashMap::new(),
             menu: None,
             menu_closed: None,
+            menu_cursor: None,
+            menu_scroll: Default::default(),
+            menu_children: Default::default(),
+            menu_arrow_held: false,
+            menu_armed: false,
             sent_at: None,
             open: HashSet::new(),
             answered: HashSet::new(),
@@ -1128,6 +1146,7 @@ impl ChatView {
     }
 
     fn close_menu(&mut self, cx: &mut Context<Self>) {
+        self.menu_cursor = None;
         if let Some(menu) = self.menu.take() {
             self.menu_closed = Some((menu, Instant::now()));
             self.focus_composer = true;
@@ -1136,6 +1155,8 @@ impl ChatView {
     }
 
     fn toggle_menu(&mut self, menu: Menu, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu_cursor = None;
+        self.menu_armed = false;
         // The press that closed this menu is the one that is now a click on its button.
         if self.menu.is_none()
             && self.menu_closed.take().is_some_and(|(closed, at)| {
@@ -1348,6 +1369,10 @@ impl Render for ChatView {
             .on_action(cx.listener(Self::dictation_action))
             .on_action(cx.listener(Self::copy_transcript))
             .on_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, _| {
+                view.menu_armed = true;
+                if matches!(event.keystroke.key.as_str(), "up" | "down") {
+                    view.menu_arrow_held = false;
+                }
                 if matches!(event.keystroke.key.as_str(), "enter" | "return") {
                     view.enter_down = false;
                     view.enter_repeated = false;
@@ -1357,6 +1382,9 @@ impl Render for ChatView {
                 }
             }))
             .capture_action(cx.listener(Self::escape_action))
+            .capture_action(cx.listener(Self::menu_up))
+            .capture_action(cx.listener(Self::menu_down))
+            .capture_action(cx.listener(Self::menu_enter))
             // Scope ownership only: Base's window layer handles every gesture.
             .capture_any_mouse_down(cx.listener(
                 |view, event: &gpui::MouseDownEvent, window, cx| {

@@ -12,7 +12,7 @@ use crate::{
     text_input::{self, EnterBehavior, InputEvent, InputState, TextareaState},
 };
 use gpui::{Context, Entity, EntityInputHandler, Focusable, Subscription, Window};
-use gpui_kit::base::input::{Enter, Escape};
+use gpui_kit::base::input::{Enter, Escape, MoveDown, MoveUp};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -189,7 +189,7 @@ impl ChatView {
 
     pub(super) fn model_event(
         &mut self,
-        state: &Entity<InputState>,
+        _: &Entity<InputState>,
         event: &InputEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -198,18 +198,98 @@ impl ChatView {
             gpui_kit::base::TextSelection::clear(window, cx);
         }
         if matches!(event, InputEvent::Change) && self.menu == Some(super::Menu::Model) {
+            // A new search starts with nothing highlighted; ⏎ takes its first match.
+            self.menu_cursor = None;
             cx.notify();
         }
-        if text_input::is_submit(event, EnterBehavior::Submit)
-            && self.menu == Some(super::Menu::Model)
-            && self.model.transcript.models.is_empty()
+    }
+    /// ↑, ↓ and ⏎ belong to the open model or effort menu while the focus is in the model
+    /// search field or the message box and no text is being composed (an input method's ⏎
+    /// confirms its text); anywhere else they reach the field as ever.
+    fn menu_keys(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !matches!(self.menu, Some(super::Menu::Model | super::Menu::Effort)) {
+            return false;
+        }
+        if self
+            .model_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
         {
-            let model = state.read(cx).value().trim().to_owned();
+            !self.model_input.update(cx, |state, cx| {
+                state.marked_text_range(window, cx).is_some()
+            })
+        } else if self.composer.read(cx).focus_handle(cx).is_focused(window) {
+            !self.composer.update(cx, |state, cx| {
+                state.marked_text_range(window, cx).is_some()
+            })
+        } else {
+            false
+        }
+    }
+
+    /// ↑ or ↓ in the open menu moves its highlight once per press: a held key's repeats
+    /// move nothing until it comes up.
+    fn menu_arrow(&mut self, down: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.menu_keys(window, cx) {
+            return;
+        }
+        if self.menu_arrow_held {
+            cx.stop_propagation();
+        } else if self.step_menu(down, cx) {
+            self.menu_arrow_held = true;
+            cx.stop_propagation();
+        }
+    }
+
+    pub(super) fn menu_up(&mut self, _: &MoveUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu_arrow(false, window, cx);
+    }
+
+    pub(super) fn menu_down(&mut self, _: &MoveDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu_arrow(true, window, cx);
+    }
+
+    /// While the model or effort menu is open it owns ⏎: the highlighted row (or a search's
+    /// first match) is chosen, and with none the menu stays as it is; the draft is never
+    /// sent nor a request answered. For a driver without a model list, ⏎ in the field names
+    /// the model typed. An ⏎ held through the menu's opening, or held after it chose,
+    /// does nothing.
+    pub(super) fn menu_enter(
+        &mut self,
+        enter: &Enter,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if enter.secondary || enter.shift || !self.menu_keys(window, cx) {
+            return;
+        }
+        let typed = self.menu == Some(super::Menu::Model)
+            && self.model.transcript.models.is_empty()
+            && self.menu_cursor.is_none()
+            && self
+                .model_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window);
+        cx.stop_propagation();
+        // The press is held until its key comes up: a repeat must not choose again, send
+        // the draft or answer a request once the menu has closed.
+        let repeat = self.enter_down;
+        self.enter_down = true;
+        if !self.menu_armed || repeat {
+            return;
+        }
+        if typed {
+            let model = self.model_input.read(cx).value().trim().to_owned();
             if !model.is_empty() {
                 self.configure(Some(model), None, None, None, cx);
             }
+        } else {
+            self.choose_highlighted(cx);
         }
     }
+
     /// Observe Enter only to distinguish a held key from a new approval gesture.
     /// Submission remains in the one InputEvent subscription. KeyUp rearms this guard.
     pub(super) fn capture_enter(&mut self, _: &Enter, _: &mut Window, _: &mut Context<Self>) {
