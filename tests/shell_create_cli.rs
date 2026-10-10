@@ -94,7 +94,21 @@ impl Drop for Home {
     }
 }
 
+/// Reads a child's output while it runs: output that outgrows the pipe's buffer
+/// would block it in write, and it would never exit.
+fn read_meanwhile(pipe: Option<impl Read + Send + 'static>) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            pipe.read_to_end(&mut bytes).unwrap();
+        }
+        bytes
+    })
+}
+
 fn finish(mut child: Child, what: &[&str]) -> Output {
+    let stdout = read_meanwhile(child.stdout.take());
+    let stderr = read_meanwhile(child.stderr.take());
     let deadline = Instant::now() + Duration::from_secs(60);
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
@@ -107,18 +121,11 @@ fn finish(mut child: Child, what: &[&str]) -> Output {
         }
         thread::sleep(Duration::from_millis(20));
     };
-    let mut output = Output {
+    Output {
         status,
-        stdout: Vec::new(),
-        stderr: Vec::new(),
-    };
-    if let Some(mut stdout) = child.stdout.take() {
-        stdout.read_to_end(&mut output.stdout).unwrap();
+        stdout: stdout.join().unwrap(),
+        stderr: stderr.join().unwrap(),
     }
-    if let Some(mut stderr) = child.stderr.take() {
-        stderr.read_to_end(&mut output.stderr).unwrap();
-    }
-    output
 }
 
 fn git(root: &Path, args: &[&str]) {

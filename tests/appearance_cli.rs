@@ -16,6 +16,18 @@ use uuid::Uuid;
 const NOT_PUBLISHED: &str =
     "riwork: RiWork has not published its appearance yet; open the RiWork app\n";
 
+/// Reads a child's output while it runs: output that outgrows the pipe's buffer
+/// would block it in write, and it would never exit.
+fn read_meanwhile(pipe: Option<impl Read + Send + 'static>) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            pipe.read_to_end(&mut bytes).unwrap();
+        }
+        bytes
+    })
+}
+
 struct Home(PathBuf);
 
 impl Home {
@@ -46,6 +58,8 @@ impl Home {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
+        let stdout = read_meanwhile(child.stdout.take());
+        let stderr = read_meanwhile(child.stderr.take());
         let deadline = Instant::now() + Duration::from_secs(60);
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {
@@ -58,24 +72,11 @@ impl Home {
             }
             thread::sleep(Duration::from_millis(20));
         };
-        let mut output = Output {
+        Output {
             status,
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-        };
-        child
-            .stdout
-            .take()
-            .unwrap()
-            .read_to_end(&mut output.stdout)
-            .unwrap();
-        child
-            .stderr
-            .take()
-            .unwrap()
-            .read_to_end(&mut output.stderr)
-            .unwrap();
-        output
+            stdout: stdout.join().unwrap(),
+            stderr: stderr.join().unwrap(),
+        }
     }
 
     fn json(&self) -> Value {
