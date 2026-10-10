@@ -75,8 +75,8 @@ pub const CARD_INSET: f32 = 14.0;
 pub const CARD_PADDING: f32 = 8.0;
 /// From the card's edge to the letters of its first line of text: a little more than the
 /// padding under its control row.
-pub const CARD_TEXT_TOP: f32 = 10.0;
-pub const CARD_GAP: f32 = 6.0;
+pub const CARD_TEXT_TOP: f32 = 13.0;
+pub const CARD_GAP: f32 = 4.0;
 /// The card's inset from a pane narrower than `NARROW_PANE`, in pixels: it does not grow with
 /// the text, so a big text size leaves the box its room.
 pub const NARROW_SPACE: f32 = 4.0;
