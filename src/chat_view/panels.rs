@@ -2478,8 +2478,11 @@ impl ChatView {
     fn composer_send(&self, look: Look, side: gpui::Pixels, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
         let empty = self.draft_empty(cx) || self.pending_submission.is_some();
-        // While a turn runs Stop holds this slot, and its tooltip says ⏎ steers the turn.
-        let tip = "Send · ⏎ · ⇧⏎ new line";
+        let tip = if self.running() {
+            "Send · ⏎ steers the turn · ⇧⏎ new line · ⌘. interrupts"
+        } else {
+            "Send · ⏎ · ⇧⏎ new line"
+        };
         let send = if look.native {
             widgets::round_button_sized(
                 "chat-send",
@@ -2524,11 +2527,11 @@ impl ChatView {
             .into_any_element()
     }
 
-    /// Stop, in Send's slot while a turn runs: Native and Hermes
+    /// Stop, in Send's slot while a turn runs and there is nothing to send: Native and Hermes
     /// draw it as the box's other quiet round buttons, its symbol and a tint in the warning
     /// color; the colorful themes their mark in the terminal's red.
     fn composer_stop(&self, look: Look, side: gpui::Pixels, cx: &mut Context<Self>) -> AnyElement {
-        let tip = "Interrupt · ⌘. · ⏎ steers the turn";
+        let tip = "Interrupt · ⌘.";
         if look.native || look.hermes() {
             let warning = look.tone(cards::Tone::Warning);
             let colors = look.colors;
@@ -2607,16 +2610,18 @@ impl ChatView {
                     .test_support(),
             );
         // Send and Stop share one slot, so neither moves the controls: Stop while a turn runs
-        // (⏎ still steers it with a draft), Send otherwise.
-        let action = if self.running() {
-            div()
-                .debug_selector(|| "composer-stop".into())
-                .child(self.composer_stop(look, side, cx))
-        } else {
-            div()
-                .debug_selector(|| "composer-send".into())
-                .child(self.composer_send(look, side, cx))
-        };
+        // and there is nothing to send, Send (which steers the turn, as ⏎ does) once there is.
+        // ⌘. interrupts either way.
+        let action =
+            if self.running() && (self.draft_empty(cx) || self.pending_submission.is_some()) {
+                div()
+                    .debug_selector(|| "composer-stop".into())
+                    .child(self.composer_stop(look, side, cx))
+            } else {
+                div()
+                    .debug_selector(|| "composer-send".into())
+                    .child(self.composer_send(look, side, cx))
+            };
         let actions = div()
             .flex()
             .flex_none()
@@ -3383,8 +3388,8 @@ mod tests {
                     at_rest,
                     "{design:?} {width}: Fast moved the controls"
                 );
-                // While a turn runs Stop takes Send's slot, and keeps it with a draft (⏎
-                // steers the turn), so Interrupt stays in reach.
+                // While a turn runs Stop takes Send's slot, and Send takes it back for a
+                // draft that steers the turn.
                 update_info(cx, handle, &view, |view| {
                     view.model.transcript.state = ChatState::Running;
                 });
@@ -3394,9 +3399,9 @@ mod tests {
                     "{design:?} {width}: Stop is not in Send's slot"
                 );
                 set_draft(cx, handle, &view, "steer");
-                assert_eq!(composer_frames(cx, handle, "chat-interrupt"), at_rest);
+                assert_eq!(composer_frames(cx, handle, "chat-send"), at_rest);
                 cx.update_window(handle.into(), |_, window, _| {
-                    assert!(window.try_find("chat-send").is_none());
+                    assert!(window.try_find("chat-interrupt").is_none());
                 })
                 .unwrap();
             }
@@ -3603,6 +3608,47 @@ mod tests {
         })
         .unwrap();
         draw_hermes(cx, handle);
+    }
+
+    #[gpui::test]
+    fn the_enter_that_chooses_new_chat_does_not_swallow_the_next_one(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let previous = ui_text::set_for_tests(1.0, ui_text::Face::System);
+        let (handle, view, recording) =
+            composer_fixture(cx, 760.0, theme::ThemeChoice::Native, ChatState::Idle);
+        // Focus changes are only reported in an active window.
+        cx.update_window(handle.into(), |_, window, _| window.activate_window())
+            .unwrap();
+        set_draft(cx, handle, &view, "keep me");
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("chat-model", cx)
+        })
+        .unwrap();
+        draw_hermes(cx, handle);
+        view.update(cx, |view, _| view.menu_cursor = Some("chat-new".into()));
+        key_event(cx, handle, "enter", Some(false));
+        // The new-chat chooser takes focus, so this ⏎ comes up outside the chat.
+        let chooser = cx.update(|cx| cx.focus_handle());
+        cx.update_window(handle.into(), |_, window, cx| window.focus(&chooser, cx))
+            .unwrap();
+        draw_hermes(cx, handle);
+        key_event(cx, handle, "enter", None);
+        // Cancelled: back in the chat, the next ⏎ sends.
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |view, cx| view.focus(window, cx))
+        })
+        .unwrap();
+        draw_hermes(cx, handle);
+        key_event(cx, handle, "enter", Some(false));
+        assert!(
+            matches!(
+                recording.try_recv(),
+                Ok(super::super::feed::Delivery::Submission { .. })
+            ),
+            "the ⏎ after New chat… was swallowed"
+        );
+        ui_text::set_for_tests(previous.0, previous.1);
     }
 
     #[gpui::test]

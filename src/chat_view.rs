@@ -384,11 +384,20 @@ impl ChatView {
         let composer =
             text_input::multiline("", "Message", 1, 8, EnterBehavior::Submit, window, cx);
         let model_input = text_input::single_line("", "model name, then ⏎", window, cx);
+        let focus = cx.focus_handle();
         let subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::composer_event),
             cx.subscribe_in(&model_input, window, Self::model_event),
+            // A key held as focus leaves comes up elsewhere (the new-chat chooser, another
+            // tab), never in this view's key-up: forget it, or the next ⏎ here is taken for
+            // its repeat and swallowed.
+            cx.on_focus_out(&focus, window, |view, _, _, _| {
+                view.enter_down = false;
+                view.enter_repeated = false;
+                view.escape_down = false;
+                view.menu_arrow_held = false;
+            }),
         ];
-        let focus = cx.focus_handle();
         let transcript_selection =
             select::TranscriptSelection::new(window.window_handle(), cx.weak_entity(), cx);
         Self {
