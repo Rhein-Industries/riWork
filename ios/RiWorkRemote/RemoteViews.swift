@@ -323,6 +323,11 @@ struct TerminalTabsView: View {
     private var focused: Bool { chrome.header == .hidden }
     var body: some View {
         let _ = Perf.count("body.TerminalTabsView")
+        // Three parts, not one expression: as one, the Release build gives up type-checking it.
+        lifecycle(dialogs(screen))
+    }
+    /// The navigation row over the tab's content, and what follows the session shown.
+    @ViewBuilder private var screen: some View {
         let chrome = chrome
         VStack(spacing: 0) {
             // Focus mode drops all of this: only the shell (and its keyboard) stays.
@@ -357,6 +362,10 @@ struct TerminalTabsView: View {
         .onChange(of: model.desktopFeatures.tabs && model.sharedTabs != nil) { _, shared in
             if !shared { showingWorkers = false; showingEditTabs = false; closingTab = nil; renamingTab = nil; dropTarget = nil }
         }
+    }
+    /// The sheets, the close and rename questions and the alerts over this screen.
+    private func dialogs(_ content: some View) -> some View {
+        content
         .sheet(isPresented: $showingWorkers) {
             OpenTabSheet(rows: SharedTabStrip.openable(model.sharedTabs), open: { key in
                 showingWorkers = false
@@ -392,6 +401,10 @@ struct TerminalTabsView: View {
             Button("Close terminal", role: .destructive) { close(session) }
             Button("Cancel", role: .cancel) {}
         } message: { session in Text("Close \(session.title) · \(session.shortID)? This ends its running process on the Mac.") }
+    }
+    /// ⌘N, and what runs while this screen is up.
+    private func lifecycle(_ content: some View) -> some View {
+        content
         // ⌘N, wherever the keyboard is (also in focus mode, where the header is gone). SwiftUI turns it into a UIKeyCommand on the
         // hosting controller, which the terminal's key view passes on: it claims no ⌘ combination.
         .background {
