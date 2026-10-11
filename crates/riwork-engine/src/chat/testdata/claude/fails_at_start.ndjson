@@ -1,0 +1,5 @@
+# Modelled on the T3 Code recordings (MIT) tool_call_read_only_on_request, tool_call_denied_write and
+# claude_compact_after_peer_turn, the live claude 2.1.289 captures, and the SDK types; shortened, text invented.
+# exits before the handshake, as claude --resume does for an unknown session (checked live)
+{"type":"emit","frame":{"type":"result","subtype":"error_during_execution","is_error":true,"result":"No conversation found with session ID: sess-1","num_turns":1,"session_id":"sess-1","total_cost_usd":0,"usage":{"input_tokens":3,"cache_creation_input_tokens":100,"cache_read_input_tokens":900,"output_tokens":20,"iterations":[{"input_tokens":3,"output_tokens":20,"cache_read_input_tokens":900,"cache_creation_input_tokens":100}]},"modelUsage":{"claude-sonnet-4-6":{"inputTokens":3,"outputTokens":20,"contextWindow":200000}}}}
+{"type":"exit","code":1,"stderr":"No conversation found with session ID: sess-1"}
