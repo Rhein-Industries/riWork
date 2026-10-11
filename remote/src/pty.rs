@@ -1053,6 +1053,12 @@ mod sys {
             // SAFETY: only async-signal-safe calls between fork and exec.
             unsafe {
                 command.pre_exec(|| {
+                    // A daemon or shell may ignore SIGHUP. An attached client must
+                    // still hang up when the connector's PTY master disappears.
+                    let mut hangup: libc::sigaction = std::mem::zeroed();
+                    hangup.sa_sigaction = libc::SIG_DFL;
+                    check(libc::sigemptyset(&mut hangup.sa_mask))?;
+                    check(libc::sigaction(libc::SIGHUP, &hangup, std::ptr::null_mut()))?;
                     check(libc::setsid())?;
                     // Standard input is the slave by now.
                     check(libc::ioctl(0, libc::TIOCSCTTY as _, 0))?;

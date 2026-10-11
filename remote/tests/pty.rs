@@ -913,6 +913,9 @@ impl Rig {
     }
     /// `cli`: a real RiWork CLI instead of the stand-in.
     async fn with_cli(kind: DeviceKind, cli: Option<PathBuf>) -> Self {
+        Self::with_cli_options(kind, cli, false).await
+    }
+    async fn with_cli_options(kind: DeviceKind, cli: Option<PathBuf>, ignore_hangup: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
         std::fs::create_dir(&home).unwrap();
@@ -939,16 +942,31 @@ impl Rig {
             axum::serve(listener, relay.router()).await.unwrap();
         });
         let cli = cli.unwrap_or_else(|| stand_in_cli(dir.path()));
-        let connector = Command::new(env!("CARGO_BIN_EXE_riwork-remote"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_riwork-remote"));
+        command
             .env("RIWORK_HOME", &home)
             .args(["start", "--riwork"])
             .arg(&cli)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+            .kill_on_drop(true);
+        if ignore_hangup {
+            // Change only the connector child, never the test process's signal state.
+            unsafe {
+                command.pre_exec(|| {
+                    let mut hangup: libc::sigaction = std::mem::zeroed();
+                    hangup.sa_sigaction = libc::SIG_IGN;
+                    if libc::sigemptyset(&mut hangup.sa_mask) < 0
+                        || libc::sigaction(libc::SIGHUP, &hangup, std::ptr::null_mut()) < 0
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        let connector = command.spawn().unwrap();
         Self {
             dir,
             home,
@@ -1327,7 +1345,16 @@ async fn a_new_session_starts_without_the_streams_of_the_old_one() {
 
 #[tokio::test]
 async fn when_the_connector_dies_the_terminals_hang_up_and_their_clients_end() {
-    let mut rig = Rig::new(DeviceKind::Desktop).await;
+    connector_death_hangs_up_clients(Rig::new(DeviceKind::Desktop).await).await;
+}
+
+#[tokio::test]
+async fn inherited_ignored_hangup_does_not_keep_terminal_clients_alive() {
+    connector_death_hangs_up_clients(Rig::with_cli_options(DeviceKind::Desktop, None, true).await)
+        .await;
+}
+
+async fn connector_death_hangs_up_clients(mut rig: Rig) {
     let (mut client, _) = rig.first_session().await;
     let shell = uuid4();
     rig.mode(&shell, "idle");
@@ -1342,9 +1369,14 @@ async fn when_the_connector_dies_the_terminals_hang_up_and_their_clients_end() {
     assert!(running(pid));
     // No chance to clean up: the master closes with the process.
     rig.connector.start_kill().unwrap();
+    let ended = gone(pid, Duration::from_secs(5)).await;
+    if !ended {
+        // This group belongs to the fixture; clean it up even when the assertion fails.
+        unsafe { libc::kill(-pid, libc::SIGKILL) };
+    }
     assert!(
-        gone(pid, Duration::from_secs(5)).await,
-        "the client is still running after its connector was killed"
+        ended,
+        "the client {pid} is still running after its connector was killed"
     );
 }
 
