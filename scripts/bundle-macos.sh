@@ -12,9 +12,9 @@ zig=${ZIG:-zig}
 
 if [ ! -x "$binary" ]; then
     if [ "$profile" = debug ]; then
-        echo "Build RiWork first: cargo build" >&2
+        echo "Build RiWork first: cargo build -p riwork-desktop --bin riwork" >&2
     else
-        echo "Build RiWork first: cargo build --profile $profile" >&2
+        echo "Build RiWork first: cargo build -p riwork-desktop --bin riwork --profile $profile" >&2
     fi
     exit 1
 fi
@@ -74,8 +74,8 @@ ZIG
 rm -rf "$bundle"
 mkdir -p "$bundle/Contents/MacOS" "$resources/terminfo" "$resources/ghostty"
 cp "$binary" "$bundle/Contents/MacOS/riwork"
-# Optional standalone connector: build with remote/Cargo.toml before bundling.
-remote_binary="remote/target/$profile/riwork-remote"
+# Optional standalone connector: build with cargo build -p riwork-remote before bundling.
+remote_binary="target/$profile/riwork-remote"
 if [ -x "$remote_binary" ]; then
     cp "$remote_binary" "$bundle/Contents/MacOS/riwork-remote"
 fi
