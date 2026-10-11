@@ -1,0 +1,36 @@
+[package]
+name = "riwork-desktop"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "riwork"
+path = "src/main.rs"
+
+[dependencies]
+riwork-core = { path = "../riwork-core" }
+riwork-engine = { path = "../riwork-engine" }
+riwork-cli = { path = "../riwork-cli" }
+gpui = { package = "gpui-pre", version = "=0.3.8", default-features = false, features = ["font-kit"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit", "runtime_shaders"] }
+gpui-kit = { version = "=0.7.1", default-features = false }
+# Keep Kit's otherwise semver-wide Base dependency on the reviewed release.
+gpui-base = "=0.7.1"
+gpui-libghostty = "=0.3.1"
+async-channel = "2.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+fs2 = "0.4"
+chrono = "0.4"
+image = "=0.25.10"
+base64 = "0.22"
+ureq = "3"
+libc = "0.2"
+core-foundation-sys = "0.8"
+objc2 = "0.6"
+raw-window-handle = "0.6"
+
+[dev-dependencies]
+gpui-kit = { version = "=0.7.1", default-features = false, features = ["test-support"] }
+riwork-engine = { path = "../riwork-engine", features = ["test-support"] }
