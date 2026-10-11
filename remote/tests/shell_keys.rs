@@ -1,13 +1,8 @@
 //! `shell.keys` (direct typing) and the screen fields of `shell.output`, against
-//! a stub CLI that records its argv. The production key module is compiled here
+//! a stub CLI that records its argv. The production engine key API is used here
 //! too, without GPUI, to keep the two validators identical and to type into a
 //! real private tmux.
-#[allow(dead_code)]
-#[path = "../../src/session_keys.rs"]
-mod session_keys;
-#[allow(dead_code)]
-#[path = "../../src/session_viewport.rs"]
-mod session_viewport;
+use riwork_engine::session_keys;
 
 use riwork_remote::{
     config::{Storage, private_read, private_write},

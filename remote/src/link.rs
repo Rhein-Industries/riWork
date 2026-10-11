@@ -314,7 +314,7 @@ mod tests {
                "result":{"shell_id":"s","output":text,"line_count":lines}})
     }
 
-    /// `cargo test --lib print_the_rust_vector -- --ignored --nocapture` prints the frame the
+    /// `cargo test --locked --package riwork-remote --lib print_the_rust_vector -- --ignored --nocapture` prints the frame the
     /// fixture `fixtures/link.json` holds as its Rust-made vector (see `fixtures/generate_link.py`).
     #[test]
     #[ignore = "prints a vector; used to regenerate fixtures/link.json"]

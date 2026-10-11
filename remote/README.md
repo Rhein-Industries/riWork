@@ -1,6 +1,6 @@
 # RiWork encrypted remote access
 
-This standalone Rust crate builds the blind relay and the outbound desktop
+This headless workspace member builds the blind relay and the outbound desktop
 connector without GPUI/Ghostty native dependencies. The mobile client uses the
 [frozen v1 protocol](../docs/remote-protocol.md) and shared fixtures. Desktop
 session content is encrypted end to end with a random per-device pairing secret;
@@ -8,17 +8,22 @@ relay authentication uses independent role tokens.
 
 ## Build
 
+Run these commands from the repository root. The remote package uses the root
+workspace's `Cargo.lock` and `target/` directory; selecting it builds only the
+standalone remote library and binary. Core and engine are dev dependencies for
+compatibility tests, not dependencies of the deployed connector or relay.
+
 ```sh
-cargo build --locked --release --manifest-path remote/Cargo.toml
+cargo build --locked --release --package riwork-remote
 ```
 
-Use `remote/target/release/riwork-remote` directly. With a rebuilt desktop CLI,
+Use `target/release/riwork-remote` directly. With a rebuilt desktop CLI,
 `riwork remote ...` forwards arguments unchanged to a sibling `riwork-remote`,
 the companion inside an adjacent `RiWork.app`, or `RIWORK_REMOTE_BIN`. PATH
 symlinks to `target/{debug,release}/riwork` resolve that packaged companion too:
 
 ```sh
-export RIWORK_REMOTE_BIN="$PWD/remote/target/release/riwork-remote"
+export RIWORK_REMOTE_BIN="$PWD/target/release/riwork-remote"
 riwork remote --help
 ```
 
@@ -26,7 +31,7 @@ riwork remote --help
 staging directory, requires it in the bundle, then installs the executable/app
 atomically. A companion build or validation failure keeps the previous install.
 The direct macOS bundling script includes the standalone binary when built in
-`remote/target/{debug,release}` before bundling. Existing installed desktop CLIs
+`target/{debug,release}` before bundling. Existing installed desktop CLIs
 can use the standalone binary directly until the orchestrator installs a new
 build. No GUI window is needed for the connector. `RIWORK_HOME` is inherited by
 all CLI subprocesses and is never changed by forwarding/start.
@@ -174,8 +179,8 @@ theme (the contract is in [remote-protocol.md](../docs/remote-protocol.md)). It 
 (version 1, lowercase `#rrggbb` colors, exactly 16 terminal colors, the optional
 `native` and `mic` flags as booleans and passed on only when true, at most 16 KiB)
 and answers `not_found` "appearance not published" when the desktop app has not
-published a usable `appearance.json` yet. Its tests use a stub CLI and compile the
-desktop's `src/appearance_file.rs` to keep the two validators identical.
+published a usable `appearance.json` yet. Its tests use a stub CLI and the
+core's `appearance_file` API to keep the two validators identical.
 
 `shell.create` starts a terminal in a project or worktree of the desktop (a plain shell,
 Codex, Claude or Grok, optionally with the agent's `unrestricted` flag or a command for
@@ -193,8 +198,8 @@ the one asked for. Both run in the ordered lane, which a phone that drops does n
 creation runs in a task of its own, so no connection ending can kill it between tmux starting
 the session and the CLI registering it. A creation first looks the id up with
 `project show` / `worktree show` and requires that exact id back (the CLI would also resolve names,
-branches and paths). They are not idempotent and not deduplicated. Their tests use a stub CLI (`tests/shell_create.rs`); the root crate's
-`tests/shell_create_cli.rs` pins the CLI sentences and output the connector relies on,
+branches and paths). They are not idempotent and not deduplicated. Their tests use a stub CLI (`tests/shell_create.rs`);
+`../crates/riwork-cli/tests/shell_create_cli.rs` pins the CLI sentences and output the connector relies on,
 and an ignored test drives the real CLI with `RIWORK_TEST_CLI`.
 
 `project.create` makes a new project in the desktop's default projects folder (the contract is in
@@ -211,7 +216,7 @@ sentence of its own that names no path. It refuses a project that is not the one
 the result like `projects.list`, runs in the ordered lane like `shell.create`, and the CLI runs in a
 task of its own so no connection ending can kill it between making the folder and registering it. It
 is not idempotent and not deduplicated: a repeat answers `already_exists`. Its tests use a stub CLI
-(`tests/project_create.rs`); the root crate's `tests/project_create_cli.rs` pins the CLI sentences
+(`tests/project_create.rs`); `../crates/riwork-cli/tests/project_create_cli.rs` pins the CLI sentences
 and output the connector relies on (in a throwaway `HOME` and `RIWORK_HOME`), and an ignored test
 drives the real CLI with `RIWORK_TEST_CLI` the same way.
 
@@ -219,7 +224,7 @@ drives the real CLI with `RIWORK_TEST_CLI` the same way.
 desktop's Codex and Claude chats (the contract is in [remote-protocol.md](../docs/remote-protocol.md), "Chat
 extension"; the code is `src/rpc/chat.rs`). Each is one call of the installed CLI (`riwork chat list|new|events|
 command|stop ... --json`) with an argument vector built from validated values; the chat JSON itself is the
-desktop's `src/chat/model.rs`, passed on as printed, after the connector checked its envelope (a chat has a
+engine's `chat::model` API, passed on as printed, after the connector checked its envelope (a chat has a
 canonical id, a known provider and a state; a page of events has `{seq, event}` entries in rising order after
 `since`). A project or worktree is looked up by its exact id first, like `shell.create`. `riwork capabilities
 --json` says whether the CLI has chats (`"chat":true`): it decides `features.chat` in `ready` (asked once per
@@ -251,8 +256,8 @@ it is deleted. A begin for a shell checks first that the CLI has `shell paste` (
 locks and `sent|duplicate|uncertain` answers of `shell.keys`, and the same reading of the CLI's error tokens. The
 upload steps are reads in `lanes.rs` (a shared slot each, so an upload never holds up typing); `shell.paste` is
 ordered. Nothing logs, opens or runs a file. The tests are `tests/upload.rs` (a stub CLI: validation, traversal
-names, resume, damaged files, limits, exactly-once paste, sweep and revocation) and, in the root crate,
-`tests/shell_paste_cli.rs` (the real CLI and a real tmux in a throwaway `RIWORK_HOME`).
+names, resume, damaged files, limits, exactly-once paste, sweep and revocation) and
+`../crates/riwork-cli/tests/shell_paste_cli.rs` (the real CLI and a real tmux in a throwaway `RIWORK_HOME`).
 
 `projects.list`, `shells.list` and `orchestrators.list` also carry what the desktop knows about
 recency and agent activity (the contract is in [remote-protocol.md](../docs/remote-protocol.md),
@@ -265,8 +270,8 @@ before it is passed on (non-negative integers, the five activity words, `agents`
 `working` and `waiting` and optionally `done`, at most eight short kind names), and one that
 fails is left out as if the CLI had not answered it, so a damaged or newer answer cannot reach a
 phone that decodes them strictly. An older CLI has none of them and the answers are byte for byte
-what they were. The tests are `tests/activity_fields.rs` (a stub CLI) and, in the root crate,
-`tests/agent_activity_cli.rs`, which pins the CLI side with real hook events, Codex rollouts and a
+what they were. The tests are `tests/activity_fields.rs` (a stub CLI) and
+`../crates/riwork-cli/tests/agent_activity_cli.rs`, which pins the CLI side with real hook events, Codex rollouts and a
 real tmux in a throwaway `RIWORK_HOME`.
 
 An orchestrator can run as a chat of the chat host instead of a tmux terminal ("Chat orchestrators"
@@ -316,8 +321,8 @@ allowlisted environment, and the process killed and reaped when the stream, the 
 connector ends). The connector's `lanes.rs` gives `pty.open` a lane of its own (one at a time) and
 `pty.read` another (up to 12 parked), and the connection loop answers `pty.write`, `pty.resize` and
 `pty.close` itself, in arrival order, because they never wait. The tests are `tests/pty.rs` (a
-stand-in CLI, through the RPC layer and through a real relay and connector) and, in the root crate,
-`tests/shell_attach_exec_cli.rs`.
+stand-in CLI, through the RPC layer and through a real relay and connector) and
+`../crates/riwork-cli/tests/shell_attach_exec_cli.rs`.
 
 Revocation stops live endpoint access within one second and removes its local
 PSK/tokens. Remove that route from the relay manifest and restart the relay to
@@ -419,14 +424,14 @@ Use an iOS simulator on the relay host, or TLS for a physical device.
 
 ```sh
 RIWORK_PAIR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/riwork-pair.XXXXXX")
-remote/target/release/riwork-remote pair --relay ws://127.0.0.1:8787/v1/ws \
+target/release/riwork-remote pair --relay ws://127.0.0.1:8787/v1/ws \
   --allow-insecure-loopback --name 'Simulator' \
   --out "$RIWORK_PAIR_DIR/simulator.pairing.json" \
   --relay-routes "$RIWORK_PAIR_DIR/routes.json"
-remote/target/release/riwork-remote relay --bind 127.0.0.1:8787 \
+target/release/riwork-remote relay --bind 127.0.0.1:8787 \
   --routes "$RIWORK_PAIR_DIR/routes.json"
 # In another terminal, retaining the same RIWORK_HOME:
-remote/target/release/riwork-remote start --riwork /absolute/path/to/riwork
+target/release/riwork-remote start --riwork /absolute/path/to/riwork
 ```
 
 For isolated manual testing, explicitly set a temporary `RIWORK_HOME` on **each**
@@ -436,11 +441,11 @@ by any automated test below.
 ## Verification
 
 ```sh
-cargo test --locked --manifest-path remote/Cargo.toml
-cargo clippy --locked --manifest-path remote/Cargo.toml --all-targets -- -D warnings
+cargo test --locked --package riwork-remote
+cargo clippy --locked --package riwork-remote --all-targets -- -D warnings
 swift remote/fixtures/verify.swift remote/fixtures/v1.json
 RIWORK_TEST_CLI=/absolute/path/to/installed/riwork \
-  cargo test --locked --manifest-path remote/Cargo.toml --test isolated_e2e \
+  cargo test --locked --package riwork-remote --test isolated_e2e \
   -- --ignored --nocapture
 ```
 
@@ -460,11 +465,10 @@ independent crypto vectors, replay/gaps/wrong device, routing authentication,
 health, duplicate sockets, unavailable peers, frame/socket/queue limits,
 unauthenticated-socket budget, ping/idle liveness and stale-registration
 replacement, connector lease renewal, transactional pairing, private
-config, RPC allowlist and durable outcome-cache behavior. Root forwarding is
-compiled and exercised by the standalone tests too.
-The small default terminal-control test also requires `tmux` (and uses its own
-temporary server). Root input/viewport modules are compiled here with strict
-Clippy independently of GPUI.
+config, RPC allowlist and durable outcome-cache behavior. Engine forwarding is
+exercised by the remote tests too, and input, key and viewport compatibility
+tests call the engine APIs independently of GPUI. The slow terminal-control
+test requires `tmux` and uses its own temporary server; it remains opt-in.
 
 The client tests (`tests/client*.rs`) run in temporary homes with short paths and touch no real
 state. `client.rs` pairs a real relay and the real connector by a v2 link and drives the real binary
@@ -474,7 +478,7 @@ real v2 handshake and answers `pty.*` as the design says, so the stream, the rec
 (in a real pseudo-terminal: raw mode, SIGWINCH, the reset, the restored terminal) are tested
 independently of the host's `pty.*`. `client_real_host.rs` checks the same against the real connector;
 its attach test is ignored until the host's `pty.*` and `pair --kind desktop` exist
-(`cargo test --test client_real_host -- --ignored`).
+(`cargo test --locked --package riwork-remote --test client_real_host -- --ignored`).
 
 Fixtures were generated independently with Python `cryptography`, checked in
 Rust, and verified against native Swift CryptoKit. To regenerate:

@@ -9,7 +9,7 @@
 //!
 //! ```sh
 //! RIWORK_TEST_CLI=/abs/riwork RIWORK_BENCH_REMOTE=/abs/riwork-remote \
-//!   cargo test --release --test latency_bench -- --ignored --nocapture
+//!   cargo test --locked --release --package riwork-remote --test latency_bench -- --ignored --nocapture
 //! ```
 //!
 //! `RIWORK_BENCH_ROUNDS` (default 40) sets the samples per request type,
