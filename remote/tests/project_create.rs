@@ -654,12 +654,22 @@ async fn the_real_cli_creates_a_project_in_its_own_default_folder_through_the_rp
     assert_eq!(plain["ok"], true, "{plain}");
     assert!(projects.join("Plain").is_dir() && !projects.join("Plain/.git").exists());
 
-    // Both are in the list exactly as the create answers gave them, and nothing else is.
+    // Both created projects are listed with live agent counts and no other records.
     let listed = call("projects.list", json!({})).await;
     let listed = listed["result"]["projects"].as_array().unwrap().clone();
     assert_eq!(listed.len(), 2, "{listed:?}");
-    assert!(listed.contains(&git["result"]["project"]), "{listed:?}");
-    assert!(listed.contains(&plain["result"]["project"]), "{listed:?}");
+    for created in [&git["result"]["project"], &plain["result"]["project"]] {
+        let mut project = listed
+            .iter()
+            .find(|project| project["id"] == created["id"])
+            .expect("the created project is listed")
+            .clone();
+        assert_eq!(
+            project.as_object_mut().unwrap().remove("agents"),
+            Some(json!({"working":0,"waiting":0,"done":0}))
+        );
+        assert_eq!(&project, created);
+    }
     assert_eq!(
         git["result"]["project_id"], git["result"]["project"]["id"],
         "{git}"

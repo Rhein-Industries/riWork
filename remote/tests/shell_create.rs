@@ -1179,11 +1179,32 @@ async fn the_real_cli_creates_lists_and_closes_a_terminal_through_the_rpc() {
     let agent_id = agent["result"]["shell_id"].as_str().unwrap().to_owned();
     assert_eq!(agent["result"]["shell"]["harness"], "claude");
 
-    // `shells.list` shows both, each as `shell.create` returned it.
+    // `shells.list` shows both with the same identity and current activity.
     let listed = call("shells.list", json!({"project_id":project})).await;
     let listed = listed["result"]["shells"].as_array().unwrap().clone();
-    assert!(listed.contains(&shell["result"]["shell"]), "{listed:?}");
-    assert!(listed.contains(&agent["result"]["shell"]), "{listed:?}");
+    assert_eq!(listed.len(), 2, "{listed:?}");
+    for created in [&shell["result"]["shell"], &agent["result"]["shell"]] {
+        let mut session = listed
+            .iter()
+            .find(|session| session["id"] == created["id"])
+            .expect("the created session is listed")
+            .clone();
+        assert!(
+            session["last_activity_unix"].as_u64().unwrap()
+                >= created["created_at_unix"].as_u64().unwrap()
+        );
+        if created["harness"].is_null() {
+            assert!(session.get("activity").is_none());
+        } else {
+            assert_eq!(session["activity"], "unknown");
+        }
+        let mut created = created.clone();
+        for field in ["last_activity_unix", "activity"] {
+            session.as_object_mut().unwrap().remove(field);
+            created.as_object_mut().unwrap().remove(field);
+        }
+        assert_eq!(session, created);
+    }
     // And the new shell can be read at once.
     let output = call("shell.output", json!({"shell_id":shell_id,"lines":5})).await;
     assert_eq!(output["ok"], true, "{output}");
