@@ -1350,7 +1350,7 @@ async fn when_the_connector_dies_the_terminals_hang_up_and_their_clients_end() {
 
 /// The real CLI and a real tmux in a throwaway `RIWORK_HOME`: the stand-in cannot
 /// show that the connector and the CLI agree on the state, the arguments and the terminal.
-/// `RIWORK_TEST_CLI=/absolute/path/to/riwork cargo test --test pty -- --ignored`
+/// `RIWORK_TEST_CLI=/absolute/path/to/riwork cargo test --locked --package riwork-remote --test pty -- --ignored`
 #[tokio::test]
 #[ignore = "requires RIWORK_TEST_CLI (an absolute RiWork CLI) and tmux; creates only isolated temporary data"]
 async fn the_real_cli_streams_a_real_tmux_shell_and_leaves_it_running() {

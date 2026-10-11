@@ -1,9 +1,6 @@
-//! Compile the production root terminal modules with strict Clippy, without GPUI.
-#[path = "../../src/session_input.rs"]
-mod session_input;
-#[path = "../../src/session_viewport.rs"]
-mod session_viewport;
+//! Exercise the production engine terminal APIs without GPUI.
 use anyhow::{Result, ensure};
+use riwork_engine::{session_input, session_viewport};
 use session_viewport::{Size, clear, resize};
 use std::process::Command;
 use uuid::Uuid;

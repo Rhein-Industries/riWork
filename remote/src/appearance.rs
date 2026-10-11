@@ -1,7 +1,7 @@
 //! The `appearance.get` result: `riwork appearance --json` checked before it
 //! goes to the phone.
 //!
-//! The desktop crate's `src/appearance_file.rs` defines and validates the same
+//! `riwork_core::appearance_file` defines and validates the same
 //! document. The two accept and reject the same input, and the matrices in both
 //! crates' tests must stay identical. This side also serves as a guard against
 //! a CLI that prints something else.

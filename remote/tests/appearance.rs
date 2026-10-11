@@ -1,10 +1,8 @@
 //! `appearance.get`, against a stub CLI that answers `appearance --json` from a
-//! file and records its argv. The desktop's own file module is compiled here
+//! file and records its argv. The core appearance file API is used here
 //! too, without GPUI, to keep the two validators identical and to feed the
 //! RPC what the desktop really writes.
-#[allow(dead_code)]
-#[path = "../../src/appearance_file.rs"]
-mod appearance_file;
+use riwork_core::appearance_file;
 
 use riwork_remote::{
     appearance::{MAX_BYTES, validate},

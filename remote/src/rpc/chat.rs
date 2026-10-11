@@ -5,7 +5,7 @@
 //! The connector validates the params before any CLI runs, builds the argument vector from
 //! the validated values (one argument per value, never a shell string), and checks what the
 //! CLI answers before it reaches the phone. The chat JSON itself (`ChatInfo`, `ChatEvent`,
-//! `ChatCommand`) is the desktop's `src/chat/model.rs` and is passed on as the CLI printed
+//! `ChatCommand`) is defined by `riwork_engine::chat::model` and is passed on as the CLI printed
 //! it: the phone decodes it leniently.
 //!
 //! - `chat.events` is a long poll. The CLI waits for the first event after `since`, collects
@@ -807,7 +807,9 @@ impl Page {
             .and_then(Value::as_u64)
     }
 }
-#[path = "../../../src/chat/remote_payload.rs"]
+// Keep the connector's payload recovery local so its production binary remains
+// independent of the engine crate. This is the same implementation as
+// riwork_engine::chat::remote_payload; preserve its wire behavior when updating it.
 mod remote_payload;
 #[cfg(test)]
 use remote_payload::cut_strings;

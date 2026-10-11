@@ -220,7 +220,7 @@ pub fn attach_args(spec: &OpenSpec) -> Vec<String> {
 /// - `TERM` as asked (one of the two allowed values) and `COLORTERM=truecolor`,
 ///   because the display is a Ghostty; `TERMINFO` only if the connector has one
 ///   (the CLI decides whether `xterm-ghostty` can be used here, see
-///   `attach_terminal` in `src/sessions.rs`);
+///   `riwork_engine::sessions::attach_terminal`);
 /// - tmux decides from the locale whether a client speaks UTF-8, so a locale
 ///   that is not one becomes `LANG=en_US.UTF-8`.
 pub fn environment(

@@ -1,6 +1,5 @@
-//! Compile and exercise the very same root forwarding module without GPUI.
-#[path = "../../src/remote_cli.rs"]
-mod remote_cli;
+//! Exercise the production engine forwarding module without GPUI.
+use riwork_engine::remote_cli;
 #[test]
 fn forwarding_child_entry() {
     if std::env::var_os("RIWORK_FORWARD_CHILD").is_some() {

@@ -3,7 +3,7 @@
 # A frame is JSON text, or 0x01 || inflated length (u32 big-endian) || raw deflate (RFC 1951) of that JSON text.
 # The Python vectors are made with zlib, independently of the Rust and Swift code; the Rust vector is the desktop's own output
 # (flate2) so that Apple's decoder is shown to read what the connector writes. Run:
-#   cargo test --manifest-path remote/Cargo.toml --lib print_the_rust_vector -- --ignored --nocapture \
+#   cargo test --locked --package riwork-remote --lib print_the_rust_vector -- --ignored --nocapture \
 #     | python3 remote/fixtures/generate_link.py
 # Writes remote/fixtures/link.json and ios/Tests/Fixtures/link.json.
 import json, pathlib, re, struct, sys, zlib

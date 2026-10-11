@@ -190,7 +190,7 @@ fn id(s: &str) -> std::result::Result<(), Fault> {
 /// The longest a `shell.output` may wait for a change.
 pub const MAX_WAIT_MS: i64 = 10_000;
 /// The most lines one `shell.history` page may hold, as far as the connector goes. The installed
-/// CLI limits itself (`src/sessions.rs`) and may be an older build; the first time it refuses a page
+/// CLI limits itself (`riwork_engine::sessions`) and may be an older build; the first time it refuses a page
 /// for being too long, `Rpc` remembers its limit (`Rpc::history_max_lines`) and says so in `ready`.
 pub const HISTORY_PAGE_MAX: u32 = crate::link::HISTORY_MAX_LINES;
 /// The limit the CLI names in `--lines needs an integer from 1 to N`, if that is what `message` says.
@@ -777,7 +777,7 @@ fn project_create_result(spec: &ProjectSpec, cli: &Value) -> Option<Value> {
     Some(json!({"project_id": project_id, "project": project(cli.clone(), PROJECT_FIELDS)}))
 }
 
-/// Direct-typing limits. `src/session_keys.rs` enforces the same ones in the
+/// Direct-typing limits. `riwork_engine::session_keys` enforces the same ones in the
 /// CLI; the two test matrices must stay identical.
 const KEYS_MAX_ITEMS: usize = 64;
 const KEYS_MAX_TEXT_BYTES: usize = 4096;
