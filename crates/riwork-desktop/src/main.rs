@@ -5,8 +5,8 @@ pub use riwork_core::{
     store,
 };
 pub use riwork_engine::{
-    activity, agent_hooks, cli_agents, cua, handoff, project_sort, project_tabs, remote_cache,
-    remote_cli, remote_hosts, remote_tree, runtime, schedule_chat, schedule_service,
+    activity, agent_hooks, cli_agents, cua, global_overview, handoff, project_sort, project_tabs,
+    remote_cache, remote_cli, remote_hosts, remote_tree, runtime, schedule_chat, schedule_service,
     session_catalog, session_input, session_keys, session_reload, session_viewport, sessions, sgr,
     upload_inbox, usage,
 };
@@ -19,11 +19,13 @@ mod chat_drafts;
 mod chat_tabs;
 mod chat_view;
 mod controls;
+mod dashboard;
 mod dictation;
 mod dock_menu;
 mod file_explorer;
 mod file_preview;
 mod form_input;
+mod global_nav;
 mod handoff_dialog;
 mod icons;
 mod metal_layer;
@@ -125,6 +127,7 @@ actions!(
         FocusSearch,
         OpenOrchestrator,
         OpenProjectOrchestrator,
+        OpenGlobalDashboard,
         NewProjectWindow,
         OpenCodex,
         OpenClaude,
@@ -1292,6 +1295,22 @@ struct CodexUsageEntry {
 }
 impl Global for AccountUsage {}
 
+/// What the global dashboard reads that the window does not sample anyway: the automations'
+/// ledger, and when failed chats last wrote (so old failures are not called new). Read off the
+/// window while the dashboard is on screen; reading starts no agent and no chat host.
+#[derive(Default)]
+struct DashboardReads {
+    schedules: Option<Result<Vec<schedules::Schedule>, String>>,
+    chat_activity: BTreeMap<String, u64>,
+    pending: bool,
+    read_at: Option<Instant>,
+    /// The dashboard lists the projects with nothing going on as well.
+    show_quiet: bool,
+}
+
+/// How often the dashboard reads the automations again while it is on screen.
+const DASHBOARD_READ_EVERY: Duration = Duration::from_secs(10);
+
 struct Workspace {
     modal_selection_scope: gpui_kit::base::TextSelectionScopeId,
     menu_focus: FocusHandle,
@@ -1424,6 +1443,17 @@ struct Workspace {
     /// Where the status bar's layout item was last drawn, so that the menu opens above it and
     /// a click on the item itself closes the menu instead of closing and reopening it.
     layout_item_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// The global menu of the status bar is open: the dashboard and the chat, hung from the
+    /// global item as the layout menu hangs from its own, and freezing the terminals alike.
+    global_menu_open: bool,
+    /// Where the global item was last drawn, for the menu's place and its own toggle.
+    global_item_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// What the dashboard reads beside the sessions, while it is on screen.
+    dashboard: DashboardReads,
+    /// When the sessions were last read (Unix seconds), and why the last read failed if it
+    /// did: the dashboard says how fresh its figures are.
+    sessions_sampled_at: Option<u64>,
+    sessions_sample_error: Option<String>,
     resizing: Option<SplitResize>,
     tab_dragging: bool,
     terminal_snapshots: BTreeMap<TabId, Arc<gpui::RenderImage>>,
@@ -2069,6 +2099,11 @@ impl Workspace {
             panel_menu: None,
             layout_menu_open: false,
             layout_item_bounds: Rc::new(Cell::new(Bounds::default())),
+            global_menu_open: false,
+            global_item_bounds: Rc::new(Cell::new(Bounds::default())),
+            dashboard: DashboardReads::default(),
+            sessions_sampled_at: None,
+            sessions_sample_error: None,
             resizing: None,
             tab_dragging: false,
             terminal_snapshots: BTreeMap::new(),
@@ -2674,6 +2709,7 @@ impl Workspace {
             PanelKind::Settings => "SETTINGS",
             PanelKind::Schedules => "AUTOMATIONS",
             PanelKind::ProjectSettings => "PROJECT SETTINGS",
+            PanelKind::Dashboard => "DASHBOARD",
         }
     }
 
@@ -3886,6 +3922,7 @@ impl Workspace {
         self.panes.clear();
         self.tab_dragging = false;
         self.layout_menu_open = false;
+        self.global_menu_open = false;
         self.release_snapshots(cx);
         self.drop_target = None;
         self.resizing = None;
@@ -5472,6 +5509,10 @@ impl Workspace {
         let files_visible =
             panel_on_screen(PanelKind::Files) || panel_on_screen(PanelKind::Preview);
         let project_settings_visible = panel_on_screen(PanelKind::ProjectSettings);
+        // The dashboard draws the sessions sampled below; the automations it reads itself.
+        if self.dashboard_on_screen() {
+            self.refresh_dashboard(false, cx);
+        }
         if project_settings_visible && let Some(panel) = &self.project_settings_panel {
             panel.update(cx, |panel, cx| panel.refresh_folders(window, cx));
         }
@@ -5666,14 +5707,27 @@ impl Workspace {
                 {
                     return;
                 }
-                let Ok((shells, metrics, cwds, claude_usage, chats, shared_tabs, foreign_tabs)) =
-                    result
-                else {
-                    return;
-                };
+                let (shells, metrics, cwds, claude_usage, chats, shared_tabs, foreign_tabs) =
+                    match result {
+                        Ok(sample) => sample,
+                        Err(error) => {
+                            // The dashboard says the sessions could not be read, not that
+                            // nothing runs.
+                            if workspace.sessions_sample_error.as_ref() != Some(&error) {
+                                workspace.sessions_sample_error = Some(error);
+                                cx.notify();
+                            }
+                            return;
+                        }
+                    };
+                let fresh = workspace.sessions_sampled_at.is_none()
+                    || workspace.sessions_sample_error.is_some();
+                workspace.sessions_sampled_at = Some(activity::unix_now());
+                workspace.sessions_sample_error = None;
                 // Most ticks find everything as it was; the window is drawn again
                 // only when something it shows is different.
-                let mut changed = workspace.shells != shells
+                let mut changed = fresh
+                    || workspace.shells != shells
                     || workspace.claude_usage != claude_usage
                     || metrics
                         .as_ref()
@@ -6969,6 +7023,7 @@ impl Workspace {
         }
         self.panel_menu = None;
         self.layout_menu_open = false;
+        self.global_menu_open = false;
         self.finish_tab_drag(cx);
         // Focus mode shows one pane, where the new arrangement could not be seen.
         if self.focus_mode {
@@ -7065,6 +7120,7 @@ impl Workspace {
             self.menu_return.capture(window, cx);
         }
         self.panel_menu = None;
+        self.global_menu_open = false;
         self.layout_menu_open = true;
         // Terminals are native views drawn above everything of ours; the menu is drawn over
         // their snapshots instead, as a pane's menu is.
@@ -7810,10 +7866,11 @@ impl Workspace {
 
     fn toggle_panel_menu(&mut self, pane_id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
         self.dismiss_project_sort_menus(window, cx);
-        if self.panel_menu.is_none() && !self.layout_menu_open {
+        if self.panel_menu.is_none() && !self.layout_menu_open && !self.global_menu_open {
             self.menu_return.capture(window, cx);
         }
         self.layout_menu_open = false;
+        self.global_menu_open = false;
         self.active_pane = pane_id;
         self.panel_menu = if self.panel_menu == Some(pane_id) {
             None
@@ -8579,6 +8636,7 @@ impl Workspace {
         self.focus_mode = enabled;
         self.panel_menu = None;
         self.layout_menu_open = false;
+        self.global_menu_open = false;
         self.resizing = None;
         self.drop_target = None;
         self.finish_tab_drag(cx);
@@ -8887,6 +8945,11 @@ impl Workspace {
         }
         if event.keystroke.key == "escape" && self.layout_menu_open {
             self.close_layout_menu(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if event.keystroke.key == "escape" && self.global_menu_open {
+            self.close_global_menu(window, cx);
             cx.stop_propagation();
             return;
         }
@@ -9818,6 +9881,7 @@ impl Workspace {
                 panels::unavailable(*kind, remote_host_label.as_deref().unwrap_or_default(), cx)
             }
             Some(TabContent::Panel(PanelKind::Usage)) => self.render_usage_panel(cx),
+            Some(TabContent::Panel(PanelKind::Dashboard)) => self.render_dashboard(cx),
             Some(TabContent::Panel(PanelKind::Schedules)) => self
                 .schedule_panel
                 .as_ref()
@@ -10160,6 +10224,7 @@ impl Workspace {
                             PanelKind::Shells,
                             PanelKind::Usage,
                             PanelKind::Schedules,
+                            PanelKind::Dashboard,
                             PanelKind::ProjectSettings,
                             PanelKind::Settings,
                         ]
@@ -10177,6 +10242,7 @@ impl Workspace {
                                     PanelKind::Preview => "⌘⇧P",
                                     PanelKind::Settings => "⌘,",
                                     PanelKind::Schedules => "⌘⇧S",
+                                    PanelKind::Dashboard => "⌘⌥G",
                                     _ => "",
                                 },
                                 None,
@@ -10507,21 +10573,7 @@ impl Workspace {
                     })
                     .into_any_element()
             }
-            StatusItemKind::GlobalOrchestrator => {
-                behavior_controls::action("top-orchestrator", "Open global orchestrator", colors)
-                    .flex_none()
-                    .text_color(rgb(status_accent(colors.magenta, colors)))
-                    .child(ui_text::quiet(format!(
-                        "{}G·ORCH",
-                        orchestrator_mark(
-                            self.chat_orchestrator_activity(&OrchestratorScope::Global, cx)
-                        )
-                    )))
-                    .on_click(cx.listener(|workspace, _, window, cx| {
-                        workspace.open_orchestrator(window, cx)
-                    }))
-                    .into_any_element()
-            }
+            StatusItemKind::GlobalOrchestrator => self.render_global_status(cx),
             StatusItemKind::ProjectOrchestrator => behavior_controls::action(
                 "project-orchestrator",
                 "Open project orchestrator",
@@ -11512,6 +11564,9 @@ impl Render for Workspace {
         if self.layout_menu_open && (!self.layout_item_shown() || !self.tab_dragging) {
             self.layout_menu_open = false;
         }
+        if self.global_menu_open && (!self.global_item_shown() || !self.tab_dragging) {
+            self.global_menu_open = false;
+        }
         self.settle_terminal_drop(cx);
         if !cx.has_active_drag() {
             self.drop_target = None;
@@ -11524,6 +11579,7 @@ impl Render for Workspace {
                 && self.panel_menu.is_none()
                 && self.strip_menu.is_none()
                 && !self.layout_menu_open
+                && !self.global_menu_open
                 && !self.modal_open()
             {
                 self.finish_tab_drag(cx);
@@ -11596,6 +11652,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_focus_mode_action))
             .on_action(cx.listener(Self::open_orchestrator_action))
             .on_action(cx.listener(Self::open_project_orchestrator_action))
+            .on_action(cx.listener(Self::open_global_dashboard_action))
             .capture_key_down(cx.listener(|workspace, event: &KeyDownEvent, window, cx| {
                 // A shortcut acts on the window, not the strip menu: close the menu first so
                 // the terminals thaw and focus returns before the action runs.
@@ -11692,6 +11749,10 @@ impl Render for Workspace {
             .children(
                 self.layout_menu_open
                     .then(|| self.render_layout_menu(window.viewport_size().width.as_f32(), cx)),
+            )
+            .children(
+                self.global_menu_open
+                    .then(|| self.render_global_menu(window.viewport_size().width.as_f32(), cx)),
             )
             .children(show_window_controls.then(|| window_controls_island(cx)))
             .children(self.project_creator.as_ref().map(|creator| {
@@ -12075,6 +12136,7 @@ fn panel_tooltip(panel: PanelKind) -> &'static str {
         PanelKind::Settings => "Settings · ⌘,",
         PanelKind::ProjectSettings => "Project Settings · ⌘⌥A",
         PanelKind::Schedules => "Automations · ⌘⇧S",
+        PanelKind::Dashboard => "Global dashboard · ⌘⌥G",
     }
 }
 
@@ -12935,6 +12997,7 @@ fn main() {
             KeyBinding::new("cmd-shift-f", ToggleFocusMode, None),
             KeyBinding::new("cmd-shift-o", OpenOrchestrator, None),
             KeyBinding::new("cmd-alt-o", OpenProjectOrchestrator, None),
+            KeyBinding::new("cmd-alt-g", OpenGlobalDashboard, None),
             KeyBinding::new("cmd-shift-n", NewProjectWindow, None),
             KeyBinding::new("cmd-shift-c", OpenCodex, None),
             KeyBinding::new("cmd-shift-l", OpenClaude, None),
@@ -12955,6 +13018,9 @@ fn main() {
             behavior_controls::edit_menu(),
             // RiWork's own text; terminals zoom with the same keys while focused.
             Menu::new("View").items([
+                MenuItem::action("Global Dashboard", OpenGlobalDashboard),
+                MenuItem::action("Global Chat", OpenOrchestrator),
+                MenuItem::separator(),
                 MenuItem::action("New chat…", OpenNewChat),
                 MenuItem::action("Sessions", OpenSessions),
                 MenuItem::action("Default Layout", ApplyDefaultLayout),

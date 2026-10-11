@@ -12,6 +12,7 @@ pub mod chat;
 pub mod cli_agents;
 pub mod cua;
 pub mod file_preview;
+pub mod global_overview;
 pub mod handoff;
 pub mod notifications;
 pub mod orchestrators;

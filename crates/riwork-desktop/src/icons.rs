@@ -86,6 +86,7 @@ impl Icon {
                 PanelKind::Settings => "gearshape",
                 PanelKind::ProjectSettings => "slider.horizontal.3",
                 PanelKind::Schedules => "calendar",
+                PanelKind::Dashboard => "globe",
             },
             Self::Action(action) => match action {
                 ActionGlyph::NewFolder => "folder.badge.plus",
@@ -583,6 +584,19 @@ fn panel_glyph(path: &mut PathBuilder, panel: PanelKind) {
             path.line_to(point(px(7.0), px(7.0)));
             path.line_to(point(px(9.4), px(8.4)));
         }
+        PanelKind::Dashboard => {
+            // A globe: its outline, a meridian seen from the side, and the equator.
+            circle(path, 7.0, 7.0, 5.3);
+            for bulge in [4.3, 9.7] {
+                path.move_to(point(px(7.0), px(1.7)));
+                path.cubic_bezier_to(
+                    point(px(7.0), px(12.3)),
+                    point(px(bulge), px(3.6)),
+                    point(px(bulge), px(10.4)),
+                );
+            }
+            line(path, (1.7, 7.0), (12.3, 7.0));
+        }
     }
 }
 
@@ -772,7 +786,7 @@ fn circle(path: &mut PathBuilder, x: f32, y: f32, radius: f32) {
 mod tests {
     use super::*;
 
-    const PANELS: [PanelKind; 10] = [
+    const PANELS: [PanelKind; 11] = [
         PanelKind::Projects,
         PanelKind::Worktrees,
         PanelKind::Files,
@@ -783,6 +797,7 @@ mod tests {
         PanelKind::Settings,
         PanelKind::ProjectSettings,
         PanelKind::Schedules,
+        PanelKind::Dashboard,
     ];
 
     const ACTIONS: [ActionGlyph; 7] = [

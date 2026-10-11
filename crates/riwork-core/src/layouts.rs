@@ -926,6 +926,9 @@ pub enum PanelKind {
     Settings,
     ProjectSettings,
     Schedules,
+    /// The global dashboard: the work of every project on this Mac. Builds from before it
+    /// skip its tab when they read a layout, and keep it when they save one.
+    Dashboard,
 }
 
 impl PanelKind {
@@ -942,6 +945,7 @@ impl PanelKind {
             Self::Settings => "settings",
             Self::ProjectSettings => "project_settings",
             Self::Schedules => "schedules",
+            Self::Dashboard => "dashboard",
         }
     }
 
@@ -958,6 +962,7 @@ impl PanelKind {
             Self::Settings => "Settings",
             Self::Schedules => "Automations",
             Self::ProjectSettings => "Project settings",
+            Self::Dashboard => "Dashboard",
         }
     }
 }
@@ -2782,6 +2787,34 @@ mod tests {
         );
         assert_eq!(store.load("old").unwrap(), Some(changed));
         assert_eq!(store.load("brand-new").unwrap(), Some(saved_layout()));
+    }
+
+    #[test]
+    fn a_dashboard_tab_is_saved_by_name_and_comes_back_selected() {
+        let directory = TestDirectory::new();
+        let mut layout = saved_layout();
+        let pane = layout.panes.get_mut(&15).unwrap();
+        pane.tabs.push(SavedTab::Panel {
+            panel: PanelKind::Dashboard,
+        });
+        pane.active_tab_key = Some("panel:dashboard".to_owned());
+        layout.normalize().unwrap();
+        directory.store().save("project-a", &layout).unwrap();
+
+        // One more panel name in the file: a build that predates it skips the tab, as it
+        // skips any kind it does not know, and keeps it when it saves.
+        let stored = directory.read_value();
+        assert_eq!(
+            stored["projects"]["project-a"]["panes"]["15"]["tabs"],
+            serde_json::json!([{"kind": "panel", "panel": "dashboard"}])
+        );
+        let loaded = directory.store().load("project-a").unwrap().unwrap();
+        assert_eq!(
+            loaded.panes[&15].active_tab_key.as_deref(),
+            Some("panel:dashboard")
+        );
+        assert_eq!(loaded, layout);
+        assert!(!NAVIGATION_PANELS.contains(&PanelKind::Dashboard));
     }
 
     #[test]

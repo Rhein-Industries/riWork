@@ -595,7 +595,8 @@ pub fn render_panel<V: Render + 'static>(
         | PanelKind::Usage
         | PanelKind::Settings
         | PanelKind::ProjectSettings
-        | PanelKind::Schedules => {}
+        | PanelKind::Schedules
+        | PanelKind::Dashboard => {}
         PanelKind::Projects => {
             total = data.state.projects.len();
             let order = sorted_project_indices(
@@ -2765,7 +2766,8 @@ pub enum RemoteSupport {
 pub fn remote_support(kind: PanelKind) -> RemoteSupport {
     match kind {
         PanelKind::Worktrees | PanelKind::Tasks | PanelKind::Shells => RemoteSupport::Lists,
-        PanelKind::Projects | PanelKind::Settings => RemoteSupport::Global,
+        // The dashboard is this Mac's own work, whichever project the window shows.
+        PanelKind::Projects | PanelKind::Settings | PanelKind::Dashboard => RemoteSupport::Global,
         PanelKind::Files
         | PanelKind::Preview
         | PanelKind::ProjectSettings
@@ -2789,6 +2791,7 @@ pub fn unavailable<V: 'static>(kind: PanelKind, host: &str, cx: &mut Context<V>)
         PanelKind::Tasks => "Tasks",
         PanelKind::Shells => "Sessions",
         PanelKind::Settings => "Settings",
+        PanelKind::Dashboard => "Dashboard",
     };
     div()
         .id(format!("unavailable-{}", kind.name()))

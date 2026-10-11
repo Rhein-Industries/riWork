@@ -62,7 +62,7 @@ impl StatusItemKind {
             Self::Usage => "The active account's remaining quota.",
             Self::CodexAccount => "Focused Codex account email, or the configured project default.",
             Self::SessionId => "The active session's ID; click to copy it.",
-            Self::GlobalOrchestrator => "Open the global orchestrator.",
+            Self::GlobalOrchestrator => "Open the global dashboard or the global chat.",
             Self::ProjectOrchestrator => "Open this project's orchestrator.",
             Self::Layout => "Apply the default layout or gather tabs into the main pane.",
         }
