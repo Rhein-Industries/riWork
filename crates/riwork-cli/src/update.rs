@@ -73,8 +73,10 @@ fn resolve_source_from(
     if let Some(source) = explicit.or(configured) {
         return validate_source(source);
     }
-    if let Ok(source) = validate_source(manifest) {
-        return Ok(source);
+    for candidate in manifest.ancestors() {
+        if let Ok(source) = validate_source(candidate) {
+            return Ok(source);
+        }
     }
     if let Some(executable) = executable {
         for candidate in executable.ancestors().skip(1) {
@@ -87,16 +89,73 @@ fn resolve_source_from(
 }
 
 fn validate_source(source: &Path) -> Result<PathBuf, String> {
+    validate_source_layout(source).map(|(source, _)| source)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourceLayout {
+    Workspace,
+    Legacy,
+}
+
+impl SourceLayout {
+    fn companion_target(self, root: &Path) -> PathBuf {
+        match self {
+            Self::Workspace => root.join("target"),
+            Self::Legacy => root.join("remote/target"),
+        }
+    }
+}
+
+fn validate_source_layout(source: &Path) -> Result<(PathBuf, SourceLayout), String> {
     let source = source
         .canonicalize()
         .map_err(|error| format!("Cannot resolve source {}: {error}", source.display()))?;
-    for relative in [
-        "Cargo.toml",
-        "src/main.rs",
-        "scripts/bundle-macos.sh",
-        // The only icon the bundler reads.
-        "assets/app-icon/RiWork-legacy.icns",
-    ] {
+    require_source_files(&source, &["Cargo.toml"])?;
+    let manifest = fs::read_to_string(source.join("Cargo.toml"))
+        .map_err(|error| format!("Cannot read RiWork Cargo.toml: {error}"))?;
+    let layout = if manifest_names_section(&manifest, "[package]", "riwork") {
+        // Keep updates of older source checkouts (and their fixtures) working.
+        require_source_files(&source, &["src/main.rs"])?;
+        SourceLayout::Legacy
+    } else if manifest_has_section(&manifest, "[workspace]")
+        && !manifest_has_section(&manifest, "[package]")
+    {
+        let desktop_manifest = "crates/riwork-desktop/Cargo.toml";
+        require_source_files(
+            &source,
+            &[desktop_manifest, "crates/riwork-desktop/src/main.rs"],
+        )?;
+        let desktop = fs::read_to_string(source.join(desktop_manifest))
+            .map_err(|error| format!("Cannot read RiWork {desktop_manifest}: {error}"))?;
+        if !manifest_names_section(&desktop, "[package]", "riwork-desktop")
+            || !manifest_names_section(&desktop, "[[bin]]", "riwork")
+        {
+            return Err(format!(
+                "{} does not contain the riwork-desktop Cargo package with its riwork binary",
+                source.display()
+            ));
+        }
+        SourceLayout::Workspace
+    } else {
+        return Err(format!(
+            "{} does not contain the riwork Cargo package or the RiWork virtual workspace",
+            source.display()
+        ));
+    };
+    require_source_files(
+        &source,
+        &[
+            "scripts/bundle-macos.sh",
+            // The only icon the bundler reads.
+            "assets/app-icon/RiWork-legacy.icns",
+        ],
+    )?;
+    Ok((source, layout))
+}
+
+fn require_source_files(source: &Path, files: &[&str]) -> Result<(), String> {
+    for relative in files {
         if !source.join(relative).is_file() {
             return Err(format!(
                 "{} is not a RiWork checkout: missing {relative}",
@@ -104,28 +163,41 @@ fn validate_source(source: &Path) -> Result<PathBuf, String> {
             ));
         }
     }
-    let manifest = fs::read_to_string(source.join("Cargo.toml"))
-        .map_err(|error| format!("Cannot read RiWork Cargo.toml: {error}"))?;
-    let mut package = false;
-    let mut riwork = false;
-    for line in manifest.lines().map(str::trim) {
+    Ok(())
+}
+
+fn manifest_lines(manifest: &str) -> impl Iterator<Item = &str> {
+    manifest
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or_default().trim())
+}
+
+fn manifest_has_section(manifest: &str, section: &str) -> bool {
+    manifest_lines(manifest).any(|line| line == section)
+}
+
+fn manifest_names_section(manifest: &str, section: &str, name: &str) -> bool {
+    let mut selected = false;
+    for line in manifest_lines(manifest) {
         if line.starts_with('[') {
-            package = line == "[package]";
+            selected = line == section;
         }
-        if package && let Some((key, value)) = line.split_once('=') {
-            let value = value.trim().split('#').next().unwrap_or_default().trim();
-            if key.trim() == "name" && matches!(value, "\"riwork\"" | "'riwork'") {
-                riwork = true;
+        if selected && let Some((key, value)) = line.split_once('=') {
+            let value = value.trim();
+            let value = value
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+                .or_else(|| {
+                    value
+                        .strip_prefix('\'')
+                        .and_then(|value| value.strip_suffix('\''))
+                });
+            if key.trim() == "name" && value == Some(name) {
+                return true;
             }
         }
     }
-    if !riwork {
-        return Err(format!(
-            "{} does not contain the riwork Cargo package",
-            source.display()
-        ));
-    }
-    Ok(source)
+    false
 }
 
 fn update_profile(profile: Option<&str>) -> Result<&str, String> {
@@ -160,7 +232,7 @@ fn build_update_with(
     // Declared first so it is released last: a signal that arrives during
     // cleanup must not end the process before staging is removed.
     let _interrupts = InterruptGuard::install();
-    let source = validate_source(source)?;
+    let (source, layout) = validate_source_layout(source)?;
     let profile = update_profile(profile)?.to_owned();
     let target = source.join("target");
     fs::create_dir_all(&target)
@@ -201,18 +273,11 @@ fn build_update_with(
     )?;
     let cargo = find_tool("cargo", tool_path)
         .ok_or("Cargo is required to rebuild RiWork. Install Rust or put cargo on PATH.")?;
-    let mut build = Command::new(&cargo);
-    build
-        .current_dir(&source)
-        .args(["build", "--locked", "--bin", "riwork"])
-        .env("CARGO_TARGET_DIR", &staged_target)
-        .env("PATH", tool_path);
+    let mut build =
+        desktop_build_command(&cargo, &source, &staged_target, &profile, tool_path, layout);
     if let Some(zig) = &environment.zig {
         build.env("ZIG", zig);
         eprintln!("Using Zig at {}.", zig.display());
-    }
-    if profile == "release" {
-        build.arg("--release");
     }
     eprintln!("Building RiWork ({profile}). Log: {}", log_path.display());
     run_stage(
@@ -227,16 +292,20 @@ fn build_update_with(
     // optional binary from the running app or silently omit it after failure.
     let companion = source.join("remote/Cargo.toml").is_file();
     if companion {
-        let remote_target = staging.path.join("remote/target");
-        fs::create_dir_all(&remote_target)
-            .map_err(|e| format!("Cannot stage remote target: {e}"))?;
-        seed_build_cache(
-            &source.join("remote/target").join(&profile),
-            &remote_target.join(&profile),
-            tool_path,
-            &mut log,
-            &log_path,
-        )?;
+        let remote_target = layout.companion_target(&staging.path);
+        // Workspace builds already share the cloned target cache. Cloning it
+        // again here would overwrite the desktop build that just completed.
+        if remote_target != staged_target {
+            fs::create_dir_all(&remote_target)
+                .map_err(|e| format!("Cannot stage remote target: {e}"))?;
+            seed_build_cache(
+                &layout.companion_target(&source).join(&profile),
+                &remote_target.join(&profile),
+                tool_path,
+                &mut log,
+                &log_path,
+            )?;
+        }
         let mut remote_build =
             companion_build_command(&cargo, &source, &remote_target, &profile, tool_path);
         eprintln!("Building riwork-remote ({profile}).");
@@ -247,6 +316,23 @@ fn build_update_with(
             &mut log,
             &log_path,
         )?;
+    } else {
+        // A shared cache can contain a companion from a checkout that used to
+        // have one. The optional bundler must not package that stale binary.
+        let cached_companion = layout
+            .companion_target(&staging.path)
+            .join(&profile)
+            .join("riwork-remote");
+        match fs::remove_file(&cached_companion) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Cannot clear cached companion {}: {error}",
+                    cached_companion.display()
+                ));
+            }
+        }
     }
 
     // The existing bundler removes target/<profile>/RiWork.app. Run an exact
@@ -342,6 +428,29 @@ fn build_update_with(
         previous_bundle,
         log_path,
     })
+}
+
+fn desktop_build_command(
+    cargo: &Path,
+    source: &Path,
+    target: &Path,
+    profile: &str,
+    tool_path: &std::ffi::OsStr,
+    layout: SourceLayout,
+) -> Command {
+    let mut command = Command::new(cargo);
+    command.current_dir(source).args(["build", "--locked"]);
+    if layout == SourceLayout::Workspace {
+        command.args(["-p", "riwork-desktop"]);
+    }
+    command
+        .args(["--bin", "riwork"])
+        .env("CARGO_TARGET_DIR", target)
+        .env("PATH", tool_path);
+    if profile == "release" {
+        command.arg("--release");
+    }
+    command
 }
 
 fn companion_build_command(
@@ -1115,6 +1224,34 @@ mod tests {
         source
     }
 
+    fn workspace_fixture(parent: &Path, name: &str) -> PathBuf {
+        let source = fixture(parent, name);
+        fs::remove_file(source.join("src/main.rs")).unwrap();
+        fs::remove_dir(source.join("src")).unwrap();
+        fs::write(
+            source.join("Cargo.toml"),
+            "[workspace]\nresolver = \"3\"\nmembers = [\"crates/*\", \"remote\"]\ndefault-members = [\"crates/riwork-desktop\"]\n",
+        )
+        .unwrap();
+        for (relative, package, binary) in [
+            ("crates/riwork-desktop", "riwork-desktop", "riwork"),
+            ("crates/riwork-cli", "riwork-cli", "riwork-cli"),
+            ("remote", "riwork-remote", "riwork-remote"),
+        ] {
+            let crate_root = source.join(relative);
+            fs::create_dir_all(crate_root.join("src")).unwrap();
+            fs::write(
+                crate_root.join("Cargo.toml"),
+                format!(
+                    "[package]\nname = \"{package}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[[bin]]\nname = \"{binary}\"\npath = \"src/main.rs\"\n"
+                ),
+            )
+            .unwrap();
+            fs::write(crate_root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        }
+        source
+    }
+
     #[test]
     fn source_resolution_honors_explicit_and_configured_checkouts() {
         let temporary = StagingDirectory::new(
@@ -1143,6 +1280,40 @@ mod tests {
         assert_eq!(
             resolve_source_from(None, None, &missing, Some(&executable)).unwrap(),
             compiled.canonicalize().unwrap()
+        );
+        let workspace = workspace_fixture(&temporary.path, "workspace source");
+        let nested_manifest = workspace.join("crates/riwork-cli");
+        assert_eq!(
+            resolve_source_from(None, None, &nested_manifest, Some(&executable)).unwrap(),
+            workspace.canonicalize().unwrap(),
+            "the compiled crate's workspace takes priority over executable ancestors"
+        );
+        assert_eq!(
+            resolve_source_from(Some(&explicit), Some(&workspace), &nested_manifest, None).unwrap(),
+            explicit.canonicalize().unwrap()
+        );
+        assert_eq!(
+            resolve_source_from(None, Some(&workspace), &compiled, None).unwrap(),
+            workspace.canonicalize().unwrap()
+        );
+        assert_eq!(
+            resolve_source_from(Some(&workspace), Some(&configured), &compiled, None).unwrap(),
+            workspace.canonicalize().unwrap()
+        );
+        // A supplied crate directory must fail as supplied, even though its
+        // ancestors contain a valid checkout. Only automatic discovery climbs.
+        assert!(
+            resolve_source_from(Some(&nested_manifest), Some(&configured), &compiled, None)
+                .is_err()
+        );
+        assert!(
+            resolve_source_from(None, Some(&nested_manifest), &compiled, Some(&executable))
+                .is_err()
+        );
+        let workspace_executable = workspace.join("target/debug/RiWork.app/Contents/MacOS/riwork");
+        assert_eq!(
+            resolve_source_from(None, None, &missing, Some(&workspace_executable)).unwrap(),
+            workspace.canonicalize().unwrap()
         );
     }
 
@@ -1182,6 +1353,49 @@ mod tests {
         fs::write(source.join(relative), b"icon fixture").unwrap();
         assert!(!source.join("assets/app-icon/RiWork.icns").exists());
         validate_source(&source).unwrap();
+        assert_eq!(
+            validate_source_layout(&source).unwrap().1,
+            SourceLayout::Legacy
+        );
+
+        let workspace = workspace_fixture(&temporary.path, "workspace");
+        assert!(!workspace.join("src/main.rs").exists());
+        assert_eq!(
+            validate_source_layout(&workspace).unwrap().1,
+            SourceLayout::Workspace
+        );
+        for relative in [
+            "crates/riwork-desktop/Cargo.toml",
+            "crates/riwork-desktop/src/main.rs",
+            "scripts/bundle-macos.sh",
+            "assets/app-icon/RiWork-legacy.icns",
+        ] {
+            let path = workspace.join(relative);
+            let original = fs::read(&path).unwrap();
+            fs::remove_file(&path).unwrap();
+            assert!(validate_source(&workspace).unwrap_err().contains(relative));
+            fs::write(&path, original).unwrap();
+        }
+        let desktop_manifest = workspace.join("crates/riwork-desktop/Cargo.toml");
+        let desktop = fs::read_to_string(&desktop_manifest).unwrap();
+        for invalid in [
+            desktop.replace("name = \"riwork-desktop\"", "name = \"other\""),
+            desktop.replace("name = \"riwork\"", "name = \"other-binary\""),
+        ] {
+            fs::write(&desktop_manifest, invalid).unwrap();
+            assert!(
+                validate_source(&workspace)
+                    .unwrap_err()
+                    .contains("riwork-desktop Cargo package with its riwork binary")
+            );
+        }
+        fs::write(&desktop_manifest, desktop).unwrap();
+        let root_manifest = workspace.join("Cargo.toml");
+        let root = fs::read_to_string(&root_manifest).unwrap();
+        fs::write(&root_manifest, "[workspace.package]\nname = \"riwork\"\n").unwrap();
+        assert!(validate_source(&workspace).is_err());
+        fs::write(&root_manifest, root).unwrap();
+        validate_source(&workspace).unwrap();
         for profile in ["../release", "release; false", "", "/tmp", "custom"] {
             assert!(update_profile(Some(profile)).is_err());
         }
@@ -1288,14 +1502,53 @@ mod tests {
     }
 
     #[test]
-    fn companion_build_uses_staged_target_and_bundle_validation_fails_closed() {
+    fn workspace_builds_share_staged_target_and_bundle_validation_fails_closed() {
         let temporary = StagingDirectory::new(
             env::temp_dir().join(format!("riwork-update-companion-{}", Uuid::new_v4())),
         )
         .unwrap();
         let source = temporary.path.join("source with spaces");
-        let target = temporary.path.join("staging/remote/target");
+        let staging = temporary.path.join("staging");
+        let target = staging.join("target");
+        assert_eq!(SourceLayout::Workspace.companion_target(&staging), target);
+        assert_eq!(
+            SourceLayout::Workspace.companion_target(&source),
+            source.join("target")
+        );
+        assert_eq!(
+            SourceLayout::Legacy.companion_target(&staging),
+            staging.join("remote/target")
+        );
         for profile in ["debug", "release"] {
+            for layout in [SourceLayout::Workspace, SourceLayout::Legacy] {
+                let desktop = desktop_build_command(
+                    Path::new("/test/cargo"),
+                    &source,
+                    &target,
+                    profile,
+                    std::ffi::OsStr::new("/test/bin"),
+                    layout,
+                );
+                let mut expected = vec!["build", "--locked"];
+                if layout == SourceLayout::Workspace {
+                    expected.extend(["-p", "riwork-desktop"]);
+                }
+                expected.extend(["--bin", "riwork"]);
+                if profile == "release" {
+                    expected.push("--release");
+                }
+                assert_eq!(
+                    desktop
+                        .get_args()
+                        .map(|arg| arg.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>(),
+                    expected
+                );
+                assert_eq!(desktop.get_current_dir(), Some(source.as_path()));
+                assert!(desktop.get_envs().any(|(key, value)| {
+                    key == "CARGO_TARGET_DIR" && value == Some(target.as_os_str())
+                }));
+            }
             let command = companion_build_command(
                 Path::new("/test/cargo"),
                 &source,
@@ -1698,15 +1951,31 @@ mod tests {
     /// pipeline runs in a second without building anything.
     #[cfg(target_os = "macos")]
     fn pipeline_fixture(temporary: &Path) -> (PathBuf, UpdateEnvironment) {
-        let source = fixture(temporary, "pipeline source");
+        let source = workspace_fixture(temporary, "pipeline source");
         write_executable(
             &source.join("scripts/bundle-macos.sh"),
-            "set -eu\nbundle=target/$1/RiWork.app\nmkdir -p $bundle/Contents/MacOS $bundle/Contents/Resources/terminfo/78 $bundle/Contents/Resources/ghostty/shell-integration/zsh\ncp target/$1/riwork $bundle/Contents/MacOS/riwork\ncp assets/app-icon/RiWork-legacy.icns $bundle/Contents/Resources/RiWork.icns\ntouch $bundle/Contents/Info.plist $bundle/Contents/Resources/terminfo/78/xterm-ghostty $bundle/Contents/Resources/ghostty/shell-integration/zsh/ghostty-integration",
+            r#"set -eu
+bundle="target/$1/RiWork.app"
+mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources/terminfo/78" "$bundle/Contents/Resources/ghostty/shell-integration/zsh"
+cp "target/$1/riwork" "$bundle/Contents/MacOS/riwork"
+cp "target/$1/riwork-remote" "$bundle/Contents/MacOS/riwork-remote"
+cp assets/app-icon/RiWork-legacy.icns "$bundle/Contents/Resources/RiWork.icns"
+touch "$bundle/Contents/Info.plist" "$bundle/Contents/Resources/terminfo/78/xterm-ghostty" "$bundle/Contents/Resources/ghostty/shell-integration/zsh/ghostty-integration"
+"#,
         );
         let tools = temporary.join("tools");
         write_executable(
             &tools.join("cargo"),
-            "mkdir -p \"$CARGO_TARGET_DIR/debug\"\nmode=$(cat build-mode)\nprintf '#!/bin/sh\\n%s\\n' \"$mode\" > \"$CARGO_TARGET_DIR/debug/riwork\"\nchmod +x \"$CARGO_TARGET_DIR/debug/riwork\"",
+            r#"set -eu
+binary=riwork
+for arg in "$@"; do
+    if [ "$arg" = riwork-remote ]; then binary=riwork-remote; fi
+done
+mkdir -p "$CARGO_TARGET_DIR/debug"
+mode=$(cat build-mode)
+printf '#!/bin/sh\n%s\n' "$mode" > "$CARGO_TARGET_DIR/debug/$binary"
+chmod +x "$CARGO_TARGET_DIR/debug/$binary"
+"#,
         );
         let tool_path =
             env::join_paths([tools, PathBuf::from("/usr/bin"), PathBuf::from("/bin")]).unwrap();
@@ -1753,6 +2022,7 @@ mod tests {
         assert!(!stale.exists(), "interrupted staging is swept");
         assert_eq!(first.previous_bundle, None);
         assert!(installed("riwork").contains("generation one"));
+        assert!(installed("RiWork.app/Contents/MacOS/riwork-remote").contains("generation one"));
         let logs = |source: &Path| {
             fs::read_dir(source.join("target"))
                 .unwrap()
@@ -1766,6 +2036,7 @@ mod tests {
         let second = build_update_with(&source, Some("debug"), &environment).unwrap();
         assert!(installed("riwork").contains("generation two"));
         assert!(installed("RiWork.app/Contents/MacOS/riwork").contains("generation two"));
+        assert!(installed("RiWork.app/Contents/MacOS/riwork-remote").contains("generation two"));
         assert_eq!(
             second.previous_bundle,
             Some(source.join("target/debug/RiWork.app.previous"))
@@ -1779,6 +2050,7 @@ mod tests {
         assert!(error.contains("does not run"), "{error}");
         assert!(installed("riwork").contains("generation two"));
         assert!(installed("RiWork.app/Contents/MacOS/riwork").contains("generation two"));
+        assert!(installed("RiWork.app/Contents/MacOS/riwork-remote").contains("generation two"));
         assert!(installed("riwork.previous").contains("generation one"));
         assert!(
             fs::read_dir(source.join("target"))
