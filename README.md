@@ -13,6 +13,20 @@ A compact, themeable GPUI workspace with native Ghostty terminals on macOS. Tabs
 - Vim for editing files in persistent RiWork tabs (included with macOS)
 - macOS 14 or later for Cua.ai desktop control; RiWork setup installs Cua Driver
 
+## Rust workspace
+
+The Rust implementation is divided into five packages:
+
+| Package | Location | Responsibility |
+| --- | --- | --- |
+| `riwork-core` | `crates/riwork-core` | Stored models, paths, configuration, and persistence |
+| `riwork-engine` | `crates/riwork-engine` | Sessions, chat providers, scheduling, and orchestration |
+| `riwork-cli` | `crates/riwork-cli` | CLI and MCP commands, updater, and the headless `riwork-cli` executable |
+| `riwork-desktop` | `crates/riwork-desktop` | GPUI windows, Ghostty terminals, native controls, and the public `riwork` executable |
+| `riwork-remote` | `remote` | Encrypted relay, desktop connector, and remote client |
+
+Core and engine have no GPUI or Ghostty dependency. The desktop calls the same CLI implementation before starting its UI, preserving the `riwork` command. The default workspace member is desktop; use `cargo build -p riwork-cli` or `cargo build -p riwork-remote` to build either companion independently. All Rust packages share the root lockfile and target directory. The Swift iOS app remains under `ios/`, and the desktop speech helper remains under `macos/speech/`.
+
 ## Build and run
 
 ```sh
@@ -31,7 +45,7 @@ To make the CLI available everywhere, link the built executable into a directory
 ln -sfn "$PWD/target/release/riwork" "$HOME/.local/bin/riwork"
 ```
 
-**Tests.** `ZIG=/path/to/zig-0.16/zig cargo test` runs the fast, deterministic tests: formats and protocols, data safety, permissions and the chat, session and schedule state machines, with no real tmux server, agent process or timing. Tests that drive real tmux, real child processes or wall-clock timing are marked `#[ignore = "slow: …"]`; run them before a release, on an otherwise idle machine, with `cargo test -- --include-ignored`. The phone connector has its own: `cargo test --manifest-path remote/Cargo.toml` (its ignored end-to-end tests need the setup in `remote/README.md`). Main is kept `cargo fmt`-clean (`cargo fmt --check` before committing), so formatting never arrives as a repo-wide diff that every open branch then conflicts with.
+**Tests.** `ZIG=/path/to/zig-0.16/zig cargo test --workspace` runs the fast, deterministic tests across the Rust packages: formats and protocols, data safety, permissions and the chat, session and schedule state machines, with no real tmux server, agent process or timing. Use `cargo test -p riwork-core`, `cargo test -p riwork-engine`, or `cargo test -p riwork-cli` for focused backend work without the desktop UI dependency. Tests that drive real tmux, real child processes or wall-clock timing are marked `#[ignore = "slow: …"]`; run them before a release, on an otherwise idle machine, with `cargo test --workspace -- --include-ignored`. The phone connector can also be selected with `cargo test -p riwork-remote` (its ignored end-to-end tests need the setup in `remote/README.md`). Main is kept `cargo fmt`-clean (`cargo fmt --all --check` before committing), so formatting never arrives as a repo-wide diff that every open branch then conflicts with.
 
 Run `riwork help` for the full command list and `riwork --version` for the installed version. Data defaults to `~/.local/share/riwork`; set `RIWORK_HOME` to use a separate store and tmux server. An empty `RIWORK_HOME` or `HOME` counts as unset. A newly created data directory is owner-only, and `state.json` and `sessions.json` are written with owner-only permissions.
 
@@ -55,7 +69,7 @@ relay routes encrypted frames without session content or pairing secrets.
 
 ```sh
 cargo build --locked --release --manifest-path remote/Cargo.toml
-export RIWORK_REMOTE_BIN="$PWD/remote/target/release/riwork-remote"
+export RIWORK_REMOTE_BIN="$PWD/target/release/riwork-remote"
 riwork remote --help
 riwork remote start --riwork /absolute/path/to/riwork
 ```

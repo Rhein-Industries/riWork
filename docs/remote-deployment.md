@@ -12,7 +12,7 @@ Build on the deployment host from the reviewed source/lockfile:
 cargo build --locked --release --manifest-path remote/Cargo.toml
 ```
 
-Install `remote/target/release/riwork-remote` as `/usr/local/bin/riwork-remote`.
+Install `target/release/riwork-remote` as `/usr/local/bin/riwork-remote`.
 Create the `riwork-relay` service account and `/etc/riwork-relay` with mode 700,
 owned by it. Install the **route hash manifest** exported by desktop pairing as
 `/etc/riwork-relay/routes.json`, mode 600, also owned by `riwork-relay`. Transfer
