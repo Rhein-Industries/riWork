@@ -123,8 +123,8 @@ fn run_cua_action(action: CuaAction, cx: &mut App) {
 }
 
 pub use riwork_core::settings::{
-    OrchestratorMode, OrchestratorRuns, TabCloseBehavior, agent_inline_mode,
-    agent_terminals_unrestricted, claude_chat_ignores_api_key, orchestrator_runs,
+    OrchestratorMode, OrchestratorRuns, TabCloseBehavior, agent_terminals_unrestricted,
+    claude_chat_ignores_api_key, orchestrator_runs,
 };
 
 /// The window's settings global. Serialization and persistence stay in core.
@@ -1115,7 +1115,7 @@ impl SettingsPanel {
         if event.keystroke.modifiers.platform || event.keystroke.modifiers.control {
             return;
         }
-        let settings = cx.global::<Settings>().clone();
+        let _settings = cx.global::<Settings>().clone();
         let theme_index = self
             .theme_focus
             .iter()

@@ -4,10 +4,9 @@ use std::{collections::BTreeMap, ops::Range};
 
 use crate::text_input::{self, EnterBehavior, InputEvent, InputState};
 use gpui::{
-    AnyElement, App, Bounds, ClipboardItem, Context, ElementInputHandler, Entity,
-    EntityInputHandler, EventEmitter, FocusHandle, HighlightStyle, IntoElement, KeyDownEvent,
-    MouseButton, Pixels, Point, Render, StyledText, UTF16Selection, Window, canvas, div,
-    prelude::*, rgb,
+    AnyElement, App, ClipboardItem, Context, ElementInputHandler, Entity, EntityInputHandler,
+    EventEmitter, FocusHandle, HighlightStyle, IntoElement, KeyDownEvent, MouseButton, Render,
+    StyledText, Window, canvas, div, prelude::*, rgb,
 };
 use gpui::{Focusable, Subscription};
 
@@ -1132,7 +1131,7 @@ impl Render for ProjectSettingsPanel {
                         .child(label),
                 )
                 .on_change({
-                    let listener = cx.listener(move |form, _, window, cx| {
+                    let listener = cx.listener(move |form, _, _window, cx| {
                         form.active = Field::Account(index);
                         if available
                             && form
@@ -1284,7 +1283,7 @@ impl Render for ProjectSettingsPanel {
                         .hover(move |style| style.bg(rgb(kind.hover(colors))))
                         .when(focused && self.active == Field::AccountRefresh, |button| button.border_color(rgb(colors.focus)))
                 }))
-                .on_click(cx.listener(|form, _, window, cx| {
+                .on_click(cx.listener(|form, _, _window, cx| {
                     form.active = Field::AccountRefresh;
                     refresh_codex_accounts(cx);
                 })))
@@ -1957,8 +1956,6 @@ macro_rules! impl_input_handler {
         }
     };
 }
-
-pub(crate) use impl_input_handler;
 
 #[cfg(test)]
 mod tests {

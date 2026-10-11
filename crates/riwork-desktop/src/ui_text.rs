@@ -24,13 +24,12 @@ use std::cell::Cell;
 use gpui::{App, Global, Keystroke, Pixels, SharedString, px};
 pub use riwork_core::ui_text::{
     DEFAULT_POINTS, Face, GHOSTTY_DEFAULT_FONT_SIZE, InterfaceFont, MAX_POINTS, MIN_POINTS,
-    REFERENCE_SIZE, STEP_POINTS, SYSTEM_BODY_POINTS, SizeChange, TextPoints, effective_points,
-    label, matching_points, sentence_case, shown_points, stepped,
+    REFERENCE_SIZE, SizeChange, TextPoints, effective_points, label, sentence_case, shown_points,
 };
 
 use crate::{
     settings::{Settings, SettingsStore},
-    theme::{self, GhosttyConfigStamp, ThemeChoice},
+    theme::{self, GhosttyConfigStamp},
 };
 
 const MENLO: &str = "Menlo";

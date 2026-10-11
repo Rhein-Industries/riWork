@@ -9,9 +9,12 @@
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
-    path::{Path, PathBuf},
+    path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(test)]
+use std::path::PathBuf;
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};

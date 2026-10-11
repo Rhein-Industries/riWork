@@ -1224,7 +1224,7 @@ mod tests {
         );
         LayoutStore::open(&f.home)
             .unwrap()
-            .save(&id(1), &layout)
+            .save_chat_state(&id(1), &layout, &[], None)
             .unwrap();
         let mut harness = session(4);
         harness.kind = Kind::Shell;
@@ -1748,7 +1748,7 @@ mod tests {
         layout.detached_chat_ids.insert(id(4));
         LayoutStore::open(&f.home)
             .unwrap()
-            .save(&id(1), &layout)
+            .save_chat_state(&id(1), &layout, &[], None)
             .unwrap();
         let mut orch = session(2);
         orch.orchestrator = true;
@@ -1766,7 +1766,7 @@ mod tests {
         layout.detached_chat_ids.clear();
         LayoutStore::open(&f.home)
             .unwrap()
-            .save(&id(1), &layout)
+            .save_chat_state(&id(1), &layout, &[], None)
             .unwrap();
         assert!(f.store.list().unwrap()[2].hidden);
     }
@@ -1855,7 +1855,7 @@ mod tests {
         );
         LayoutStore::open(&f.home)
             .unwrap()
-            .save(&id(1), &layout)
+            .save_chat_state(&id(1), &layout, &[], None)
             .unwrap();
         assert!(f.store.list().unwrap().is_empty());
         let mut dead = session(2);

@@ -902,7 +902,7 @@ fn attachment_send_refusal_retains_exact_draft_and_requires_explicit_resend(
     let attachment = locally_staged().remove(0);
     let text = "  exact refused draft 🦀  ";
     cx.update_window(handle.into(), |_, window, cx| {
-        view.update(cx, |v, cx| {
+        view.update(cx, |v, _cx| {
             v.attachments.push(Chip::ready(attachment.clone()));
             v.bump_generation();
         });

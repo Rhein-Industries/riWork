@@ -41,7 +41,7 @@ use crate::{
 
 use riwork_engine::terminal_drop::foreground_names;
 pub use riwork_engine::terminal_drop::{
-    Copied, Program, dropped_text, paste_input, path_input, program, shell_escape,
+    Copied, Program, paste_input, path_input, program, shell_escape,
 };
 
 /// How thick the outline around the terminal under a drag is, in points.

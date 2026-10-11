@@ -2561,7 +2561,7 @@ impl FileExplorer {
                         .border_1()
                         .border_color(rgb(colors.divider))
                         .text_color(rgb(colors.cyan))
-                        .on_click(cx.listener(|view, _, window, cx| {
+                        .on_click(cx.listener(|view, _, _window, cx| {
                             view.mode = Mode::Preview;
                             cx.stop_propagation();
                             view.open_pdf_preview(cx);
@@ -2727,7 +2727,7 @@ impl FileExplorer {
                                     colors.muted
                                 }))
                                 .on_click(cx.listener(
-                                    move |view, _, window, cx| {
+                                    move |view, _, _window, cx| {
                                         view.mode = Mode::Preview;
                                         cx.stop_propagation();
                                         if can_previous {
@@ -2750,7 +2750,7 @@ impl FileExplorer {
                                 .disabled(!can_next)
                                 .text_color(rgb(if can_next { colors.cyan } else { colors.muted }))
                                 .on_click(cx.listener(
-                                    move |view, _, window, cx| {
+                                    move |view, _, _window, cx| {
                                         view.mode = Mode::Preview;
                                         cx.stop_propagation();
                                         if can_next {
@@ -2946,7 +2946,7 @@ impl FileExplorer {
                 )
                 .py(ui_text::space(3.0))
                 .hover(move |style| style.bg(rgb(controls::Button::Secondary.hover(colors))))
-                .on_click(cx.listener(|view, _, window, cx| {
+                .on_click(cx.listener(|view, _, _window, cx| {
                     view.mode = Mode::Preview;
                     cx.stop_propagation();
                     view.open_pdf_preview(cx);
@@ -3098,7 +3098,7 @@ impl FileExplorer {
                                     colors,
                                 )
                                 .on_click(cx.listener(
-                                    move |view, _, window, cx| {
+                                    move |view, _, _window, cx| {
                                         cx.stop_propagation();
                                         view.mode = Mode::Preview;
                                         cx.stop_propagation();
@@ -3118,7 +3118,7 @@ impl FileExplorer {
                                     colors,
                                 )
                                 .on_click(cx.listener(
-                                    move |view, _, window, cx| {
+                                    move |view, _, _window, cx| {
                                         cx.stop_propagation();
                                         view.mode = Mode::Preview;
                                         cx.stop_propagation();

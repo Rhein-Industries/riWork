@@ -2235,8 +2235,8 @@ async fn a_switch_is_rebuilt_from_what_was_checked_and_needs_a_cli_that_has_it()
         .await;
     assert_eq!(response["ok"], true, "{response}");
     assert_eq!(
-        f.calls_of("chat", "command").pop().unwrap()[4],
-        r#"{"command":"switch","model":"opus","provider":"claude"}"#
+        serde_json::from_str::<Value>(&f.calls_of("chat", "command").pop().unwrap()[4]).unwrap(),
+        json!({"command":"switch","model":"opus","provider":"claude"})
     );
     // Blank is left out, as in configure.
     f.call(
@@ -2245,8 +2245,8 @@ async fn a_switch_is_rebuilt_from_what_was_checked_and_needs_a_cli_that_has_it()
     )
     .await;
     assert_eq!(
-        f.calls_of("chat", "command").pop().unwrap()[4],
-        r#"{"command":"switch","fast":true,"provider":"codex"}"#
+        serde_json::from_str::<Value>(&f.calls_of("chat", "command").pop().unwrap()[4]).unwrap(),
+        json!({"command":"switch","fast":true,"provider":"codex"})
     );
     let calls = f.calls_of("chat", "command").len();
     for bad in [

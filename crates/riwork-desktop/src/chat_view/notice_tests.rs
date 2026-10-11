@@ -950,7 +950,7 @@ fn profile_more_menu(cx: &mut TestAppContext) {
         cx.notify();
     });
     let frames = 10;
-    let mut report =
+    let report =
         |label: &str, cx: &mut TestAppContext, step: &dyn Fn(&mut Window, &mut gpui::App)| {
             let (mut act, mut frame) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
             for _ in 0..frames {

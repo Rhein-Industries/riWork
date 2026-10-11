@@ -11,7 +11,7 @@ use std::{
 
 use gpui::{
     AnyElement, Bounds, Context, Div, Entity, FocusHandle, Focusable, FontWeight, IntoElement,
-    MouseButton, Pixels, Render, Stateful, Window, canvas, div, prelude::*, px, rgb,
+    MouseButton, Pixels, Render, Window, canvas, div, prelude::*, px, rgb,
 };
 use gpui_kit::TestSupportExt;
 

@@ -2,7 +2,6 @@
 
 use std::{
     ffi::OsStr,
-    fs,
     io::{Cursor, Read},
     path::Path,
     sync::Arc,

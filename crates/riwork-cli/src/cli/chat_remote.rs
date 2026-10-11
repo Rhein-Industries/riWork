@@ -260,6 +260,7 @@ fn entry_bytes(entry: &Entry) -> usize {
     serde_json::to_string(entry).map_or(usize::MAX, |text| text.len() + 1)
 }
 
+#[cfg(test)]
 pub(super) use crate::chat::remote_payload::cut_strings;
 
 pub(super) fn shrink_body(entry: &Entry, budget: usize) -> Option<Entry> {

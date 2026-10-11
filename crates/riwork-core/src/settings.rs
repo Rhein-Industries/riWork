@@ -951,8 +951,7 @@ mod tests {
         );
         store
             .update(|settings| {
-                settings.orchestrator_chat_provider =
-                    other_provider(settings.orchestrator_chat_provider)
+                settings.orchestrator_chat_provider = Provider::Claude;
             })
             .unwrap();
         assert_eq!(document(&dir)["orchestrator_chat_provider"], "claude");

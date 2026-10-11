@@ -33,7 +33,7 @@ use crate::{
             Provider, Question,
         },
     },
-    text_input::{self, EnterBehavior, InputEvent, InputState, TextareaState},
+    text_input::{self, EnterBehavior, InputState, TextareaState},
     ui_text,
 };
 

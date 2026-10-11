@@ -380,7 +380,7 @@ impl ChatView {
             let handle = self.transcript_selection.handle.clone();
             let data = self.transcript_selection.data.clone();
             InteractiveText::new(ElementId::Name(format!("links:{key}").into()), styled)
-                .on_click(ranges, move |at, window, cx| {
+                .on_click(ranges, move |at, _window, cx| {
                     let snapshot = handle.snapshot(cx);
                     if !data.borrow().export(snapshot).is_empty()
                         || snapshot

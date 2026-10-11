@@ -3,8 +3,8 @@
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, Div, ElementId, Pixels, Point, ScrollHandle,
-    SharedString, div, prelude::*, pulsating_between, px, rgb,
+    Animation, AnimationExt, AnyElement, App, ElementId, Pixels, Point, ScrollHandle, SharedString,
+    div, prelude::*, pulsating_between, px, rgb,
 };
 
 use crate::{

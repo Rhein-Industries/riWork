@@ -811,7 +811,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme::palette(cx);
-        let native = ui_text::is_native();
+        let _native = ui_text::is_native();
         let pane = &self.panes[&pane_id];
         let tab = &pane.tabs[index];
         let tab_id = tab.id;

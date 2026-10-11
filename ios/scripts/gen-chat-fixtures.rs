@@ -122,9 +122,9 @@ fn main() {
         ChatEvent::ItemCompleted { item: item("w", ItemBody::WebSearch { query: "rust serde".into() }, ItemStatus::Completed) },
         ChatEvent::ItemCompleted { item: item("d", ItemBody::Todo { items: vec![step("x", StepStatus::Completed), step("y", StepStatus::Pending)] }, ItemStatus::Completed) },
         ChatEvent::ItemCompleted { item: item("k", ItemBody::Compaction, ItemStatus::Completed) },
-        ChatEvent::ItemCompleted { item: item("n1", ItemBody::Notice { level: NoticeLevel::Info, text: "fyi".into() }, ItemStatus::Completed) },
-        ChatEvent::ItemCompleted { item: item("n2", ItemBody::Notice { level: NoticeLevel::Warning, text: "careful".into() }, ItemStatus::Interrupted) },
-        ChatEvent::ItemCompleted { item: item("n3", ItemBody::Notice { level: NoticeLevel::Error, text: "bad".into() }, ItemStatus::Failed) },
+        ChatEvent::ItemCompleted { item: item("n1", ItemBody::notice(NoticeLevel::Info, "fyi", None), ItemStatus::Completed) },
+        ChatEvent::ItemCompleted { item: item("n2", ItemBody::notice(NoticeLevel::Warning, "careful", None), ItemStatus::Interrupted) },
+        ChatEvent::ItemCompleted { item: item("n3", ItemBody::notice(NoticeLevel::Error, "bad", None), ItemStatus::Failed) },
         ChatEvent::ApprovalRequested { approval: Approval { request_id: "r1".into(), item_id: Some("c".into()), kind: ApprovalKind::Command, title: "rm -rf build".into(), detail: "why".into(), choices: vec![Decision::Accept, Decision::AcceptForSession, Decision::Decline, Decision::Cancel] } },
         ChatEvent::ApprovalRequested { approval: Approval { request_id: "r2".into(), item_id: None, kind: ApprovalKind::FileChange, title: "a.rs".into(), detail: String::new(), choices: vec![Decision::Accept, Decision::Decline] } },
         ChatEvent::ApprovalRequested { approval: Approval { request_id: "r3".into(), item_id: None, kind: ApprovalKind::Permissions, title: "network".into(), detail: String::new(), choices: vec![Decision::Accept] } },
@@ -142,7 +142,7 @@ fn main() {
         ChatEvent::Models { models: vec![model_options[2].clone()] },
         ChatEvent::Models { models: Vec::new() },
         ChatEvent::Info { info: switched.clone() },
-        ChatEvent::ItemCompleted { item: Item { presentation: Default::default(), id: "switch-58".into(), turn_id: None, status: ItemStatus::Completed, body: ItemBody::Notice { level: NoticeLevel::Info, text: "Continued with Claude (opus), which has the conversation so far.".into() } } },
+        ChatEvent::ItemCompleted { item: Item { presentation: Default::default(), id: "switch-58".into(), turn_id: None, status: ItemStatus::Completed, body: ItemBody::notice(NoticeLevel::Info, "Continued with Claude (opus), which has the conversation so far.", None) } },
     ];
     let commands: Vec<ChatCommand> = vec![
         ChatCommand::Send { text: "go".into() },
