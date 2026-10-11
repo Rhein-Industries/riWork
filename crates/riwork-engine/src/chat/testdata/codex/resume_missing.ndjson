@@ -1,0 +1,6 @@
+# Frames modelled on T3 Code's recorded codex app-server transcripts (MIT, codex 0.156.1) and the 0.159.3 schema; shortened, ids and text invented.
+# thread/resume of a thread without a rollout fails as in codex 0.159.3 (probed with an empty CODEX_HOME); the driver opens a new thread.
+{"type":"expect","frame":{"id":"<any>","method":"initialize","params":{"clientInfo":{"name":"riwork"},"capabilities":{"experimentalApi":true,"optOutNotificationMethods":["turn/diff/updated","item/plan/delta"]}}},"reply":[{"id":"$id","result":{"userAgent":"fake/0","codexHome":"/tmp/fake-codex","platformFamily":"unix","platformOs":"macos"}}]}
+{"type":"expect","frame":{"method":"initialized"}}
+{"type":"expect","frame":{"id":"<any>","method":"thread/resume","params":{"threadId":"thread-9"}},"reply":[{"id":"$id","error":{"code":-32600,"message":"no rollout found for thread id thread-9"}}]}
+{"type":"expect","frame":{"id":"<any>","method":"thread/start","params":{"cwd":"<any>"}},"reply":[{"id":"$id","result":{"thread":{"id":"thread-2"},"model":"gpt-test"}}]}

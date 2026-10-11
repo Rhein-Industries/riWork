@@ -1,0 +1,5 @@
+{"type":"expect","frame":{"method":"initialize"},"reply":[{"id":"$id","result":{}}]}
+{"type":"expect","frame":{"method":"initialized"}}
+{"type":"expect","frame":{"method":"thread/start"},"reply":[{"id":"$id","result":{"thread":{"id":"attachment-thread"}}}]}
+{"type":"expect","frame":{"method":"turn/start"}}
+{"type":"exit","code":1}

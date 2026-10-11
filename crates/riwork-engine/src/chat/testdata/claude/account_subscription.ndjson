@@ -1,0 +1,3 @@
+# The account of claude 2.1.293's own initialize answer when logged in to a subscription (no message sent); the email and
+# organization are invented and must never leave the driver. Shortened.
+{"type":"expect","frame":{"type":"control_request","request":{"subtype":"initialize"}},"reply":[{"type":"control_response","response":{"subtype":"success","request_id":"$request_id","response":{"commands":[],"models":[],"current_permission_mode":"default","capabilities":[],"account":{"email":"someone@example.com","organization":"Example Org","subscriptionType":"Claude Max","apiProvider":"firstParty"}}}}]}

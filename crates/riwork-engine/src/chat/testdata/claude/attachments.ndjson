@@ -1,0 +1,4 @@
+# Stream-json envelope from official streaming-input docs. Completion is separate.
+{"type":"expect","frame":{"type":"control_request","request":{"subtype":"initialize"}},"reply":[{"type":"control_response","response":{"subtype":"success","request_id":"$request_id","response":{"models":[],"commands":[]}}}]}
+{"type":"expect","frame":{"type":"user","session_id":"","parent_tool_use_id":null,"message":{"role":"user","content":"<any>"}}}
+{"type":"expect","frame":{"type":"user","message":{"content":"legacy"}},"reply":[{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"attachment-session","usage":{"input_tokens":1,"output_tokens":1}},{"type":"system","subtype":"session_state_changed","state":"idle","session_id":"attachment-session"}]}
