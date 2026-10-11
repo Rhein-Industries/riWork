@@ -1,0 +1,1375 @@
+//! Saved account discovery without reading, moving, or rewriting credentials.
+//!
+//! Orca's public CLI supplies account metadata. Its managed homes stay owned by
+//! Orca; RiWork only points a newly launched Codex process at the selected home.
+
+use std::{
+    collections::HashSet,
+    env,
+    ffi::{OsStr, OsString},
+    fs,
+    fs::OpenOptions,
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+    time::{Duration, Instant},
+};
+
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+pub const SYSTEM_DEFAULT_ID: &str = "system-default";
+/// Exported beside CODEX_HOME by account-bound RiWork sessions.
+const PINNED_HOME_VARIABLE: &str = "RIWORK_CODEX_ACCOUNT_HOME";
+const MAX_OUTPUT: usize = 1024 * 1024;
+const MAX_ACCOUNTS: usize = 128;
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const CACHE_NAME: &str = "codex-accounts.json";
+
+#[derive(Clone, Debug)]
+pub struct CodexAccount {
+    pub id: String,
+    pub label: String,
+    /// Email supplied by Orca's public account list, if it is usable.
+    pub email: Option<String>,
+    pub home: PathBuf,
+    pub available: bool,
+    pub unavailable_reason: Option<String>,
+    pub is_system_default: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct AccountsSnapshot {
+    pub accounts: Vec<CodexAccount>,
+    pub error: Option<String>,
+    pub source_active_id: Option<String>,
+    pub from_cache: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodexAccountBinding {
+    pub id: Option<String>,
+    pub label: Option<String>,
+    pub email: Option<String>,
+    pub home: PathBuf,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountMetadata {
+    id: String,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    workspace_label: Option<String>,
+    #[serde(default)]
+    managed_home_runtime: Option<String>,
+    #[serde(default)]
+    wsl_distro: Option<String>,
+}
+
+// Unknown fields are ignored: a newer build may add some, and rejecting them
+// would report a different Orca profile and block every Codex launch.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct AccountCache {
+    version: u32,
+    user_data: PathBuf,
+    accounts: Vec<AccountMetadata>,
+    source_active_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AccountResponse {
+    ok: bool,
+    result: Option<AccountResult>,
+}
+
+#[derive(Deserialize)]
+struct AccountResult {
+    codex: CodexResponse,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexResponse {
+    accounts: Vec<AccountMetadata>,
+    #[serde(default)]
+    active_account_id: Option<String>,
+    #[serde(default)]
+    active_account_ids_by_runtime: ActiveAccountIds,
+}
+
+#[derive(Default, Deserialize)]
+struct ActiveAccountIds {
+    host: Option<String>,
+}
+
+/// Run this bounded discovery on the background executor, not the UI thread.
+pub fn discover() -> AccountsSnapshot {
+    match default_state_home() {
+        Ok(home) => discover_in(&home),
+        Err(error) => snapshot(None, Some(error), false),
+    }
+}
+
+pub fn discover_in(state_home: &Path) -> AccountsSnapshot {
+    let result = (|| {
+        let user_data = orca_user_data()?;
+        let output = run_orca_account_list(&installed_orca_cli()?)?;
+        let cache = parse_accounts(&output, user_data)?;
+        write_cache(state_home, &cache)?;
+        Ok(cache)
+    })();
+    match result {
+        Ok(cache) => snapshot(Some(cache), None, false),
+        Err(error) => match read_cache(state_home) {
+            Ok(cache) => snapshot(
+                Some(cache),
+                Some(format!("{error} Showing previously discovered accounts.")),
+                true,
+            ),
+            Err(_) => snapshot(None, Some(error), false),
+        },
+    }
+}
+
+/// Resolves only saved metadata for launches. A bad selection never changes
+/// identities by silently falling back to the system account.
+pub fn resolve_launch_binding(
+    state_home: &Path,
+    selected: Option<&str>,
+) -> Result<CodexAccountBinding, String> {
+    let Some(selected) = selected.filter(|id| *id != SYSTEM_DEFAULT_ID) else {
+        return Ok(CodexAccountBinding {
+            id: None,
+            label: None,
+            email: None,
+            home: default_codex_home()?,
+        });
+    };
+    if !safe_account_id(selected) {
+        return Err("The selected Codex account is invalid. Choose an account in Settings, or in Project Settings if this project sets its own.".into());
+    }
+    let cache = read_cache(state_home).map_err(|_| {
+        "The selected Codex account is unavailable. Refresh accounts in Settings (or Project Settings) before launching."
+            .to_owned()
+    })?;
+    resolve_cached_binding(&cache, selected)
+}
+
+pub fn resolve_project_launch_binding(
+    state_home: &Path,
+    project_id: &str,
+) -> Result<CodexAccountBinding, String> {
+    let store = crate::store::Store::open(state_home)?;
+    let state = store.snapshot()?;
+    let project = state.project(project_id)?;
+    let app_selected = if matches!(
+        project.codex_account,
+        crate::store::ProjectCodexAccount::Inherit
+    ) {
+        crate::settings::SettingsStore::open(state_home)?
+            .load()?
+            .selected_codex_account
+    } else {
+        None
+    };
+    resolve_project_choice_binding(state_home, &project.codex_account, app_selected.as_deref())
+}
+
+pub fn resolve_project_choice_binding(
+    state_home: &Path,
+    choice: &crate::store::ProjectCodexAccount,
+    app_selected: Option<&str>,
+) -> Result<CodexAccountBinding, String> {
+    use crate::store::ProjectCodexAccount;
+    match choice {
+        ProjectCodexAccount::Inherit => resolve_launch_binding(state_home, app_selected),
+        ProjectCodexAccount::SystemDefault => resolve_launch_binding(state_home, None),
+        ProjectCodexAccount::Saved(id) => resolve_launch_binding(state_home, Some(id)),
+    }
+}
+
+/// The accounts launches can use, read from the saved metadata only: nothing runs
+/// and nothing is written, so it is quick enough to call where a window is waiting.
+/// The system default comes first. An error means no list was ever saved.
+pub fn cached_accounts(state_home: &Path) -> Result<Vec<CodexAccount>, String> {
+    let cache = read_cache(state_home)?;
+    Ok(snapshot(Some(cache), None, true).accounts)
+}
+
+/// The account a person named by label or id, resolved the way a launch resolves its
+/// selection (saved metadata, a home that must exist), so that "the Work account" starts
+/// the same Codex home as choosing it in Settings. When no list was ever saved, Orca is
+/// asked once for it, as Settings does; run this on a background thread.
+pub fn resolve_account(state_home: &Path, query: &str) -> Result<CodexAccountBinding, String> {
+    let cache = match read_cache(state_home) {
+        Ok(cache) => cache,
+        Err(_) => {
+            let found = discover_in(state_home);
+            read_cache(state_home).map_err(|_| {
+                found.error.unwrap_or_else(|| {
+                    "No Codex accounts are saved yet. Refresh accounts in Settings.".into()
+                })
+            })?
+        }
+    };
+    resolve_account_in(&cache, query)
+}
+
+fn resolve_account_in(cache: &AccountCache, query: &str) -> Result<CodexAccountBinding, String> {
+    let accounts = snapshot(Some(cache.clone()), None, true).accounts;
+    let account = find_account(&accounts, query)?;
+    if account.is_system_default {
+        return Ok(CodexAccountBinding {
+            id: None,
+            label: None,
+            email: None,
+            home: default_codex_home()?,
+        });
+    }
+    resolve_cached_binding(cache, &account.id)
+}
+
+/// Which of `accounts` a person means by `query`: an id, or a label, email or workspace
+/// name in any case (`Work` for `me@example.com · Work`), or else a part of a label or the
+/// start of an id (at least eight characters). The first of these that names anything
+/// decides, and it must name one account.
+pub fn find_account<'a>(
+    accounts: &'a [CodexAccount],
+    query: &str,
+) -> Result<&'a CodexAccount, String> {
+    let wanted = query.trim().to_lowercase();
+    if wanted.is_empty() {
+        return Err("The account name is empty.".into());
+    }
+    let parts = |account: &CodexAccount| -> Vec<String> {
+        account
+            .label
+            .split(" · ")
+            .map(|part| part.trim().to_lowercase())
+            .chain(account.email.iter().map(|email| email.to_lowercase()))
+            .collect()
+    };
+    let tiers: [&dyn Fn(&CodexAccount) -> bool; 4] = [
+        &|account| account.id.to_lowercase() == wanted,
+        &|account| account.label.to_lowercase() == wanted || parts(account).contains(&wanted),
+        &|account| wanted.len() >= 8 && account.id.to_lowercase().starts_with(&wanted),
+        &|account| account.label.to_lowercase().contains(&wanted),
+    ];
+    for tier in tiers {
+        let mut found = accounts.iter().filter(|account| tier(account));
+        match (found.next(), found.next()) {
+            (None, _) => continue,
+            (Some(account), None) => {
+                return match &account.unavailable_reason {
+                    Some(reason) if !account.available => Err(format!(
+                        "The Codex account {} is unavailable: {reason}",
+                        account.label
+                    )),
+                    _ => Ok(account),
+                };
+            }
+            (Some(first), Some(second)) => {
+                let names: Vec<_> = [first, second]
+                    .into_iter()
+                    .chain(found)
+                    .map(|account| format!("{} ({})", account.label, account.id))
+                    .collect();
+                return Err(format!(
+                    "More than one Codex account matches '{}': {}. Use an id.",
+                    query.trim(),
+                    names.join(", ")
+                ));
+            }
+        }
+    }
+    let known: Vec<_> = accounts
+        .iter()
+        .map(|account| account.label.as_str())
+        .collect();
+    Err(format!(
+        "No Codex account matches '{}'. Known accounts: {}.",
+        query.trim(),
+        known.join(", ")
+    ))
+}
+
+fn resolve_cached_binding(
+    cache: &AccountCache,
+    selected: &str,
+) -> Result<CodexAccountBinding, String> {
+    let account = cache
+        .accounts
+        .iter()
+        .find(|account| account.id == selected && host_account(account))
+        .ok_or("The selected Codex account was not found. Choose an account in Settings, or in Project Settings if this project sets its own.")?;
+    let home = managed_home(&cache.user_data, &account.id)?;
+    Ok(CodexAccountBinding {
+        id: Some(account.id.clone()),
+        label: Some(account_label(account)),
+        email: account_email(account),
+        home,
+    })
+}
+
+fn snapshot(
+    cache: Option<AccountCache>,
+    mut error: Option<String>,
+    from_cache: bool,
+) -> AccountsSnapshot {
+    let mut accounts = Vec::new();
+    match default_codex_home() {
+        Ok(home) => accounts.push(CodexAccount {
+            id: SYSTEM_DEFAULT_ID.into(),
+            label: "System default".into(),
+            email: None,
+            home,
+            available: true,
+            unavailable_reason: None,
+            is_system_default: true,
+        }),
+        Err(reason) => error = Some(reason),
+    }
+    let source_active_id = cache
+        .as_ref()
+        .and_then(|cache| cache.source_active_id.clone());
+    if let Some(cache) = cache {
+        for metadata in cache.accounts {
+            let result = managed_home(&cache.user_data, &metadata.id);
+            let home = cache
+                .user_data
+                .join("codex-accounts")
+                .join(&metadata.id)
+                .join("home");
+            accounts.push(CodexAccount {
+                label: account_label(&metadata),
+                email: account_email(&metadata),
+                id: metadata.id,
+                home: result.as_ref().cloned().unwrap_or(home),
+                available: result.is_ok(),
+                unavailable_reason: result.err(),
+                is_system_default: false,
+            });
+        }
+    }
+    AccountsSnapshot {
+        accounts,
+        error,
+        source_active_id,
+        from_cache,
+    }
+}
+
+fn account_label(account: &AccountMetadata) -> String {
+    let email =
+        clean_label(account.email.as_deref()).unwrap_or_else(|| "Saved Codex account".into());
+    match clean_label(account.workspace_label.as_deref()) {
+        Some(workspace) => format!("{email} · {workspace}"),
+        None => email,
+    }
+}
+
+fn account_email(account: &AccountMetadata) -> Option<String> {
+    clean_label(account.email.as_deref()).filter(|email| {
+        let (local, domain) = email.split_once('@').unwrap_or(("", ""));
+        !local.is_empty() && domain.contains('.') && !email.chars().any(char::is_whitespace)
+    })
+}
+
+fn clean_label(value: Option<&str>) -> Option<String> {
+    let label: String = value?
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(160)
+        .collect();
+    let label = label.trim();
+    (!label.is_empty()).then(|| label.to_owned())
+}
+
+fn safe_account_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 80
+        && id != SYSTEM_DEFAULT_ID
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+fn host_account(account: &AccountMetadata) -> bool {
+    account.managed_home_runtime.as_deref() == Some("host")
+        && account
+            .wsl_distro
+            .as_deref()
+            .is_none_or(|distro| distro.is_empty())
+}
+
+fn parse_accounts(bytes: &[u8], user_data: PathBuf) -> Result<AccountCache, String> {
+    // Never surface serde's raw text, CLI stderr, or provider errors: responses
+    // may contain unrelated provider metadata and authentication diagnostics.
+    let response: AccountResponse = serde_json::from_slice(bytes)
+        .map_err(|_| "Orca returned an invalid account list.".to_owned())?;
+    if !response.ok {
+        return Err("Orca could not list saved accounts. Open Orca locally and refresh.".into());
+    }
+    let result = response
+        .result
+        .ok_or("Orca returned an incomplete account list.")?
+        .codex;
+    if result.accounts.len() > MAX_ACCOUNTS {
+        return Err("Orca returned too many accounts.".into());
+    }
+    let mut ids = HashSet::new();
+    let accounts: Vec<_> = result
+        .accounts
+        .into_iter()
+        .filter(|account| safe_account_id(&account.id) && host_account(account))
+        .filter(|account| ids.insert(account.id.clone()))
+        .map(|mut account| {
+            account.email = clean_label(account.email.as_deref());
+            account.workspace_label = clean_label(account.workspace_label.as_deref());
+            account
+        })
+        .collect();
+    let active = result
+        .active_account_ids_by_runtime
+        .host
+        .or(result.active_account_id);
+    let source_active_id = active.filter(|id| accounts.iter().any(|account| &account.id == id));
+    Ok(AccountCache {
+        version: 1,
+        user_data,
+        accounts,
+        source_active_id,
+    })
+}
+
+fn managed_home(user_data: &Path, id: &str) -> Result<PathBuf, String> {
+    if !safe_account_id(id) || !user_data.is_absolute() {
+        return Err("This saved account has an invalid home location.".into());
+    }
+    let root = user_data
+        .canonicalize()
+        .map_err(|_| "The Orca account directory is unavailable.".to_owned())?;
+    let expected = root.join("codex-accounts").join(id).join("home");
+    let home = user_data.join("codex-accounts").join(id).join("home");
+    if !home.is_dir() {
+        return Err(
+            "This saved account's home is missing. Restore or sign in through Orca.".into(),
+        );
+    }
+    let canonical = home
+        .canonicalize()
+        .map_err(|_| "This saved account's home cannot be accessed.".to_owned())?;
+    if canonical != expected {
+        return Err(
+            "This saved account's home points outside its managed account directory.".into(),
+        );
+    }
+    Ok(canonical)
+}
+
+fn default_state_home() -> Result<PathBuf, String> {
+    crate::paths::riwork_home()
+}
+
+fn user_home() -> Result<PathBuf, String> {
+    env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| "The user home directory is unavailable.".into())
+}
+
+/// The user's own Codex home: `CODEX_HOME` from their environment, else
+/// `~/.codex`. A `CODEX_HOME` that RiWork exported into an account-bound
+/// session is not the user's choice and never counts as the system default.
+pub fn default_codex_home() -> Result<PathBuf, String> {
+    system_codex_home(
+        env::var_os("CODEX_HOME"),
+        env::var_os(PINNED_HOME_VARIABLE),
+        orca_user_data().ok().as_deref(),
+    )
+}
+
+fn system_codex_home(
+    codex_home: Option<OsString>,
+    pinned_home: Option<OsString>,
+    user_data: Option<&Path>,
+) -> Result<PathBuf, String> {
+    match codex_home {
+        Some(home) if home.is_empty() => {
+            Err("CODEX_HOME is empty. Set a valid home before launching Codex.".into())
+        }
+        Some(home) => {
+            let home = absolute_path(PathBuf::from(home))?;
+            if riwork_injected_home(&home, pinned_home.as_deref(), user_data) {
+                Ok(user_home()?.join(".codex"))
+            } else {
+                Ok(home)
+            }
+        }
+        None => Ok(user_home()?.join(".codex")),
+    }
+}
+
+/// True when `home` is an Orca-managed account home, which RiWork hands to
+/// its account-bound sessions (`CODEX_HOME` in Codex panes, their tool
+/// environment, and plain project shells). The system default is never one:
+/// a system-default pane also exports its home as the pinned home, so the pin
+/// alone cannot tell an injected value from the user's own `CODEX_HOME`.
+fn riwork_injected_home(
+    home: &Path,
+    pinned_home: Option<&OsStr>,
+    user_data: Option<&Path>,
+) -> bool {
+    // The pin locates a managed home even when this process sees a different
+    // Orca profile override than the session that exported it.
+    if pinned_home.is_some_and(|pinned| Path::new(pinned) == home) && managed_home_shape(home) {
+        return true;
+    }
+    let Some(user_data) = user_data else {
+        return false;
+    };
+    if home.starts_with(user_data.join("codex-accounts")) {
+        return true;
+    }
+    // Managed homes are stored canonically; the profile path might not be.
+    match (user_data.canonicalize(), home.canonicalize()) {
+        (Ok(root), Ok(home)) => home.starts_with(root.join("codex-accounts")),
+        _ => false,
+    }
+}
+
+/// `<profile>/codex-accounts/<account id>/home`
+fn managed_home_shape(home: &Path) -> bool {
+    let mut parts = home
+        .components()
+        .rev()
+        .filter_map(|part| part.as_os_str().to_str());
+    parts.next() == Some("home")
+        && parts.next().is_some_and(safe_account_id)
+        && parts.next() == Some("codex-accounts")
+}
+
+/// A home for display, with the user's home directory shortened to `~`.
+pub fn display_home(path: &Path) -> String {
+    abbreviate_home(path, user_home().ok().as_deref())
+}
+
+fn abbreviate_home(path: &Path, user_home: Option<&Path>) -> String {
+    match user_home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
+/// Removes the account variables RiWork injected into this process from a
+/// command that starts a new RiWork root (the GUI), so it cannot mistake them
+/// for the user's own environment or pass them on to its sessions.
+pub fn scrub_injected_environment(command: &mut Command) {
+    for name in injected_environment(
+        env::var_os("CODEX_HOME").as_deref(),
+        env::var_os(PINNED_HOME_VARIABLE).as_deref(),
+        orca_user_data().ok().as_deref(),
+    ) {
+        command.env_remove(name);
+    }
+}
+
+fn injected_environment(
+    codex_home: Option<&OsStr>,
+    pinned_home: Option<&OsStr>,
+    user_data: Option<&Path>,
+) -> Vec<&'static str> {
+    let mut names = vec![PINNED_HOME_VARIABLE, "RIWORK_CODEX_SHELL_ID"];
+    if let Some(home) = codex_home.filter(|home| !home.is_empty())
+        && absolute_path(PathBuf::from(home))
+            .is_ok_and(|home| riwork_injected_home(&home, pinned_home, user_data))
+    {
+        names.push("CODEX_HOME");
+    }
+    names
+}
+
+/// This process's `CODEX_HOME` when it is the user's own, that is, not a home
+/// RiWork exported into the session that started it.
+pub fn user_codex_home_variable() -> Option<OsString> {
+    let home = env::var_os("CODEX_HOME")?;
+    let injected = injected_environment(
+        Some(&home),
+        env::var_os(PINNED_HOME_VARIABLE).as_deref(),
+        orca_user_data().ok().as_deref(),
+    )
+    .contains(&"CODEX_HOME");
+    (!injected).then_some(home)
+}
+
+/// The Orca-managed account home this process's `CODEX_HOME` points at, if any.
+/// Credential and configuration commands must not run against it: the home
+/// belongs to Orca, which is where its account is managed.
+pub fn managed_codex_home_in_use() -> Option<PathBuf> {
+    managed_home_variable(
+        env::var_os("CODEX_HOME"),
+        env::var_os(PINNED_HOME_VARIABLE),
+        orca_user_data().ok().as_deref(),
+    )
+}
+
+fn managed_home_variable(
+    codex_home: Option<OsString>,
+    pinned_home: Option<OsString>,
+    user_data: Option<&Path>,
+) -> Option<PathBuf> {
+    let home = absolute_path(PathBuf::from(codex_home.filter(|home| !home.is_empty())?)).ok()?;
+    riwork_injected_home(&home, pinned_home.as_deref(), user_data).then_some(home)
+}
+
+fn absolute_path(path: PathBuf) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .map_err(|_| "The account home cannot be resolved from this directory.".into())
+}
+
+fn orca_user_data() -> Result<PathBuf, String> {
+    // These paths match Orca's installed public CLI runtime/metadata.js. Honor
+    // its profile override so metadata and managed homes refer to one instance.
+    if let Some(path) = env::var_os("ORCA_USER_DATA_PATH").filter(|path| !path.is_empty()) {
+        return absolute_path(PathBuf::from(path));
+    }
+    #[cfg(target_os = "macos")]
+    return Ok(user_home()?.join("Library/Application Support/orca"));
+    #[cfg(target_os = "windows")]
+    return env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .map(|path| path.join("orca"))
+        .ok_or_else(|| "Orca's profile directory is unavailable.".into());
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    return Ok(env::var_os("XDG_CONFIG_HOME")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or(user_home()?.join(".config"))
+        .join("orca"));
+}
+
+fn installed_orca_cli() -> Result<PathBuf, String> {
+    // The shared resolver's messages can name paths and variables; the account
+    // list only needs to say that no CLI was found.
+    crate::orca_import::discover_cli().map_err(|_| {
+        "Orca's CLI is unavailable. Previously discovered accounts can still be used.".to_owned()
+    })
+}
+
+fn read_cache(state_home: &Path) -> Result<AccountCache, String> {
+    let path = state_home.join(CACHE_NAME);
+    let metadata = fs::symlink_metadata(&path).map_err(|_| "No saved account metadata.")?;
+    if !metadata.is_file() || metadata.len() > MAX_OUTPUT as u64 {
+        return Err("Invalid account metadata cache.".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err("The account metadata cache is not private.".into());
+        }
+    }
+    let file = fs::File::open(path).map_err(|_| "Cannot open saved account metadata.")?;
+    let mut bytes = Vec::new();
+    file.take((MAX_OUTPUT + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Cannot read saved account metadata.")?;
+    if bytes.len() > MAX_OUTPUT {
+        return Err("Invalid account metadata cache.".into());
+    }
+    let cache: AccountCache =
+        serde_json::from_slice(&bytes).map_err(|_| "Invalid account metadata cache.")?;
+    if cache.version != 1
+        || cache.user_data != orca_user_data()?
+        || cache.accounts.len() > MAX_ACCOUNTS
+    {
+        return Err(
+            "Saved accounts belong to a different Orca profile. Refresh accounts in Settings (or Project Settings)."
+                .into(),
+        );
+    }
+    let mut ids = HashSet::new();
+    if cache.accounts.iter().any(|account| {
+        !safe_account_id(&account.id) || !host_account(account) || !ids.insert(&account.id)
+    }) {
+        return Err("Invalid account metadata cache.".into());
+    }
+    Ok(cache)
+}
+
+fn write_cache(state_home: &Path, cache: &AccountCache) -> Result<(), String> {
+    fs::create_dir_all(state_home).map_err(|_| "Cannot save account metadata.")?;
+    let temporary = state_home.join(format!(".codex-accounts-{}.tmp", Uuid::new_v4()));
+    let result = (|| {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&temporary)
+            .map_err(|_| "Cannot save account metadata.")?;
+        serde_json::to_writer_pretty(&mut file, cache)
+            .map_err(|_| "Cannot save account metadata.")?;
+        file.write_all(b"\n")
+            .and_then(|_| file.sync_all())
+            .map_err(|_| "Cannot save account metadata.")?;
+        fs::rename(&temporary, state_home.join(CACHE_NAME))
+            .map_err(|_| "Cannot save account metadata.")?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+
+fn run_orca_account_list(cli: &Path) -> Result<Vec<u8>, String> {
+    let mut command = local_account_command(cli);
+    let mut child = command
+        .spawn()
+        .map_err(|_| "Cannot run Orca's installed CLI.")?;
+    let overflow = Arc::new(AtomicBool::new(false));
+    let (send, recv) = mpsc::channel();
+    read_output(
+        child.stdout.take().unwrap(),
+        overflow.clone(),
+        send.clone(),
+        true,
+    );
+    read_output(child.stderr.take().unwrap(), overflow.clone(), send, false);
+    let started = Instant::now();
+    let status = loop {
+        if overflow.load(Ordering::Relaxed) || started.elapsed() >= COMMAND_TIMEOUT {
+            terminate(&mut child);
+            return Err("Orca account discovery timed out or exceeded its output limit. Open Orca locally and refresh.".into());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => thread::sleep(Duration::from_millis(15)),
+            Err(_) => {
+                terminate(&mut child);
+                return Err("Orca account discovery could not complete.".into());
+            }
+        }
+    };
+    let mut output = Vec::new();
+    for _ in 0..2 {
+        match recv.recv_timeout(Duration::from_secs(1)) {
+            Ok((stdout, Ok(bytes))) => {
+                if stdout {
+                    output = bytes;
+                }
+            }
+            _ => {
+                terminate(&mut child);
+                return Err("Orca account discovery could not read its response.".into());
+            }
+        }
+    }
+    if overflow.load(Ordering::Relaxed) || !status.success() {
+        return Err("Orca could not list saved accounts. Open Orca locally and refresh.".into());
+    }
+    Ok(output)
+}
+
+fn local_account_command(cli: &Path) -> Command {
+    let mut command = Command::new(cli);
+    command
+        .args(["account", "list", "--json"])
+        .env_remove("ORCA_ENVIRONMENT")
+        .env_remove("ORCA_PAIRING_CODE")
+        .env_remove("ORCA_REMOTE_PAIRING")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    command
+}
+
+fn read_output(
+    mut reader: impl Read + Send + 'static,
+    overflow: Arc<AtomicBool>,
+    sender: mpsc::Sender<(bool, std::io::Result<Vec<u8>>)>,
+    stdout: bool,
+) {
+    thread::spawn(move || {
+        let mut output = Vec::new();
+        let mut chunk = [0; 8192];
+        let result = loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break Ok(output),
+                Ok(count) => {
+                    let remaining = MAX_OUTPUT.saturating_sub(output.len());
+                    output.extend_from_slice(&chunk[..count.min(remaining)]);
+                    if count > remaining {
+                        overflow.store(true, Ordering::Relaxed);
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => break Err(error),
+            }
+        };
+        let _ = sender.send((stdout, result));
+    });
+}
+
+fn terminate(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        // Only this CLI process group; never Orca's already-running application.
+        unsafe {
+            libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let path = env::temp_dir().join(format!("riwork-accounts-test-{}", Uuid::new_v4()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn response(accounts: serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({"ok":true,"result":{"codex":{
+            "accounts":accounts,"activeAccountId":"local-1",
+            "activeAccountIdsByRuntime":{"host":"local-2"}
+        },"unrelatedProvider":{"authToken":"NEVER_CACHE_ME"}}}))
+        .unwrap()
+    }
+
+    #[test]
+    fn cache_from_a_newer_build_with_extra_fields_still_parses() {
+        let cache: AccountCache = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "user_data": "/profile",
+            "accounts": [{"id": "local-1", "email": null, "futureField": {"nested": true}}],
+            "source_active_id": null,
+            "refreshed_at": 7
+        }))
+        .unwrap();
+        assert_eq!(cache.accounts[0].id, "local-1");
+    }
+
+    #[test]
+    fn keeps_only_unique_host_accounts_and_safe_ids() {
+        let bytes = response(serde_json::json!([
+            {"id":"local-1","email":"first@example.test","managedHomeRuntime":"host"},
+            {"id":"local-2","email":"second@example.test","managedHomeRuntime":"host"},
+            {"id":"local-2","email":"duplicate@example.test","managedHomeRuntime":"host"},
+            {"id":"wsl","managedHomeRuntime":"wsl","wslDistro":"Ubuntu"},
+            {"id":"remote","managedHomeRuntime":"ssh"},
+            {"id":"unknown"},
+            {"id":"../escape","managedHomeRuntime":"host"}
+        ]));
+        let parsed = parse_accounts(&bytes, PathBuf::from("/profile")).unwrap();
+        assert_eq!(parsed.accounts.len(), 2);
+        assert_eq!(parsed.source_active_id.as_deref(), Some("local-2"));
+        let cache = serde_json::to_string(&parsed).unwrap();
+        assert!(!cache.contains("NEVER_CACHE_ME"));
+        assert!(!cache.contains("authToken"));
+    }
+
+    #[test]
+    fn account_ids_cannot_escape_or_conflict_with_default() {
+        for id in ["", ".", "..", "a/b", "a\\b", "a\n", SYSTEM_DEFAULT_ID] {
+            assert!(!safe_account_id(id));
+        }
+        assert!(safe_account_id("948f08ad-ec46-4f87-806e-3afb2a5fd8c4"));
+    }
+
+    #[test]
+    fn homes_are_only_existing_contained_directories() {
+        let fixture = Fixture::new();
+        assert!(managed_home(&fixture.0, "local-1").is_err());
+        let path = fixture.0.join("codex-accounts/local-1/home");
+        fs::create_dir_all(&path).unwrap();
+        assert_eq!(
+            managed_home(&fixture.0, "local-1").unwrap(),
+            path.canonicalize().unwrap()
+        );
+        assert!(managed_home(&fixture.0, "../escape").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_home_symlink_cannot_select_another_identity() {
+        use std::os::unix::fs::symlink;
+        let fixture = Fixture::new();
+        let account = fixture.0.join("codex-accounts/local-1");
+        let other = fixture.0.join("codex-accounts/local-2/home");
+        fs::create_dir_all(&account).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        symlink(other, account.join("home")).unwrap();
+        assert!(managed_home(&fixture.0, "local-1").is_err());
+    }
+
+    #[test]
+    fn parsing_errors_do_not_expose_provider_diagnostics() {
+        let secret = b"{\"ok\":false,\"error\":\"TOKEN_SHOULD_STAY_PRIVATE\"}";
+        assert!(
+            !parse_accounts(secret, PathBuf::from("/profile"))
+                .unwrap_err()
+                .contains("TOKEN_")
+        );
+        assert!(
+            !parse_accounts(b"TOKEN_SHOULD_STAY_PRIVATE", PathBuf::from("/profile"))
+                .unwrap_err()
+                .contains("TOKEN_")
+        );
+    }
+
+    #[test]
+    fn selected_missing_account_fails_instead_of_using_default() {
+        let fixture = Fixture::new();
+        assert!(resolve_launch_binding(&fixture.0, Some("local-1")).is_err());
+        assert!(resolve_launch_binding(&fixture.0, Some("../escape")).is_err());
+        assert_eq!(resolve_launch_binding(&fixture.0, None).unwrap().id, None);
+        assert_eq!(
+            resolve_launch_binding(&fixture.0, Some(SYSTEM_DEFAULT_ID))
+                .unwrap()
+                .id,
+            None
+        );
+    }
+
+    #[test]
+    fn selected_binding_uses_its_home_without_following_orca_active_account() {
+        let fixture = Fixture::new();
+        let home = fixture.0.join("codex-accounts/local-1/home");
+        fs::create_dir_all(&home).unwrap();
+        let cache = parse_accounts(
+            &response(serde_json::json!([
+                {"id":"local-1","email":"first@example.test","managedHomeRuntime":"host"},
+                {"id":"local-2","email":"second@example.test","managedHomeRuntime":"host"}
+            ])),
+            fixture.0.clone(),
+        )
+        .unwrap();
+        let binding = resolve_cached_binding(&cache, "local-1").unwrap();
+        assert_eq!(binding.id.as_deref(), Some("local-1"));
+        assert_eq!(binding.label.as_deref(), Some("first@example.test"));
+        assert_eq!(binding.home, home.canonicalize().unwrap());
+        assert_eq!(cache.source_active_id.as_deref(), Some("local-2"));
+        assert!(resolve_cached_binding(&cache, "local-2").is_err());
+        fs::remove_dir_all(home).unwrap();
+        assert!(resolve_cached_binding(&cache, "local-1").is_err());
+    }
+
+    fn named(id: &str, label: &str, email: Option<&str>, available: bool) -> CodexAccount {
+        CodexAccount {
+            id: id.into(),
+            label: label.into(),
+            email: email.map(str::to_owned),
+            home: format!("/accounts/{id}/home").into(),
+            available,
+            unavailable_reason: (!available)
+                .then(|| "This saved account's home is missing.".into()),
+            is_system_default: id == SYSTEM_DEFAULT_ID,
+        }
+    }
+
+    fn roster() -> Vec<CodexAccount> {
+        vec![
+            named(SYSTEM_DEFAULT_ID, "System default", None, true),
+            named(
+                "948f08ad-ec46-4f87-806e-3afb2a5fd8c4",
+                "me@example.com · Work",
+                Some("me@example.com"),
+                true,
+            ),
+            named(
+                "7c1d9b3e-0000-4000-8000-000000000001",
+                "me@home.example · Private",
+                Some("me@home.example"),
+                true,
+            ),
+            named(
+                "7c1d9b3e-0000-4000-8000-000000000002",
+                "me@home.example · Private spare",
+                Some("me@home.example"),
+                false,
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_person_names_an_account_by_label_workspace_email_or_id() {
+        let accounts = roster();
+        let id = |query: &str| find_account(&accounts, query).map(|account| account.id.as_str());
+        let work = Ok("948f08ad-ec46-4f87-806e-3afb2a5fd8c4");
+        // Any case, any part of the label that is whole: `Work` is `me@example.com · Work`.
+        for query in [
+            "Work",
+            "work",
+            " WORK ",
+            "me@example.com · Work",
+            "me@example.com",
+            "948f08ad-ec46-4f87-806e-3afb2a5fd8c4",
+            "948F08AD-EC46-4F87-806E-3AFB2A5FD8C4",
+            "948f08ad",
+        ] {
+            assert_eq!(id(query), work, "{query}");
+        }
+        // The system default is an account too, by label or id.
+        assert_eq!(id("System default"), Ok(SYSTEM_DEFAULT_ID));
+        assert_eq!(id("system-default"), Ok(SYSTEM_DEFAULT_ID));
+        // A part of a label names an account when only one has it.
+        assert_eq!(id("example.com"), work);
+        // An id's start needs eight characters to count.
+        assert!(id("948f").is_err());
+    }
+
+    #[test]
+    fn a_name_that_fits_two_accounts_or_none_is_an_error() {
+        let accounts = roster();
+        // Ambiguous: never pick one of them.
+        assert!(find_account(&accounts, "me@home.example").is_err());
+        // The exact label wins over the longer one that contains it.
+        let one = find_account(&accounts, "me@home.example · Private").unwrap();
+        assert_eq!(one.id, "7c1d9b3e-0000-4000-8000-000000000001");
+        assert!(find_account(&accounts, "Holiday").is_err());
+        assert!(find_account(&accounts, "  ").is_err());
+    }
+
+    #[test]
+    fn a_named_account_resolves_to_the_home_a_launch_would_use() {
+        let fixture = Fixture::new();
+        for id in ["local-1", "local-2"] {
+            fs::create_dir_all(fixture.0.join("codex-accounts").join(id).join("home")).unwrap();
+        }
+        let cache = parse_accounts(
+            &response(serde_json::json!([
+                {"id":"local-1","email":"first@example.test","workspaceLabel":"Work","managedHomeRuntime":"host"},
+                {"id":"local-2","email":"second@example.test","managedHomeRuntime":"host"}
+            ])),
+            fixture.0.clone(),
+        )
+        .unwrap();
+        let binding = resolve_account_in(&cache, "work").unwrap();
+        assert_eq!(binding, resolve_cached_binding(&cache, "local-1").unwrap());
+        assert_eq!(binding.id.as_deref(), Some("local-1"));
+        assert_eq!(binding.label.as_deref(), Some("first@example.test · Work"));
+        assert_eq!(
+            resolve_account_in(&cache, "second@example.test")
+                .unwrap()
+                .id
+                .as_deref(),
+            Some("local-2")
+        );
+        // The system default is the CLI's own profile: no account, no managed home.
+        let system = resolve_account_in(&cache, "System default").unwrap();
+        assert_eq!((system.id, system.label), (None, None));
+        assert!(resolve_account_in(&cache, "third").is_err());
+        // An account whose home went away is unavailable, never another one.
+        fs::remove_dir_all(fixture.0.join("codex-accounts/local-2")).unwrap();
+        let error = resolve_account_in(&cache, "second@example.test").unwrap_err();
+        assert!(error.contains("is unavailable"), "{error}");
+    }
+
+    #[test]
+    fn account_command_is_explicitly_local_and_uses_public_list_only() {
+        let command = local_account_command(Path::new("/installed/orca"));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["account", "list", "--json"]
+        );
+        let removed = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect::<HashSet<_>>();
+        assert!(removed.contains("ORCA_ENVIRONMENT"));
+        assert!(removed.contains("ORCA_PAIRING_CODE"));
+        assert!(removed.contains("ORCA_REMOTE_PAIRING"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "slow: spawns a real shell script as the Orca CLI"]
+    fn cli_failure_never_displays_raw_stderr() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = Fixture::new();
+        let cli = fixture.0.join("orca");
+        fs::write(
+            &cli,
+            b"#!/bin/sh\nprintf 'PRIVATE_PROVIDER_ERROR' >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
+        let error = run_orca_account_list(&cli).unwrap_err();
+        assert!(!error.contains("PRIVATE_PROVIDER_ERROR"));
+    }
+
+    #[test]
+    fn cache_is_private_metadata_and_works_without_orca() {
+        let fixture = Fixture::new();
+        let cache = parse_accounts(
+            &response(serde_json::json!([
+                {"id":"local-1","email":"first@example.test","managedHomeRuntime":"host"}
+            ])),
+            orca_user_data().unwrap(),
+        )
+        .unwrap();
+        write_cache(&fixture.0, &cache).unwrap();
+        let loaded = read_cache(&fixture.0).unwrap();
+        assert_eq!(loaded.accounts[0].id, "local-1");
+        let bytes = fs::read(fixture.0.join(CACHE_NAME)).unwrap();
+        assert!(!String::from_utf8(bytes).unwrap().contains("NEVER_CACHE_ME"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(fixture.0.join(CACHE_NAME))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_symlinks_are_rejected_before_reading_contents() {
+        use std::os::unix::fs::symlink;
+        let fixture = Fixture::new();
+        let other = fixture.0.join("unrelated-file");
+        fs::write(&other, b"DO_NOT_READ").unwrap();
+        symlink(other, fixture.0.join(CACHE_NAME)).unwrap();
+        assert_eq!(
+            read_cache(&fixture.0).unwrap_err(),
+            "Invalid account metadata cache."
+        );
+    }
+
+    /// Runs the named test again in a child whose environment is `vars`, so the
+    /// test can exercise process-environment lookups without mutating the
+    /// environment shared with other tests. The child gets the parent's
+    /// fixture directory as `Some`; the parent gets `None` once the child passed.
+    fn run_in_child(fixture: &Fixture, name: &str, vars: &[(&str, &OsStr)]) -> Option<PathBuf> {
+        if let Some(root) = env::var_os("RIWORK_TEST_ACCOUNT_CHILD") {
+            return Some(PathBuf::from(root));
+        }
+        let output = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!("codex_accounts::tests::{name}"),
+                "--include-ignored",
+                "--nocapture",
+            ])
+            .env("RIWORK_TEST_ACCOUNT_CHILD", &fixture.0)
+            .envs(vars.iter().copied())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // A filter that matches nothing also exits successfully.
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        None
+    }
+
+    fn managed(fixture: &Fixture, id: &str) -> PathBuf {
+        let home = fixture
+            .0
+            .join("profile/codex-accounts")
+            .join(id)
+            .join("home");
+        fs::create_dir_all(&home).unwrap();
+        home.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn system_default_ignores_homes_riwork_injected_into_sessions() {
+        let fixture = Fixture::new();
+        let profile = fixture.0.join("profile");
+        let account = managed(&fixture, "local-1");
+        let genuine = user_home().unwrap().join(".codex");
+        let os = |path: &Path| Some(path.as_os_str().to_owned());
+        // A Codex pane or its tool environment: CODEX_HOME plus the pinned home.
+        assert_eq!(
+            system_codex_home(os(&account), os(&account), Some(&profile)).unwrap(),
+            genuine
+        );
+        // A plain project shell receives only CODEX_HOME, with an empty pin.
+        assert_eq!(
+            system_codex_home(os(&account), Some("".into()), Some(&profile)).unwrap(),
+            genuine
+        );
+        // A different Orca profile override still identifies the pinned home.
+        assert_eq!(
+            system_codex_home(os(&account), os(&account), None).unwrap(),
+            genuine
+        );
+        // The user's own CODEX_HOME survives, including in a pane that pins it
+        // because the system default was selected.
+        let own = fixture.0.join("my-codex");
+        assert_eq!(
+            system_codex_home(os(&own), None, Some(&profile)).unwrap(),
+            own
+        );
+        assert_eq!(
+            system_codex_home(os(&own), os(&own), Some(&profile)).unwrap(),
+            own
+        );
+        assert_eq!(
+            system_codex_home(None, None, Some(&profile)).unwrap(),
+            genuine
+        );
+        assert!(system_codex_home(Some("".into()), None, Some(&profile)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn injected_homes_are_recognized_through_a_symlinked_profile() {
+        use std::os::unix::fs::symlink;
+        let fixture = Fixture::new();
+        let account = managed(&fixture, "local-1");
+        let alias = fixture.0.join("profile-alias");
+        symlink(fixture.0.join("profile"), &alias).unwrap();
+        assert!(riwork_injected_home(&account, None, Some(&alias)));
+        assert!(!riwork_injected_home(
+            &fixture.0.join("elsewhere"),
+            None,
+            Some(&alias)
+        ));
+        assert!(!managed_home_shape(
+            &fixture.0.join("codex-accounts/../home")
+        ));
+    }
+
+    #[test]
+    #[ignore = "slow: re-runs the test binary in a child process with a controlled environment"]
+    fn system_default_bindings_and_rows_ignore_the_injected_home() {
+        let fixture = Fixture::new();
+        let account = managed(&fixture, "local-1");
+        let profile = fixture.0.join("profile");
+        let user = fixture.0.join("user");
+        fs::create_dir_all(&user).unwrap();
+        let Some(root) = run_in_child(
+            &fixture,
+            "system_default_bindings_and_rows_ignore_the_injected_home",
+            &[
+                ("HOME", user.as_os_str()),
+                ("CODEX_HOME", account.as_os_str()),
+                ("RIWORK_CODEX_ACCOUNT_HOME", account.as_os_str()),
+                ("ORCA_USER_DATA_PATH", profile.as_os_str()),
+            ],
+        ) else {
+            return;
+        };
+        let genuine = root.join("user/.codex");
+        let state = root.join("state");
+        for selected in [None, Some(SYSTEM_DEFAULT_ID)] {
+            let binding = resolve_launch_binding(&state, selected).unwrap();
+            assert_eq!((binding.id, binding.home), (None, genuine.clone()));
+        }
+        use crate::store::ProjectCodexAccount::{Inherit, SystemDefault};
+        for choice in [Inherit, SystemDefault] {
+            let binding = resolve_project_choice_binding(&state, &choice, None).unwrap();
+            assert_eq!((binding.id, binding.home), (None, genuine.clone()));
+        }
+        let rows = snapshot(None, None, false).accounts;
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].is_system_default);
+        assert_eq!(rows[0].home, genuine);
+    }
+
+    #[test]
+    fn open_scrubs_pins_and_only_an_injected_codex_home() {
+        let fixture = Fixture::new();
+        let account = managed(&fixture, "local-1");
+        let profile = fixture.0.join("profile");
+        let own = fixture.0.join("my-codex");
+        let os = |path: &Path| Some(path.as_os_str().to_owned());
+        let injected = injected_environment(
+            os(&account).as_deref(),
+            os(&account).as_deref(),
+            Some(&profile),
+        );
+        assert_eq!(
+            injected,
+            [
+                "RIWORK_CODEX_ACCOUNT_HOME",
+                "RIWORK_CODEX_SHELL_ID",
+                "CODEX_HOME"
+            ]
+        );
+        let genuine =
+            injected_environment(os(&own).as_deref(), os(&own).as_deref(), Some(&profile));
+        assert_eq!(
+            genuine,
+            ["RIWORK_CODEX_ACCOUNT_HOME", "RIWORK_CODEX_SHELL_ID"]
+        );
+        assert_eq!(
+            injected_environment(None, None, Some(&profile)),
+            ["RIWORK_CODEX_ACCOUNT_HOME", "RIWORK_CODEX_SHELL_ID"]
+        );
+    }
+
+    #[test]
+    fn only_an_orca_managed_home_counts_as_managed_by_orca() {
+        let fixture = Fixture::new();
+        let account = managed(&fixture, "local-1");
+        let profile = fixture.0.join("profile");
+        let own = fixture.0.join("my-codex");
+        let os = |path: &Path| Some(path.as_os_str().to_owned());
+        assert_eq!(
+            managed_home_variable(os(&account), None, Some(&profile)),
+            Some(account.clone())
+        );
+        // Found through the pin even when this process sees another profile.
+        assert_eq!(
+            managed_home_variable(os(&account), os(&account), None),
+            Some(account)
+        );
+        // The user's own home, including one a system-default pane pins.
+        assert_eq!(managed_home_variable(os(&own), None, Some(&profile)), None);
+        assert_eq!(
+            managed_home_variable(os(&own), os(&own), Some(&profile)),
+            None
+        );
+        assert_eq!(managed_home_variable(None, None, Some(&profile)), None);
+        assert_eq!(
+            managed_home_variable(Some("".into()), None, Some(&profile)),
+            None
+        );
+    }
+}
