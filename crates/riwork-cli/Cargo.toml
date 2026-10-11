@@ -1,0 +1,24 @@
+[package]
+name = "riwork-cli"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "riwork-cli"
+path = "src/main.rs"
+
+[dependencies]
+riwork-core = { path = "../riwork-core" }
+riwork-engine = { path = "../riwork-engine" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+fs2 = "0.4"
+chrono = "0.4"
+libc = "0.2"
+
+[dev-dependencies]
+riwork-engine = { path = "../riwork-engine", features = ["test-support"] }
