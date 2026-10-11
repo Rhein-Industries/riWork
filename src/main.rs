@@ -5606,7 +5606,14 @@ impl Workspace {
             }))
             .filter(|(key, _)| shown.contains(key))
             .collect::<HashMap<_, _>>();
+        let shown_shells = shown
+            .iter()
+            .filter_map(|key| key.strip_prefix("shell:").map(str::to_owned))
+            .collect::<HashSet<_>>();
         let work = cx.background_executor().spawn(async move {
+            // Sessions of a deleted worktree end once it has stayed gone, never one in a
+            // tab here or attached anywhere; at most one look a minute per process.
+            sessions.reap_orphaned_worktree_sessions(&shown_shells);
             // One tmux and `ps` sample serves every window for about a tick.
             let sample = sessions.sample(want_metrics)?;
             let chats = {

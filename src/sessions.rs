@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::session_keys::tmux_argument;
 
+mod orphans;
 mod sample;
 pub use sample::SessionSample;
 mod watch;
