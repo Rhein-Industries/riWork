@@ -12,6 +12,9 @@ use std::fs;
 
 const ALPHA: &str = "aaaaaaaa-0000-4000-8000-0000000000a1";
 const BETA: &str = "bbbbbbbb-0000-4000-8000-0000000000b2";
+/// The fixture's chat, and another chat beside it.
+const CHAT: &str = "11111111-2222-4333-8444-555555555555";
+const OTHER_CHAT: &str = "99999999-2222-4333-8444-555555555555";
 
 pub(crate) struct Fixture {
     /// The fixture's folder as the system temp dir names it (on macOS under the `/var` link).
@@ -27,6 +30,14 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.base);
     }
+}
+
+/// Send `source` to chat `id` as the chat host does: an owned snapshot in the chat's own
+/// folder, named `content`, with its preview beside it. Returns the snapshot's path.
+pub(crate) fn sent(home: &Path, id: &str, source: &Path) -> PathBuf {
+    let chat = crate::chat::log::chat_dir(home, id).unwrap();
+    fs::create_dir_all(&chat).unwrap();
+    crate::chat::attachments::stage(&chat, source).unwrap().path
 }
 
 pub(crate) fn png(path: &Path) {
@@ -107,7 +118,7 @@ impl Fixture {
         orchestrator: Option<serde_json::Value>,
     ) -> ChatInfo {
         let mut value = json!({
-            "id": "11111111-2222-4333-8444-555555555555",
+            "id": CHAT,
             "provider": "codex",
             "project_id": project,
             "worktree_id": worktree,
@@ -582,6 +593,7 @@ mod mounted {
         let fixture = Fixture::new();
         let (handle, view, _feed) = super::super::super::editor_tests::mount(cx);
         let info = fixture.chat(Some(ALPHA), Some("alpha-main"), &fixture.alpha, None);
+        let snapshot = sent(&fixture.home, CHAT, &fixture.alpha.join("shot.png"));
         let item = Item {
             // A final answer: Normal mode shows it, with its images.
             presentation: Presentation {
@@ -589,6 +601,7 @@ mod mounted {
                 images: vec![
                     local(&fixture.feature.join("my shot ü.png")),
                     local(&fixture.alpha.join("shot.png")),
+                    local(&snapshot),
                 ],
                 ..Presentation::default()
             },
@@ -624,7 +637,7 @@ mod mounted {
         })
         .unwrap();
         cx.run_until_parked();
-        for key in ["item-1:image:0", "item-1:image:1"] {
+        for key in ["item-1:image:0", "item-1:image:1", "item-1:image:2"] {
             cx.update_window(handle.into(), |_, window, cx| {
                 window.render_frame(cx);
                 window.click(format!("fold:{key}"), cx);
@@ -641,6 +654,10 @@ mod mounted {
             assert!(window.try_find("preview:item-1:image:0").is_none());
             assert!(window.try_find("view:item-1:image:1").is_some());
             assert!(window.try_find("preview:item-1:image:1").is_some());
+            // The chat's own uploaded snapshot is shown too, and is not a Files item.
+            assert_eq!(view.read(cx).image_slot("item-1:image:2"), Some(Ok(false)));
+            assert!(window.try_find("view:item-1:image:2").is_some());
+            assert!(window.try_find("preview:item-1:image:2").is_none());
             // The full viewer opens for the cross-worktree image.
             window.click("view:item-1:image:0", cx);
         })
@@ -656,4 +673,80 @@ mod mounted {
         })
         .unwrap();
     }
+}
+
+#[test]
+fn a_chat_shows_the_images_the_user_sent_it_and_no_other_chats() {
+    let fixture = Fixture::new();
+    let own = sent(&fixture.home, CHAT, &fixture.alpha.join("shot.png"));
+    let other = sent(&fixture.home, OTHER_CHAT, &fixture.beta.join("b.png"));
+    // A real snapshot, as Claude's chat shows the user's message: no extension.
+    assert_eq!(own.file_name().unwrap(), "content");
+    assert!(own.starts_with(fixture.home.join(format!("chats/{CHAT}/attachments"))));
+    let chat = fixture.home.join(format!("chats/{CHAT}"));
+    png(&chat.join("beside.png"));
+    for scope in [fixture.alpha_chat(), fixture.global_chat()] {
+        // Its own snapshot and its preview, by path and by file URL; Files cannot show them.
+        assert_eq!(show(&scope, &own.to_string_lossy()), Ok(false));
+        assert_eq!(show(&scope, &url(&own)), Ok(false));
+        let preview = own.with_file_name("preview.png");
+        assert_eq!(show(&scope, &preview.to_string_lossy()), Ok(false));
+        // The snapshot's metadata is not an image: refused unread.
+        assert_eq!(
+            show(
+                &scope,
+                &own.with_file_name("attachment.json").to_string_lossy()
+            )
+            .unwrap_err(),
+            "This reference is not a supported image."
+        );
+        // Another chat's snapshot, the chat's folder outside its attachments, and the way
+        // round through `..`.
+        for refused in [
+            other.clone(),
+            chat.join("beside.png"),
+            PathBuf::from(format!(
+                "{}/../../{OTHER_CHAT}/attachments/{}/content",
+                own.parent().unwrap().parent().unwrap().display(),
+                other
+                    .parent()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+            )),
+        ] {
+            let error = show(&scope, &refused.to_string_lossy()).unwrap_err();
+            assert!(error.contains("outside"), "{refused:?}: {error}");
+        }
+    }
+    // A chat whose id is not a canonical UUID gets no attachment folder at all; its
+    // project's folders are as before.
+    for id in [
+        "11111111-2222-4333-8444-55555555555A",
+        "../11111111-2222-4333-8444-555555555555",
+        "11111111-2222-4333-8444-555555555555/../99999999-2222-4333-8444-555555555555",
+        "not-a-chat",
+        "",
+    ] {
+        let mut info = fixture.chat(Some(ALPHA), Some("alpha-main"), &fixture.alpha, None);
+        info.id = id.into();
+        let scope = ImageScope::for_chat(&info, None, &fixture.state, &fixture.home, None);
+        assert!(
+            scope
+                .roots()
+                .iter()
+                .all(|root| !root.starts_with(fixture.home.join("chats"))),
+            "{id:?}: {:?}",
+            scope.roots()
+        );
+        assert!(show(&scope, &own.to_string_lossy()).is_err(), "{id:?}");
+        assert!(show(&scope, &other.to_string_lossy()).is_err(), "{id:?}");
+        assert_eq!(show(&scope, "shot.png"), Ok(false), "{id:?}");
+    }
+    // A chat refused for its identity gets no attachment folder either.
+    let spoof = fixture.chat(None, None, &fixture.alpha, Some(json!({"scope": "global"})));
+    let refused = ImageScope::for_chat(&spoof, None, &fixture.state, &fixture.home, None);
+    assert!(refused.roots().is_empty());
+    assert!(show(&refused, &own.to_string_lossy()).is_err());
 }

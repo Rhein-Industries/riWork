@@ -421,8 +421,9 @@ struct Slot {
 }
 
 /// Read an image a card shows, and whether Open in Files preview reaches it. A local file is
-/// read only when `scope` allows it and it is an image: the scope reaches further than Files
-/// does, so it reads nothing else.
+/// read only when `scope` allows it, and only as an image: the scope reaches further than
+/// Files does, so it shows nothing else. A name with another extension is refused unread; a
+/// name without one (an attachment snapshot is `content`) is decoded by what it holds.
 pub(super) fn load(
     image: &ChatImage,
     scope: &ImageScope,
@@ -430,10 +431,12 @@ pub(super) fn load(
     match &image.source {
         ImageSource::Local { path } => {
             let content = scope.resolve(path).and_then(|resolved| {
-                if !file_preview::is_image_path(&resolved.path) {
+                if resolved.path.extension().is_some()
+                    && !file_preview::is_image_path(&resolved.path)
+                {
                     return Err("This reference is not a supported image.".into());
                 }
-                match file_preview::load(&resolved.root, &resolved.path, None)? {
+                match file_preview::load_image(&resolved.root, &resolved.path)? {
                     image @ PreviewContent::Image { .. } | image @ PreviewContent::Message(_) => {
                         Ok(image)
                     }

@@ -463,6 +463,7 @@ fn chat_tabs_get_image_scopes_from_their_identity_and_follow_the_store(
         alpha.clone(),
         feature.clone(),
         home.join("orchestrators/projects").join(&project),
+        home.join("chats").join(&ordinary.id).join("attachments"),
     ];
     own.sort();
     assert_eq!(roots(&ordinary_tab, cx), own);
@@ -480,6 +481,7 @@ fn chat_tabs_get_image_scopes_from_their_identity_and_follow_the_store(
         home.join("orchestrator"),
         home.join("orchestrators/projects").join(&project),
         home.join("orchestrators/projects").join(&other),
+        home.join("chats").join(&global.id).join("attachments"),
     ];
     everything.sort();
     assert_eq!(roots(&global_tab, cx), everything);

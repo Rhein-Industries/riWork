@@ -170,6 +170,40 @@ pub fn load(
     })
 }
 
+/// A file read as an image and as nothing else, whatever its name: a chat's attachment
+/// snapshots are stored without an extension. The same no-follow walk, size limit, change
+/// check and decoding as an image in `load`; content that is not a supported image is an error.
+pub(crate) fn load_image(root: &Path, path: &Path) -> Result<PreviewContent, String> {
+    let (mut file, _) = open_regular_in(root, path)?;
+    let before = file
+        .metadata()
+        .map_err(|error| format!("Cannot inspect this file: {error}"))?;
+    let too_large = || {
+        PreviewContent::Message(format!(
+            "This file exceeds the {} MiB preview limit. Use Open to view it externally.",
+            MEDIA_LIMIT / 1024 / 1024
+        ))
+    };
+    if before.len() > MEDIA_LIMIT {
+        return Ok(too_large());
+    }
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(MEDIA_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Cannot read this file: {error}"))?;
+    let after = file
+        .metadata()
+        .map_err(|error| format!("Cannot inspect this file: {error}"))?;
+    if FileIdentity::of(&before) != FileIdentity::of(&after) {
+        return Err("This file changed while it was being read. Refresh and try again.".into());
+    }
+    if bytes.len() as u64 > MEDIA_LIMIT {
+        return Ok(too_large());
+    }
+    decode_image(&bytes)
+}
+
 /// Text with control characters other than newline, carriage return and tab
 /// is treated as binary, by the preview and by Copy Contents alike.
 fn has_binary_control(text: &str) -> bool {

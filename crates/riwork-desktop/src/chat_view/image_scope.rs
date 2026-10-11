@@ -11,7 +11,10 @@
 //!   worktrees, and that project's orchestrator folder (`RIWORK_HOME/orchestrators/projects/ID`);
 //! - the global orchestrator chat (`{"scope":"global"}`, no project or worktree, working in
 //!   `RIWORK_HOME/orchestrator`): every registered project's folders and orchestrator folder,
-//!   and its own folder.
+//!   and its own folder;
+//! - and, for either, once its identity checks out, the chat's own attachment snapshots
+//!   (`RIWORK_HOME/chats/ID/attachments`, for its canonical UUID only), where the images the
+//!   user sent it are kept. No other chat's folder, and nothing else under `chats`.
 //!
 //! A relative reference resolves against the chat's working directory only; an absolute path
 //! or a `file://` URL may name a file in any folder of the scope. Files, chat links and Open
@@ -122,6 +125,11 @@ impl ImageScope {
                 };
                 push_project(&mut roots, state, project, home);
             }
+        }
+        // What the user sent this chat: its own snapshots, under its own id, and only when the
+        // id is a canonical UUID (`chat_dir` refuses any other id as a path component).
+        if let Some(chat) = crate::chat::log::chat_dir(home, &info.id) {
+            roots.push(chat.join("attachments"));
         }
         roots.retain(|root| root.is_absolute());
         roots.sort();
