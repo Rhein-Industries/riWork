@@ -39,6 +39,7 @@ use crate::{
     theme,
 };
 
+use riwork_engine::terminal_drop::foreground_names;
 pub use riwork_engine::terminal_drop::{
     Copied, Program, dropped_text, paste_input, path_input, program, shell_escape,
 };
