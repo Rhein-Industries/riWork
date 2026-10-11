@@ -87,7 +87,7 @@ fn inode(_: &fs::Metadata) -> u64 {
 /// The stamps of every path one result was computed from. Each is taken before
 /// the path is read, so a change during the read shows up as a difference.
 #[derive(Clone, Debug)]
-pub(crate) struct Fingerprint {
+pub struct Fingerprint {
     stamps: BTreeMap<(PathBuf, Kind), Stamp>,
     racy: bool,
     since: Instant,
@@ -111,31 +111,31 @@ impl Default for Fingerprint {
 }
 
 impl Fingerprint {
-    pub(crate) fn entries(&mut self, directory: &Path) {
+    pub fn entries(&mut self, directory: &Path) {
         self.record(directory, Kind::Entries);
     }
 
-    pub(crate) fn marker(&mut self, path: &Path) {
+    pub fn marker(&mut self, path: &Path) {
         self.record(path, Kind::Marker);
     }
 
     /// Trust this fingerprint for `age` instead of `MAX_AGE`. For a result that
     /// is expensive to recompute and that a missed change only makes a little
     /// stale.
-    pub(crate) fn lasts(&mut self, age: Duration) {
+    pub fn lasts(&mut self, age: Duration) {
         self.max_age = age;
     }
 
     /// For a fingerprint whose stamps are taken around a read that takes a
     /// while: anything modified since the read began counts as racy, even when
     /// the stamp is taken after the read ended.
-    pub(crate) fn begin_read(&mut self) {
+    pub fn begin_read(&mut self) {
         self.read_from = Some(SystemTime::now());
     }
 
     /// False when a stamp was too fresh to tell a later change from this one, so
     /// the fingerprint never validates.
-    pub(crate) fn settled(&self) -> bool {
+    pub fn settled(&self) -> bool {
         !self.racy
     }
 
@@ -171,7 +171,7 @@ impl Fingerprint {
     }
 
     /// True when a fresh stat of every path gives what was recorded.
-    pub(crate) fn is_current(&self) -> bool {
+    pub fn is_current(&self) -> bool {
         !self.racy
             && self.since.elapsed() < self.max_age
             && self
@@ -181,8 +181,9 @@ impl Fingerprint {
     }
 
     /// Pretend the stamps were read `by` ago.
-    #[cfg(test)]
-    pub(crate) fn backdate(&mut self, by: Duration) {
+    /// Available to fixtures in other crates, which use core without `cfg(test)`.
+    #[doc(hidden)]
+    pub fn backdate(&mut self, by: Duration) {
         self.since = self
             .since
             .checked_sub(by)

@@ -103,7 +103,7 @@ struct Discovery {
 }
 
 #[path = "store_scan.rs"]
-pub(crate) mod scan;
+pub mod scan;
 use scan::Scan;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -535,7 +535,7 @@ impl Store {
         self.read_state()
     }
 
-    pub(crate) fn transaction<T>(
+    pub fn transaction<T>(
         &self,
         operation: impl FnOnce(&mut State) -> Result<T, String>,
     ) -> Result<T, String> {
@@ -544,7 +544,7 @@ impl Store {
 
     /// Import can race with another completed import. In that case, return the
     /// saved receipt without replacing an otherwise unchanged state file.
-    pub(crate) fn transaction_if_changed<T>(
+    pub fn transaction_if_changed<T>(
         &self,
         operation: impl FnOnce(&mut State) -> Result<(T, bool), String>,
     ) -> Result<T, String> {
