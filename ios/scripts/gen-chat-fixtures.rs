@@ -1,19 +1,16 @@
-//! Writes `ios/Tests/Fixtures/chat-serde.json`: chat events, commands and infos in the exact serde form of `src/chat/model.rs`, made by
+//! Writes `ios/Tests/Fixtures/chat-serde.json`: chat events, commands and infos in the exact serde form of `crates/riwork-engine/src/chat/model.rs`, made by
 //! the real types, so the phone's decoder is tested against what the desktop really sends (and its encoder against what it expects).
 //! Run `ios/scripts/gen-chat-fixtures.sh`, never by hand; the output is checked in and `ios/Tests/ChatTests.swift` reads it.
 #![allow(dead_code)]
-#[path = "../../src/chat/model.rs"]
-mod model;
-/// `model.rs` names the attachment type of `SendAttachments`, which reads files; no fixture has one, so a stand-in will do.
-mod attachments {
-    #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-    pub struct Attachment {}
-}
-use model::*;
+use riwork_engine::chat::model::*;
 use serde_json::{json, to_value, Value};
 
 fn main() {
     let info = ChatInfo {
+        parent_id: None,
+        user_title: None,
+        first_user_message: None,
+        provider_title: None,
         id: "11111111-1111-4111-8111-111111111111".into(),
         provider: Provider::Codex,
         project_id: Some("22222222-2222-4222-8222-222222222222".into()),
@@ -32,6 +29,10 @@ fn main() {
         carried_over: None,
     };
     let minimal = ChatInfo {
+        parent_id: None,
+        user_title: None,
+        first_user_message: None,
+        provider_title: None,
         id: "33333333-3333-4333-8333-333333333333".into(),
         provider: Provider::Claude,
         project_id: None,
@@ -165,7 +166,7 @@ fn main() {
     let modes: Vec<Value> = [ApprovalMode::Supervised, ApprovalMode::AutoEdit, ApprovalMode::Full, ApprovalMode::Plan].iter().map(|m| to_value(m).unwrap()).collect();
     let providers: Vec<Value> = [Provider::Codex, Provider::Claude].iter().map(|p| to_value(p).unwrap()).collect();
     let doc = json!({
-        "generated_by": "ios/scripts/gen-chat-fixtures.sh from src/chat/model.rs; do not edit by hand",
+        "generated_by": "ios/scripts/gen-chat-fixtures.sh from crates/riwork-engine/src/chat/model.rs; do not edit by hand",
         "events": events,
         "commands": commands,
         "chats": [to_value(&info).unwrap(), to_value(&minimal).unwrap(), to_value(&switched).unwrap()],

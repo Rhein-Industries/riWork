@@ -1,20 +1,19 @@
 #!/bin/sh
-# Regenerates ios/Tests/Fixtures/chat-serde.json from the Rust chat model (src/chat/model.rs), in a throwaway crate.
+# Regenerates ios/Tests/Fixtures/chat-serde.json from the Rust chat model (crates/riwork-engine/src/chat/model.rs), in a throwaway crate.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
+riwork_root=$(cd "$here/../.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 mkdir "$work/src"
 cp "$here/gen-chat-fixtures.rs" "$work/src/main.rs"
-# The program refers to ../../src/chat/model.rs relative to itself: keep that path valid from the throwaway crate.
-sed -i.bak "s#\"../../src/chat/model.rs\"#\"$here/../../src/chat/model.rs\"#" "$work/src/main.rs"
 cat > "$work/Cargo.toml" <<TOML
 [package]
 name = "gen-chat-fixtures"
 version = "0.0.0"
 edition = "2024"
 [dependencies]
-serde = { version = "1", features = ["derive"] }
+riwork-engine = { path = "$riwork_root/crates/riwork-engine" }
 serde_json = "1"
 TOML
 # Into a temporary file first, so a failed build leaves the fixture as it was.

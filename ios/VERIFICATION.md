@@ -58,7 +58,7 @@ Xcode 26 / Swift 6.2, iPhone 17 simulator (iOS 26.0), ad-hoc signing.
 ```sh
 swift build --package-path ios
 python3 ios/scripts/local-smoke.py \
-  --relay-binary /absolute/path/to/remote/target/debug/riwork-remote \
+  --relay-binary /absolute/path/to/riWork/target/debug/riwork-remote \
   --riwork /absolute/path/to/rebuilt/target/debug/riwork --viewport
 ```
 
