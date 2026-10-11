@@ -3992,7 +3992,7 @@ fn matches_orchestrator_scope(session: &ShellSession, project_id: Option<&str>) 
 }
 
 /// The folder an orchestrator works in, whatever it runs as.
-pub(crate) fn orchestrator_context(home: &Path, project_id: Option<&str>) -> PathBuf {
+pub fn orchestrator_context(home: &Path, project_id: Option<&str>) -> PathBuf {
     match project_id {
         Some(project_id) => home.join("orchestrators/projects").join(project_id),
         None => home.join("orchestrator"),

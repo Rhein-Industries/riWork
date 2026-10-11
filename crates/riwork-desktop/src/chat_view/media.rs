@@ -1,6 +1,7 @@
 //! User-triggered, bounded image loading. Folding uses stable message/image keys.
 use super::{
     ChatView, ChatViewEvent,
+    image_scope::ImageScope,
     widgets::{Look, button},
 };
 use crate::{
@@ -188,6 +189,7 @@ impl MediaState {
         generation: u64,
         source: &ImageSource,
         content: Result<PreviewContent, String>,
+        in_files: bool,
     ) -> Option<PreviewContent> {
         if let Some(slot) = self
             .slots
@@ -195,10 +197,44 @@ impl MediaState {
             .filter(|slot| slot.generation == generation && &slot.source == source)
         {
             slot.content = Some(content);
+            slot.in_files = in_files;
             None
         } else {
             content.ok()
         }
+    }
+
+    /// Forget every local image read under a scope that has changed: their slots go (to be
+    /// released by the caller), a load still running for one finds no slot of its generation
+    /// and is dropped on arrival, and each one still open is queued to be read again under the
+    /// new scope. Returns the forgotten slots.
+    fn rescope(&mut self, open: &HashSet<String>) -> Vec<Slot> {
+        let stale: Vec<String> = self
+            .slots
+            .iter()
+            .filter(|(_, slot)| matches!(slot.source, ImageSource::Local { .. }))
+            .map(|(key, _)| key.clone())
+            .collect();
+        let mut released = Vec::new();
+        for key in stale {
+            let Some(slot) = self.slots.remove(&key) else {
+                continue;
+            };
+            if self.viewer.as_ref() == Some(&key) {
+                self.viewer = None;
+            }
+            if open.contains(&key) && !self.queue.iter().any(|(queued, _)| *queued == key) {
+                self.queue.push_back((
+                    key,
+                    ChatImage {
+                        label: String::new(),
+                        source: slot.source.clone(),
+                    },
+                ));
+            }
+            released.push(slot);
+        }
+        released
     }
 }
 
@@ -231,6 +267,7 @@ mod tests {
                 generation: 8,
                 source: source.clone(),
                 content: Some(Ok(PreviewContent::Message("Loaded".into()))),
+                in_files: false,
             },
         );
         media.slots.insert(
@@ -239,6 +276,7 @@ mod tests {
                 generation: 9,
                 source: source.clone(),
                 content: None,
+                in_files: false,
             },
         );
         media.slots.insert(
@@ -247,6 +285,7 @@ mod tests {
                 generation: 10,
                 source: source.clone(),
                 content: None,
+                in_files: false,
             },
         );
         media.queue.extend(
@@ -273,7 +312,8 @@ mod tests {
                     &keys[1],
                     9,
                     &source,
-                    Ok(PreviewContent::Message("Late".into()))
+                    Ok(PreviewContent::Message("Late".into())),
+                    false
                 )
                 .is_some()
         );
@@ -287,6 +327,7 @@ mod tests {
                 generation: media.generation,
                 source: source.clone(),
                 content: None,
+                in_files: false,
             },
         );
         assert!(
@@ -295,7 +336,8 @@ mod tests {
                     &keys[1],
                     9,
                     &source,
-                    Ok(PreviewContent::Message("Old generation".into()))
+                    Ok(PreviewContent::Message("Old generation".into())),
+                    false
                 )
                 .is_some()
         );
@@ -306,7 +348,8 @@ mod tests {
                     &keys[1],
                     11,
                     &source,
-                    Ok(PreviewContent::Message("Reopened".into()))
+                    Ok(PreviewContent::Message("Reopened".into())),
+                    false
                 )
                 .is_none()
         );
@@ -352,12 +395,12 @@ mod tests {
                 }
             }
         });
-        let root = std::path::Path::new("");
+        let scope = ImageScope::default();
         let remote = ChatImage {
             label: "Image".into(),
             source: ImageSource::Url { url },
         };
-        assert!(load(&remote, root, root).err().unwrap().contains("8 MiB"));
+        assert!(load(&remote, &scope).0.err().unwrap().contains("8 MiB"));
         server.join().unwrap();
         let invalid = ChatImage {
             label: "Image".into(),
@@ -366,30 +409,47 @@ mod tests {
                 base64: "aGVsbG8=".into(),
             },
         };
-        assert!(load(&invalid, root, root).is_err());
+        assert!(load(&invalid, &scope).0.is_err());
     }
 }
 struct Slot {
     generation: u64,
     source: ImageSource,
     content: Option<Result<PreviewContent, String>>,
+    /// Open in Files preview reaches this local image: it is in the chat's own Files root.
+    in_files: bool,
 }
 
-fn load(
+/// Read an image a card shows, and whether Open in Files preview reaches it. A local file is
+/// read only when `scope` allows it and it is an image: the scope reaches further than Files
+/// does, so it reads nothing else.
+pub(super) fn load(
     image: &ChatImage,
-    root: &std::path::Path,
-    cwd: &std::path::Path,
-) -> Result<PreviewContent, String> {
+    scope: &ImageScope,
+) -> (Result<PreviewContent, String>, bool) {
     match &image.source {
         ImageSource::Local { path } => {
-            let (path, _) = super::links::resolve(root, cwd, path)?;
-            match file_preview::load(root, &path, None)? {
-                image @ PreviewContent::Image { .. } | image @ PreviewContent::Message(_) => {
-                    Ok(image)
+            let content = scope.resolve(path).and_then(|resolved| {
+                if !file_preview::is_image_path(&resolved.path) {
+                    return Err("This reference is not a supported image.".into());
                 }
-                _ => Err("This reference is not a supported image.".into()),
-            }
+                match file_preview::load(&resolved.root, &resolved.path, None)? {
+                    image @ PreviewContent::Image { .. } | image @ PreviewContent::Message(_) => {
+                        Ok(image)
+                    }
+                    _ => Err("This reference is not a supported image.".into()),
+                }
+            });
+            let in_files = content.is_ok() && scope.in_files(path);
+            (content, in_files)
         }
+        _ => (load_remote(image), false),
+    }
+}
+
+fn load_remote(image: &ChatImage) -> Result<PreviewContent, String> {
+    match &image.source {
+        ImageSource::Local { .. } => Err("This reference is not a supported image.".into()),
         ImageSource::Data { base64, .. } => {
             if base64.len() > crate::chat::media::IMAGE_BYTES {
                 return Err("Image exceeds the encoded size limit.".into());
@@ -441,6 +501,34 @@ impl ChatView {
         }
         if self.open.iter().filter(|id| id.contains("image")).count() < OPEN {
             self.notices.clear(super::notices::LocalKey::Media);
+        }
+    }
+
+    /// A new image scope: what the old one let a card read is forgotten and read again.
+    pub(super) fn rescope_images(&mut self, cx: &mut Context<Self>) {
+        for slot in self.media.rescope(&self.open) {
+            release(slot, cx);
+        }
+        self.start_images(cx);
+        self.list.remeasure();
+        cx.notify();
+    }
+
+    /// What a card's slot holds, for tests: `Ok(in_files)` once an image or a message was
+    /// read, the error once it failed, nothing while it loads or when nothing was asked.
+    #[cfg(test)]
+    pub(super) fn image_slot(&self, key: &str) -> Option<Result<bool, String>> {
+        let slot = self.media.slots.get(key)?;
+        match slot.content.as_ref()? {
+            Ok(PreviewContent::Image { .. }) => Some(Ok(slot.in_files)),
+            Ok(other) => Some(Err(format!(
+                "not an image: {}",
+                match other {
+                    PreviewContent::Message(message) => message.as_str(),
+                    _ => "other content",
+                }
+            ))),
+            Err(error) => Some(Err(error.clone())),
         }
     }
 
@@ -528,10 +616,19 @@ impl ChatView {
         } else {
             None
         };
-        let local = if let ImageSource::Local { path } = &image.source {
-            Some(path.clone())
-        } else {
-            None
+        // Open in Files preview shows the file in the chat's own worktree; an image of another
+        // worktree or project is viewed here only, rather than offered an action that fails.
+        let local = match &image.source {
+            ImageSource::Local { path }
+                if self
+                    .media
+                    .slots
+                    .get(key)
+                    .is_some_and(|slot| slot.source == image.source && slot.in_files) =>
+            {
+                Some(path.clone())
+            }
+            _ => None,
         };
         div()
             .w_full()
@@ -570,7 +667,7 @@ impl ChatView {
             }))
             .into_any_element()
     }
-    fn toggle_image(&mut self, key: String, image: ChatImage, cx: &mut Context<Self>) {
+    pub(super) fn toggle_image(&mut self, key: String, image: ChatImage, cx: &mut Context<Self>) {
         let offset = self.list.logical_scroll_top();
         self.list.pause_following_tail();
         if !self.open.remove(&key) {
@@ -623,31 +720,25 @@ impl ChatView {
                     }
                 }
             }
-            let info = self.model.transcript.info.as_ref();
-            let cwd = info.map(|info| info.cwd.clone()).unwrap_or_default();
-            // Provider local references are scoped to the chat's actual cwd, never the selected UI worktree.
-            let root = self.preview_root.clone();
+            // Local references resolve against the chat's own working directory, within the
+            // folders its identity allows (`ImageScope`), never the selected UI worktree.
+            let scope = self.image_scope.clone();
             let owned = image.clone();
-            let work = cx.background_executor().spawn(async move {
-                if matches!(owned.source, ImageSource::Local { .. }) && root.is_none() {
-                    return Err(
-                        "This chat’s worktree is unavailable for local image preview.".into(),
-                    );
-                }
-                load(&owned, &root.unwrap_or_default(), &cwd)
-            });
+            let work = cx
+                .background_executor()
+                .spawn(async move { load(&owned, &scope) });
             self.media.active += 1;
             self.media.generation += 1;
             let generation = self.media.generation;
             let completion_key = key.clone();
             let source = image.source.clone();
             cx.spawn(async move |this, cx| {
-                let content = work.await;
+                let (content, in_files) = work.await;
                 let _ = this.update(cx, |view, cx| {
                     view.media.active = view.media.active.saturating_sub(1);
                     if let Some(content) =
                         view.media
-                            .complete(&completion_key, generation, &source, content)
+                            .complete(&completion_key, generation, &source, content, in_files)
                         && let Some(image) = content.render_image()
                     {
                         let image = image.clone();
@@ -665,6 +756,7 @@ impl ChatView {
                     generation,
                     source: image.source,
                     content: None,
+                    in_files: false,
                 },
             );
         }

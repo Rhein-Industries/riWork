@@ -5531,6 +5531,7 @@ impl Workspace {
         }
         changed |= self.refresh_shell_titles();
         changed |= self.refresh_remote(cx);
+        self.refresh_chat_image_scopes(cx);
         // The panels draw what they were last told; the open ones are asked again
         // each tick and redraw themselves when it differs. The rest of the window
         // has a few ages ("3m ago") that move with the clock, so it is drawn every
@@ -7728,6 +7729,53 @@ impl Workspace {
         .detach();
     }
 
+    /// Where a chat tab's image cards may read local images from: its identity as the
+    /// transcript says and the host lists it, the store's folders, and the Files root that its
+    /// Open in Files preview uses (its worktree, when its project is this window's).
+    fn chat_image_scope(&self, view: &Entity<ChatView>, cx: &App) -> chat_view::ImageScope {
+        let Some(info) = view.read(cx).info() else {
+            return chat_view::ImageScope::default();
+        };
+        let listed = self
+            .shared_chats
+            .iter()
+            .flatten()
+            .find(|chat| chat.id == info.id);
+        let files_root = info
+            .project_id
+            .as_deref()
+            .filter(|id| *id == self.project_id)
+            .and_then(|project| {
+                file_explorer_root(&self.state, project, info.worktree_id.as_deref())
+            })
+            .map(|root| root.path);
+        chat_view::ImageScope::for_chat(
+            info,
+            listed,
+            &self.state,
+            self.sessions.state_home(),
+            files_root,
+        )
+    }
+
+    /// Keep every chat tab's image scope in step with the store and the chats' identities: a
+    /// folder registered or forgotten, a chat's worktree changed. Unchanged scopes cost nothing.
+    fn refresh_chat_image_scopes(&mut self, cx: &mut Context<Self>) {
+        let views: Vec<Entity<ChatView>> = self
+            .panes
+            .values()
+            .flat_map(|pane| &pane.tabs)
+            .filter_map(Tab::chat)
+            .cloned()
+            .collect();
+        for view in views {
+            let scope = self.chat_image_scope(&view, cx);
+            if view.read(cx).image_scope() != &scope {
+                view.update(cx, |view, cx| view.set_image_scope(scope, cx));
+            }
+        }
+    }
+
     fn chat_event(
         &mut self,
         view: &Entity<ChatView>,
@@ -7745,15 +7793,8 @@ impl Workspace {
             ChatViewEvent::Changed => {
                 // The tab's own title is what the layout menu and a dragged tab name it by.
                 let summary = view.read(cx).summary();
-                let root = summary
-                    .project_id
-                    .as_deref()
-                    .filter(|id| *id == self.project_id)
-                    .and_then(|project| {
-                        file_explorer_root(&self.state, project, summary.worktree_id.as_deref())
-                    })
-                    .map(|root| root.path);
-                view.update(cx, |view, _| view.set_preview_root(root));
+                let scope = self.chat_image_scope(view, cx);
+                view.update(cx, |view, cx| view.set_image_scope(scope, cx));
                 let title = summary.title;
                 for pane in self.panes.values_mut() {
                     for tab in &mut pane.tabs {

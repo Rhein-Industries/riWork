@@ -191,6 +191,13 @@ fn is_image(extension: &str) -> bool {
     )
 }
 
+/// Whether a path names an image by its extension, as the preview decides.
+pub(crate) fn is_image_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|extension| is_image(&extension.to_ascii_lowercase()))
+}
+
 pub(crate) fn decode_image(bytes: &[u8]) -> Result<PreviewContent, String> {
     let format =
         image::guess_format(bytes).map_err(|_| "This image format is not supported.".to_owned())?;

@@ -55,6 +55,7 @@ mod editor_tests;
 mod editors;
 mod feed;
 mod host;
+mod image_scope;
 mod links;
 mod markdown;
 mod media;
@@ -78,6 +79,7 @@ mod widgets;
 
 pub use display::DisplayMode;
 pub use host::HostConfig;
+pub use image_scope::ImageScope;
 pub use links::resolve as resolve_file;
 pub use state::{Link, Summary};
 
@@ -194,7 +196,8 @@ pub struct ChatView {
     display_mode: DisplayMode,
     pending_display: Option<DisplayMode>,
     media: media::MediaState,
-    preview_root: Option<std::path::PathBuf>,
+    /// Where the image cards may read local images from; set by the window.
+    image_scope: ImageScope,
     /// The interface text scale the list's rows were measured at.
     scale: f32,
     /// Theme-specific fonts and spacing also change the measured row heights.
@@ -276,8 +279,24 @@ pub struct ChatView {
 }
 
 impl ChatView {
-    pub fn set_preview_root(&mut self, root: Option<std::path::PathBuf>) {
-        self.preview_root = root;
+    /// The folders this chat's image cards may read from, as the window works them out from
+    /// the chat's identity and the store. A different scope forgets what the old one read.
+    pub fn set_image_scope(&mut self, scope: ImageScope, cx: &mut Context<Self>) {
+        if self.image_scope == scope {
+            return;
+        }
+        self.image_scope = scope;
+        self.rescope_images(cx);
+    }
+    pub fn image_scope(&self) -> &ImageScope {
+        &self.image_scope
+    }
+    /// Give a tab under test its chat's info, as the host's first event would.
+    #[cfg(test)]
+    pub fn adopt_info_for_tests(&mut self, info: ChatInfo) {
+        self.model
+            .transcript
+            .apply(&crate::chat::model::ChatEvent::Info { info });
     }
     pub fn info(&self) -> Option<&ChatInfo> {
         self.model.transcript.info.as_ref()
@@ -422,7 +441,7 @@ impl ChatView {
                 .unwrap_or_default(),
             pending_display: None,
             media: Default::default(),
-            preview_root: None,
+            image_scope: ImageScope::default(),
             scale: ui_text::scale(),
             row_theme: cx
                 .try_global::<crate::theme::Appearance>()

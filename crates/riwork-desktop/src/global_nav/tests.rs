@@ -357,3 +357,158 @@ fn a_chat_the_window_no_longer_knows_is_reported_gone_not_made(cx: &mut gpui::Te
     cx.run_until_parked();
     nothing_was_started(&fixture, cx);
 }
+
+/// The window works out each chat tab's image scope from the chat's identity and the store,
+/// and keeps it in step: here an ordinary chat of the window's project and the global chat.
+#[gpui::test]
+fn chat_tabs_get_image_scopes_from_their_identity_and_follow_the_store(
+    cx: &mut gpui::TestAppContext,
+) {
+    let fixture = window(cx);
+    let workspace = fixture.workspace.clone();
+    // The data directory as the window and the chat host spell it (resolved, as on macOS
+    // `/var` is a link): orchestrator chats are made to work in it.
+    let home = workspace.read_with(cx, |workspace, _| {
+        workspace.sessions.state_home().to_path_buf()
+    });
+    let project = fixture.project_id.clone();
+    let other = uuid::Uuid::new_v4().to_string();
+    let work = home.join("work");
+    let (alpha, feature, beta) = (
+        work.join("alpha"),
+        work.join("alpha-feature"),
+        work.join("beta"),
+    );
+    let chat = |id: &str, value: serde_json::Value| -> ChatInfo {
+        let mut base = serde_json::json!({
+            "id": id,
+            "provider": "codex",
+            "title": "Chat",
+            "created_at_unix": 1,
+        });
+        for (key, field) in value.as_object().unwrap() {
+            base[key] = field.clone();
+        }
+        serde_json::from_value(base).unwrap()
+    };
+    let ordinary = chat(
+        &uuid::Uuid::new_v4().to_string(),
+        serde_json::json!({"project_id": project, "worktree_id": "wt-feature", "cwd": feature}),
+    );
+    let global = chat(
+        &uuid::Uuid::new_v4().to_string(),
+        serde_json::json!({"cwd": home.join("orchestrator"), "orchestrator": {"scope": "global"}}),
+    );
+    let tab_of = |workspace: &Workspace, id: &str| {
+        workspace
+            .panes
+            .values()
+            .flat_map(|pane| &pane.tabs)
+            .find(|tab| tab.chat_id() == Some(id))
+            .and_then(Tab::chat)
+            .cloned()
+            .unwrap()
+    };
+    let (ordinary_tab, global_tab) = {
+        let (ordinary, global) = (ordinary.clone(), global.clone());
+        let (project, other) = (project.clone(), other.clone());
+        let (alpha, feature, beta) = (alpha.clone(), feature.clone(), beta.clone());
+        let home = home.clone();
+        let mut tabs = None;
+        crate::form_input::test_turn(cx, fixture.handle, |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                let mut state = workspace.state.clone();
+                state.projects[0].root = alpha.clone();
+                let mut second = state.projects[0].clone();
+                second.id = other.clone();
+                second.root = beta.clone();
+                state.projects.push(second);
+                state.worktrees = vec![
+                    serde_json::from_value(serde_json::json!({
+                        "id": "wt-main", "project_id": project, "branch": "main",
+                        "path": alpha, "is_primary": true, "created_at": 1
+                    }))
+                    .unwrap(),
+                    serde_json::from_value(serde_json::json!({
+                        "id": "wt-feature", "project_id": project, "branch": "feature",
+                        "path": feature, "created_at": 1
+                    }))
+                    .unwrap(),
+                ];
+                workspace.state = state;
+                workspace.shared_chats = Some(vec![ordinary.clone(), global.clone()]);
+                // A project chat's tab is recorded in the project's shared tab store.
+                project_tabs::TabStore::at(&home, &project)
+                    .unwrap()
+                    .reconcile(&[project_tabs::Session::chat(&ordinary)])
+                    .unwrap();
+                workspace.shared_tabs = Some(Vec::new());
+                workspace.show_existing_chat(ordinary.clone(), window, cx);
+                workspace.show_orchestrator_chat(global.clone(), window, cx);
+                assert_eq!(workspace.notice, None);
+                let ordinary_tab = tab_of(workspace, &ordinary.id);
+                let global_tab = tab_of(workspace, &global.id);
+                ordinary_tab.update(cx, |view, _| view.adopt_info_for_tests(ordinary.clone()));
+                global_tab.update(cx, |view, _| view.adopt_info_for_tests(global.clone()));
+                workspace.refresh_chat_image_scopes(cx);
+                tabs = Some((ordinary_tab, global_tab));
+            });
+        });
+        tabs.unwrap()
+    };
+    let roots = |view: &Entity<ChatView>, cx: &mut gpui::TestAppContext| {
+        view.read_with(cx, |view, _| view.image_scope().roots().to_vec())
+    };
+    let mut own = vec![
+        alpha.clone(),
+        feature.clone(),
+        home.join("orchestrators/projects").join(&project),
+    ];
+    own.sort();
+    assert_eq!(roots(&ordinary_tab, cx), own);
+    assert_eq!(
+        ordinary_tab.read_with(cx, |view, _| view
+            .image_scope()
+            .cwd()
+            .map(Path::to_path_buf)),
+        Some(feature.clone())
+    );
+    let mut everything = vec![
+        alpha.clone(),
+        feature.clone(),
+        beta.clone(),
+        home.join("orchestrator"),
+        home.join("orchestrators/projects").join(&project),
+        home.join("orchestrators/projects").join(&other),
+    ];
+    everything.sort();
+    assert_eq!(roots(&global_tab, cx), everything);
+
+    // The store forgets the feature worktree; the next refresh takes it out of both scopes.
+    crate::form_input::test_turn(cx, fixture.handle, |_, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace
+                .state
+                .worktrees
+                .retain(|worktree| worktree.id != "wt-feature");
+            workspace.refresh_chat_image_scopes(cx);
+        });
+    });
+    assert!(!roots(&ordinary_tab, cx).contains(&feature));
+    assert!(!roots(&global_tab, cx).contains(&feature));
+
+    // The host lists the global chat as an ordinary one: no folders at all.
+    let mut demoted = global.clone();
+    demoted.orchestrator = None;
+    crate::form_input::test_turn(cx, fixture.handle, |_, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.shared_chats = Some(vec![ordinary.clone(), demoted]);
+            workspace.refresh_chat_image_scopes(cx);
+        });
+    });
+    assert!(roots(&global_tab, cx).is_empty());
+    // The global chat is still the one it was: same tab, same chat.
+    workspace.read_with(cx, |workspace, _| {
+        assert_eq!(tab_of(workspace, &global.id), global_tab);
+    });
+}
