@@ -301,6 +301,11 @@ impl ChatView {
     pub fn info(&self) -> Option<&ChatInfo> {
         self.model.transcript.info.as_ref()
     }
+    /// The chat this view shows and what its message box holds, for a window under test.
+    #[cfg(test)]
+    pub fn identity_for_tests(&self, cx: &gpui::App) -> (Option<String>, String) {
+        (self.chat_id.clone(), self.composer_text(cx))
+    }
     /// Browse an existing chat without starting its host on follow/reconnect. The normal
     /// configuration remains available for explicit sends and attachment staging.
     pub fn open_existing(

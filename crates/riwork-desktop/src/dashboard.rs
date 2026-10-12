@@ -58,8 +58,6 @@ pub struct DashboardData<'a> {
     pub chat_starting: bool,
     /// How a new global orchestrator would run.
     pub runs: OrchestratorRuns,
-    /// The Mac the window's project is on, when it is another.
-    pub remote_host: Option<&'a str>,
     pub show_quiet: bool,
 }
 
@@ -90,12 +88,7 @@ fn activity_word(activity: Option<AgentActivity>) -> &'static str {
 
 /// The Chat controls' words for the global orchestrator as it is. A terminal one is named as
 /// one and opened as it is: nothing converts it into a chat or ends it.
-pub fn chat_copy(
-    global: &GlobalOrchestrator,
-    runs: OrchestratorRuns,
-    starting: bool,
-    remote_host: Option<&str>,
-) -> ChatCopy {
+pub fn chat_copy(global: &GlobalOrchestrator, runs: OrchestratorRuns, starting: bool) -> ChatCopy {
     let copy = |action: &str, status: String, note: Option<String>, starts: bool| ChatCopy {
         action: action.to_owned(),
         status,
@@ -104,19 +97,6 @@ pub fn chat_copy(
         enabled: !starting,
         provider: None,
     };
-    if let Some(host) = remote_host {
-        return ChatCopy {
-            action: format!("Open chat on {host}"),
-            ..copy(
-                "",
-                format!("This window shows a project on {host}"),
-                Some(format!(
-                    "Chat opens the global orchestrator of {host}, if it has one."
-                )),
-                false,
-            )
-        };
-    }
     if starting {
         return copy(
             "Opening global chat…",
@@ -380,12 +360,7 @@ pub fn render<V: 'static>(
     let colors = theme::palette(cx);
     let overview = data.overview;
     let native = ui_text::is_native();
-    let chat = chat_copy(
-        &overview.global,
-        data.runs,
-        data.chat_starting,
-        data.remote_host,
-    );
+    let chat = chat_copy(&overview.global, data.runs, data.chat_starting);
 
     let meta = match (data.sampled_at, data.sample_error) {
         (_, Some(error)) => format!("Sessions could not be read: {}", one_line(error)),

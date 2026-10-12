@@ -206,8 +206,12 @@ fn new_window(cx: &mut App) {
             });
             if matches!(opened, Ok(Some(()))) {
                 cx.activate(true);
-                break;
+                return;
             }
+        }
+        // Only the global window is open: a window on the active project.
+        if let Err(error) = crate::global_window::open_new_project_window(cx) {
+            eprintln!("riwork: {error}");
         }
     });
 }

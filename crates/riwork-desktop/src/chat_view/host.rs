@@ -40,6 +40,15 @@ impl HostConfig {
         Arc::new(move || Ok(socket_path(&home)))
     }
 
+    /// A host nobody can reach, for tests that open a chat's view: a test build must never
+    /// start a chat host (its executable is the test harness).
+    #[cfg(test)]
+    pub fn offline() -> Self {
+        Self {
+            ensure: Arc::new(|| Err("no chat host in this test".to_owned())),
+        }
+    }
+
     /// Makes sure the host runs and says where it listens.
     pub fn ensure(&self) -> Result<PathBuf, String> {
         (self.ensure)()

@@ -4,7 +4,7 @@
 //! on (see `stop_replacement`), and that replacement stops itself if it is
 //! wedged and nobody is left to do it (see `RestoreWatchdog`).
 
-use crate::layouts::ProjectLayout;
+use crate::{global_window::GlobalWindowState, layouts::ProjectLayout};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
@@ -83,6 +83,22 @@ pub enum WindowMode {
     Maximized,
     Fullscreen,
 }
+/// What a window is: a project's window, or the one global window (the dashboard and the
+/// global chat), which belongs to no project.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowKind {
+    #[default]
+    Project,
+    Global,
+}
+
+impl WindowKind {
+    pub fn is_project(&self) -> bool {
+        *self == Self::Project
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeWindow {
     pub project_id: Option<String>,
@@ -95,6 +111,51 @@ pub struct RuntimeWindow {
     pub focus_mode: bool,
     #[serde(default)]
     pub focus_centered: bool,
+    /// Written only for the global window, so a project window is recorded exactly as before
+    /// and every window of a snapshot from an older build is a project window.
+    #[serde(default, skip_serializing_if = "WindowKind::is_project")]
+    pub kind: WindowKind,
+    /// The global window's own state; `None` for a project window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global: Option<GlobalWindowState>,
+}
+
+/// Where the global window says it is. No folder is ever made there: a build that predates
+/// the global window reads it as a project window, cannot open the folder and fails the
+/// restore (the GUI that asked for the reload then stays as it is) instead of registering
+/// a project for it or opening the active project in its place.
+pub const GLOBAL_WINDOW_PATH: &str = "global-window";
+
+impl RuntimeWindow {
+    /// The global window, as a reload restores it.
+    pub fn global(
+        state_home: &Path,
+        bounds: Option<WindowGeometry>,
+        mode: WindowMode,
+        state: GlobalWindowState,
+    ) -> Self {
+        Self {
+            project_id: None,
+            path: state_home.join(GLOBAL_WINDOW_PATH),
+            bounds,
+            mode,
+            layout: None,
+            focus_mode: false,
+            focus_centered: false,
+            kind: WindowKind::Global,
+            global: Some(state),
+        }
+    }
+
+    pub fn is_global(&self) -> bool {
+        self.kind == WindowKind::Global
+    }
+
+    /// Whether a window a reload opened has come back: a project window once its layout is
+    /// loaded, the global window as soon as it is open (it has no layout).
+    pub fn restored(&self) -> bool {
+        self.is_global() || self.layout.is_some()
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RuntimeInstance {
@@ -1909,7 +1970,16 @@ fn validate_windows(windows: &[RuntimeWindow]) -> Result<(), String> {
     if windows.len() > 256 {
         return Err("Too many RiWork windows in restore snapshot".to_owned());
     }
+    if windows.iter().filter(|window| window.is_global()).count() > 1 {
+        return Err("A RiWork restore snapshot has more than one global window".to_owned());
+    }
     for window in windows {
+        // The global window is no project's, and a project window has no global state.
+        if window.is_global() && (window.project_id.is_some() || window.layout.is_some())
+            || !window.is_global() && window.global.is_some()
+        {
+            return Err("Invalid global window in restore snapshot".to_owned());
+        }
         if let Some(bounds) = window.bounds {
             if ![bounds.x, bounds.y, bounds.width, bounds.height]
                 .iter()
@@ -2182,6 +2252,8 @@ mod tests {
             layout: None,
             focus_mode: true,
             focus_centered: false,
+            kind: WindowKind::Project,
+            global: None,
         }
     }
     #[test]
@@ -2778,6 +2850,91 @@ mod tests {
             symlink(path, &link).unwrap();
             assert!(read_json::<RuntimeInstance>(&link).is_err());
         }
+    }
+
+    #[test]
+    fn the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows() {
+        use crate::global_window::GlobalView;
+        let fixture = Fixture::new();
+        // A project window is written exactly as before: no kind and no global state.
+        let project = window(fixture.path.clone());
+        let text = serde_json::to_string(&project).unwrap();
+        assert!(!text.contains("kind") && !text.contains("global"), "{text}");
+        // Every window of a snapshot from a build before the global window is a project's.
+        let older: RuntimeWindow = serde_json::from_value(serde_json::json!({
+            "project_id": Uuid::new_v4().to_string(),
+            "path": "/Users/me/app",
+            "bounds": null,
+            "layout": null
+        }))
+        .unwrap();
+        assert_eq!(
+            (older.kind, older.global.is_none()),
+            (WindowKind::Project, true)
+        );
+        assert!(!older.is_global() && !older.restored());
+
+        // The global window says what it is, names no project and no layout, and carries
+        // its own state.
+        let state = GlobalWindowState {
+            view: GlobalView::Chat,
+            show_quiet: true,
+            window_size: None,
+        };
+        let geometry = WindowGeometry {
+            x: 40.,
+            y: 50.,
+            width: 900.,
+            height: 640.,
+        };
+        let global = RuntimeWindow::global(
+            &fixture.path,
+            Some(geometry),
+            WindowMode::Windowed,
+            state.clone(),
+        );
+        let value = serde_json::to_value(&global).unwrap();
+        assert_eq!(value["kind"], "global");
+        assert_eq!(value["global"]["view"], "chat");
+        assert!(value["project_id"].is_null() && value["layout"].is_null());
+        // Its place is no folder, so a build that cannot tell it from a project window fails
+        // to open it instead of registering a project there.
+        assert_eq!(global.path, fixture.path.join(GLOBAL_WINDOW_PATH));
+        assert!(!global.path.exists());
+        // It counts as restored as soon as it is open; a project window once its layout is.
+        assert!(global.is_global() && global.restored());
+
+        // Through a reload ticket and back, beside a project window.
+        let ticket = Uuid::new_v4().to_string();
+        let snapshot = RestoreSnapshot {
+            ticket_id: ticket.clone(),
+            request_id: Uuid::new_v4().to_string(),
+            old_instance_id: Uuid::new_v4().to_string(),
+            replacement_executable: executable_path(&env::current_exe().unwrap()).unwrap(),
+            state_home: fixture.path.clone(),
+            windows: vec![project.clone(), global.clone()],
+            created_at: now(),
+        };
+        write_json(&fixture.manager.restore_path(&ticket).unwrap(), &snapshot).unwrap();
+        let read = fixture.manager.restore_ticket(&ticket).unwrap();
+        assert_eq!(read.windows, [project.clone(), global.clone()]);
+        assert_eq!(read.windows[1].global.as_ref(), Some(&state));
+
+        // One global window at most, and it is never a project's.
+        assert!(validate_windows(&[project.clone(), global.clone()]).is_ok());
+        assert!(validate_windows(&[global.clone(), global.clone()]).is_err());
+        let mut named = global.clone();
+        named.project_id = Some(Uuid::new_v4().to_string());
+        assert!(validate_windows(&[named]).is_err());
+        let mut laid_out = global.clone();
+        laid_out.layout = Some(
+            serde_json::from_value(serde_json::json!({"layout": {"pane": 1}, "active_pane": 1}))
+                .unwrap(),
+        );
+        assert!(validate_windows(&[laid_out]).is_err());
+        let mut posing = project.clone();
+        posing.global = Some(state);
+        assert!(validate_windows(&[posing]).is_err());
     }
 
     // -- Stopping a replacement that failed ---------------------------------

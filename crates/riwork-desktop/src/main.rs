@@ -26,6 +26,7 @@ mod file_explorer;
 mod file_preview;
 mod form_input;
 mod global_nav;
+mod global_window;
 mod handoff_dialog;
 mod icons;
 mod metal_layer;
@@ -95,6 +96,7 @@ use project_settings::{
 use remote_prompt::{PromptKind, RemotePrompt, RemotePromptEvent};
 use remote_service::RemoteState;
 use remote_tree::{NewShellKind, RemoteShell};
+use riwork_core::global_window::GlobalView;
 use sessions::{HarnessKind, SessionManager, SessionMetrics, ShellKind, ShellSession};
 use settings::{CuaSetupState, Settings, SettingsEvent, SettingsPanel, SettingsStore};
 use store::{Project, ProjectCodexAccount, SearchHit, State, Store};
@@ -1295,17 +1297,16 @@ struct CodexUsageEntry {
 }
 impl Global for AccountUsage {}
 
-/// What the global dashboard reads that the window does not sample anyway: the automations'
+/// What the global dashboard reads that a window does not sample anyway: the automations'
 /// ledger, and when failed chats last wrote (so old failures are not called new). Read off the
-/// window while the dashboard is on screen; reading starts no agent and no chat host.
+/// window while the global window's dashboard or a project window's global menu is on screen;
+/// reading starts no agent and no chat host.
 #[derive(Default)]
 struct DashboardReads {
     schedules: Option<Result<Vec<schedules::Schedule>, String>>,
     chat_activity: BTreeMap<String, u64>,
     pending: bool,
     read_at: Option<Instant>,
-    /// The dashboard lists the projects with nothing going on as well.
-    show_quiet: bool,
 }
 
 /// How often the dashboard reads the automations again while it is on screen.
@@ -1838,6 +1839,32 @@ impl WorkspaceStartup {
             startup_path,
             fallback_cwd,
         )
+    }
+
+    /// The registered project `project_id`, or an error when the store does not have it.
+    fn for_project(
+        store: Store,
+        layouts: LayoutStore,
+        settings_store: SettingsStore,
+        sessions: SessionManager,
+        project_id: &str,
+    ) -> Result<Self, String> {
+        let state = store.snapshot()?;
+        let project = state
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .cloned()
+            .ok_or_else(|| "That project is no longer registered.".to_owned())?;
+        Ok(Self {
+            store,
+            layouts,
+            settings_store,
+            sessions,
+            state,
+            project,
+            remote: None,
+        })
     }
 
     fn resolve(
@@ -2764,6 +2791,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A project window never holds the dashboard; see `open_panel`.
+        if panel == PanelKind::Dashboard {
+            return;
+        }
         self.prepare_panel(panel, window, cx);
         if let Some(pane) = self.panes.get_mut(&pane_id) {
             if select {
@@ -2802,6 +2833,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if panel == PanelKind::Dashboard {
+            // The dashboard is the global window's, never a project window's tab.
+            self.panel_menu = None;
+            global_window::open(GlobalView::Dashboard, false, cx);
+            cx.notify();
+            return;
+        }
         if !self.ensure_layout(window, cx) {
             return;
         }
@@ -4110,10 +4148,23 @@ impl Workspace {
         }
         let mut known_shell_ids = self.detached_shell_ids.clone();
         let mut restore_error = None;
+        // Layouts saved before the global window can hold the dashboard and the global
+        // orchestrator's chat or terminal. Those belong to the global window now: they are left
+        // out here, so the next save drops them, and the chat or terminal itself runs on.
+        let mut moved_global = false;
         if let Some(saved) = &saved {
             for pane_id in &pane_ids {
                 if let Some(pane) = saved.panes.get(pane_id) {
                     for tab in &pane.tabs {
+                        if belongs_to_global_window(tab, &live_shells, &|id| {
+                            self.is_global_chat(id)
+                        }) {
+                            if let SavedTab::Shell { shell_id } = tab {
+                                known_shell_ids.insert(shell_id.clone());
+                            }
+                            moved_global = true;
+                            continue;
+                        }
                         match tab {
                             SavedTab::Shell { shell_id } => {
                                 known_shell_ids.insert(shell_id.clone());
@@ -4205,7 +4256,9 @@ impl Workspace {
                 self.focus_centered = centered;
                 self.set_focus_mode(mode, window, cx);
             }
-            self.notice = layout_notice.or_else(|| self.shared_tab_error.clone());
+            self.notice = layout_notice
+                .or_else(|| self.shared_tab_error.clone())
+                .or_else(|| moved_global.then(|| global_window::MOVED_NOTICE.to_owned()));
             self.save_layout();
         }
         cx.notify();
@@ -4324,30 +4377,17 @@ impl Workspace {
     }
 
     fn runtime_window(&self, window: &Window) -> runtime::RuntimeWindow {
-        // GPUI reports a zoomed macOS window as Windowed. A zoomed window is restored
-        // from its last ordinary frame so that un-zooming still has somewhere to go.
-        let (mode, bounds) = match window.window_bounds() {
-            WindowBounds::Fullscreen(bounds) => (runtime::WindowMode::Fullscreen, bounds),
-            WindowBounds::Maximized(bounds) => (runtime::WindowMode::Maximized, bounds),
-            WindowBounds::Windowed(bounds) if window.is_maximized() => (
-                runtime::WindowMode::Maximized,
-                self.normal_bounds.unwrap_or(bounds),
-            ),
-            WindowBounds::Windowed(bounds) => (runtime::WindowMode::Windowed, bounds),
-        };
+        let (mode, bounds) = window_placement(window, self.normal_bounds);
         runtime::RuntimeWindow {
             project_id: Some(self.project_id.clone()),
             path: self.cwd.clone(),
-            bounds: Some(runtime::WindowGeometry {
-                x: bounds.origin.x.as_f32(),
-                y: bounds.origin.y.as_f32(),
-                width: bounds.size.width.as_f32(),
-                height: bounds.size.height.as_f32(),
-            }),
+            bounds: Some(bounds),
             mode,
             layout: self.layout_snapshot(),
             focus_mode: self.focus_mode,
             focus_centered: self.focus_centered,
+            kind: runtime::WindowKind::Project,
+            global: None,
         }
     }
 
@@ -4615,6 +4655,14 @@ impl Workspace {
     }
 
     fn show_shell(&mut self, shell_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .shells
+            .iter()
+            .any(|shell| shell.id == shell_id && is_global_orchestrator_shell(shell))
+        {
+            global_window::open(GlobalView::Chat, false, cx);
+            return;
+        }
         if self.shared_tabs.is_some() && !self.is_remote() {
             if let Err(error) = self.set_session_tab_hidden(&format!("shell:{shell_id}"), false) {
                 self.notice = Some(error);
@@ -5509,10 +5557,6 @@ impl Workspace {
         let files_visible =
             panel_on_screen(PanelKind::Files) || panel_on_screen(PanelKind::Preview);
         let project_settings_visible = panel_on_screen(PanelKind::ProjectSettings);
-        // The dashboard draws the sessions sampled below; the automations it reads itself.
-        if self.dashboard_on_screen() {
-            self.refresh_dashboard(false, cx);
-        }
         if project_settings_visible && let Some(panel) = &self.project_settings_panel {
             panel.update(cx, |panel, cx| panel.refresh_folders(window, cx));
         }
@@ -7380,6 +7424,8 @@ impl Workspace {
                 layout: None,
                 focus_mode: false,
                 focus_centered: false,
+                kind: runtime::WindowKind::Project,
+                global: None,
             };
             if let Err(error) = open_workspace_window(None, self.cwd.clone(), Some(window), cx) {
                 self.notice = Some(error);
@@ -7613,8 +7659,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // A layout saved while the host was still making the chat can carry no id.
+        // A layout saved while the host was still making the chat can carry no id. The global
+        // orchestrator's chat is the global window's.
         if chat_id.is_empty()
+            || self.is_global_chat(&chat_id)
             || self.detached_chat_ids.contains(&chat_id)
             || chat_tab_in(&self.panes, &chat_id).is_some()
             || !self.chat_tabs.claim(&chat_id, false)
@@ -7640,6 +7688,22 @@ impl Workspace {
         pane.tabs.push(tab);
         pane.active = pane.tabs.len() - 1;
         self.active_pane = pane_id;
+    }
+
+    /// Whether `chat_id` is the global orchestrator's chat, as the chats listed or saved say.
+    fn is_global_chat(&self, chat_id: &str) -> bool {
+        let global = |info: &ChatInfo| info.orchestrator == Some(OrchestratorScope::Global);
+        match self
+            .shared_chats
+            .as_ref()
+            .and_then(|chats| chats.iter().find(|info| info.id == chat_id))
+        {
+            Some(info) => global(info),
+            None => chat::log::chat_dir(self.sessions.state_home(), chat_id)
+                .and_then(|dir| std::fs::read(dir.join("info.json")).ok())
+                .and_then(|bytes| serde_json::from_slice::<ChatInfo>(&bytes).ok())
+                .is_some_and(|info| global(&info)),
+        }
     }
 
     fn chat_tab(
@@ -8392,19 +8456,6 @@ impl Workspace {
         cx.notify();
     }
 
-    fn open_orchestrator_action(
-        &mut self,
-        _: &OpenOrchestrator,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_orchestrator(window, cx);
-    }
-
-    fn open_orchestrator(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_scoped_orchestrator(None, window, cx);
-    }
-
     fn open_project_orchestrator_action(
         &mut self,
         _: &OpenProjectOrchestrator,
@@ -8420,6 +8471,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if project_id.is_none() {
+            // The global orchestrator lives in the global window, never in a project's.
+            global_window::open(GlobalView::Chat, true, cx);
+            return;
+        }
         if self.modal_open() || !self.ensure_layout(window, cx) {
             return;
         }
@@ -8542,6 +8598,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if is_global_orchestrator_shell(&shell) {
+            global_window::open(GlobalView::Chat, false, cx);
+            return;
+        }
         if let Err(error) = self.set_session_tab_hidden(&format!("shell:{}", shell.id), false) {
             self.notice = Some(error);
             cx.notify();
@@ -8597,6 +8657,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if chat.orchestrator == Some(OrchestratorScope::Global) {
+            // Its window is the global window: no project's tabs, layout or chat requests.
+            global_window::open(GlobalView::Chat, false, cx);
+            return;
+        }
         if let Err(error) = self.set_session_tab_hidden(&format!("chat:{}", chat.id), false) {
             self.notice = Some(error);
             cx.notify();
@@ -9922,7 +9987,8 @@ impl Workspace {
                 panels::unavailable(*kind, remote_host_label.as_deref().unwrap_or_default(), cx)
             }
             Some(TabContent::Panel(PanelKind::Usage)) => self.render_usage_panel(cx),
-            Some(TabContent::Panel(PanelKind::Dashboard)) => self.render_dashboard(cx),
+            // Never made in a project window (`attach_panel_as`): the global window has it.
+            Some(TabContent::Panel(PanelKind::Dashboard)) => div().into_any_element(),
             Some(TabContent::Panel(PanelKind::Schedules)) => self
                 .schedule_panel
                 .as_ref()
@@ -11583,6 +11649,15 @@ impl Render for Workspace {
             window,
             cx,
         );
+        if self
+            .pending_automation_chat
+            .as_deref()
+            .is_some_and(|chat_id| self.is_global_chat(chat_id))
+        {
+            // An automation of the global orchestrator: its chat is the global window's.
+            self.pending_automation_chat = None;
+            global_window::open(GlobalView::Chat, false, cx);
+        }
         if let Some(chat_id) = self.pending_automation_chat.take() {
             let existing = self.panes.iter().find_map(|(id, pane)| pane.tabs.iter().position(|tab| matches!(&tab.content, TabContent::Chat { chat_id: current, .. } if current == &chat_id)).map(|index| (*id, index)));
             if let Some((pane, index)) = existing {
@@ -11691,9 +11766,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::apply_default_layout_action))
             .on_action(cx.listener(Self::focus_search_action))
             .on_action(cx.listener(Self::toggle_focus_mode_action))
-            .on_action(cx.listener(Self::open_orchestrator_action))
             .on_action(cx.listener(Self::open_project_orchestrator_action))
-            .on_action(cx.listener(Self::open_global_dashboard_action))
             .capture_key_down(cx.listener(|workspace, event: &KeyDownEvent, window, cx| {
                 // A shortcut acts on the window, not the strip menu: close the menu first so
                 // the terminals thaw and focus returns before the action runs.
@@ -12259,6 +12332,30 @@ fn start_window_drag(event: &gpui::MouseDownEvent, window: &mut Window, cx: &mut
 impl Drop for Workspace {
     fn drop(&mut self) {
         self.release_tab_claims();
+    }
+}
+
+/// The global orchestrator's terminal: it belongs to no project, and opens in the global window.
+fn is_global_orchestrator_shell(shell: &ShellSession) -> bool {
+    shell.kind == ShellKind::Orchestrator && shell.project_id.is_none()
+}
+
+/// Whether a project window leaves a tab of its saved layout out because it is the global
+/// window's: the dashboard, the global orchestrator's chat, or its live terminal. Layouts saved
+/// before the global window can hold them; the window's next save drops them, and the chat or
+/// the terminal session runs on untouched.
+fn belongs_to_global_window(
+    tab: &SavedTab,
+    live_shells: &BTreeMap<String, ShellSession>,
+    global_chat: &dyn Fn(&str) -> bool,
+) -> bool {
+    match tab {
+        SavedTab::Panel { panel } => *panel == PanelKind::Dashboard,
+        SavedTab::Chat { chat_id } => global_chat(chat_id),
+        SavedTab::Shell { shell_id } => live_shells
+            .get(shell_id)
+            .is_some_and(is_global_orchestrator_shell),
+        SavedTab::RemoteShell { .. } => false,
     }
 }
 
@@ -12977,9 +13074,18 @@ fn main() {
         cx.on_action(|_: &Quit, cx| {
             for handle in cx.windows() {
                 let _ = with_workspace(handle, cx, |workspace, _, _| workspace.save_layout());
+                let _ = global_window::with_global_window(handle, cx, |global, _, _| {
+                    global.save_state()
+                });
             }
             cx.quit();
         });
+        // The dashboard and the global chat are one window of their own, whichever window,
+        // menu or shortcut asks for them, and also when no window is open.
+        cx.on_action(|_: &OpenGlobalDashboard, cx| {
+            global_window::open(GlobalView::Dashboard, false, cx)
+        });
+        cx.on_action(|_: &OpenOrchestrator, cx| global_window::open(GlobalView::Chat, true, cx));
         cx.on_action(|_: &BiggerText, cx| ui_text::change(ui_text::SizeChange::Bigger, cx));
         cx.on_action(|_: &SmallerText, cx| ui_text::change(ui_text::SizeChange::Smaller, cx));
         cx.on_action(|_: &ActualSizeText, cx| ui_text::change(ui_text::SizeChange::Reset, cx));
@@ -13085,12 +13191,19 @@ fn main() {
         .detach();
         if let Some(snapshot) = &restore {
             for window in &snapshot.windows {
-                if let Err(error) = open_workspace_window(
-                    Some(window.path.clone()),
-                    fallback_cwd.clone(),
-                    Some(window.clone()),
-                    cx,
-                ) {
+                // The global window is itself again, never a project window on its path.
+                let opened = if window.is_global() {
+                    global_window::open_window(Some(window.clone()), cx).map(|_| ())
+                } else {
+                    open_workspace_window(
+                        Some(window.path.clone()),
+                        fallback_cwd.clone(),
+                        Some(window.clone()),
+                        cx,
+                    )
+                    .map(|_| ())
+                };
+                if let Err(error) = opened {
                     // The previous app stays open until every window is restored.
                     eprintln!("riwork: cannot restore a window: {error}");
                     cx.quit();
@@ -13125,9 +13238,8 @@ fn main() {
                             cx.quit();
                             return;
                         }
-                        let windows = runtime_windows(cx, false);
-                        if windows.len() == snapshot.windows.len()
-                            && windows.iter().all(|window| window.layout.is_some())
+                        if let Some(windows) =
+                            restored_windows(runtime_windows(cx, false), &snapshot.windows)
                         {
                             // The watchdog may already be ending this process,
                             // which must then not confirm anything.
@@ -13233,6 +13345,21 @@ fn open_completed_agent(project_id: &str, shell_id: &str, cx: &mut App) -> Resul
     Ok(())
 }
 
+/// The windows a replacement confirms a reload with, once every window of the snapshot is back.
+/// A global window opened while it restored, which the snapshot did not have, is left out: the
+/// GUI that handed the windows over counts them. `None` while one is still missing.
+fn restored_windows(
+    mut windows: Vec<runtime::RuntimeWindow>,
+    snapshot: &[runtime::RuntimeWindow],
+) -> Option<Vec<runtime::RuntimeWindow>> {
+    if !snapshot.iter().any(runtime::RuntimeWindow::is_global) {
+        windows.retain(|window| !window.is_global());
+    }
+    (windows.len() == snapshot.len() && windows.iter().all(runtime::RuntimeWindow::restored))
+        .then_some(windows)
+}
+
+/// Every RiWork window as a reload restores it: the project windows and the global window.
 fn runtime_windows(cx: &mut App, save: bool) -> Vec<runtime::RuntimeWindow> {
     cx.windows()
         .into_iter()
@@ -13245,6 +13372,16 @@ fn runtime_windows(cx: &mut App, save: bool) -> Vec<runtime::RuntimeWindow> {
             })
             .ok()
             .flatten()
+            .or_else(|| {
+                global_window::with_global_window(handle, cx, |global, window, _| {
+                    if save {
+                        global.save_state();
+                    }
+                    global.runtime_window(window)
+                })
+                .ok()
+                .flatten()
+            })
         })
         .collect()
 }
@@ -13260,6 +13397,32 @@ fn with_workspace<R>(
             Some(content.update(cx, |workspace, cx| update(workspace, window, cx)))
         })
         .map_err(|error| error.to_string())
+}
+
+/// Where a window is and how, as a reload restores it. GPUI reports a zoomed macOS window as
+/// Windowed. A zoomed window is restored from its last ordinary frame (`normal`) so that
+/// un-zooming still has somewhere to go.
+fn window_placement(
+    window: &Window,
+    normal: Option<Bounds<Pixels>>,
+) -> (runtime::WindowMode, runtime::WindowGeometry) {
+    let (mode, bounds) = match window.window_bounds() {
+        WindowBounds::Fullscreen(bounds) => (runtime::WindowMode::Fullscreen, bounds),
+        WindowBounds::Maximized(bounds) => (runtime::WindowMode::Maximized, bounds),
+        WindowBounds::Windowed(bounds) if window.is_maximized() => {
+            (runtime::WindowMode::Maximized, normal.unwrap_or(bounds))
+        }
+        WindowBounds::Windowed(bounds) => (runtime::WindowMode::Windowed, bounds),
+    };
+    (
+        mode,
+        runtime::WindowGeometry {
+            x: bounds.origin.x.as_f32(),
+            y: bounds.origin.y.as_f32(),
+            width: bounds.size.width.as_f32(),
+            height: bounds.size.height.as_f32(),
+        },
+    )
 }
 
 /// The window's frame when it is an ordinary window, None in full screen or
@@ -13308,16 +13471,57 @@ fn open_workspace_window(
     if ordinary {
         startup.remote = cx.global::<RemoteState>().selected().map(str::to_owned);
     }
+    open_prepared_window(startup, restore, cx)
+}
+
+/// A new window on the registered project `project_id`, found by its id: nothing is
+/// registered for it, and the store's active project stays what it is.
+fn open_project_window_by_id(
+    project_id: &str,
+    cx: &mut App,
+) -> Result<WindowHandle<gpui_kit::base::Root>, String> {
+    sessions::prefetch_login_shell_dirs();
+    let startup = WorkspaceStartup::for_project(
+        Store::open_default()?,
+        LayoutStore::open_default()?,
+        SettingsStore::open_default()?,
+        SessionManager::open_default()?,
+        project_id,
+    )?;
+    open_prepared_window(startup, None, cx)
+}
+
+fn open_prepared_window(
+    startup: WorkspaceStartup,
+    restore: Option<runtime::RuntimeWindow>,
+    cx: &mut App,
+) -> Result<WindowHandle<gpui_kit::base::Root>, String> {
     // Best effort: an unreadable layout only means the default size.
     let saved_size = cx
         .global::<Settings>()
         .remember_window_size
         .then(|| startup.layouts.window_size(&startup.project.id))
-        .flatten()
-        .unwrap_or(WindowSize {
-            width: 1220.0,
-            height: 780.0,
-        });
+        .flatten();
+    let window_bounds = opening_bounds(saved_size, restore.as_ref(), cx);
+    cx.open_window(window_options(window_bounds), |window, cx| {
+        metal_layer::limit_drawables(window);
+        let workspace = cx.new(|cx| Workspace::new(startup, restore, window, cx));
+        cx.new(|cx| gpui_kit::base::Root::new(workspace, window, cx))
+    })
+    .map_err(|error| error.to_string())
+}
+
+/// Where a new window opens: as a reload restores it, else at `saved_size` (or the default
+/// size), centred and cascaded below the windows already open.
+fn opening_bounds(
+    saved_size: Option<WindowSize>,
+    restore: Option<&runtime::RuntimeWindow>,
+    cx: &App,
+) -> WindowBounds {
+    let saved_size = saved_size.unwrap_or(WindowSize {
+        width: 1220.0,
+        height: 780.0,
+    });
     let cascade = cx
         .windows()
         .iter()
@@ -13345,38 +13549,30 @@ fn open_workspace_window(
         point(px(frame.x), px(frame.y)),
         size(px(frame.width), px(frame.height)),
     );
-    if let Some(saved) = restore.as_ref().and_then(|window| window.bounds.as_ref()) {
+    if let Some(saved) = restore.and_then(|window| window.bounds.as_ref()) {
         bounds.origin = point(px(saved.x), px(saved.y));
         bounds.size = size(px(saved.width), px(saved.height));
     }
-    let window_bounds = match restore
-        .as_ref()
-        .map(|window| window.mode)
-        .unwrap_or_default()
-    {
+    match restore.map(|window| window.mode).unwrap_or_default() {
         runtime::WindowMode::Windowed => WindowBounds::Windowed(bounds),
         runtime::WindowMode::Maximized => WindowBounds::Maximized(bounds),
         runtime::WindowMode::Fullscreen => WindowBounds::Fullscreen(bounds),
-    };
-    cx.open_window(
-        WindowOptions {
-            window_bounds: Some(window_bounds),
-            titlebar: Some(TitlebarOptions {
-                appears_transparent: true,
-                traffic_light_position: Some(point(px(10.0), px(8.0))),
-                ..Default::default()
-            }),
-            app_owns_titlebar_drag: true,
-            window_min_size: Some(size(px(640.0), px(400.0))),
+    }
+}
+
+/// Every RiWork window draws its own title bar under the traffic lights.
+fn window_options(window_bounds: WindowBounds) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(window_bounds),
+        titlebar: Some(TitlebarOptions {
+            appears_transparent: true,
+            traffic_light_position: Some(point(px(10.0), px(8.0))),
             ..Default::default()
-        },
-        |window, cx| {
-            metal_layer::limit_drawables(window);
-            let workspace = cx.new(|cx| Workspace::new(startup, restore, window, cx));
-            cx.new(|cx| gpui_kit::base::Root::new(workspace, window, cx))
-        },
-    )
-    .map_err(|error| error.to_string())
+        }),
+        app_owns_titlebar_drag: true,
+        window_min_size: Some(size(px(640.0), px(400.0))),
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]
@@ -13542,7 +13738,45 @@ mod workspace_tab_tests {
             layout: None,
             focus_mode: false,
             focus_centered: false,
+            kind: runtime::WindowKind::Project,
+            global: None,
         }
+    }
+
+    #[test]
+    fn a_reload_is_confirmed_once_every_window_it_handed_over_is_back() {
+        let home = Path::new("/Users/me/.local/share/riwork");
+        let mut loaded = restored(Some(&uuid::Uuid::new_v4().to_string()));
+        loaded.layout = Some(
+            serde_json::from_value(serde_json::json!({"layout": {"pane": 1}, "active_pane": 1}))
+                .unwrap(),
+        );
+        let loading = restored(Some(&uuid::Uuid::new_v4().to_string()));
+        let global = runtime::RuntimeWindow::global(
+            home,
+            None,
+            runtime::WindowMode::Windowed,
+            Default::default(),
+        );
+        // A project window counts once its layout is loaded; the global window at once.
+        let snapshot = [loaded.clone(), global.clone()];
+        assert_eq!(
+            restored_windows(vec![loaded.clone(), global.clone()], &snapshot),
+            Some(vec![loaded.clone(), global.clone()])
+        );
+        assert_eq!(
+            restored_windows(vec![loading.clone(), global.clone()], &snapshot),
+            None
+        );
+        assert_eq!(restored_windows(vec![loaded.clone()], &snapshot), None);
+        // A snapshot of an older build has project windows only. A global window opened while
+        // it restores is not one of them and does not hold the confirmation up.
+        let older = [loaded.clone()];
+        assert_eq!(
+            restored_windows(vec![loaded.clone(), global.clone()], &older),
+            Some(vec![loaded.clone()])
+        );
+        assert_eq!(restored_windows(vec![global], &older), None);
     }
 
     #[test]
