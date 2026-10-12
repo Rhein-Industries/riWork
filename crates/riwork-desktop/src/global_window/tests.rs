@@ -781,28 +781,45 @@ fn the_dashboard_is_laid_out_by_the_windows_own_width(cx: &mut gpui::TestAppCont
     let fixture = open_global(cx, &home.0, GlobalWindowState::default());
     let global = fixture.global.clone();
     sample(cx, &fixture, Vec::new(), Vec::new());
-    for (width, compact, rails) in [
-        (800.0, true, &[][..]),
-        (1100.0, false, &["dashboard-rail"][..]),
+    let both = &["dashboard-rail-activity", "dashboard-rail-work"][..];
+    // The colorful themes' default size, then Native's, which draws 11 pt text at 13 pt:
+    // a 1900-wide Native window still has both rails, and an 1100-wide one shows one
+    // region at a time.
+    for (scale, face, width, compact, rails) in [
+        (1.0, ui_text::Face::Menlo, 800.0, true, &[][..]),
         (
-            1900.0,
+            1.0,
+            ui_text::Face::Menlo,
+            1100.0,
             false,
-            &["dashboard-rail-activity", "dashboard-rail-work"][..],
+            &["dashboard-rail"][..],
         ),
+        (1.0, ui_text::Face::Menlo, 1900.0, false, both),
+        (13.0 / 11.0, ui_text::Face::System, 1100.0, true, &[][..]),
+        (
+            13.0 / 11.0,
+            ui_text::Face::System,
+            1440.0,
+            false,
+            &["dashboard-rail"][..],
+        ),
+        (13.0 / 11.0, ui_text::Face::System, 1900.0, false, both),
     ] {
-        cx.simulate_window_resize(fixture.handle, gpui::size(px(width), px(760.0)));
+        let before = ui_text::set_for_tests(scale, face);
+        cx.simulate_window_resize(fixture.handle, gpui::size(px(width), px(1000.0)));
         cx.run_until_parked();
         crate::form_input::test_turn(cx, fixture.handle, |window, _| {
             assert_eq!(
                 window.try_find("dashboard-region-projects").is_some(),
                 compact,
-                "{width}"
+                "{width} at {scale}"
             );
             for rail in rails {
                 let bounds = window.find(*rail).bounds();
                 assert!(bounds.right() <= px(width + 0.5), "{width}: {rail}");
             }
         });
+        ui_text::set_for_tests(before.0, before.1);
     }
     // ⌘F finds the search on the dashboard.
     crate::form_input::test_turn(cx, fixture.handle, |window, cx| {

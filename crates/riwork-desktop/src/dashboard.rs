@@ -183,7 +183,7 @@ impl Columns {
             },
             Self::Narrow => Widths {
                 activity: None,
-                tasks: 110.0,
+                tasks: 120.0,
                 orchestrator: None,
                 last: 64.0,
                 actions: 120.0,
@@ -217,12 +217,14 @@ pub(crate) struct Layout {
 }
 
 impl Layout {
-    /// The layout for a dashboard `width` design pixels wide: the rails a table with room
-    /// for its columns leaves space for, then the most columns that fit beside them.
+    /// The layout for a dashboard `width` design pixels wide: as many rails as leave the
+    /// table room for at least its medium columns, then the most columns that fit beside
+    /// them. A second rail is worth more than the orchestrator column, which folds into
+    /// the project's lines.
     pub(crate) fn for_width(width: f32) -> Self {
         let table =
             |arrangement: Arrangement| width - 2.0 * PAGE - arrangement.rails() * (RAIL + GAP);
-        let arrangement = if table(Arrangement::Wide) >= Columns::Full.min_table() {
+        let arrangement = if table(Arrangement::Wide) >= Columns::Medium.min_table() {
             Arrangement::Wide
         } else if table(Arrangement::Normal) >= Columns::Medium.min_table() {
             Arrangement::Normal
@@ -694,6 +696,78 @@ fn tasks_words(tasks: TaskCounts) -> Option<(String, String)> {
         (in_progress, todo) => format!("{in_progress} in progress · {todo} to do"),
     };
     Some((format!("{}/{} done", tasks.done, tasks.total()), open))
+}
+
+/// A detail-text character's advance at most, in design pixels: Menlo's (0.6 em). SF Pro,
+/// Native's face, is narrower, so what fits in Menlo fits in both.
+const DETAIL_ADVANCE: f32 = 0.6 * controls::ROW_DETAIL_TEXT;
+/// The narrowest progress bar beside the done count.
+const BAR_MIN: f32 = 24.0;
+
+fn fits(text: &str, width: f32) -> bool {
+    // Text and widths grow with the interface size but round apart: keep a little room.
+    text.chars().count() as f32 * DETAIL_ADVANCE <= width - 2.0
+}
+
+/// A tasks cell's words, chosen to fit `width` whole: never an ellipsis over a count.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct TaskLabels {
+    /// "71/85 done", or "71/85" where that does not fit beside the bar.
+    pub done: String,
+    /// Whether the bar sits beside `done` (else on a line of its own).
+    pub bar_beside: bool,
+    /// What is open: one line when it fits, else one count to a line. A line says
+    /// whether it counts work in progress.
+    pub open: Vec<(String, bool)>,
+}
+
+pub(crate) fn task_labels(tasks: TaskCounts, width: f32) -> Option<TaskLabels> {
+    if tasks.total() == 0 {
+        return None;
+    }
+    let ratio = format!("{}/{}", tasks.done, tasks.total());
+    let beside = |text: &str| fits(text, width - BAR_MIN - 6.0);
+    let long = format!("{ratio} done");
+    let (done, bar_beside) = if beside(&long) {
+        (long, true)
+    } else if fits(&long, width) {
+        (long, false)
+    } else {
+        let beside = beside(&ratio);
+        (ratio, beside)
+    };
+    let open = match (tasks.in_progress, tasks.todo) {
+        (0, 0) => vec![("all done".to_owned(), false)],
+        (0, todo) => vec![(format!("{todo} to do"), false)],
+        (in_progress, todo) => {
+            let todo = (todo > 0).then(|| format!("{todo} to do"));
+            let doing = |word: &str| format!("{in_progress} {word}");
+            let together = |word: &str| match &todo {
+                Some(todo) => vec![(format!("{} · {todo}", doing(word)), true)],
+                None => vec![(doing(word), true)],
+            };
+            let stacked = |word: &str| {
+                let mut lines = vec![(doing(word), true)];
+                lines.extend(todo.clone().map(|todo| (todo, false)));
+                lines
+            };
+            // One line before two, and the full words before the short one.
+            [
+                together("in progress"),
+                together("doing"),
+                stacked("in progress"),
+                stacked("doing"),
+            ]
+            .into_iter()
+            .find(|lines| lines.iter().all(|(line, _)| fits(line, width)))
+            .unwrap_or_else(|| stacked("doing"))
+        }
+    };
+    Some(TaskLabels {
+        done,
+        bar_beside,
+        open,
+    })
 }
 
 /// The project's mark: its most pressing state, as a color and a word.
@@ -1851,22 +1925,69 @@ fn project_row<V: 'static>(
             controls::ROW_DETAIL_TEXT,
         ))
     });
-    let tasks_cell = cell(widths.tasks).children(match tasks_words(project.tasks) {
-        None => vec![line("No tasks", colors.muted, controls::ROW_DETAIL_TEXT).into_any_element()],
-        Some((done, open)) => vec![
-            line(
-                format!("{done} · {open}"),
-                if project.tasks.in_progress > 0 {
-                    colors.text
+    // Each count is a whole label at its own width, so a test can see that it fits.
+    let label = |id: String, text: String, color: u32| {
+        div()
+            .id(id)
+            .flex_none()
+            .whitespace_nowrap()
+            .text_size(ui_text::text(controls::ROW_DETAIL_TEXT))
+            .text_color(rgb(color))
+            .child(text)
+            .test_support()
+    };
+    let tasks_id = format!("dashboard-project-{}-tasks", project.id);
+    let tasks_cell = cell(widths.tasks)
+        .id(format!("{tasks_id}-cell"))
+        .children(match task_labels(project.tasks, widths.tasks) {
+            None => {
+                vec![line("No tasks", colors.muted, controls::ROW_DETAIL_TEXT).into_any_element()]
+            }
+            Some(labels) => {
+                let done = label(format!("{tasks_id}-done"), labels.done, colors.text);
+                let mut lines = if labels.bar_beside {
+                    vec![
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(ui_text::space(6.0))
+                            .child(done)
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(ui_text::space(BAR_MIN))
+                                    .child(progress_bar(project.tasks, colors)),
+                            )
+                            .into_any_element(),
+                    ]
                 } else {
-                    colors.muted
-                },
-                controls::ROW_DETAIL_TEXT,
-            )
-            .into_any_element(),
-            progress_bar(project.tasks, colors),
-        ],
-    });
+                    vec![
+                        div().w_full().flex().child(done).into_any_element(),
+                        progress_bar(project.tasks, colors),
+                    ]
+                };
+                lines.extend(labels.open.into_iter().enumerate().map(
+                    |(index, (text, in_progress))| {
+                        div()
+                            .w_full()
+                            .flex()
+                            .child(label(
+                                format!("{tasks_id}-open-{index}"),
+                                text,
+                                if in_progress {
+                                    colors.working
+                                } else {
+                                    colors.muted
+                                },
+                            ))
+                            .into_any_element()
+                    },
+                ));
+                lines
+            }
+        })
+        .test_support();
     let orchestrator_cell = widths.orchestrator.map(|width| match &orchestrator {
         None => cell(width).child(line("None", colors.muted, controls::ROW_DETAIL_TEXT)),
         Some((what, state)) => cell(width)

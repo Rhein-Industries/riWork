@@ -10,6 +10,8 @@ use gpui_kit::test::TestWindowExt;
 use std::path::PathBuf;
 
 const NOW: u64 = 1_800_000_000;
+/// Native's default interface scale: 11 pt design text drawn at 13 pt.
+const NATIVE: f32 = 13.0 / 11.0;
 const ALPHA: &str = "aaaaaaaa-0000-4000-8000-000000000001";
 const BETA: &str = "bbbbbbbb-0000-4000-8000-000000000002";
 
@@ -611,20 +613,98 @@ fn every_order_keeps_the_busiest_first_among_equals() {
 
 #[test]
 fn the_layout_follows_the_width_it_is_given() {
-    for (width, arrangement, columns) in [
-        (640.0, Arrangement::Compact, Columns::Narrow),
-        (800.0, Arrangement::Compact, Columns::Medium),
-        (1100.0, Arrangement::Normal, Columns::Medium),
-        (1440.0, Arrangement::Normal, Columns::Full),
-        (1900.0, Arrangement::Wide, Columns::Full),
+    // The colorful themes at the default size draw the design sizes as they are; Native's
+    // default draws 11 pt text at 13 pt, so everything is 13/11 as wide.
+    for (scale, face, width, arrangement, columns) in [
+        (
+            1.0,
+            ui_text::Face::Menlo,
+            640.0,
+            Arrangement::Compact,
+            Columns::Narrow,
+        ),
+        (
+            1.0,
+            ui_text::Face::Menlo,
+            800.0,
+            Arrangement::Compact,
+            Columns::Medium,
+        ),
+        (
+            1.0,
+            ui_text::Face::Menlo,
+            1100.0,
+            Arrangement::Normal,
+            Columns::Medium,
+        ),
+        (
+            1.0,
+            ui_text::Face::Menlo,
+            1440.0,
+            Arrangement::Normal,
+            Columns::Full,
+        ),
+        (
+            1.0,
+            ui_text::Face::Menlo,
+            1900.0,
+            Arrangement::Wide,
+            Columns::Full,
+        ),
+        (
+            NATIVE,
+            ui_text::Face::System,
+            640.0,
+            Arrangement::Compact,
+            Columns::Narrow,
+        ),
+        (
+            NATIVE,
+            ui_text::Face::System,
+            800.0,
+            Arrangement::Compact,
+            Columns::Narrow,
+        ),
+        (
+            NATIVE,
+            ui_text::Face::System,
+            1100.0,
+            Arrangement::Compact,
+            Columns::Medium,
+        ),
+        (
+            NATIVE,
+            ui_text::Face::System,
+            1440.0,
+            Arrangement::Normal,
+            Columns::Medium,
+        ),
+        // A 1900-wide Native window keeps both rails; the orchestrator folds away instead.
+        (
+            NATIVE,
+            ui_text::Face::System,
+            1900.0,
+            Arrangement::Wide,
+            Columns::Medium,
+        ),
+        (
+            NATIVE,
+            ui_text::Face::System,
+            2560.0,
+            Arrangement::Wide,
+            Columns::Full,
+        ),
     ] {
+        let before = ui_text::set_for_tests(scale, face);
+        let layout = Layout::of(px(width));
+        ui_text::set_for_tests(before.0, before.1);
         assert_eq!(
-            Layout::for_width(width),
+            layout,
             Layout {
                 arrangement,
                 columns
             },
-            "{width}"
+            "{width} at {scale}"
         );
     }
     // From the smallest window up, the table always has room for the columns it shows, and
@@ -647,6 +727,100 @@ fn the_layout_follows_the_width_it_is_given() {
             "{width}"
         );
         last = layout;
+    }
+}
+
+#[test]
+fn task_counts_are_said_whole_in_the_room_a_cell_has() {
+    let counts = TaskCounts {
+        todo: 1,
+        in_progress: 12,
+        done: 71,
+    };
+    let lines = |width: f32| {
+        let labels = task_labels(counts, width).unwrap();
+        (
+            labels.done,
+            labels.bar_beside,
+            labels
+                .open
+                .into_iter()
+                .map(|(line, _)| line)
+                .collect::<Vec<_>>(),
+        )
+    };
+    // The full and medium columns, and the narrow one.
+    assert_eq!(
+        lines(170.0),
+        (
+            "71/84 done".into(),
+            true,
+            vec!["12 in progress · 1 to do".into()]
+        )
+    );
+    assert_eq!(
+        lines(130.0),
+        ("71/84 done".into(), true, vec!["12 doing · 1 to do".into()])
+    );
+    assert_eq!(
+        lines(120.0),
+        ("71/84 done".into(), true, vec!["12 doing · 1 to do".into()])
+    );
+    // Narrower still: one count to a line, then the short word, and the bar under the
+    // done count.
+    assert_eq!(
+        lines(90.0),
+        (
+            "71/84 done".into(),
+            false,
+            vec!["12 in progress".into(), "1 to do".into()]
+        )
+    );
+    assert_eq!(
+        lines(80.0),
+        (
+            "71/84 done".into(),
+            false,
+            vec!["12 doing".into(), "1 to do".into()]
+        )
+    );
+    assert_eq!(task_labels(TaskCounts::default(), 170.0), None);
+    assert_eq!(
+        task_labels(
+            TaskCounts {
+                done: 3,
+                ..TaskCounts::default()
+            },
+            120.0
+        )
+        .unwrap()
+        .open,
+        [("all done".to_owned(), false)]
+    );
+    // At any width a column could have, every count is there, whole: no ellipsis, nothing
+    // dropped, the in-progress line marked as such.
+    let large = TaskCounts {
+        todo: 15,
+        in_progress: 120,
+        done: 1234,
+    };
+    for width in (100..=220).step_by(2) {
+        let labels = task_labels(large, width as f32).unwrap();
+        let all = format!(
+            "{} {}",
+            labels.done,
+            labels
+                .open
+                .iter()
+                .map(|(line, _)| line.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        for count in ["1234/1369", "120 ", "15 to do"] {
+            assert!(all.contains(count), "{width}: {count:?} in {all:?}");
+        }
+        assert!(!all.contains('…'), "{width}: {all}");
+        assert!(labels.open[0].1 && labels.open[0].0.starts_with("120 "));
     }
 }
 
@@ -833,6 +1007,16 @@ fn crowded() -> Overview {
         provider: Provider::Codex,
         state: ChatState::Stopped,
     });
+    // Large task counts: the longest a tasks cell has to say.
+    overview.projects.push(ProjectOverview {
+        live_shells: 1,
+        tasks: TaskCounts {
+            todo: 15,
+            in_progress: 120,
+            done: 1234,
+        },
+        ..project("counts", "counts")
+    });
     for index in 0..40 {
         overview.projects.push(ProjectOverview {
             folder: Some("A group with a rather long name".into()),
@@ -860,18 +1044,25 @@ fn crowded() -> Overview {
 fn at_every_size_nothing_crosses_the_edge_and_tasks_are_never_buried(cx: &mut TestAppContext) {
     const HEIGHT: f32 = 800.0;
     let cases = [
-        (640.0, 1.0, ui_text::Face::Menlo),
-        (800.0, 1.0, ui_text::Face::System),
-        (800.0, 1.3, ui_text::Face::System),
-        (1100.0, 1.0, ui_text::Face::Menlo),
-        (1100.0, 1.0, ui_text::Face::System),
-        (1440.0, 1.0, ui_text::Face::System),
-        (1900.0, 1.0, ui_text::Face::System),
-        (1900.0, 1.0, ui_text::Face::Menlo),
+        (640.0, 1.0, ui_text::Face::Menlo, Arrangement::Compact),
+        (800.0, 1.0, ui_text::Face::System, Arrangement::Compact),
+        (800.0, 1.3, ui_text::Face::System, Arrangement::Compact),
+        (1100.0, 1.0, ui_text::Face::Menlo, Arrangement::Normal),
+        (1100.0, 1.0, ui_text::Face::System, Arrangement::Normal),
+        (1440.0, 1.0, ui_text::Face::System, Arrangement::Normal),
+        (1900.0, 1.0, ui_text::Face::System, Arrangement::Wide),
+        (1900.0, 1.0, ui_text::Face::Menlo, Arrangement::Wide),
+        // Native at its default text size.
+        (640.0, NATIVE, ui_text::Face::System, Arrangement::Compact),
+        (800.0, NATIVE, ui_text::Face::System, Arrangement::Compact),
+        (1100.0, NATIVE, ui_text::Face::System, Arrangement::Compact),
+        (1440.0, NATIVE, ui_text::Face::System, Arrangement::Normal),
+        (1900.0, NATIVE, ui_text::Face::System, Arrangement::Wide),
     ];
-    for (width, scale, face) in cases {
+    for (width, scale, face, expected) in cases {
         let before = ui_text::set_for_tests(scale, face);
         let layout = Layout::of(px(width));
+        assert_eq!(layout.arrangement, expected, "{width} at {scale}");
         let overview = crowded();
         let last = format!("dashboard-project-{}", overview.projects.last().unwrap().id);
         let (window, _) = mount(cx, overview, Some(NOW - 1), width, HEIGHT);
@@ -907,10 +1098,25 @@ fn at_every_size_nothing_crosses_the_edge_and_tasks_are_never_buried(cx: &mut Te
             inside(window, &last_row);
             // Within a row, the cells end before its buttons begin, and the project's own
             // column keeps room to be read.
-            for project in ["extra-0", "extra-39", ALPHA] {
+            for project in ["extra-0", "extra-39", ALPHA, "counts"] {
                 let row =
                     |part: &str| inside(window, &format!("dashboard-project-{project}{part}"));
                 let (name, last, tasks) = (row("-name"), row("-last"), row("-tasks"));
+                // Every task count is drawn whole inside its cell: done of all, then each
+                // open count, whatever the width.
+                let cell = row("-tasks-cell");
+                let mut labels = vec![row("-tasks-done"), row("-tasks-open-0")];
+                if let Some(todo) =
+                    window.try_find(format!("dashboard-project-{project}-tasks-open-1"))
+                {
+                    labels.push(todo.bounds());
+                }
+                for label in labels {
+                    assert!(
+                        label.left() >= cell.left() && label.right() <= cell.right() + px(0.5),
+                        "{width}/{scale}/{face:?}: {project}'s task count {label:?} leaves {cell:?}"
+                    );
+                }
                 assert!(
                     last.right() <= tasks.left(),
                     "{width}/{scale}/{face:?}: {project}'s cells run into its buttons: {last:?} {tasks:?}"
