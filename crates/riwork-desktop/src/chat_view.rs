@@ -306,6 +306,13 @@ impl ChatView {
     pub fn identity_for_tests(&self, cx: &gpui::App) -> (Option<String>, String) {
         (self.chat_id.clone(), self.composer_text(cx))
     }
+
+    /// Whether the view has begun following its chat through the host, for a window under
+    /// test.
+    #[cfg(test)]
+    pub fn following_for_tests(&self) -> bool {
+        self.feed_started || self.feed.is_some()
+    }
     /// Browse an existing chat without starting its host on follow/reconnect. The normal
     /// configuration remains available for explicit sends and attachment staging.
     pub fn open_existing(

@@ -4015,7 +4015,8 @@ impl Workspace {
                 locked_panes: None,
                 main_pane: None,
             });
-            match destination.carry_locked_regions_from(previous) {
+            let previous = self.return_own_orchestrators(previous, &destination, &shells);
+            match destination.carry_locked_regions_from(&previous) {
                 Ok(layout) => saved = Some(layout),
                 Err(error) => {
                     layout_notice = Some(format!("{error}; locked regions were not carried over"));
@@ -4163,6 +4164,15 @@ impl Workspace {
                                 known_shell_ids.insert(shell_id.clone());
                             }
                             moved_global = true;
+                            continue;
+                        }
+                        // Another project's orchestrator is that project's, wherever a carried
+                        // locked pane or an older save put it here. Ordinary chats and shells
+                        // in a locked pane go with the window as they always have.
+                        if self.is_foreign_orchestrator_tab(tab, &live_shells) {
+                            if let SavedTab::Shell { shell_id } = tab {
+                                known_shell_ids.insert(shell_id.clone());
+                            }
                             continue;
                         }
                         match tab {
@@ -5781,15 +5791,7 @@ impl Workspace {
                         .as_ref()
                         .is_some_and(|cwds| workspace.shell_cwds != *cwds);
                 if let Some((chats, stale, _)) = chats {
-                    workspace.shared_chats = Some(chats.clone());
-                    let chats = chats
-                        .into_iter()
-                        .filter(|chat| chat.orchestrator.is_some())
-                        .collect::<Vec<_>>();
-                    changed |= workspace.chat_orchestrators.as_ref() != Some(&chats)
-                        || workspace.chat_skill_stale != stale;
-                    workspace.chat_orchestrators = Some(chats);
-                    workspace.chat_skill_stale = stale;
+                    changed |= workspace.take_chat_inventory(chats, stale, window, cx);
                 }
                 workspace.shells = shells.clone();
                 workspace.foreign_tabs.extend(foreign_tabs);
@@ -7659,10 +7661,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // A layout saved while the host was still making the chat can carry no id. The global
-        // orchestrator's chat is the global window's.
+        // A layout saved while the host was still making the chat can carry no id. An
+        // orchestrator's chat is shown only where its scope is: the global one in the global
+        // window, a project's in a window showing that project. A layout can carry another
+        // project's (a locked pane carried over, or a layout saved with one), and the window
+        // leaves it out without touching the chat.
         if chat_id.is_empty()
-            || self.is_global_chat(&chat_id)
+            || self
+                .chat_orchestrator(&chat_id)
+                .is_some_and(|scope| !self.owns_orchestrator(&scope))
             || self.detached_chat_ids.contains(&chat_id)
             || chat_tab_in(&self.panes, &chat_id).is_some()
             || !self.chat_tabs.claim(&chat_id, false)
@@ -7692,18 +7699,186 @@ impl Workspace {
 
     /// Whether `chat_id` is the global orchestrator's chat, as the chats listed or saved say.
     fn is_global_chat(&self, chat_id: &str) -> bool {
-        let global = |info: &ChatInfo| info.orchestrator == Some(OrchestratorScope::Global);
+        self.chat_orchestrator(chat_id) == Some(OrchestratorScope::Global)
+    }
+
+    /// Which orchestrator `chat_id` is, as the chats listed or saved say: the chat's own
+    /// record, never the project this window shows. `None` for an ordinary chat and for one
+    /// nothing is known about yet.
+    fn chat_orchestrator(&self, chat_id: &str) -> Option<OrchestratorScope> {
         match self
             .shared_chats
             .as_ref()
             .and_then(|chats| chats.iter().find(|info| info.id == chat_id))
         {
-            Some(info) => global(info),
+            Some(info) => info.orchestrator.clone(),
             None => chat::log::chat_dir(self.sessions.state_home(), chat_id)
                 .and_then(|dir| std::fs::read(dir.join("info.json")).ok())
                 .and_then(|bytes| serde_json::from_slice::<ChatInfo>(&bytes).ok())
-                .is_some_and(|info| global(&info)),
+                .and_then(|info| info.orchestrator),
         }
+    }
+
+    /// Whether an orchestrator of `scope` is this window's project's own.
+    fn owns_orchestrator(&self, scope: &OrchestratorScope) -> bool {
+        scope.project_id() == Some(self.project_id.as_str())
+    }
+
+    /// Whether a saved tab is another project's orchestrator, chat or terminal. Such a tab
+    /// is that project's: a window showing this project leaves it out of its view and its
+    /// layout, and the chat or the session runs on as it is.
+    fn is_foreign_orchestrator_tab(
+        &self,
+        tab: &SavedTab,
+        shells: &BTreeMap<String, ShellSession>,
+    ) -> bool {
+        match tab {
+            SavedTab::Chat { chat_id } => self.chat_orchestrator(chat_id).is_some_and(|scope| {
+                scope.project_id().is_some() && !self.owns_orchestrator(&scope)
+            }),
+            SavedTab::Shell { shell_id } => shells.get(shell_id).is_some_and(|shell| {
+                shell.kind == ShellKind::Orchestrator
+                    && shell
+                        .project_id
+                        .as_deref()
+                        .is_some_and(|project| project != self.project_id)
+            }),
+            SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } => false,
+        }
+    }
+
+    /// Whether a saved tab is this project's own orchestrator, chat or terminal.
+    fn is_own_orchestrator_tab(&self, tab: &SavedTab, shells: &[ShellSession]) -> bool {
+        match tab {
+            SavedTab::Chat { chat_id } => self
+                .chat_orchestrator(chat_id)
+                .is_some_and(|scope| self.owns_orchestrator(&scope)),
+            SavedTab::Shell { shell_id } => shells.iter().any(|shell| {
+                &shell.id == shell_id
+                    && shell.kind == ShellKind::Orchestrator
+                    && shell.project_id.as_deref() == Some(self.project_id.as_str())
+            }),
+            SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } => false,
+        }
+    }
+
+    /// Coming back to this project with locked panes carried from another: its own
+    /// orchestrator tabs that sat in one of its locked panes go back into that pane (still
+    /// locked, by the same id), where they were, rather than among the tabs the carry
+    /// recovers. The other project's window never had them; see `is_foreign_orchestrator_tab`.
+    fn return_own_orchestrators(
+        &self,
+        previous: &ProjectLayout,
+        destination: &ProjectLayout,
+        shells: &[ShellSession],
+    ) -> ProjectLayout {
+        let mut previous = previous.clone();
+        let carried = previous.effective_locked_panes();
+        let present = previous
+            .panes
+            .values()
+            .flat_map(|pane| pane.tabs.iter().map(SavedTab::key))
+            .collect::<HashSet<_>>();
+        for id in destination.effective_locked_panes() {
+            let (Some(own), true) = (destination.panes.get(&id), carried.contains(&id)) else {
+                continue;
+            };
+            let Some(target) = previous.panes.get_mut(&id) else {
+                continue;
+            };
+            for (index, tab) in own.tabs.iter().enumerate() {
+                if present.contains(&tab.key()) || !self.is_own_orchestrator_tab(tab, shells) {
+                    continue;
+                }
+                target
+                    .tabs
+                    .insert(index.min(target.tabs.len()), tab.clone());
+                if own.active_tab_key == Some(tab.key()) {
+                    target.active_tab_key = Some(tab.key());
+                }
+            }
+        }
+        previous
+    }
+
+    /// The chats as the chat host, or else the saved chats, list them now. Returns whether
+    /// anything the window shows changed.
+    fn take_chat_inventory(
+        &mut self,
+        chats: Vec<ChatInfo>,
+        stale: HashSet<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.shared_chats = Some(chats.clone());
+        // What each restored chat is may be known only now.
+        let mut changed = self.drop_foreign_orchestrator_tabs(window, cx);
+        let chats = chats
+            .into_iter()
+            .filter(|chat| chat.orchestrator.is_some())
+            .collect::<Vec<_>>();
+        changed |=
+            self.chat_orchestrators.as_ref() != Some(&chats) || self.chat_skill_stale != stale;
+        self.chat_orchestrators = Some(chats);
+        self.chat_skill_stale = stale;
+        changed
+    }
+
+    /// Take out the tabs of chats the inventory, now read, names as another project's
+    /// orchestrator: tabs restored before anything said what their chat was. Only this
+    /// window's view and layout change; the chat, its draft and settings, and its project's
+    /// shared tabs stay as they are, and its claim is let go for that project's window.
+    fn drop_foreign_orchestrator_tabs(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(chats) = &self.shared_chats else {
+            return false;
+        };
+        let foreign = self
+            .panes
+            .values()
+            .flat_map(|pane| pane.tabs.iter().filter_map(Tab::chat_id))
+            .filter(|id| {
+                chats.iter().any(|info| {
+                    &info.id == id
+                        && info.orchestrator.as_ref().is_some_and(|scope| {
+                            scope.project_id().is_some() && !self.owns_orchestrator(scope)
+                        })
+                })
+            })
+            .map(str::to_owned)
+            .collect::<HashSet<_>>();
+        if foreign.is_empty() {
+            return false;
+        }
+        let mut focus_removed = false;
+        for (pane_id, pane) in self.panes.iter_mut() {
+            let active = pane.tabs.get(pane.active).map(|tab| tab.id);
+            pane.tabs.retain(|tab| {
+                let keep = tab.chat_id().is_none_or(|id| !foreign.contains(id));
+                if !keep {
+                    focus_removed |= *pane_id == self.active_pane && active == Some(tab.id);
+                    if let Some(id) = tab.chat_id() {
+                        self.chat_tabs.release(id);
+                    }
+                    tab.set_visible(false, cx);
+                }
+                keep
+            });
+            pane.active = active
+                .and_then(|id| pane.tabs.iter().position(|tab| tab.id == id))
+                .unwrap_or(pane.active.min(pane.tabs.len().saturating_sub(1)));
+            for (index, tab) in pane.tabs.iter().enumerate() {
+                tab.set_visible(index == pane.active, cx);
+            }
+        }
+        if focus_removed {
+            self.focus_active(window, cx);
+        }
+        self.save_layout();
+        true
     }
 
     fn chat_tab(
@@ -13574,6 +13749,9 @@ fn window_options(window_bounds: WindowBounds) -> WindowOptions {
         ..Default::default()
     }
 }
+
+#[cfg(test)]
+mod orchestrator_tab_tests;
 
 #[cfg(test)]
 mod startup_tests {
