@@ -299,6 +299,55 @@ fn every_project_is_counted_from_its_own_sessions_chats_and_tasks() {
 }
 
 #[test]
+fn each_project_says_where_it_is_and_when_something_last_happened_in_it() {
+    let mut fixture = busy();
+    // Beta's running chat wrote to its log ten seconds ago, as far as that was read.
+    fixture
+        .chat_activity
+        .insert("c-beta-run".to_owned(), NOW - 10);
+    let overview = fixture.overview();
+    let row = |id: &str| {
+        overview
+            .projects
+            .iter()
+            .find(|project| project.id == id)
+            .unwrap()
+            .clone()
+    };
+    let alpha = row(ALPHA);
+    assert_eq!(alpha.root, PathBuf::from("/work/alpha"));
+    // Its waiting Claude began waiting two minutes ago: later than its tasks changed and
+    // than its Codex began working.
+    assert_eq!(alpha.last_activity, Some(NOW - 120));
+    // The chat's log is the latest of beta's; its ended session counts for nothing.
+    assert_eq!(row(BETA).last_activity, Some(NOW - 10));
+    fixture.chat_activity.clear();
+    assert_eq!(
+        fixture
+            .overview()
+            .projects
+            .iter()
+            .find(|project| project.id == BETA)
+            .unwrap()
+            .last_activity,
+        Some(NOW - 60),
+        "its orchestrator began working a minute ago"
+    );
+    // Nothing recorded a time for the quiet project: unknown, not zero.
+    assert_eq!(row(QUIET).last_activity, None);
+    // A task's change is a time of its own.
+    let mut tasks_only = busy();
+    tasks_only.activity.clear();
+    let alpha = tasks_only
+        .overview()
+        .projects
+        .into_iter()
+        .find(|project| project.id == ALPHA)
+        .unwrap();
+    assert_eq!(alpha.last_activity, Some(20));
+}
+
+#[test]
 fn the_busiest_projects_come_first_and_quiet_ones_last() {
     let overview = busy().overview();
     let order: Vec<&str> = overview.projects.iter().map(|p| p.name.as_str()).collect();
@@ -628,13 +677,64 @@ fn automations_that_did_not_run_need_attention_unless_paused() {
             total,
             paused,
             next: Some(next),
+            items,
         } => {
             assert_eq!((total, paused), (3, 1));
             assert_eq!(next.at, NOW + 600);
             assert_eq!(next.title, "Automation a1");
+            // Each one, as its row says it: the paused one runs at no time, and comes last.
+            let rows: Vec<_> = items
+                .iter()
+                .map(|item| {
+                    (
+                        item.id.as_str(),
+                        item.project_name.as_deref(),
+                        item.paused,
+                        item.next_run,
+                        item.last_run.clone(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                rows,
+                [
+                    (
+                        "a1",
+                        Some("beta"),
+                        false,
+                        Some(NOW + 600),
+                        Some((Outcome::Failed, NOW - 3500))
+                    ),
+                    (
+                        "a2",
+                        None,
+                        false,
+                        Some(NOW + 600),
+                        Some((Outcome::Submitted, NOW - 3500))
+                    ),
+                    ("a3", None, true, None, Some((Outcome::Missed, NOW - 3500))),
+                ]
+            );
         }
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn automations_are_listed_by_their_next_run() {
+    let mut fixture = busy();
+    let mut later = schedule("later", json!({"scope": "app"}), false, None);
+    later.next_run = Some(NOW + 7200);
+    let mut never = schedule("never", json!({"scope": "app"}), false, None);
+    never.next_run = None;
+    let soon = schedule("soon", json!({"scope": "app"}), false, None);
+    let paused = schedule("paused", json!({"scope": "app"}), true, None);
+    fixture.schedules = Some(Ok(vec![paused, never, later, soon]));
+    let Automations::Read { items, .. } = fixture.overview().automations else {
+        panic!("read");
+    };
+    let order: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
+    assert_eq!(order, ["soon", "later", "never", "paused"]);
 }
 
 #[test]
@@ -684,7 +784,8 @@ fn an_empty_mac_has_an_empty_honest_overview() {
         Automations::Read {
             total: 0,
             paused: 0,
-            next: None
+            next: None,
+            items: Vec::new(),
         }
     );
 }

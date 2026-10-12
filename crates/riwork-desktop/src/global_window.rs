@@ -7,8 +7,10 @@
 //! from any project window raises the same window. It has no project: it reads the store and
 //! the sessions like any window, but it never registers, selects or switches a project, never
 //! writes a project's layout, tabs or chat requests, and claims no project's shell. What it
-//! last showed is kept in `global-window.json` (`riwork_core::global_window`) and, for a
-//! reload, in its own entry of the runtime registry (`runtime::WindowKind::Global`).
+//! last showed (its view, and its dashboard's filter and order) is kept in
+//! `global-window.json` (`riwork_core::global_window`) and, for a reload, in its own entry of
+//! the runtime registry (`runtime::WindowKind::Global`). The dashboard's search lives as long
+//! as the window and is not kept.
 //!
 //! The dashboard draws what the window samples, as project windows do; opening, drawing or
 //! refreshing it starts nothing. The Chat view shows the global orchestrator there is: its
@@ -25,7 +27,9 @@
 use super::*;
 use dashboard::{DashboardAction, DashboardData};
 use global_overview::{GlobalOrchestrator, Target};
-use riwork_core::global_window::{GlobalWindowState, GlobalWindowStore};
+use riwork_core::global_window::{
+    DashboardFilter, DashboardSort, GlobalWindowState, GlobalWindowStore,
+};
 
 pub(crate) const TITLE: &str = "RiWork · Global";
 
@@ -475,7 +479,15 @@ enum Shown {
 
 pub(crate) struct GlobalWindow {
     pub(crate) view: GlobalView,
-    show_quiet: bool,
+    /// The dashboard's own filter and order of the projects, kept with the window's state.
+    pub(crate) filter: DashboardFilter,
+    pub(crate) sort: DashboardSort,
+    /// What a compact dashboard shows; not kept.
+    pub(crate) region: dashboard::Region,
+    /// The dashboard's search field, kept for the window's life, and its text.
+    pub(crate) search: Entity<InputState>,
+    pub(crate) query: String,
+    _search_events: gpui::Subscription,
     store: Store,
     sessions: SessionManager,
     settings_store: SettingsStore,
@@ -532,6 +544,18 @@ impl GlobalWindow {
         } = startup;
         window.set_window_title(TITLE);
         let activity_tracker = ActivityTracker::at(sessions.state_home().to_path_buf());
+        let search =
+            text_input::single_line("", "Search projects, tasks and sessions  ⌘F", window, cx);
+        // The search only narrows what the dashboard draws: it reads and changes nothing.
+        let search_events = cx.subscribe_in(&search, window, |global, input, event, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                let query = input.read(cx).value().to_string();
+                if global.query != query {
+                    global.query = query;
+                    cx.notify();
+                }
+            }
+        });
         cx.set_global(Open {
             window: Some((window.window_handle(), cx.weak_entity())),
         });
@@ -549,7 +573,12 @@ impl GlobalWindow {
         .detach();
         let mut global = Self {
             view: saved.view,
-            show_quiet: saved.show_quiet,
+            filter: saved.filter(),
+            sort: saved.dashboard_sort,
+            region: dashboard::Region::default(),
+            search,
+            query: String::new(),
+            _search_events: search_events,
             store,
             sessions,
             settings_store,
@@ -641,11 +670,14 @@ impl GlobalWindow {
     }
 
     fn state_to_save(&self) -> GlobalWindowState {
-        GlobalWindowState {
+        let mut state = GlobalWindowState {
             view: self.view,
-            show_quiet: self.show_quiet,
+            dashboard_sort: self.sort,
             window_size: self.window_size,
-        }
+            ..GlobalWindowState::default()
+        };
+        state.set_filter(self.filter);
+        state
     }
 
     /// Keep what the window shows in its own file, never in a project's layout.
@@ -1248,9 +1280,27 @@ impl GlobalWindow {
                 }
                 cx.notify();
             }
-            DashboardAction::ToggleQuietProjects => {
-                self.show_quiet = !self.show_quiet;
-                self.save_state();
+            DashboardAction::Filter(filter) => {
+                if self.filter != filter {
+                    self.filter = filter;
+                    self.save_state();
+                }
+                cx.notify();
+            }
+            DashboardAction::Sort(sort) => {
+                if self.sort != sort {
+                    self.sort = sort;
+                    self.save_state();
+                }
+                cx.notify();
+            }
+            DashboardAction::Region(region) => {
+                self.region = region;
+                cx.notify();
+            }
+            DashboardAction::ClearSearch => {
+                crate::form_input::set_value(&self.search, String::new(), window, cx);
+                self.query.clear();
                 cx.notify();
             }
             DashboardAction::GlobalChat => self.show(GlobalView::Chat, true, window, cx),
@@ -1297,6 +1347,21 @@ impl GlobalWindow {
                 }
             }),
         }
+    }
+
+    /// ⌘F: the dashboard's search. In the Chat view the key is the chat's.
+    fn focus_search_action(
+        &mut self,
+        _: &FocusSearch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.view != GlobalView::Dashboard {
+            cx.propagate();
+            return;
+        }
+        self.search.read(cx).focus_handle(cx).focus(window, cx);
+        cx.notify();
     }
 
     fn close_action(&mut self, _: &CloseTab, window: &mut Window, _: &mut Context<Self>) {
@@ -1452,7 +1517,7 @@ impl GlobalWindow {
         )
     }
 
-    fn render_dashboard(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_dashboard(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let overview = self.overview();
         dashboard::render(
             DashboardData {
@@ -1462,9 +1527,15 @@ impl GlobalWindow {
                 sample_error: self.sample_error.as_deref(),
                 chat_starting: self.starting,
                 runs: orchestrator_runs(&self.settings),
-                show_quiet: self.show_quiet,
+                width: window.viewport_size().width,
+                search: Some(&self.search),
+                query: &self.query,
+                filter: self.filter,
+                sort: self.sort,
+                region: self.region,
             },
             Self::dashboard_action,
+            window,
             cx,
         )
     }
@@ -1597,7 +1668,7 @@ impl Render for GlobalWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme::palette(cx);
         let body = match self.view {
-            GlobalView::Dashboard => self.render_dashboard(cx),
+            GlobalView::Dashboard => self.render_dashboard(window, cx),
             GlobalView::Chat => self.render_chat(cx),
         };
         div()
@@ -1606,6 +1677,7 @@ impl Render for GlobalWindow {
             .key_context("RiWorkGlobal")
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::close_action))
+            .on_action(cx.listener(Self::focus_search_action))
             .on_action(cx.listener(Self::new_project_window_action))
             .on_action(cx.listener(Self::open_settings_action))
             .on_action(cx.listener(Self::open_schedules_action))

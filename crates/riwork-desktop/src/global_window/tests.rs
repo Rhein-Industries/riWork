@@ -446,13 +446,14 @@ fn every_entry_reuses_the_one_global_window_and_a_reload_records_it_as_itself(
 ) {
     init_app(cx);
     let home = Home::new();
+    // A state an older build saved: quiet projects shown, no filter of its own.
     let fixture = open_global(
         cx,
         &home.0,
         GlobalWindowState {
             view: GlobalView::Dashboard,
             show_quiet: true,
-            window_size: None,
+            ..GlobalWindowState::default()
         },
     );
     let windows = cx.update(|cx| cx.windows().len());
@@ -481,18 +482,19 @@ fn every_entry_reuses_the_one_global_window_and_a_reload_records_it_as_itself(
         !window.path.exists(),
         "nothing a build could take for a project"
     );
-    assert_eq!(
-        window.global,
-        Some(GlobalWindowState {
-            view: GlobalView::Dashboard,
-            show_quiet: true,
-            window_size: None,
-        })
-    );
+    // The older state's meaning is kept: every project listed, now as the All filter.
+    let mut expected = GlobalWindowState {
+        view: GlobalView::Dashboard,
+        ..GlobalWindowState::default()
+    };
+    expected.set_filter(DashboardFilter::All);
+    assert_eq!(window.global, Some(expected));
     let text = serde_json::to_string(window).unwrap();
     assert!(text.contains("\"kind\":\"global\""), "{text}");
     // Saving for a reload wrote its own file and nothing of a project's.
-    assert!(GlobalWindowStore::at(&home.0).load().show_quiet);
+    let saved = GlobalWindowStore::at(&home.0).load();
+    assert!(saved.show_quiet);
+    assert_eq!(saved.filter(), DashboardFilter::All);
     nothing_was_started_or_saved_for_a_project(&home.0);
 }
 
@@ -653,8 +655,8 @@ fn a_reload_reopens_the_window_as_it_handed_it_over_else_as_it_was_last_shown() 
     assert_eq!(opening_state(None, &saved), GlobalWindowState::default());
     let last = GlobalWindowState {
         view: GlobalView::Chat,
-        show_quiet: false,
-        window_size: None,
+        dashboard_sort: DashboardSort::Name,
+        ..GlobalWindowState::default()
     };
     saved.save(&last).unwrap();
     assert_eq!(opening_state(None, &saved), last);
@@ -662,7 +664,8 @@ fn a_reload_reopens_the_window_as_it_handed_it_over_else_as_it_was_last_shown() 
     let handed = GlobalWindowState {
         view: GlobalView::Dashboard,
         show_quiet: true,
-        window_size: None,
+        dashboard_filter: Some(DashboardFilter::Working),
+        ..GlobalWindowState::default()
     };
     let window = runtime::RuntimeWindow::global(
         &home.0,
@@ -671,4 +674,142 @@ fn a_reload_reopens_the_window_as_it_handed_it_over_else_as_it_was_last_shown() 
         handed.clone(),
     );
     assert_eq!(opening_state(Some(&window), &saved), handed);
+}
+
+/// A store with two projects: alpha with a task in progress, and a quiet one.
+fn two_projects(home: &Path) -> (Store, String, String) {
+    let store = Store::open(home).unwrap();
+    let mut ids = Vec::new();
+    for name in ["alpha", "quiet"] {
+        let root = home.join("work").join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        ids.push(store.add_project(root, None).unwrap().id);
+    }
+    let task = store.add_task(&ids[0], "Ship the dashboard", "").unwrap();
+    store
+        .set_task_status(&task.id, store::TaskStatus::InProgress)
+        .unwrap();
+    let quiet = ids.pop().unwrap();
+    (store, ids.pop().unwrap(), quiet)
+}
+
+#[gpui::test]
+fn the_dashboards_search_filter_and_order_are_the_windows_own(cx: &mut gpui::TestAppContext) {
+    init_app(cx);
+    let home = Home::new();
+    let (store, alpha, quiet) = two_projects(&home.0);
+    let before = store.snapshot().unwrap();
+    let fixture = open_global(cx, &home.0, GlobalWindowState::default());
+    let global = fixture.global.clone();
+    sample(cx, &fixture, Vec::new(), Vec::new());
+    let (quiet_row, alpha_row) = (
+        format!("dashboard-project-{quiet}"),
+        format!("dashboard-project-{alpha}"),
+    );
+    crate::form_input::test_turn(cx, fixture.handle, |window, cx| {
+        // Active is the default: the quiet project waits behind All.
+        assert!(window.try_find(alpha_row.clone()).is_some());
+        assert!(window.try_find(quiet_row.clone()).is_none());
+        window.click("dashboard-filter-all", cx);
+    });
+    crate::form_input::test_turn(cx, fixture.handle, |window, cx| {
+        assert!(window.try_find(quiet_row.clone()).is_some());
+        window.click("dashboard-sort-name", cx);
+    });
+    crate::form_input::test_turn(cx, fixture.handle, |window, cx| {
+        window.click("dashboard-search-icon", cx)
+    });
+    for character in "qui".chars() {
+        let character = character.to_string();
+        crate::form_input::test_turn(cx, fixture.handle, |window, cx| {
+            window.input(&character, cx)
+        });
+    }
+    crate::form_input::test_turn(cx, fixture.handle, |window, cx| {
+        let global = global.read(cx);
+        assert_eq!(global.query, "qui");
+        assert!(window.try_find(alpha_row.clone()).is_none());
+        assert!(window.try_find(quiet_row.clone()).is_some());
+        assert_eq!(
+            (global.filter, global.sort),
+            (DashboardFilter::All, DashboardSort::Name)
+        );
+        // Nothing was started or asked for.
+        assert!(!global.starting);
+        assert!(matches!(global.shown, Shown::Nothing));
+    });
+    // The filter and the order are saved as the window's own; the search is not.
+    let saved = GlobalWindowStore::at(&home.0).load();
+    assert_eq!(
+        (saved.filter(), saved.dashboard_sort, saved.show_quiet),
+        (DashboardFilter::All, DashboardSort::Name, true)
+    );
+    let text = std::fs::read_to_string(GlobalWindowStore::at(&home.0).path()).unwrap();
+    assert!(!text.contains("qui\""), "{text}");
+    let recorded = cx.update(|cx| runtime_windows(cx, true));
+    let state = recorded[0].global.clone().unwrap();
+    assert_eq!(
+        (state.filter(), state.dashboard_sort),
+        (DashboardFilter::All, DashboardSort::Name)
+    );
+    // Searching, filtering and sorting left every project as it was: no selection, no
+    // layout, no tabs, no session and no chat.
+    assert_eq!(store.snapshot().unwrap(), before);
+    nothing_was_started_or_saved_for_a_project(&home.0);
+
+    // Closed and opened again, it lists as it did, with an empty search.
+    cx.update_window(fixture.handle, |_, window, _| window.remove_window())
+        .unwrap();
+    drop(fixture);
+    drop(global);
+    cx.run_until_parked();
+    let saved = opening_state(None, &GlobalWindowStore::at(&home.0));
+    let fixture = open_global(cx, &home.0, saved);
+    fixture.global.read_with(cx, |global, _| {
+        assert_eq!(
+            (global.filter, global.sort, global.query.as_str()),
+            (DashboardFilter::All, DashboardSort::Name, "")
+        );
+    });
+}
+
+#[gpui::test]
+fn the_dashboard_is_laid_out_by_the_windows_own_width(cx: &mut gpui::TestAppContext) {
+    init_app(cx);
+    let home = Home::new();
+    let (_store, _alpha, _quiet) = two_projects(&home.0);
+    let fixture = open_global(cx, &home.0, GlobalWindowState::default());
+    let global = fixture.global.clone();
+    sample(cx, &fixture, Vec::new(), Vec::new());
+    for (width, compact, rails) in [
+        (800.0, true, &[][..]),
+        (1100.0, false, &["dashboard-rail"][..]),
+        (
+            1900.0,
+            false,
+            &["dashboard-rail-activity", "dashboard-rail-work"][..],
+        ),
+    ] {
+        cx.simulate_window_resize(fixture.handle, gpui::size(px(width), px(760.0)));
+        cx.run_until_parked();
+        crate::form_input::test_turn(cx, fixture.handle, |window, _| {
+            assert_eq!(
+                window.try_find("dashboard-region-projects").is_some(),
+                compact,
+                "{width}"
+            );
+            for rail in rails {
+                let bounds = window.find(*rail).bounds();
+                assert!(bounds.right() <= px(width + 0.5), "{width}: {rail}");
+            }
+        });
+    }
+    // ⌘F finds the search on the dashboard.
+    crate::form_input::test_turn(cx, fixture.handle, |window, cx| {
+        window.dispatch_action(Box::new(FocusSearch), cx);
+    });
+    crate::form_input::test_turn(cx, fixture.handle, |window, cx| {
+        let search = global.read(cx).search.clone();
+        assert!(search.read(cx).focus_handle(cx).is_focused(window));
+    });
 }

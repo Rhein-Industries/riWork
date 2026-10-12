@@ -1,6 +1,7 @@
-//! `global-window.json`: what the global window last showed. The global window holds the
-//! dashboard and the global chat, and it belongs to no project, so its state is kept here and
-//! never in a project's layout (`layouts.json`), the store's selection or a project's tabs.
+//! `global-window.json`: what the global window last showed, and how its dashboard filters
+//! and orders the projects. The global window holds the dashboard and the global chat, and
+//! it belongs to no project, so its state is kept here and never in a project's layout
+//! (`layouts.json`), the store's selection or a project's tabs.
 //!
 //! The file is small and only ever read back by this app. A missing, unreadable or foreign
 //! file is the default state (the dashboard), never an error a window has to show, and a view
@@ -54,17 +55,142 @@ impl From<GlobalView> for String {
     }
 }
 
+/// Which projects the dashboard's table lists.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum DashboardFilter {
+    /// With a live session or chat, or an open task.
+    #[default]
+    Active,
+    /// With an agent waiting for the user, a failed chat or a failed automation.
+    NeedsYou,
+    /// With an agent at work.
+    Working,
+    /// With a task in progress.
+    InProgress,
+    /// Every project, the quiet ones too.
+    All,
+}
+
+impl DashboardFilter {
+    pub const ALL: [Self; 5] = [
+        Self::Active,
+        Self::NeedsYou,
+        Self::Working,
+        Self::InProgress,
+        Self::All,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::NeedsYou => "needs_you",
+            Self::Working => "working",
+            Self::InProgress => "in_progress",
+            Self::All => "all",
+        }
+    }
+}
+
+impl From<String> for DashboardFilter {
+    fn from(name: String) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|filter| filter.name() == name)
+            .unwrap_or_default()
+    }
+}
+
+impl From<DashboardFilter> for String {
+    fn from(filter: DashboardFilter) -> Self {
+        filter.name().to_owned()
+    }
+}
+
+/// The order of the dashboard's table.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum DashboardSort {
+    /// What needs the user, then what works, then what runs, then open tasks.
+    #[default]
+    Priority,
+    /// The latest recorded activity first.
+    Recent,
+    /// The most tasks in progress, then the most open ones, first.
+    Tasks,
+    /// The most live sessions and chats first.
+    Sessions,
+    Name,
+}
+
+impl DashboardSort {
+    pub const ALL: [Self; 5] = [
+        Self::Priority,
+        Self::Recent,
+        Self::Tasks,
+        Self::Sessions,
+        Self::Name,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Priority => "priority",
+            Self::Recent => "recent",
+            Self::Tasks => "tasks",
+            Self::Sessions => "sessions",
+            Self::Name => "name",
+        }
+    }
+}
+
+impl From<String> for DashboardSort {
+    fn from(name: String) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|sort| sort.name() == name)
+            .unwrap_or_default()
+    }
+}
+
+impl From<DashboardSort> for String {
+    fn from(sort: DashboardSort) -> Self {
+        sort.name().to_owned()
+    }
+}
+
 /// The global window's own state. Every field has a default, so a file from another build
 /// still reads.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GlobalWindowState {
     pub view: GlobalView,
-    /// The dashboard lists the projects with nothing going on as well.
+    /// The dashboard lists the projects with nothing going on as well. Builds before the
+    /// dashboard's filters read only this; it is kept true exactly when the filter is All.
     pub show_quiet: bool,
+    /// The dashboard's project filter; a file without one has `show_quiet`'s meaning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dashboard_filter: Option<DashboardFilter>,
+    pub dashboard_sort: DashboardSort,
     /// The last ordinary size the user gave the window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_size: Option<WindowSize>,
+}
+
+impl GlobalWindowState {
+    /// The filter the dashboard opens with: the saved one, else what `show_quiet` meant.
+    pub fn filter(&self) -> DashboardFilter {
+        self.dashboard_filter.unwrap_or(if self.show_quiet {
+            DashboardFilter::All
+        } else {
+            DashboardFilter::Active
+        })
+    }
+
+    /// Set the dashboard's filter, and `show_quiet` as an older build would take it.
+    pub fn set_filter(&mut self, filter: DashboardFilter) {
+        self.dashboard_filter = Some(filter);
+        self.show_quiet = filter == DashboardFilter::All;
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -159,11 +285,13 @@ mod tests {
         let home = home();
         let store = GlobalWindowStore::at(&home);
         assert_eq!(store.load(), GlobalWindowState::default());
-        let state = GlobalWindowState {
+        let mut state = GlobalWindowState {
             view: GlobalView::Chat,
-            show_quiet: true,
+            dashboard_sort: DashboardSort::Recent,
             window_size: WindowSize::new(900.0, 640.0),
+            ..GlobalWindowState::default()
         };
+        state.set_filter(DashboardFilter::All);
         store.save(&state).unwrap();
         assert_eq!(store.load(), state);
         let names = fs::read_dir(&home)
@@ -174,6 +302,10 @@ mod tests {
         assert_eq!(names, [FILE_NAME]);
         let text = fs::read_to_string(store.path()).unwrap();
         assert!(text.contains("\"view\": \"chat\""), "{text}");
+        // An older build, which knows only `show_quiet`, still lists every project.
+        assert!(text.contains("\"show_quiet\": true"), "{text}");
+        assert!(text.contains("\"dashboard_filter\": \"all\""), "{text}");
+        assert!(text.contains("\"dashboard_sort\": \"recent\""), "{text}");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -219,6 +351,54 @@ mod tests {
         .unwrap();
         let state = store.load();
         assert_eq!((state.view, state.window_size), (GlobalView::Chat, None));
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn the_dashboards_filter_and_order_read_from_files_of_every_build() {
+        let home = home();
+        let store = GlobalWindowStore::at(&home);
+        // Before the filters: `show_quiet` alone says whether quiet projects are listed.
+        for (text, filter) in [
+            (r#"{"view":"dashboard"}"#, DashboardFilter::Active),
+            (r#"{"show_quiet":false}"#, DashboardFilter::Active),
+            (r#"{"show_quiet":true}"#, DashboardFilter::All),
+            // A saved filter wins over `show_quiet`.
+            (
+                r#"{"show_quiet":true,"dashboard_filter":"needs_you"}"#,
+                DashboardFilter::NeedsYou,
+            ),
+            // One a newer build named is the default one.
+            (
+                r#"{"show_quiet":true,"dashboard_filter":"starred"}"#,
+                DashboardFilter::Active,
+            ),
+        ] {
+            fs::write(store.path(), text).unwrap();
+            assert_eq!(store.load().filter(), filter, "{text}");
+        }
+        for (text, sort) in [
+            (r#"{}"#, DashboardSort::Priority),
+            (r#"{"dashboard_sort":"name"}"#, DashboardSort::Name),
+            (r#"{"dashboard_sort":"size"}"#, DashboardSort::Priority),
+        ] {
+            fs::write(store.path(), text).unwrap();
+            assert_eq!(store.load().dashboard_sort, sort, "{text}");
+        }
+        // Every filter and order is written and read back as itself.
+        for filter in DashboardFilter::ALL {
+            for sort in DashboardSort::ALL {
+                let mut state = GlobalWindowState {
+                    dashboard_sort: sort,
+                    ..GlobalWindowState::default()
+                };
+                state.set_filter(filter);
+                store.save(&state).unwrap();
+                let read = store.load();
+                assert_eq!((read.filter(), read.dashboard_sort), (filter, sort));
+                assert_eq!(read.show_quiet, filter == DashboardFilter::All);
+            }
+        }
         fs::remove_dir_all(home).unwrap();
     }
 }

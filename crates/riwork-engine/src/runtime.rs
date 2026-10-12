@@ -2879,7 +2879,7 @@ mod tests {
         let state = GlobalWindowState {
             view: GlobalView::Chat,
             show_quiet: true,
-            window_size: None,
+            ..GlobalWindowState::default()
         };
         let geometry = WindowGeometry {
             x: 40.,

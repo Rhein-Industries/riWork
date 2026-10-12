@@ -160,7 +160,9 @@ pub enum ProjectOrchestrator {
 pub struct ProjectOverview {
     pub id: String,
     pub name: String,
+    /// Its group in RiWork, if it is in one.
     pub folder: Option<String>,
+    pub root: PathBuf,
     /// Agents in its shells and chats, by what they are doing.
     pub agents: ActivityCounts,
     pub live_shells: usize,
@@ -170,6 +172,10 @@ pub struct ProjectOverview {
     /// Rows of this project in the attention list.
     pub attention: usize,
     pub orchestrator: Option<ProjectOrchestrator>,
+    /// The latest thing RiWork recorded happening in it (Unix seconds): a task changed, one
+    /// of its live agents began what it is doing, or one of its chats' logs grew as far as
+    /// that was read. `None` when nothing recorded a time.
+    pub last_activity: Option<u64>,
 }
 
 impl ProjectOverview {
@@ -215,6 +221,21 @@ pub struct NextRun {
     pub project_id: Option<String>,
 }
 
+/// One automation, as its row says it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutomationSummary {
+    pub id: String,
+    pub title: String,
+    /// `None` for an app automation.
+    pub project_id: Option<String>,
+    pub project_name: Option<String>,
+    pub paused: bool,
+    /// When it runs next; a paused one has none.
+    pub next_run: Option<u64>,
+    /// How its last run went, and when that was seen.
+    pub last_run: Option<(Outcome, u64)>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Automations {
     NotRead,
@@ -223,6 +244,8 @@ pub enum Automations {
         total: usize,
         paused: usize,
         next: Option<NextRun>,
+        /// Every automation: the next to run first, the paused ones last.
+        items: Vec<AutomationSummary>,
     },
 }
 
@@ -539,10 +562,38 @@ pub fn build(inputs: &Inputs) -> Overview {
                     at,
                     project_id: schedule_project(&schedule.target.scope),
                 });
+            let mut items: Vec<AutomationSummary> = schedules
+                .iter()
+                .map(|schedule| {
+                    let project_id = schedule_project(&schedule.target.scope);
+                    AutomationSummary {
+                        id: schedule.id.clone(),
+                        title: schedule.title.clone(),
+                        project_name: names.project(project_id.as_deref()),
+                        project_id,
+                        paused: schedule.paused,
+                        next_run: schedule.next_run.filter(|_| !schedule.paused),
+                        last_run: schedule
+                            .last_run
+                            .as_ref()
+                            .map(|run| (run.outcome.clone(), run.observed_at)),
+                    }
+                })
+                .collect();
+            items.sort_by(|a, b| {
+                let key = |item: &AutomationSummary| {
+                    (item.paused, item.next_run.is_none(), item.next_run)
+                };
+                key(a)
+                    .cmp(&key(b))
+                    .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+                    .then_with(|| a.id.cmp(&b.id))
+            });
             Automations::Read {
                 total: schedules.len(),
                 paused: schedules.iter().filter(|schedule| schedule.paused).count(),
                 next,
+                items,
             }
         }
     };
@@ -608,6 +659,29 @@ pub fn build(inputs: &Inputs) -> Overview {
             .or_default()
             .add(task.status);
     }
+    // The latest recorded time of each project: task changes, its live agents' activity,
+    // and its chats' log growth as far as that was read.
+    let mut last_activity: HashMap<&str, u64> = HashMap::new();
+    for task in &inputs.state.tasks {
+        seen(&mut last_activity, &task.project_id, task.updated_at);
+    }
+    for shell in &live_shells {
+        if let Some(project) = shell.project_id.as_deref()
+            && let Some(since) = inputs
+                .activity
+                .get(&shell.id)
+                .and_then(|state| state.since_unix)
+        {
+            seen(&mut last_activity, project, since);
+        }
+    }
+    for chat in chats {
+        if let Some(project) = chat.project_id.as_deref()
+            && let Some(at) = inputs.chat_activity.get(&chat.id)
+        {
+            seen(&mut last_activity, project, *at);
+        }
+    }
     let mut attention_counts: HashMap<&str, usize> = HashMap::new();
     for item in &attention {
         if let Some(project) = item.project_id.as_deref() {
@@ -633,6 +707,7 @@ pub fn build(inputs: &Inputs) -> Overview {
                         .find(|folder| folder.id == folder_id)
                         .map(|folder| folder.name.clone())
                 }),
+                root: project.root.clone(),
                 agents: agents.get(id).copied().unwrap_or_default(),
                 live_shells: shell_counts.get(id).copied().unwrap_or(0),
                 live_chats: chat_counts.get(id).copied().unwrap_or(0),
@@ -640,6 +715,7 @@ pub fn build(inputs: &Inputs) -> Overview {
                 worktrees: inputs.state.worktrees_for(id).len(),
                 attention: attention_counts.get(id).copied().unwrap_or(0),
                 orchestrator: orchestrators.remove(id),
+                last_activity: last_activity.get(id).copied(),
             }
         })
         .collect();
@@ -719,6 +795,12 @@ pub fn build(inputs: &Inputs) -> Overview {
         automations,
         chats_known: inputs.chats.is_some(),
     }
+}
+
+/// Keep the later of what `latest` has for `project` and `at`.
+fn seen<'a>(latest: &mut HashMap<&'a str, u64>, project: &'a str, at: u64) {
+    let time = latest.entry(project).or_default();
+    *time = (*time).max(at);
 }
 
 fn add_state(counts: ActivityCounts, state: &AgentState) -> ActivityCounts {
