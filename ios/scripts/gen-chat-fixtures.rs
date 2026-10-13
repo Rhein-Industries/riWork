@@ -22,6 +22,7 @@ fn main() {
         model: Some("gpt-5".into()),
         effort: Some("high".into()),
         fast: true,
+        contributor_opt_out: false,
         approval_mode: ApprovalMode::AutoEdit,
         codex_account_id: Some("acct".into()),
         orchestrator: None,
@@ -44,16 +45,19 @@ fn main() {
         model: None,
         effort: None,
         fast: false,
+        contributor_opt_out: false,
         approval_mode: ApprovalMode::default(),
         codex_account_id: None,
         orchestrator: None,
         state: ChatState::default(),
         carried_over: None,
     };
+    // A Muse chat opted out of Muse's contributor mode: the field is written only when true.
     let muse_chat = ChatInfo {
         provider: Provider::Muse,
         id: "55555555-5555-4555-8555-555555555555".into(),
         title: "Muse chat".into(),
+        contributor_opt_out: true,
         ..minimal.clone()
     };
     // A chat that went on with the other provider (`switch`): the same id, the new provider, and what it was given.
@@ -156,12 +160,15 @@ fn main() {
         ChatCommand::Approve { request_id: "r".into(), decision: Decision::AcceptForSession },
         ChatCommand::Approve { request_id: "r".into(), decision: Decision::Cancel },
         ChatCommand::Answer { request_id: "q".into(), answers: vec![vec!["A".into(), "B".into()], vec!["free".into()]] },
-        ChatCommand::Configure { model: None, effort: None, approval_mode: Some(ApprovalMode::Plan), fast: None },
-        ChatCommand::Configure { model: Some("m".into()), effort: Some("high".into()), approval_mode: None, fast: None },
-        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: None },
-        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: Some(true) },
-        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: Some(false) },
-        ChatCommand::Configure { model: Some("gpt-5.5".into()), effort: Some("xhigh".into()), approval_mode: Some(ApprovalMode::Full), fast: Some(true) },
+        ChatCommand::Configure { model: None, effort: None, approval_mode: Some(ApprovalMode::Plan), fast: None, contributor_opt_out: None },
+        ChatCommand::Configure { model: Some("m".into()), effort: Some("high".into()), approval_mode: None, fast: None, contributor_opt_out: None },
+        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: None, contributor_opt_out: None },
+        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: Some(true), contributor_opt_out: None },
+        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: Some(false), contributor_opt_out: None },
+        ChatCommand::Configure { model: Some("gpt-5.5".into()), effort: Some("xhigh".into()), approval_mode: Some(ApprovalMode::Full), fast: Some(true), contributor_opt_out: None },
+        // A Muse chat's contributor mode: off, and back to the Muse settings.
+        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: None, contributor_opt_out: Some(true) },
+        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: None, contributor_opt_out: Some(false) },
         ChatCommand::Compact,
         ChatCommand::Stop,
         ChatCommand::Switch { provider: Provider::Claude, model: None, effort: None, fast: None },

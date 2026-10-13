@@ -475,7 +475,14 @@ fn command_json(command: &Value) -> std::result::Result<Value, Fault> {
         "interrupt" | "compact" | "stop" => &["command"],
         "approve" => &["command", "request_id", "decision"],
         "answer" => &["command", "request_id", "answers"],
-        "configure" => &["command", "model", "effort", "approval_mode", "fast"],
+        "configure" => &[
+            "command",
+            "model",
+            "effort",
+            "approval_mode",
+            "fast",
+            "contributor_opt_out",
+        ],
         "switch" => &["command", "provider", "model", "effort", "fast"],
         _ => {
             return Err(invalid(
@@ -525,12 +532,14 @@ fn command_json(command: &Value) -> std::result::Result<Value, Fault> {
             let effort = label("effort", text(object, "effort")?, EFFORT_MAX_CHARS)?;
             let approval_mode = text(object, "approval_mode")?.map(mode).transpose()?;
             let fast = flag(object, "fast")?;
+            let contributor_opt_out = flag(object, "contributor_opt_out")?;
             let mut changes = Map::from_iter([("command".to_owned(), json!("configure"))]);
             for (name, value) in [
                 ("model", model.map(Value::from)),
                 ("effort", effort.map(Value::from)),
                 ("approval_mode", approval_mode.map(Value::from)),
                 ("fast", fast.map(Value::from)),
+                ("contributor_opt_out", contributor_opt_out.map(Value::from)),
             ] {
                 if let Some(value) = value {
                     changes.insert(name.to_owned(), value);
@@ -538,7 +547,7 @@ fn command_json(command: &Value) -> std::result::Result<Value, Fault> {
             }
             if changes.len() == 1 {
                 return Err(invalid(
-                    "configure needs a model, an effort, an approval_mode or fast",
+                    "configure needs a model, an effort, an approval_mode, fast or contributor_opt_out",
                 ));
             }
             Value::Object(changes)
@@ -1687,5 +1696,33 @@ mod tests {
             "{}",
             fault.message
         );
+    }
+
+    #[test]
+    fn configure_takes_a_contributor_opt_out_either_way_and_only_as_a_boolean() {
+        for opt_out in [true, false] {
+            assert_eq!(
+                command_json(&json!({"command": "configure", "contributor_opt_out": opt_out}))
+                    .unwrap(),
+                json!({"command": "configure", "contributor_opt_out": opt_out})
+            );
+        }
+        for bad in [json!(null), json!(1), json!("off")] {
+            assert!(
+                command_json(&json!({"command": "configure", "contributor_opt_out": bad})).is_err(),
+                "{bad}"
+            );
+        }
+        for command in [
+            json!({"command": "send", "text": "hi", "contributor_opt_out": true}),
+            json!({"command": "switch", "provider": "muse", "contributor_opt_out": true}),
+        ] {
+            let fault = command_json(&command).unwrap_err();
+            assert!(
+                fault.message.contains("unknown field contributor_opt_out"),
+                "{}",
+                fault.message
+            );
+        }
     }
 }

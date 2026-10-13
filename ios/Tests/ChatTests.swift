@@ -38,7 +38,7 @@ final class ChatTests: XCTestCase {
     }
     func testEveryCommandWeSendEncodesToTheFormTheDesktopWrites() throws {
         let commands = try fixture()["commands"].array
-        XCTAssertEqual(commands.count, 16)
+        XCTAssertEqual(commands.count, 18)
         for original in commands {
             let command = try original.decode(ChatCommand.self)
             XCTAssertEqual(try wire(command), original, "\(original)")
@@ -88,6 +88,7 @@ final class ChatTests: XCTestCase {
         XCTAssertTrue(switched.carriedOver?.document.hasSuffix("/context.md") == true)
         let muse = try chats[3].decode(ChatInfo.self)
         XCTAssertEqual(muse.provider, .muse); XCTAssertEqual(muse.title, "Muse chat")
+        XCTAssertTrue(muse.contributorOptOut); XCTAssertFalse(full.contributorOptOut); XCTAssertFalse(minimal.contributorOptOut)
     }
     func testTheWordsOfTheEnumsAreTheDesktops() throws {
         let doc = try fixture()
@@ -184,6 +185,10 @@ final class ChatTests: XCTestCase {
         // A command written before Fast: no `fast`.
         XCTAssertEqual(try decode(ChatCommand.self, #"{"command":"configure","effort":"high"}"#), .configure(effort: "high"))
         XCTAssertEqual(try decode(ChatCommand.self, #"{"command":"configure","fast":false}"#), .configure(fast: false))
+        // And before contributor mode: no `contributor_opt_out`, which is written only when set.
+        XCTAssertEqual(try wire(ChatCommand.configure(fast: false)), try value(#"{"command":"configure","fast":false}"#))
+        XCTAssertEqual(try decode(ChatCommand.self, #"{"command":"configure","contributor_opt_out":false}"#), .configure(contributorOptOut: false))
+        XCTAssertEqual(try wire(ChatCommand.configure(contributorOptOut: true)), try value(#"{"command":"configure","contributor_opt_out":true}"#))
     }
     func testAModelOptionIsReadLeniently() throws {
         // No name: the id is shown. A name of blanks too.

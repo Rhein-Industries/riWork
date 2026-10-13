@@ -52,6 +52,7 @@
     },
     {
       "approval_mode": "supervised",
+      "contributor_opt_out": true,
       "created_at_unix": 1,
       "cwd": "/c",
       "fast": false,
@@ -121,6 +122,14 @@
       "effort": "xhigh",
       "fast": true,
       "model": "gpt-5.5"
+    },
+    {
+      "command": "configure",
+      "contributor_opt_out": true
+    },
+    {
+      "command": "configure",
+      "contributor_opt_out": false
     },
     {
       "command": "compact"

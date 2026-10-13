@@ -333,8 +333,8 @@ public struct ChatCommandRequest: Sendable, Equatable {
         if case .dismissNotice(let itemID) = command {
             guard (1...512).contains(itemID.utf8.count), !itemID.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw ChatValidationError.invalidID }
         }
-        if case .configure(let model, let effort, let mode, let fast) = command {
-            guard model != nil || effort != nil || mode != nil || fast != nil else { throw ChatValidationError.emptyConfigure }
+        if case .configure(let model, let effort, let mode, let fast, let contributorOptOut) = command {
+            guard model != nil || effort != nil || mode != nil || fast != nil || contributorOptOut != nil else { throw ChatValidationError.emptyConfigure }
             try Self.validate(model: model, effort: effort)
         }
         // A switch needs only its provider; a model or an effort it names is one the desktop would take.

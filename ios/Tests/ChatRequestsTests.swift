@@ -182,6 +182,12 @@ final class ChatRequestsTests: XCTestCase {
         XCTAssertEqual(try ChatCommandRequest(chatID: chat, command: .configure(fast: false)).params["command"], try value(#"{"command":"configure","fast":false}"#), "turning it off is a change")
         let all = try ChatCommandRequest(chatID: chat, command: .configure(model: "gpt-5.5", effort: "xhigh", approvalMode: .plan, fast: true))
         XCTAssertEqual(try ChatCommandRequest(params: all.params), all)
+        // A Muse chat's contributor mode, off and back to the Muse settings, is a change on its own.
+        for optOut in [true, false] {
+            let contributor = try ChatCommandRequest(chatID: chat, command: .configure(contributorOptOut: optOut))
+            XCTAssertEqual(contributor.params["command"], try value(#"{"command":"configure","contributor_opt_out":\#(optOut)}"#))
+            XCTAssertEqual(try ChatCommandRequest(params: contributor.params), contributor)
+        }
         // The desktop refuses a configure with nothing in it, and a blank or overlong model or effort.
         XCTAssertThrowsError(try ChatCommandRequest(chatID: chat, command: .configure())) { XCTAssertEqual($0 as? ChatValidationError, .emptyConfigure) }
         XCTAssertThrowsError(try ChatCommandRequest(chatID: chat, command: .configure(model: "  "))) { XCTAssertEqual($0 as? ChatValidationError, .blankSetting(field: "model")) }

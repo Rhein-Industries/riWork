@@ -782,8 +782,10 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
     case approve(requestID: String, decision: ChatDecision)
     /// One entry per question, in order: the chosen labels, or free text.
     case answer(requestID: String, answers: [[String]])
-    /// Each field is a change; one left out stays as it is. `fast` is `false` to turn it off, `nil` to leave it.
-    case configure(model: String? = nil, effort: String? = nil, approvalMode: ChatApprovalMode? = nil, fast: Bool? = nil)
+    /// Each field is a change; one left out stays as it is. `fast` is `false` to turn it off, `nil` to leave it. `contributorOptOut` is a Muse
+    /// chat's: `true` turns contributor mode off for the chat, `false` hands it back to the Muse settings. The desktop restarts the chat's Muse on
+    /// the same conversation for it, and refuses it while a turn works and for another provider; one that predates it refuses the field.
+    case configure(model: String? = nil, effort: String? = nil, approvalMode: ChatApprovalMode? = nil, fast: Bool? = nil, contributorOptOut: Bool? = nil)
     case compact
     /// Stops the provider process; the chat resumes with the next message.
     case stop
@@ -797,7 +799,7 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
 
     private enum Keys: String, CodingKey {
         case command, text, decision, answers, model, effort, fast, provider
-        case requestID = "request_id", approvalMode = "approval_mode", itemID = "item_id"
+        case requestID = "request_id", approvalMode = "approval_mode", itemID = "item_id", contributorOptOut = "contributor_opt_out"
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -809,7 +811,8 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
         case "answer": self = .answer(requestID: try c.decode(String.self, forKey: .requestID), answers: try c.decode([[String]].self, forKey: .answers))
         case "configure":
             self = .configure(model: try c.decodeIfPresent(String.self, forKey: .model), effort: try c.decodeIfPresent(String.self, forKey: .effort),
-                              approvalMode: try c.decodeIfPresent(ChatApprovalMode.self, forKey: .approvalMode), fast: try c.decodeIfPresent(Bool.self, forKey: .fast))
+                              approvalMode: try c.decodeIfPresent(ChatApprovalMode.self, forKey: .approvalMode), fast: try c.decodeIfPresent(Bool.self, forKey: .fast),
+                              contributorOptOut: try c.decodeIfPresent(Bool.self, forKey: .contributorOptOut))
         case "compact": self = .compact
         case "stop": self = .stop
         case "dismiss_notice": self = .dismissNotice(itemID: try c.decode(String.self, forKey: .itemID))
@@ -826,10 +829,10 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
         case .interrupt: try c.encode("interrupt", forKey: .command)
         case .approve(let requestID, let decision): try c.encode("approve", forKey: .command); try c.encode(requestID, forKey: .requestID); try c.encode(decision, forKey: .decision)
         case .answer(let requestID, let answers): try c.encode("answer", forKey: .command); try c.encode(requestID, forKey: .requestID); try c.encode(answers, forKey: .answers)
-        case .configure(let model, let effort, let approvalMode, let fast):
+        case .configure(let model, let effort, let approvalMode, let fast, let contributorOptOut):
             try c.encode("configure", forKey: .command)
             try c.encodeIfPresent(model, forKey: .model); try c.encodeIfPresent(effort, forKey: .effort); try c.encodeIfPresent(approvalMode, forKey: .approvalMode)
-            try c.encodeIfPresent(fast, forKey: .fast)
+            try c.encodeIfPresent(fast, forKey: .fast); try c.encodeIfPresent(contributorOptOut, forKey: .contributorOptOut)
         case .compact: try c.encode("compact", forKey: .command)
         case .stop: try c.encode("stop", forKey: .command)
         case .dismissNotice(let itemID): try c.encode("dismiss_notice", forKey: .command); try c.encode(itemID, forKey: .itemID)
