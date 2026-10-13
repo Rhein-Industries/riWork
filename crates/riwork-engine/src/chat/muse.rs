@@ -61,7 +61,7 @@
 
 use super::attachments::{self, Attachment, AttachmentKind, UNKNOWN_SUBMISSION};
 use super::child::{self, Frame, FrameReader, Proc};
-use super::driver::{Driver, DriverConfig, StartDriver};
+use super::driver::{Driver, DriverConfig, DriverReport, DriverReporter, StartDriver};
 use super::model::{
     Approval, ApprovalKind, ApprovalMode, ChatCommand, ChatEvent, ChatImage, ChatState, Decision,
     Delta, ImageSource, Item, ItemBody, ItemStatus, ModelOption, NoticeLevel, Presentation,
@@ -236,6 +236,20 @@ impl Driver for MuseDriver {
         self.muse.command(command)
     }
 
+    fn configure(&mut self, command: ChatCommand, reporter: DriverReporter) -> Result<(), String> {
+        let ChatCommand::Configure {
+            model,
+            effort,
+            approval_mode,
+            fast,
+        } = command
+        else {
+            return self.command(command);
+        };
+        self.muse
+            .configure(model, effort, approval_mode, fast, reporter)
+    }
+
     fn provider_thread_id(&self) -> Option<String> {
         self.muse.with(|session| session.session_id.clone())
     }
@@ -362,6 +376,7 @@ impl Muse {
             .as_ref()
             .filter(|_| session_mcp)
             .map(|servers| json!({"mcpServers": servers}));
+        let observed: Value;
         let (session_id, name, fresh, active_turn, resumed, unsent) = match &config.resume {
             Some(resume) => {
                 let mut params =
@@ -371,6 +386,7 @@ impl Muse {
                 }
                 match self.call("session/resume", params, SESSION_TIMEOUT) {
                     Ok(result) => {
+                        observed = result["session"].clone();
                         let active = result["session"]["activeTurnId"]
                             .as_str()
                             .filter(|id| !id.is_empty())
@@ -389,20 +405,28 @@ impl Muse {
                         )
                     }
                     Err(error) if error.kind.as_deref() == Some("sessionNotFound") => {
-                        let (id, name) = self.start_session(config, session_config.as_ref())?;
+                        if config.resume_has_history {
+                            return Err(format!(
+                                "Muse could not find historical session {resume}. Its identity and transcript were kept; restore Muse's session store and retry."
+                            ));
+                        }
+                        let (id, name, metadata) =
+                            self.start_session(config, session_config.as_ref())?;
+                        observed = metadata;
                         (id, name, true, None, false, true)
                     }
                     Err(error) => return Err(error.message),
                 }
             }
             None => {
-                let (id, name) = self.start_session(config, session_config.as_ref())?;
+                let (id, name, metadata) = self.start_session(config, session_config.as_ref())?;
+                observed = metadata;
                 (id, name, false, None, false, true)
             }
         };
-        let effort = config.effort.clone();
         let adopted = self.with(|session| {
             session.session_id = Some(session_id.clone());
+            session.observe_metadata(&observed);
             session.ready = true;
             if fresh {
                 session.notice(
@@ -457,58 +481,46 @@ impl Muse {
             frames
         });
         self.send_all(adopted);
-        // `session/start` takes model and approval mode as parameters;
-        // `session/resume` does not, so re-apply the saved ones explicitly.
+        // A resume observes the provider's standing values first. Saved selections
+        // become effective only once the corresponding reconfigure is accepted.
         if resumed {
-            let mut frames = Vec::new();
-            if let Some(model) = &config.model {
-                let model = model.clone();
-                frames.push(self.with(|session| {
-                    session.request(
-                        "session/setModel",
-                        json!({"commandId": command_id(), "sessionId": session_id, "model": {"modelId": model}}),
-                        Box::new(|muse, outcome| {
-                            if let Err(error) = outcome {
-                                muse.with(|session| {
-                                    session.notice(
-                                        NoticeLevel::Warning,
-                                        notice_kind::SETTING_REFUSED,
-                                        format!("Muse did not take the saved model: {}", error.message),
-                                    );
-                                });
-                            }
-                        }),
-                    )
-                }));
-            }
-            frames.push(self.with(|session| {
-                session.request(
-                    "session/setApprovalMode",
-                    json!({"commandId": command_id(), "sessionId": session_id, "mode": policy(config.approval_mode)}),
-                    Box::new(|_, _| {}),
-                )
-            }));
-            self.send_all(frames);
+            self.configure(
+                config.model.clone(),
+                None,
+                None,
+                None,
+                config.reporter.clone(),
+            )?;
+            self.configure(
+                None,
+                None,
+                Some(config.approval_mode),
+                None,
+                config.reporter.clone(),
+            )?;
         }
-        if let Some(effort) = effort.filter(|effort| EFFORTS.contains(&effort.as_str())) {
-            let frame = self.with(|session| {
-                session.request(
-                    "session/setReasoningEffort",
-                    json!({"commandId": command_id(), "sessionId": session_id, "reasoningEffort": effort}),
-                    Box::new(|muse, outcome| {
-                        if let Err(error) = outcome {
-                            muse.with(|session| {
-                                session.notice(
-                                    NoticeLevel::Warning,
-                                    notice_kind::EFFORT_REFUSED,
-                                    format!("Muse did not take the saved reasoning effort: {}", error.message),
-                                );
-                            });
-                        }
-                    }),
-                )
+        if config
+            .effort
+            .as_ref()
+            .is_some_and(|effort| EFFORTS.contains(&effort.as_str()))
+        {
+            self.configure(
+                None,
+                config.effort.clone(),
+                None,
+                None,
+                config.reporter.clone(),
+            )?;
+        }
+        if let Some(effort) = &config.effort
+            && !EFFORTS.contains(&effort.as_str())
+        {
+            self.with(|session| session.notice(NoticeLevel::Warning, notice_kind::EFFORT_REFUSED,
+                format!("The saved reasoning effort {effort} is not one Muse takes; its default is used.")));
+            config.reporter.report(DriverReport {
+                effort: Some(None),
+                ..Default::default()
             });
-            self.send_all(vec![frame]);
         }
         self.list_models();
         Ok(())
@@ -518,7 +530,7 @@ impl Muse {
         &self,
         config: &DriverConfig,
         session_config: Option<&Value>,
-    ) -> Result<(String, Option<String>), String> {
+    ) -> Result<(String, Option<String>, Value), String> {
         let mut params = json!({
             "commandId": command_id(),
             "workspaceRoot": config.cwd.to_string_lossy(),
@@ -541,6 +553,7 @@ impl Muse {
         Ok((
             session_id_of(&result).ok_or("muse started without a session id")?,
             result["session"]["name"].as_str().map(str::to_owned),
+            result["session"].clone(),
         ))
     }
 
@@ -807,6 +820,7 @@ impl Submission {
     }
 }
 
+#[derive(Clone)]
 struct Settings {
     model: Option<String>,
     effort: Option<String>,
@@ -819,6 +833,9 @@ struct Session {
     waiting: HashMap<i64, Reply>,
     session_id: Option<String>,
     settings: Settings,
+    reporter: DriverReporter,
+    setting_revisions: [u64; 3],
+    plan_profile: bool,
     models: Vec<ModelOption>,
     /// Raw `model/list` rows, replayed by `session/setModel`.
     catalog: Vec<Value>,
@@ -865,9 +882,12 @@ impl Session {
             session_id: config.resume.clone(),
             settings: Settings {
                 model: config.model.clone(),
-                effort: config.effort.clone(),
+                effort: None,
                 mode: config.approval_mode,
             },
+            reporter: config.reporter.clone(),
+            setting_revisions: [0; 3],
+            plan_profile: config.approval_mode == ApprovalMode::Plan,
             models: Vec::new(),
             catalog: Vec::new(),
             state: ChatState::Starting,
@@ -899,6 +919,50 @@ impl Session {
             context_in_flight: None,
             shown: VecDeque::new(),
         }
+    }
+
+    fn mapped_mode(&self, wire: &Value) -> Option<ApprovalMode> {
+        if self.plan_profile {
+            return Some(ApprovalMode::Plan);
+        }
+        match wire.as_str()? {
+            "promptUnmatched" => Some(ApprovalMode::Supervised),
+            "onRequest" => Some(ApprovalMode::AutoEdit),
+            "allowAll" => Some(ApprovalMode::Full),
+            _ => None,
+        }
+    }
+
+    fn observe_metadata(&mut self, metadata: &Value) {
+        let model = metadata
+            .get("modelId")
+            .map(|value| value.as_str().map(str::to_owned));
+        if let Some(model) = &model {
+            self.settings.model = model.clone();
+        }
+        let mode = self.mapped_mode(&metadata["approvalMode"]["mode"]);
+        if let Some(mode) = mode {
+            self.settings.mode = mode;
+        }
+        self.reporter.report(DriverReport {
+            provider_thread_id: self.session_id.clone(),
+            model,
+            approval_mode: mode,
+            fast: Some(false),
+            ..Default::default()
+        });
+    }
+
+    fn setting_refusal(&mut self, name: &str, outcome: &Result<Value, RpcError>) {
+        let reason = match outcome {
+            Err(error) => error.message.clone(),
+            Ok(value) => format!("unconfirmed response {}", value["status"]),
+        };
+        self.notice(
+            NoticeLevel::Warning,
+            notice_kind::SETTING_REFUSED,
+            format!("Muse did not change the {name}: {reason}"),
+        );
     }
 
     fn remember(&mut self, command_id: &str, shown: Shown) {
@@ -1416,7 +1480,13 @@ impl Muse {
                 effort,
                 approval_mode,
                 fast,
-            } => self.configure(model, effort, approval_mode, fast),
+            } => self.configure(
+                model,
+                effort,
+                approval_mode,
+                fast,
+                self.with(|session| session.reporter.clone()),
+            ),
             ChatCommand::Compact => {
                 let frames = self.with(|session| session.compact_frame());
                 self.send_all(frames);
@@ -1773,111 +1843,128 @@ impl Muse {
         Ok(())
     }
 
-    /// Refused whole, before anything changes, when it asks for what Muse
-    /// cannot do: a fast tier (MSP has none), or moving a conversation into
-    /// or out of Plan (its `:read-only` profile is fixed at the start).
+    /// Keep standing values until Muse accepts the change. Each callback owns
+    /// its field revision and request-specific host reporter; a later selection
+    /// or provider observation makes older replies harmless.
     fn configure(
         &self,
         model: Option<String>,
         effort: Option<String>,
         approval_mode: Option<ApprovalMode>,
         fast: Option<bool>,
+        reporter: DriverReporter,
     ) -> Result<(), String> {
         if fast == Some(true) {
             return Err("Muse has no fast mode".to_owned());
         }
-        let mut frames = Vec::new();
-        self.with(|session| {
+        let frames = self.with(|session| -> Result<Vec<Value>, String> {
+            if session.finished { return Err("the Muse process is not running".to_owned()); }
             if let Some(mode) = approval_mode
-                && (mode == ApprovalMode::Plan) != (session.settings.mode == ApprovalMode::Plan)
+                && (mode == ApprovalMode::Plan) != session.plan_profile
             {
                 return Err(plan_switch_refusal(mode));
             }
-            let Some(session_id) = session.session_id.clone() else {
-                return Ok(());
-            };
+            if let Some(effort) = &effort {
+                let selected = model.clone().or_else(|| session.effective_model());
+                let supported = EFFORTS.contains(&effort.as_str()) && selected.as_ref().is_none_or(|id| {
+                    session.models.iter().find(|row| &row.id == id).is_none_or(|row| {
+                        row.efforts.is_empty() || row.efforts.contains(effort)
+                    })
+                });
+                if !supported { return Err(format!("The reasoning effort {effort} is not one Muse takes here.")); }
+            }
+            let session_id = session.session_id.clone().ok_or("muse has no session yet")?;
+            let mut frames = Vec::new();
             if let Some(model) = model {
-                let before = session.settings.model.replace(model.clone());
+                session.setting_revisions[0] += 1;
+                let revision = session.setting_revisions[0];
                 let mut selection = json!({"modelId": model});
-                if let Some(row) = session
-                    .catalog
-                    .iter()
-                    .find(|row| row["modelId"].as_str() == Some(model.as_str()))
-                {
+                if let Some(row) = session.catalog.iter().find(|row| row["modelId"].as_str() == Some(model.as_str())) {
                     for field in ["providerId", "profileId", "displayLabel"] {
-                        if !row[field].is_null() {
-                            selection[field] = row[field].clone();
-                        }
+                        if !row[field].is_null() { selection[field] = row[field].clone(); }
                     }
                 }
-                frames.push(session.request(
-                    "session/setModel",
+                let report = reporter.clone();
+                frames.push(session.request("session/setModel",
                     json!({"commandId": command_id(), "sessionId": session_id, "model": selection}),
-                    Box::new(move |muse, outcome| {
-                        if let Err(error) = outcome {
-                            muse.with(|session| {
-                                session.settings.model = before;
-                                session.notice(
-                                    NoticeLevel::Error,
-                                    notice_kind::SETTING_REFUSED,
-                                    format!("Muse did not change the model: {}", error.message),
-                                );
-                            });
-                        }
-                    }),
+                    Box::new(move |muse, outcome| muse.with(|session| {
+                        if session.finished || session.setting_revisions[0] != revision { return; }
+                        if admitted(&outcome) { session.settings.model = Some(model); }
+                        else { session.setting_refusal("model", &outcome); }
+                        report.report(DriverReport { model: Some(session.settings.model.clone()), ..Default::default() });
+                    })),
                 ));
             }
             if let Some(effort) = effort {
-                if session.takes_effort(&effort) {
-                    let before = session.settings.effort.replace(effort.clone());
-                    frames.push(session.request(
-                        "session/setReasoningEffort",
-                        json!({"commandId": command_id(), "sessionId": session_id, "reasoningEffort": effort}),
-                        Box::new(move |muse, outcome| {
-                            if let Err(error) = outcome {
-                                muse.with(|session| {
-                                    session.settings.effort = before;
-                                    session.notice(
-                                        NoticeLevel::Error,
-                                        notice_kind::SETTING_REFUSED,
-                                        format!("Muse did not change the reasoning effort: {}", error.message),
-                                    );
-                                });
-                            }
-                        }),
-                    ));
-                } else {
-                    session.notice(
-                        NoticeLevel::Warning,
-                        notice_kind::EFFORT_REFUSED,
-                        format!("The reasoning effort {effort} is not one Muse takes here."),
-                    );
-                }
-            }
-            if let Some(mode) = approval_mode {
-                let before = std::mem::replace(&mut session.settings.mode, mode);
-                frames.push(session.request(
-                    "session/setApprovalMode",
-                    json!({"commandId": command_id(), "sessionId": session_id, "mode": policy(mode)}),
-                    Box::new(move |muse, outcome| {
-                        if let Err(error) = outcome {
-                            muse.with(|session| {
-                                session.settings.mode = before;
-                                session.notice(
-                                    NoticeLevel::Error,
-                                    notice_kind::SETTING_REFUSED,
-                                    format!("Muse did not change the approval mode: {}", error.message),
-                                );
-                            });
-                        }
-                    }),
+                session.setting_revisions[1] += 1;
+                let revision = session.setting_revisions[1];
+                let report = reporter.clone();
+                frames.push(session.request("session/setReasoningEffort",
+                    json!({"commandId": command_id(), "sessionId": session_id, "reasoningEffort": effort}),
+                    Box::new(move |muse, outcome| muse.with(|session| {
+                        if session.finished || session.setting_revisions[1] != revision { return; }
+                        if admitted(&outcome) { session.settings.effort = Some(effort); }
+                        else { session.setting_refusal("reasoning effort", &outcome); }
+                        report.report(DriverReport { effort: Some(session.settings.effort.clone()), ..Default::default() });
+                    })),
                 ));
             }
-            Ok(())
+            if let Some(mode) = approval_mode {
+                session.setting_revisions[2] += 1;
+                let revision = session.setting_revisions[2];
+                let report = reporter.clone();
+                frames.push(session.request("session/setApprovalMode",
+                    json!({"commandId": command_id(), "sessionId": session_id, "mode": policy(mode)}),
+                    Box::new(move |muse, outcome| muse.with(|session| {
+                        if session.finished || session.setting_revisions[2] != revision { return; }
+                        if admitted(&outcome) {
+                            let effective = outcome.as_ref().ok().and_then(|value| session.mapped_mode(&value["effectiveMode"]["mode"]));
+                            session.settings.mode = effective.unwrap_or(mode);
+                        } else { session.setting_refusal("approval mode", &outcome); }
+                        report.report(DriverReport { approval_mode: Some(session.settings.mode), ..Default::default() });
+                    })),
+                ));
+            }
+            Ok(frames)
         })?;
-        self.send_all(frames);
+        if fast == Some(false) {
+            reporter.report(DriverReport {
+                fast: Some(false),
+                ..Default::default()
+            });
+        }
+        // Settle writes that never left through the same request callback. A
+        // write failure cannot leave an optimistic setting or pending callback.
+        let mut frames = frames.into_iter();
+        while let Some(frame) = frames.next() {
+            if let Err(error) = self.proc.send(&frame) {
+                let message = error.to_string();
+                for failed in std::iter::once(frame).chain(frames) {
+                    let reply = self.with(|session| {
+                        failed["id"]
+                            .as_i64()
+                            .and_then(|id| session.waiting.remove(&id))
+                    });
+                    if let Some(reply) = reply {
+                        reply(
+                            self,
+                            Err(RpcError {
+                                message: message.clone(),
+                                kind: None,
+                                data: Value::Null,
+                            }),
+                        );
+                    }
+                }
+                break;
+            }
+        }
         Ok(())
     }
+}
+
+fn admitted(outcome: &Result<Value, RpcError>) -> bool {
+    matches!(outcome, Ok(value) if value["status"].as_str() == Some("accepted"))
 }
 
 /// Why a Muse conversation does not move into or out of Plan.
@@ -2285,6 +2372,39 @@ impl Session {
                         notice_kind::PROVIDER_WARNING,
                         "Muse's context window is full; compact the chat to continue.".to_owned(),
                     );
+                }
+            }
+            "session/modelChanged" => {
+                if let Some(model) = params["modelId"].as_str().filter(|id| !id.is_empty()) {
+                    self.setting_revisions[0] += 1;
+                    self.settings.model = Some(model.to_owned());
+                    self.reporter.report(DriverReport {
+                        model: Some(self.settings.model.clone()),
+                        ..Default::default()
+                    });
+                }
+            }
+            "session/reasoningEffortChanged" => {
+                if let Some(effort) = params["reasoningEffort"]
+                    .as_str()
+                    .filter(|tier| EFFORTS.contains(tier))
+                {
+                    self.setting_revisions[1] += 1;
+                    self.settings.effort = Some(effort.to_owned());
+                    self.reporter.report(DriverReport {
+                        effort: Some(self.settings.effort.clone()),
+                        ..Default::default()
+                    });
+                }
+            }
+            "session/approvalModeChanged" => {
+                if let Some(mode) = self.mapped_mode(&params["mode"]) {
+                    self.setting_revisions[2] += 1;
+                    self.settings.mode = mode;
+                    self.reporter.report(DriverReport {
+                        approval_mode: Some(mode),
+                        ..Default::default()
+                    });
                 }
             }
             "session/nameChanged" => {
@@ -2947,3 +3067,7 @@ fn truncate_bytes(text: &mut String, limit: usize) {
 #[cfg(test)]
 #[path = "muse_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "muse_contract_tests.rs"]
+mod contract_tests;
