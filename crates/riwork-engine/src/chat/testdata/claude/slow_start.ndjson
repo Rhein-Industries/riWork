@@ -1,0 +1,4 @@
+# Modelled on the T3 Code recordings (MIT) tool_call_read_only_on_request, tool_call_denied_write and
+# claude_compact_after_peer_turn, the live claude 2.1.289 captures, and the SDK types; shortened, text invented.
+# a process that takes its time to answer initialize, so a stop can come during a restart
+{"type":"expect","frame":{"type":"control_request","request":{"subtype":"initialize"}},"reply":[{"type":"control_response","response":{"subtype":"success","request_id":"$request_id","response":{"commands":[],"models":[],"current_permission_mode":"default","capabilities":[]}}}],"delay_ms":3000}

@@ -91,6 +91,14 @@
 //! | `Compact` | `thread/compact/start` |
 //! | `Stop` | shutdown |
 //!
+//! What the user sent is never dropped without a word: the words of a `turn/start`
+//! or `turn/steer` are kept until Codex answers it, and those of messages waiting
+//! for a turn id until they are written. A refused start, a write that fails, a
+//! stop or a crash ends them with an `undelivered` notice that keeps the words, as
+//! not delivered (never written, or refused) or with delivery not confirmed
+//! (written and not answered). Nothing that may have reached Codex is sent again on
+//! its own; only a steer Codex refused goes on to start the next turn.
+//!
 //! `ApprovalMode` becomes `approvalPolicy` and `sandboxPolicy` on every
 //! `turn/start`: `Supervised` is `untrusted` with `readOnly`, `AutoEdit` is
 //! `on-request` with `workspaceWrite`, `Full` is `never` with
@@ -360,6 +368,11 @@ struct Session {
     completion_overflow: bool,
     /// Messages sent before the turn id was known, steered in once it is.
     queued: Vec<String>,
+    /// The words of each `turn/start` and `turn/steer` written and not yet
+    /// answered, by request id: until Codex takes them, their delivery is not known.
+    in_flight: HashMap<i64, Vec<String>>,
+    /// The `turn/start` in flight, which a `turn/started` confirms before its receipt.
+    start_request: Option<i64>,
     interrupt_wanted: bool,
     /// An interrupt was sent for the open turn: messages wait for the next one.
     interrupting: bool,
@@ -412,6 +425,8 @@ impl Session {
             completed_before_receipt: HashSet::new(),
             completion_overflow: false,
             queued: Vec::new(),
+            in_flight: HashMap::new(),
+            start_request: None,
             interrupt_wanted: false,
             interrupting: false,
             last_finished_turn: None,
@@ -459,6 +474,68 @@ impl Session {
             ChatState::Waiting
         };
         self.set_state(state);
+    }
+
+    /// The words of the request `id`, which has been answered or never will be.
+    fn taken(&mut self, id: i64) -> Option<Vec<String>> {
+        if self.start_request == Some(id) {
+            self.start_request = None;
+        }
+        self.in_flight.remove(&id)
+    }
+
+    /// Messages that never reached Codex (`why`), kept word for word.
+    fn not_delivered(&mut self, texts: Vec<String>, why: &str) {
+        if texts.is_empty() {
+            return;
+        }
+        let lead = if texts.len() == 1 {
+            format!("This message was not delivered: {why}. Send it again when Codex can take it.")
+        } else {
+            format!(
+                "These messages were not delivered: {why}. Send them again when Codex can take them."
+            )
+        };
+        self.notice(
+            NoticeLevel::Warning,
+            notice_kind::UNDELIVERED,
+            kept_words(&lead, &texts),
+        );
+    }
+
+    /// Messages written to Codex that it may not have taken (`why`), kept word for word.
+    fn not_confirmed(&mut self, texts: Vec<String>, why: &str) {
+        if texts.is_empty() {
+            return;
+        }
+        let (what, it) = if texts.len() == 1 {
+            ("this message", "it")
+        } else {
+            ("these messages", "them")
+        };
+        let lead = format!(
+            "Delivery not confirmed: {why}, so Codex may not have received {what}. \
+             Send {it} again if Codex did not answer."
+        );
+        self.notice(
+            NoticeLevel::Warning,
+            notice_kind::UNDELIVERED,
+            kept_words(&lead, &texts),
+        );
+    }
+
+    /// Nothing more will be sent or answered (`why`): what was written and not
+    /// answered is in doubt, what was waiting to be written never left.
+    fn keep_unsent(&mut self, why: &str) {
+        let mut written: Vec<(i64, Vec<String>)> = self.in_flight.drain().collect();
+        written.sort_by_key(|(id, _)| *id);
+        self.start_request = None;
+        self.not_confirmed(
+            written.into_iter().flat_map(|(_, texts)| texts).collect(),
+            why,
+        );
+        let queued = std::mem::take(&mut self.queued);
+        self.not_delivered(queued, why);
     }
 
     fn notice(&mut self, level: NoticeLevel, kind: &str, text: String) {
@@ -551,6 +628,12 @@ impl Session {
         // Both the `turn/start` result and `turn/started` come here, and either
         // can arrive after the turn is over.
         if self.turn.is_none() && self.last_finished_turn.as_deref() != Some(turn_id) {
+            if self.starting
+                && let Some(start) = self.start_request.take()
+            {
+                // The turn the start asked for is running: Codex has its words.
+                self.in_flight.remove(&start);
+            }
             self.starting = false;
             self.turn = Some(turn_id.to_owned());
             self.error_shown = false;
@@ -582,10 +665,13 @@ impl Session {
             "input": text_input(&text),
         });
         let turn = turn.to_owned();
+        let id = self.next_request + 1;
+        self.in_flight.insert(id, vec![text.clone()]);
         self.request(
             "turn/steer",
             params,
             Box::new(move |codex, outcome| {
+                codex.with(|session| session.taken(id));
                 if outcome.is_ok() {
                     return;
                 }
@@ -773,26 +859,31 @@ impl Session {
         // Messages that came too late to steer start the next turn.
         let queued = std::mem::take(&mut self.queued);
         if let (false, Some(thread)) = (queued.is_empty(), self.thread_id.clone()) {
-            return vec![self.start_frame(&thread, queued.join("\n\n"))];
+            return vec![self.start_frame(&thread, queued)];
         }
         self.refresh_state();
         Vec::new()
     }
 
-    /// A `turn/start` for `text`, marking the chat busy.
-    fn start_frame(&mut self, thread: &str, text: String) -> Value {
+    /// A `turn/start` for the messages `texts` (one input, joined), marking the
+    /// chat busy.
+    fn start_frame(&mut self, thread: &str, texts: Vec<String>) -> Value {
         self.starting = true;
         self.start_serial += 1;
         self.completed_before_receipt.clear();
         self.completion_overflow = false;
         let serial = self.start_serial;
         self.refresh_state();
-        let params = self.turn_params(thread, &text);
+        let params = self.turn_params(thread, &texts.join("\n\n"));
+        let id = self.next_request + 1;
+        self.in_flight.insert(id, texts);
+        self.start_request = Some(id);
         self.request(
             "turn/start",
             params,
             Box::new(move |codex, outcome| match outcome {
                 Ok(result) => {
+                    codex.with(|session| session.taken(id));
                     if let Some(turn_id) = result["turn"]["id"].as_str() {
                         let frames = codex.with(|session| {
                             if session.start_serial == serial {
@@ -805,17 +896,22 @@ impl Session {
                     }
                 }
                 Err(message) => codex.with(|session| {
+                    // Refused: Codex took none of it. The words are kept, never resent.
+                    let refused = session.taken(id).unwrap_or_default();
                     if session.start_serial != serial {
+                        session.not_delivered(refused, "Codex did not start its turn");
                         return;
                     }
                     session.starting = false;
-                    session.queued.clear();
                     session.interrupt_wanted = false;
                     session.notice(
                         NoticeLevel::Error,
                         notice_kind::SETTING_REFUSED,
                         format!("Codex did not start the turn: {message}"),
                     );
+                    let mut texts = refused;
+                    texts.extend(std::mem::take(&mut session.queued));
+                    session.not_delivered(texts, "Codex did not start the turn");
                     session.refresh_state();
                 }),
             }),
@@ -824,6 +920,7 @@ impl Session {
 
     /// The chat has stopped on purpose.
     fn finish_stopped(&mut self) {
+        self.keep_unsent("the chat was stopped");
         self.finished = true;
         self.waiting.clear();
         self.requests.clear();
@@ -840,6 +937,7 @@ impl Session {
 
     /// The process ended by itself.
     fn finish_failed(&mut self, message: String) {
+        self.keep_unsent("codex stopped unexpectedly");
         self.finished = true;
         self.waiting.clear();
         self.requests.clear();
@@ -864,9 +962,28 @@ impl Codex {
     /// the pipe can still hold the reader up while Codex is not reading; stopping
     /// the chat ends that.)
     fn send_all(&self, frames: Vec<Value>) {
-        for frame in frames {
+        let mut frames = frames.into_iter();
+        while let Some(frame) = frames.next() {
             if let Err(error) = self.proc.send(&frame) {
+                let unsent: Vec<Value> = frames.collect();
                 self.with(|session| {
+                    // The words this frame and those after it carried: none of the
+                    // later ones left, and this one left only if part of it did.
+                    let words = |session: &mut Session, frame: &Value| {
+                        frame["id"]
+                            .as_i64()
+                            .and_then(|id| session.taken(id))
+                            .unwrap_or_default()
+                    };
+                    let mut lost = words(session, &frame);
+                    if error.starts_with(super::attachments::UNKNOWN_SUBMISSION) {
+                        let partial = std::mem::take(&mut lost);
+                        session.not_confirmed(partial, "writing it to codex failed partway");
+                    }
+                    for frame in &unsent {
+                        lost.extend(words(session, frame));
+                    }
+                    session.not_delivered(lost, "it could not be written to codex");
                     if !session.stopping && !session.finished {
                         // A `turn/start` that never went out leaves nothing running.
                         if session.turn.is_none() {
@@ -1222,13 +1339,17 @@ impl Codex {
             } else if let Some(turn) = session.turn.clone() {
                 Some(session.steer_frame(&thread, &turn, text))
             } else {
-                Some(session.start_frame(&thread, text))
+                Some(session.start_frame(&thread, vec![text]))
             }
         });
         let Some(frame) = frame else { return Ok(()) };
         let sent = self.proc.send(&frame);
         if sent.is_err() {
             self.with(|session| {
+                // The caller has the error and the words: nothing is kept twice.
+                if let Some(id) = frame["id"].as_i64() {
+                    session.taken(id);
+                }
                 session.starting = false;
                 session.refresh_state();
             });
@@ -2177,6 +2298,20 @@ fn model_option(model: &Value) -> Option<ModelOption> {
         supports_fast,
         is_default: model["isDefault"].as_bool() == Some(true),
     })
+}
+
+/// A notice's text that keeps messages word for word after `lead`, so they can be
+/// sent again: one follows the lead, several are numbered.
+fn kept_words(lead: &str, texts: &[String]) -> String {
+    let mut kept = lead.to_owned();
+    for (index, text) in texts.iter().enumerate() {
+        if texts.len() > 1 {
+            kept.push_str(&format!("\n\nMessage {} of {}:", index + 1, texts.len()));
+        }
+        kept.push_str("\n\n");
+        kept.push_str(text);
+    }
+    kept
 }
 
 fn text_input(text: &str) -> Value {

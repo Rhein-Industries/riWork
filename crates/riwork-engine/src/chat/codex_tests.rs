@@ -2139,3 +2139,164 @@ fn live_id_and_credentials_email_resolve_the_same_as_credentials_id_and_live_ema
     assert_eq!(account.account_id, reverse.account_id);
     assert_eq!(account.email, reverse.email);
 }
+
+// What the user sent is never lost without a word.
+
+/// The completed undelivered notice that carries `text`, if any.
+fn undelivered_with(events: &[ChatEvent], text: &str) -> Option<Item> {
+    completed_notices(events).into_iter().find(|item| {
+        matches!(&item.body, ItemBody::Notice { kind: Some(kind), text: said, .. }
+            if kind == notice_kind::UNDELIVERED && said.contains(text))
+    })
+}
+
+fn notice_says(item: &Item, words: &str) -> bool {
+    matches!(&item.body, ItemBody::Notice { text, .. } if text.contains(words))
+}
+
+/// Events until `done`, then whatever follows within a moment.
+fn settle(events: &Receiver<ChatEvent>, done: impl Fn(&ChatEvent) -> bool) -> Vec<ChatEvent> {
+    let mut seen = until(events, done);
+    while let Ok(event) = events.recv_timeout(Duration::from_millis(300)) {
+        seen.push(event);
+    }
+    seen
+}
+
+#[test]
+fn a_refused_start_keeps_its_text_and_the_messages_queued_behind_it() {
+    let script = format!(
+        "{}\n{}",
+        fixture("codex/idle.ndjson"),
+        json!({"type":"expect","frame":{"method":"turn/start"},"delay_ms":300,
+            "reply":[{"id":"$id","error":{"code":-32602,"message":"refused"}}]})
+    );
+    let fake = Fake::new(&[&script]);
+    let (sender, events) = mpsc::channel();
+    let mut driver = start(fake.config(Provider::Codex), sender).unwrap();
+    until(&events, is_state(ChatState::Idle));
+    let first = "first 🦀\n  exactly as typed";
+    let second = "second, sent while the first started";
+    driver
+        .command(ChatCommand::Send { text: first.into() })
+        .unwrap();
+    driver
+        .command(ChatCommand::Send {
+            text: second.into(),
+        })
+        .unwrap();
+    let seen = settle(&events, is_state(ChatState::Idle));
+    assert_notice(
+        &completed_notices(&seen)[0],
+        notice_kind::SETTING_REFUSED,
+        false,
+    );
+    for text in [first, second] {
+        let notice = undelivered_with(&seen, text).unwrap_or_else(|| panic!("{text}: {seen:#?}"));
+        assert!(notice_says(&notice, "not delivered"), "{notice:?}");
+    }
+    // Neither is sent again on its own.
+    driver.shutdown();
+    assert_eq!(fake.received_method("turn/start").len(), 1);
+    assert!(fake.received_method("turn/steer").is_empty());
+}
+
+#[test]
+fn stopping_keeps_the_text_of_a_start_in_flight_and_of_queued_messages() {
+    let script = format!(
+        "{}\n{}\n{}",
+        fixture("codex/idle.ndjson"),
+        json!({"type":"expect","frame":{"method":"turn/start"}}),
+        json!({"type":"hang"})
+    );
+    let fake = Fake::new(&[&script]);
+    let (sender, events) = mpsc::channel();
+    let mut driver = start(fake.config(Provider::Codex), sender).unwrap();
+    until(&events, is_state(ChatState::Idle));
+    let sent = "written, never acknowledged";
+    let queued = "never written";
+    driver
+        .command(ChatCommand::Send { text: sent.into() })
+        .unwrap();
+    driver
+        .command(ChatCommand::Send {
+            text: queued.into(),
+        })
+        .unwrap();
+    super::super::testing::eventually(|| fake.received_method("turn/start").len() == 1);
+    driver.shutdown();
+    let seen: Vec<ChatEvent> = events.try_iter().collect();
+    let unsure = undelivered_with(&seen, sent).unwrap_or_else(|| panic!("{seen:#?}"));
+    assert!(notice_says(&unsure, "not confirmed"), "{unsure:?}");
+    let lost = undelivered_with(&seen, queued).unwrap_or_else(|| panic!("{seen:#?}"));
+    assert!(notice_says(&lost, "not delivered"), "{lost:?}");
+}
+
+#[test]
+fn a_crash_keeps_the_text_of_a_start_in_flight_and_of_queued_messages() {
+    let script = format!(
+        "{}\n{}\n{}",
+        fixture("codex/idle.ndjson"),
+        json!({"type":"expect","frame":{"method":"turn/start"},"delay_ms":300}),
+        json!({"type":"exit","code":1,"stderr":"codex: lost its state"})
+    );
+    let fake = Fake::new(&[&script]);
+    let (sender, events) = mpsc::channel();
+    let mut driver = start(fake.config(Provider::Codex), sender).unwrap();
+    until(&events, is_state(ChatState::Idle));
+    let sent = "written before the crash";
+    let queued = "queued before the crash";
+    driver
+        .command(ChatCommand::Send { text: sent.into() })
+        .unwrap();
+    driver
+        .command(ChatCommand::Send {
+            text: queued.into(),
+        })
+        .unwrap();
+    let seen = settle(&events, |event| {
+        matches!(
+            event,
+            ChatEvent::State {
+                state: ChatState::Failed { .. }
+            }
+        )
+    });
+    assert!(undelivered_with(&seen, sent).is_some(), "{seen:#?}");
+    assert!(undelivered_with(&seen, queued).is_some(), "{seen:#?}");
+    driver.shutdown();
+}
+
+#[test]
+fn a_queued_message_whose_steer_cannot_be_written_keeps_its_text() {
+    let script = format!(
+        "{}\n{}\n{}",
+        fixture("codex/idle.ndjson"),
+        json!({"type":"expect","frame":{"method":"turn/start"},"delay_ms":400,
+            "reply":[{"id":"$id","result":{"turn":{"id":"turn-1","items":[],"status":"inProgress"}}}]}),
+        json!({"type":"hang"})
+    );
+    let fake = Fake::new(&[&script]);
+    let (sender, events) = mpsc::channel();
+    let mut driver = start(fake.config(Provider::Codex), sender).unwrap();
+    until(&events, is_state(ChatState::Idle));
+    driver
+        .command(ChatCommand::Send {
+            text: "start".into(),
+        })
+        .unwrap();
+    let queued = "steered in once the turn has an id";
+    driver
+        .command(ChatCommand::Send {
+            text: queued.into(),
+        })
+        .unwrap();
+    super::super::testing::eventually(|| fake.received_method("turn/start").len() == 1);
+    // Input is refused from here on, before the receipt names the turn.
+    driver.cancel_io().expect("codex cancels writes")();
+    let seen = settle(&events, is_turn_started);
+    let notice = undelivered_with(&seen, queued).unwrap_or_else(|| panic!("{seen:#?}"));
+    assert!(notice_says(&notice, "not delivered"), "{notice:?}");
+    driver.shutdown();
+    assert!(fake.received_method("turn/steer").is_empty());
+}
