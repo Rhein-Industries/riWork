@@ -2105,6 +2105,47 @@ fn only_an_untitled_ordinary_chat_takes_its_first_message_as_title_and_only_once
 }
 
 #[test]
+fn an_attachment_message_names_an_untitled_chat_once_and_survives_a_restart() {
+    for provider in [Provider::Codex, Provider::Claude] {
+        let mut host = TestHost::new();
+        let chat = host.create(provider);
+        host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
+        let source = host.work().join("build.log");
+        fs::write(&source, "error: the build failed").unwrap();
+        let attachment = host.client().stage_attachment(&chat.id, &source).unwrap();
+        host.client()
+            .command(
+                &chat.id,
+                ChatCommand::SendAttachments {
+                    text: "Fix the attached build failure. Then run tests.".into(),
+                    attachments: vec![attachment],
+                },
+            )
+            .unwrap();
+        host.wait_for_log(&chat.id, |log| {
+            turns_completed(log) == 1 && last_state(log) == Some(ChatState::Idle)
+        });
+        let named = host.info(&chat.id);
+        assert_eq!(
+            named.first_user_message.as_deref(),
+            Some("Fix the attached build failure")
+        );
+        assert_eq!(
+            crate::project_tabs::Session::chat(&named).title,
+            "Fix the attached build failure"
+        );
+
+        host.restart(quick_options());
+        let mut client = host.client();
+        send(&mut client, &chat.id, "A later message must keep the title");
+        assert_eq!(
+            host.info(&chat.id).first_user_message,
+            named.first_user_message
+        );
+    }
+}
+
+#[test]
 fn a_switch_to_the_chats_own_provider_is_an_ordinary_change() {
     let host = TestHost::new();
     let chat = host.create(Provider::Claude);

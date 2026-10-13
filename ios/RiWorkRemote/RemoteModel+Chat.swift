@@ -160,21 +160,46 @@ extension RemoteModel {
     var tabs: [ProjectTab] {
         let legacy = ProjectTabs.tabs(sessions: sessions, chats: chats, chatsAvailable: chatSupport != .unsupported, missing: missingSessionIDs)
         guard let sharedTabs else { return legacy }
-        let listed = Dictionary(legacy.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var listed = Dictionary(legacy.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        // An older desktop can share an orchestrator's chat tab while refusing chat reads. Keep its update notice in the strip.
+        for case .unavailable(let session, let opening) in legacy {
+            if let id = session.chat_id { listed["chat:\(id)"] = .unavailable(session, opening) }
+        }
         let shared: [ProjectTab] = sharedTabs.visible.compactMap { entry in
             if entry.kind == .shell, var session = sessions.first(where: { $0.id == entry.sessionID && $0.alive && $0.mode != .chat && !missingSessionIDs.contains($0.id) }) {
                 session.sharedTitle = entry.title; return .terminal(session)
             }
-            guard let tab = listed[entry.sessionID] else { return nil }
+            guard entry.kind != .unknown else { return nil }
+            guard let tab = listed[entry.key] else {
+                // Membership and names come from tabs.list. A separate chats.list failure must not erase its visible chats.
+                guard entry.kind == .chat, chatSupport != .unsupported else { return nil }
+                var info = chatConversations[entry.sessionID]?.transcript.info
+                    ?? ChatInfo(id: entry.sessionID, provider: .codex, projectID: projectID, state: chatState(entry.status))
+                info.title = entry.title; info.sharedTitle = entry.title
+                return .chat(info)
+            }
             switch tab {
-            case .chat(var info): info.title = entry.title; return .chat(info)
+            case .chat(var info): info.title = entry.title; info.sharedTitle = entry.title; return .chat(info)
             case .terminal(var session): session.sharedTitle = entry.title; return .terminal(session)
-            case .orchestratorChat(var session, var info): session.sharedTitle = entry.title; info.title = entry.title; return .orchestratorChat(session, info)
-            case .unavailable: return tab
+            case .orchestratorChat(var session, var info): session.sharedTitle = entry.title; info.title = entry.title; info.sharedTitle = entry.title; return .orchestratorChat(session, info)
+            case .unavailable(var session, let opening): session.sharedTitle = entry.title; return .unavailable(session, opening)
             }
         }
         // Global orchestrators are device-local views outside project membership.
         return shared + legacy.filter { $0.session?.kind == "orchestrator" && $0.session?.project_id == nil }
+    }
+    private func chatState(_ status: SharedTab.Status) -> ChatState {
+        switch status {
+        case .working: .running
+        case .waiting: .waiting
+        case .error: .failed("")
+        case .stopped: .stopped
+        case .done, .idle, .unknown: .idle
+        }
+    }
+    func hasChatMetadata(_ id: String) -> Bool {
+        chats.contains { $0.id == id } || chatConversations[id]?.transcript.info != nil
+            || sessions.contains { $0.chat_id == id && $0.provider != nil }
     }
     /// The chosen project's own chats in tab order: those that are not an orchestrator's.
     var projectChats: [ChatInfo] { tabs.compactMap { if case .chat(let info) = $0 { info } else { nil } } }
@@ -300,6 +325,14 @@ extension RemoteModel {
         for id in chatConversations.keys where !known.contains(id) && chatConversations[id]?.following != true && !chatSendsInFlight.contains(id) { chatConversations[id] = nil }
         lastListRead[.sessions] = .now
     }
+    /// Current info from the chat reader also fills in a tab whose separate metadata listing failed.
+    func installChatInfo(_ info: ChatInfo) {
+        if let index = chats.firstIndex(where: { $0.id == info.id }) {
+            if chats[index].provider != info.provider || ChatTabs.title(chats[index]) != ChatTabs.title(info) { chats[index] = info }
+        } else if projectID != nil, sharedTabs?.allEntries.contains(where: { $0.kind == .chat && $0.sessionID == info.id }) == true {
+            chats.append(info)
+        }
+    }
 
     /// The chats of a project, for a project load; nil when the desktop has none to offer or the list could not be read.
     func chatsOfProject(_ id: String) async -> [ChatInfo]? {
@@ -310,10 +343,10 @@ extension RemoteModel {
     /// Reads the project's chats again without the side effects of a full refresh. A failed read is skipped: the next one tries again.
     func refreshChatsQuietly() async {
         guard state == .connected, chatSupport != .unsupported, desktopFeatures.chat, let project = projectID, let request = try? ChatListRequest(projectID: project) else { return }
-        let token = generation
+        let token = generation, stamp = inventoryStamp
         do {
             let listed = try await client.listChats(request)
-            guard generation == token, projectID == project, state == .connected else { return }
+            guard generation == token, projectID == project, state == .connected, inventoryStamp == stamp else { return }
             installChats(listed, project: project)
         } catch ChatControlError.unsupported {
             if generation == token { chatSupport = .unsupported }
@@ -390,7 +423,7 @@ extension RemoteModel {
                     guard !Task.isCancelled, conversation.follower == token, generation == connection else { continue }
                     conversation.install(snapshot)
                     conversation.readError = nil
-                    if let info = conversation.transcript.info { prepareChatCatalogue(info) }
+                    if let info = conversation.transcript.info { installChatInfo(info); prepareChatCatalogue(info) }
                 } catch {
                     guard !Task.isCancelled, conversation.follower == token, generation == connection else { continue }
                     if RemoteError.isUnsupportedMethod(error) {
@@ -455,9 +488,8 @@ extension RemoteModel {
                     conversation.legacyLoading = false
                 }
                 // A chat that went on with the other provider: its tab shows the new one's mark and name at once.
-                if let info = conversation.transcript.info, let at = chats.firstIndex(where: { $0.id == info.id }),
-                   chats[at].provider != info.provider || chats[at].title != info.title { chats[at] = info }
                 if let info = conversation.transcript.info {
+                    installChatInfo(info)
                     prepareChatCatalogue(info)
                 }
                 if chatSupport == .unknown { chatSupport = .supported }

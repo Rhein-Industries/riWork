@@ -1886,7 +1886,7 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
         return Err("the chat is stopped; send a message to resume it".into());
     };
     lock(&driver).command(command.clone())?;
-    if let ChatCommand::Send { text } = &command {
+    if let ChatCommand::Send { text } | ChatCommand::SendAttachments { text, .. } = &command {
         let mut inner = lock(&chat.inner);
         if needs_auto_title(&inner.info) {
             let title = crate::project_tabs::message_title(text);

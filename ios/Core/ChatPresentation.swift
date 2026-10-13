@@ -259,10 +259,21 @@ public enum ChatTabs {
     public static func ordered(_ chats: [ChatInfo]) -> [ChatInfo] {
         chats.enumerated().sorted { ($0.element.createdAtUnix, $1.offset) > ($1.element.createdAtUnix, $0.offset) }.map(\.element)
     }
-    /// The first line of a tab: the chat's own name, or what it is when it has none.
+    /// The same title precedence as the desktop: shared rename, user, orchestrator, provider, first message, legacy name.
     public static func title(_ chat: ChatInfo) -> String {
-        let named = chat.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return named.isEmpty ? chat.provider.chatTitle : named
+        func named(_ value: String?) -> String? {
+            guard let value else { return nil }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let shared = named(chat.sharedTitle) { return shared }
+        let fixed = ["Global orchestrator", "Project orchestrator", "G·ORCH · GLOBAL", "P·ORCH · PROJECT"]
+        if let user = named(chat.userTitle), chat.orchestrator == nil || !fixed.contains(user) { return user }
+        if let orchestrator = chat.orchestrator { return orchestrator.title }
+        if let provider = named(chat.providerTitle) { return provider }
+        if let first = named(chat.firstUserMessage) { return first }
+        if let legacy = named(chat.title), !["Codex chat", "Claude chat"].contains(legacy) { return legacy }
+        return chat.provider.chatTitle
     }
     /// The second line of a tab: what it is (unless the first line already says), and where it runs, or its short id.
     public static func detail(_ chat: ChatInfo, branch: String?) -> String {

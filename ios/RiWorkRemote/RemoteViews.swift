@@ -602,7 +602,7 @@ struct TerminalTabsView: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {
-                    ForEach(model.tabs) { tab in
+                    ForEach(model.tabs, id: \.key) { tab in
                         let entry = sharedEntry(tab)
                         Group {
                             switch tab {
@@ -622,19 +622,19 @@ struct TerminalTabsView: View {
                     }
                 }
             }.scrollIndicators(.hidden)
-                .onChange(of: model.sessionID) { _, id in if let id, !model.terminalCovered { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
-                .onChange(of: model.selectedChatID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
-                .onChange(of: model.selectedBlockedID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
+                .onChange(of: model.sessionID) { _, _ in scrollToSelected(proxy, animated: true) }
+                .onChange(of: model.selectedChatID) { _, _ in scrollToSelected(proxy, animated: true) }
+                .onChange(of: model.selectedBlockedID) { _, _ in scrollToSelected(proxy, animated: true) }
                 // The tab on screen is in view when the row comes up, and when the list changes under it (a move, a tab opened or
                 // closed, here or on the Mac).
                 .onAppear { scrollToSelected(proxy, animated: false) }
-                .onChange(of: model.tabs.map(\.id)) { _, _ in scrollToSelected(proxy, animated: true) }
-                // Titles and pins change widths (a rename on the Mac) without changing which tabs there are.
-                .onChange(of: model.sharedTabs?.visible.map { "\($0.key)|\($0.title)" }) { _, _ in scrollToSelected(proxy, animated: true) }
+                // A name change adjusts widths too, including live provider names on a desktop without shared tabs.
+                .onChange(of: model.tabs.map { "\($0.key)|\($0.title)" }) { _, _ in scrollToSelected(proxy, animated: true) }
         }
     }
     private func scrollToSelected(_ proxy: ScrollViewProxy, animated: Bool) {
-        let id = model.selectedChatID ?? model.selectedBlockedID ?? (model.terminalCovered ? nil : model.sessionID)
+        let id = model.selectedChatID.map { "chat:\($0)" } ?? model.selectedBlockedID.map { "shell:\($0)" }
+            ?? (model.terminalCovered ? nil : model.sessionID.map { "shell:\($0)" })
         guard let id else { return }
         // After this layout pass, when the tabs have their widths.
         DispatchQueue.main.async { if animated { withAnimation { proxy.scrollTo(id, anchor: .center) } } else { proxy.scrollTo(id, anchor: .center) } }
@@ -680,7 +680,7 @@ struct TerminalTabsView: View {
             .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
             .tabChrome(selected: selected, waiting: entry.map { $0.status == .waiting } ?? (session.shownActivity == .waiting))
         }
-        .buttonStyle(.plain).id(session.id)
+        .buttonStyle(.plain).id("shell:\(session.id)")
         .accessibilityLabel(["\(session.title), \(tabDetail(session))", entry.flatMap { $0.status == .unknown ? nil : OpenTabSheet.status($0.status) } ?? session.activitySummary]
             .compactMap { $0 }.joined(separator: ", "))
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -707,10 +707,14 @@ struct TerminalTabsView: View {
         let activity = model.chatActivity(chat)
         let state = model.chatState(chat)
         let branch = model.worktrees.first(where: { $0.id == (orchestrator?.worktree_id ?? chat.worktreeID) })?.branch
+        let metadataKnown = model.hasChatMetadata(chat.id)
+        let detail = metadataKnown ? ChatTabs.detail(chat, branch: branch) : "Chat"
         return Button { model.selectChat(chat.id) } label: {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
-                    Label { Text(ChatTabs.title(chat)) } icon: { Image(systemName: chat.provider.glyph).foregroundStyle(style.accent) }
+                    Label { Text(ChatTabs.title(chat)) } icon: {
+                        Image(systemName: metadataKnown ? chat.provider.glyph : "bubble.left.and.text.bubble.right").foregroundStyle(style.accent)
+                    }
                         .font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
                     ActivityIndicator(activity: activity)
                     if case .failed = state { Image(systemName: "exclamationmark.triangle.fill").font(style.system(.caption2)).foregroundStyle(style.error).accessibilityHidden(true) }
@@ -720,11 +724,11 @@ struct TerminalTabsView: View {
             .tabChrome(selected: selected, waiting: activity == .waiting)
             .opacity(state == .stopped && !selected ? 0.6 : 1)
         }
-        .buttonStyle(.plain).id(chat.id)
-        .accessibilityLabel([ChatTabs.title(chat) + ", " + ChatTabs.detail(chat, branch: branch), state.spokenCondition, activity.spoken()].compactMap { $0 }.joined(separator: ", "))
+        .buttonStyle(.plain).id("chat:\(chat.id)")
+        .accessibilityLabel([ChatTabs.title(chat) + ", " + detail, state.spokenCondition, activity.spoken()].compactMap { $0 }.joined(separator: ", "))
         .accessibilityAddTraits(selected ? .isSelected : [])
         .contextMenu {
-            Text(ChatTabs.detail(chat, branch: branch))
+            Text(detail)
             if let entry { Section { sharedTabItems(entry) } }
             Button("New terminal", systemImage: "plus") { openNewTerminal() }
             Button("Stop agent", systemImage: "stop.circle", role: .destructive) { Task { await model.stopChat(chat.id) } }.disabled(state == .stopped || model.state != .connected)
@@ -744,7 +748,7 @@ struct TerminalTabsView: View {
             .tabChrome(selected: selected, waiting: false)
             .opacity(selected ? 1 : 0.7)
         }
-        .buttonStyle(.plain).id(session.id)
+        .buttonStyle(.plain).id("shell:\(session.id)")
         .accessibilityLabel("\(session.title), \(headline)")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
