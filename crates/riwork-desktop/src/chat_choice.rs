@@ -1,5 +1,5 @@
-//! Explicit new-chat choices: one list of every provider's models, where the model chosen
-//! decides which provider's the chat is. Reading saved model metadata
+//! Explicit new-chat choices: a visible provider selector and its model catalog.
+//! Reading saved model metadata
 //! (`chat::catalog`) never contacts the host.
 
 use crate::{
@@ -184,6 +184,9 @@ impl ChatChoice {
             .unwrap_or(0);
         let mut controls = BTreeMap::new();
         for key in [
+            "provider-0",
+            "provider-1",
+            "provider-2",
             "model-default-0",
             "model-default-1",
             "model-default-2",
@@ -278,6 +281,14 @@ impl ChatChoice {
         self.fast = false;
         self.error = None;
         cx.notify();
+    }
+
+    fn pick_provider(&mut self, provider: Provider, window: &mut Window, cx: &mut Context<Self>) {
+        if self.provider == provider {
+            return;
+        }
+        self.pick_model(provider, String::new(), window, cx);
+        form_input::set_value(&self.search, String::new(), window, cx);
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -508,60 +519,63 @@ impl Render for ChatChoice {
             .collect();
         let query = self.search.read(cx).value().trim().to_lowercase();
         let current = self.model.read(cx).value().trim().to_owned();
-        let model_groups: Vec<AnyElement> = [Provider::Codex, Provider::Claude, Provider::Muse]
+        let providers = [Provider::Codex, Provider::Claude, Provider::Muse]
             .into_iter()
             .map(|provider| {
-                let group = provider_index(provider);
-                let chosen = self.provider == provider;
-                let mut rows = vec![self.radio(
-                    format!("model-default-{group}"),
-                    format!("{} default", provider_label(provider)),
-                    chosen && current.is_empty(),
+                self.radio(
+                    format!("provider-{}", provider_index(provider)),
+                    provider_label(provider).into(),
+                    self.provider == provider,
                     cx,
-                    move |choice, window, cx| {
-                        choice.pick_model(provider, String::new(), window, cx)
-                    },
-                )];
-                for (row, model) in self.models[group].supported.iter().enumerate() {
-                    if !format!("{} {} {}", model.name, model.id, model.description)
-                        .to_lowercase()
-                        .contains(&query)
-                    {
-                        continue;
-                    }
-                    let id = model.id.clone();
-                    rows.push(self.radio(
-                        format!("model-{group}-{row}"),
-                        format!(
-                            "{}{}",
-                            model.name,
-                            if model.is_default { " · default" } else { "" }
-                        ),
-                        chosen && current == id,
-                        cx,
-                        move |choice, window, cx| {
-                            choice.pick_model(provider, id.clone(), window, cx)
-                        },
-                    ));
-                }
-                for (row, id) in self.models[group].configured.iter().enumerate() {
-                    if !id.to_lowercase().contains(&query) {
-                        continue;
-                    }
-                    let id = id.clone();
-                    rows.push(self.radio(
-                        format!("configured-{group}-{row}"),
-                        format!("{id} · previously configured"),
-                        chosen && current == id,
-                        cx,
-                        move |choice, window, cx| {
-                            choice.pick_model(provider, id.clone(), window, cx)
-                        },
-                    ));
-                }
-                Self::group(provider_label(provider), rows)
+                    move |choice, window, cx| choice.pick_provider(provider, window, cx),
+                )
             })
             .collect();
+        let model_group = {
+            let provider = self.provider;
+            let group = provider_index(provider);
+            let mut rows = vec![self.radio(
+                format!("model-default-{group}"),
+                format!("{} default", provider_label(provider)),
+                current.is_empty(),
+                cx,
+                move |choice, window, cx| choice.pick_model(provider, String::new(), window, cx),
+            )];
+            for (row, model) in self.models[group].supported.iter().enumerate() {
+                if !format!("{} {} {}", model.name, model.id, model.description)
+                    .to_lowercase()
+                    .contains(&query)
+                {
+                    continue;
+                }
+                let id = model.id.clone();
+                rows.push(self.radio(
+                    format!("model-{group}-{row}"),
+                    format!(
+                        "{}{}",
+                        model.name,
+                        if model.is_default { " · default" } else { "" }
+                    ),
+                    current == id,
+                    cx,
+                    move |choice, window, cx| choice.pick_model(provider, id.clone(), window, cx),
+                ));
+            }
+            for (row, id) in self.models[group].configured.iter().enumerate() {
+                if !id.to_lowercase().contains(&query) {
+                    continue;
+                }
+                let id = id.clone();
+                rows.push(self.radio(
+                    format!("configured-{group}-{row}"),
+                    format!("{id} · previously configured"),
+                    current == id,
+                    cx,
+                    move |choice, window, cx| choice.pick_model(provider, id.clone(), window, cx),
+                ));
+            }
+            Self::group("Model", rows)
+        };
         let selected = self.selected_model(cx);
         let efforts = selected
             .map(|model| model.efforts.clone())
@@ -654,6 +668,7 @@ impl Render for ChatChoice {
                 ApprovalMode::Full => "Never asks before acting",
                 ApprovalMode::Plan => "Plans first and changes nothing",
             }))
+            .child(Self::group("Provider", providers))
             .child(form_input::frame(
                 "new-chat-model-search",
                 &self.search,
@@ -669,7 +684,7 @@ impl Render for ChatChoice {
                     .flex()
                     .flex_col()
                     .gap(ui_text::space(10.0))
-                    .children(model_groups),
+                    .child(model_group),
             )
             .children(
                 (self.provider == Provider::Codex)
@@ -787,6 +802,84 @@ mod tests {
             );
             choice
         })
+    }
+
+    #[gpui::test]
+    fn muse_is_reachable_without_scrolling_past_other_providers(cx: &mut TestAppContext) {
+        let (handle, choice) = fixture(cx);
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let observed = requests.clone();
+        let _subscription = cx.update(|app| {
+            app.subscribe(&choice, move |_, event: &ChoiceEvent, _| {
+                if let ChoiceEvent::Confirmed(request) = event {
+                    observed.borrow_mut().push(request.clone());
+                }
+            })
+        });
+        test_turn(cx, handle, |window, app| {
+            choice.update(app, |choice, cx| {
+                let mut models = choice.models.clone();
+                for provider in [0, 1] {
+                    let template = models[provider].supported[0].clone();
+                    models[provider]
+                        .supported
+                        .extend((0..40).map(|index| ModelOption {
+                            id: format!("long-catalog-{provider}-{index}"),
+                            name: format!("Long catalog model {index}"),
+                            ..template.clone()
+                        }));
+                }
+                models[2].supported[0].supports_fast = false;
+                choice.apply_models(models, cx);
+                form_input::set_value(&choice.search, "codex".into(), window, cx);
+                form_input::set_value(&choice.model, "codex-fixture".into(), window, cx);
+                choice.effort = Some("high".into());
+                choice.fast = true;
+            });
+        });
+        test_turn(cx, handle, |window, app| {
+            assert!(
+                window.find("new-chat-provider-2").bounds().bottom()
+                    <= window.find("new-chat-model-default-0").bounds().top(),
+                "Muse's provider control is outside the clipped model catalog"
+            );
+            window.click("new-chat-provider-2", app);
+        });
+        test_turn(cx, handle, |window, app| {
+            let draft = choice.read(app);
+            assert_eq!(draft.provider, Provider::Muse);
+            assert!(draft.model.read(app).value().is_empty());
+            assert!(draft.search.read(app).value().is_empty());
+            assert_eq!(draft.effort, None);
+            assert!(!draft.fast);
+            let model = window.find("new-chat-model-2-0").bounds();
+            assert!(model.top() >= window.find("new-chat-model-default-2").bounds().top());
+            assert!(model.bottom() <= window.find("new-chat-model-input").bounds().top());
+            window.click("new-chat-model-2-0", app);
+        });
+        assert!(requests.borrow().is_empty(), "browsing creates no chat");
+        test_turn(cx, handle, |window, app| {
+            choice.update(app, |choice, cx| {
+                let handle = choice.controls["model-2-0"].clone();
+                choice.apply_models(choice.models.clone(), cx);
+                assert_eq!(choice.controls["model-2-0"], handle);
+                assert_eq!(choice.provider, Provider::Muse);
+                assert_eq!(choice.model.read(cx).value(), "muse-fixture");
+            });
+            window.click("new-chat-effort-high", app);
+        });
+        test_turn(cx, handle, |window, app| {
+            window.click("new-chat-confirm", app)
+        });
+        let requests = requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].provider, Provider::Muse);
+        assert_eq!(requests[0].model.as_deref(), Some("muse-fixture"));
+        assert_eq!(requests[0].effort.as_deref(), Some("high"));
+        assert!(!requests[0].fast);
+        assert_eq!(requests[0].codex_account_id, None);
+        assert_eq!(requests[0].worktree_id.as_deref(), Some("fixture-tree"));
+        assert_eq!(requests[0].approval_mode, ApprovalMode::Supervised);
     }
 
     #[gpui::test]
