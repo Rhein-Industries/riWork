@@ -51,6 +51,7 @@ pub enum PanelAction {
     },
     ProjectSettings(String),
     ToggleProjectNotifications(String),
+    ToggleProjectOrchestratorWakes(String),
     Project(String),
     OpenProject(String),
     Worktree(String),
@@ -703,6 +704,12 @@ pub fn render_panel<V: Render + 'static>(
                         .child(project_notification_control(
                             &project.id,
                             project.notify_on_agent_done,
+                            on_action.clone(),
+                            cx,
+                        ))
+                        .child(project_wake_control(
+                            &project.id,
+                            project.wake_orchestrators_on_agent_done,
                             on_action.clone(),
                             cx,
                         ))
@@ -2215,6 +2222,72 @@ fn project_notification_control<V: 'static>(
         move |_, event, window, cx| listener(event, window, cx)
     })
     .into_any_element()
+}
+
+/// Beside the bell: whether a worker's finished turn checks in with the
+/// project's and the global orchestrator (`orchestrator_wakes`).
+fn project_wake_control<V: 'static>(
+    project_id: &str,
+    enabled: bool,
+    on_action: impl Fn(&mut V, PanelAction, &mut Window, &mut Context<V>) + Clone + 'static,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let colors = theme::palette(cx);
+    let project_id = project_id.to_owned();
+    let id = format!("orchestrator-wakes-project-{project_id}");
+    behavior::toggle_content(
+        id.clone(),
+        "Wake orchestrators when a worker finishes",
+        icons::text_mark("↻", 10.0),
+        enabled,
+    )
+    .flex_none()
+    .flex()
+    .items_center()
+    .justify_center()
+    .w(ui_text::space(20.0))
+    .h(ui_text::space(18.0))
+    .text_color(rgb(if enabled { colors.cyan } else { colors.muted }))
+    .focus_visible(move |style| style.bg(rgb(colors.divider)))
+    .hover(move |style| {
+        let style = style.bg(rgb(colors.divider));
+        if ui_text::is_native() {
+            style.text_color(rgb(colors.text))
+        } else {
+            style
+        }
+    })
+    // Native draws it as the bell: a round hover, primary while it is on.
+    .map(|control| {
+        controls::native(control, |control| {
+            control
+                .size(ui_text::space(20.0))
+                .rounded_full()
+                .text_color(rgb(if enabled { colors.text } else { colors.muted }))
+        })
+    })
+    .child(tooltip::anchor(
+        if enabled {
+            "Orchestrator check-ins on · a worker's finished turn wakes the project and global orchestrator · click to disable"
+        } else {
+            "Orchestrator check-ins off · click to wake the project and global orchestrator when a worker finishes"
+        },
+        Look::Control,
+    ))
+    // Keep Base's pointer focus transfer; the domain activation stays isolated.
+    .on_change({
+        let listener = cx.listener(move |view, _, window, cx| {
+            cx.stop_propagation();
+            on_action(
+                view,
+                PanelAction::ToggleProjectOrchestratorWakes(project_id.clone()),
+                window,
+                cx,
+            );
+        });
+        move |_, event, window, cx| listener(event, window, cx)
+    })
+    .map(|control| crate::form_input::control_element(id, control))
 }
 
 /// The detail of the selected task under the Tasks list.
@@ -3899,10 +3972,12 @@ mod kit_control_tests {
         actions: Vec<PanelAction>,
         row_focus: FocusHandle,
         native_reveal: bool,
+        wakes: bool,
     }
     impl Fixture {
         fn action(&mut self, action: PanelAction, window: &mut Window, cx: &mut Context<Self>) {
             match &action {
+                PanelAction::ToggleProjectOrchestratorWakes(_) => self.wakes = !self.wakes,
                 PanelAction::CloseProjectSortMenu => self.sort.dismiss(window, cx),
                 PanelAction::SetProjectOrder(order) => {
                     self.order = *order;
@@ -3951,6 +4026,12 @@ mod kit_control_tests {
                                     window,
                                     cx,
                                 )
+                                .child(project_wake_control(
+                                    "synthetic-project-id",
+                                    self.wakes,
+                                    Self::action,
+                                    cx,
+                                ))
                                 .child(project_control(
                                     "synthetic-project-id",
                                     "settings",
@@ -3976,7 +4057,31 @@ mod kit_control_tests {
             actions: Vec::new(),
             row_focus: cx.focus_handle(),
             native_reveal: false,
+            wakes: false,
         })
+    }
+
+    #[gpui::test]
+    fn the_wake_toggle_routes_its_own_project_and_shows_its_state(cx: &mut TestAppContext) {
+        const TOGGLE: &str = "orchestrator-wakes-project-synthetic-project-id";
+        let (window, owner) = mount(cx);
+        test_turn(cx, window, |window, app| {
+            let toggle = crate::form_input::test_ax_node(window, app, TOGGLE);
+            assert_eq!(
+                toggle.label(),
+                Some("Wake orchestrators when a worker finishes")
+            );
+            assert_eq!(toggle.toggled(), Some(gpui::accesskit::Toggled::False));
+            window.click(TOGGLE, app);
+        });
+        test_turn(cx, window, |window, app| {
+            // The row itself is not activated by its nested toggle.
+            assert!(
+                matches!(owner.read(app).actions.as_slice(), [PanelAction::ToggleProjectOrchestratorWakes(id)] if id == "synthetic-project-id")
+            );
+            let toggle = crate::form_input::test_ax_node(window, app, TOGGLE);
+            assert_eq!(toggle.toggled(), Some(gpui::accesskit::Toggled::True));
+        });
     }
 
     #[gpui::test]

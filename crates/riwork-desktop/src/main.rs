@@ -31,6 +31,7 @@ mod handoff_dialog;
 mod icons;
 mod metal_layer;
 mod notifications;
+mod orchestrator_wakes;
 mod orchestrators;
 mod panels;
 mod project_creator;
@@ -3051,6 +3052,36 @@ impl Workspace {
                             notifications::show_enabled(&project, cx);
                         } else if let Err(error) =
                             notifications::cancel_pending(self.sessions.state_home(), &id)
+                        {
+                            self.notice = Some(error);
+                        }
+                        self.refresh_project_metadata(window, cx);
+                        cx.refresh_windows();
+                    }
+                    Err(error) => {
+                        self.notice = Some(error);
+                        cx.notify();
+                    }
+                }
+            }
+            PanelAction::ToggleProjectOrchestratorWakes(id) => {
+                let enabled = match self.store.snapshot().and_then(|state| {
+                    state
+                        .project(&id)
+                        .map(|project| !project.wake_orchestrators_on_agent_done)
+                }) {
+                    Ok(enabled) => enabled,
+                    Err(error) => {
+                        self.notice = Some(error);
+                        cx.notify();
+                        return;
+                    }
+                };
+                match self.store.set_project_orchestrator_wakes(&id, enabled) {
+                    Ok(_) => {
+                        if !enabled
+                            && let Err(error) =
+                                orchestrator_wakes::cancel_pending(self.sessions.state_home(), &id)
                         {
                             self.notice = Some(error);
                         }
@@ -13225,6 +13256,7 @@ fn main() {
         cx.set_app_identity("dev.riwork.shell", "RiWork");
         schedules::start(state_home.clone(), cx);
         notifications::start(state_home.clone(), cx);
+        orchestrator_wakes::start(state_home.clone(), cx);
         cx.on_system_notification_response(|response, cx| {
             if response.action_id.as_ref().is_some_and(|action| action.as_ref() != "open") { return; }
             if let Some((project_id, shell_id)) = notifications::response_target(&response.tag) {
