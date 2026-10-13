@@ -42,6 +42,13 @@
 //! intentional stop and `State { Failed }` an unexpected end. `Send` echoes the
 //! message as a `UserMessage` item, since the CLI does not.
 //!
+//! What the user sent is never dropped without a word. A message sent while a turn
+//! runs waits behind it in the CLI, which drops it on an interrupt (`cancel_queued`)
+//! or when the process ends: if the turn ends that way, an `undelivered` notice says
+//! its delivery is not confirmed and keeps its words. Messages queued for a restart
+//! that does not happen are kept the same way, as not delivered. An attachment
+//! message is echoed once its write is known to have begun, never before.
+//!
 //! # Frames to events
 //!
 //! | stream-json                                  | event                                                   |
@@ -176,6 +183,10 @@ const NO_CONVERSATION: &str = "No conversation found";
 /// How long after SIGINT a process that exits is taken to have been ended by it.
 const SIGINT_EXIT_WINDOW: Duration = Duration::from_secs(10);
 
+/// How long a cancelled attachment write is given to report what it wrote. The
+/// writer stops at once when cancelled; this only bounds a thread being slow.
+const CANCELLED_RECEIPT_WAIT: Duration = Duration::from_millis(250);
+
 /// How long the driver waits at each step; tests shorten them.
 #[derive(Clone, Copy, Debug)]
 struct Tuning {
@@ -296,7 +307,7 @@ impl Driver for ClaudeDriver {
             let content = super::attachments::inputs(text, attachments, true)?;
             let (receipt, wait) = mpsc::channel();
             {
-                let mut core = self.shared.lock();
+                let core = self.shared.lock();
                 if !core.ready || core.restarting || core.stopped || core.dead.is_some() {
                     return Err(
                         "Claude is not ready; keep the attachment draft and send after it settles"
@@ -317,10 +328,43 @@ impl Driver for ClaudeDriver {
                     .ok_or("Claude is not running")?
                     .send(outgoing)
                     .map_err(|_| "Claude has closed its input")?;
-                core.session_used = true;
-                let turn_id = core.ensure_turn();
-                core.last_activity = Instant::now();
-                core.reset_silence();
+            }
+            // Receipt means written to Claude's pipe, not provider acceptance/completion.
+            let result = loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let cancelled = self
+                    .shared
+                    .lock()
+                    .proc
+                    .as_ref()
+                    .is_none_or(|proc| proc.writes_cancelled());
+                if remaining.is_zero() || cancelled {
+                    // A cancelled writer answers at once with what it wrote: prefer its
+                    // precise zero/partial classification.
+                    let grace = if cancelled {
+                        remaining.min(CANCELLED_RECEIPT_WAIT)
+                    } else {
+                        Duration::ZERO
+                    };
+                    break wait.recv_timeout(grace).unwrap_or_else(|_| Err(format!("{} Claude submission write was not confirmed; inspect the transcript before resending", super::attachments::UNKNOWN_SUBMISSION)));
+                }
+                match wait.recv_timeout(remaining.min(Duration::from_millis(20))) {
+                    Ok(result) => break result,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(error) => {
+                        break Err(format!(
+                            "{} Claude submission writer lost ({error}); inspect the transcript before resending",
+                            super::attachments::UNKNOWN_SUBMISSION
+                        ));
+                    }
+                }
+            };
+            // The message is shown once its bytes may have reached Claude. A write
+            // that never began leaves it with the draft: shown, a resend would look
+            // like a second message. One that may have gone out is shown, and its
+            // delivery is said to be unknown.
+            let unknown = matches!(&result, Err(error) if error.starts_with(super::attachments::UNKNOWN_SUBMISSION));
+            if result.is_ok() || unknown {
                 let images = attachments
                     .iter()
                     .filter_map(|a| match &a.kind {
@@ -335,6 +379,12 @@ impl Driver for ClaudeDriver {
                         _ => None,
                     })
                     .collect();
+                let summary = super::attachments::summary(text, attachments);
+                let mut core = self.shared.lock();
+                core.session_used = true;
+                let turn_id = core.ensure_turn();
+                core.last_activity = Instant::now();
+                core.reset_silence();
                 core.born(Item {
                     presentation: super::model::Presentation {
                         images,
@@ -345,34 +395,22 @@ impl Driver for ClaudeDriver {
                     turn_id: Some(turn_id),
                     status: ItemStatus::Completed,
                     body: ItemBody::UserMessage {
-                        text: super::attachments::summary(text, attachments),
+                        text: summary.clone(),
                     },
                 });
-            }
-            // Receipt means written to Claude's pipe, not provider acceptance/completion.
-            loop {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                let cancelled = self
-                    .shared
-                    .lock()
-                    .proc
-                    .as_ref()
-                    .is_none_or(|proc| proc.writes_cancelled());
-                if remaining.is_zero() || cancelled {
-                    // Prefer a writer's precise zero/partial classification if available.
-                    return wait.try_recv().unwrap_or_else(|_| Err(format!("{} Claude submission write was not confirmed; inspect the transcript before resending", super::attachments::UNKNOWN_SUBMISSION)));
-                }
-                match wait.recv_timeout(remaining.min(Duration::from_millis(20))) {
-                    Ok(result) => return result,
-                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(error) => {
-                        return Err(format!(
-                            "{} Claude submission writer lost ({error}); inspect the transcript before resending",
-                            super::attachments::UNKNOWN_SUBMISSION
-                        ));
-                    }
+                if unknown {
+                    core.notice(
+                        NoticeLevel::Warning,
+                        notice_kind::UNDELIVERED,
+                        kept_words(
+                            "Delivery not confirmed: this message with attachments may not have \
+                             reached Claude. Check for its answer before sending it again.",
+                            &[summary],
+                        ),
+                    );
                 }
             }
+            return result;
         }
         let mut core = self.shared.lock();
         let result = core.command(command);
@@ -443,6 +481,10 @@ struct Turn {
     last_text: Option<String>,
     last_item: Option<Item>,
     failure_noticed: bool,
+    /// Messages written while this turn ran, which the CLI keeps behind it. An
+    /// interrupt drops them (`cancel_queued`) and so does the process ending, so
+    /// until the turn ends normally their delivery is not known.
+    queued_behind: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -692,6 +734,7 @@ impl Core {
             last_text: None,
             last_item: None,
             failure_noticed: false,
+            queued_behind: Vec::new(),
         });
         self.last_activity = Instant::now();
         self.reset_silence();
@@ -740,6 +783,66 @@ impl Core {
 
     fn notice(&mut self, level: NoticeLevel, kind: &str, text: impl Into<String>) {
         self.notice_at(level, kind, text.into(), None);
+    }
+
+    /// The messages queued for a restart (`queued`) will not be sent (`why`); say so
+    /// with their words, which nothing else has shown.
+    fn undelivered(&mut self, why: &str) {
+        let queued = std::mem::take(&mut self.queued);
+        if queued.is_empty() {
+            return;
+        }
+        let lead = if queued.len() == 1 {
+            format!("1 message sent while claude restarted was not delivered: {why}.")
+        } else {
+            format!(
+                "{} messages sent while claude restarted were not delivered: {why}.",
+                queued.len()
+            )
+        };
+        let texts: Vec<String> = queued
+            .into_iter()
+            .map(|(text, echo)| {
+                if echo {
+                    text
+                } else {
+                    "(a request to compact the context)".to_owned()
+                }
+            })
+            .collect();
+        self.notice(
+            NoticeLevel::Warning,
+            notice_kind::UNDELIVERED,
+            kept_words(&lead, &texts),
+        );
+    }
+
+    /// The open turn is ending without having run its course (`why`): the messages
+    /// waiting behind it may never reach Claude. They are in the transcript already;
+    /// the notice says that their delivery is not known and keeps their words.
+    fn doubt_queued(&mut self, why: &str) {
+        let Some(texts) = self
+            .turn
+            .as_mut()
+            .map(|turn| std::mem::take(&mut turn.queued_behind))
+            .filter(|texts| !texts.is_empty())
+        else {
+            return;
+        };
+        let (what, it) = if texts.len() == 1 {
+            ("this message, sent while it was working", "it")
+        } else {
+            ("these messages, sent while it was working", "them")
+        };
+        let lead = format!(
+            "Delivery not confirmed: {why}, so Claude may not have received {what}. \
+             Send {it} again if Claude did not answer."
+        );
+        self.notice(
+            NoticeLevel::Warning,
+            notice_kind::UNDELIVERED,
+            kept_words(&lead, &texts),
+        );
     }
 
     fn notice_at(&mut self, level: NoticeLevel, kind: &str, text: String, resets_at: Option<u64>) {
@@ -941,9 +1044,16 @@ impl Core {
             "parent_tool_use_id": null,
         }))?;
         self.session_used = true;
+        let behind = self.turn.is_some();
         let turn_id = self.ensure_turn();
         self.last_activity = Instant::now();
         self.reset_silence();
+        if echo
+            && behind
+            && let Some(turn) = &mut self.turn
+        {
+            turn.queued_behind.push(text.clone());
+        }
         if echo {
             self.born(Item {
                 presentation: Default::default(),
@@ -963,18 +1073,29 @@ impl Core {
         if self.turn.is_none() {
             return Ok(());
         }
-        // The CLI is blocked on any prompt we owe an answer to.
-        for pending in &self.pending {
-            let (request_id, tool_use_id) = match pending {
+        // The CLI is blocked on any prompt we owe an answer to. Each is refused here,
+        // once: the prompt is over, and an answer to it that comes later must not
+        // reach the CLI as a second reply.
+        for pending in std::mem::take(&mut self.pending) {
+            match pending {
                 Pending::Approval {
                     approval,
                     tool_use_id,
                     ..
-                } => (approval.request_id.as_str(), tool_use_id.as_str()),
-                Pending::Question { request_id, .. } => (request_id.as_str(), ""),
-            };
-            let _ = self.respond(request_id, deny_body(tool_use_id, true));
+                } => {
+                    let _ = self.respond(&approval.request_id, deny_body(&tool_use_id, true));
+                    self.emit(ChatEvent::ApprovalResolved {
+                        request_id: approval.request_id,
+                        decision: Decision::Cancel,
+                    });
+                }
+                Pending::Question { request_id, .. } => {
+                    let _ = self.respond(&request_id, deny_body("", true));
+                    self.emit(ChatEvent::QuestionResolved { request_id });
+                }
+            }
         }
+        self.refresh_state();
         self.begin_interrupt()
     }
 
@@ -1369,6 +1490,9 @@ impl Core {
     /// `idle`: the turn is over, whichever way it went.
     fn finish_turn(&mut self) {
         let outcome = if self.interrupt.is_some() {
+            self.doubt_queued(
+                "the turn was interrupted, and an interrupt drops the messages waiting behind it",
+            );
             TurnOutcome::Interrupted
         } else {
             self.turn
@@ -1386,7 +1510,8 @@ impl Core {
         };
         let subagent = !frame["parent_tool_use_id"].is_null();
         match str_of(event, "type") {
-            Some("message_start") => {
+            // A subagent's message is not the one the main stream is in.
+            Some("message_start") if !subagent => {
                 self.stream.message_id = event
                     .pointer("/message/id")
                     .and_then(Value::as_str)
@@ -1620,7 +1745,14 @@ impl Core {
             .filter(|block| matches!(str_of(block, "type"), Some("text" | "image")))
             .cloned()
             .collect::<Vec<_>>();
-        if !ordinary.is_empty() {
+        // Only what the user sent is theirs: a subagent's prompt, and what the CLI
+        // writes in the user's name (an interruption, a command's output, a
+        // compaction's summary), are not. Their tool results still complete tools.
+        let theirs = frame["parent_tool_use_id"].is_null()
+            && !["isSynthetic", "isMeta", "isCompactSummary"]
+                .iter()
+                .any(|flag| frame.get(*flag).and_then(Value::as_bool) == Some(true));
+        if theirs && !ordinary.is_empty() {
             let ordinary = Value::Array(ordinary);
             let uuid = str_of(frame, "uuid")
                 .filter(|id| !id.trim().is_empty())
@@ -2293,6 +2425,7 @@ fn process_ended(shared: &Arc<Shared>, generation: u64, proc: &Arc<Proc>) {
     }
     core.dead = Some(reason.clone());
     core.out = None;
+    core.doubt_queued("claude stopped unexpectedly during the turn");
     core.close_turn(TurnOutcome::Failed {
         message: reason.clone(),
     });
@@ -2310,6 +2443,7 @@ fn spawn_restart(shared: &Arc<Shared>) {
 fn restart(shared: &Arc<Shared>) {
     let old = {
         let mut core = shared.lock();
+        core.doubt_queued("claude was restarted during the turn");
         core.close_turn(TurnOutcome::Interrupted);
         if !core.stopped {
             core.set_state(ChatState::Starting);
@@ -2326,24 +2460,16 @@ fn restart(shared: &Arc<Shared>) {
     core.retiring = None;
     core.restarting = false;
     match result {
-        Ok(()) if core.stopped => {}
+        Ok(()) if core.stopped => core.undelivered("the chat was stopped first"),
         Ok(()) => {
             core.set_state(ChatState::Idle);
             for (text, echo) in std::mem::take(&mut core.queued) {
                 let _ = core.send_user(text, echo);
             }
         }
-        Err(_) if core.stopped => {}
+        Err(_) if core.stopped => core.undelivered("the chat was stopped first"),
         Err(error) => {
-            let undelivered = std::mem::take(&mut core.queued).len();
-            if undelivered > 0 {
-                let what = if undelivered == 1 {
-                    "1 message sent while claude restarted was not delivered".to_owned()
-                } else {
-                    format!("{undelivered} messages sent while claude restarted were not delivered")
-                };
-                core.notice(NoticeLevel::Warning, notice_kind::UNDELIVERED, what);
-            }
+            core.undelivered("claude did not start again");
             core.dead = Some(error.clone());
             core.set_state(ChatState::Failed { message: error });
         }
@@ -2375,6 +2501,7 @@ fn shutdown(shared: &Arc<Shared>) {
         .wait_timeout_while(core, Duration::from_secs(10), |core| core.restarting)
         .map(|(core, _)| core)
         .unwrap_or_else(|poisoned| poisoned.into_inner().0);
+    core.doubt_queued("the chat was stopped during the turn");
     core.close_turn(TurnOutcome::Interrupted);
     if !matches!(core.state, ChatState::Failed { .. }) {
         core.set_state(ChatState::Stopped);
@@ -2476,6 +2603,20 @@ fn fast_off_text(state: &str, reason: Option<&str>) -> String {
         (_, None) => "Fast mode is off for this model",
     };
     text.to_owned()
+}
+
+/// A notice's text that keeps messages word for word after `lead`, so they can be
+/// sent again: one follows the lead, several are numbered.
+fn kept_words(lead: &str, texts: &[String]) -> String {
+    let mut kept = lead.to_owned();
+    for (index, text) in texts.iter().enumerate() {
+        if texts.len() > 1 {
+            kept.push_str(&format!("\n\nMessage {} of {}:", index + 1, texts.len()));
+        }
+        kept.push_str("\n\n");
+        kept.push_str(text);
+    }
+    kept
 }
 
 fn str_of<'a>(value: &'a Value, key: &str) -> Option<&'a str> {

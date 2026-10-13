@@ -1569,6 +1569,8 @@ fn messages_queued_for_a_restart_that_fails_are_reported_not_lost() {
         notices[0].1.contains("2 messages") && notices[0].1.contains("not delivered"),
         "{notices:?}"
     );
+    // The words themselves, to send again: they were never echoed anywhere else.
+    assert!(notices[0].1.contains("hello?"), "{notices:?}");
     // Nothing was echoed for what never reached the CLI.
     assert!(
         !rig.transcript()
@@ -2382,4 +2384,276 @@ fn a_resumed_session_and_an_idle_chat_learn_claudes_title_without_another_turn()
     );
     rig.driver.shutdown();
     let _ = std::fs::remove_dir_all(home);
+}
+
+// What the user sent is never lost without a word, and never shown as sent when it was not.
+
+/// The completed undelivered notice that carries `text`, if any.
+fn undelivered_with(events: &[ChatEvent], text: &str) -> Option<Item> {
+    completed_notices(events).into_iter().find(|item| {
+        matches!(&item.body, ItemBody::Notice { kind: Some(kind), text: said, .. }
+            if kind == notice_kind::UNDELIVERED && said.contains(text))
+    })
+}
+
+fn user_texts(events: &[ChatEvent]) -> Vec<String> {
+    fold(events)
+        .items
+        .iter()
+        .filter_map(|item| match &item.body {
+            ItemBody::UserMessage { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_message_waiting_behind_an_interrupted_turn_keeps_its_text_unconfirmed() {
+    let mut rig = Rig::new(&["interrupt_queued"]);
+    rig.send("go");
+    rig.until(|event| matches!(event, ChatEvent::ItemDelta { .. }));
+    let waiting = "and then this 🦀\n  exactly as typed";
+    rig.send(waiting);
+    rig.command(ChatCommand::Interrupt);
+    rig.until_idle();
+    assert!(!rig.fake.saw("mismatch"));
+    assert_eq!(outcomes(&rig.seen), vec![TurnOutcome::Interrupted]);
+    // It went to the CLI, so it stays in the transcript; that it got there is not
+    // known, since the interrupt drops what waits behind the turn.
+    assert_eq!(user_texts(&rig.seen), ["go", waiting]);
+    let notice = undelivered_with(&rig.seen, waiting).expect("the waiting text is kept");
+    assert_eq!(notice.status, ItemStatus::Completed);
+    assert!(
+        matches!(&notice.body, ItemBody::Notice { level: NoticeLevel::Warning, text, .. }
+            if text.contains("not confirmed")),
+        "{notice:?}"
+    );
+    // The message that started the turn is not in doubt.
+    assert_eq!(completed_notices(&rig.seen).len(), 1);
+}
+
+#[test]
+fn a_message_waiting_behind_a_turn_that_crashes_keeps_its_text_unconfirmed() {
+    let mut rig = Rig::new(&["crash_queued"]);
+    rig.send("go");
+    rig.until(|event| matches!(event, ChatEvent::ItemDelta { .. }));
+    let waiting = "keep this exact text";
+    rig.send(waiting);
+    rig.until(|event| {
+        matches!(
+            event,
+            ChatEvent::State {
+                state: ChatState::Failed { .. }
+            }
+        )
+    });
+    assert!(
+        undelivered_with(&rig.seen, waiting).is_some(),
+        "{:#?}",
+        rig.seen
+    );
+}
+
+#[test]
+fn a_message_waiting_behind_a_turn_that_ends_normally_raises_no_doubt() {
+    let mut rig = Rig::new(&["queued_completes"]);
+    rig.send("go");
+    rig.until(|event| matches!(event, ChatEvent::ItemDelta { .. }));
+    rig.send("later");
+    rig.until_idle();
+    assert!(!rig.fake.saw("mismatch"));
+    assert!(
+        completed_notices(&rig.seen)
+            .iter()
+            .all(|item| !matches!(&item.body, ItemBody::Notice { kind: Some(kind), .. } if kind == notice_kind::UNDELIVERED)),
+        "{:#?}",
+        rig.seen
+    );
+}
+
+#[test]
+fn messages_queued_for_a_restart_the_user_stops_keep_their_text() {
+    let mut rig = Rig::new(&["idle_only", "slow_start"]);
+    rig.command(ChatCommand::Configure {
+        model: None,
+        effort: Some("low".into()),
+        approval_mode: None,
+        fast: None,
+    });
+    let text = "sent while it restarts ✓";
+    rig.send(text);
+    rig.driver.shutdown();
+    let events: Vec<ChatEvent> = rig.events.try_iter().collect();
+    let notice = undelivered_with(&events, text).expect("the queued text is kept");
+    assert!(
+        matches!(&notice.body, ItemBody::Notice { text: said, .. } if said.contains("not delivered")),
+        "{notice:?}"
+    );
+    // It never reached a CLI, so it is not shown as sent.
+    assert!(user_texts(&events).is_empty(), "{events:#?}");
+}
+
+#[test]
+fn a_prompt_the_interrupt_refused_is_not_answered_again() {
+    let mut rig = Rig::new(&["interrupt_late_approval"]);
+    rig.send("go");
+    rig.until(is_approval);
+    rig.command(ChatCommand::Interrupt);
+    // The CLI has not answered the interrupt yet; the prompt is already refused.
+    let late = rig.driver.command(ChatCommand::Approve {
+        request_id: "perm-1".into(),
+        decision: Decision::Accept,
+    });
+    assert!(late.is_err(), "{late:?}");
+    rig.until_idle();
+    rig.driver.shutdown();
+    assert!(!rig.fake.saw("mismatch"), "{:#?}", rig.fake.entries());
+    let answers = rig
+        .fake
+        .received()
+        .into_iter()
+        .filter(|frame| {
+            frame["type"] == "control_response" && frame["response"]["request_id"] == "perm-1"
+        })
+        .count();
+    assert_eq!(answers, 1);
+    let resolved: Vec<&ChatEvent> = rig
+        .seen
+        .iter()
+        .filter(|event| matches!(event, ChatEvent::ApprovalResolved { .. }))
+        .collect();
+    assert_eq!(
+        resolved,
+        [&ChatEvent::ApprovalResolved {
+            request_id: "perm-1".into(),
+            decision: Decision::Cancel
+        }]
+    );
+}
+
+#[test]
+fn an_attachment_message_that_never_reached_claude_is_not_shown_as_sent() {
+    let fake = Fake::new(&[&fixture("claude/attachments.ndjson")]);
+    let file = fake.dir.join("notes.md");
+    std::fs::write(&file, "notes\n").unwrap();
+    let attachment = super::super::attachments::stage(&fake.dir, &file).unwrap();
+    let (sender, events) = mpsc::channel();
+    let mut driver = start(fake.config(Provider::Claude), sender).expect("the fake claude starts");
+    until(&events, is_idle);
+    // The writer refuses before a byte goes out, as it does when the host stops the chat.
+    driver.cancel_io().expect("claude cancels writes")();
+    let error = driver
+        .command(ChatCommand::SendAttachments {
+            text: "look at this".into(),
+            attachments: vec![attachment],
+        })
+        .unwrap_err();
+    assert!(
+        !error.starts_with(super::super::attachments::UNKNOWN_SUBMISSION),
+        "nothing was written, so that is known: {error}"
+    );
+    let after: Vec<ChatEvent> = events.try_iter().collect();
+    // The draft stays with the user; a resend must not show the message twice.
+    assert!(user_texts(&after).is_empty(), "{after:#?}");
+    assert!(
+        !after
+            .iter()
+            .any(|event| matches!(event, ChatEvent::TurnStarted { .. })),
+        "{after:#?}"
+    );
+    driver.shutdown();
+    assert!(!fake.received().iter().any(|frame| frame["type"] == "user"));
+}
+
+#[test]
+fn a_subagent_message_start_leaves_the_main_stream_whole() {
+    let (sender, events) = mpsc::channel();
+    let mut core = Core::new(&bare_config(), sender, "session".into());
+    core.ready = true;
+    let main = |event: Value| json!({"type":"stream_event","event":event,"session_id":"s","parent_tool_use_id":null});
+    let sub = |event: Value| json!({"type":"stream_event","event":event,"session_id":"s","parent_tool_use_id":"toolu_task"});
+    let text = |text: &str| json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}});
+    let block =
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}});
+    core.on_frame(&main(json!({"type":"message_start","message":{"id":"M1"}})));
+    core.on_frame(&main(block.clone()));
+    core.on_frame(&main(text("Hello ")));
+    // A subagent streams at the same time.
+    core.on_frame(&sub(json!({"type":"message_start","message":{"id":"S1"}})));
+    core.on_frame(&sub(block));
+    core.on_frame(&sub(text("sub-agent chatter")));
+    core.on_frame(&main(text("world")));
+    core.on_frame(&json!({"type":"assistant","message":{"id":"M1","role":"assistant",
+        "content":[{"type":"text","text":"Hello world"}]},"parent_tool_use_id":null,"session_id":"s"}));
+    let transcript = fold(&events.try_iter().collect::<Vec<_>>());
+    assert_eq!(
+        agent_texts(&transcript),
+        ["Hello world"],
+        "{:#?}",
+        transcript.items
+    );
+    assert!(
+        transcript
+            .items
+            .iter()
+            .all(|item| item.status == ItemStatus::Completed),
+        "{:#?}",
+        transcript.items
+    );
+}
+
+#[test]
+fn subagent_synthetic_and_meta_user_frames_are_not_the_users_messages() {
+    let (sender, events) = mpsc::channel();
+    let mut core = Core::new(&bare_config(), sender, "session".into());
+    core.ready = true;
+    core.ensure_turn();
+    // A subagent's tool call, so its result has something to complete.
+    core.on_frame(
+        &json!({"type":"assistant","message":{"id":"S1","role":"assistant",
+        "content":[{"type":"tool_use","id":"toolu_sub","name":"Grep","input":{"pattern":"x"}}]},
+        "parent_tool_use_id":"toolu_task","session_id":"s"}),
+    );
+    let user = |content: Value, extra: Value| {
+        let mut frame = json!({"type":"user","message":{"role":"user","content":content},
+            "parent_tool_use_id":null,"session_id":"s"});
+        for (key, value) in extra.as_object().unwrap() {
+            frame[key] = value.clone();
+        }
+        frame
+    };
+    for frame in [
+        // The prompt a subagent was given.
+        user(
+            json!([{"type":"text","text":"Search the repository for x"}]),
+            json!({"parent_tool_use_id":"toolu_task"}),
+        ),
+        // What the CLI says on the user's behalf.
+        user(
+            json!([{"type":"text","text":"[Request interrupted by user]"}]),
+            json!({"isSynthetic":true}),
+        ),
+        user(
+            json!([{"type":"text","text":"<local-command-stdout></local-command-stdout>"}]),
+            json!({"isMeta":true}),
+        ),
+        user(
+            json!([{"type":"text","text":"This session is being continued from a previous conversation."}]),
+            json!({"isCompactSummary":true}),
+        ),
+        // A subagent's tool result still completes its tool.
+        user(
+            json!([{"type":"tool_result","tool_use_id":"toolu_sub","content":"found","is_error":false},
+                   {"type":"text","text":"subagent context"}]),
+            json!({"parent_tool_use_id":"toolu_task"}),
+        ),
+    ] {
+        core.on_frame(&frame);
+    }
+    let seen: Vec<ChatEvent> = events.try_iter().collect();
+    assert!(user_texts(&seen).is_empty(), "{seen:#?}");
+    assert_eq!(
+        item(&fold(&seen), "toolu_sub").status,
+        ItemStatus::Completed
+    );
 }
