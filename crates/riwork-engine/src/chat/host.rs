@@ -2151,18 +2151,21 @@ fn configure_command_locked(
     command: ChatCommand,
 ) -> Result<(), String> {
     muse_refusal(&chat.info(), &command)?;
+    contributor_refusal(&chat.info(), &command)?;
     let ChatCommand::Configure {
         model,
         effort,
         approval_mode,
         fast,
+        contributor_opt_out,
     } = &command
     else {
         return Err("expected a Configure command".into());
     };
+    let settings = model.is_some() || effort.is_some() || approval_mode.is_some() || fast.is_some();
     // A tab's Retry has no settings, and is the only Configure that starts a
     // stopped provider. Choices made before first use remain saved for start.
-    if model.is_none() && effort.is_none() && approval_mode.is_none() && fast.is_none() {
+    if !settings && contributor_opt_out.is_none() {
         ensure_running_locked(shared, chat)?;
     }
     {
@@ -2171,6 +2174,22 @@ fn configure_command_locked(
             return Err("this chat cannot be configured".into());
         }
     }
+    // A change comes alone (`contributor_refusal`); beside other settings it is the value the
+    // chat has, and only they change.
+    if let Some(opt_out) = *contributor_opt_out {
+        configure_contributor_locked(shared, chat, opt_out)?;
+        if !settings {
+            return Ok(());
+        }
+    }
+    // A driver has no contributor mode to set: that is the process's, chosen above.
+    let command = ChatCommand::Configure {
+        model: model.clone(),
+        effort: effort.clone(),
+        approval_mode: *approval_mode,
+        fast: *fast,
+        contributor_opt_out: None,
+    };
     let Some((generation, driver)) = live_driver(chat) else {
         configure(chat, model.clone(), effort.clone(), *approval_mode, *fast);
         return Ok(());
@@ -2227,6 +2246,120 @@ fn configure_command_locked(
         }
     }
     result
+}
+
+/// A contributor mode change that is refused before anything changes: for a chat that is not
+/// Muse's, as Muse refuses a fast mode (Codex and Claude have none), and together with other
+/// settings, which the Muse started again for the change could still refuse, leaving the change
+/// made and the command failed. Asking for the value the chat already has changes nothing and is
+/// not refused, as asking Muse for no fast mode is not.
+fn contributor_refusal(info: &ChatInfo, command: &ChatCommand) -> Result<(), String> {
+    let ChatCommand::Configure {
+        model,
+        effort,
+        approval_mode,
+        fast,
+        contributor_opt_out: Some(opt_out),
+    } = command
+    else {
+        return Ok(());
+    };
+    if *opt_out == info.contributor_opt_out {
+        return Ok(());
+    }
+    if info.provider != Provider::Muse {
+        return Err(format!(
+            "Only Muse has a contributor mode; this {} chat has none to change.",
+            provider_name(info.provider)
+        ));
+    }
+    if model.is_some() || effort.is_some() || approval_mode.is_some() || fast.is_some() {
+        return Err("Change contributor mode on its own: Muse starts again for it.".into());
+    }
+    Ok(())
+}
+
+/// Opts a Muse chat out of contributor mode, or hands the mode back to the user's Muse
+/// settings. Muse fixes the mode when `muse serve` starts and MSP has no field for it, so no
+/// driver can be configured with it. A chat with no process keeps the value for its next
+/// start. An idle one has its process stopped and started again with the value, and the start
+/// resumes the same Muse session with the standing model, effort and approval mode, as any
+/// resume does. While a turn runs or waits for the user, or the process still starts, the
+/// change is refused and the chat keeps its value. A start that fails leaves the chat failed,
+/// as any failed start does, and with the value it had: no process runs with the new one, and
+/// the next start uses the old one again; a notice says so.
+fn configure_contributor_locked(
+    shared: &Shared,
+    chat: &Arc<Chat>,
+    opt_out: bool,
+) -> Result<(), String> {
+    let before = {
+        let mut inner = lock(&chat.inner);
+        if inner.info.contributor_opt_out == opt_out {
+            return Ok(());
+        }
+        let at_work = matches!(inner.info.state, ChatState::Running | ChatState::Waiting)
+            || inner.open.turn.is_some()
+            || !inner.open.approvals.is_empty()
+            || !inner.open.questions.is_empty();
+        if at_work {
+            return Err(
+                "Wait for the turn to finish, or interrupt it, before changing contributor mode."
+                    .into(),
+            );
+        }
+        if inner.busy() {
+            return Err("Muse is still starting; change contributor mode once it is ready.".into());
+        }
+        if !inner.live() {
+            inner.info.contributor_opt_out = opt_out;
+            inner.publish_info();
+            return Ok(());
+        }
+        inner.info.contributor_opt_out
+    };
+    if shared.quit.load(Ordering::SeqCst) {
+        return Err("the chat host is shutting down".into());
+    }
+    stop_locked(chat);
+    {
+        let mut inner = lock(&chat.inner);
+        if inner.deleted || inner.broken {
+            return Err("this chat cannot be configured".into());
+        }
+        inner.info.contributor_opt_out = opt_out;
+        inner.publish_info();
+    }
+    let Err(error) = ensure_running_locked(shared, chat) else {
+        return Ok(());
+    };
+    let mut inner = lock(&chat.inner);
+    inner.info.contributor_opt_out = before;
+    inner.publish_info();
+    let text = format!(
+        "Contributor mode was not changed: the restart for it did not complete ({error}). \
+         This chat keeps {}.",
+        if before {
+            "contributor mode off"
+        } else {
+            "following your Muse settings"
+        }
+    );
+    let id = format!("contributor-refused-{}", inner.next_seq);
+    inner.append(ChatEvent::ItemCompleted {
+        item: Item {
+            presentation: Default::default(),
+            id,
+            turn_id: None,
+            status: ItemStatus::Completed,
+            body: ItemBody::notice(
+                NoticeLevel::Warning,
+                text.clone(),
+                Some(notice_kind::SETTING_REFUSED),
+            ),
+        },
+    });
+    Err(text)
 }
 
 /// What a Muse chat cannot be asked, refused before anything changes whether or not its
@@ -2298,6 +2431,7 @@ fn switch(
                 effort,
                 approval_mode: None,
                 fast,
+                contributor_opt_out: None,
             },
         );
     }

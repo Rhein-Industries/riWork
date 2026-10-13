@@ -1343,12 +1343,14 @@ fn plan_starts_read_only_and_cannot_be_left_and_fast_is_refused() {
             effort: Some("low".into()),
             approval_mode: Some(ApprovalMode::Supervised),
             fast: None,
+            contributor_opt_out: None,
         },
         ChatCommand::Configure {
             model: None,
             effort: Some("low".into()),
             approval_mode: None,
             fast: Some(true),
+            contributor_opt_out: None,
         },
     ] {
         assert!(run.driver.command(refused).is_err());
@@ -1370,6 +1372,7 @@ fn plan_starts_read_only_and_cannot_be_left_and_fast_is_refused() {
             effort: Some("high".into()),
             approval_mode: Some(ApprovalMode::Plan),
             fast: Some(false),
+            contributor_opt_out: None,
         })
         .unwrap();
     super::super::testing::eventually(|| {
@@ -1855,6 +1858,7 @@ fn live_plan_chat_runs_under_the_read_only_profile() {
                 effort: None,
                 approval_mode: Some(ApprovalMode::Supervised),
                 fast: None,
+                contributor_opt_out: None,
             })
             .is_err()
     );

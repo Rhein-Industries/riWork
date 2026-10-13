@@ -944,6 +944,22 @@ impl ChatView {
                 );
                 return;
             }
+            // The host's refusals name contributor mode themselves.
+            ChatCommand::Configure {
+                contributor_opt_out: Some(_),
+                ..
+            } => {
+                self.notices.set(
+                    notices::LocalKey::Settings,
+                    crate::chat::model::NoticeLevel::Error,
+                    if error.contains("contributor mode") {
+                        error
+                    } else {
+                        format!("Could not change contributor mode: {error}")
+                    },
+                );
+                return;
+            }
             _ => {}
         }
         self.notices.set(
@@ -1055,6 +1071,7 @@ impl ChatView {
             effort,
             approval_mode,
             fast,
+            contributor_opt_out: None,
         });
         cx.notify();
     }
@@ -1081,6 +1098,27 @@ impl ChatView {
             .as_ref()
             .is_some_and(|info| info.fast);
         self.configure(None, None, None, Some(!on), cx);
+    }
+
+    /// Turn Muse's contributor mode off for the chat, or hand it back to the Muse settings. The
+    /// host restarts an idle chat's Muse on the same conversation, and refuses while it works.
+    fn toggle_contributor(&mut self, cx: &mut Context<Self>) {
+        let opted_out = self
+            .model
+            .transcript
+            .info
+            .as_ref()
+            .is_some_and(|info| info.contributor_opt_out);
+        self.menu = None;
+        self.focus_composer = true;
+        self.command(ChatCommand::Configure {
+            model: None,
+            effort: None,
+            approval_mode: None,
+            fast: None,
+            contributor_opt_out: Some(!opted_out),
+        });
+        cx.notify();
     }
 
     /// Start the provider process again for a chat that stopped or failed. Any command

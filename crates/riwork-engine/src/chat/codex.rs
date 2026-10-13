@@ -1440,6 +1440,7 @@ impl Codex {
                 effort,
                 approval_mode,
                 fast,
+                contributor_opt_out: _,
             } => {
                 self.with(|session| {
                     if model.is_some() {

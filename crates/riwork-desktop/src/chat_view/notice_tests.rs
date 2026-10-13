@@ -169,6 +169,35 @@ fn a_tab_error_updates_in_place_and_clears_when_the_host_answers(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn a_refused_contributor_change_says_the_hosts_reason_among_the_settings(cx: &mut TestAppContext) {
+    let (_handle, view, _recording) = mount(cx);
+    let contributor = |opt_out| ChatCommand::Configure {
+        model: None,
+        effort: None,
+        approval_mode: None,
+        fast: None,
+        contributor_opt_out: Some(opt_out),
+    };
+    let busy = "Wait for the turn to finish, or interrupt it, before changing contributor mode.";
+    view.update(cx, |view, _| {
+        view.command_failed(contributor(true), busy.into())
+    });
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.notices.local(notices::LocalKey::Settings), Some(busy));
+        assert_eq!(view.notices.local(notices::LocalKey::Link), None);
+    });
+    view.update(cx, |view, _| {
+        view.command_failed(contributor(false), "this chat cannot be configured".into())
+    });
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.notices.local(notices::LocalKey::Settings),
+            Some("Could not change contributor mode: this chat cannot be configured")
+        );
+    });
+}
+
+#[gpui::test]
 fn a_limit_banner_goes_by_itself_at_its_reset_time(cx: &mut TestAppContext) {
     let start = 1_800_000_000;
     notices::TEST_NOW.with(|now| now.set(Some(start)));

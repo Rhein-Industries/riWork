@@ -4,7 +4,7 @@
 //! Plain std sockets and threads, no async runtime: a window runs these calls on
 //! its background executor and a subscription on a thread of its own.
 
-use super::model::{ChatCommand, ChatInfo, NewChat, Provider};
+use super::model::{ChatCommand, ChatInfo, ChatState, NewChat, Provider};
 use super::wire::{Envelope, Request, Response};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::Shutdown;
@@ -191,12 +191,57 @@ impl Client {
     }
 
     pub fn command(&mut self, chat_id: &str, command: ChatCommand) -> Result<(), String> {
+        let contributor = match &command {
+            ChatCommand::Configure {
+                contributor_opt_out,
+                ..
+            } => *contributor_opt_out,
+            _ => None,
+        };
+        // Whether the chat runs no process now, for a host that would start it (below).
+        let stopped = match contributor {
+            Some(_) => self.list()?.iter().any(|info| {
+                info.id == chat_id
+                    && matches!(info.state, ChatState::Stopped | ChatState::Failed { .. })
+            }),
+            None => false,
+        };
         self.call(Request::Command {
             id: new_id(),
             chat_id: chat_id.into(),
             command,
-        })
-        .map(drop)
+        })?;
+        match contributor {
+            Some(opt_out) => self.confirm_contributor(chat_id, opt_out, stopped),
+            None => Ok(()),
+        }
+    }
+
+    /// A host from before a chat could change contributor mode reads past the field, takes the
+    /// Configure for a Retry and says yes. The chat's own word tells: a change it does not show
+    /// did not happen, and is not reported as done. A chat that was `stopped` before is stopped
+    /// again, so the Muse that host started for it does not go on running as it was.
+    fn confirm_contributor(
+        &mut self,
+        chat_id: &str,
+        opt_out: bool,
+        stopped: bool,
+    ) -> Result<(), String> {
+        let chats = self.list().map_err(|error| {
+            format!("The chat host could not be asked whether contributor mode changed: {error}")
+        })?;
+        match chats.iter().find(|info| info.id == chat_id) {
+            Some(info) if info.contributor_opt_out != opt_out => Err(format!(
+                "The running chat host predates changing Muse contributor mode in a chat, so it \
+                 was not changed{}. Try again once the chat host runs this version of RiWork.",
+                match stopped.then(|| self.close(chat_id)) {
+                    None => String::new(),
+                    Some(Ok(())) => "; the chat it started for this is stopped again".to_owned(),
+                    Some(Err(error)) => format!("; stopping the chat it started failed ({error})"),
+                }
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// `command`, for a caller that must know whether the host can have acted on
@@ -545,6 +590,111 @@ mod tests {
             (seen[1]["op"].as_str(), seen[1]["chat_id"].as_str()),
             (Some("delete"), Some("chat-1"))
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_contributor_change_a_host_read_past_is_not_reported_as_made() {
+        // The Configure of the host before the field: serde reads past what it does not know.
+        #[derive(serde::Deserialize)]
+        #[serde(tag = "command", rename_all = "snake_case")]
+        enum OldCommand {
+            Configure {
+                model: Option<String>,
+                effort: Option<String>,
+                approval_mode: Option<ApprovalMode>,
+                fast: Option<bool>,
+            },
+        }
+        let dir = std::env::temp_dir().join(format!("rwchat-{}", &new_id()[..8]));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("c.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let cwd = dir.clone();
+        let host = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            let mut seen = Vec::new();
+            // A stopped chat, made with the opt-out, which it keeps.
+            let mut state = "stopped";
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() > 0 {
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let result = match request["op"].as_str().unwrap() {
+                    "command" => {
+                        let OldCommand::Configure {
+                            model,
+                            effort,
+                            approval_mode,
+                            fast,
+                        } = serde_json::from_value(request["command"].clone()).unwrap();
+                        // What it is left with: a Retry, which starts the chat, or the model.
+                        assert!(effort.is_none() && approval_mode.is_none() && fast.is_none());
+                        if model.is_none() {
+                            state = "idle";
+                        }
+                        serde_json::Value::Null
+                    }
+                    "close" => {
+                        state = "stopped";
+                        serde_json::Value::Null
+                    }
+                    "list" => serde_json::json!([{
+                        "id": "chat-1", "provider": "muse", "cwd": cwd, "title": "Muse chat",
+                        "created_at_unix": 1, "fast": false, "contributor_opt_out": true,
+                        "approval_mode": "supervised", "state": {"state": state},
+                    }]),
+                    other => panic!("unexpected {other}"),
+                };
+                let response =
+                    serde_json::json!({"id": request["id"], "ok": true, "result": result});
+                writeln!(writer, "{response}").unwrap();
+                seen.push(request);
+                line.clear();
+            }
+            seen
+        });
+        let mut client = Client::connect(&socket).unwrap();
+        let configure = |model: Option<&str>, contributor_opt_out| ChatCommand::Configure {
+            model: model.map(Into::into),
+            effort: None,
+            approval_mode: None,
+            fast: None,
+            contributor_opt_out,
+        };
+        // Stopped, the chat it started is stopped again.
+        let error = client
+            .command("chat-1", configure(None, Some(false)))
+            .unwrap_err();
+        assert!(
+            error.contains("predates changing Muse contributor mode")
+                && error.contains("stopped again"),
+            "{error}"
+        );
+        // What the chat already has needs no change; a Configure without it is not checked.
+        client
+            .command("chat-1", configure(None, Some(true)))
+            .unwrap();
+        client
+            .command("chat-1", configure(Some("m"), None))
+            .unwrap();
+        // Running, it was not started for this, and runs on.
+        let error = client
+            .command("chat-1", configure(None, Some(false)))
+            .unwrap_err();
+        assert!(!error.contains("stopped again"), "{error}");
+        drop(client);
+        let seen = host.join().unwrap();
+        let ops: Vec<_> = seen.iter().map(|r| r["op"].as_str().unwrap()).collect();
+        assert_eq!(
+            ops,
+            [
+                "list", "command", "list", "close", "list", "command", "list", "command", "list",
+                "command", "list"
+            ]
+        );
+        assert_eq!(seen[1]["command"]["contributor_opt_out"], false);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -135,6 +135,7 @@ impl Driver for FakeDriver {
                 effort,
                 approval_mode,
                 fast,
+                contributor_opt_out: _,
             } = command
             {
                 reporter.report(DriverReport {

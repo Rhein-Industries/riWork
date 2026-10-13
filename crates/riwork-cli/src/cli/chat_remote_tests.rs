@@ -660,24 +660,28 @@ fn every_command_reaches_the_driver_in_either_argument_form() {
                 effort: Some("low".into()),
                 approval_mode: Some(ApprovalMode::Plan),
                 fast: None,
+                contributor_opt_out: None,
             },
             ChatCommand::Configure {
                 model: Some("gpt-5.6".into()),
                 effort: None,
                 approval_mode: None,
                 fast: None,
+                contributor_opt_out: None,
             },
             ChatCommand::Configure {
                 model: None,
                 effort: None,
                 approval_mode: None,
                 fast: Some(true),
+                contributor_opt_out: None,
             },
             ChatCommand::Configure {
                 model: None,
                 effort: None,
                 approval_mode: None,
                 fast: Some(false),
+                contributor_opt_out: None,
             },
         ]
     );
@@ -790,6 +794,11 @@ fn a_command_that_is_not_strictly_a_command_is_refused_before_a_host_is_asked() 
         r#"{"command":"configure","fast":1}"#,
         r#"{"command":"configure","fast":null}"#,
         r#"{"command":"send","text":"hi","fast":true}"#,
+        // So is a contributor opt-out, and only a configure has one.
+        r#"{"command":"configure","contributor_opt_out":"off"}"#,
+        r#"{"command":"configure","contributor_opt_out":null}"#,
+        r#"{"command":"send","text":"hi","contributor_opt_out":true}"#,
+        r#"{"command":"switch","provider":"muse","contributor_opt_out":true}"#,
         r#"{"command":"approve","request_id":"r","decision":"yes"}"#,
         r#"{"command":"approve","request_id":"r"}"#,
         r#"{"command":"answer","request_id":"r","answers":["a"]}"#,
@@ -810,6 +819,21 @@ fn a_command_that_is_not_strictly_a_command_is_refused_before_a_host_is_asked() 
     // The longest message there is, is fine for the check.
     let longest = format!(r#"{{"command":"send","text":"{}"}}"#, "x".repeat(MAX_TEXT));
     assert!(parse_command(&longest).is_ok());
+    // A contributor opt-out alone is a change, either way.
+    for opt_out in [true, false] {
+        assert_eq!(
+            parse_command(&format!(
+                r#"{{"command":"configure","contributor_opt_out":{opt_out}}}"#
+            )),
+            Ok(ChatCommand::Configure {
+                model: None,
+                effort: None,
+                approval_mode: None,
+                fast: None,
+                contributor_opt_out: Some(opt_out),
+            })
+        );
+    }
     assert!(!started.get(), "no host was asked for any of them");
     let _ = std::fs::remove_dir_all(home);
 }

@@ -1,0 +1,9 @@
+# A restart for a contributor mode change: the same session resumed, and the standing model, approval
+# mode and effort applied to it again, as at any resume. Only the `muse serve` arguments differ.
+{"type":"expect","frame":{"id":"<any>","method":"initialize","params":{"clientInfo":{"name":"riwork"},"capabilities":{"requestedCapabilities":["sessionMcp"]}}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"serverInfo":{"name":"muse","version":"1.4.7"},"grantedCapabilities":["sessionMcp"]}}]}
+{"type":"expect","frame":{"method":"initialized"},"reply":[]}
+{"type":"expect","frame":{"id":"<any>","method":"session/resume","params":{"commandId":"<any>","sessionId":"sess-1","excludeItems":true}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"session":{"sessionId":"sess-1","activeTurnId":null,"turnCount":1},"viewCursor":"","pendingRequests":[]}}]}
+{"type":"expect","frame":{"id":"<any>","method":"session/setModel","params":{"commandId":"<any>","sessionId":"sess-1","model":{"modelId":"muse-pro"}}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"status":"accepted"}}]}
+{"type":"expect","frame":{"id":"<any>","method":"session/setApprovalMode","params":{"commandId":"<any>","sessionId":"sess-1","mode":"allowAll"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"status":"accepted","effectiveMode":{"mode":"allowAll"}}}]}
+{"type":"expect","frame":{"id":"<any>","method":"session/setReasoningEffort","params":{"commandId":"<any>","sessionId":"sess-1","reasoningEffort":"high"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"status":"accepted"}}]}
+{"type":"expect","frame":{"id":"<any>","method":"model/list","params":{"sessionId":"sess-1"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"providerId":"fake","profileId":null,"source":"fakeCatalog","models":[]}}]}

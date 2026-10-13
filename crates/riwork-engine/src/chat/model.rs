@@ -112,8 +112,9 @@ pub struct ChatInfo {
     pub fast: bool,
     /// The user opted this Muse chat out of Muse's contributor mode: every `muse serve` it
     /// starts, first and on each resume, says `--contributor-mode off`. Off leaves the
-    /// mode to the user's Muse settings. Only a Muse chat is made with it; it stays with a
-    /// chat that switches provider and applies again if the chat goes back to Muse.
+    /// mode to the user's Muse settings. Only a Muse chat is made with it or changes it
+    /// (`ChatCommand::Configure`); it stays with a chat that switches provider and applies
+    /// again if the chat goes back to Muse.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub contributor_opt_out: bool,
     #[serde(default)]
@@ -670,6 +671,13 @@ pub enum ChatCommand {
         approval_mode: Option<ApprovalMode>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fast: Option<bool>,
+        /// Muse only (`ChatInfo::contributor_opt_out`); false hands the mode back to the
+        /// user's Muse settings. Muse fixes it for a process, so the host restarts an idle
+        /// chat's `muse serve` and resumes its session, stores it for a stopped chat's next
+        /// start, and refuses it while a turn runs, waits or the process still starts. A host
+        /// from before it reads past the field: the client checks the chat afterwards.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contributor_opt_out: Option<bool>,
     },
     Compact,
     /// Stop the provider process; the chat resumes with the next message.
@@ -1092,6 +1100,7 @@ mod tests {
                 effort: Some("high".into()),
                 approval_mode: None,
                 fast: None,
+                contributor_opt_out: None,
             }
         );
         // Leaving it out stays out of the JSON; turning it off is a change that is sent.
@@ -1105,6 +1114,7 @@ mod tests {
                 effort: None,
                 approval_mode: None,
                 fast: Some(fast),
+                contributor_opt_out: None,
             };
             let line = serde_json::to_string(&command).unwrap();
             assert_eq!(line, format!(r#"{{"command":"configure","fast":{fast}}}"#));
@@ -1118,7 +1128,7 @@ mod tests {
     }
 
     #[test]
-    fn contributor_opt_out_is_off_in_info_and_new_chat_written_before_it_existed() {
+    fn contributor_opt_out_is_off_in_info_new_chat_and_configure_written_before_it_existed() {
         let info: ChatInfo = serde_json::from_str(
             r#"{"id":"i","provider":"muse","cwd":"/w","title":"t","created_at_unix":1,"fast":false}"#,
         )
@@ -1139,6 +1149,40 @@ mod tests {
         new.contributor_opt_out = true;
         let line = serde_json::to_string(&new).unwrap();
         assert_eq!(serde_json::from_str::<NewChat>(&line).unwrap(), new);
+        // A Configure from before the field reads as one that leaves contributor mode alone,
+        // and one that leaves it alone is written as before.
+        let old: ChatCommand =
+            serde_json::from_str(r#"{"command":"configure","model":"m","fast":false}"#).unwrap();
+        assert_eq!(
+            old,
+            ChatCommand::Configure {
+                model: Some("m".into()),
+                effort: None,
+                approval_mode: None,
+                fast: Some(false),
+                contributor_opt_out: None,
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&old).unwrap(),
+            r#"{"command":"configure","model":"m","fast":false}"#
+        );
+        // Off and back to the Muse settings are both changes that are sent.
+        for opt_out in [true, false] {
+            let command = ChatCommand::Configure {
+                model: None,
+                effort: None,
+                approval_mode: None,
+                fast: None,
+                contributor_opt_out: Some(opt_out),
+            };
+            let line = serde_json::to_string(&command).unwrap();
+            assert_eq!(
+                line,
+                format!(r#"{{"command":"configure","contributor_opt_out":{opt_out}}}"#)
+            );
+            assert_eq!(serde_json::from_str::<ChatCommand>(&line).unwrap(), command);
+        }
     }
 
     #[test]

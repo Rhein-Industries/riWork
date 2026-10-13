@@ -300,6 +300,7 @@ impl Driver for MuseDriver {
             effort,
             approval_mode,
             fast,
+            contributor_opt_out: _,
         } = command
         else {
             return self.command(command);
@@ -1767,6 +1768,7 @@ impl Muse {
                 effort,
                 approval_mode,
                 fast,
+                contributor_opt_out: _,
             } => self.configure(
                 model,
                 effort,

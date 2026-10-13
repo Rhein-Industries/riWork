@@ -167,6 +167,10 @@ answer, configure, compact, stop, dismiss_notice, switch) and refuses unknown fi
 `invalid_request:` are about the command, anything else about the host or the chat.
 {\"command\":\"switch\",\"provider\":\"claude\"} goes on with the other provider in the same chat
 (optional model, effort, fast); it is refused while a turn runs or waits.
+{\"command\":\"configure\",\"contributor_opt_out\":true} turns a Muse chat's contributor mode
+off (false: back to your Muse settings). An idle chat's `muse serve` restarts and resumes its
+session; a stopped one keeps it for its next start. Send it on its own: it is refused beside
+other settings, while a turn runs or waits or Muse still starts, and for a Codex or Claude chat.
 chat models lists what a chat of that provider can be set to, read from saved chats; a
 project selects the Codex account the list is for.
 capabilities --json has \"chat\": true, \"orchestrator_create\": true,

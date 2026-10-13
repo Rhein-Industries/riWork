@@ -200,6 +200,16 @@ pub fn fast_label(on: bool) -> &'static str {
     if on { "Fast on" } else { "Fast off" }
 }
 
+/// What a Muse chat's contributor toggle says, as the new-chat dialog does: off for this chat,
+/// or left to the user's Muse settings (never a forced on).
+pub fn contributor_label(opted_out: bool) -> &'static str {
+    if opted_out {
+        "Contributor mode off"
+    } else {
+        "Contributor mode: Muse settings"
+    }
+}
+
 /// The model and effort to send when `model` is picked. An effort the new model does not take
 /// moves to the new model's own default (the driver would leave it out otherwise, and the chat
 /// would show one it does not use); an effort it takes stays, and none stays none.

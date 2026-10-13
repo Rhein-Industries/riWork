@@ -51,6 +51,7 @@ fn configure(model: Option<&str>, effort: Option<&str>, mode: Option<ApprovalMod
         effort: effort.map(str::to_owned),
         approval_mode: mode,
         fast: None,
+        contributor_opt_out: None,
     }
 }
 
