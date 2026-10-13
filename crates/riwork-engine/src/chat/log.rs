@@ -12,7 +12,7 @@
 //! No file stays open between events: a host with hundreds of chats would run
 //! out of descriptors (a macOS app's soft limit is 256).
 
-use super::model::ChatInfo;
+use super::model::{ChatEvent, ChatInfo, ItemBody};
 use super::wire::Envelope;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -119,6 +119,59 @@ impl ChatLog {
         self.replace(INFO, &data).map(drop)
     }
 
+    /// Whether the current provider session has ever been used. Scan the whole
+    /// log as a stream: a tail or `first_user_message` alone would confuse an
+    /// empty switched session with an old conversation. Legacy records without
+    /// binding metadata belong to the only known session. An unreadable record
+    /// is an error, not evidence that a conversation is safe to replace.
+    pub(super) fn provider_session_has_history(&self, info: &ChatInfo) -> Result<bool, String> {
+        let path = self.dir.join(EVENTS);
+        let read = |error: io::Error| format!("Cannot read {}: {error}", path.display());
+        let mut reader = BufReader::new(File::open(&path).map_err(read)?);
+        let mut binding: Option<(super::model::Provider, Option<String>)> = None;
+        let mut history = false;
+        let mut any_history = false;
+        let mut boundary = false;
+        let mut seq = 0;
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            if reader.read_until(b'\n', &mut line).map_err(read)? == 0 {
+                break;
+            }
+            let envelope: Envelope = serde_json::from_slice(&line)
+                .map_err(|error| format!("Cannot parse {}: {error}", path.display()))?;
+            if line.last() != Some(&b'\n') || envelope.chat_id != info.id || envelope.seq != seq + 1
+            {
+                return Err(format!("Invalid session history in {}", path.display()));
+            }
+            seq = envelope.seq;
+            if let ChatEvent::Info { info: said } = &envelope.event {
+                let changed = binding.as_ref().is_some_and(|(provider, thread)| {
+                    *provider != said.provider
+                        || matches!((thread, &said.provider_thread_id), (Some(a), Some(b)) if a != b)
+                });
+                if changed {
+                    history = false;
+                    boundary = true;
+                }
+                binding = Some((said.provider, said.provider_thread_id.clone()));
+            } else if is_session_history(&envelope.event) {
+                history = true;
+                any_history = true;
+            }
+        }
+        if binding.as_ref().is_some_and(|(provider, thread)| {
+            *provider != info.provider
+                || matches!((thread, &info.provider_thread_id), (Some(a), Some(b)) if a != b)
+        }) {
+            // Metadata can be saved just before a crash prevented its Info.
+            // With ambiguous ownership, never assert that a used chat is empty.
+            return Ok(any_history || info.first_user_message.is_some());
+        }
+        Ok(history || (!boundary && info.first_user_message.is_some()))
+    }
+
     /// Writes the conversation a chat passes on when it switches provider
     /// (`ChatInfo::carried_over`), replacing the one an earlier switch wrote, and returns
     /// where it is. It goes with the chat when the chat is deleted.
@@ -141,6 +194,20 @@ impl ChatLog {
             return Err(format!("Cannot write {}: {error}", path.display()));
         }
         Ok(path)
+    }
+}
+
+fn is_session_history(event: &ChatEvent) -> bool {
+    match event {
+        ChatEvent::TurnStarted { .. }
+        | ChatEvent::TurnCompleted { .. }
+        | ChatEvent::ItemDelta { .. }
+        | ChatEvent::ApprovalRequested { .. }
+        | ChatEvent::QuestionRequested { .. } => true,
+        ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => {
+            !matches!(item.body, ItemBody::Notice { .. })
+        }
+        _ => false,
     }
 }
 

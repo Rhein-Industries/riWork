@@ -1394,6 +1394,8 @@ impl Live {
             effort: None,
             fast: false,
             resume: None,
+            resume_has_history: false,
+            reporter: Default::default(),
             outstanding_notices: Default::default(),
             extra_args: Vec::new(),
             instructions: None,

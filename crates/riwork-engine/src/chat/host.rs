@@ -39,7 +39,7 @@
 //! next `ensure` starts it again.
 
 use super::client;
-use super::driver::{Driver, DriverConfig, StartDriver};
+use super::driver::{Driver, DriverConfig, DriverReport, DriverReporter, StartDriver};
 use super::log::{self, ChatLog};
 use super::model::{
     CarriedOver, ChatCommand, ChatEvent, ChatInfo, ChatState, Decision, Item, ItemBody, ItemStatus,
@@ -257,10 +257,26 @@ fn now_unix() -> u64 {
 
 type DriverHandle = Arc<Mutex<Box<dyn Driver>>>;
 
+/// Each field has its own request revision: choosing an effort must not make
+/// an independent pending model acknowledgement stale.
+#[derive(Clone, Copy, Default)]
+struct SettingsRevisions {
+    model: u64,
+    effort: u64,
+    approval_mode: u64,
+    fast: u64,
+}
+
 /// The provider process of a chat while one is wanted.
 struct Run {
     /// Which start this is: events of an earlier run are dropped.
     generation: u64,
+    settings_revisions: SettingsRevisions,
+    configurations: u64,
+    /// A successful guarded start must still own this historical session.
+    guarded_resume: Option<String>,
+    /// Do not publish settings/identity from a start that may still fail.
+    startup_reports: Vec<DriverReport>,
     /// `None` while `StartDriver` is still running.
     driver: Option<DriverHandle>,
     cancel_io: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -276,6 +292,10 @@ impl Run {
     fn starting(generation: u64) -> Self {
         Self {
             generation,
+            settings_revisions: SettingsRevisions::default(),
+            configurations: 0,
+            guarded_resume: None,
+            startup_reports: Vec::new(),
             driver: None,
             cancel_io: None,
             stopping: false,
@@ -557,29 +577,122 @@ impl Inner {
         });
     }
 
-    /// What a driver tells about the chat it runs: the thread id and the model.
-    fn learn(&mut self, thread: Option<String>, model: Option<String>, effort: Option<String>) {
+    /// What a driver actually retained or observed, without accepting any of
+    /// the chat/project/account metadata the provider does not own.
+    fn learn(&mut self, report: DriverReport) {
         let mut changed = false;
-        if let Some(thread) = thread.filter(|thread| !thread.is_empty())
+        if let Some(thread) = report
+            .provider_thread_id
+            .filter(|thread| !thread.is_empty())
             && self.info.provider_thread_id.as_ref() != Some(&thread)
         {
             self.info.provider_thread_id = Some(thread);
             changed = true;
         }
-        if let Some(model) = model.filter(|model| !model.is_empty())
-            && self.info.model.as_ref() != Some(&model)
+        if let Some(model) = report.model
+            && model.as_ref().is_none_or(|model| !model.is_empty())
+            && self.info.model != model
         {
-            self.info.model = Some(model);
+            self.info.model = model;
             changed = true;
         }
-        if let Some(effort) = effort.filter(|effort| !effort.is_empty())
-            && self.info.effort.as_ref() != Some(&effort)
+        if let Some(effort) = report.effort
+            && effort.as_ref().is_none_or(|effort| !effort.is_empty())
+            && self.info.effort != effort
         {
-            self.info.effort = Some(effort);
+            self.info.effort = effort;
+            changed = true;
+        }
+        if let Some(mode) = report.approval_mode
+            && self.info.approval_mode != mode
+        {
+            self.info.approval_mode = mode;
+            changed = true;
+        }
+        if let Some(fast) = report.fast
+            && self.info.fast != fast
+        {
+            self.info.fast = fast;
             changed = true;
         }
         if changed {
             self.publish_info();
+        }
+    }
+
+    fn take_driver_report(
+        &mut self,
+        mut report: DriverReport,
+        revisions: Option<SettingsRevisions>,
+    ) {
+        if self.deleted || self.broken {
+            return;
+        }
+        let Some(run) = self.run.as_mut().filter(|run| run.live()) else {
+            return;
+        };
+        if revisions.is_none() && run.driver.is_some() {
+            // An actual provider change supersedes pending acknowledgements
+            // for that field (or the old session). An unchanged observation
+            // must not invalidate a legitimate next-turn selection.
+            let identity = report.provider_thread_id.as_ref().is_some_and(|id| {
+                !id.is_empty() && self.info.provider_thread_id.as_ref() != Some(id)
+            });
+            let model = report.model.as_ref().is_some_and(|value| {
+                value.as_ref().is_none_or(|id| !id.is_empty()) && self.info.model != *value
+            });
+            let effort = report.effort.as_ref().is_some_and(|value| {
+                value.as_ref().is_none_or(|id| !id.is_empty()) && self.info.effort != *value
+            });
+            let mode = report
+                .approval_mode
+                .is_some_and(|mode| self.info.approval_mode != mode);
+            let fast = report.fast.is_some_and(|fast| self.info.fast != fast);
+            if identity || model || effort || mode || fast {
+                run.configurations += 1;
+                let revision = run.configurations;
+                if identity || model {
+                    run.settings_revisions.model = revision;
+                }
+                if identity || effort {
+                    run.settings_revisions.effort = revision;
+                }
+                if identity || mode {
+                    run.settings_revisions.approval_mode = revision;
+                }
+                if identity || fast {
+                    run.settings_revisions.fast = revision;
+                }
+            }
+        }
+        if let Some(revisions) = revisions {
+            let current = run.settings_revisions;
+            if revisions.model != current.model {
+                report.model = None;
+            }
+            if revisions.effort != current.effort {
+                report.effort = None;
+            }
+            if revisions.approval_mode != current.approval_mode {
+                report.approval_mode = None;
+            }
+            if revisions.fast != current.fast {
+                report.fast = None;
+            }
+            // A settings reply has no authority to restore an identity from
+            // before another request. Session observations use the run sink.
+            if revisions.model != current.model
+                || revisions.effort != current.effort
+                || revisions.approval_mode != current.approval_mode
+                || revisions.fast != current.fast
+            {
+                report.provider_thread_id = None;
+            }
+        }
+        if run.driver.is_none() {
+            run.startup_reports.push(report);
+        } else {
+            self.learn(report);
         }
     }
 
@@ -610,7 +723,17 @@ impl Inner {
                 false
             }
             ChatEvent::Info { info } => {
-                self.learn(info.provider_thread_id, info.model, info.effort);
+                // Compatibility for existing adapters; new adapters use the
+                // internal reporter for precise optional fields and replies.
+                self.take_driver_report(
+                    DriverReport {
+                        provider_thread_id: info.provider_thread_id,
+                        model: info.model.map(Some),
+                        effort: info.effort.map(Some),
+                        ..Default::default()
+                    },
+                    None,
+                );
                 false
             }
             ChatEvent::ProviderTitle { title } => {
@@ -1569,6 +1692,11 @@ fn outstanding_sticky_notices(transcript: &Transcript) -> HashMap<String, Item> 
 /// Starts the chat's provider process unless one is running.
 fn ensure_running(shared: &Shared, chat: &Arc<Chat>) -> Result<(), String> {
     let _turn = lock(&chat.lifecycle);
+    ensure_running_locked(shared, chat)
+}
+
+/// The caller already serializes start/stop/switch/configure.
+fn ensure_running_locked(shared: &Shared, chat: &Arc<Chat>) -> Result<(), String> {
     if shared.quit.load(Ordering::SeqCst) {
         return Err("the chat host is shutting down".into());
     }
@@ -1603,10 +1731,23 @@ fn ensure_running(shared: &Shared, chat: &Arc<Chat>) -> Result<(), String> {
         Err(error) => return fail_start(chat, generation, error),
     };
     let mut inner = lock(&chat.inner);
+    if config.resume.is_some() {
+        config.resume_has_history = match inner.log.provider_session_has_history(&info) {
+            Ok(history) => history,
+            Err(error) => {
+                drop(inner);
+                return fail_start(chat, generation, error);
+            }
+        };
+    }
+    if let Some(run) = inner.run.as_mut() {
+        run.guarded_resume = config.resume.clone().filter(|_| config.resume_has_history);
+    }
     let identity =
         super::account_identity::canonical(&config, None, inner.provider_account_identity.as_ref());
     inner.set_account_identity(identity);
     drop(inner);
+    config.reporter = driver_reporter(chat, generation, None);
     // Only the log's tail, and only its notices: a long chat does not hold up the start,
     // and one that cannot be read leaves nothing to resolve.
     config.outstanding_notices =
@@ -1631,15 +1772,39 @@ fn ensure_running(shared: &Shared, chat: &Arc<Chat>) -> Result<(), String> {
     }
 }
 
+fn driver_reporter(
+    chat: &Arc<Chat>,
+    generation: u64,
+    revisions: Option<SettingsRevisions>,
+) -> DriverReporter {
+    // A driver may outlive its run. Do not keep the chat alive via a callback
+    // owned by its driver (or a saved fixture configuration).
+    let chat = Arc::downgrade(chat);
+    DriverReporter::new(move |report| {
+        let Some(chat) = chat.upgrade() else {
+            return;
+        };
+        let mut inner = lock(&chat.inner);
+        if inner
+            .run
+            .as_ref()
+            .is_some_and(|run| run.generation == generation)
+        {
+            inner.take_driver_report(report, revisions);
+        }
+    })
+}
+
 fn fail_start(chat: &Chat, generation: u64, message: String) -> Result<(), String> {
     let mut inner = lock(&chat.inner);
     if inner
         .run
         .as_ref()
-        .is_some_and(|run| run.generation == generation)
+        .is_none_or(|run| run.generation != generation)
     {
-        inner.run = None;
+        return Err(message);
     }
+    inner.run = None;
     inner.settle(TurnOutcome::Failed {
         message: message.clone(),
     });
@@ -1666,22 +1831,38 @@ fn attach(chat: &Chat, generation: u64, driver: Box<dyn Driver>) -> Result<(), S
     };
     run.driver = Some(handle);
     run.cancel_io = cancel_io;
-    let ended = run.ended;
-    inner.learn(thread, None, None);
-    if ended {
+    let ended = run.ended || run.stopping;
+    let replaced = run
+        .guarded_resume
+        .as_ref()
+        .filter(|original| {
+            thread.as_ref() != Some(original)
+                || run.startup_reports.iter().any(|report| {
+                    report
+                        .provider_thread_id
+                        .as_ref()
+                        .is_some_and(|id| id != *original)
+                })
+        })
+        .cloned();
+    if ended || replaced.is_some() {
         // The provider was over before `start` returned. If it said how, that
         // is the chat's state; if its channel just closed, the chat fails here.
-        let message = match &inner.info.state {
-            ChatState::Failed { message } => message.clone(),
+        let message = match (&inner.info.state, replaced) {
+            (_, Some(original)) => format!(
+                "The provider did not resume historical session {original}. Its original identity \
+                 and transcript were kept; restore the provider's session store and retry."
+            ),
+            (ChatState::Failed { message }, _) => message.clone(),
             _ => "the provider process ended while it started".to_owned(),
         };
-        if let Some(run) = inner.run.take() {
-            run.reap();
-        }
-        if !matches!(
-            inner.info.state,
-            ChatState::Stopped | ChatState::Failed { .. }
-        ) {
+        let reap = inner.run.take();
+        if !ended
+            || !matches!(
+                inner.info.state,
+                ChatState::Stopped | ChatState::Failed { .. }
+            )
+        {
             inner.settle(TurnOutcome::Failed {
                 message: message.clone(),
             });
@@ -1689,7 +1870,19 @@ fn attach(chat: &Chat, generation: u64, driver: Box<dyn Driver>) -> Result<(), S
                 message: message.clone(),
             });
         }
+        drop(inner);
+        if let Some(run) = reap {
+            run.reap();
+        }
         return Err(message);
+    }
+    let reports = std::mem::take(&mut run.startup_reports);
+    inner.learn(DriverReport {
+        provider_thread_id: thread,
+        ..Default::default()
+    });
+    for report in reports {
+        inner.learn(report);
     }
     Ok(())
 }
@@ -1767,6 +1960,18 @@ fn read_events(
 /// Shuts the chat's provider process down and marks the chat stopped. The
 /// history stays.
 fn stop(chat: &Chat) {
+    // A Configure can block on child I/O while holding lifecycle and driver.
+    // Cancel before waiting on those locks, so Stop can always release it.
+    let cancel = {
+        let mut inner = lock(&chat.inner);
+        inner.run.as_mut().and_then(|run| {
+            run.stopping = true;
+            run.cancel_io.clone()
+        })
+    };
+    if let Some(cancel) = cancel {
+        cancel();
+    }
     let _turn = lock(&chat.lifecycle);
     stop_locked(chat);
 }
@@ -1808,13 +2013,13 @@ fn stop_locked(chat: &Chat) {
     }
 }
 
-fn live_driver(chat: &Chat) -> Option<DriverHandle> {
+fn live_driver(chat: &Chat) -> Option<(u64, DriverHandle)> {
     let inner = lock(&chat.inner);
     inner
         .run
         .as_ref()
         .filter(|run| run.live())
-        .and_then(|run| run.driver.clone())
+        .and_then(|run| run.driver.clone().map(|driver| (run.generation, driver)))
 }
 
 /// Routes a user command to the chat's driver, starting (resuming) the driver
@@ -1835,66 +2040,48 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
         stop(chat);
         return Ok(());
     }
-    muse_refusal(&chat.info(), &command)?;
-    let command = match command {
+    match command {
         ChatCommand::Switch {
             provider,
             model,
             effort,
             fast,
-        } if provider != chat.info().provider => {
+        } => {
             return switch(shared, chat, provider, model, effort, fast);
         }
-        // The provider the chat has already: the rest is an ordinary change.
-        ChatCommand::Switch {
-            model,
-            effort,
-            fast,
-            ..
-        } => ChatCommand::Configure {
-            model,
-            effort,
-            approval_mode: None,
-            fast,
-        },
-        command => command,
-    };
-    // A Configure that changes nothing is a tab's Retry: resume the provider.
-    let retry = matches!(
-        &command,
-        ChatCommand::Configure {
-            model: None,
-            effort: None,
-            approval_mode: None,
-            fast: None,
+        ChatCommand::Configure { .. } => {
+            let _turn = lock(&chat.lifecycle);
+            return configure_command_locked(shared, chat, command);
         }
-    );
-    if retry
-        || matches!(
-            command,
-            ChatCommand::Send { .. } | ChatCommand::SendAttachments { .. } | ChatCommand::Compact
-        )
-    {
+        _ => {}
+    }
+    if matches!(
+        command,
+        ChatCommand::Send { .. } | ChatCommand::SendAttachments { .. } | ChatCommand::Compact
+    ) {
         ensure_running(shared, chat)?;
     }
-    let Some(driver) = live_driver(chat) else {
-        // Settings are the chat's own; the next process starts with them.
-        if let ChatCommand::Configure {
-            model,
-            effort,
-            approval_mode,
-            fast,
-        } = command
-        {
-            configure(chat, model, effort, approval_mode, fast);
-            return Ok(());
-        }
+    let Some((generation, driver)) = live_driver(chat) else {
         return Err("the chat is stopped; send a message to resume it".into());
     };
-    lock(&driver).command(command.clone())?;
+    let mut driver = lock(&driver);
+    if !lock(&chat.inner)
+        .run
+        .as_ref()
+        .is_some_and(|run| run.generation == generation && run.live())
+    {
+        return Err("the chat was stopped before the command reached its provider".into());
+    }
+    driver.command(command.clone())?;
+    drop(driver);
     if let ChatCommand::Send { text } = &command {
         let mut inner = lock(&chat.inner);
-        if needs_auto_title(&inner.info) {
+        if inner
+            .run
+            .as_ref()
+            .is_some_and(|run| run.generation == generation)
+            && needs_auto_title(&inner.info)
+        {
             let title = crate::project_tabs::message_title(text);
             if !title.is_empty() {
                 inner.info.first_user_message = Some(title);
@@ -1902,16 +2089,91 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
             }
         }
     }
-    if let ChatCommand::Configure {
+    Ok(())
+}
+
+fn configure_command_locked(
+    shared: &Shared,
+    chat: &Arc<Chat>,
+    command: ChatCommand,
+) -> Result<(), String> {
+    muse_refusal(&chat.info(), &command)?;
+    let ChatCommand::Configure {
         model,
         effort,
         approval_mode,
         fast,
-    } = command
-    {
-        configure(chat, model, effort, approval_mode, fast);
+    } = &command
+    else {
+        return Err("expected a Configure command".into());
+    };
+    // A tab's Retry has no settings, and is the only Configure that starts a
+    // stopped provider. Choices made before first use remain saved for start.
+    if model.is_none() && effort.is_none() && approval_mode.is_none() && fast.is_none() {
+        ensure_running_locked(shared, chat)?;
     }
-    Ok(())
+    {
+        let inner = lock(&chat.inner);
+        if inner.deleted || inner.broken {
+            return Err("this chat cannot be configured".into());
+        }
+    }
+    let Some((generation, driver)) = live_driver(chat) else {
+        configure(chat, model.clone(), effort.clone(), *approval_mode, *fast);
+        return Ok(());
+    };
+    let mut driver = lock(&driver);
+    let (before, revisions) = {
+        let mut inner = lock(&chat.inner);
+        let Some(run) = inner
+            .run
+            .as_mut()
+            .filter(|run| run.generation == generation && run.live())
+        else {
+            return Err("the provider ended before it could be configured".into());
+        };
+        let before = run.settings_revisions;
+        run.configurations += 1;
+        let revision = run.configurations;
+        if model.is_some() {
+            run.settings_revisions.model = revision;
+        }
+        if effort.is_some() {
+            run.settings_revisions.effort = revision;
+        }
+        if approval_mode.is_some() {
+            run.settings_revisions.approval_mode = revision;
+        }
+        if fast.is_some() {
+            run.settings_revisions.fast = revision;
+        }
+        (before, run.settings_revisions)
+    };
+    let result = driver.configure(command, driver_reporter(chat, generation, Some(revisions)));
+    if result.is_err() {
+        let mut inner = lock(&chat.inner);
+        if let Some(run) = inner
+            .run
+            .as_mut()
+            .filter(|run| run.generation == generation)
+        {
+            // A synchronous refusal did not supersede an earlier pending
+            // selection. Do not undo intervening provider observations.
+            if run.settings_revisions.model == revisions.model {
+                run.settings_revisions.model = before.model;
+            }
+            if run.settings_revisions.effort == revisions.effort {
+                run.settings_revisions.effort = before.effort;
+            }
+            if run.settings_revisions.approval_mode == revisions.approval_mode {
+                run.settings_revisions.approval_mode = before.approval_mode;
+            }
+            if run.settings_revisions.fast == revisions.fast {
+                run.settings_revisions.fast = before.fast;
+            }
+        }
+    }
+    result
 }
 
 /// What a Muse chat cannot be asked, refused before anything changes whether or not its
@@ -1962,8 +2224,31 @@ fn switch(
     effort: Option<String>,
     fast: Option<bool>,
 ) -> Result<(), String> {
+    let _turn = lock(&chat.lifecycle);
+    muse_refusal(
+        &chat.info(),
+        &ChatCommand::Switch {
+            provider,
+            model: model.clone(),
+            effort: effort.clone(),
+            fast,
+        },
+    )?;
+    // Decide under the same lock as the switch, so racing switches cannot
+    // turn a settings change into a new session of the wrong provider.
+    if provider == chat.info().provider {
+        return configure_command_locked(
+            shared,
+            chat,
+            ChatCommand::Configure {
+                model,
+                effort,
+                approval_mode: None,
+                fast,
+            },
+        );
+    }
     {
-        let _turn = lock(&chat.lifecycle);
         let before = {
             let inner = lock(&chat.inner);
             if inner.deleted {
@@ -2055,7 +2340,7 @@ fn switch(
             },
         });
     }
-    let _ = ensure_running(shared, chat);
+    let _ = ensure_running_locked(shared, chat);
     Ok(())
 }
 

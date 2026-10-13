@@ -1327,6 +1327,8 @@ fn live_codex_answers_a_trivial_prompt() {
         effort: None,
         fast: false,
         resume: None,
+        resume_has_history: false,
+        reporter: Default::default(),
         outstanding_notices: Default::default(),
         extra_args: Vec::new(),
         env: Vec::new(),

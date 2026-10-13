@@ -2468,3 +2468,670 @@ fn switching_retires_notices_limits_and_login_scope_even_when_start_fails() {
         }
     }
 }
+
+// ---- Resume and effective configuration contract ------------------------------------
+
+fn choose(model: Option<&str>, effort: Option<&str>, mode: Option<ApprovalMode>) -> ChatCommand {
+    ChatCommand::Configure {
+        model: model.map(str::to_owned),
+        effort: effort.map(str::to_owned),
+        approval_mode: mode,
+        fast: None,
+    }
+}
+
+fn configure_reply(host: &TestHost, index: usize) -> DriverReporter {
+    host.fake().configurations.lock().unwrap()[index].1.clone()
+}
+
+fn saved_info(host: &TestHost, id: &str) -> ChatInfo {
+    serde_json::from_slice(&fs::read(host.home.join("chats").join(id).join("info.json")).unwrap())
+        .unwrap()
+}
+
+#[test]
+fn missing_resume_preserves_used_sessions_and_allows_never_used_sessions_for_every_provider() {
+    for provider in [Provider::Codex, Provider::Claude, Provider::Muse] {
+        for used in [false, true] {
+            let mut host = TestHost::new();
+            let mut new = host.new_chat(provider);
+            new.project_id = Some(PROJECT.into());
+            new.worktree_id = Some("33333333-3333-4333-8333-333333333333".into());
+            new.title = Some("Keep this conversation".into());
+            new.approval_mode = ApprovalMode::Plan;
+            let chat = host.client().create(new).unwrap();
+            host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+            if used {
+                send(&mut host.client(), &chat.id, "remember this 🦀");
+                host.wait_for_log(&chat.id, |log| {
+                    turns_completed(log) == 1 && last_state(log) == Some(ChatState::Idle)
+                });
+            }
+            host.client().close(&chat.id).unwrap();
+            let before = host.info(&chat.id);
+            let prefix = host.log(&chat.id);
+            let tabs_path = host
+                .home
+                .join("project-tabs")
+                .join(format!("{PROJECT}.json"));
+            let tabs = fs::read(&tabs_path).unwrap();
+            let draft = host.home.join("chat-drafts").join(&chat.id);
+            fs::create_dir_all(draft.parent().unwrap()).unwrap();
+            fs::write(&draft, "  my unsent draft 🦀\n").unwrap();
+            // Reloading must derive history for this session, not just this run.
+            host.restart(quick_options());
+            host.fake().resume_missing.store(true, Ordering::SeqCst);
+            let result = host.client().command(
+                &chat.id,
+                ChatCommand::Send {
+                    text: "  my unsent draft 🦀\n".into(),
+                },
+            );
+            let config = host.fake().starts.lock().unwrap().last().unwrap().clone();
+            assert_eq!(config.resume_has_history, used, "{provider:?}");
+            assert_eq!(config.resume, before.provider_thread_id);
+            if used {
+                assert!(result.unwrap_err().contains("Historical session"));
+                let after = host.info(&chat.id);
+                assert!(matches!(after.state, ChatState::Failed { .. }));
+                let mut comparable = after.clone();
+                comparable.state = before.state.clone();
+                assert_eq!(comparable, before, "metadata and original identity survive");
+                assert_eq!(saved_info(&host, &chat.id), after);
+                assert_eq!(&host.log(&chat.id)[..prefix.len()], prefix.as_slice());
+                assert_eq!(
+                    host.fake().commands().len(),
+                    1,
+                    "failed Send never reaches the driver, so the caller keeps its draft"
+                );
+            } else {
+                result.unwrap();
+                let after = host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+                assert_ne!(
+                    after.provider_thread_id, before.provider_thread_id,
+                    "unused missing sessions may start fresh"
+                );
+                assert_eq!(after.approval_mode, before.approval_mode);
+            }
+            assert_eq!(
+                fs::read_to_string(&draft).unwrap(),
+                "  my unsent draft 🦀\n"
+            );
+            assert_eq!(fs::read(&tabs_path).unwrap(), tabs);
+            assert_eq!(
+                host.info(&chat.id).id,
+                chat.id,
+                "RiWork session identity remains stable"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_guarded_start_cannot_publish_a_replacement_even_if_the_adapter_ignores_the_guard() {
+    for provider in [Provider::Codex, Provider::Claude, Provider::Muse] {
+        let host = TestHost::new();
+        let chat = host.create(provider);
+        send(&mut host.client(), &chat.id, "saved history");
+        host.wait_for_log(&chat.id, |log| {
+            turns_completed(log) == 1 && last_state(log) == Some(ChatState::Idle)
+        });
+        host.client().close(&chat.id).unwrap();
+        let original = host.info(&chat.id).provider_thread_id;
+        host.fake().resume_missing.store(true, Ordering::SeqCst);
+        host.fake()
+            .ignore_resume_guard
+            .store(true, Ordering::SeqCst);
+        let error = host
+            .client()
+            .command(&chat.id, choose(None, None, None))
+            .unwrap_err();
+        assert!(
+            error.contains("did not resume historical session"),
+            "{error}"
+        );
+        let after = host.info(&chat.id);
+        assert_eq!(after.provider_thread_id, original);
+        assert_eq!(saved_info(&host, &chat.id).provider_thread_id, original);
+        assert!(host.log(&chat.id).iter().all(|e| !matches!(&e.event, ChatEvent::Info { info } if info.provider_thread_id != original && info.provider_thread_id.is_some())));
+        eventually(|| host.fake().shutdowns.load(Ordering::SeqCst) == 2);
+    }
+}
+
+#[test]
+fn reports_from_a_start_that_fails_do_not_change_identity_or_settings() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Claude);
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    host.client().close(&chat.id).unwrap();
+    let before = host.info(&chat.id);
+    *host.fake().startup_report.lock().unwrap() = Some(DriverReport {
+        provider_thread_id: Some("replacement-never-attached".into()),
+        model: Some(Some("unaccepted-model".into())),
+        effort: Some(Some("max".into())),
+        approval_mode: Some(ApprovalMode::Full),
+        fast: Some(true),
+    });
+    *host.fake().fail_start.lock().unwrap() = Some("guarded resume not found".into());
+    assert!(
+        host.client()
+            .command(&chat.id, choose(None, None, None))
+            .is_err()
+    );
+    let mut after = host.info(&chat.id);
+    assert!(matches!(after.state, ChatState::Failed { .. }));
+    after.state = before.state.clone();
+    assert_eq!(after, before);
+}
+
+#[test]
+fn history_guard_uses_the_current_provider_session_after_switching_and_switching_back() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Codex);
+    send(&mut host.client(), &chat.id, "Codex history");
+    host.wait_for_log(&chat.id, |log| {
+        turns_completed(log) == 1 && last_state(log) == Some(ChatState::Idle)
+    });
+    for provider in [Provider::Claude, Provider::Muse, Provider::Codex] {
+        host.client()
+            .command(&chat.id, switch(provider, None))
+            .unwrap();
+        host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+        let old_id = host.info(&chat.id).provider_thread_id;
+        host.client().close(&chat.id).unwrap();
+        host.fake().resume_missing.store(true, Ordering::SeqCst);
+        host.client()
+            .command(&chat.id, choose(None, None, None))
+            .unwrap();
+        host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+        assert!(
+            !host
+                .fake()
+                .starts
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .resume_has_history
+        );
+        assert_ne!(host.info(&chat.id).provider_thread_id, old_id);
+        let document = host.info(&chat.id).carried_over.unwrap().document;
+        assert!(
+            fs::read_to_string(document)
+                .unwrap()
+                .contains("echo: Codex history")
+        );
+    }
+    assert_eq!(turns_completed(&host.log(&chat.id)), 1);
+}
+
+#[test]
+fn legacy_history_outside_the_notice_tail_still_guards_resume_and_bad_history_fails_closed() {
+    for corrupt in [false, true] {
+        let mut host = TestHost::new();
+        let chat = host.create(Provider::Muse);
+        host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+        host.client().close(&chat.id).unwrap();
+        host.stop();
+        let dir = host.home.join("chats").join(&chat.id);
+        let events = [
+            ChatEvent::ItemCompleted {
+                item: Item {
+                    id: "legacy-user".into(),
+                    turn_id: None,
+                    status: ItemStatus::Completed,
+                    body: ItemBody::UserMessage {
+                        text: "old user message".into(),
+                    },
+                    presentation: Default::default(),
+                },
+            },
+            ChatEvent::ItemCompleted {
+                item: Item {
+                    id: "long-notice".into(),
+                    turn_id: None,
+                    status: ItemStatus::Completed,
+                    body: ItemBody::notice(
+                        NoticeLevel::Info,
+                        "n".repeat(log::NOTICE_TAIL as usize + 100),
+                        None,
+                    ),
+                    presentation: Default::default(),
+                },
+            },
+        ];
+        let mut bytes = Vec::new();
+        for (i, event) in events.into_iter().enumerate() {
+            if corrupt && i == 1 {
+                bytes.extend_from_slice(b"{\"seq\":2,\"unknown\":true}\n");
+            }
+            let seq = i as u64 + 1 + u64::from(corrupt && i == 1);
+            serde_json::to_writer(
+                &mut bytes,
+                &Envelope {
+                    chat_id: chat.id.clone(),
+                    seq,
+                    event,
+                },
+            )
+            .unwrap();
+            bytes.push(b'\n');
+        }
+        fs::write(dir.join("events.jsonl"), &bytes).unwrap();
+        host.restart(quick_options());
+        host.fake().resume_missing.store(true, Ordering::SeqCst);
+        let count = host.fake().start_count();
+        assert!(
+            host.client()
+                .command(&chat.id, choose(None, None, None))
+                .is_err()
+        );
+        assert_eq!(
+            host.info(&chat.id).provider_thread_id,
+            chat.provider_thread_id
+        );
+        if corrupt {
+            assert_eq!(
+                host.fake().start_count(),
+                count,
+                "unreadable ownership must not start a provider"
+            );
+        } else {
+            assert!(
+                host.fake()
+                    .starts
+                    .lock()
+                    .unwrap()
+                    .last()
+                    .unwrap()
+                    .resume_has_history
+            );
+            assert_eq!(
+                &fs::read(dir.join("events.jsonl")).unwrap()[..bytes.len()],
+                bytes.as_slice()
+            );
+        }
+    }
+}
+
+#[test]
+fn unconfirmed_or_rejected_configuration_does_not_persist_the_requested_values() {
+    for provider in [Provider::Codex, Provider::Claude, Provider::Muse] {
+        let host = TestHost::new();
+        let mut new = host.new_chat(provider);
+        new.model = Some("working-model".into());
+        new.effort = Some("low".into());
+        let chat = host.client().create(new).unwrap();
+        host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+        host.fake().defer_configure.store(true, Ordering::SeqCst);
+        let before = host.info(&chat.id);
+        host.client()
+            .command(
+                &chat.id,
+                ChatCommand::Configure {
+                    model: Some("refused-model".into()),
+                    effort: Some("refused-effort".into()),
+                    approval_mode: Some(ApprovalMode::Full),
+                    fast: Some(true),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            host.info(&chat.id),
+            before,
+            "Ok accepts delivery, not provider settings"
+        );
+        configure_reply(&host, 0).report(DriverReport {
+            model: Some(before.model.clone()),
+            effort: Some(before.effort.clone()),
+            approval_mode: Some(before.approval_mode),
+            fast: Some(before.fast),
+            ..Default::default()
+        });
+        assert_eq!(saved_info(&host, &chat.id), before);
+        assert!(host.log(&chat.id).iter().all(|e| !matches!(&e.event, ChatEvent::Info { info } if info.model.as_deref() == Some("refused-model"))));
+        // A supported model and an unsupported effort in one Configure can
+        // settle independently, preserving the real retained effort.
+        host.client()
+            .command(
+                &chat.id,
+                choose(Some("accepted-model"), Some("bad-effort"), None),
+            )
+            .unwrap();
+        configure_reply(&host, 1).report(DriverReport {
+            model: Some(Some("accepted-model".into())),
+            effort: Some(Some("low".into())),
+            ..Default::default()
+        });
+        assert_eq!(host.info(&chat.id).model.as_deref(), Some("accepted-model"));
+        assert_eq!(host.info(&chat.id).effort.as_deref(), Some("low"));
+        host.client().close(&chat.id).unwrap();
+        host.client()
+            .command(&chat.id, choose(None, None, None))
+            .unwrap();
+        let config = host.fake().starts.lock().unwrap().last().unwrap().clone();
+        assert_eq!(config.model.as_deref(), Some("accepted-model"));
+        assert_eq!(config.effort.as_deref(), Some("low"));
+        assert_eq!(config.approval_mode, ApprovalMode::Supervised);
+        assert!(!config.fast);
+    }
+}
+
+#[test]
+fn delayed_configuration_results_do_not_overwrite_newer_choices_but_independent_fields_can_settle()
+{
+    let mut host = TestHost::new();
+    let chat = host.create(Provider::Codex);
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    host.fake().defer_configure.store(true, Ordering::SeqCst);
+    host.client()
+        .command(
+            &chat.id,
+            choose(Some("older"), Some("high"), Some(ApprovalMode::AutoEdit)),
+        )
+        .unwrap();
+    let older = configure_reply(&host, 0);
+    host.client()
+        .command(&chat.id, choose(Some("newer"), None, None))
+        .unwrap();
+    configure_reply(&host, 1).report(DriverReport {
+        model: Some(Some("newer".into())),
+        ..Default::default()
+    });
+    older.report(DriverReport {
+        provider_thread_id: Some("obsolete-id".into()),
+        model: Some(Some("older".into())),
+        effort: Some(Some("high".into())),
+        approval_mode: Some(ApprovalMode::AutoEdit),
+        ..Default::default()
+    });
+    let info = host.info(&chat.id);
+    assert_eq!(info.model.as_deref(), Some("newer"));
+    assert_eq!(info.effort.as_deref(), Some("high"));
+    assert_eq!(info.approval_mode, ApprovalMode::AutoEdit);
+    assert_eq!(info.provider_thread_id, chat.provider_thread_id);
+    // Clearing to a default is distinct from an omitted report field.
+    host.client()
+        .command(&chat.id, choose(Some("default"), Some("default"), None))
+        .unwrap();
+    configure_reply(&host, 2).report(DriverReport {
+        model: Some(None),
+        effort: Some(None),
+        ..Default::default()
+    });
+    older.report(DriverReport {
+        model: Some(Some("older".into())),
+        effort: Some(Some("high".into())),
+        ..Default::default()
+    });
+    assert_eq!(host.info(&chat.id).model, None);
+    assert_eq!(host.info(&chat.id).effort, None);
+    host.restart(quick_options());
+    assert_eq!(host.info(&chat.id).model, None);
+    assert_eq!(host.info(&chat.id).effort, None);
+}
+
+#[test]
+fn a_local_configuration_refusal_does_not_supersede_an_earlier_pending_choice() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Codex);
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    host.fake().defer_configure.store(true, Ordering::SeqCst);
+    host.client()
+        .command(&chat.id, choose(Some("pending"), None, None))
+        .unwrap();
+    let pending = configure_reply(&host, 0);
+    *host.fake().fail_configure.lock().unwrap() = Some("invalid local choice".into());
+    assert!(
+        host.client()
+            .command(&chat.id, choose(Some("invalid"), None, None))
+            .is_err()
+    );
+    pending.report(DriverReport {
+        model: Some(Some("pending".into())),
+        ..Default::default()
+    });
+    assert_eq!(host.info(&chat.id).model.as_deref(), Some("pending"));
+    configure_reply(&host, 1).report(DriverReport {
+        model: Some(Some("invalid".into())),
+        ..Default::default()
+    });
+    assert_eq!(host.info(&chat.id).model.as_deref(), Some("pending"));
+}
+
+#[test]
+fn provider_observations_supersede_older_acknowledgements_and_reach_existing_info_only() {
+    for provider in [Provider::Codex, Provider::Claude, Provider::Muse] {
+        let host = TestHost::new();
+        let mut new = host.new_chat(provider);
+        new.title = Some("My named session".into());
+        new.project_id = Some(PROJECT.into());
+        new.worktree_id = Some("33333333-3333-4333-8333-333333333333".into());
+        new.model = Some("chosen".into());
+        new.effort = Some("low".into());
+        let chat = host.client().create(new).unwrap();
+        host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+        let before = host.info(&chat.id);
+        let run_reporter = host.fake().starts.lock().unwrap()[0].reporter.clone();
+        host.fake().defer_configure.store(true, Ordering::SeqCst);
+        host.client()
+            .command(
+                &chat.id,
+                choose(Some("pending"), None, Some(ApprovalMode::Plan)),
+            )
+            .unwrap();
+        let last_seq = host.log(&chat.id).last().unwrap().seq;
+        let follower = Follower::open(&host.socket(), &chat.id, last_seq).unwrap();
+        run_reporter.report(DriverReport {
+            provider_thread_id: Some("provider-adopted-id".into()),
+            model: Some(Some("real-model".into())),
+            effort: Some(Some("high".into())),
+            approval_mode: Some(ApprovalMode::AutoEdit),
+            ..Default::default()
+        });
+        let live = follower.next().unwrap();
+        let expected = ChatInfo {
+            provider_thread_id: Some("provider-adopted-id".into()),
+            model: Some("real-model".into()),
+            effort: Some("high".into()),
+            approval_mode: ApprovalMode::AutoEdit,
+            ..before.clone()
+        };
+        assert_eq!(host.info(&chat.id), expected);
+        assert_eq!(saved_info(&host, &chat.id), expected);
+        assert_eq!(
+            live.event,
+            ChatEvent::Info {
+                info: expected.clone()
+            }
+        );
+        let shape = serde_json::to_value(&live).unwrap();
+        assert_eq!(
+            shape
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            ["chat_id", "event", "seq"]
+        );
+        assert_eq!(
+            shape["event"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            ["event", "info"]
+        );
+        assert_eq!(shape["event"]["event"], "info");
+        let disk = fs::read_to_string(host.home.join("chats").join(&chat.id).join("events.jsonl"))
+            .unwrap();
+        for internal in [
+            "reporter",
+            "settings_revisions",
+            "resume_has_history",
+            "generation",
+        ] {
+            assert!(!disk.contains(internal));
+        }
+        configure_reply(&host, 0).report(DriverReport {
+            provider_thread_id: Some("older-id".into()),
+            model: Some(Some("pending".into())),
+            approval_mode: Some(ApprovalMode::Plan),
+            ..Default::default()
+        });
+        assert_eq!(host.info(&chat.id), expected);
+        assert_eq!(
+            host.log(&chat.id).last().unwrap().seq,
+            last_seq + 1,
+            "stale reports publish nothing"
+        );
+        host.client().close(&chat.id).unwrap();
+        host.client()
+            .command(&chat.id, choose(None, None, None))
+            .unwrap();
+        let config = host.fake().starts.lock().unwrap().last().unwrap().clone();
+        assert_eq!(config.resume.as_deref(), Some("provider-adopted-id"));
+        assert_eq!(config.approval_mode, ApprovalMode::AutoEdit);
+        assert_eq!(config.model.as_deref(), Some("real-model"));
+        assert_eq!(config.effort.as_deref(), Some("high"));
+        assert_eq!(
+            host.fake().commands().len(),
+            2,
+            "reports never send a permission/configuration command"
+        );
+    }
+}
+
+#[test]
+fn stopped_or_replaced_runs_cannot_report_identity_or_settings_into_the_new_provider() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Codex);
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    let run = host.fake().starts.lock().unwrap()[0].reporter.clone();
+    host.fake().defer_configure.store(true, Ordering::SeqCst);
+    host.client()
+        .command(&chat.id, choose(Some("old-pending"), None, None))
+        .unwrap();
+    let pending = configure_reply(&host, 0);
+    host.client().close(&chat.id).unwrap();
+    let stopped = host.info(&chat.id);
+    let stale = DriverReport {
+        provider_thread_id: Some("old-session".into()),
+        model: Some(Some("old-model".into())),
+        effort: Some(Some("max".into())),
+        approval_mode: Some(ApprovalMode::Full),
+        fast: Some(true),
+    };
+    run.report(stale.clone());
+    pending.report(stale.clone());
+    assert_eq!(host.info(&chat.id), stopped);
+    host.client()
+        .command(&chat.id, switch(Provider::Claude, Some("new-model")))
+        .unwrap();
+    let current = host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    let seq = host.log(&chat.id).last().unwrap().seq;
+    run.report(stale.clone());
+    pending.report(stale);
+    assert_eq!(host.info(&chat.id), current);
+    assert_eq!(saved_info(&host, &chat.id), current);
+    assert_eq!(host.log(&chat.id).last().unwrap().seq, seq);
+}
+
+#[test]
+fn a_stale_start_failure_cannot_fail_a_newer_run() {
+    let host = NoticeHost::new();
+    let chat = host.create(Provider::Claude);
+    ensure_running(&host.shared, &chat).unwrap();
+    let first = lock(&chat.inner).run.as_ref().unwrap().generation;
+    stop(&chat);
+    ensure_running(&host.shared, &chat).unwrap();
+    let before = chat.info();
+    assert!(fail_start(&chat, first, "delayed old failure".into()).is_err());
+    assert_eq!(chat.info(), before);
+    assert_ne!(lock(&chat.inner).run.as_ref().unwrap().generation, first);
+    stop(&chat);
+}
+
+#[test]
+fn stop_cancels_a_blocked_configure_before_waiting_on_lifecycle_or_driver_locks() {
+    struct BlockedConfigure {
+        entered: mpsc::Sender<()>,
+        cancelled: mpsc::Receiver<()>,
+        cancel: mpsc::Sender<()>,
+    }
+    impl Driver for BlockedConfigure {
+        fn cancel_io(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+            let cancel = self.cancel.clone();
+            Some(Arc::new(move || {
+                let _ = cancel.send(());
+            }))
+        }
+        fn command(&mut self, _: ChatCommand) -> Result<(), String> {
+            Ok(())
+        }
+        fn configure(&mut self, _: ChatCommand, reporter: DriverReporter) -> Result<(), String> {
+            self.entered.send(()).unwrap();
+            self.cancelled
+                .recv_timeout(Duration::from_secs(3))
+                .map_err(|_| "Stop deadlocked behind Configure".to_owned())?;
+            // A cancellation result from the old attempt must not change info.
+            reporter.report(DriverReport {
+                model: Some(Some("cancelled-choice".into())),
+                approval_mode: Some(ApprovalMode::Full),
+                ..Default::default()
+            });
+            Err("configuration cancelled".into())
+        }
+        fn provider_thread_id(&self) -> Option<String> {
+            Some("existing-session".into())
+        }
+        fn shutdown(&mut self) {}
+    }
+    let host = Arc::new(NoticeHost::new());
+    let chat = host.create(Provider::Claude);
+    let (entered, entry) = mpsc::channel();
+    let (cancel, cancelled) = mpsc::channel();
+    let driver: Box<dyn Driver> = Box::new(BlockedConfigure {
+        entered,
+        cancelled,
+        cancel,
+    });
+    let cancel = driver.cancel_io();
+    {
+        let mut inner = lock(&chat.inner);
+        inner.generations = 1;
+        let mut run = Run::starting(1);
+        run.driver = Some(Arc::new(Mutex::new(driver)));
+        run.cancel_io = cancel;
+        run.reader_done.store(true, Ordering::SeqCst);
+        inner.run = Some(run);
+        inner.set_state(ChatState::Idle);
+    }
+    let configuring = {
+        let (host, chat) = (host.clone(), chat.clone());
+        thread::spawn(move || {
+            run_command(
+                &host.shared,
+                &chat,
+                choose(Some("blocked-choice"), None, None),
+            )
+        })
+    };
+    entry.recv_timeout(Duration::from_secs(2)).unwrap();
+    let start = Instant::now();
+    stop(&chat);
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "Stop must cancel without acquiring the blocked locks"
+    );
+    assert_eq!(
+        configuring.join().unwrap().unwrap_err(),
+        "configuration cancelled"
+    );
+    assert_eq!(chat.info().state, ChatState::Stopped);
+    assert_eq!(chat.info().model, None);
+    assert_eq!(chat.info().approval_mode, ApprovalMode::Supervised);
+    assert!(lock(&chat.inner).run.is_none());
+}

@@ -142,6 +142,8 @@ fn assemble(
         effort: info.effort.clone(),
         fast: info.fast,
         resume,
+        resume_has_history: false,
+        reporter: Default::default(),
         outstanding_notices: Default::default(),
         extra_args,
         instructions: instructions(info),
