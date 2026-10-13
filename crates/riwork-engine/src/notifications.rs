@@ -1,4 +1,5 @@
 //! Project-scoped completion alerts. Only identifiers are queued; no agent text.
+//! The same completions also queue orchestrator wakes (`orchestrator_wakes`).
 //!
 //! A durable claim prevents multiple windows/processes from notifying twice.
 //! Native delivery stays in the GUI process so notifications belong to RiWork.
@@ -113,15 +114,32 @@ impl CompletionNotice {
     }
 }
 
-/// Enqueue a verified completion from a hook or an exact lifecycle binding.
-/// Disabled and unscoped sessions do not create a notification ledger.
+/// Enqueue a verified completion from a hook or an exact lifecycle binding: an
+/// alert when the project's bell is on, and orchestrator wakes when a worker's
+/// project has them on. Disabled and unscoped sessions do not create a ledger.
+/// Each ledger is tried even when the other fails; the error still reaches the
+/// hook, whose retry both deduplicate. True when an alert was queued.
 pub fn record_completion(
     home: &Path,
     shell_id: &str,
     event_id: &str,
     provider: HarnessKind,
 ) -> Result<bool, String> {
-    record_at(home, shell_id, event_id, provider, now())
+    let time = now();
+    let alerted = record_at(home, shell_id, event_id, provider, time);
+    let woken = crate::orchestrator_wakes::record_at(home, shell_id, event_id, provider, time);
+    match (alerted, woken) {
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+        (Ok(alerted), Ok(_)) => Ok(alerted),
+    }
+}
+
+/// A completion names an exact shell and a bounded, one-line event id.
+pub(crate) fn valid_completion(shell_id: &str, event_id: &str) -> bool {
+    canonical_uuid(shell_id)
+        && !event_id.is_empty()
+        && event_id.len() <= 1024
+        && !event_id.chars().any(char::is_control)
 }
 
 fn record_at(
@@ -131,11 +149,7 @@ fn record_at(
     provider: HarnessKind,
     time: u64,
 ) -> Result<bool, String> {
-    if !canonical_uuid(shell_id)
-        || event_id.is_empty()
-        || event_id.len() > 1024
-        || event_id.chars().any(char::is_control)
-    {
+    if !valid_completion(shell_id, event_id) {
         return Err("Invalid agent completion identity".into());
     }
     let shell = SessionManager::at(home.to_path_buf())?.registered_session(shell_id)?;
@@ -294,11 +308,11 @@ pub fn compact_label(value: &str) -> String {
         .collect()
 }
 
-fn canonical_uuid(value: &str) -> bool {
+pub(crate) fn canonical_uuid(value: &str) -> bool {
     Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value)
 }
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -332,7 +346,7 @@ fn lock(home: &Path) -> Result<File, String> {
     Ok(file)
 }
 
-fn reject_symlink(path: &Path) -> Result<(), String> {
+pub(crate) fn reject_symlink(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if !metadata.file_type().is_file() => {
             Err("Notification metadata must be a regular file".into())
@@ -378,11 +392,8 @@ fn read(home: &Path) -> Result<Ledger, String> {
 
 fn valid_entry(entry: &Entry) -> bool {
     canonical_uuid(&entry.completion_id)
-        && canonical_uuid(&entry.shell_id)
         && canonical_uuid(&entry.project_id)
-        && !entry.event_id.is_empty()
-        && entry.event_id.len() <= 1024
-        && !entry.event_id.chars().any(char::is_control)
+        && valid_completion(&entry.shell_id, &entry.event_id)
 }
 
 fn write(home: &Path, ledger: &Ledger) -> Result<(), String> {

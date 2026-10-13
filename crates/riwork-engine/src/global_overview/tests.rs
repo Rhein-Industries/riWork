@@ -19,6 +19,7 @@ fn project(id: &str, name: &str, folder: Option<&str>) -> Project {
         repository_roots: Vec::new(),
         folder_id: folder.map(str::to_owned),
         notify_on_agent_done: false,
+        wake_orchestrators_on_agent_done: false,
         codex_account: Default::default(),
         created_at: 0,
     }

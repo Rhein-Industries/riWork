@@ -76,6 +76,7 @@ impl Fixture {
             repository_roots: Vec::new(),
             folder_id: None,
             notify_on_agent_done: false,
+            wake_orchestrators_on_agent_done: false,
             codex_account: Default::default(),
             created_at: 0,
         };

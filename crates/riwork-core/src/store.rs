@@ -27,6 +27,10 @@ pub struct Project {
     pub folder_id: Option<String>,
     #[serde(default)]
     pub notify_on_agent_done: bool,
+    /// A worker shell's finished turn checks in with the project's and the
+    /// global orchestrator (`orchestrator_wakes`). Off for older projects.
+    #[serde(default)]
+    pub wake_orchestrators_on_agent_done: bool,
     #[serde(default)]
     pub codex_account: ProjectCodexAccount,
     pub created_at: u64,
@@ -1052,6 +1056,7 @@ impl Store {
                     repository_roots: inspection.repository_roots.clone(),
                     folder_id: None,
                     notify_on_agent_done: false,
+                    wake_orchestrators_on_agent_done: false,
                     codex_account: ProjectCodexAccount::default(),
                     created_at: now(),
                 };
@@ -1278,6 +1283,26 @@ impl Store {
                 .expect("resolved project remains in the transaction");
             let changed = project.notify_on_agent_done != enabled;
             project.notify_on_agent_done = enabled;
+            Ok((project.clone(), changed))
+        })
+    }
+
+    /// Change only whether this project's worker shells wake its orchestrators
+    /// when they finish a turn, as `set_project_notifications` does for alerts.
+    pub fn set_project_orchestrator_wakes(
+        &self,
+        selector: &str,
+        enabled: bool,
+    ) -> Result<Project, String> {
+        self.transaction_if_changed(|state| {
+            let project_id = state.project(selector)?.id.clone();
+            let project = state
+                .projects
+                .iter_mut()
+                .find(|project| project.id == project_id)
+                .expect("resolved project remains in the transaction");
+            let changed = project.wake_orchestrators_on_agent_done != enabled;
+            project.wake_orchestrators_on_agent_done = enabled;
             Ok((project.clone(), changed))
         })
     }

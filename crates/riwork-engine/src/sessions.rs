@@ -1736,6 +1736,32 @@ impl SessionManager {
         )
     }
 
+    /// `send_at_empty_prompt` for a caller that decides last: once the screen has shown the
+    /// agent's empty prompt twice, 100 ms apart, as a schedule waits for it, `gate` runs under
+    /// the same input lock, and nothing is typed unless it agrees. Orchestrator wakes claim there.
+    pub(crate) fn send_at_settled_prompt(
+        &self,
+        shell: &ShellSession,
+        text: &str,
+        gate: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        crate::session_input::submit_checked(
+            &self.home,
+            &shell.id,
+            text,
+            &|args| self.tmux_text(args),
+            &|args, input| self.tmux_text_input(args, input),
+            || {
+                let first = self.schedule_prompt_screen(shell)?;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                if first != self.schedule_prompt_screen(shell)? {
+                    return Err("Harness prompt is changing".to_owned());
+                }
+                gate()
+            },
+        )
+    }
+
     /// Send literal text followed by Return to an existing shell.
     pub fn send(&self, id: &str, text: &str) -> Result<(), String> {
         self.require_live(id)?;

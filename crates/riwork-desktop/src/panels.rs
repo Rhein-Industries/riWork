@@ -3553,6 +3553,7 @@ mod tests {
             folder_id: folder.map(str::to_owned),
             created_at: 0,
             notify_on_agent_done: false,
+            wake_orchestrators_on_agent_done: false,
             codex_account: crate::store::ProjectCodexAccount::default(),
         }
     }
@@ -4239,6 +4240,7 @@ mod search_regression_tests {
                                     repository_roots: Vec::new(),
                                     folder_id: None,
                                     notify_on_agent_done: false,
+                                    wake_orchestrators_on_agent_done: false,
                                     codex_account: Default::default(),
                                     created_at: 0,
                                 })

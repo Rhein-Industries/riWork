@@ -1792,6 +1792,72 @@ mod tests {
     }
 
     #[test]
+    fn a_workers_codex_completion_wakes_each_orchestrator_scope_once_from_either_path() {
+        use crate::orchestrator_wakes::{WakeScope, WakeState, states};
+        let fixture = Fixture::new();
+        let project_root = fixture.root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let store = crate::store::Store::open(fixture.home.clone()).unwrap();
+        let project = store
+            .add_project(project_root, Some("Test project"))
+            .unwrap();
+        store
+            .set_project_orchestrator_wakes(&project.id, true)
+            .unwrap();
+        let mut session = shell(Some(HarnessKind::Codex));
+        session.project_id = Some(project.id);
+        session.user_opened = false;
+        session.parent_id = Some(Uuid::new_v4().to_string());
+        fs::write(
+            fixture.home.join("sessions.json"),
+            serde_json::json!({"sessions":[session]}).to_string(),
+        )
+        .unwrap();
+        let thread = Uuid::new_v4().to_string();
+        let path = fixture.log(
+            &thread,
+            &(meta(&thread) + &event("task_started", "new") + &event("task_complete", "new")),
+        );
+        let notify = |turn: &str| Notification {
+            kind: "agent-turn-complete".into(),
+            thread_id: thread.clone(),
+            turn_id: Some(turn.into()),
+        };
+        record_codex_notification_at(&fixture.home, &session.id, notify("new"), &fixture.log_home)
+            .unwrap();
+        let pending = vec![
+            (WakeScope::Project, WakeState::Pending, None),
+            (WakeScope::Global, WakeState::Pending, None),
+        ];
+        assert_eq!(states(&fixture.home), pending);
+        // The same turn again from Codex, or from a window's tracker, is not new.
+        record_codex_notification_at(&fixture.home, &session.id, notify("new"), &fixture.log_home)
+            .unwrap();
+        crate::notifications::record_completion(
+            &fixture.home,
+            &session.id,
+            &codex_completion_event_id(&fixture.log_home, &thread, "new"),
+            HarnessKind::Codex,
+        )
+        .unwrap();
+        append(&path, &event("task_started", "working"));
+        record_codex_notification_at(
+            &fixture.home,
+            &session.id,
+            notify("working"),
+            &fixture.log_home,
+        )
+        .unwrap();
+        assert_eq!(states(&fixture.home), pending);
+        // Alerts stayed off: wakes do not turn the bell on.
+        assert!(
+            crate::notifications::claim_pending(&fixture.home)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn exact_resume_argv_binds_without_matching_paths_or_reading_messages() {
         let fixture = Fixture::new();
         let thread = Uuid::new_v4().to_string();
@@ -1892,6 +1958,7 @@ mod tests {
             folder_id: None,
             created_at: 1,
             notify_on_agent_done: false,
+            wake_orchestrators_on_agent_done: false,
             codex_account: crate::store::ProjectCodexAccount::default(),
         });
         for (id, project, path) in [

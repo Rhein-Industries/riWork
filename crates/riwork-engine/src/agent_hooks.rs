@@ -731,6 +731,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_workers_stop_wakes_each_orchestrator_scope_once_without_its_text() {
+        use crate::orchestrator_wakes::{WakeScope, WakeState, states};
+        let fixture = Fixture::new();
+        crate::store::Store::open(fixture.home.clone())
+            .unwrap()
+            .set_project_orchestrator_wakes(&fixture.project_id, true)
+            .unwrap();
+        fixture.record("UserPromptSubmit", "prompt-a").unwrap();
+        fixture.record("Stop", "prompt-a").unwrap();
+        fixture.record("Stop", "prompt-a").unwrap();
+        let pending = vec![
+            (WakeScope::Project, WakeState::Pending, None),
+            (WakeScope::Global, WakeState::Pending, None),
+        ];
+        assert_eq!(states(&fixture.home), pending);
+        let saved = fs::read_to_string(fixture.home.join("orchestrator-wakes.json")).unwrap();
+        assert!(!saved.contains("private"));
+        // The bell is off: wakes queue no alert.
+        assert!(
+            crate::notifications::claim_pending(&fixture.home)
+                .unwrap()
+                .is_empty()
+        );
+        fixture.record("UserPromptSubmit", "prompt-b").unwrap();
+        fixture.record("Stop", "prompt-b").unwrap();
+        assert_eq!(states(&fixture.home).len(), 4);
+    }
+
     fn hook(event: &str, session: &str, prompt: Option<&str>) -> ClaudeHookInput {
         serde_json::from_value(serde_json::json!({
             "hook_event_name":event,"session_id":session,"prompt_id":prompt,

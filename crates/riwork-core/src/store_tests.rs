@@ -115,6 +115,7 @@ fn virtual_folders_extend_schema_one_without_requiring_a_migration() {
     assert!(state.project_folders.is_empty());
     assert_eq!(state.projects[0].folder_id, None);
     assert!(!state.projects[0].notify_on_agent_done);
+    assert!(!state.projects[0].wake_orchestrators_on_agent_done);
     assert_eq!(
         state.projects[0].codex_account,
         ProjectCodexAccount::Inherit
@@ -141,6 +142,7 @@ fn virtual_folders_extend_schema_one_without_requiring_a_migration() {
     );
     assert_eq!(reopened.projects[0].root, root);
     assert!(!reopened.projects[0].notify_on_agent_done);
+    assert!(!reopened.projects[0].wake_orchestrators_on_agent_done);
     assert_eq!(
         reopened.projects[0].codex_account,
         ProjectCodexAccount::Inherit
@@ -277,6 +279,58 @@ fn completion_notifications_are_project_scoped_and_preserve_workspace_metadata()
             .unwrap()
             .notify_on_agent_done
     );
+}
+
+#[test]
+fn orchestrator_wakes_are_project_scoped_and_independent_of_alerts() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let main = store
+        .add_project(fixture.directory("main"), Some("Main"))
+        .unwrap();
+    let other = store
+        .add_project(fixture.directory("other"), Some("Other"))
+        .unwrap();
+    assert!(!main.wake_orchestrators_on_agent_done);
+    store.set_project_notifications(&main.id, true).unwrap();
+    let enabled = store.set_project_orchestrator_wakes("Main", true).unwrap();
+    assert!(enabled.wake_orchestrators_on_agent_done && enabled.notify_on_agent_done);
+    let reopened = fixture.store().snapshot().unwrap();
+    assert!(
+        reopened
+            .project(&main.id)
+            .unwrap()
+            .wake_orchestrators_on_agent_done
+    );
+    assert!(
+        !reopened
+            .project(&other.id)
+            .unwrap()
+            .wake_orchestrators_on_agent_done
+    );
+    // Re-registration and renames keep it; an unchanged value writes nothing.
+    assert!(
+        store
+            .add_project(&main.root, None)
+            .unwrap()
+            .wake_orchestrators_on_agent_done
+    );
+    let state_path = store.dir.join("state.json");
+    let unchanged = fs::read(&state_path).unwrap();
+    store
+        .set_project_orchestrator_wakes(&main.id, true)
+        .unwrap();
+    assert_eq!(fs::read(&state_path).unwrap(), unchanged);
+    assert!(
+        store
+            .set_project_orchestrator_wakes("missing", true)
+            .is_err()
+    );
+    // Turning wakes off leaves the bell as it was.
+    let disabled = store
+        .set_project_orchestrator_wakes(&main.id, false)
+        .unwrap();
+    assert!(!disabled.wake_orchestrators_on_agent_done && disabled.notify_on_agent_done);
 }
 
 #[test]

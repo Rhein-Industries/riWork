@@ -158,7 +158,13 @@ pub fn deliver(
 
 /// Whether the chat's log gets a user message that is `prompt` after `mark`
 /// within the time `proof` allows.
-fn seen_in_log(host: &ChatHost, chat_id: &str, mark: u64, prompt: &str, proof: Proof) -> bool {
+pub(crate) fn seen_in_log(
+    host: &ChatHost,
+    chat_id: &str,
+    mark: u64,
+    prompt: &str,
+    proof: Proof,
+) -> bool {
     let deadline = Instant::now() + proof.wait;
     let mut from = mark;
     loop {

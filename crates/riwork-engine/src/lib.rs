@@ -15,6 +15,7 @@ pub mod file_preview;
 pub mod global_overview;
 pub mod handoff;
 pub mod notifications;
+pub mod orchestrator_wakes;
 pub mod orchestrators;
 pub mod project_sort;
 pub mod project_tabs;
