@@ -131,6 +131,11 @@ impl ChatChoice {
             cx,
         );
         let metadata_project = project.clone();
+        let discovery_home = home.clone();
+        let discovery_project = project.clone();
+        let discovery = cx.background_executor().spawn(async move {
+            catalog::available(&discovery_home, Some(&discovery_project), Provider::Muse)
+        });
         let work = cx.background_executor().spawn(async move {
             [
                 catalog::saved(&home, Some(&metadata_project), Provider::Codex),
@@ -139,7 +144,12 @@ impl ChatChoice {
             ]
         });
         cx.spawn(async move |this, cx| {
-            let models = work.await;
+            let mut models = work.await;
+            let _ = this.update(cx, |choice, cx| {
+                choice.apply_models(models.clone(), cx);
+                cx.notify();
+            });
+            models[provider_index(Provider::Muse)] = discovery.await;
             let _ = this.update(cx, |choice, cx| {
                 choice.apply_models(models, cx);
                 cx.notify();
@@ -163,7 +173,7 @@ impl ChatChoice {
         // Capture the invoker before moving focus to a retained chooser input.
         let return_focus = window.focused(cx);
         let model = text_input::single_line("", "Or type a model ID", window, cx);
-        let search = text_input::single_line("", "Search saved models", window, cx);
+        let search = text_input::single_line("", "Search models", window, cx);
         let subscriptions = [&model, &search]
             .into_iter()
             .map(|input| cx.subscribe(input, |_, _, _: &InputEvent, cx| cx.notify()))
@@ -227,7 +237,8 @@ impl ChatChoice {
         for (provider, models) in self.models.iter().enumerate() {
             for (index, model) in models.supported.iter().enumerate() {
                 self.controls
-                    .insert(format!("model-{provider}-{index}"), cx.focus_handle());
+                    .entry(format!("model-{provider}-{index}"))
+                    .or_insert_with(|| cx.focus_handle());
                 for effort in &model.efforts {
                     self.controls
                         .entry(format!("effort-{effort}"))
@@ -236,7 +247,8 @@ impl ChatChoice {
             }
             for index in 0..models.configured.len() {
                 self.controls
-                    .insert(format!("configured-{provider}-{index}"), cx.focus_handle());
+                    .entry(format!("configured-{provider}-{index}"))
+                    .or_insert_with(|| cx.focus_handle());
             }
         }
     }
@@ -582,6 +594,8 @@ impl Render for ChatChoice {
         }
         let note = if self.loading {
             "Reading saved model choices…".to_owned()
+        } else if let Some(warning) = &self.models[index].warning {
+            warning.clone()
         } else if self.models[index].supported.is_empty() {
             format!(
                 "No saved {} model list. Use its default or type an ID; the chat lists its models once it runs.",
@@ -589,7 +603,7 @@ impl Render for ChatChoice {
             )
         } else {
             format!(
-                "A typed ID is a {} model. Models come from saved provider metadata; availability is checked when the chat starts.",
+                "A typed ID is a {} model. Models come from provider metadata; availability is checked when the chat starts.",
                 provider_label(self.provider)
             )
         };

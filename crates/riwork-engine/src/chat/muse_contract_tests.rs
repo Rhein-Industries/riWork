@@ -322,3 +322,47 @@ fn muses_own_change_notifications_before_replies_confirm_the_request_reporter() 
     assert_eq!(observations[0].effort, None);
     assert!(!fake.saw("mismatch"), "{:#?}", fake.entries());
 }
+
+#[test]
+fn model_discovery_reads_the_provider_without_creating_a_session_or_attaching_cua() {
+    let mut script = handshake();
+    script.push(expect("model/list", vec![ack(json!("$id"), json!({
+        "providerId":"meta", "profileId":null,"source":"providerCatalog",
+        "models":[{"modelId":"muse-wonder-1.0","displayLabel":"Wonder","variants":["high","max"]}]
+    }))]));
+    let fake = Fake::new(&[&steps(script)]);
+    let models = discover_models(fake.config(Provider::Muse)).unwrap();
+    assert_eq!(models[0].id, "muse-wonder-1.0");
+    assert_eq!(models[0].name, "Wonder");
+    assert_eq!(models[0].efforts, ["high", "max"]);
+    let frames = fake.received();
+    assert_eq!(
+        frames
+            .iter()
+            .filter_map(|f| f["method"].as_str())
+            .collect::<Vec<_>>(),
+        ["initialize", "initialized", "model/list"]
+    );
+    assert_eq!(
+        frames[2]["params"],
+        json!({}),
+        "no session or command identity"
+    );
+    assert!(fake.saw("eof"), "the discovery process is reaped");
+    assert!(!fake.saw("mismatch"), "{:#?}", fake.entries());
+}
+
+#[test]
+fn model_discovery_failure_is_returned_and_its_process_is_reaped() {
+    let mut script = handshake();
+    script.push(expect("model/list", vec![refused(json!("$id"))]));
+    let fake = Fake::new(&[&steps(script)]);
+    assert!(
+        discover_models(fake.config(Provider::Muse))
+            .unwrap_err()
+            .contains("refused")
+    );
+    assert!(fake.received_method("session/start").is_empty());
+    assert!(fake.saw("eof"));
+    assert!(!fake.saw("mismatch"));
+}

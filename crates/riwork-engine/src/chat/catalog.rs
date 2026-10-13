@@ -1,6 +1,7 @@
 //! The models a new chat, or a chat that switches provider, can choose from, read from what
 //! earlier chats saved: the newest `Models` list a driver of that provider reported, and the
-//! other model ids chats of that provider were set to. Reading it never contacts the host or
+//! other model ids chats of that provider were set to. Muse also keeps catalogs discovered
+//! before its first chat. Reading saved metadata never contacts the host or
 //! starts a provider, so the list can be offered before any agent of the provider runs; the
 //! provider checks the choice when it starts.
 
@@ -12,8 +13,9 @@ use super::{
 use crate::sessions;
 use serde::Serialize;
 use std::{
-    fs::File,
-    io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    fs::{File, OpenOptions},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    os::unix::fs::OpenOptionsExt,
     path::Path,
 };
 
@@ -37,13 +39,17 @@ pub struct Catalog {
     pub account_label: Option<String>,
     /// Why the provider cannot be offered (a Codex account that cannot be used).
     pub error: Option<String>,
+    /// A discovery failure keeps default/manual choices usable. UI-only; it is
+    /// not a provider/account eligibility error or a new protocol field.
+    #[serde(skip)]
+    pub warning: Option<String>,
 }
 
 /// Whether `info` is a chat of `provider` whose list is the one a new chat would see: any
-/// Claude chat, a Codex chat only under the same account.
+/// Claude or Muse chat, a Codex chat only under the same account.
 fn eligible(info: &ChatInfo, provider: Provider, account: Option<&str>) -> bool {
     info.provider == provider
-        && (provider == Provider::Claude || info.codex_account_id.as_deref() == account)
+        && (provider != Provider::Codex || info.codex_account_id.as_deref() == account)
 }
 
 /// What one complete line of chat `id`'s log says about its models: a list, or the provider
@@ -160,10 +166,87 @@ pub fn saved(home: &Path, project: Option<&str>, provider: Provider) -> Catalog 
                 .collect();
         }
     }
+    if provider == Provider::Muse && !found_list {
+        result.supported = cached_muse(home);
+    }
     result
         .configured
         .retain(|id| !result.supported.iter().any(|model| &model.id == id));
     result
+}
+
+/// A picker can query Muse before a chat exists. Keep the passive saved reader
+/// for CLI/remote callers; a successful query is also available to them later.
+/// This runs on a background executor, never the UI thread.
+pub fn available(home: &Path, project: Option<&str>, provider: Provider) -> Catalog {
+    let saved = saved(home, project, provider);
+    if provider != Provider::Muse {
+        return saved;
+    }
+    let query = super::launch::muse_discovery_config(home).and_then(super::muse::discover_models);
+    merge_discovery(home, saved, query)
+}
+
+fn cache_path(home: &Path) -> std::path::PathBuf {
+    home.join("chat-models").join("muse.json")
+}
+
+fn cached_muse(home: &Path) -> Vec<ModelOption> {
+    let Ok(file) = File::open(cache_path(home)) else {
+        return Vec::new();
+    };
+    serde_json::from_reader::<_, Vec<ModelOption>>(file.take(TAIL))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|model| valid_model(&model.id))
+        .collect()
+}
+
+fn save_muse(home: &Path, models: &[ModelOption]) -> Result<(), String> {
+    let path = cache_path(home);
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|error| error.to_string())?;
+        serde_json::to_writer(&mut file, models).map_err(|error| error.to_string())?;
+        file.write_all(b"\n").map_err(|error| error.to_string())?;
+        std::fs::rename(&temporary, &path).map_err(|error| error.to_string())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn merge_discovery(
+    home: &Path,
+    mut catalog: Catalog,
+    result: Result<Vec<ModelOption>, String>,
+) -> Catalog {
+    match result {
+        Ok(models) => {
+            catalog.warning = None;
+            catalog.supported = models
+                .into_iter()
+                .filter(|model| valid_model(&model.id))
+                .collect();
+            let _ = save_muse(home, &catalog.supported);
+            catalog
+                .configured
+                .retain(|id| !catalog.supported.iter().any(|model| &model.id == id));
+        }
+        Err(error) => {
+            catalog.warning = Some(format!(
+                "Could not load Muse models: {error}. Use the default or enter a model ID."
+            ))
+        }
+    }
+    catalog
 }
 
 #[cfg(test)]
@@ -281,6 +364,79 @@ mod tests {
         assert_eq!(
             saved(&home, Some("p"), Provider::Claude).supported,
             [option("opus")]
+        );
+        std::fs::remove_dir_all(home).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn a_muse_catalog_is_available_before_any_chat_and_failure_keeps_it_usable() {
+        let home =
+            std::env::temp_dir().join(format!("riwork-muse-catalog-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let model = ModelOption {
+            id: "muse-wonder-1.0".into(),
+            name: "Wonder".into(),
+            efforts: vec!["high".into(), "max".into()],
+            ..Default::default()
+        };
+        let mut draft = Catalog::default();
+        draft.configured = vec![model.id.clone(), "custom-model".into()];
+        let discovered = merge_discovery(&home, draft, Ok(vec![model.clone()]));
+        assert_eq!(discovered.supported, [model.clone()]);
+        assert_eq!(discovered.configured, ["custom-model"]);
+        assert!(
+            !home.join("chats").exists(),
+            "discovery must not create a chat or history"
+        );
+        assert_eq!(
+            std::fs::metadata(cache_path(&home))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let saved = saved(&home, None, Provider::Muse);
+        assert_eq!(
+            saved.supported,
+            [model.clone()],
+            "passive CLI/remote readers see discovery results"
+        );
+        let fallback = merge_discovery(&home, saved, Err("provider unavailable".into()));
+        assert_eq!(fallback.supported, [model]);
+        assert_eq!(
+            fallback.error, None,
+            "catalog failure does not block default/manual chat creation"
+        );
+        assert!(
+            fallback
+                .warning
+                .as_deref()
+                .unwrap()
+                .contains("provider unavailable")
+        );
+        assert!(
+            serde_json::to_value(&fallback)
+                .unwrap()
+                .get("warning")
+                .is_none(),
+            "no new public wire field"
+        );
+        let empty = merge_discovery(&home, fallback, Ok(vec![]));
+        assert!(empty.supported.is_empty());
+        assert!(
+            empty.warning.is_none(),
+            "a successful refresh settles the old warning"
+        );
+        assert!(
+            cached_muse(&home).is_empty(),
+            "an authoritative empty catalog clears the cache"
         );
         std::fs::remove_dir_all(home).unwrap();
     }

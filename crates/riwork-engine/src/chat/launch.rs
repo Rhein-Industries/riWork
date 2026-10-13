@@ -73,6 +73,44 @@ pub fn driver_config(
     ))
 }
 
+/// A read-only Muse model query has no chat identity, permissions to select or
+/// session context. Keep the normal provider program and PATH, without Cua.
+pub(super) fn muse_discovery_config(home: &Path) -> Result<DriverConfig, String> {
+    let home = home.canonicalize().map_err(|error| error.to_string())?;
+    let launch = sessions::chat_launch(HarnessKind::Muse, &home, None)?;
+    Ok(DriverConfig {
+        provider: Provider::Muse,
+        program: launch.program,
+        cwd: home.clone(),
+        approval_mode: super::model::ApprovalMode::Supervised,
+        model: None,
+        effort: None,
+        fast: false,
+        resume: None,
+        resume_has_history: false,
+        reporter: Default::default(),
+        outstanding_notices: Default::default(),
+        extra_args: launch.arguments,
+        env: vec![
+            ("PATH".into(), launch.path),
+            ("RIWORK_HOME".into(), home.into_os_string()),
+            ("MUSE_NO_AUTO_UPDATE".into(), "1".into()),
+            ("MUSE_LOGIN".into(), "0".into()),
+        ],
+        env_remove: [
+            "RIWORK_CHAT_ID",
+            "RIWORK_SHELL_ID",
+            "RIWORK_CODEX_SHELL_ID",
+            "RIWORK_ORCHESTRATOR_SCOPE",
+            "RIWORK_PROJECT_ID",
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect(),
+        instructions: None,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn assemble(
     info: &ChatInfo,

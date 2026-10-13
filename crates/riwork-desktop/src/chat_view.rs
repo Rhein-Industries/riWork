@@ -972,7 +972,7 @@ impl ChatView {
                 .map(|other| {
                     (
                         other,
-                        crate::chat::catalog::saved(&home, project.as_deref(), other),
+                        crate::chat::catalog::available(&home, project.as_deref(), other),
                     )
                 })
                 .collect::<Vec<_>>()

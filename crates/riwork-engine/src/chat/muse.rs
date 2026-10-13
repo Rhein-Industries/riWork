@@ -179,28 +179,7 @@ fn start_with(
     events: Sender<ChatEvent>,
     servers: Option<Value>,
 ) -> Result<Box<dyn Driver>, String> {
-    let _ = events.send(ChatEvent::State {
-        state: ChatState::Starting,
-    });
-    let (proc, stdout) = Proc::spawn(child::command(&config, &["serve"])).inspect_err(|error| {
-        let _ = events.send(ChatEvent::State {
-            state: ChatState::Failed {
-                message: error.clone(),
-            },
-        });
-    })?;
-    let muse = Arc::new(Muse {
-        proc,
-        servers,
-        session: Mutex::new(Session::new(&config, events)),
-    });
-    let reader_muse = muse.clone();
-    let reader = std::thread::spawn(move || reader_muse.read_loop(stdout));
-    let mut driver = MuseDriver {
-        muse,
-        reader: Some(reader),
-        stopped: false,
-    };
+    let mut driver = spawn_driver(&config, events, servers)?;
     match driver.muse.clone().handshake(&config) {
         Ok(()) => Ok(Box::new(driver)),
         Err(message) => {
@@ -212,6 +191,63 @@ fn start_with(
             Err(message)
         }
     }
+}
+
+fn spawn_driver(
+    config: &DriverConfig,
+    events: Sender<ChatEvent>,
+    servers: Option<Value>,
+) -> Result<MuseDriver, String> {
+    let _ = events.send(ChatEvent::State {
+        state: ChatState::Starting,
+    });
+    let (proc, stdout) = Proc::spawn(child::command(config, &["serve"])).inspect_err(|error| {
+        let _ = events.send(ChatEvent::State {
+            state: ChatState::Failed {
+                message: error.clone(),
+            },
+        });
+    })?;
+    let muse = Arc::new(Muse {
+        proc,
+        servers,
+        session: Mutex::new(Session::new(config, events)),
+    });
+    let reader_muse = muse.clone();
+    let reader = std::thread::spawn(move || reader_muse.read_loop(stdout));
+    Ok(MuseDriver {
+        muse,
+        reader: Some(reader),
+        stopped: false,
+    })
+}
+
+/// Read the provider catalog before any chat exists. MSP model/list needs no
+/// session: this sends no session/start, resume, turn or tool command, and no
+/// Cua server is attached. The ordinary process owner reaps it on every result.
+pub(super) fn discover_models(config: DriverConfig) -> Result<Vec<ModelOption>, String> {
+    let (events, _) = mpsc::channel();
+    let mut driver = spawn_driver(&config, events, None)?;
+    let muse = &driver.muse;
+    let result = (|| {
+        muse.call(
+            "initialize",
+            json!({"clientInfo":{"name":"riwork","version":env!("CARGO_PKG_VERSION")}}),
+            Duration::from_secs(5),
+        )
+        .map_err(|error| error.message)?;
+        muse.proc
+            .send(&json!({"jsonrpc":"2.0","method":"initialized"}))?;
+        let result = muse
+            .call("model/list", json!({}), Duration::from_secs(5))
+            .map_err(|error| error.message)?;
+        if !result["models"].is_array() {
+            return Err("Muse returned no model catalog".to_owned());
+        }
+        Ok(model_options(&result).0)
+    })();
+    driver.shutdown();
+    result
 }
 
 struct MuseDriver {
@@ -637,14 +673,21 @@ impl Muse {
             session.request(
                 "model/list",
                 json!({"sessionId": session_id}),
-                Box::new(|muse, outcome| {
-                    if let Ok(result) = outcome {
+                Box::new(|muse, outcome| match outcome {
+                    Ok(result) => {
                         let (models, rows) = model_options(&result);
                         muse.with(|session| {
                             session.catalog = rows;
                             session.set_models(models);
                         });
                     }
+                    Err(error) => muse.with(|session| {
+                        session.notice(
+                            NoticeLevel::Warning,
+                            notice_kind::PROVIDER_WARNING,
+                            format!("Muse could not list its models: {}", error.message),
+                        )
+                    }),
                 }),
             )
         });

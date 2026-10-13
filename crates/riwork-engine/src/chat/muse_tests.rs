@@ -1838,3 +1838,46 @@ fn live_plan_chat_runs_under_the_read_only_profile() {
     assert!(agent_texts(&seen).join("\n").contains("plan this"));
     driver.shutdown();
 }
+
+#[test]
+#[ignore = "live: needs MUSE_LIVE_BIN and its configured provider; queries models without a session or turn"]
+fn live_model_discovery_lists_models_without_creating_a_conversation() {
+    let live = Live::new();
+    let mut config = live.config();
+    config.program = live_muse(); // actual default provider, not the echo wrapper
+    // Read this machine's configured provider catalog and login. Keep Muse's
+    // session/project stores, RiWork state and temporary files isolated; only
+    // metadata is queried, with no model turn or interactive login.
+    config.env.retain(|(name, _)| {
+        ![
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_STATE_HOME",
+            "XDG_CACHE_HOME",
+        ]
+        .iter()
+        .any(|key| name == key)
+    });
+    let models = discover_models(config).unwrap();
+    assert!(
+        !models.is_empty(),
+        "this installed Muse publishes its provider catalog"
+    );
+    assert!(
+        models
+            .iter()
+            .all(|model| super::super::catalog::valid_model(&model.id))
+    );
+    assert!(
+        live.mcp_starts().is_empty(),
+        "discovery attaches no desktop MCP server"
+    );
+    let sessions = std::fs::read_dir(live.dir.join("data"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
+        .count();
+    assert_eq!(sessions, 0, "no conversation was written");
+    eprintln!("discovered {} Muse models without a session", models.len());
+}
