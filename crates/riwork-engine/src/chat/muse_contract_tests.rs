@@ -263,16 +263,20 @@ fn muses_own_change_notifications_before_replies_confirm_the_request_reporter() 
     ] {
         let mut params = value;
         params["sessionId"] = json!("s");
-        script.push(expect(
-            method,
-            vec![
-                json!({"jsonrpc":"2.0","method":notification,"params":params}),
-                ack(
-                    json!("$id"),
-                    json!({"status":"accepted","effectiveMode":{"mode":"onRequest"}}),
-                ),
-            ],
-        ));
+        let mut replies = vec![
+            json!({"jsonrpc":"2.0","method":notification,"params":params}),
+            ack(
+                json!("$id"),
+                json!({"status":"accepted","effectiveMode":{"mode":"onRequest"}}),
+            ),
+        ];
+        if method == "session/setApprovalMode" {
+            // Muse can fold the original startup mode after session/start's
+            // reply. An unchanged observation must not retire this Configure.
+            replies.insert(0, json!({"jsonrpc":"2.0","method":"session/approvalModeChanged",
+                "params":{"sessionId":"s","mode":"promptUnmatched","source":"approvalReconfigure","commandId":"older-startup"}}));
+        }
+        script.push(expect(method, replies));
     }
     let fake = Fake::new(&[&steps(script)]);
     let mut config = fake.config(Provider::Muse);
@@ -304,9 +308,17 @@ fn muses_own_change_notifications_before_replies_confirm_the_request_reporter() 
         confirmed[2] |= report.approval_mode == Some(ApprovalMode::AutoEdit);
     }
     driver.shutdown();
-    assert!(
-        run_reports.try_recv().is_err(),
-        "our Configure confirmations must use its own reporter"
+    let observations: Vec<_> = run_reports.try_iter().collect();
+    assert_eq!(
+        observations.len(),
+        1,
+        "only the unchanged startup mode is an unsolicited observation"
     );
+    assert_eq!(
+        observations[0].approval_mode,
+        Some(ApprovalMode::Supervised)
+    );
+    assert_eq!(observations[0].model, None);
+    assert_eq!(observations[0].effort, None);
     assert!(!fake.saw("mismatch"), "{:#?}", fake.entries());
 }

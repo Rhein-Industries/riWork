@@ -1050,6 +1050,7 @@ impl Session {
         value: &str,
         params: &Value,
         report: DriverReport,
+        changed: bool,
     ) {
         let own = self.pending_settings[field].as_ref().filter(|pending| {
             pending.revision == self.setting_revisions[field]
@@ -1063,8 +1064,10 @@ impl Session {
         if let Some(pending) = own {
             pending.reporter.report(report);
         } else {
-            self.setting_revisions[field] += 1;
-            self.pending_settings[field] = None;
+            if changed {
+                self.setting_revisions[field] += 1;
+                self.pending_settings[field] = None;
+            }
             self.reporter.report(report);
         }
     }
@@ -2632,6 +2635,7 @@ impl Session {
             }
             "session/modelChanged" => {
                 if let Some(model) = params["modelId"].as_str().filter(|id| !id.is_empty()) {
+                    let changed = self.settings.model.as_deref() != Some(model);
                     self.settings.model = Some(model.to_owned());
                     self.report_setting_change(
                         0,
@@ -2641,6 +2645,7 @@ impl Session {
                             model: Some(self.settings.model.clone()),
                             ..Default::default()
                         },
+                        changed,
                     );
                 }
             }
@@ -2649,6 +2654,7 @@ impl Session {
                     .as_str()
                     .filter(|tier| EFFORTS.contains(tier))
                 {
+                    let changed = self.settings.effort.as_deref() != Some(effort);
                     self.settings.effort = Some(effort.to_owned());
                     self.report_setting_change(
                         1,
@@ -2658,11 +2664,13 @@ impl Session {
                             effort: Some(self.settings.effort.clone()),
                             ..Default::default()
                         },
+                        changed,
                     );
                 }
             }
             "session/approvalModeChanged" => {
                 if let Some(mode) = self.mapped_mode(&params["mode"]) {
+                    let changed = self.settings.mode != mode;
                     self.settings.mode = mode;
                     self.report_setting_change(
                         2,
@@ -2672,6 +2680,7 @@ impl Session {
                             approval_mode: Some(mode),
                             ..Default::default()
                         },
+                        changed,
                     );
                 }
             }
