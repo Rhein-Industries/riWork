@@ -1410,6 +1410,10 @@ fn create_identified(
     if new.orchestrator.is_some() && new.parent_id.is_some() {
         return Err("an orchestrator cannot be a child session".into());
     }
+    // Muse has no fast mode. A saved automation may still ask for it, so the chat is made,
+    // never recorded as fast, and says so (`fast_refused` below).
+    let fast_refused = new.provider == Provider::Muse && new.fast;
+    new.fast &= !fast_refused;
     new.parent_id = crate::project_tabs::same_project_parent(
         &shared.home,
         new.project_id.as_deref(),
@@ -1485,6 +1489,22 @@ fn create_identified(
     let log = ChatLog::create(&dir, &info)?;
     let mut inner = Inner::new(info.clone(), log, 0, shared.dismissals.clone());
     inner.append(ChatEvent::Info { info });
+    if fast_refused {
+        let id = format!("fast-refused-{}", inner.next_seq);
+        inner.append(ChatEvent::ItemCompleted {
+            item: Item {
+                presentation: Default::default(),
+                id,
+                turn_id: None,
+                status: ItemStatus::Completed,
+                body: ItemBody::notice(
+                    NoticeLevel::Warning,
+                    "Muse has no fast mode; this chat runs at Muse's usual speed.".to_owned(),
+                    Some(notice_kind::FAST_MODE),
+                ),
+            },
+        });
+    }
     let chat = Arc::new(Chat {
         dir,
         lifecycle: Mutex::new(()),

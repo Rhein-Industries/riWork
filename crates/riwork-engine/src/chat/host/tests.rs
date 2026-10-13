@@ -451,6 +451,18 @@ fn a_muse_chat_refuses_fast_and_moving_its_conversation_into_or_out_of_plan() {
         .unwrap_err();
     assert!(error.contains("no fast mode"), "{error}");
     assert_eq!(host.info(&codex.id).provider, Provider::Codex);
+    // An automation may still ask a new Muse chat for fast: it is made, not fast, and says so.
+    let mut new = host.new_chat(Provider::Muse);
+    new.fast = true;
+    let created = client.create(new).unwrap();
+    assert!(!created.fast);
+    assert!(
+        notices(&host.log(&created.id))
+            .iter()
+            .any(|notice| notice.contains("no fast mode")),
+        "{:?}",
+        notices(&host.log(&created.id))
+    );
 }
 
 #[test]

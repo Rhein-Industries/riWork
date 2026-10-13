@@ -344,18 +344,20 @@ riwork chat stop CHAT_ID
 
 **Muse chats** run one `muse serve` per chat. They cover:
 
-- **Messages and steering.** A message sent while a turn runs is steered into exactly that turn (`turn/steer` with the turn's id). One sent while the turn is starting waits for its id. One Muse does not take into the turn starts the next turn, once. Muse 1.4.7 answers a steer that arrives after the turn's last model call as accepted, but under the steer's own id instead of the turn's, and drops it.
+- **Messages and steering.** A message sent while a turn runs is steered into exactly that turn (`turn/steer` with the turn's id). One sent while the turn is starting waits for its id. One that Muse refuses because the turn just ended starts the next turn, once.
+  - Muse 1.4.7 answers a steer that arrives after the turn's last model call as accepted, but under the steer's own id instead of the turn's, and drops it. Such a message is not sent again; a notice gives it back in full.
+  - A typed message is never lost silently. One that Muse refuses, that is never written, or that is waiting or unconfirmed when Muse stops or dies comes back in full in a notice. One whose delivery is uncertain is never resent.
 - **Attachments.** UTF-8 text files arrive as text. Static PNG and JPEG images arrive as MSP image parts (`mediaType`, `base64Data`), within the same limits as the other providers. The transcript shows the message as sent, with its snapshots, never the file contents.
   - The send is answered only once Muse has taken or refused it, so a refusal keeps the draft.
   - Attachments are refused while a turn is starting or being interrupted.
   - A reply that cannot be matched to the turn is reported as unknown rather than retried.
-- **Approvals.** Each choice Muse offers has a scope (`once`, `session` or `localPersistent`). **Allow**, **Allow for this session** and **Decline** send only a one-time or session-scoped choice. RiWork never sends a choice that saves a lasting rule; when Muse offers a grant only in that form, the chat says so and offers Decline and Stop. A refreshed approval (`approval/updated`) is shown again with its new subject.
+- **Approvals.** Each choice Muse offers has a scope (`once`, `session` or `localPersistent`). **Allow**, **Allow for this session** and **Decline** send only a one-time or session-scoped choice. RiWork never sends a choice that saves a lasting rule; when Muse offers a grant only in that form, the chat says so and offers Decline and Stop. A refreshed approval (`approval/updated`) is shown again with its new subject. A refresh that leaves no choice RiWork can send closes the prompt and says so, so an earlier step's choice is never sent against the new one.
 - **Questions.** Single choice, several choices within Muse's bounds, and free text up to Muse's 500 characters. An answer outside those limits is refused before anything is sent. A question Muse settles by itself after a delay says so; showing it does not stop the countdown.
 - **Modes.**
   - **Supervised**, **Auto-edit** and **Full** select Muse's `promptUnmatched`, `onRequest` and `allowAll` under the permission profile your Muse settings choose. Muse's own default profile is Auto-review, where an AI reviewer may decide eligible approvals.
   - Muse has no planning mode. **Plan** starts the conversation under Muse's **Read only** profile ("Reads files only") with `denyUnmatched`, and the chat says so. Under that profile a write by a shell command is refused.
   - Muse fixes a conversation's profile when it starts, so a Muse conversation cannot be moved into or out of Plan. Start a new Muse chat instead.
-  - Muse has no fast mode; RiWork refuses it.
+  - Muse has no fast mode. RiWork refuses it for a running chat. A new Muse chat that asks for it, for example from an automation, is made without it and says so.
 - **Switching providers.** A chat that moves to Muse sends the conversation so far with its first message to Muse, as a leading part of that message. The transcript shows only what you typed. It is sent once: a resumed Muse conversation that has run a turn already has it.
 - **Cua.ai Driver.** RiWork's Cua.ai Driver reaches the chat as an MCP server for that session only (`config.mcpServers` on `session/start` and `session/resume`, which needs Muse's `sessionMcp` capability), never through Muse's settings. A Muse without that capability runs the chat without it, and the chat says so.
 

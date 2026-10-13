@@ -1,0 +1,9 @@
+# Muse dies after reading a start it never answered, while a second message waits behind it: both
+# come back to the user, the first as unconfirmed, the second as never sent.
+{"type":"expect","frame":{"id":"<any>","method":"initialize","params":{"clientInfo":{"name":"riwork"},"capabilities":{"requestedCapabilities":["sessionMcp"]}}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"serverInfo":{"name":"muse","version":"1.4.7"},"grantedCapabilities":["sessionMcp"]}}]}
+{"type":"expect","frame":{"method":"initialized"},"reply":[]}
+{"type":"expect","frame":{"id":"<any>","method":"session/start","params":{"commandId":"<any>","workspaceRoot":"<any>","approvalMode":"promptUnmatched"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"session":{"sessionId":"sess-1","activeTurnId":null,"turnCount":0},"viewCursor":""}}]}
+{"type":"expect","frame":{"id":"<any>","method":"model/list","params":{"sessionId":"sess-1"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"providerId":"fake","profileId":null,"source":"fakeCatalog","models":[]}}]}
+{"type":"expect","frame":{"id":"<any>","method":"turn/start","params":{"commandId":"<any>","sessionId":"sess-1","input":[{"type":"text","text":"first"}]}},"reply":[]}
+{"type":"sleep","ms":300}
+{"type":"exit","code":3,"stderr":"muse: gone"}
