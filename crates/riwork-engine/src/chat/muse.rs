@@ -902,6 +902,13 @@ struct Settings {
     mode: ApprovalMode,
 }
 
+struct PendingSetting {
+    revision: u64,
+    value: String,
+    command_id: String,
+    reporter: DriverReporter,
+}
+
 struct Session {
     events: Sender<ChatEvent>,
     next_request: i64,
@@ -910,6 +917,7 @@ struct Session {
     settings: Settings,
     reporter: DriverReporter,
     setting_revisions: [u64; 3],
+    pending_settings: [Option<PendingSetting>; 3],
     plan_profile: bool,
     models: Vec<ModelOption>,
     /// Raw `model/list` rows, replayed by `session/setModel`.
@@ -965,6 +973,7 @@ impl Session {
             },
             reporter: config.reporter.clone(),
             setting_revisions: [0; 3],
+            pending_settings: std::array::from_fn(|_| None),
             plan_profile: config.approval_mode == ApprovalMode::Plan,
             models: Vec::new(),
             catalog: Vec::new(),
@@ -1030,6 +1039,34 @@ impl Session {
             fast: Some(false),
             ..Default::default()
         });
+    }
+
+    /// MSP emits a change notification before its accepted reply. Route our
+    /// own change through its request reporter; unrelated durable changes
+    /// supersede pending requests and use the run's observation reporter.
+    fn report_setting_change(
+        &mut self,
+        field: usize,
+        value: &str,
+        params: &Value,
+        report: DriverReport,
+    ) {
+        let own = self.pending_settings[field].as_ref().filter(|pending| {
+            pending.revision == self.setting_revisions[field]
+                && pending.value == value
+                && if field == 2 {
+                    params["commandId"].as_str() == Some(pending.command_id.as_str())
+                } else {
+                    params["source"].as_str() == Some("user")
+                }
+        });
+        if let Some(pending) = own {
+            pending.reporter.report(report);
+        } else {
+            self.setting_revisions[field] += 1;
+            self.pending_settings[field] = None;
+            self.reporter.report(report);
+        }
     }
 
     fn setting_refusal(&mut self, name: &str, outcome: &Result<Value, RpcError>) {
@@ -2070,6 +2107,8 @@ impl Muse {
             if let Some(model) = model {
                 session.setting_revisions[0] += 1;
                 let revision = session.setting_revisions[0];
+                let command = command_id();
+                session.pending_settings[0] = Some(PendingSetting { revision, value: model.clone(), command_id: command.clone(), reporter: reporter.clone() });
                 let mut selection = json!({"modelId": model});
                 if let Some(row) = session.catalog.iter().find(|row| row["modelId"].as_str() == Some(model.as_str())) {
                     for field in ["providerId", "profileId", "displayLabel"] {
@@ -2078,9 +2117,10 @@ impl Muse {
                 }
                 let report = reporter.clone();
                 frames.push(session.request("session/setModel",
-                    json!({"commandId": command_id(), "sessionId": session_id, "model": selection}),
+                    json!({"commandId": command, "sessionId": session_id, "model": selection}),
                     Box::new(move |muse, outcome| muse.with(|session| {
                         if session.finished || session.setting_revisions[0] != revision { return; }
+                        session.pending_settings[0] = None;
                         if admitted(&outcome) { session.settings.model = Some(model); }
                         else { session.setting_refusal("model", &outcome); }
                         report.report(DriverReport { model: Some(session.settings.model.clone()), ..Default::default() });
@@ -2090,11 +2130,14 @@ impl Muse {
             if let Some(effort) = effort {
                 session.setting_revisions[1] += 1;
                 let revision = session.setting_revisions[1];
+                let command = command_id();
+                session.pending_settings[1] = Some(PendingSetting { revision, value: effort.clone(), command_id: command.clone(), reporter: reporter.clone() });
                 let report = reporter.clone();
                 frames.push(session.request("session/setReasoningEffort",
-                    json!({"commandId": command_id(), "sessionId": session_id, "reasoningEffort": effort}),
+                    json!({"commandId": command, "sessionId": session_id, "reasoningEffort": effort}),
                     Box::new(move |muse, outcome| muse.with(|session| {
                         if session.finished || session.setting_revisions[1] != revision { return; }
+                        session.pending_settings[1] = None;
                         if admitted(&outcome) { session.settings.effort = Some(effort); }
                         else { session.setting_refusal("reasoning effort", &outcome); }
                         report.report(DriverReport { effort: Some(session.settings.effort.clone()), ..Default::default() });
@@ -2104,11 +2147,14 @@ impl Muse {
             if let Some(mode) = approval_mode {
                 session.setting_revisions[2] += 1;
                 let revision = session.setting_revisions[2];
+                let command = command_id();
+                session.pending_settings[2] = Some(PendingSetting { revision, value: policy(mode).to_owned(), command_id: command.clone(), reporter: reporter.clone() });
                 let report = reporter.clone();
                 frames.push(session.request("session/setApprovalMode",
-                    json!({"commandId": command_id(), "sessionId": session_id, "mode": policy(mode)}),
+                    json!({"commandId": command, "sessionId": session_id, "mode": policy(mode)}),
                     Box::new(move |muse, outcome| muse.with(|session| {
                         if session.finished || session.setting_revisions[2] != revision { return; }
+                        session.pending_settings[2] = None;
                         if admitted(&outcome) {
                             let effective = outcome.as_ref().ok().and_then(|value| session.mapped_mode(&value["effectiveMode"]["mode"]));
                             session.settings.mode = effective.unwrap_or(mode);
@@ -2586,12 +2632,16 @@ impl Session {
             }
             "session/modelChanged" => {
                 if let Some(model) = params["modelId"].as_str().filter(|id| !id.is_empty()) {
-                    self.setting_revisions[0] += 1;
                     self.settings.model = Some(model.to_owned());
-                    self.reporter.report(DriverReport {
-                        model: Some(self.settings.model.clone()),
-                        ..Default::default()
-                    });
+                    self.report_setting_change(
+                        0,
+                        model,
+                        params,
+                        DriverReport {
+                            model: Some(self.settings.model.clone()),
+                            ..Default::default()
+                        },
+                    );
                 }
             }
             "session/reasoningEffortChanged" => {
@@ -2599,22 +2649,30 @@ impl Session {
                     .as_str()
                     .filter(|tier| EFFORTS.contains(tier))
                 {
-                    self.setting_revisions[1] += 1;
                     self.settings.effort = Some(effort.to_owned());
-                    self.reporter.report(DriverReport {
-                        effort: Some(self.settings.effort.clone()),
-                        ..Default::default()
-                    });
+                    self.report_setting_change(
+                        1,
+                        effort,
+                        params,
+                        DriverReport {
+                            effort: Some(self.settings.effort.clone()),
+                            ..Default::default()
+                        },
+                    );
                 }
             }
             "session/approvalModeChanged" => {
                 if let Some(mode) = self.mapped_mode(&params["mode"]) {
-                    self.setting_revisions[2] += 1;
                     self.settings.mode = mode;
-                    self.reporter.report(DriverReport {
-                        approval_mode: Some(mode),
-                        ..Default::default()
-                    });
+                    self.report_setting_change(
+                        2,
+                        params["mode"].as_str().unwrap_or_default(),
+                        params,
+                        DriverReport {
+                            approval_mode: Some(mode),
+                            ..Default::default()
+                        },
+                    );
                 }
             }
             "session/nameChanged" => {

@@ -58,7 +58,7 @@ fn configure(model: Option<&str>, effort: Option<&str>, mode: Option<ApprovalMod
 fn historical_missing_muse_resume_never_sends_a_fresh_start() {
     for historical in [true, false] {
         let mut script = handshake();
-        script.push(expect("session/resume",vec![json!({"jsonrpc":"2.0","id":"$id","error":{"code":-32004,"message":"absent","data":{"kind":"sessionNotFound"}}})]));
+        script.push(expect("session/resume",vec![json!({"jsonrpc":"2.0","id":"$id","error":{"code":-32020,"message":"absent","data":{"kind":"sessionNotFound"}}})]));
         if !historical {
             script.extend(fresh().into_iter().skip(2));
         }
@@ -238,5 +238,75 @@ fn muse_provider_observations_override_pending_settings_and_report_actual_mode()
     );
     assert!(pending_reports.try_recv().is_err());
     driver.shutdown();
+    assert!(!fake.saw("mismatch"), "{:#?}", fake.entries());
+}
+
+#[test]
+fn muses_own_change_notifications_before_replies_confirm_the_request_reporter() {
+    let mut script = fresh();
+    for (method, notification, value) in [
+        (
+            "session/setModel",
+            "session/modelChanged",
+            json!({"modelId":"selected","source":"user"}),
+        ),
+        (
+            "session/setReasoningEffort",
+            "session/reasoningEffortChanged",
+            json!({"reasoningEffort":"high","source":"user"}),
+        ),
+        (
+            "session/setApprovalMode",
+            "session/approvalModeChanged",
+            json!({"mode":"onRequest","source":"approvalReconfigure","commandId":"$command_id"}),
+        ),
+    ] {
+        let mut params = value;
+        params["sessionId"] = json!("s");
+        script.push(expect(
+            method,
+            vec![
+                json!({"jsonrpc":"2.0","method":notification,"params":params}),
+                ack(
+                    json!("$id"),
+                    json!({"status":"accepted","effectiveMode":{"mode":"onRequest"}}),
+                ),
+            ],
+        ));
+    }
+    let fake = Fake::new(&[&steps(script)]);
+    let mut config = fake.config(Provider::Muse);
+    let (run, run_reports) = reporter();
+    config.reporter = run;
+    let (send, events) = mpsc::channel();
+    let mut driver = start(config, send).unwrap();
+    until(&events, |e| {
+        matches!(
+            e,
+            ChatEvent::State {
+                state: ChatState::Idle
+            }
+        )
+    });
+    run_reports.recv_timeout(Duration::from_secs(3)).unwrap();
+    let (request, reports) = reporter();
+    driver
+        .configure(
+            configure(Some("selected"), Some("high"), Some(ApprovalMode::AutoEdit)),
+            request,
+        )
+        .unwrap();
+    let mut confirmed = [false; 3];
+    while confirmed.iter().any(|confirmed| !confirmed) {
+        let report = reports.recv_timeout(Duration::from_secs(3)).unwrap();
+        confirmed[0] |= report.model == Some(Some("selected".into()));
+        confirmed[1] |= report.effort == Some(Some("high".into()));
+        confirmed[2] |= report.approval_mode == Some(ApprovalMode::AutoEdit);
+    }
+    driver.shutdown();
+    assert!(
+        run_reports.try_recv().is_err(),
+        "our Configure confirmations must use its own reporter"
+    );
     assert!(!fake.saw("mismatch"), "{:#?}", fake.entries());
 }

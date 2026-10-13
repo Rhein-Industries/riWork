@@ -2793,7 +2793,7 @@ fn unconfirmed_or_rejected_configuration_does_not_persist_the_requested_values()
                     model: Some("refused-model".into()),
                     effort: Some("refused-effort".into()),
                     approval_mode: Some(ApprovalMode::Full),
-                    fast: Some(true),
+                    fast: (provider != Provider::Muse).then_some(true),
                 },
             )
             .unwrap();
@@ -2935,11 +2935,13 @@ fn provider_observations_supersede_older_acknowledgements_and_reach_existing_inf
         let before = host.info(&chat.id);
         let run_reporter = host.fake().starts.lock().unwrap()[0].reporter.clone();
         host.fake().defer_configure.store(true, Ordering::SeqCst);
+        let pending_mode = if provider == Provider::Muse {
+            ApprovalMode::Full
+        } else {
+            ApprovalMode::Plan
+        };
         host.client()
-            .command(
-                &chat.id,
-                choose(Some("pending"), None, Some(ApprovalMode::Plan)),
-            )
+            .command(&chat.id, choose(Some("pending"), None, Some(pending_mode)))
             .unwrap();
         let last_seq = host.log(&chat.id).last().unwrap().seq;
         let follower = Follower::open(&host.socket(), &chat.id, last_seq).unwrap();
@@ -2999,7 +3001,7 @@ fn provider_observations_supersede_older_acknowledgements_and_reach_existing_inf
         configure_reply(&host, 0).report(DriverReport {
             provider_thread_id: Some("older-id".into()),
             model: Some(Some("pending".into())),
-            approval_mode: Some(ApprovalMode::Plan),
+            approval_mode: Some(pending_mode),
             ..Default::default()
         });
         assert_eq!(host.info(&chat.id), expected);
