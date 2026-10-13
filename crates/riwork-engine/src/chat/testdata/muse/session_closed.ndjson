@@ -1,0 +1,7 @@
+# The host unloads an idle session (session/closed, reason idle): the chat is stopped, and the next
+# message resumes it in a new process.
+{"type":"expect","frame":{"id":"<any>","method":"initialize","params":{"clientInfo":{"name":"riwork"},"capabilities":{"requestedCapabilities":["sessionMcp"]}}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"serverInfo":{"name":"muse","version":"1.4.7"},"grantedCapabilities":["sessionMcp"]}}]}
+{"type":"expect","frame":{"method":"initialized"},"reply":[]}
+{"type":"expect","frame":{"id":"<any>","method":"session/start","params":{"commandId":"<any>","workspaceRoot":"<any>","approvalMode":"promptUnmatched"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"session":{"sessionId":"sess-1","activeTurnId":null,"turnCount":0},"viewCursor":""}}]}
+{"type":"expect","frame":{"id":"<any>","method":"model/list","params":{"sessionId":"sess-1"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"providerId":"fake","profileId":null,"source":"fakeCatalog","models":[]}}]}
+{"type":"emit","frame":{"jsonrpc":"2.0","method":"session/closed","params":{"sessionId":"sess-1","reason":"idle","viewCursor":null}}}

@@ -418,6 +418,68 @@ fn drivers_refuse_invalid_set_without_writing_even_plain_text() {
 }
 
 #[test]
+fn muse_refuses_an_invalid_set_without_writing_and_sends_owned_bytes_as_image_parts() {
+    // The handshake of a Muse fixture, then nothing: anything written would be unexpected.
+    let script = fixture("muse/attachments_refused.ndjson")
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .take(4)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let fake = Fake::new(&[&script]);
+    let mut attachments = snapshots(&fake);
+    let (mut driver, _) = start(&fake, Provider::Muse);
+    fs::remove_file(&attachments[1].path).unwrap();
+    assert!(
+        driver
+            .command(ChatCommand::SendAttachments {
+                text: "never sent".into(),
+                attachments: attachments.clone()
+            })
+            .unwrap_err()
+            .contains("photo.png")
+    );
+    attachments[0].bytes = FILE_BYTES + 1;
+    assert!(
+        driver
+            .command(ChatCommand::SendAttachments {
+                text: "never sent".into(),
+                attachments
+            })
+            .is_err()
+    );
+    driver.shutdown();
+    assert!(fake.received_method("turn/start").is_empty());
+    assert!(fake.received_method("turn/steer").is_empty());
+    // The same snapshots encode as MSP parts from their owned bytes, not their source files.
+    let fresh = Fake::new(&[""]);
+    let attachments = snapshots(&fresh);
+    for name in ["readme.md", "photo.png", "photo.jpg"] {
+        fs::remove_file(fresh.dir.join(name)).unwrap();
+    }
+    let parts = muse_inputs("", &attachments).unwrap();
+    let images: Vec<(&str, Vec<u8>)> = parts
+        .iter()
+        .filter(|part| part["type"] == "image")
+        .map(|part| {
+            (
+                part["mediaType"].as_str().unwrap(),
+                STANDARD
+                    .decode(part["base64Data"].as_str().unwrap())
+                    .unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        images,
+        [
+            ("image/png", fs::read(&attachments[1].path).unwrap()),
+            ("image/jpeg", fs::read(&attachments[2].path).unwrap()),
+        ]
+    );
+}
+
+#[test]
 fn codex_attachment_steer_checks_receipt_and_exact_bytes_without_restart() {
     for turn_id in ["attachment-turn", "unexpected-turn"] {
         let mut script = fixture("codex/attachments.ndjson");

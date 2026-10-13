@@ -396,6 +396,47 @@ pub fn inputs(text: &str, attachments: &[Attachment], claude: bool) -> Result<Va
     Ok(input)
 }
 
+/// The same input as MSP `TurnInputPart`s for Muse: images as `mediaType` and `base64Data`.
+/// Muse joins text parts with nothing between them, so each one after the first opens with
+/// its own blank line.
+pub fn muse_inputs(text: &str, attachments: &[Attachment]) -> Result<Vec<Value>, String> {
+    check_set(attachments)?;
+    if text.len() > TEXT_BYTES {
+        return Err("attachment message text exceeds 1 MiB".into());
+    }
+    fn push_text(parts: &mut Vec<Value>, body: String) {
+        let body = if parts.is_empty() {
+            body
+        } else {
+            format!("\n\n{body}")
+        };
+        parts.push(json!({"type":"text","text":body}));
+    }
+    let mut parts = Vec::new();
+    if !text.is_empty() {
+        push_text(&mut parts, text.to_owned());
+    }
+    for a in attachments {
+        let bytes = load(a)?;
+        match &a.kind {
+            AttachmentKind::Text => push_text(
+                &mut parts,
+                format!("Attached file: {}\n{}", a.name, self::text(&bytes)?),
+            ),
+            AttachmentKind::Image { mime } => {
+                push_text(&mut parts, format!("Attached image: {}\n", a.name));
+                parts.push(
+                    json!({"type":"image","mediaType":mime,"base64Data":STANDARD.encode(&bytes)}),
+                );
+            }
+        }
+    }
+    if serde_json::to_vec(&parts).map_err(|e| e.to_string())?.len() > 12 << 20 {
+        return Err("encoded attachment input exceeds 12 MiB; attach fewer/smaller files".into());
+    }
+    Ok(parts)
+}
+
 /// User-visible echo without inlining multi-megabyte file/image payloads in history.
 pub fn summary(text: &str, attachments: &[Attachment]) -> String {
     let mut text = text.to_owned();

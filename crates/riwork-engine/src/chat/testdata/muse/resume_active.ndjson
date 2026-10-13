@@ -1,7 +1,7 @@
 # Resuming a session whose turn is still running server-side: Session.activeTurnId names it
 # (msp.d.ts Session), and the driver must adopt it and re-apply the approval mode, which
 # session/resume does not take as a parameter.
-{"type":"expect","frame":{"id":"<any>","method":"initialize","params":{"clientInfo":{"name":"riwork"}}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"serverInfo":{"name":"muse","version":"1.4.6"}}}]}
+{"type":"expect","frame":{"id":"<any>","method":"initialize","params":{"clientInfo":{"name":"riwork"}}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"serverInfo":{"name":"muse","version":"1.4.7"},"grantedCapabilities":["sessionMcp"]}}]}
 {"type":"expect","frame":{"method":"initialized"}}
 {"type":"expect","frame":{"id":"<any>","method":"session/resume","params":{"commandId":"<any>","sessionId":"sess-old","excludeItems":true}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"session":{"sessionId":"sess-old","activeTurnId":"turn-9"},"viewCursor":"","pendingRequests":[]}}]}
 {"type":"expect","frame":{"id":"<any>","method":"session/setApprovalMode","params":{"commandId":"<any>","sessionId":"sess-old","mode":"promptUnmatched"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{}}]}

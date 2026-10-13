@@ -1,0 +1,10 @@
+# What a broken peer can put on stdout: a line that is not JSON, a line over the 16 MiB frame cap, a
+# response to no request of ours. The chat says what it skipped and carries on.
+{"type":"expect","frame":{"id":"<any>","method":"initialize","params":{"clientInfo":{"name":"riwork"},"capabilities":{"requestedCapabilities":["sessionMcp"]}}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"serverInfo":{"name":"muse","version":"1.4.7"},"grantedCapabilities":["sessionMcp"]}}]}
+{"type":"expect","frame":{"method":"initialized"},"reply":[]}
+{"type":"expect","frame":{"id":"<any>","method":"session/start","params":{"commandId":"<any>","workspaceRoot":"<any>","approvalMode":"promptUnmatched"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"session":{"sessionId":"sess-1","activeTurnId":null,"turnCount":0},"viewCursor":""}}]}
+{"type":"expect","frame":{"id":"<any>","method":"model/list","params":{"sessionId":"sess-1"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"providerId":"fake","profileId":null,"source":"fakeCatalog","models":[]}}]}
+{"type":"emit_raw","text":"this is not json"}
+{"type":"emit_oversized","bytes":17825792}
+{"type":"emit","frame":{"jsonrpc":"2.0","id":"not-ours","result":{}}}
+{"type":"expect","frame":{"id":"<any>","method":"turn/start","params":{"commandId":"<any>","sessionId":"sess-1","input":[{"type":"text","text":"hi"}]}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"commandId":"$command_id","status":"accepted","turnId":"turn-1","startedNewTurn":true,"disposition":"started"}},{"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":"sess-1","turnId":"turn-1","commandId":"c"}},{"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"sess-1","item":{"revision":1,"status":"completed","itemId":"msg-1","kind":"agentMessage","turnId":"turn-1","text":"still fine"}}},{"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":"sess-1","turnId":"turn-1","terminal":"completed"}}]}

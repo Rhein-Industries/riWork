@@ -390,6 +390,70 @@ fn only_a_configure_that_changes_nothing_at_all_is_a_retry_and_fast_alone_is_not
 }
 
 #[test]
+fn a_muse_chat_refuses_fast_and_moving_its_conversation_into_or_out_of_plan() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Muse);
+    host.wait_for_info(&chat.id, |info| info.provider_thread_id.is_some());
+    let mut client = host.client();
+    let plan = ChatCommand::Configure {
+        model: None,
+        effort: Some("low".into()),
+        approval_mode: Some(ApprovalMode::Plan),
+        fast: None,
+    };
+    for (command, refusal) in [
+        (configure_fast(true), "no fast mode"),
+        (plan.clone(), "cannot become Plan"),
+    ] {
+        let error = client.command(&chat.id, command).unwrap_err();
+        assert!(error.contains(refusal), "{error}");
+    }
+    assert!(
+        host.fake().commands().is_empty(),
+        "nothing reached the driver"
+    );
+    // Stopped, the host keeps the settings itself, and refuses the same.
+    client.close(&chat.id).unwrap();
+    for command in [configure_fast(true), plan] {
+        assert!(client.command(&chat.id, command).is_err());
+    }
+    let info = host.info(&chat.id);
+    assert_eq!(
+        (info.approval_mode, info.fast, info.effort),
+        (ApprovalMode::Supervised, false, None)
+    );
+    // Any other mode change, and fast off, go through.
+    client
+        .command(
+            &chat.id,
+            ChatCommand::Configure {
+                model: None,
+                effort: None,
+                approval_mode: Some(ApprovalMode::Full),
+                fast: Some(false),
+            },
+        )
+        .unwrap();
+    assert_eq!(host.info(&chat.id).approval_mode, ApprovalMode::Full);
+    // Moving another chat to Muse asks no fast mode of it either.
+    let codex = host.create(Provider::Codex);
+    host.wait_for_state(&codex.id, |s| *s == ChatState::Idle);
+    let error = client
+        .command(
+            &codex.id,
+            ChatCommand::Switch {
+                provider: Provider::Muse,
+                model: None,
+                effort: None,
+                fast: Some(true),
+            },
+        )
+        .unwrap_err();
+    assert!(error.contains("no fast mode"), "{error}");
+    assert_eq!(host.info(&codex.id).provider, Provider::Codex);
+}
+
+#[test]
 fn requests_for_unknown_chats_and_things_a_stopped_chat_cannot_do_are_refused() {
     let host = TestHost::new();
     let mut client = host.client();
@@ -1937,6 +2001,95 @@ fn notices(log: &[Envelope]) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+/// The fake `muse serve` the host's real Muse driver runs in the next test.
+static MUSE_FIXTURE: std::sync::OnceLock<(PathBuf, PathBuf)> = std::sync::OnceLock::new();
+
+/// The fake providers' configuration, with Muse started from `MUSE_FIXTURE`.
+fn muse_fixture_config(
+    home: &Path,
+    info: &ChatInfo,
+    resume: Option<String>,
+) -> Result<DriverConfig, String> {
+    let mut config = (fake_providers().config)(home, info, resume)?;
+    if info.provider == Provider::Muse {
+        let (program, dir) = MUSE_FIXTURE.get().cloned().ok_or("no Muse fixture")?;
+        config.program = program;
+        config.env = vec![("RIWORK_HOME".into(), dir.into_os_string())];
+    }
+    Ok(config)
+}
+
+#[test]
+fn a_chat_switched_to_muse_gives_the_real_driver_the_conversation_with_the_first_message() {
+    let fake = crate::chat::testkit::Fake::new(&[&crate::chat::testkit::fixture(
+        "muse/host_switch.ndjson",
+    )]);
+    MUSE_FIXTURE
+        .set((fake.program.clone(), fake.dir.clone()))
+        .unwrap();
+    let mut providers = fake_providers();
+    providers.muse = super::super::muse::start;
+    providers.config = muse_fixture_config;
+    let host = TestHost::with_providers(quick_options(), providers);
+    let chat = host.create(Provider::Codex);
+    let mut client = host.client();
+    send(&mut client, &chat.id, "remember the blue door");
+    host.wait_for_log(&chat.id, |log| {
+        turns_completed(log) == 1 && last_state(log) == Some(ChatState::Idle)
+    });
+    client
+        .command(&chat.id, switch(Provider::Muse, None))
+        .unwrap();
+    host.wait_for_info(&chat.id, |info| {
+        info.provider == Provider::Muse && info.state == ChatState::Idle
+    });
+    send(&mut client, &chat.id, "hello");
+    host.wait_for_log(&chat.id, |log| {
+        turns_completed(log) == 2 && last_state(log) == Some(ChatState::Idle)
+    });
+    let start = &fake.received_method("turn/start")[0]["params"];
+    let context = start["input"][0]["text"].as_str().unwrap();
+    assert!(
+        context.contains("taking it over")
+            && context.contains("remember the blue door")
+            && context.ends_with("\n\n"),
+        "{context}"
+    );
+    assert_eq!(
+        start["input"][1],
+        serde_json::json!({"type": "text", "text": "hello"})
+    );
+    assert_eq!(start["displayText"], "hello");
+    let log = host.log(&chat.id);
+    let echoed: Vec<&str> = log
+        .iter()
+        .filter_map(|e| match &e.event {
+            ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item }
+                if item.id == "um-1" =>
+            {
+                match &item.body {
+                    ItemBody::UserMessage { text } => Some(text.as_str()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !echoed.is_empty() && echoed.iter().all(|text| *text == "hello"),
+        "the durable log keeps only what was typed: {echoed:?}"
+    );
+    assert!(
+        notices(&log)
+            .iter()
+            .any(|notice| notice.contains("goes to Muse with the next message")),
+        "{:?}",
+        notices(&log)
+    );
+    drop(host);
+    assert!(!fake.saw("mismatch"), "{:#?}", fake.entries());
 }
 
 #[test]

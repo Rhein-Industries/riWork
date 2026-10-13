@@ -3308,8 +3308,8 @@ pub(crate) fn chat_launch(
     let program =
         find_harness_program(harness, &shim_directory).ok_or_else(|| harness_missing(harness))?;
     // Muse's chat host is a subcommand that must come first (`muse serve …`),
-    // and these arguments lead the command line, so the Muse driver appends
-    // the Cua config after `serve` itself instead of taking it from here.
+    // and these arguments lead the command line, so the Muse driver names the
+    // Cua server itself, for its session only (`session/start` config).
     let mut arguments = if harness == HarnessKind::Muse {
         Vec::new()
     } else {

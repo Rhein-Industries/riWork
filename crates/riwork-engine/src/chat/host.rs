@@ -1835,6 +1835,7 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
         stop(chat);
         return Ok(());
     }
+    muse_refusal(&chat.info(), &command)?;
     let command = match command {
         ChatCommand::Switch {
             provider,
@@ -1909,6 +1910,36 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
     } = command
     {
         configure(chat, model, effort, approval_mode, fast);
+    }
+    Ok(())
+}
+
+/// What a Muse chat cannot be asked, refused before anything changes whether or not its
+/// process runs: a fast tier (Muse has none), or moving a conversation it already has into
+/// or out of Plan (Muse fixes the read-only profile when a conversation starts).
+fn muse_refusal(info: &ChatInfo, command: &ChatCommand) -> Result<(), String> {
+    let (approval_mode, fast) = match command {
+        ChatCommand::Configure {
+            approval_mode,
+            fast,
+            ..
+        } if info.provider == Provider::Muse => (*approval_mode, *fast),
+        ChatCommand::Switch {
+            provider: Provider::Muse,
+            fast,
+            ..
+        } => (None, *fast),
+        _ => return Ok(()),
+    };
+    if fast == Some(true) {
+        return Err("Muse has no fast mode".into());
+    }
+    if let Some(mode) = approval_mode
+        && info.provider_thread_id.is_some()
+        && (mode == super::model::ApprovalMode::Plan)
+            != (info.approval_mode == super::model::ApprovalMode::Plan)
+    {
+        return Err(super::muse::plan_switch_refusal(mode));
     }
     Ok(())
 }
@@ -1997,11 +2028,11 @@ fn switch(
             document: path,
             from: crate::handoff::chat_label(before.provider, &before.title, &before.id),
         });
-        // Muse cannot take the carried-over document as session context, so
-        // the notice must not claim it has the conversation.
+        // Muse takes no instructions beside the conversation: the one so far goes with
+        // the first message of its new conversation, so the notice says when.
         let text = match (provider, &info.model) {
             (Provider::Muse, _) => "Continued with Muse in a new conversation; \
-                 Muse could not receive the conversation so far."
+                 the conversation so far goes to Muse with the next message."
                 .to_owned(),
             (_, Some(model)) => format!(
                 "Continued with {} ({model}), which has the conversation so far.",

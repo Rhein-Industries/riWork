@@ -24,7 +24,8 @@ newline-delimited JSON, one step per line; blank lines and lines starting with
    "stderr":"..."}
 
 In `emit` and `reply` frames the string "$id" stands for the `id` of the last
-frame read, and "$request_id" for its `request_id`. After its last step the
+frame read, "$request_id" for its `request_id`, and "$command_id" for its
+`params.commandId` (an MSP client mints that id itself). After its last step the
 fake stays alive until stdin closes (as the real programs do) and exits 0.
 
 Everything is recorded, one JSON object per line, to RECORD: the start (argv,
@@ -103,6 +104,8 @@ def substitute(value):
         return last.get("id")
     if value == "$request_id":
         return last.get("request_id")
+    if value == "$command_id":
+        return (last.get("params") or {}).get("commandId")
     if isinstance(value, dict):
         return {key: substitute(item) for key, item in value.items()}
     if isinstance(value, list):

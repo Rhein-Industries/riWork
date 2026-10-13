@@ -1,0 +1,8 @@
+# Plan: the session starts under Muse's ":read-only" permission profile with denyUnmatched
+# (SessionStartParams.permissionProfile; the profile refused a real write in a probe of 1.4.7).
+# Other settings still change; moving out of Plan and fast mode are refused before anything is sent.
+{"type":"expect","frame":{"id":"<any>","method":"initialize","params":{"clientInfo":{"name":"riwork"},"capabilities":{"requestedCapabilities":["sessionMcp"]}}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"serverInfo":{"name":"muse","version":"1.4.7"},"grantedCapabilities":["sessionMcp"]}}]}
+{"type":"expect","frame":{"method":"initialized"},"reply":[]}
+{"type":"expect","frame":{"id":"<any>","method":"session/start","params":{"commandId":"<any>","workspaceRoot":"<any>","approvalMode":"denyUnmatched","permissionProfile":":read-only"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"session":{"sessionId":"sess-1","activeTurnId":null,"turnCount":0},"viewCursor":""}}]}
+{"type":"expect","frame":{"id":"<any>","method":"model/list","params":{"sessionId":"sess-1"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"providerId":"fake","profileId":null,"source":"fakeCatalog","models":[]}}]}
+{"type":"expect","frame":{"id":"<any>","method":"session/setReasoningEffort","params":{"sessionId":"sess-1","reasoningEffort":"high"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{}}]}

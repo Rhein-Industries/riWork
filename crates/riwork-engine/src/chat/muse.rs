@@ -24,46 +24,67 @@
 //! | `model/list` result | `Models` |
 //!
 //! Commands out: `Send` → `turn/start` (or `turn/steer` into the open turn),
-//! `Interrupt` → `turn/interrupt` (or `userInput/interrupt` while a question
-//! pends), `Approve` → `approval/decide`, `Answer` → `userInput/answer`,
-//! `Configure` → `session/setModel`/`setReasoningEffort`/`setApprovalMode`,
-//! `Compact` → `session/compact`. Approvals are answered in two steps: the
-//! JSON-RPC receipt acknowledges presentation only; the decision travels as
-//! its own command, and the prompt closes when the server folds
-//! `approval/resolved` — never on our decide ack.
+//! `SendAttachments` → the same with MSP `image` parts, answered only once
+//! Muse has taken or refused it, `Interrupt` → `turn/interrupt` (or
+//! `userInput/interrupt` while a question pends), `Approve` →
+//! `approval/decide`, `Answer` → `userInput/answer`, `Configure` →
+//! `session/setModel`/`setReasoningEffort`/`setApprovalMode`, `Compact` →
+//! `session/compact`. Approvals are answered in two steps: the JSON-RPC
+//! receipt acknowledges presentation only; the decision travels as its own
+//! command, and the prompt closes when the server folds `approval/resolved` —
+//! never on our decide ack. A choice that would save a rule
+//! (`localPersistent`) is never sent for a RiWork decision.
+//!
+//! RiWork's Cua.ai Driver reaches the session as a session-only MCP server
+//! (`config.mcpServers` on `session/start` and `session/resume`, granted by
+//! the `sessionMcp` capability), never through Muse's settings. The
+//! conversation a chat had before it switched provider rides the first turn
+//! as a leading text part; `displayText` and the user-message echo keep the
+//! user's own words on screen.
 //!
 //! Approval modes map onto MSP's closed enum: Supervised →
-//! `promptUnmatched`, AutoEdit → `onRequest`, Full → `allowAll`, Plan →
-//! `denyUnmatched` (nearest available; MSP has no plan collaboration mode).
+//! `promptUnmatched`, AutoEdit → `onRequest`, Full → `allowAll`. Muse has no
+//! planning mode: Plan starts the session under Muse's `:read-only`
+//! permission profile with `denyUnmatched`, and since a profile is fixed when
+//! a session starts, a running conversation does not move into or out of
+//! Plan. Muse has no fast tier.
 //!
-//! Verified against `muse serve --provider echo` (Muse 1.4.6): framing,
-//! initialize/initialized, session start, two echo turns with deltas and
-//! token usage, `model/list`, `usage/read`. Assumed from the MSP schema
-//! (echo is text-only and cannot produce them): toolCall item shapes and
-//! tool names, approval choice inventories, userInput answers, compact
-//! success, non-zero usage and model rows. Attachments are refused: MSP
-//! image parts exist, but RiWork's attachment presentation cannot ride the
-//! echoed user message yet.
+//! Verified against `muse serve --provider echo` (Muse 1.4.7, schema
+//! `sha256:6de32db0…`): framing, the handshake and its `sessionMcp` grant, a
+//! session MCP server started with exactly the configured command, arguments
+//! and environment at start and again at resume, echo turns with deltas and
+//! usage, `displayText`, image parts up to a 4.4 MB frame, steering into a
+//! running turn, the `:read-only` profile refusing a write, and the refusals
+//! of a steer or interrupt without a running turn. Assumed from the MSP schema
+//! (echo cannot produce them): toolCall item shapes, approval and question
+//! inventories and their answers, compaction, non-zero usage and model rows.
 
+use super::attachments::{self, Attachment, AttachmentKind, UNKNOWN_SUBMISSION};
 use super::child::{self, Frame, FrameReader, Proc};
 use super::driver::{Driver, DriverConfig, StartDriver};
 use super::model::{
-    Approval, ApprovalKind, ApprovalMode, ChatCommand, ChatEvent, ChatState, Decision, Delta, Item,
-    ItemBody, ItemStatus, ModelOption, NoticeLevel, Question, QuestionOption, QuestionPrompt, Step,
-    StepStatus, TurnOutcome, Usage, notice_kind,
+    Approval, ApprovalKind, ApprovalMode, ChatCommand, ChatEvent, ChatImage, ChatState, Decision,
+    Delta, ImageSource, Item, ItemBody, ItemStatus, ModelOption, NoticeLevel, Presentation,
+    Question, QuestionOption, QuestionPrompt, Step, StepStatus, TurnOutcome, Usage, notice_kind,
 };
-use crate::sessions::HarnessKind;
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::Path;
 use std::process::ChildStdout;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const _: StartDriver = start;
+
+/// Muse's permission profile for Plan: "Reads files only".
+const READ_ONLY_PROFILE: &str = ":read-only";
+/// The most characters `userInput/answer` takes as one free-text answer.
+const FREE_TEXT_CHARS: usize = 500;
+/// How many submissions keep their on-screen form for the user-message echo.
+const SHOWN_KEEP: usize = 64;
 
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(60);
@@ -104,34 +125,56 @@ fn command_id() -> String {
     Uuid::now_v7().to_string()
 }
 
-/// The Cua MCP config as arguments after `serve`. The subcommand must lead
-/// Muse's command line, so these cannot ride `DriverConfig::extra_args`
-/// (which `child::command` puts first); the driver builds them itself from
-/// the same helper the terminal launch uses.
-fn serve_args(config: &DriverConfig) -> Vec<String> {
-    let mut args = vec!["serve".to_owned()];
+/// RiWork's Cua.ai Driver as Muse's `SessionConfig.mcpServers`: `executable
+/// cua mcp` with the chat's RiWork state, the same server a terminal launch
+/// names with `-c`, but for this session only and with literal values (a
+/// session server's environment is its own, not Muse's `${VAR}` settings).
+/// `None` without a RiWork home to point it at.
+fn cua_servers(
+    config: &DriverConfig,
+    executable: &Path,
+    custom_driver: Option<&Path>,
+) -> Option<Value> {
     let home = config
         .env
         .iter()
         .find(|(name, _)| name == "RIWORK_HOME")
-        .map(|(_, value)| PathBuf::from(value));
-    if let (Some(home), Ok(executable)) = (home, std::env::current_exe()) {
-        args.extend(crate::sessions::cua_harness_arguments(
-            HarnessKind::Muse,
-            &executable,
-            &home,
-        ));
+        .map(|(_, value)| value.to_string_lossy().into_owned())?;
+    let mut env = json!({"RIWORK_HOME": home});
+    if let Some(driver) = custom_driver {
+        env["RIWORK_CUA_DRIVER"] = json!(driver.to_string_lossy());
     }
-    args
+    Some(json!({"cua-driver": {
+        "transport": "stdio",
+        "command": executable.to_string_lossy(),
+        "args": ["cua", "mcp"],
+        "env": env,
+        "mode": "required",
+    }}))
 }
 
 pub fn start(config: DriverConfig, events: Sender<ChatEvent>) -> Result<Box<dyn Driver>, String> {
+    let servers = std::env::current_exe().ok().and_then(|executable| {
+        cua_servers(
+            &config,
+            &executable,
+            crate::cua::driver_override_for_harness().as_deref(),
+        )
+    });
+    start_with(config, events, servers)
+}
+
+/// `start` with `servers` as the session's MCP servers; a live test names a
+/// private stand-in for `riwork cua mcp` here.
+fn start_with(
+    config: DriverConfig,
+    events: Sender<ChatEvent>,
+    servers: Option<Value>,
+) -> Result<Box<dyn Driver>, String> {
     let _ = events.send(ChatEvent::State {
         state: ChatState::Starting,
     });
-    let args = serve_args(&config);
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let (proc, stdout) = Proc::spawn(child::command(&config, &refs)).inspect_err(|error| {
+    let (proc, stdout) = Proc::spawn(child::command(&config, &["serve"])).inspect_err(|error| {
         let _ = events.send(ChatEvent::State {
             state: ChatState::Failed {
                 message: error.clone(),
@@ -140,6 +183,7 @@ pub fn start(config: DriverConfig, events: Sender<ChatEvent>) -> Result<Box<dyn 
     })?;
     let muse = Arc::new(Muse {
         proc,
+        servers,
         session: Mutex::new(Session::new(&config, events)),
     });
     let reader_muse = muse.clone();
@@ -213,6 +257,8 @@ impl Drop for MuseDriver {
 
 struct Muse {
     proc: Arc<Proc>,
+    /// `SessionConfig.mcpServers` for start and resume (RiWork's Cua.ai Driver).
+    servers: Option<Value>,
     session: Mutex<Session>,
 }
 
@@ -293,42 +339,65 @@ impl Muse {
     }
 
     fn handshake(self: Arc<Self>, config: &DriverConfig) -> Result<(), String> {
-        self.call(
-            "initialize",
-            json!({"clientInfo": {"name": "riwork", "version": env!("CARGO_PKG_VERSION")}}),
-            INITIALIZE_TIMEOUT,
-        )
-        .map_err(|error| error.message)?;
+        let initialized = self
+            .call(
+                "initialize",
+                json!({
+                    "clientInfo": {"name": "riwork", "version": env!("CARGO_PKG_VERSION")},
+                    "capabilities": {"requestedCapabilities": ["sessionMcp"]},
+                }),
+                INITIALIZE_TIMEOUT,
+            )
+            .map_err(|error| error.message)?;
         let _ = self
             .proc
-            .send(&json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}));
-        let (session_id, name, fresh, active_turn, resumed) = match &config.resume {
+            .send(&json!({"jsonrpc": "2.0", "method": "initialized"}));
+        // Session MCP servers are refused without the grant; a Muse that does
+        // not give it runs the chat without RiWork's Cua.ai Driver, and says so.
+        let session_mcp = initialized["grantedCapabilities"]
+            .as_array()
+            .is_some_and(|granted| granted.iter().any(|name| name == "sessionMcp"));
+        let session_config = self
+            .servers
+            .as_ref()
+            .filter(|_| session_mcp)
+            .map(|servers| json!({"mcpServers": servers}));
+        let (session_id, name, fresh, active_turn, resumed, unsent) = match &config.resume {
             Some(resume) => {
-                match self.call(
-                    "session/resume",
-                    json!({"commandId": command_id(), "sessionId": resume, "excludeItems": true}),
-                    SESSION_TIMEOUT,
-                ) {
-                    Ok(result) => (
-                        session_id_of(&result).ok_or("muse resumed without a session id")?,
-                        result["session"]["name"].as_str().map(str::to_owned),
-                        false,
-                        result["session"]["activeTurnId"]
+                let mut params =
+                    json!({"commandId": command_id(), "sessionId": resume, "excludeItems": true});
+                if let Some(session_config) = &session_config {
+                    params["config"] = session_config.clone();
+                }
+                match self.call("session/resume", params, SESSION_TIMEOUT) {
+                    Ok(result) => {
+                        let active = result["session"]["activeTurnId"]
                             .as_str()
                             .filter(|id| !id.is_empty())
-                            .map(str::to_owned),
-                        true,
-                    ),
+                            .map(str::to_owned);
+                        // No turn has run or runs yet: the carried-over
+                        // conversation has not reached Muse.
+                        let unsent =
+                            active.is_none() && result["session"]["turnCount"].as_u64() == Some(0);
+                        (
+                            session_id_of(&result).ok_or("muse resumed without a session id")?,
+                            result["session"]["name"].as_str().map(str::to_owned),
+                            false,
+                            active,
+                            true,
+                            unsent,
+                        )
+                    }
                     Err(error) if error.kind.as_deref() == Some("sessionNotFound") => {
-                        let (id, name) = self.start_session(config)?;
-                        (id, name, true, None, false)
+                        let (id, name) = self.start_session(config, session_config.as_ref())?;
+                        (id, name, true, None, false, true)
                     }
                     Err(error) => return Err(error.message),
                 }
             }
             None => {
-                let (id, name) = self.start_session(config)?;
-                (id, name, false, None, false)
+                let (id, name) = self.start_session(config, session_config.as_ref())?;
+                (id, name, false, None, false, true)
             }
         };
         let effort = config.effort.clone();
@@ -342,6 +411,13 @@ impl Muse {
                     "Muse no longer has this conversation; a fresh one was started.".to_owned(),
                 );
             }
+            if self.servers.is_some() && !session_mcp {
+                session.notice(
+                    NoticeLevel::Warning,
+                    notice_kind::PROVIDER_WARNING,
+                    "This Muse does not take MCP servers for one session, so RiWork's Cua.ai Driver is not connected to this chat.".to_owned(),
+                );
+            }
             if let Some(name) = &name
                 && !name.is_empty()
             {
@@ -349,18 +425,26 @@ impl Muse {
                     title: name.clone(),
                 });
             }
-            // Only the switch start (no session to resume) drops the context;
-            // later restarts resume it, so the warning is for that start only.
-            if config.resume.is_none()
-                && config
+            // The conversation from before a provider switch goes with the
+            // first message of the session, which keeps it from then on.
+            if unsent {
+                session.context = config
                     .instructions
-                    .as_deref()
-                    .is_some_and(|text| !text.is_empty())
-            {
+                    .clone()
+                    .filter(|text| !text.trim().is_empty());
+            }
+            if !resumed && config.approval_mode == ApprovalMode::Plan {
+                session.notice(
+                    NoticeLevel::Info,
+                    notice_kind::PROVIDER_WARNING,
+                    "Muse has no planning mode. This conversation runs under Muse's Read only permission profile, which reads files only, and actions Muse's rules do not allow are declined instead of asked. It stays read-only for its whole life.".to_owned(),
+                );
+            }
+            if !resumed && config.fast {
                 session.notice(
                     NoticeLevel::Warning,
-                    notice_kind::PROVIDER_WARNING,
-                    "The conversation this chat had with its previous provider could not be passed to Muse; it starts without that context.".to_owned(),
+                    notice_kind::FAST_MODE,
+                    "Muse has no fast mode; this chat runs at Muse's usual speed.".to_owned(),
                 );
             }
             // A turn still running server-side is ours again: without this the
@@ -430,7 +514,11 @@ impl Muse {
         Ok(())
     }
 
-    fn start_session(&self, config: &DriverConfig) -> Result<(String, Option<String>), String> {
+    fn start_session(
+        &self,
+        config: &DriverConfig,
+        session_config: Option<&Value>,
+    ) -> Result<(String, Option<String>), String> {
         let mut params = json!({
             "commandId": command_id(),
             "workspaceRoot": config.cwd.to_string_lossy(),
@@ -438,6 +526,14 @@ impl Muse {
         });
         if let Some(model) = &config.model {
             params["modelId"] = json!(model);
+        }
+        if let Some(session_config) = session_config {
+            params["config"] = session_config.clone();
+        }
+        // A profile is chosen once, here: `session/resume` keeps it and
+        // does not take another. A host that cannot give it refuses the start.
+        if config.approval_mode == ApprovalMode::Plan {
+            params["permissionProfile"] = json!(READ_ONLY_PROFILE);
         }
         let result = self
             .call("session/start", params, SESSION_TIMEOUT)
@@ -543,7 +639,19 @@ impl Muse {
     /// presentation only; the decision travels later as its own command.
     fn on_request(&self, id: Value, method: &str, params: &Value) {
         let mut frames = Vec::new();
+        let theirs = params["sessionId"].as_str();
+        let ours = self.with(|session| session.session_id.clone());
         match method {
+            // A request for another session is not this chat's to show.
+            "approval/request" | "userInput/request"
+                if theirs.is_some() && ours.is_some() && theirs != ours.as_deref() =>
+            {
+                frames.push(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32602, "message": "riwork serves another session on this connection"},
+                }));
+            }
             "approval/request" | "userInput/request" => {
                 frames.push(json!({"jsonrpc": "2.0", "id": id, "result": {}}));
                 frames.extend(self.with(|session| session.present(method, params)));
@@ -567,9 +675,11 @@ struct OpenRequest {
 enum RequestKind {
     Approval {
         requirement: Value,
-        choices: Vec<(Decision, String)>,
-        /// The prompt as presented, so a stage refresh can re-present it
-        /// with its title and detail intact.
+        choices: Vec<Choice>,
+        /// The request as it came, so a stage refresh (which carries the
+        /// new subject but not the raw arguments) re-describes it whole.
+        request: Value,
+        /// The prompt as presented.
         presented: Approval,
         /// A `approval/decide` is in flight; further clicks are ignored.
         deciding: bool,
@@ -581,8 +691,52 @@ enum RequestKind {
 }
 
 struct WireQuestion {
+    /// How the question reads, for a refusal to name it.
+    name: String,
     multi: bool,
     labels: Vec<String>,
+    min: Option<u64>,
+    max: Option<u64>,
+}
+
+/// One `UserInputAnswer`: exactly one of `selectedLabel` (single choice),
+/// `selectedLabels` (multiple, within the question's bounds) or `freeText`
+/// (at most 500 characters). What does not fit is refused, never cut, so
+/// the answer can be fixed and sent again.
+fn wire_answer(id: &str, question: &WireQuestion, given: &[String]) -> Result<Value, String> {
+    let mut answer = json!({"questionId": id});
+    let labels = given.iter().all(|label| question.labels.contains(label));
+    if question.multi && labels {
+        let count = given.len() as u64;
+        if question.min.is_some_and(|min| count < min)
+            || question.max.is_some_and(|max| count > max)
+        {
+            return Err(format!(
+                "Muse wants between {} and {} choices for “{}”",
+                question.min.unwrap_or(0),
+                question
+                    .max
+                    .map_or("any number of".to_owned(), |max| max.to_string()),
+                question.name
+            ));
+        }
+        answer["selectedLabels"] = json!(given);
+    } else if !question.multi && labels && given.len() == 1 {
+        answer["selectedLabel"] = json!(given[0]);
+    } else {
+        let text = given.join(", ");
+        if text.trim().is_empty() {
+            return Err(format!("Answer “{}” before sending", question.name));
+        }
+        if text.chars().count() > FREE_TEXT_CHARS {
+            return Err(format!(
+                "Muse takes at most {FREE_TEXT_CHARS} characters as the answer to “{}”; shorten it",
+                question.name
+            ));
+        }
+        answer["freeText"] = json!(text);
+    }
+    Ok(answer)
 }
 
 #[derive(Default)]
@@ -591,6 +745,66 @@ struct Streamed {
     started: bool,
     reasoning: bool,
     summary_part: Option<i64>,
+}
+
+/// How a submission shows in the transcript. Muse's user-message echo
+/// carries the model's input (the carried-over conversation, file contents);
+/// the transcript shows what the user sent, with the snapshots attached.
+#[derive(Clone)]
+struct Shown {
+    text: String,
+    presentation: Presentation,
+}
+
+/// One message for Muse: its input parts and how it shows.
+struct Submission {
+    input: Vec<Value>,
+    shown: Shown,
+}
+
+impl Submission {
+    fn text(text: String) -> Self {
+        Self {
+            input: vec![json!({"type": "text", "text": text})],
+            shown: Shown {
+                text,
+                presentation: Presentation::default(),
+            },
+        }
+    }
+
+    fn attachments(text: &str, attachments: &[Attachment]) -> Result<Self, String> {
+        let input = attachments::muse_inputs(text, attachments)?;
+        let images = attachments
+            .iter()
+            .filter(|a| matches!(a.kind, AttachmentKind::Image { .. }))
+            .map(|a| ChatImage {
+                label: a.name.clone(),
+                source: ImageSource::Local {
+                    path: a.path.display().to_string(),
+                },
+            })
+            .collect();
+        Ok(Self {
+            input,
+            shown: Shown {
+                text: attachments::summary(text, attachments),
+                presentation: Presentation {
+                    images,
+                    attachments: attachments.to_vec(),
+                    ..Default::default()
+                },
+            },
+        })
+    }
+
+    /// The input's text parts as Muse joins them.
+    fn joined(&self) -> String {
+        self.input
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect()
+    }
 }
 
 struct Settings {
@@ -634,6 +848,12 @@ struct Session {
     notice_prefix: String,
     stopping: bool,
     finished: bool,
+    /// The conversation from before a provider switch, until a turn takes it.
+    context: Option<String>,
+    /// That conversation on its way, with the serial of the start carrying it.
+    context_in_flight: Option<(u64, String)>,
+    /// How recent submissions show, by `commandId`.
+    shown: VecDeque<(String, Shown)>,
 }
 
 impl Session {
@@ -675,6 +895,31 @@ impl Session {
             notice_prefix: Uuid::new_v4().simple().to_string()[..8].to_owned(),
             stopping: false,
             finished: false,
+            context: None,
+            context_in_flight: None,
+            shown: VecDeque::new(),
+        }
+    }
+
+    fn remember(&mut self, command_id: &str, shown: Shown) {
+        if self.shown.len() >= SHOWN_KEEP {
+            self.shown.pop_front();
+        }
+        self.shown.push_back((command_id.to_owned(), shown));
+    }
+
+    fn forget(&mut self, command_id: &str) {
+        self.shown.retain(|(id, _)| id != command_id);
+    }
+
+    /// The current start did not reach Muse: its carried-over conversation
+    /// goes with the next one.
+    fn unsend_context(&mut self) {
+        if let Some((serial, context)) = self.context_in_flight.take()
+            && serial == self.start_serial
+            && self.context.is_none()
+        {
+            self.context = Some(context);
         }
     }
 
@@ -869,7 +1114,10 @@ impl Session {
             "turn/steer",
             params,
             Box::new(move |muse, outcome| {
-                if outcome.is_ok() {
+                // In only when Muse names the turn that absorbed it. Muse
+                // 1.4.7 answers a steer that came too late as accepted under
+                // the steer's own id, and its log records it rejected.
+                if outcome.is_ok_and(|result| result["turnId"].as_str() == Some(turn.as_str())) {
                     return;
                 }
                 // The turn may have ended just as the message was sent: then
@@ -884,91 +1132,169 @@ impl Session {
         )
     }
 
-    /// A `turn/start` for `text`, marking the chat busy.
-    fn start_frame(&mut self, session: &str, text: String) -> Value {
+    /// A `turn/start` for `submission`, marking the chat busy. The
+    /// carried-over conversation, while Muse has not had it, leads the input;
+    /// `answer`, when given, hears how Muse took the start (an attachment
+    /// send waits for it), else a refusal is a notice.
+    fn start_frame(
+        &mut self,
+        session: &str,
+        submission: Submission,
+        answer: Option<Sender<Result<(), String>>>,
+    ) -> Value {
         self.starting = true;
         self.start_serial += 1;
         self.completed_before_receipt.clear();
         self.completion_overflow = false;
         let serial = self.start_serial;
         self.refresh_state();
+        let command = command_id();
+        let context = self.context.take();
+        self.context_in_flight = context.clone().map(|context| (serial, context));
+        let raw = submission.joined();
+        let Submission { mut input, shown } = submission;
+        if let Some(context) = &context {
+            input.insert(0, json!({"type": "text", "text": format!("{context}\n\n")}));
+        }
         let mut params = json!({
-            "commandId": command_id(),
+            "commandId": command,
             "sessionId": session,
-            "input": [{"type": "text", "text": text}],
+            "input": input,
         });
+        if context.is_some() || shown.text != raw || !shown.presentation.is_empty() {
+            params["displayText"] = json!(shown.text);
+            self.remember(&command, shown);
+        }
         if let Some(effort) = self.effort_to_send() {
             params["reasoningEffort"] = json!(effort);
         }
         self.request(
             "turn/start",
             params,
-            Box::new(move |muse, outcome| match outcome {
-                Ok(result) => {
-                    let frames = muse.with(|session| {
-                        if session.start_serial != serial {
-                            return Vec::new();
-                        }
-                        let Some(turn_id) = result["turnId"].as_str() else {
-                            session.starting = false;
-                            session.notice(
-                                NoticeLevel::Error,
-                                notice_kind::SETTING_REFUSED,
-                                "Muse took the message without naming a turn.".to_owned(),
-                            );
-                            session.refresh_state();
-                            return Vec::new();
-                        };
-                        // `disposition` says what happened to the input: a
-                        // queued turn is adopted when its `turn/started`
-                        // arrives, a steered one was folded into the turn
-                        // already open, anything else starts now.
-                        match result["disposition"].as_str() {
-                            Some("queued") => {
-                                session.pending_turn = Some(turn_id.to_owned());
-                                Vec::new()
-                            }
-                            Some("steered") => {
-                                session.starting = false;
-                                session.refresh_state();
-                                Vec::new()
-                            }
-                            _ => session.begin_turn(turn_id),
-                        }
-                    });
-                    muse.send_all(frames);
-                }
-                Err(error) => {
-                    let frame = muse.with(|session| {
-                        if session.start_serial != serial {
-                            return None;
-                        }
-                        session.starting = false;
-                        session.interrupt_wanted = false;
+            Box::new(move |muse, outcome| {
+                let waited = answer.is_some();
+                let (frames, result) =
+                    muse.with(|session| session.started(serial, &command, outcome, waited));
+                muse.send_all(frames);
+                // A sender that stopped waiting was told the outcome is
+                // unknown; a refusal that comes after is still said.
+                if let Some(answer) = answer
+                    && let Err(mpsc::SendError(Err(message))) = answer.send(result)
+                {
+                    muse.with(|session| {
                         session.notice(
                             NoticeLevel::Error,
                             notice_kind::SETTING_REFUSED,
-                            format!("Muse did not start the turn: {}", error.message),
-                        );
-                        // A message accepted behind this start still
-                        // deserves a turn of its own, not the bin.
-                        let queued = std::mem::take(&mut session.queued);
-                        match (queued.is_empty(), session.session_id.clone()) {
-                            (false, Some(session_id)) => {
-                                Some(session.start_frame(&session_id, queued.join("\n\n")))
-                            }
-                            _ => {
-                                session.refresh_state();
-                                None
-                            }
-                        }
+                            format!("Muse did not start the turn: {message}"),
+                        )
                     });
-                    if let Some(frame) = frame {
-                        muse.send_all(vec![frame]);
-                    }
                 }
             }),
         )
+    }
+
+    /// How Muse took the `turn/start` numbered `serial`: frames to send, and
+    /// the outcome for a sender that waits. A refusal gives the carried-over
+    /// conversation back for the next start; a receipt that arrives after
+    /// another start, or names no turn, leaves it unknown whether the
+    /// message is in.
+    fn started(
+        &mut self,
+        serial: u64,
+        command: &str,
+        outcome: Result<Value, RpcError>,
+        waited: bool,
+    ) -> (Vec<Value>, Result<(), String>) {
+        let result = match outcome {
+            Ok(result) => {
+                if self
+                    .context_in_flight
+                    .as_ref()
+                    .is_some_and(|(sent, _)| *sent == serial)
+                {
+                    self.context_in_flight = None;
+                }
+                result
+            }
+            Err(error) => {
+                if self.start_serial != serial {
+                    return (
+                        Vec::new(),
+                        Err(format!(
+                            "{UNKNOWN_SUBMISSION} Muse refused a start ({}) after another one began; inspect the transcript before resending",
+                            error.message
+                        )),
+                    );
+                }
+                self.starting = false;
+                self.interrupt_wanted = false;
+                self.unsend_context();
+                self.forget(command);
+                if !waited {
+                    self.notice(
+                        NoticeLevel::Error,
+                        notice_kind::SETTING_REFUSED,
+                        format!("Muse did not start the turn: {}", error.message),
+                    );
+                }
+                // A message accepted behind this start still deserves a
+                // turn of its own, not the bin.
+                let queued = std::mem::take(&mut self.queued);
+                let frames = match (queued.is_empty(), self.session_id.clone()) {
+                    (false, Some(session_id)) => vec![self.start_frame(
+                        &session_id,
+                        Submission::text(queued.join("\n\n")),
+                        None,
+                    )],
+                    _ => {
+                        self.refresh_state();
+                        Vec::new()
+                    }
+                };
+                return (frames, Err(error.message));
+            }
+        };
+        if self.start_serial != serial {
+            return (
+                Vec::new(),
+                Err(format!(
+                    "{UNKNOWN_SUBMISSION} Muse's start receipt arrived after another start; inspect the transcript before resending"
+                )),
+            );
+        }
+        let Some(turn_id) = result["turnId"].as_str().filter(|id| !id.trim().is_empty()) else {
+            self.starting = false;
+            if !waited {
+                self.notice(
+                    NoticeLevel::Error,
+                    notice_kind::SETTING_REFUSED,
+                    "Muse took the message without naming a turn.".to_owned(),
+                );
+            }
+            self.refresh_state();
+            return (
+                Vec::new(),
+                Err(format!(
+                    "{UNKNOWN_SUBMISSION} Muse took the message without naming a turn; inspect the transcript before resending"
+                )),
+            );
+        };
+        // `disposition` says what happened to the input: a queued turn is
+        // adopted when its `turn/started` arrives, a steered one was folded
+        // into the turn already open, anything else starts now.
+        let frames = match result["disposition"].as_str() {
+            Some("queued") => {
+                self.pending_turn = Some(turn_id.to_owned());
+                Vec::new()
+            }
+            Some("steered") => {
+                self.starting = false;
+                self.refresh_state();
+                Vec::new()
+            }
+            _ => self.begin_turn(turn_id),
+        };
+        (frames, Ok(()))
     }
 
     /// The end of the turn `turn_id`; frames to send for messages still queued.
@@ -1020,7 +1346,7 @@ impl Session {
         // Messages that came too late to steer start the next turn.
         let queued = std::mem::take(&mut self.queued);
         if let (false, Some(session)) = (queued.is_empty(), self.session_id.clone()) {
-            return vec![self.start_frame(&session, queued.join("\n\n"))];
+            return vec![self.start_frame(&session, Submission::text(queued.join("\n\n")), None)];
         }
         self.refresh_state();
         Vec::new()
@@ -1066,8 +1392,8 @@ impl Muse {
         }
         match command {
             ChatCommand::Send { text } => self.send_text(text),
-            ChatCommand::SendAttachments { .. } => {
-                Err("Muse chats do not take attachments yet; keep the draft".to_owned())
+            ChatCommand::SendAttachments { text, attachments } => {
+                self.send_attachments(&text, &attachments)
             }
             ChatCommand::DismissNotice { .. } => {
                 Err("notice dismissal belongs to the host".to_owned())
@@ -1090,10 +1416,7 @@ impl Muse {
                 effort,
                 approval_mode,
                 fast,
-            } => {
-                self.configure(model, effort, approval_mode, fast);
-                Ok(())
-            }
+            } => self.configure(model, effort, approval_mode, fast),
             ChatCommand::Compact => {
                 let frames = self.with(|session| session.compact_frame());
                 self.send_all(frames);
@@ -1115,13 +1438,119 @@ impl Muse {
             } else if let Some(turn) = session.turn.clone() {
                 Ok(Some(session.steer_frame(&session_id, &turn, text)))
             } else {
-                Ok(Some(session.start_frame(&session_id, text)))
+                Ok(Some(session.start_frame(
+                    &session_id,
+                    Submission::text(text),
+                    None,
+                )))
             }
         })?;
         if let Some(frame) = frame {
             self.send_all(vec![frame]);
         }
         Ok(())
+    }
+
+    /// Attachments go only when Muse can take them now: into the open turn
+    /// (exactly that turn) or as a new one. The answer is Muse's, so a
+    /// refusal keeps the draft; nothing is queued or retried, and a reply
+    /// that cannot be matched leaves the submission unknown.
+    fn send_attachments(&self, text: &str, attachments: &[Attachment]) -> Result<(), String> {
+        let deadline = Instant::now() + child::WRITE_WAIT;
+        if text.len() > attachments::TEXT_BYTES {
+            return Err("attachment message text exceeds 1 MiB".into());
+        }
+        let submission = Submission::attachments(text, attachments)?;
+        let (answer, wait) = mpsc::channel();
+        let (frame, command, starting) = self.with(|session| -> Result<_, String> {
+            let Some(session_id) = session.session_id.clone() else {
+                return Err("muse has no session yet; keep the draft".to_owned());
+            };
+            if session.interrupting || session.starting {
+                return Err("Muse is starting or interrupting a turn; keep the draft and send after it settles".to_owned());
+            }
+            match session.turn.clone() {
+                Some(turn) => {
+                    let command = command_id();
+                    let Submission { input, shown } = submission;
+                    session.remember(&command, shown);
+                    let forget = command.clone();
+                    let frame = session.request(
+                        "turn/steer",
+                        json!({
+                            "commandId": command,
+                            "sessionId": session_id,
+                            "expectedTurnId": turn,
+                            "input": input,
+                        }),
+                        Box::new(move |muse, outcome| {
+                            let result = match outcome {
+                                Ok(value) if value["turnId"].as_str() == Some(turn.as_str()) => Ok(()),
+                                // Not absorbed by this turn (Muse 1.4.7 answers so when
+                                // the turn has just ended, and drops the input), yet
+                                // acknowledged: whether it is in is for the transcript.
+                                Ok(_) => Err(format!(
+                                    "{UNKNOWN_SUBMISSION} Muse acknowledged the attachments without naming the turn that took them; inspect the transcript before resending"
+                                )),
+                                Err(error) => {
+                                    muse.with(|session| session.forget(&forget));
+                                    Err(error.message)
+                                }
+                            };
+                            let _ = answer.send(result);
+                        }),
+                    );
+                    Ok((frame, command, false))
+                }
+                None => {
+                    let frame = session.start_frame(&session_id, submission, Some(answer));
+                    let command = frame["params"]["commandId"].as_str().unwrap_or_default().to_owned();
+                    Ok((frame, command, true))
+                }
+            }
+        })?;
+        // Even a partial write may have submitted it: never write it again.
+        if let Err(error) = self.proc.send_line_until(&frame.to_string(), deadline) {
+            if error.written == 0 {
+                // Nothing reached Muse: undo what the send set up, so a late
+                // unrelated reply cannot read as this message's.
+                self.with(|session| {
+                    if let Some(id) = frame["id"].as_i64() {
+                        session.waiting.remove(&id);
+                    }
+                    session.forget(&command);
+                    if starting {
+                        session.starting = false;
+                        session.unsend_context();
+                        session.refresh_state();
+                    }
+                });
+                return Err(error.to_string());
+            }
+            return Err(format!(
+                "{UNKNOWN_SUBMISSION} {error}; inspect the transcript before resending"
+            ));
+        }
+        loop {
+            if let Ok(result) = wait.try_recv() {
+                return result;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() || self.proc.writes_cancelled() {
+                return Err(format!(
+                    "{UNKNOWN_SUBMISSION} Muse's answer to the submission timed out or was cancelled; inspect the transcript before resending"
+                ));
+            }
+            match wait.recv_timeout(remaining.min(Duration::from_millis(20))) {
+                Ok(result) => return result,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "{UNKNOWN_SUBMISSION} Muse's answer to the submission was lost ({error}); inspect the transcript before resending"
+                    ));
+                }
+            }
+        }
     }
 
     fn approve(&self, request_id: &str, decision: Decision) -> Result<(), String> {
@@ -1132,7 +1561,9 @@ impl Muse {
                 requirement: Value,
                 stop_turn: bool,
             },
-            RefuseDurableOnly,
+            RefuseNotOneOff {
+                for_session: bool,
+            },
             AlreadyDeciding,
         }
         let plan = self.with(|session| -> Result<Plan, String> {
@@ -1157,6 +1588,8 @@ impl Muse {
                 .session_id
                 .clone()
                 .ok_or("muse has no session yet")?;
+            // A narrower grant may stand in for a wider one, and a stop for
+            // a refusal; never the other way round.
             let wanted: &[Decision] = match decision {
                 Decision::Accept => &[Decision::Accept],
                 Decision::AcceptForSession => &[Decision::AcceptForSession, Decision::Accept],
@@ -1164,34 +1597,36 @@ impl Muse {
                 Decision::Cancel => &[Decision::Cancel, Decision::Decline],
             };
             let picked = wanted.iter().find_map(|want| {
-                choices
-                    .iter()
-                    .find(|(offered, _)| offered == want)
-                    .map(|(_, choice_id)| choice_id.clone())
+                pick(choices, *want).map(|choice| (*want, choice.choice_id.clone()))
             });
             match picked {
-                Some(choice_id) => {
+                Some((carried, choice_id)) => {
                     *deciding = true;
                     Ok(Plan::Decide {
                         session_id,
                         choice_id,
                         requirement: requirement.clone(),
-                        stop_turn: decision == Decision::Cancel
-                            && !choices.iter().any(|(d, _)| *d == Decision::Cancel),
+                        stop_turn: decision == Decision::Cancel && carried != Decision::Cancel,
                     })
                 }
-                None if decision == Decision::Accept => Ok(Plan::RefuseDurableOnly),
+                None if decision == Decision::Accept => Ok(Plan::RefuseNotOneOff {
+                    for_session: pick(choices, Decision::AcceptForSession).is_some(),
+                }),
                 None => Err(format!("muse did not offer {decision:?} for {request_id}")),
             }
         })?;
         match plan {
             Plan::AlreadyDeciding => Ok(()),
-            Plan::RefuseDurableOnly => {
+            Plan::RefuseNotOneOff { for_session } => {
                 self.with(|session| {
                     session.notice(
                         NoticeLevel::Warning,
                         notice_kind::SETTING_REFUSED,
-                        "Muse offers only a lasting approval here; choose “for this session” to grant it, or decline.".to_owned(),
+                        if for_session {
+                            "Muse offers no one-time approval here; choose “for this session” to grant it, or decline.".to_owned()
+                        } else {
+                            "Muse offers only an approval that saves a lasting rule here, which RiWork does not give; decline it, or decide in Muse itself.".to_owned()
+                        },
                     );
                 });
                 Ok(())
@@ -1302,23 +1737,9 @@ impl Muse {
                 .enumerate()
                 .map(|(index, (id, question))| {
                     let given: &[String] = answers.get(index).map(Vec::as_slice).unwrap_or(&[]);
-                    let mut answer = json!({"questionId": id});
-                    if question.multi
-                        && !given.is_empty()
-                        && given.iter().all(|label| question.labels.contains(label))
-                    {
-                        answer["selectedLabels"] = json!(given);
-                    } else if !question.multi
-                        && given.len() == 1
-                        && question.labels.contains(&given[0])
-                    {
-                        answer["selectedLabel"] = json!(given[0]);
-                    } else {
-                        answer["freeText"] = json!(truncate_chars(&given.join(", "), 500));
-                    }
-                    answer
+                    wire_answer(id, question, given)
                 })
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
             Ok((session_id, wire))
         })?;
         let user_input_id = request_id.to_owned();
@@ -1352,18 +1773,28 @@ impl Muse {
         Ok(())
     }
 
+    /// Refused whole, before anything changes, when it asks for what Muse
+    /// cannot do: a fast tier (MSP has none), or moving a conversation into
+    /// or out of Plan (its `:read-only` profile is fixed at the start).
     fn configure(
         &self,
         model: Option<String>,
         effort: Option<String>,
         approval_mode: Option<ApprovalMode>,
-        _fast: Option<bool>,
-    ) {
-        // MSP has no fast tier; the choice is kept by the host and ignored here.
+        fast: Option<bool>,
+    ) -> Result<(), String> {
+        if fast == Some(true) {
+            return Err("Muse has no fast mode".to_owned());
+        }
         let mut frames = Vec::new();
         self.with(|session| {
+            if let Some(mode) = approval_mode
+                && (mode == ApprovalMode::Plan) != (session.settings.mode == ApprovalMode::Plan)
+            {
+                return Err(plan_switch_refusal(mode));
+            }
             let Some(session_id) = session.session_id.clone() else {
-                return;
+                return Ok(());
             };
             if let Some(model) = model {
                 let before = session.settings.model.replace(model.clone());
@@ -1442,8 +1873,19 @@ impl Muse {
                     }),
                 ));
             }
-        });
+            Ok(())
+        })?;
         self.send_all(frames);
+        Ok(())
+    }
+}
+
+/// Why a Muse conversation does not move into or out of Plan.
+pub(crate) fn plan_switch_refusal(to: ApprovalMode) -> String {
+    if to == ApprovalMode::Plan {
+        "Muse fixes read-only access when a conversation starts, so this one cannot become Plan; start a new Muse chat in Plan".to_owned()
+    } else {
+        "This Muse conversation was started read-only for Plan and stays read-only; start a new Muse chat for another mode".to_owned()
     }
 }
 
@@ -1478,16 +1920,25 @@ impl Session {
         vec![self.request(
             "session/compact",
             json!({"commandId": command_id(), "sessionId": session_id}),
-            Box::new(|muse, outcome| {
-                if let Err(error) = outcome {
-                    muse.with(|session| {
-                        session.notice(
-                            NoticeLevel::Error,
-                            notice_kind::SETTING_REFUSED,
-                            format!("Muse could not compact the context: {}", error.message),
-                        );
-                    });
-                }
+            Box::new(|muse, outcome| match outcome {
+                Ok(result) if result["status"].as_str() == Some("noop") => muse.with(|session| {
+                    session.notice(
+                        NoticeLevel::Info,
+                        notice_kind::PROVIDER_WARNING,
+                        match result["reason"].as_str() {
+                            Some(reason) => format!("Muse had nothing to compact ({reason})."),
+                            None => "Muse had nothing to compact.".to_owned(),
+                        },
+                    );
+                }),
+                Ok(_) => {}
+                Err(error) => muse.with(|session| {
+                    session.notice(
+                        NoticeLevel::Error,
+                        notice_kind::SETTING_REFUSED,
+                        format!("Muse could not compact the context: {}", error.message),
+                    );
+                }),
             }),
         )]
     }
@@ -1549,62 +2000,7 @@ impl Session {
         let requirement = params["currentRequirementId"].clone();
         // One prompt per requirement stage: a re-issued approval replaces
         // the stored choices under the same request id.
-        let choices = map_choices(params);
-        let subject = &params["subject"];
-        let kind = match subject["kind"].as_str().unwrap_or_default() {
-            "shell" | "process" => ApprovalKind::Command,
-            "fileAccess" => ApprovalKind::FileChange,
-            "network" | "unixSocket" => ApprovalKind::Permissions,
-            _ => ApprovalKind::Tool,
-        };
-        let title = subject["command"]
-            .as_str()
-            .or_else(|| subject["path"].as_str())
-            .map(str::to_owned)
-            .or_else(|| {
-                subject["host"]
-                    .as_str()
-                    .map(|host| match subject["port"].as_u64() {
-                        Some(port) => format!("{host}:{port}"),
-                        None => host.to_owned(),
-                    })
-            })
-            .or_else(|| subject["toolName"].as_str().map(str::to_owned))
-            .or_else(|| params["toolName"].as_str().map(str::to_owned))
-            .unwrap_or_else(|| "Muse asks to continue".to_owned());
-        let mut detail = String::new();
-        if params["subagentOrigin"].is_object() {
-            detail.push_str("A subagent asks. ");
-        }
-        if params["judgeEscalated"].as_bool() == Some(true) {
-            detail.push_str("Escalated by Muse's approval judge. ");
-        }
-        if params["protectedWrite"].as_bool() == Some(true) {
-            detail.push_str("This writes somewhere protected. ");
-        }
-        if let Some(raw) = params["rawArgs"].as_str().filter(|raw| !raw.is_empty()) {
-            detail.push_str(raw);
-        }
-        if let Some(stages) = subject["stages"].as_array() {
-            for stage in stages {
-                if let Some(argv) = stage["argv"].as_array() {
-                    let words: Vec<&str> = argv.iter().filter_map(Value::as_str).collect();
-                    if !detail.is_empty() {
-                        detail.push('\n');
-                    }
-                    detail.push_str(&words.join(" "));
-                }
-            }
-        }
-        for choice in params["availableChoices"].as_array().into_iter().flatten() {
-            if let Some(preview) = choice["rulePreview"].as_str().filter(|p| !p.is_empty()) {
-                if !detail.is_empty() {
-                    detail.push('\n');
-                }
-                detail.push_str(preview);
-            }
-        }
-        truncate_bytes(&mut detail, DETAIL_BYTES);
+        let choices = wire_choices(params);
         let offered = offered_of(&choices);
         if offered.is_empty() {
             // A prompt with no answerable choice would wedge the chat in
@@ -1612,10 +2008,11 @@ impl Session {
             self.notice(
                 NoticeLevel::Warning,
                 notice_kind::PROVIDER_WARNING,
-                "Muse asked for an approval RiWork cannot answer.".to_owned(),
+                "Muse asked for an approval RiWork cannot answer without saving a rule; interrupt the turn, or decide in Muse itself.".to_owned(),
             );
             return;
         }
+        let (kind, title, detail) = describe(params);
         let approval = Approval {
             request_id: approval_id.clone(),
             item_id: params["itemId"].as_str().map(str::to_owned),
@@ -1630,6 +2027,7 @@ impl Session {
             kind: RequestKind::Approval {
                 requirement,
                 choices,
+                request: params.clone(),
                 presented: approval.clone(),
                 deciding: false,
             },
@@ -1639,9 +2037,9 @@ impl Session {
         self.refresh_state();
     }
 
-    /// A stage refresh for an open approval: patch its requirement and
-    /// choices in place. The params carry no title/detail material, so
-    /// re-presenting from them would strip the prompt the user is reading.
+    /// A stage refresh for an open approval: the new requirement, choices
+    /// and subject, described with the request's own raw arguments, under
+    /// the same request and item.
     fn update_approval(&mut self, params: &Value) {
         let Some(approval_id) = params["approvalId"].as_str().filter(|id| !id.is_empty()) else {
             return;
@@ -1656,6 +2054,7 @@ impl Session {
         let RequestKind::Approval {
             requirement,
             choices,
+            request,
             presented,
             ..
         } = &mut open.kind
@@ -1665,11 +2064,21 @@ impl Session {
         if !params["currentRequirementId"].is_null() {
             *requirement = params["currentRequirementId"].clone();
         }
-        let mapped = map_choices(params);
-        if !mapped.is_empty() {
-            presented.choices = offered_of(&mapped);
-            *choices = mapped;
+        for field in ["subject", "availableChoices", "currentRequirementId"] {
+            if !params[field].is_null() {
+                request[field] = params[field].clone();
+            }
         }
+        let fresh = wire_choices(params);
+        let offered = offered_of(&fresh);
+        if !offered.is_empty() {
+            presented.choices = offered;
+            *choices = fresh;
+        }
+        let (kind, title, detail) = describe(request);
+        presented.kind = kind;
+        presented.title = title;
+        presented.detail = detail;
         let approval = presented.clone();
         self.emit(ChatEvent::ApprovalRequested { approval });
     }
@@ -1722,11 +2131,26 @@ impl Session {
                 multi_select: multi,
             });
             ids.push(id.to_owned());
-            wire.push(WireQuestion { multi, labels });
+            wire.push(WireQuestion {
+                name: question["header"]
+                    .as_str()
+                    .filter(|header| !header.is_empty())
+                    .or_else(|| question["question"].as_str())
+                    .unwrap_or(id)
+                    .to_owned(),
+                multi,
+                labels,
+                min: question["selection"]["minSelections"].as_u64(),
+                max: question["selection"]["maxSelections"].as_u64(),
+            });
         }
         if ids.is_empty() {
             return Vec::new();
         }
+        let again = self
+            .requests
+            .iter()
+            .any(|open| open.request_id == user_input_id);
         self.requests
             .retain(|open| open.request_id != user_input_id);
         self.requests.push(OpenRequest {
@@ -1744,12 +2168,18 @@ impl Session {
             },
         });
         self.refresh_state();
-        if params["autoResolutionMs"].is_number() {
-            return vec![json!({
-                "jsonrpc": "2.0",
-                "method": "userInput/engaged",
-                "params": {"sessionId": self.session_id, "userInputId": user_input_id},
-            })];
+        // A timed prompt settles by itself unless the user engages with it;
+        // showing it is not engaging (`userInput/engaged` is for that), so
+        // the countdown stays and the user is told of it.
+        if let Some(ms) = params["autoResolutionMs"].as_u64().filter(|_| !again) {
+            self.notice(
+                NoticeLevel::Info,
+                notice_kind::PROVIDER_WARNING,
+                format!(
+                    "Muse settles this question by itself in {} seconds unless it is answered.",
+                    ms.div_ceil(1000)
+                ),
+            );
         }
         Vec::new()
     }
@@ -1794,7 +2224,16 @@ impl Session {
             "turn/retryScheduled" => self.notice(
                 NoticeLevel::Warning,
                 notice_kind::API_RETRY,
-                "Muse is retrying after a failed request.".to_owned(),
+                match (
+                    params["nextAttempt"].as_u64(),
+                    params["maxAttempts"].as_u64(),
+                ) {
+                    (Some(next), Some(max)) => format!(
+                        "Muse is retrying after a failed request (attempt {next} of {max}): {}",
+                        params["reason"].as_str().unwrap_or("the request failed")
+                    ),
+                    _ => "Muse is retrying after a failed request.".to_owned(),
+                },
             ),
             "item/started" | "item/updated" => self.item(&params["item"], false),
             "item/completed" => self.item(&params["item"], true),
@@ -1818,10 +2257,10 @@ impl Session {
                 usage.input_tokens = cumulative["promptTokens"].as_u64().unwrap_or(0);
                 usage.output_tokens = cumulative["outputTokens"].as_u64().unwrap_or(0);
                 usage.cached_input_tokens = cumulative["cacheReadTokens"].as_u64().unwrap_or(0);
-                usage.cost_usd = cumulative["cost"]
+                // `cost {usd, partial}`; absent is unpriced, not the last price.
+                usage.cost_usd = cumulative["cost"]["usd"]
                     .as_f64()
-                    .or_else(|| cumulative["cost"]["usd"].as_f64())
-                    .or(usage.cost_usd);
+                    .or_else(|| cumulative["cost"].as_f64());
                 if usage != self.usage {
                     self.usage = usage.clone();
                     self.usage_seen = true;
@@ -1833,9 +2272,8 @@ impl Session {
                 if let Some(used) = params["usedTokens"].as_u64() {
                     usage.context_used = Some(used);
                 }
-                if let Some(window) = params["windowTokens"].as_u64() {
-                    usage.context_window = Some(window);
-                }
+                // Absent when the host's basis has no limit: no window then.
+                usage.context_window = params["windowTokens"].as_u64();
                 if usage != self.usage {
                     self.usage = usage.clone();
                     self.usage_seen = true;
@@ -1856,15 +2294,37 @@ impl Session {
                     });
                 }
             }
+            // Disclosure only: the chosen model stays chosen but cannot be
+            // served by the provider now signed in.
             "session/modelRouteUnserved" => self.notice(
                 NoticeLevel::Warning,
                 notice_kind::MODEL_FALLBACK,
-                params["reason"]
-                    .as_str()
-                    .or_else(|| params["message"].as_str())
-                    .unwrap_or("Muse could not serve the chosen model and fell back.")
-                    .to_owned(),
+                format!(
+                    "Muse's provider {} cannot serve the model {}; choose another model.",
+                    params["installedProviderId"]
+                        .as_str()
+                        .unwrap_or("now signed in"),
+                    params["modelId"].as_str().unwrap_or("this chat uses"),
+                ),
             ),
+            // A queued start reclaimed elsewhere never runs.
+            "turn/unqueued" => {
+                if let Some(turn) = params["turnId"].as_str()
+                    && self.pending_turn.as_deref() == Some(turn)
+                {
+                    self.pending_turn = None;
+                    if self.turn.is_none() {
+                        self.starting = false;
+                    }
+                    self.notice(
+                        NoticeLevel::Warning,
+                        notice_kind::UNDELIVERED,
+                        "A message waiting for its turn was withdrawn from Muse and will not run."
+                            .to_owned(),
+                    );
+                    self.refresh_state();
+                }
+            }
             "session/todoListChanged" => self.todos(params),
             "session/closed" => self.finish_stopped(),
             "view/gap" => self.notice(
@@ -1878,25 +2338,22 @@ impl Session {
     }
 
     fn todos(&mut self, params: &Value) {
-        let Some(list) = params["items"]
-            .as_array()
-            .or_else(|| params["todos"].as_array())
-        else {
+        let Some(list) = params["items"].as_array() else {
             return;
         };
         let items: Vec<Step> = list
             .iter()
             .filter_map(|todo| {
-                let status = match todo["status"].as_str() {
-                    Some("pending") => StepStatus::Pending,
-                    Some("inProgress") => StepStatus::InProgress,
-                    Some("completed") => StepStatus::Completed,
+                let text = todo["text"].as_str()?.to_owned();
+                // A cancelled step is over without being done; it stays on
+                // the list, marked, rather than vanishing.
+                let (status, text) = match todo["status"].as_str() {
+                    Some("pending") => (StepStatus::Pending, text),
+                    Some("inProgress") => (StepStatus::InProgress, text),
+                    Some("completed") => (StepStatus::Completed, text),
+                    Some("cancelled") => (StepStatus::Completed, format!("{text} (cancelled)")),
                     _ => return None,
                 };
-                let text = todo["text"]
-                    .as_str()
-                    .or_else(|| todo["title"].as_str())?
-                    .to_owned();
                 Some(Step { text, status })
             })
             .collect();
@@ -1922,6 +2379,35 @@ impl Session {
             }
             return;
         }
+        // A compaction's outcome is known only at its end: no marker before
+        // then, and none for one that did not compact.
+        if item["kind"].as_str() == Some("compaction") {
+            if !done {
+                return;
+            }
+            match item["outcome"].as_str() {
+                None | Some("compacted") => {}
+                Some("noop") => {
+                    self.notice(
+                        NoticeLevel::Info,
+                        notice_kind::PROVIDER_WARNING,
+                        "Muse had nothing to compact.".to_owned(),
+                    );
+                    return;
+                }
+                Some(outcome) => {
+                    self.notice(
+                        NoticeLevel::Warning,
+                        notice_kind::PROVIDER_WARNING,
+                        format!(
+                            "Muse could not compact the context ({}).",
+                            item["reason"].as_str().unwrap_or(outcome)
+                        ),
+                    );
+                    return;
+                }
+            }
+        }
         if let Some(revision) = item["revision"].as_u64() {
             let stored = self.revisions.get(&id).copied().unwrap_or(0);
             if !done && revision <= stored && stored > 0 {
@@ -1933,6 +2419,21 @@ impl Session {
             self.ignored.insert(id);
             return;
         };
+        // Our own submission, at every revision: what the user sent, never
+        // the model input Muse echoes.
+        let mut presentation = Presentation::default();
+        if matches!(body, ItemBody::UserMessage { .. })
+            && let Some(shown) = item["commandId"].as_str().and_then(|command| {
+                self.shown
+                    .iter()
+                    .rev()
+                    .find(|(id, _)| id == command)
+                    .map(|(_, shown)| shown.clone())
+            })
+        {
+            body = ItemBody::UserMessage { text: shown.text };
+            presentation = shown.presentation;
+        }
         let reasoning = matches!(body, ItemBody::Reasoning { .. });
         if !done {
             let entry = self.streamed.entry(id.clone()).or_default();
@@ -1946,7 +2447,7 @@ impl Session {
             entry.started = true;
             self.emit(ChatEvent::ItemStarted {
                 item: Item {
-                    presentation: Default::default(),
+                    presentation,
                     id,
                     turn_id: item["turnId"].as_str().map(str::to_owned),
                     status,
@@ -1975,7 +2476,7 @@ impl Session {
         }
         self.emit(ChatEvent::ItemCompleted {
             item: Item {
-                presentation: Default::default(),
+                presentation,
                 id,
                 turn_id: item["turnId"].as_str().map(str::to_owned),
                 status,
@@ -2070,9 +2571,83 @@ impl Session {
     }
 }
 
-/// How much Muse may do without asking, in its own closed vocabulary.
-/// Plan has no true equivalent; `denyUnmatched` at least changes nothing
-/// the rules do not already allow.
+/// What an approval asks, from its `ApprovalRequestParams`: the kind of
+/// action, a one-line title and the detail (raw arguments, stage argv, the
+/// rule each choice would add), bounded for the screen.
+fn describe(params: &Value) -> (ApprovalKind, String, String) {
+    let subject = &params["subject"];
+    let kind = match subject["kind"].as_str().unwrap_or_default() {
+        "shell" | "process" => ApprovalKind::Command,
+        "fileAccess" if subject["access"].as_str() == Some("read") => ApprovalKind::Permissions,
+        "fileAccess" => ApprovalKind::FileChange,
+        "network" | "unixSocket" => ApprovalKind::Permissions,
+        _ => ApprovalKind::Tool,
+    };
+    let title = subject["command"]
+        .as_str()
+        .or_else(|| subject["path"].as_str())
+        .or_else(|| subject["target"].as_str())
+        .map(str::to_owned)
+        .or_else(|| {
+            subject["host"]
+                .as_str()
+                .map(|host| match subject["port"].as_u64() {
+                    Some(port) => format!("{host}:{port}"),
+                    None => host.to_owned(),
+                })
+        })
+        .or_else(|| subject["toolName"].as_str().map(str::to_owned))
+        .or_else(|| params["toolName"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| "Muse asks to continue".to_owned());
+    let mut detail = String::new();
+    if params["subagentOrigin"].is_object() {
+        detail.push_str("A subagent asks. ");
+    }
+    if params["judgeEscalated"].as_bool() == Some(true) {
+        detail.push_str("Escalated by Muse's approval judge. ");
+    }
+    if params["protectedWrite"].as_bool() == Some(true) {
+        detail.push_str("This writes somewhere protected. ");
+    }
+    if let Some(access) = subject["access"]
+        .as_str()
+        .filter(|access| !access.is_empty())
+    {
+        detail.push_str(&format!("Access: {access}. "));
+    }
+    if let Some(raw) = params["rawArgs"].as_str().filter(|raw| !raw.is_empty()) {
+        detail.push_str(raw);
+    }
+    if let Some(stages) = subject["stages"].as_array() {
+        for stage in stages {
+            if let Some(argv) = stage["argv"].as_array() {
+                let words: Vec<&str> = argv.iter().filter_map(Value::as_str).collect();
+                if !detail.is_empty() {
+                    detail.push('\n');
+                }
+                detail.push_str(&words.join(" "));
+            }
+        }
+    }
+    // The rule a choice adds, for the choices RiWork can make (never a saved one).
+    for choice in params["availableChoices"].as_array().into_iter().flatten() {
+        if choice["scope"].as_str() == Some("localPersistent") {
+            continue;
+        }
+        if let Some(preview) = choice["rulePreview"].as_str().filter(|p| !p.is_empty()) {
+            if !detail.is_empty() {
+                detail.push('\n');
+            }
+            detail.push_str(preview);
+        }
+    }
+    truncate_bytes(&mut detail, DETAIL_BYTES);
+    (kind, title, detail)
+}
+
+/// How much Muse may do without asking, in its own closed vocabulary. Plan
+/// also starts its session under the `:read-only` profile (`start_session`);
+/// `denyUnmatched` alone would not keep it from writing.
 fn policy(mode: ApprovalMode) -> &'static str {
     match mode {
         ApprovalMode::Supervised => "promptUnmatched",
@@ -2082,39 +2657,75 @@ fn policy(mode: ApprovalMode) -> &'static str {
     }
 }
 
-/// The offered MSP choices as (decision, choiceId) pairs; a pair that
-/// does not map is dropped, never guessed.
-fn map_choices(params: &Value) -> Vec<(Decision, String)> {
+/// One offered MSP choice: what it decides, for how long, and its id.
+#[derive(Clone, Debug, PartialEq)]
+struct Choice {
+    decision: String,
+    scope: String,
+    choice_id: String,
+}
+
+/// The offered MSP choices, in wire order.
+fn wire_choices(params: &Value) -> Vec<Choice> {
     params["availableChoices"]
         .as_array()
         .map(|list| {
             list.iter()
                 .filter_map(|choice| {
-                    let decision = map_choice(
-                        choice["decision"].as_str().unwrap_or_default(),
-                        choice["scope"].as_str().unwrap_or_default(),
-                    )?;
-                    let choice_id = choice["choiceId"].as_str()?.to_owned();
-                    Some((decision, choice_id))
+                    Some(Choice {
+                        decision: choice["decision"].as_str()?.to_owned(),
+                        scope: choice["scope"].as_str().unwrap_or_default().to_owned(),
+                        choice_id: choice["choiceId"].as_str()?.to_owned(),
+                    })
                 })
                 .collect()
         })
         .unwrap_or_default()
 }
 
-/// The distinct decisions a choice list offers, in wire order.
-fn offered_of(choices: &[(Decision, String)]) -> Vec<Decision> {
-    let mut seen: Vec<Decision> = Vec::new();
-    for (decision, _) in choices {
-        if !seen.contains(decision) {
-            seen.push(*decision);
-        }
+/// The MSP (decision, scope) pairs that carry out a RiWork decision, best
+/// first. A `localPersistent` choice saves a rule beyond this session and a
+/// policy-amendment denial saves a refusal; RiWork has no decision that asks
+/// for either, so neither is ever sent.
+fn carries(decision: Decision) -> &'static [(&'static str, &'static str)] {
+    match decision {
+        Decision::Accept => &[("approved", "once")],
+        Decision::AcceptForSession => &[
+            ("approvedForSession", "session"),
+            ("approved", "session"),
+            ("approvedPolicyAmendment", "session"),
+            ("approvedForSession", "once"),
+        ],
+        Decision::Decline => &[("denied", "once")],
+        Decision::Cancel => &[("abort", "once"), ("abort", "session"), ("abort", "")],
     }
-    seen
+}
+
+/// The offered choice that carries out `decision`, if any.
+fn pick(choices: &[Choice], decision: Decision) -> Option<&Choice> {
+    carries(decision).iter().find_map(|(wire, scope)| {
+        choices
+            .iter()
+            .find(|choice| choice.decision == *wire && choice.scope == *scope)
+    })
+}
+
+/// The RiWork decisions the offered choices can carry out, in RiWork's order.
+fn offered_of(choices: &[Choice]) -> Vec<Decision> {
+    [
+        Decision::Accept,
+        Decision::AcceptForSession,
+        Decision::Decline,
+        Decision::Cancel,
+    ]
+    .into_iter()
+    .filter(|decision| pick(choices, *decision).is_some())
+    .collect()
 }
 
 /// A wire decision as the transcript names it (for folds that close an
-/// approval we did not decide ourselves).
+/// approval we did not decide ourselves). A saved rule never reads as a
+/// one-off.
 fn wire_decision(decision: Option<&str>) -> Decision {
     match decision {
         Some("approved") => Decision::Accept,
@@ -2124,25 +2735,11 @@ fn wire_decision(decision: Option<&str>) -> Decision {
     }
 }
 
-/// One offered MSP choice as a RiWork decision, on the (decision, scope)
-/// pair. Unknown pairs are skipped, never guessed into an accept; a lasting
-/// grant reads as AcceptForSession so the transcript never understates it
-/// as a one-off.
-fn map_choice(decision: &str, scope: &str) -> Option<Decision> {
-    match (decision, scope) {
-        ("approved", "once") => Some(Decision::Accept),
-        ("approvedForSession", _) | ("approved", "session") => Some(Decision::AcceptForSession),
-        ("approvedPolicyAmendment", _) | ("approved", "localPersistent") => {
-            Some(Decision::AcceptForSession)
-        }
-        ("denied", _) | ("deniedPolicyAmendment", _) => Some(Decision::Decline),
-        ("abort", _) => Some(Decision::Cancel),
-        _ => None,
-    }
-}
-
 fn model_options(result: &Value) -> (Vec<ModelOption>, Vec<Value>) {
     let rows: Vec<Value> = result["models"].as_array().cloned().unwrap_or_default();
+    let any_active = rows
+        .iter()
+        .any(|row| row["isActive"].as_bool() == Some(true));
     let models = rows
         .iter()
         .filter_map(|row| {
@@ -2167,7 +2764,13 @@ fn model_options(result: &Value) -> (Vec<ModelOption>, Vec<Value>) {
                 efforts,
                 default_effort: row["defaultReasoningEffort"].as_str().map(str::to_owned),
                 supports_fast: false,
-                is_default: row["isDefault"].as_bool().unwrap_or(false),
+                // Asked with the session, `isActive` marks the model it runs
+                // with no choice made, which is what "default" means here.
+                is_default: if any_active {
+                    row["isActive"].as_bool().unwrap_or(false)
+                } else {
+                    row["isDefault"].as_bool().unwrap_or(false)
+                },
             })
         })
         .collect();
@@ -2181,8 +2784,10 @@ fn item_status(item: &Value, done: bool) -> ItemStatus {
         Some("failed" | "timedOut") => ItemStatus::Failed,
         Some("rejected") => ItemStatus::Declined,
         Some("cancelled") => ItemStatus::Interrupted,
-        _ if done => ItemStatus::Completed,
-        _ => ItemStatus::InProgress,
+        // Anything but `inProgress` is over; an unknown word is over too.
+        Some(_) => ItemStatus::Completed,
+        None if done => ItemStatus::Completed,
+        None => ItemStatus::InProgress,
     }
 }
 
@@ -2325,13 +2930,6 @@ fn convert_item(item: &Value, done: bool) -> Option<(ItemBody, ItemStatus)> {
         },
     };
     Some((body, status))
-}
-
-fn truncate_chars(text: &str, limit: usize) -> String {
-    if text.chars().count() <= limit {
-        return text.to_owned();
-    }
-    text.chars().take(limit).collect()
 }
 
 fn truncate_bytes(text: &mut String, limit: usize) {

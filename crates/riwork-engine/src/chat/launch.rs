@@ -1,6 +1,8 @@
 //! What the chat host hands a driver: the provider program, the Cua MCP
 //! wiring, the Codex account and the environment, all resolved the way a
 //! terminal launch of the same agent resolves them (`sessions::chat_launch`).
+//! A Muse chat's Cua server is the driver's own, named for its session
+//! (`muse::cua_servers`), so nothing here reaches Muse's command line.
 
 use super::driver::DriverConfig;
 use super::model::{ChatInfo, OrchestratorScope, Provider};
@@ -117,13 +119,6 @@ fn assemble(
         // Settings asked that a stray key not switch the chat to API billing.
         // Otherwise `claude` keeps every sign-in method it has, as published.
         env_remove.push("ANTHROPIC_API_KEY".into());
-    }
-    if info.provider == Provider::Muse
-        && let Some(driver) = crate::cua::driver_override_for_harness()
-    {
-        // Muse's Cua config names this variable (`${RIWORK_CUA_DRIVER}`);
-        // it must be set in the serve process for the reference to resolve.
-        env.push(("RIWORK_CUA_DRIVER".into(), driver.into_os_string()));
     }
     // What a terminal orchestrator's session exports, for the skill that reads it.
     match &info.orchestrator {

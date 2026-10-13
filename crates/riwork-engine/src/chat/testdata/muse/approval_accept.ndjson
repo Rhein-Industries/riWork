@@ -1,6 +1,6 @@
 # An approval: the server request gets its {} receipt at once; the decision travels as approval/decide;
 # the prompt closes on the approval/resolved fold. Shapes from msp.d.ts (ApprovalRequestParams l.99).
-{"type":"expect","frame":{"id":"<any>","method":"initialize","params":{"clientInfo":{"name":"riwork"}}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"serverInfo":{"name":"muse","version":"1.4.6"}}}]}
+{"type":"expect","frame":{"id":"<any>","method":"initialize","params":{"clientInfo":{"name":"riwork"}}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"serverInfo":{"name":"muse","version":"1.4.7"},"grantedCapabilities":["sessionMcp"]}}]}
 {"type":"expect","frame":{"method":"initialized"}}
 {"type":"expect","frame":{"id":"<any>","method":"session/start","params":{"commandId":"<any>","workspaceRoot":"<any>","approvalMode":"promptUnmatched"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"session":{"sessionId":"sess-1"},"viewCursor":""}}]}
 {"type":"expect","frame":{"id":"<any>","method":"model/list","params":{"sessionId":"sess-1"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"providerId":"fake","profileId":null,"source":"fakeCatalog","models":[]}}]}
