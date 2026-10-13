@@ -302,6 +302,7 @@ fn create_chat(
         codex_account_id: None,
         orchestrator: Some(scope.clone()),
         fast: false,
+        contributor_opt_out: false,
     });
     let info = match created {
         Ok(info) => info,

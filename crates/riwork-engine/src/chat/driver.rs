@@ -71,6 +71,10 @@ pub struct DriverConfig {
     pub effort: Option<String>,
     /// The provider's fast mode, when the model has one.
     pub fast: bool,
+    /// Muse: start `muse serve --contributor-mode off`, a per-process override Muse never
+    /// saves (`ChatInfo::contributor_opt_out`). False passes nothing, so the user's Muse
+    /// settings decide. Other providers ignore it.
+    pub contributor_opt_out: bool,
     /// Resume this Codex thread or Claude session instead of starting one.
     pub resume: Option<String>,
     /// The current provider session has history (or its emptiness is unknown).

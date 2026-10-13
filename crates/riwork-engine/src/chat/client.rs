@@ -4,7 +4,7 @@
 //! Plain std sockets and threads, no async runtime: a window runs these calls on
 //! its background executor and a subscription on a thread of its own.
 
-use super::model::{ChatCommand, ChatInfo, NewChat};
+use super::model::{ChatCommand, ChatInfo, NewChat, Provider};
 use super::wire::{Envelope, Request, Response};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::Shutdown;
@@ -106,12 +106,28 @@ impl Client {
     }
 
     pub fn create(&mut self, chat: NewChat) -> Result<ChatInfo, String> {
+        let opted_out = chat.provider == Provider::Muse && chat.contributor_opt_out;
         let result = self.call(Request::Create {
             id: new_id(),
             chat,
             chat_id: None,
         })?;
-        decode(result)
+        let info: ChatInfo = decode(result)?;
+        // A host from before contributor opt-out reads past it and starts the chat under the
+        // user's Muse settings. Such a chat is not kept, so it never runs as if opted out.
+        if opted_out && !info.contributor_opt_out {
+            let removed = self.delete(&info.id);
+            return Err(format!(
+                "The running chat host predates Muse contributor opt-out, so chat {} started \
+                 with your Muse settings{}. Try again once the chat host runs this version of RiWork.",
+                info.id,
+                match removed {
+                    Ok(()) => " and was removed".to_owned(),
+                    Err(error) => format!("; removing it failed ({error})"),
+                }
+            ));
+        }
+        Ok(info)
     }
 
     pub fn create_identified(
@@ -404,6 +420,7 @@ mod tests {
             state: ChatState::Idle,
             orchestrator: None,
             fast: false,
+            contributor_opt_out: false,
             carried_over: None,
         };
         let served = info.clone();
@@ -452,6 +469,7 @@ mod tests {
                 effort: None,
                 orchestrator: None,
                 fast: false,
+                contributor_opt_out: false,
             })
             .unwrap();
         assert_eq!(created, info);
@@ -460,6 +478,73 @@ mod tests {
         assert_eq!(first.seq, 1);
         host.join().unwrap();
         assert!(subscription.next_envelope().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A host from before contributor opt-out answers `Create` as it always did, without
+    /// the choice. The chat it made is removed rather than handed back.
+    #[test]
+    fn a_muse_chat_a_host_made_without_its_contributor_opt_out_is_not_kept() {
+        let dir = std::env::temp_dir().join(format!("rwchat-{}", &new_id()[..8]));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("c.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let cwd = dir.clone();
+        let host = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            let mut seen = Vec::new();
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() > 0 {
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let result = match request["op"].as_str().unwrap() {
+                    "create" => serde_json::json!({
+                        "id": "chat-1", "provider": "muse", "cwd": cwd, "title": "Muse chat",
+                        "created_at_unix": 1, "fast": false, "approval_mode": "supervised",
+                        "state": {"state": "idle"},
+                    }),
+                    _ => serde_json::Value::Null,
+                };
+                let response =
+                    serde_json::json!({"id": request["id"], "ok": true, "result": result});
+                writeln!(writer, "{response}").unwrap();
+                seen.push(request);
+                line.clear();
+            }
+            seen
+        });
+        let mut client = Client::connect(&socket).unwrap();
+        let error = client
+            .create(NewChat {
+                parent_id: None,
+                provider: Provider::Muse,
+                project_id: None,
+                worktree_id: None,
+                cwd: dir.clone(),
+                codex_account_id: None,
+                title: None,
+                approval_mode: ApprovalMode::Supervised,
+                model: None,
+                effort: None,
+                orchestrator: None,
+                fast: false,
+                contributor_opt_out: true,
+            })
+            .unwrap_err();
+        assert!(
+            error.contains("predates Muse contributor opt-out"),
+            "{error}"
+        );
+        assert!(error.contains("was removed"), "{error}");
+        drop(client);
+        let seen = host.join().unwrap();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert_eq!(seen[0]["chat"]["contributor_opt_out"], true);
+        assert_eq!(
+            (seen[1]["op"].as_str(), seen[1]["chat_id"].as_str()),
+            (Some("delete"), Some("chat-1"))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

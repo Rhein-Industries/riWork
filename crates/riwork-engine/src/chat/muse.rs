@@ -47,7 +47,10 @@
 //! planning mode: Plan starts the session under Muse's `:read-only`
 //! permission profile with `denyUnmatched`, and since a profile is fixed when
 //! a session starts, a running conversation does not move into or out of
-//! Plan. Muse has no fast tier.
+//! Plan. Muse has no fast tier. Contributor mode is fixed for a `muse serve` process and
+//! MSP has no field for it: a chat opted out (`DriverConfig::contributor_opt_out`) starts
+//! every process, first and at each resume, with `--contributor-mode off`; any other chat
+//! passes nothing, so the user's Muse settings decide.
 //!
 //! Verified against `muse serve --provider echo` (Muse 1.4.7, schema
 //! `sha256:6de32db0…`): framing, the handshake and its `sessionMcp` grant, a
@@ -201,13 +204,14 @@ fn spawn_driver(
     let _ = events.send(ChatEvent::State {
         state: ChatState::Starting,
     });
-    let (proc, stdout) = Proc::spawn(child::command(config, &["serve"])).inspect_err(|error| {
-        let _ = events.send(ChatEvent::State {
-            state: ChatState::Failed {
-                message: error.clone(),
-            },
-        });
-    })?;
+    let (proc, stdout) =
+        Proc::spawn(child::command(config, serve_args(config))).inspect_err(|error| {
+            let _ = events.send(ChatEvent::State {
+                state: ChatState::Failed {
+                    message: error.clone(),
+                },
+            });
+        })?;
     let muse = Arc::new(Muse {
         proc,
         servers,
@@ -220,6 +224,16 @@ fn spawn_driver(
         reader: Some(reader),
         stopped: false,
     })
+}
+
+/// `muse serve`, with Muse's per-process contributor mode override when the chat opted
+/// out; the subcommand comes first, its flags after it.
+fn serve_args(config: &DriverConfig) -> &'static [&'static str] {
+    if config.contributor_opt_out {
+        &["serve", "--contributor-mode", "off"]
+    } else {
+        &["serve"]
+    }
 }
 
 /// Read the provider catalog before any chat exists. MSP model/list needs no

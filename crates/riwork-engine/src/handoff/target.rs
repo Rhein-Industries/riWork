@@ -48,6 +48,7 @@ pub fn start_chat(
         effort: request.effort.clone(),
         orchestrator: None,
         fast: false,
+        contributor_opt_out: false,
     })?;
     // A chat host from before the account could be asked for makes the chat under the
     // project's, which is not what was asked for: take it back before it is sent anything.

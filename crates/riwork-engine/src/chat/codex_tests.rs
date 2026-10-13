@@ -1326,6 +1326,7 @@ fn live_codex_answers_a_trivial_prompt() {
         model: None,
         effort: None,
         fast: false,
+        contributor_opt_out: false,
         resume: None,
         resume_has_history: false,
         reporter: Default::default(),

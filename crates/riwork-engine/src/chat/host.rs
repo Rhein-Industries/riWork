@@ -1422,6 +1422,10 @@ fn create_identified(
     // never recorded as fast, and says so (`fast_refused` below).
     let fast_refused = new.provider == Provider::Muse && new.fast;
     new.fast &= !fast_refused;
+    // Contributor mode is Muse's alone. A Codex or Claude chat asked to opt out of it is made
+    // the same way: never recorded as opted out, and it says so (`contributor_refused`).
+    let contributor_refused = new.provider != Provider::Muse && new.contributor_opt_out;
+    new.contributor_opt_out &= !contributor_refused;
     new.parent_id = crate::project_tabs::same_project_parent(
         &shared.home,
         new.project_id.as_deref(),
@@ -1487,12 +1491,14 @@ fn create_identified(
         model: new.model,
         effort: new.effort,
         fast: new.fast,
+        contributor_opt_out: new.contributor_opt_out,
         approval_mode: new.approval_mode,
         codex_account_id: account,
         state: ChatState::Starting,
         orchestrator: new.orchestrator,
         carried_over: None,
     };
+    let provider = info.provider;
     let dir = log::chat_dir(&shared.home, &id).ok_or("invalid chat id")?;
     let log = ChatLog::create(&dir, &info)?;
     let mut inner = Inner::new(info.clone(), log, 0, shared.dismissals.clone());
@@ -1509,6 +1515,25 @@ fn create_identified(
                     NoticeLevel::Warning,
                     "Muse has no fast mode; this chat runs at Muse's usual speed.".to_owned(),
                     Some(notice_kind::FAST_MODE),
+                ),
+            },
+        });
+    }
+    if contributor_refused {
+        let id = format!("contributor-refused-{}", inner.next_seq);
+        inner.append(ChatEvent::ItemCompleted {
+            item: Item {
+                presentation: Default::default(),
+                id,
+                turn_id: None,
+                status: ItemStatus::Completed,
+                body: ItemBody::notice(
+                    NoticeLevel::Warning,
+                    format!(
+                        "Only Muse has a contributor mode to opt out of; this {} chat starts as usual.",
+                        provider_name(provider)
+                    ),
+                    Some(notice_kind::SETTING_REFUSED),
                 ),
             },
         });

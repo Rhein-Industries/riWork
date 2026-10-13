@@ -823,6 +823,7 @@ fn placeholder_source() -> handoff::Source {
         codex_account_id: None,
         orchestrator: None,
         fast: false,
+        contributor_opt_out: false,
         state: Default::default(),
         carried_over: None,
     })

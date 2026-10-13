@@ -110,6 +110,12 @@ pub struct ChatInfo {
     /// so in a notice.
     #[serde(default)]
     pub fast: bool,
+    /// The user opted this Muse chat out of Muse's contributor mode: every `muse serve` it
+    /// starts, first and on each resume, says `--contributor-mode off`. Off leaves the
+    /// mode to the user's Muse settings. Only a Muse chat is made with it; it stays with a
+    /// chat that switches provider and applies again if the chat goes back to Muse.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub contributor_opt_out: bool,
     #[serde(default)]
     pub approval_mode: ApprovalMode,
     /// The Codex account (RiWork's account id) the chat runs under.
@@ -168,6 +174,10 @@ pub struct NewChat {
     /// Start with the provider's fast mode on. A model without one ignores it.
     #[serde(default)]
     pub fast: bool,
+    /// Opt a Muse chat out of Muse's contributor mode (`ChatInfo::contributor_opt_out`).
+    /// A Codex or Claude chat has no contributor mode: it is made without it, and says so.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub contributor_opt_out: bool,
 }
 
 /// A model the provider offers, as its driver found it out (Codex `model/list`,
@@ -1108,6 +1118,30 @@ mod tests {
     }
 
     #[test]
+    fn contributor_opt_out_is_off_in_info_and_new_chat_written_before_it_existed() {
+        let info: ChatInfo = serde_json::from_str(
+            r#"{"id":"i","provider":"muse","cwd":"/w","title":"t","created_at_unix":1,"fast":false}"#,
+        )
+        .unwrap();
+        assert!(!info.contributor_opt_out);
+        let new: NewChat = serde_json::from_str(r#"{"provider":"muse","cwd":"/w"}"#).unwrap();
+        assert!(!new.contributor_opt_out);
+        // Off stays out of the JSON, so chats and logs that never opted out read as before.
+        let line = serde_json::to_string(&info).unwrap();
+        assert!(!line.contains("contributor"), "{line}");
+        assert!(!serde_json::to_string(&new).unwrap().contains("contributor"));
+        let mut info = info;
+        info.contributor_opt_out = true;
+        let line = serde_json::to_string(&info).unwrap();
+        assert!(line.contains(r#""contributor_opt_out":true"#), "{line}");
+        assert_eq!(serde_json::from_str::<ChatInfo>(&line).unwrap(), info);
+        let mut new = new;
+        new.contributor_opt_out = true;
+        let line = serde_json::to_string(&new).unwrap();
+        assert_eq!(serde_json::from_str::<NewChat>(&line).unwrap(), new);
+    }
+
+    #[test]
     fn a_switch_command_and_carried_over_info_have_their_own_shape() {
         let switch = ChatCommand::Switch {
             provider: Provider::Claude,
@@ -1163,6 +1197,7 @@ mod tests {
             model: None,
             effort: None,
             fast: false,
+            contributor_opt_out: false,
             approval_mode: ApprovalMode::Supervised,
             codex_account_id: None,
             state: ChatState::Idle,

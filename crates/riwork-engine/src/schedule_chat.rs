@@ -260,6 +260,7 @@ pub fn deliver_new(
             model: fresh.model.clone(),
             effort: fresh.effort.clone(),
             fast: fresh.fast,
+            contributor_opt_out: false,
             orchestrator: None,
         },
     ) {

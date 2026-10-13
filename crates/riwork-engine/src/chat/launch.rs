@@ -86,6 +86,7 @@ pub(super) fn muse_discovery_config(home: &Path) -> Result<DriverConfig, String>
         model: None,
         effort: None,
         fast: false,
+        contributor_opt_out: false,
         resume: None,
         resume_has_history: false,
         reporter: Default::default(),
@@ -179,6 +180,7 @@ fn assemble(
         model: info.model.clone(),
         effort: info.effort.clone(),
         fast: info.fast,
+        contributor_opt_out: info.contributor_opt_out,
         resume,
         resume_has_history: false,
         reporter: Default::default(),
@@ -227,6 +229,7 @@ mod tests {
             model: Some("m".into()),
             effort: Some("high".into()),
             fast: true,
+            contributor_opt_out: false,
             approval_mode: ApprovalMode::AutoEdit,
             codex_account_id: None,
             state: ChatState::Stopped,
@@ -337,6 +340,30 @@ mod tests {
             // An ordinary chat is not an orchestrator.
             assert!(value(config, "RIWORK_ORCHESTRATOR_SCOPE").is_none());
         }
+    }
+
+    #[test]
+    fn a_muse_chat_hands_its_contributor_opt_out_to_every_start() {
+        let configure = |contributor_opt_out: bool, resume: Option<&str>| {
+            let mut chat = info(Provider::Muse);
+            chat.contributor_opt_out = contributor_opt_out;
+            assemble(
+                &chat,
+                resume.map(Into::into),
+                "/bin/muse".into(),
+                Vec::new(),
+                "/shims".into(),
+                Path::new("/riwork"),
+                None,
+                false,
+            )
+        };
+        assert!(configure(true, None).contributor_opt_out);
+        assert!(configure(true, Some("sess")).contributor_opt_out);
+        assert!(!configure(false, None).contributor_opt_out);
+        assert!(!configure(false, Some("sess")).contributor_opt_out);
+        // Muse takes it on its own command line, after `serve`; nothing leads it.
+        assert!(configure(true, None).extra_args.is_empty());
     }
 
     #[test]

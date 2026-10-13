@@ -366,6 +366,7 @@ fn fresh_chat_failed_or_ambiguous_create_send_never_retries_and_claim_precedes_c
                                 model: new.model,
                                 effort: new.effort,
                                 fast: new.fast,
+                                contributor_opt_out: new.contributor_opt_out,
                                 approval_mode: new.approval_mode,
                                 codex_account_id: new.codex_account_id,
                                 state: ChatState::Idle,

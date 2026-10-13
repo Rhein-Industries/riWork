@@ -121,6 +121,28 @@ fn new_starts_a_chat_in_the_projects_directory_in_the_chosen_mode() {
 }
 
 #[test]
+fn new_opts_a_muse_chat_out_of_contributor_mode_only_when_asked() {
+    let host = TestHost::new();
+    let project = Store::open(&host.home)
+        .unwrap()
+        .add_project(host.work(), Some("demo"))
+        .unwrap();
+    let new = |line: &str| -> ChatInfo {
+        serde_json::from_str(&run_json(&host.home, line, true).unwrap()).unwrap()
+    };
+    assert!(new("new --provider muse --project demo --contributor-opt-out").contributor_opt_out);
+    assert!(!new("new --provider muse --project demo").contributor_opt_out);
+    let starts = fake_for(&project.root).starts.lock().unwrap().clone();
+    assert_eq!(
+        starts
+            .iter()
+            .map(|config| (config.provider, config.contributor_opt_out))
+            .collect::<Vec<_>>(),
+        [(Provider::Muse, true), (Provider::Muse, false)]
+    );
+}
+
+#[test]
 fn new_refuses_what_it_cannot_understand() {
     let host = TestHost::new();
     let usage = |line: &str| run(&host, line).unwrap_err();

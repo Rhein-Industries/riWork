@@ -466,6 +466,71 @@ fn a_muse_chat_refuses_fast_and_moving_its_conversation_into_or_out_of_plan() {
 }
 
 #[test]
+fn a_muse_chat_opted_out_of_contributor_mode_starts_so_every_time_and_others_are_made_without_it() {
+    let mut host = TestHost::new();
+    let mut new = host.new_chat(Provider::Muse);
+    new.contributor_opt_out = true;
+    let chat = host.client().create(new).unwrap();
+    assert!(chat.contributor_opt_out);
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    // Resumed by the next message, and by a message after the host itself restarted.
+    let mut client = host.client();
+    client.close(&chat.id).unwrap();
+    send(&mut client, &chat.id, "after a stop");
+    host.wait_for_log(&chat.id, |log| turns_completed(log) == 1);
+    host.restart(quick_options());
+    assert!(
+        host.info(&chat.id).contributor_opt_out,
+        "read back from disk"
+    );
+    send(&mut host.client(), &chat.id, "after a restart");
+    host.wait_for_log(&chat.id, |log| turns_completed(log) == 2);
+    let starts = host.fake().starts.lock().unwrap().clone();
+    assert_eq!(starts.len(), 3);
+    assert_eq!(starts[0].resume, None);
+    assert_eq!(starts[2].resume.as_deref(), Some("thread-1"));
+    assert!(starts.iter().all(|config| config.contributor_opt_out));
+    // It stays with the chat through a switch away, and holds again back on Muse.
+    for provider in [Provider::Codex, Provider::Muse] {
+        let switch = ChatCommand::Switch {
+            provider,
+            model: None,
+            effort: None,
+            fast: None,
+        };
+        host.client().command(&chat.id, switch).unwrap();
+        assert!(host.info(&chat.id).contributor_opt_out);
+    }
+    let last = host.fake().starts.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(
+        (last.provider, last.resume, last.contributor_opt_out),
+        (Provider::Muse, None, true)
+    );
+
+    // A Muse chat that did not opt out leaves it to the user's Muse settings.
+    let plain = host.create_in("plain", Provider::Muse);
+    assert!(!plain.contributor_opt_out);
+    assert!(!fake_for(&plain.cwd).starts.lock().unwrap()[0].contributor_opt_out);
+
+    // Codex and Claude have no contributor mode: made without it, as Muse is without fast.
+    for provider in [Provider::Codex, Provider::Claude] {
+        let mut new = host.new_chat(provider);
+        new.cwd = host.home.join(format!("{provider:?}"));
+        fs::create_dir_all(&new.cwd).unwrap();
+        new.contributor_opt_out = true;
+        let created = host.client().create(new).unwrap();
+        assert!(!created.contributor_opt_out);
+        assert!(!host.info(&created.id).contributor_opt_out);
+        assert!(!fake_for(&created.cwd).starts.lock().unwrap()[0].contributor_opt_out);
+        let said = notices(&host.log(&created.id));
+        assert!(
+            said.iter().any(|notice| notice.contains("Only Muse")),
+            "{said:?}"
+        );
+    }
+}
+
+#[test]
 fn requests_for_unknown_chats_and_things_a_stopped_chat_cannot_do_are_refused() {
     let host = TestHost::new();
     let mut client = host.client();
@@ -813,6 +878,7 @@ fn a_chat_that_died_in_the_middle_of_a_turn_is_made_tidy_when_the_next_host_load
         state: ChatState::Waiting,
         orchestrator: None,
         fast: false,
+        contributor_opt_out: false,
         carried_over: None,
     };
     let dir = log::chat_dir(&home, &id).unwrap();
@@ -1182,6 +1248,7 @@ fn an_idle_host_exits_but_not_while_a_client_is_connected_or_a_chat_is_at_work()
             effort: None,
             orchestrator: None,
             fast: false,
+            contributor_opt_out: false,
         })
         .unwrap();
     busy.command(

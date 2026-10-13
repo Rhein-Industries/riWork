@@ -410,6 +410,7 @@ fn standin_rig(on_send: OnSend, wait: Duration) -> (PathBuf, ScheduleStore, Chat
         state: ChatState::Idle,
         orchestrator: Some(OrchestratorScope::Global),
         fast: false,
+        contributor_opt_out: false,
         carried_over: None,
     };
     chat::log::ChatLog::create(&chat::log::chat_dir(&home, &chat.id).unwrap(), &chat).unwrap();

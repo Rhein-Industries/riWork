@@ -102,7 +102,7 @@ riwork chat ensure                      Start the chat host if it is not running
 riwork chat list [--project ID] [--json]   List Codex, Claude and Muse chats, running or not
 riwork chat open CHAT_ID                 Reopen an ordinary chat in its Mac project window
 riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
-                [--model NAME] [--effort LEVEL] [--fast] [--title TEXT]
+                [--model NAME] [--effort LEVEL] [--fast] [--contributor-opt-out] [--title TEXT]
 riwork chat models --provider codex|claude|muse [--project ID] [--json]
                                         The models chats of that provider reported, read from saved chats
 riwork chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
@@ -144,7 +144,11 @@ chat new --json prints the chat as `chat list --json` shows it, also when its pr
 did not start (state failed); without --json that is an error. --model, --effort and
 --title (at most 100, 32 and 200 characters, no control characters) take their value
 as it is, also with `=`: --title=--draft. --fast turns on the provider's fast mode for
-a model that has one (Codex's fast tier, Claude's fast mode).
+a model that has one (Codex's fast tier, Claude's fast mode). --contributor-opt-out runs a
+Muse chat with Muse's contributor mode off, so its content won't be used for product
+improvement: every start and resume of that chat runs `muse serve --contributor-mode off`,
+which Muse never saves. Without it the chat follows your Muse settings; a Codex or Claude
+chat has no contributor mode and is made without it, with a notice.
 chat events --json prints one line, {\"chat_id\",\"events\":[{\"seq\",\"event\"}],\"next\",\"more\"}:
 the events with seq above --since (default 0), at most --max (500 by default, up to
 2000) and as many as fit --max-bytes (1 MiB by default, up to 2 MiB). With none yet it
@@ -2131,6 +2135,7 @@ fn chat_client_command(
                 Some(_) => return Err("--mode must be supervised, auto-edit, full, or plan".into()),
             };
             let fast = take_flag(&mut args, "--fast");
+            let contributor_opt_out = take_flag(&mut args, "--contributor-opt-out");
             ensure_empty(&args)?;
             let state = Store::open(home)?.snapshot()?;
             let (project_id, worktree_id, cwd) =
@@ -2152,6 +2157,7 @@ fn chat_client_command(
                 effort,
                 orchestrator: None,
                 fast,
+                contributor_opt_out,
             })?;
             if json {
                 // A chat whose provider did not start still exists, and the
@@ -2368,7 +2374,7 @@ fn chat_client_command(
 const CHAT_MODELS_USAGE: &str =
     "Usage: riwork chat models --provider codex|claude|muse [--project ID] [--json]";
 
-const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--title TEXT]";
+const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--contributor-opt-out] [--title TEXT]";
 
 /// A chat's ID as typed: whole, or a unique prefix of at least eight characters.
 fn resolve_chat(

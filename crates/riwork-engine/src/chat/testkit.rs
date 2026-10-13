@@ -71,6 +71,7 @@ impl Fake {
             model: None,
             effort: None,
             fast: false,
+            contributor_opt_out: false,
             resume: None,
             resume_has_history: false,
             reporter: Default::default(),
