@@ -5,7 +5,7 @@
 //! working directory of its own.
 
 use super::client::{Client, Subscription};
-use super::driver::{Driver, DriverConfig};
+use super::driver::{Driver, DriverConfig, DriverReport, DriverReporter};
 use super::host::{Host, Options, Providers, StartError};
 use super::model::*;
 use super::wire::Envelope;
@@ -28,6 +28,16 @@ pub struct Fake {
     pub shutdowns: AtomicUsize,
     /// The next start fails with this message.
     pub fail_start: Mutex<Option<String>>,
+    /// Simulate a resume that is absent from the provider's store.
+    pub resume_missing: AtomicBool,
+    /// A deliberately broken adapter, for the host's guarded-attach defense.
+    pub ignore_resume_guard: AtomicBool,
+    /// A startup observation sent even if the start subsequently fails.
+    pub startup_report: Mutex<Option<DriverReport>>,
+    /// Keep Configure replies pending so tests can settle them out of order.
+    pub defer_configure: AtomicBool,
+    pub fail_configure: Mutex<Option<String>>,
+    pub configurations: Mutex<Vec<(ChatCommand, DriverReporter)>>,
     /// The next start succeeds, and the provider is gone before it returns.
     pub vanish_on_start: AtomicBool,
     /// The newest run's number and its end of the event channel.
@@ -109,6 +119,36 @@ fn agent_item(id: &str, turn: &str, text: &str, status: ItemStatus) -> Item {
 }
 
 impl Driver for FakeDriver {
+    fn configure(&mut self, command: ChatCommand, reporter: DriverReporter) -> Result<(), String> {
+        self.fake
+            .configurations
+            .lock()
+            .unwrap()
+            .push((command.clone(), reporter.clone()));
+        if let Some(error) = self.fake.fail_configure.lock().unwrap().take() {
+            return Err(error);
+        }
+        self.command(command.clone())?;
+        if !self.fake.defer_configure.load(Ordering::SeqCst) {
+            if let ChatCommand::Configure {
+                model,
+                effort,
+                approval_mode,
+                fast,
+            } = command
+            {
+                reporter.report(DriverReport {
+                    model: model.map(Some),
+                    effort: effort.map(Some),
+                    approval_mode,
+                    fast,
+                    ..Default::default()
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// `Send` runs a scripted turn. The text `hang` starts one that never
     /// ends, and `flood:N:BYTES` streams N deltas of that size.
     fn command(&mut self, command: ChatCommand) -> Result<(), String> {
@@ -196,13 +236,24 @@ impl Drop for FakeDriver {
 fn fake_start(config: DriverConfig, events: Sender<ChatEvent>) -> Result<Box<dyn Driver>, String> {
     let fake = fake_for(&config.cwd);
     fake.starts.lock().unwrap().push(config.clone());
+    if let Some(report) = fake.startup_report.lock().unwrap().take() {
+        config.reporter.report(report);
+    }
     if let Some(message) = fake.fail_start.lock().unwrap().take() {
         return Err(message);
     }
     let number = fake.started.fetch_add(1, Ordering::SeqCst) + 1;
+    let missing = config.resume.is_some() && fake.resume_missing.swap(false, Ordering::SeqCst);
+    if missing && config.resume_has_history && !fake.ignore_resume_guard.load(Ordering::SeqCst) {
+        return Err(format!(
+            "Historical session {} was not found; restore the provider store and retry.",
+            config.resume.as_deref().unwrap()
+        ));
+    }
     let thread_id = config
         .resume
         .clone()
+        .filter(|_| !missing)
         .unwrap_or_else(|| format!("thread-{number}"));
     *fake.sender.lock().unwrap() = Some((number, events));
     fake.emit(ChatEvent::State {
@@ -266,6 +317,8 @@ fn fake_config(
         effort: info.effort.clone(),
         fast: info.fast,
         resume,
+        resume_has_history: false,
+        reporter: Default::default(),
         outstanding_notices: Default::default(),
         extra_args: Vec::new(),
         instructions: super::launch::instructions(info),

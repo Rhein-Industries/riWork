@@ -469,6 +469,8 @@ fn live_echo_turn_through_the_real_driver() {
         effort: None,
         fast: false,
         resume: None,
+        resume_has_history: false,
+        reporter: Default::default(),
         outstanding_notices: Default::default(),
         extra_args: Vec::new(),
         instructions: None,
