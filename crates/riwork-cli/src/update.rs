@@ -43,7 +43,7 @@ struct UpdateEnvironment {
     tool_path: std::ffi::OsString,
     verify_signature: bool,
     codesign_identity: Option<SigningIdentity>,
-    /// The Zig the Ghostty build is given (`None`: whatever `ZIG` or `PATH` says).
+    /// The Zig used for the Ghostty build and bundle (`None`: whatever `ZIG` or `PATH` says).
     zig: Option<PathBuf>,
 }
 
@@ -344,6 +344,9 @@ fn build_update_with(
         .arg(&profile)
         .current_dir(&staging.path)
         .env("PATH", tool_path);
+    if let Some(zig) = &environment.zig {
+        bundle_command.env("ZIG", zig);
+    }
     if let Some(identity) = &environment.codesign_identity {
         bundle_command.env("CODESIGN_IDENTITY", &identity.sign_with);
         eprintln!("Signing with {}.", identity.name);
@@ -1955,6 +1958,7 @@ mod tests {
         write_executable(
             &source.join("scripts/bundle-macos.sh"),
             r#"set -eu
+test "${ZIG##*/}" = fixture-zig
 bundle="target/$1/RiWork.app"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources/terminfo/78" "$bundle/Contents/Resources/ghostty/shell-integration/zsh"
 cp "target/$1/riwork" "$bundle/Contents/MacOS/riwork"
@@ -1971,6 +1975,7 @@ binary=riwork
 for arg in "$@"; do
     if [ "$arg" = riwork-remote ]; then binary=riwork-remote; fi
 done
+if [ "$binary" = riwork ]; then test "${ZIG##*/}" = fixture-zig; fi
 mkdir -p "$CARGO_TARGET_DIR/debug"
 mode=$(cat build-mode)
 printf '#!/bin/sh\n%s\n' "$mode" > "$CARGO_TARGET_DIR/debug/$binary"
@@ -1985,7 +1990,7 @@ chmod +x "$CARGO_TARGET_DIR/debug/$binary"
                 tool_path,
                 verify_signature: false,
                 codesign_identity: None,
-                zig: None,
+                zig: Some(temporary.join("zig toolchain/fixture-zig")),
             },
         )
     }

@@ -86,6 +86,7 @@ const START_WAIT: Duration = Duration::from_secs(10);
 pub struct Providers {
     pub codex: StartDriver,
     pub claude: StartDriver,
+    pub muse: StartDriver,
     /// The Codex account a new chat of this provider and project runs under,
     /// or the one the chat asked for by name.
     pub account: AccountFor,
@@ -105,6 +106,7 @@ impl Providers {
         Self {
             codex: super::codex::start,
             claude: super::claude::start,
+            muse: super::muse::start,
             account: super::launch::account_for,
             config: super::launch::driver_config,
         }
@@ -114,6 +116,7 @@ impl Providers {
         match provider {
             Provider::Codex => self.codex,
             Provider::Claude => self.claude,
+            Provider::Muse => self.muse,
         }
     }
 }
@@ -1386,6 +1389,7 @@ fn default_title(provider: Provider) -> &'static str {
     match provider {
         Provider::Codex => "Codex chat",
         Provider::Claude => "Claude chat",
+        Provider::Muse => "Muse chat",
     }
 }
 
@@ -1393,6 +1397,7 @@ fn provider_name(provider: Provider) -> &'static str {
     match provider {
         Provider::Codex => "Codex",
         Provider::Claude => "Claude",
+        Provider::Muse => "Muse",
     }
 }
 
@@ -1992,12 +1997,17 @@ fn switch(
             document: path,
             from: crate::handoff::chat_label(before.provider, &before.title, &before.id),
         });
-        let text = match &info.model {
-            Some(model) => format!(
+        // Muse cannot take the carried-over document as session context, so
+        // the notice must not claim it has the conversation.
+        let text = match (provider, &info.model) {
+            (Provider::Muse, _) => "Continued with Muse in a new conversation; \
+                 Muse could not receive the conversation so far."
+                .to_owned(),
+            (_, Some(model)) => format!(
                 "Continued with {} ({model}), which has the conversation so far.",
                 provider_name(provider)
             ),
-            None => format!(
+            (_, None) => format!(
                 "Continued with {}, which has the conversation so far.",
                 provider_name(provider)
             ),

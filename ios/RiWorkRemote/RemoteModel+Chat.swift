@@ -26,11 +26,13 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     @ObservationIgnored var onAttachmentsChange: (([StagedAttachment]) -> Void)?
     /// Something to send: text, or a card whose file the Mac still has (an expired one is not sent).
     var hasMessage: Bool { attachments.contains { !$0.isExpired() } || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    /// The other provider's models, for going on with it (`switch`); empty until read.
-    var switchCatalogue: [ChatModelOption] = []
-    var switchCatalogueSource: ChatCatalogueSource = .bundled
-    /// A `switch` is on its way: the other provider's rows wait for it.
-    var switching = false
+    /// The other providers' models, for going on with one of them (`switch`); empty until read.
+    var switchCatalogues: [ChatProvider: [ChatModelOption]] = [:]
+    var switchCatalogueSources: [ChatProvider: ChatCatalogueSource] = [:]
+    func switchCatalogue(for provider: ChatProvider) -> [ChatModelOption] { switchCatalogues[provider] ?? [] }
+    func switchCatalogueSource(for provider: ChatProvider) -> ChatCatalogueSource { switchCatalogueSources[provider] ?? .bundled }
+    /// A `switch` to this provider is on its way: the other providers' rows wait for it.
+    var switchingTo: ChatProvider?
     /// The cards the person opened (command output, diffs, reasoning), by item id. Kept here because rows come and go as the list scrolls.
     var expanded: Set<String> = []
     /// The mode just chosen, shown until the desktop says so itself.
@@ -123,7 +125,7 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
             // The chat went on with the other provider: what was held for the last one (its list, a choice on its way) is not this one's.
             modelCatalogue = transcript.models; modelCatalogueSource = .live; modelCatalogueRevision &+= 1
             pendingModel = nil; modelExpiry?.cancel()
-            switchCatalogue = []
+            switchCatalogues = [:]
         } else {
             for envelope in reply.events where envelope.seq > previousNext {
                 if case .models = envelope.event {
@@ -153,7 +155,7 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
 // Chats on the phone: listing them, creating them (never twice), following one while it is on screen and sending it commands. The
 // pure parts (the vocabulary, the transcript fold, the requests) are in RiWorkCore; this file is the timing.
 extension RemoteModel {
-    /// The sheet may offer Codex chat and Claude chat: the desktop said it has them, and has not refused them since.
+    /// The sheet may offer chats: the desktop said it has them, and has not refused them since.
     var chatsOffered: Bool { chatSupport == .supported }
     /// The strip: every terminal, every chat and every orchestrator, which runs as one or the other (`ProjectTabs`). A chat is not a
     /// terminal because it is an orchestrator: `mode` says, and the strip follows it.

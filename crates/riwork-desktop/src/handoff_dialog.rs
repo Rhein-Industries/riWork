@@ -93,11 +93,16 @@ impl Choices {
         rows
     }
 
-    /// The agents the target can be: chats run Codex and Claude, terminals also Grok.
+    /// The agents the target can be: chats run Codex and Claude, terminals also Grok and Muse.
     fn agents(&self) -> &'static [HarnessKind] {
         match self.kind {
             Kind::Chat => &[HarnessKind::Codex, HarnessKind::Claude],
-            Kind::Shell => &[HarnessKind::Codex, HarnessKind::Claude, HarnessKind::Grok],
+            Kind::Shell => &[
+                HarnessKind::Codex,
+                HarnessKind::Claude,
+                HarnessKind::Grok,
+                HarnessKind::Muse,
+            ],
         }
     }
 
@@ -114,7 +119,7 @@ impl Choices {
         match self.provider {
             HarnessKind::Codex => &["gpt-5"],
             HarnessKind::Claude => &["opus", "sonnet", "haiku"],
-            HarnessKind::Grok => &[],
+            HarnessKind::Grok | HarnessKind::Muse => &[],
         }
     }
 }
@@ -283,10 +288,15 @@ impl HandoffDialog {
                     ),
                     Row::Agent => (
                         "handoff-agent",
-                        [HarnessKind::Codex, HarnessKind::Claude, HarnessKind::Grok]
-                            .iter()
-                            .position(|provider| *provider == self.choices.provider)
-                            .unwrap_or(0),
+                        [
+                            HarnessKind::Codex,
+                            HarnessKind::Claude,
+                            HarnessKind::Grok,
+                            HarnessKind::Muse,
+                        ]
+                        .iter()
+                        .position(|provider| *provider == self.choices.provider)
+                        .unwrap_or(0),
                     ),
                     Row::Account => ("handoff-account", self.account),
                     Row::Context => (
@@ -864,23 +874,28 @@ impl Render for HandoffDialog {
             )
         };
         let agent = {
-            let chips = [HarnessKind::Codex, HarnessKind::Claude, HarnessKind::Grok]
-                .into_iter()
-                .enumerate()
-                .map(|(index, harness)| {
-                    let enabled = self.choices.agents().contains(&harness);
-                    self.chip(
-                        ("handoff-agent", index),
-                        agent_label(harness).to_owned(),
-                        self.choices.provider == harness,
-                        enabled,
-                        cx,
-                        move |dialog, _window, cx| {
-                            dialog.pick(Row::Agent, |dialog| dialog.choices.provider = harness, cx)
-                        },
-                    )
-                })
-                .collect();
+            let chips = [
+                HarnessKind::Codex,
+                HarnessKind::Claude,
+                HarnessKind::Grok,
+                HarnessKind::Muse,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, harness)| {
+                let enabled = self.choices.agents().contains(&harness);
+                self.chip(
+                    ("handoff-agent", index),
+                    agent_label(harness).to_owned(),
+                    self.choices.provider == harness,
+                    enabled,
+                    cx,
+                    move |dialog, _window, cx| {
+                        dialog.pick(Row::Agent, |dialog| dialog.choices.provider = harness, cx)
+                    },
+                )
+            })
+            .collect();
             self.line(
                 Row::Agent,
                 "Agent",
@@ -1134,12 +1149,16 @@ mod tests {
     }
 
     #[test]
-    fn a_chat_cannot_be_grok_and_a_terminal_can() {
+    fn a_chat_cannot_be_grok_or_muse_and_a_terminal_can() {
         let mut picked = choices(Kind::Shell, HarnessKind::Grok, true);
-        assert_eq!(picked.agents().len(), 3);
+        assert_eq!(picked.agents().len(), 4);
         picked.set_kind(Kind::Chat);
         assert_eq!(picked.provider, HarnessKind::Codex, "Grok has no chat");
         assert_eq!(picked.agents(), [HarnessKind::Codex, HarnessKind::Claude]);
+        picked.set_kind(Kind::Shell);
+        picked.provider = HarnessKind::Muse;
+        picked.set_kind(Kind::Chat);
+        assert_eq!(picked.provider, HarnessKind::Codex, "Muse has no chat");
         picked.provider = HarnessKind::Claude;
         picked.set_kind(Kind::Shell);
         assert_eq!(picked.provider, HarnessKind::Claude, "a fine choice stays");

@@ -56,7 +56,7 @@ final class NewTerminalTests: XCTestCase {
     }
     func testUnrestrictedNeedsAnAgentAndABoolean() throws {
         XCTAssertThrowsError(try request(.project(project), .shell, unrestricted: true)) { XCTAssertEqual($0 as? NewTerminalValidationError, .unrestrictedNeedsAgent) }
-        for kind in [NewTerminalKind.codex, .claude, .grok] { _ = try request(.project(project), kind, unrestricted: true) }
+        for kind in [NewTerminalKind.codex, .claude, .grok, .muse] { _ = try request(.project(project), kind, unrestricted: true) }
         let base: [String: JSONValue] = ["kind": .string("codex"), "project_id": .string(project)]
         for bad: JSONValue in [.string("true"), .number(1), .null, .array([])] {
             var params = base; params["unrestricted"] = bad
@@ -84,7 +84,7 @@ final class NewTerminalTests: XCTestCase {
         // The limit is bytes, not characters: 2048 two-byte characters fit exactly.
         XCTAssertNoThrow(try request(command: String(repeating: "é", count: 2048)))
         // A command starts a plain shell only.
-        for kind in [NewTerminalKind.codex, .claude, .grok] {
+        for kind in [NewTerminalKind.codex, .claude, .grok, .muse] {
             XCTAssertThrowsError(try request(.project(project), kind, command: "ls")) { XCTAssertEqual($0 as? NewTerminalValidationError, .commandNeedsShell) }
         }
         // Not trimmed: the desktop gets exactly what was typed.
@@ -380,22 +380,23 @@ final class NewTerminalTests: XCTestCase {
         XCTAssertEqual(NewTerminalForm(targets: f.targets, targetIndex: -4).targetIndex, 0)
     }
     func testKindsAreOrderedAndNamed() {
-        XCTAssertEqual(NewTerminalKind.terminalKinds.map(\.title), ["Shell", "Codex", "Claude", "Grok"])
-        XCTAssertEqual(NewTerminalKind.terminalKinds.map(\.isAgent), [false, true, true, true])
+        XCTAssertEqual(NewTerminalKind.terminalKinds.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Muse"])
+        XCTAssertEqual(NewTerminalKind.terminalKinds.map(\.isAgent), [false, true, true, true, true])
         // One chat for both providers comes after the terminals, only where the desktop has chats.
-        XCTAssertEqual(NewTerminalKind.allCases.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Chat"])
+        XCTAssertEqual(NewTerminalKind.allCases.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Muse", "Chat"])
         XCTAssertEqual(NewTerminalKind.offered(chats: false), NewTerminalKind.terminalKinds)
         XCTAssertEqual(NewTerminalKind.offered(chats: true), NewTerminalKind.allCases)
-        XCTAssertEqual(NewTerminalKind.allCases.map(\.isChat), [false, false, false, false, true])
+        XCTAssertEqual(NewTerminalKind.allCases.map(\.isChat), [false, false, false, false, false, true])
         XCTAssertTrue(NewTerminalKind.chat.isAgent, "its Unrestricted switch is the Full mode")
         // What an older version remembered per provider is the chat, and says which provider.
         XCTAssertEqual(NewTerminalKind.remembered("codex_chat"), .chat); XCTAssertEqual(NewTerminalKind.remembered("claude_chat"), .chat)
         XCTAssertEqual(NewTerminalKind.legacyChatProvider("claude_chat"), .claude); XCTAssertNil(NewTerminalKind.legacyChatProvider("chat"))
-        XCTAssertEqual(NewTerminalKind.remembered("grok"), .grok); XCTAssertNil(NewTerminalKind.remembered("bash"))
+        XCTAssertEqual(NewTerminalKind.remembered("grok"), .grok); XCTAssertEqual(NewTerminalKind.remembered("muse"), .muse); XCTAssertNil(NewTerminalKind.remembered("bash"))
         XCTAssertEqual(NewTerminalKind.standard, .shell)
-        XCTAssertEqual(NewTerminalKind.shell.moved(by: -1), .grok)
-        XCTAssertEqual(NewTerminalKind.grok.moved(by: 5), .shell)
-        XCTAssertEqual(NewTerminalKind.codex.moved(by: -5), .shell)
+        XCTAssertEqual(NewTerminalKind.shell.moved(by: -1), .muse)
+        XCTAssertEqual(NewTerminalKind.muse.moved(by: 1), .shell)
+        XCTAssertEqual(NewTerminalKind.grok.moved(by: 2), .shell)
+        XCTAssertEqual(NewTerminalKind.codex.moved(by: -6), .shell)
         XCTAssertNil(NewTerminalKind(rawValue: "bash"))
     }
 
@@ -441,11 +442,14 @@ final class NewTerminalTests: XCTestCase {
         XCTAssertEqual(form.kind, .shell, "not on offer")
         form.select(kind: .grok)
         form.handle(.down)
-        XCTAssertEqual(form.kind, .shell, "Grok is the last row")
+        XCTAssertEqual(form.kind, .muse)
+        form.handle(.down)
+        XCTAssertEqual(form.kind, .shell, "Muse is the last row")
     }
     func testTheArrowsStepThroughTheChatRowsToo() {
         let targets = [NewTerminalTarget.project(id: project, name: "Alpha")]
         var form = NewTerminalForm(targets: targets, kind: .grok, kinds: NewTerminalKind.allCases)
+        form.handle(.down); XCTAssertEqual(form.kind, .muse)
         form.handle(.down); XCTAssertEqual(form.kind, .chat)
         form.handle(.down); XCTAssertEqual(form.kind, .shell, "wraps")
         form.handle(.up); XCTAssertEqual(form.kind, .chat)
@@ -460,7 +464,7 @@ final class NewTerminalTests: XCTestCase {
         let targets = [NewTerminalTarget.project(id: project, name: "Alpha")]
         var form = NewTerminalForm(targets: targets, kind: .codex, kinds: NewTerminalKind.allCases)
         form.agentsFollowDesktop = true
-        for kind in [NewTerminalKind.codex, .claude, .grok] {
+        for kind in [NewTerminalKind.codex, .claude, .grok, .muse] {
             form.select(kind: kind)
             XCTAssertFalse(form.offersUnrestricted, kind.title)
             XCTAssertEqual(form.fields, [.target, .kind, .create], "no switch: the Mac's Agent terminals run unrestricted decides")

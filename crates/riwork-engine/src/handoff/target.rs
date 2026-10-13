@@ -17,8 +17,9 @@ pub fn chat_provider(harness: HarnessKind) -> Result<Provider, String> {
     match harness {
         HarnessKind::Codex => Ok(Provider::Codex),
         HarnessKind::Claude => Ok(Provider::Claude),
+        HarnessKind::Muse => Ok(Provider::Muse),
         HarnessKind::Grok => {
-            Err("Chats run Codex and Claude. Grok runs in a terminal: use --to shell.".into())
+            Err("Chats run Codex, Claude and Muse. Grok runs in a terminal: use --to shell.".into())
         }
     }
 }

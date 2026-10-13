@@ -276,7 +276,7 @@ real tmux in a throwaway `RIWORK_HOME`.
 
 An orchestrator can run as a chat of the chat host instead of a tmux terminal ("Chat orchestrators"
 in the protocol document). `orchestrator list --json` then also carries `mode` (`terminal` or
-`chat`) and, for a chat, `chat_id` (the entry's own `id`) and `provider` (`codex` or `claude`); they
+`chat`) and, for a chat, `chat_id` (the entry's own `id`) and `provider` (`codex`, `claude` or `muse`); they
 are in `SESSION_FIELDS` with the same shape checks, and `chat_id` and `provider` are passed on only for
 an entry whose own `mode` is `chat` (`session_fields`). The `shell.*` methods refuse a chat
 orchestrator's id with `invalid_request` before any `riwork shell ...` runs: `Rpc::selected` looks

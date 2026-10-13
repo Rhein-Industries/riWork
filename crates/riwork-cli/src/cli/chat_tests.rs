@@ -33,9 +33,11 @@ fn list_shows_every_chat_on_a_line_and_as_json() {
     host.wait_for_state(&codex.id, |s| *s == ChatState::Idle);
     let claude = host.create_in("other", Provider::Claude);
     host.client().close(&claude.id).unwrap();
+    let muse = host.create_in("muse", Provider::Muse);
+    host.wait_for_state(&muse.id, |s| *s == ChatState::Idle);
     let text = run(&host, "list").unwrap();
     let lines: Vec<_> = text.lines().collect();
-    assert_eq!(lines.len(), 2, "{text}");
+    assert_eq!(lines.len(), 3, "{text}");
     let line = |id: &str| lines.iter().find(|line| line.starts_with(id)).unwrap();
     assert_eq!(
         *line(&codex.id),
@@ -49,8 +51,12 @@ fn list_shows_every_chat_on_a_line_and_as_json() {
         line(&claude.id).contains("  claude  stopped  Claude chat  "),
         "{text}"
     );
+    assert!(
+        line(&muse.id).contains("  muse  idle  Muse chat  "),
+        "{text}"
+    );
     let chats = listed(&host);
-    assert_eq!(chats.len(), 2);
+    assert_eq!(chats.len(), 3);
     assert!(
         chats
             .iter()
@@ -108,6 +114,10 @@ fn new_starts_a_chat_in_the_projects_directory_in_the_chosen_mode() {
     let created: ChatInfo = serde_json::from_str(&json).unwrap();
     assert_eq!(created.approval_mode, ApprovalMode::Supervised);
     assert_eq!(created.provider, Provider::Codex);
+
+    let json = run_json(&host.home, "new --provider muse", true).unwrap();
+    let created: ChatInfo = serde_json::from_str(&json).unwrap();
+    assert_eq!(created.provider, Provider::Muse);
 }
 
 #[test]

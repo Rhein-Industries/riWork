@@ -4,7 +4,7 @@ import Foundation
 // first events), so a new chat offers what it can know: the provider's default, and the model last used with that provider, with the effort
 // and Fast it was used with. The choice is remembered per provider, so the next chat starts as the last one did.
 
-/// What a new Codex or Claude chat is started with: the provider's default model, or the last model used with it.
+/// What a new chat is started with: the provider's default model, or the last model used with it.
 public struct NewChatChoice: Codable, Sendable, Equatable {
     /// The last model chosen, as the phone knew it then (its efforts and whether it has Fast): the second row. Nil until one was.
     public var model: ChatModelOption?
@@ -84,7 +84,7 @@ extension ChatCreateRequest {
 
 // MARK: - In the sheet
 
-/// One row of a new chat's model list, which offers both providers: a provider's default, the model last used with it (while its list is not
+/// One row of a new chat's model list, which offers every provider: a provider's default, the model last used with it (while its list is not
 /// known), or one of its models. Choosing one chooses the provider too.
 public enum NewChatRow: Sendable, Equatable, Identifiable {
     case providerDefault(ChatProvider)
@@ -174,7 +174,7 @@ extension NewTerminalForm {
         if !fields.contains(focus) { focus = .kind }
     }
 
-    /// Up and down choose within the model rows (across both providers) and the efforts; space flips Fast. Left, right and tab still move the
+    /// Up and down choose within the model rows (across every provider) and the efforts; space flips Fast. Left, right and tab still move the
     /// ring, and up and down on Fast choose the kind as they do on the other toggle. True when the key was the chat controls'.
     mutating func handleChat(_ key: Key) -> Bool {
         guard let choice = chatChoice else { return false }

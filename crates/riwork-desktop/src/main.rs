@@ -134,6 +134,7 @@ actions!(
         OpenCodex,
         OpenClaude,
         OpenGrok,
+        OpenMuse,
         OpenNewChat,
         CreateProject,
         ToggleFocusMode,
@@ -994,6 +995,7 @@ fn chat_tab_text(
     let name = provider.map(|provider| match provider {
         Provider::Codex => "Codex",
         Provider::Claude => "Claude",
+        Provider::Muse => "Muse",
     });
     match name {
         Some(name) if !icon && !title.starts_with(name) => format!("{mark}{name} · {title}"),
@@ -5427,6 +5429,7 @@ impl Workspace {
                 provider: match provider {
                     Provider::Codex => HarnessKind::Codex,
                     Provider::Claude => HarnessKind::Claude,
+                    Provider::Muse => HarnessKind::Muse,
                 },
             },
             window,
@@ -5570,6 +5573,12 @@ impl Workspace {
         if project_settings_visible && let Some(panel) = &self.project_settings_panel {
             panel.update(cx, |panel, cx| panel.refresh_folders(window, cx));
         }
+        // The schedules panel keeps its own secondly loop; tell it whether
+        // its tab is showing so it can sit that work out while covered.
+        if let Some(panel) = &self.schedule_panel {
+            let schedules_visible = panel_on_screen(PanelKind::Schedules);
+            panel.update(cx, |panel, cx| panel.set_on_screen(schedules_visible, cx));
+        }
         if !self.layout_ready {
             self.load_project(window, cx);
             changed = true;
@@ -5590,8 +5599,10 @@ impl Workspace {
         // each tick and redraw themselves when it differs. The rest of the window
         // has a few ages ("3m ago") that move with the clock, so it is drawn every
         // few ticks even when nothing else changed.
-        let heartbeat = self.refresh_count.is_multiple_of(IDLE_REDRAW_TICKS);
-        let panels_open = project_settings_visible || files_visible;
+        // A window nobody can see skips the heartbeat and panel redraws; it
+        // catches up on the first tick after it shows again.
+        let heartbeat = self.window_visible && self.refresh_count.is_multiple_of(IDLE_REDRAW_TICKS);
+        let panels_open = self.window_visible && (project_settings_visible || files_visible);
         if changed || heartbeat || panels_open {
             cx.notify();
         }
@@ -7474,7 +7485,14 @@ impl Workspace {
         self.add_harness(HarnessKind::Grok, window, cx);
     }
 
-    /// A Codex, Claude or Grok terminal from the New tab menu or its shortcut, unrestricted
+    fn open_muse_action(&mut self, _: &OpenMuse, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open() {
+            return;
+        }
+        self.add_harness(HarnessKind::Muse, window, cx);
+    }
+
+    /// A Codex, Claude, Grok or Muse terminal from the New tab menu or its shortcut, unrestricted
     /// while **Agent terminals run unrestricted** is on (read now, so every window follows a
     /// change at once). A remote Mac's terminal follows this Mac's setting too.
     fn add_harness(&mut self, harness: HarnessKind, window: &mut Window, cx: &mut Context<Self>) {
@@ -7555,6 +7573,8 @@ impl Workspace {
             return;
         }
         let locations = self.chat_locations();
+        // Native terminals draw above GPUI overlays. Keep snapshots behind the dialog.
+        self.begin_tab_drag(cx);
         let dialog = cx.new(|cx| {
             chat_choice::ChatChoice::new(
                 self.project_id.clone(),
@@ -7573,6 +7593,7 @@ impl Workspace {
                 return;
             }
             workspace.new_chat_dialog = None;
+            workspace.finish_tab_drag(cx);
             match event {
                 chat_choice::ChoiceEvent::Closed => {}
                 chat_choice::ChoiceEvent::Confirmed(request) => {
@@ -10454,6 +10475,14 @@ impl Workspace {
                         PaneMenuAction::Sessions(session_catalog::Filter::Claude),
                         cx,
                     ))
+                    .child(self.pane_menu_row(
+                        pane_id,
+                        "Existing Muse chats",
+                        "",
+                        None,
+                        PaneMenuAction::Sessions(session_catalog::Filter::Muse),
+                        cx,
+                    ))
                     .child(pane_menu_heading("New tab", true, colors))
                     .children(
                         std::iter::once(("Shell", "⌘T", Some(Icon::Add), PaneMenuAction::Shell))
@@ -11896,6 +11925,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_codex_action))
             .on_action(cx.listener(Self::open_claude_action))
             .on_action(cx.listener(Self::open_grok_action))
+            .on_action(cx.listener(Self::open_muse_action))
             .on_action(cx.listener(Self::open_new_chat_action))
             .on_action(cx.listener(Self::split_right_action))
             .on_action(cx.listener(Self::split_down_action))
@@ -12558,10 +12588,11 @@ fn remote_start_project(
 
 /// The agents of the New tab menu, with their shortcuts. Each is one entry: whether it
 /// starts unrestricted is the Settings choice, not a second entry.
-const NEW_TAB_AGENTS: [(&str, &str, HarnessKind); 3] = [
+const NEW_TAB_AGENTS: [(&str, &str, HarnessKind); 4] = [
     ("Codex", "⌘⇧C", HarnessKind::Codex),
     ("Claude", "⌘⇧L", HarnessKind::Claude),
     ("Grok", "⌘⇧G", HarnessKind::Grok),
+    ("Muse", "⌘⇧U", HarnessKind::Muse),
 ];
 
 /// What the New Tab menu's agent entries ask another Mac's `shell.create` for.
@@ -12570,6 +12601,7 @@ fn remote_shell_kind(harness: HarnessKind) -> NewShellKind {
         HarnessKind::Codex => NewShellKind::Codex,
         HarnessKind::Claude => NewShellKind::Claude,
         HarnessKind::Grok => NewShellKind::Grok,
+        HarnessKind::Muse => NewShellKind::Muse,
     }
 }
 
@@ -12640,6 +12672,7 @@ fn harness_name(harness: HarnessKind) -> &'static str {
         HarnessKind::Codex => "codex",
         HarnessKind::Claude => "claude",
         HarnessKind::Grok => "grok",
+        HarnessKind::Muse => "muse",
     }
 }
 
@@ -13324,6 +13357,7 @@ fn main() {
             KeyBinding::new("cmd-shift-c", OpenCodex, None),
             KeyBinding::new("cmd-shift-l", OpenClaude, None),
             KeyBinding::new("cmd-shift-g", OpenGrok, None),
+            KeyBinding::new("cmd-shift-u", OpenMuse, None),
             // One chat for every provider: the model chosen in it decides.
             KeyBinding::new("cmd-alt-shift-c", OpenNewChat, None),
             KeyBinding::new("cmd-.", chat_view::InterruptChat, Some("ChatView")),
@@ -16825,7 +16859,7 @@ mod chat_tab_tests {
             }))
             .unwrap()
         };
-        for harness in ["codex", "claude", "grok"] {
+        for harness in ["codex", "claude", "grok", "muse"] {
             assert!(hands_off(&shell("project", Some(harness))), "{harness}");
         }
         // A plain shell has no conversation of its own, an orchestrator is not handed off.

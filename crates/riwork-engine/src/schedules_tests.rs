@@ -2333,3 +2333,45 @@ fn project_orchestrator_live_directory_remains_context_only() {
         assert_eq!(f.f.row().last_run.unwrap().outcome, Outcome::Submitted);
     }
 }
+
+#[test]
+fn a_muse_chat_can_be_scheduled_but_a_muse_terminal_cannot() {
+    let f = Fixture::new();
+    let timing = Timing::Once { at: now() + 3600 };
+    let mut fresh = f.target();
+    fresh.harness = HarnessKind::Muse;
+    fresh.new_chat = Some(NewChatTarget {
+        title: None,
+        root: f.home.clone(),
+        provider: Provider::Muse,
+        codex_account_id: None,
+        model: None,
+        effort: None,
+        fast: false,
+        approval_mode: ApprovalMode::Supervised,
+    });
+    f.store
+        .save(
+            None,
+            "Muse chat".into(),
+            "Isolated test prompt".into(),
+            fresh,
+            timing.clone(),
+            now(),
+        )
+        .expect("a Muse chat schedule saves");
+    let mut terminal = f.target();
+    terminal.harness = HarnessKind::Muse;
+    let refused = f
+        .store
+        .save(
+            None,
+            "Muse terminal".into(),
+            "Isolated test prompt".into(),
+            terminal,
+            timing,
+            now(),
+        )
+        .expect_err("a Muse terminal has no schedule turn signal");
+    assert!(refused.contains("cannot be scheduled"), "{refused}");
+}

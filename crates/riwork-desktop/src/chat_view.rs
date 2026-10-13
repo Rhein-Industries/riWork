@@ -111,11 +111,12 @@ pub enum ChatViewEvent {
 
 impl EventEmitter<ChatViewEvent> for ChatView {}
 
-/// The provider a chat of `provider` can switch to.
-fn other_provider(provider: Provider) -> Provider {
+/// The providers a chat of `provider` can switch to, in catalogue order.
+fn other_providers(provider: Provider) -> [Provider; 2] {
     match provider {
-        Provider::Codex => Provider::Claude,
-        Provider::Claude => Provider::Codex,
+        Provider::Codex => [Provider::Claude, Provider::Muse],
+        Provider::Claude => [Provider::Codex, Provider::Muse],
+        Provider::Muse => [Provider::Codex, Provider::Claude],
     }
 }
 
@@ -207,9 +208,9 @@ pub struct ChatView {
     model_input: Entity<InputState>,
     /// The RiWork data directory, where saved chats tell the other provider's models.
     catalog_home: Option<std::path::PathBuf>,
-    /// What the provider the chat does not run offers, read when the model menu opens: the
-    /// rows that move the chat to it.
-    others: Option<(Provider, crate::chat::catalog::Catalog)>,
+    /// What the providers the chat does not run offer, read when the model menu opens: the
+    /// rows that move the chat to one of them.
+    others: Vec<(Provider, crate::chat::catalog::Catalog)>,
     others_task: Option<Task<()>>,
     answers: HashMap<editors::AnswerKey, editors::AnswerEditor>,
     subscriptions: Vec<Subscription>,
@@ -462,7 +463,7 @@ impl ChatView {
             composer,
             model_input,
             catalog_home: None,
-            others: None,
+            others: Vec::new(),
             others_task: None,
             subscriptions,
             answers: HashMap::new(),
@@ -952,26 +953,34 @@ impl ChatView {
         );
     }
 
-    /// Read what the provider the chat does not run offers, from saved chats, for the model
-    /// menu's rows that move the chat to it.
+    /// Read what the providers the chat does not run offer, from saved chats, for the model
+    /// menu's rows that move the chat to one of them.
     fn load_other_models(&mut self, cx: &mut Context<Self>) {
         let (Some(home), Some(provider)) = (self.catalog_home.clone(), self.provider()) else {
             return;
         };
-        let other = other_provider(provider);
+        let others = other_providers(provider);
         let project = self
             .model
             .transcript
             .info
             .as_ref()
             .and_then(|info| info.project_id.clone());
-        let work = cx
-            .background_executor()
-            .spawn(async move { crate::chat::catalog::saved(&home, project.as_deref(), other) });
+        let work = cx.background_executor().spawn(async move {
+            others
+                .into_iter()
+                .map(|other| {
+                    (
+                        other,
+                        crate::chat::catalog::saved(&home, project.as_deref(), other),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
         self.others_task = Some(cx.spawn(async move |this, cx| {
-            let catalog = work.await;
+            let catalogs = work.await;
             let _ = this.update(cx, |view, cx| {
-                view.others = Some((other, catalog));
+                view.others = catalogs;
                 cx.notify();
             });
         }));
@@ -1244,12 +1253,14 @@ impl ChatView {
             .or_else(|| self.creation.as_ref().map(|c| c.chat().provider))
     }
 
-    /// The other provider's offer, once read for the provider the chat does not run now.
-    fn other_models(&self) -> Option<&crate::chat::catalog::Catalog> {
-        let provider = self.provider()?;
+    /// `other`'s offer, once read, unless the chat runs it now.
+    fn other_models(&self, other: Provider) -> Option<&crate::chat::catalog::Catalog> {
+        if self.provider() == Some(other) {
+            return None;
+        }
         self.others
-            .as_ref()
-            .filter(|(other, _)| *other == other_provider(provider))
+            .iter()
+            .find(|(candidate, _)| *candidate == other)
             .map(|(_, catalog)| catalog)
     }
 

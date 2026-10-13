@@ -257,13 +257,7 @@ fn provider_label(provider: Provider) -> &'static str {
     match provider {
         Provider::Codex => "Codex",
         Provider::Claude => "Claude",
-    }
-}
-
-fn other_provider(provider: Provider) -> Provider {
-    match provider {
-        Provider::Codex => Provider::Claude,
-        Provider::Claude => Provider::Codex,
+        Provider::Muse => "Muse",
     }
 }
 
@@ -2104,7 +2098,7 @@ impl SettingsPanel {
             .child(self.toggle_row(
                 Toggle::AgentsUnrestricted,
                 "Agent terminals run unrestricted",
-                "Codex, Claude and Grok from the New tab menu, ⌘⇧C, ⌘⇧L and ⌘⇧G, and from the iOS app start without approval prompts: Codex with --dangerously-bypass-approvals-and-sandbox, Claude with --dangerously-skip-permissions, Grok with --always-approve. Off, they ask before running commands and editing files. A session that is already running keeps its mode.",
+                "Codex, Claude, Grok and Muse from the New tab menu, ⌘⇧C, ⌘⇧L, ⌘⇧G and ⌘⇧U, and from the iOS app start without approval prompts: Codex with --dangerously-bypass-approvals-and-sandbox, Claude with --dangerously-skip-permissions, Grok with --always-approve, Muse with --yolo. Off, they ask before running commands and editing files. A session that is already running keeps its mode.",
                 settings.agent_terminals_unrestricted,
                 cx,
             ))
@@ -2148,13 +2142,14 @@ impl SettingsPanel {
                     "Chat provider",
                     "The agent behind a chat orchestrator. Project orchestrators never ask before they act; the global orchestrator asks before running commands and editing files.",
                     settings.orchestrator_chat_provider,
-                    [Provider::Codex, Provider::Claude].map(|provider| {
+                    [Provider::Codex, Provider::Claude, Provider::Muse].map(|provider| {
                         (
                             provider,
                             provider_label(provider),
                             match provider {
                                 Provider::Codex => "orchestrator-provider-codex",
                                 Provider::Claude => "orchestrator-provider-claude",
+                                Provider::Muse => "orchestrator-provider-muse",
                             },
                         )
                     }),
@@ -3206,10 +3201,7 @@ mod tests {
             OrchestratorRuns::Chat(Provider::Codex)
         );
         store
-            .update(|settings| {
-                settings.orchestrator_chat_provider =
-                    other_provider(settings.orchestrator_chat_provider)
-            })
+            .update(|settings| settings.orchestrator_chat_provider = Provider::Claude)
             .unwrap();
         assert_eq!(document(&dir)["orchestrator_chat_provider"], "claude");
         assert_eq!(

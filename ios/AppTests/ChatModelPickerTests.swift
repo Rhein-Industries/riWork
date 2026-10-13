@@ -765,21 +765,23 @@ import RiWorkCore
         return rig
     }
 
-    func testANewChatListsBothProvidersFromTheMacAndTheModelDecidesTheProvider() async throws {
+    func testANewChatListsEveryProviderFromTheMacAndTheModelDecidesTheProvider() async throws {
         let rig = try await switchable(chats: [])
         await rig.transport.setProviderModels(.codex, list)
         await rig.transport.setProviderModels(.claude, [opus])
+        await rig.transport.setProviderModels(.muse, [ChatModelOption(id: "wonder", name: "Wonder")])
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
         sheet.select(kind: .chat)
         XCTAssertEqual(sheet.form.chatProvider, .codex, "nothing remembered: Codex")
         await sheet.loadChatModels()
         XCTAssertEqual(sheet.form.chatModels[.codex], list); XCTAssertEqual(sheet.form.chatModels[.claude], [opus])
-        XCTAssertEqual(sheet.chatModelsSources[.codex], .live); XCTAssertEqual(sheet.chatModelsSources[.claude], .live)
+        XCTAssertEqual(sheet.form.chatModels[.muse], [ChatModelOption(id: "wonder", name: "Wonder")])
+        XCTAssertEqual(sheet.chatModelsSources[.codex], .live); XCTAssertEqual(sheet.chatModelsSources[.claude], .live); XCTAssertEqual(sheet.chatModelsSources[.muse], .live)
         let listed = await rig.transport.params(of: "chat.models")
-        XCTAssertEqual(Set(listed.compactMap { $0["provider"]?.string }), ["codex", "claude"], "read from the Mac, not by replaying chats")
+        XCTAssertEqual(Set(listed.compactMap { $0["provider"]?.string }), ["codex", "claude", "muse"], "read from the Mac, not by replaying chats")
         let replays = await rig.transport.count("chat.events")
         XCTAssertEqual(replays, 0)
-        XCTAssertEqual(sheet.form.chatRows.count, 6, "each provider's default and its models")
+        XCTAssertEqual(sheet.form.chatRows.count, 8, "each provider's default and its models")
         sheet.chooseChatRow(.model(.claude, opus))
         XCTAssertEqual(sheet.form.chatProvider, .claude)
         sheet.create()
@@ -792,6 +794,7 @@ import RiWorkCore
     func testAProviderTheMacCannotOfferSaysWhyUnderItsOwnRows() async throws {
         let rig = try await switchable(chats: [])
         await rig.transport.setProviderModels(.claude, [opus])
+        await rig.transport.setProviderModels(.muse, [ChatModelOption(id: "wonder", name: "Wonder")])
         await rig.transport.setProviderModels(.codex, [], error: "The Codex account Work cannot be used.")
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))
         sheet.selectChat(.claude)
@@ -816,13 +819,15 @@ import RiWorkCore
         await eventually("old windows arrived") { rig.model.conversation(self.chatID).transcript.rateLimits.count == 1 }
         await rig.model.loadSwitchCatalogue(chat())
         let conversation = rig.model.conversation(chatID)
-        XCTAssertEqual(conversation.switchCatalogue, [opus]); XCTAssertEqual(conversation.switchCatalogueSource, .live)
+        XCTAssertEqual(conversation.switchCatalogue(for: .claude), [opus]); XCTAssertEqual(conversation.switchCatalogueSource(for: .claude), .live)
+        XCTAssertEqual(conversation.switchCatalogue(for: .muse), [], "no Muse chat has listed its models: only its default is on offer")
         let offered = conversation.modelChoices(fallback: chat(), switchable: true)
-        XCTAssertEqual(offered.switching?.provider, .claude)
-        XCTAssertEqual(offered.switching?.rows.map(\.id), ["default", "opus"])
-        XCTAssertNil(offered.switching?.blocked)
-        XCTAssertNil(conversation.modelChoices(fallback: chat()).switching, "nothing to switch to without the desktop's word")
-        let failure = await rig.model.switchChatProvider(chat(), model: "opus")
+        XCTAssertEqual(offered.switches.map(\.provider), [.claude, .muse], "both other providers")
+        XCTAssertEqual(offered.switchTarget(.claude)?.rows.map(\.id), ["default", "opus"])
+        XCTAssertEqual(offered.switchTarget(.muse)?.rows.map(\.id), ["default"])
+        XCTAssertNil(offered.switchTarget(.claude)?.blocked)
+        XCTAssertTrue(conversation.modelChoices(fallback: chat()).switches.isEmpty, "nothing to switch to without the desktop's word")
+        let failure = await rig.model.switchChatProvider(chat(), to: .claude, model: "opus")
         XCTAssertNil(failure)
         let sent = await rig.transport.commands()
         XCTAssertEqual(sent.last, .object(["command": .string("switch"), "provider": .string("claude"), "model": .string("opus")]))
@@ -833,7 +838,7 @@ import RiWorkCore
         XCTAssertTrue(conversation.transcript.rateLimits.isEmpty, "switch command clears the old provider’s windows")
         XCTAssertNil(conversation.pendingModel)
         XCTAssertEqual(rig.model.chats.first { $0.id == chatID }?.provider, .claude, "the tab shows Claude at once")
-        XCTAssertEqual(conversation.modelChoices(fallback: chat(), switchable: true).switching?.provider, .codex, "and the way back is Codex")
+        XCTAssertEqual(conversation.modelChoices(fallback: chat(), switchable: true).switches.map(\.provider), [.codex, .muse], "and the ways on are Codex and Muse")
         await finish(rig)
     }
     func testASwitchIsRefusedWhileATurnRunsAndNothingIsSent() async throws {
@@ -841,8 +846,8 @@ import RiWorkCore
         await withModels(rig, info: chat(state: .running))
         await eventually("running") { rig.model.conversation(self.chatID).transcript.state == .running }
         let offered = rig.model.conversation(chatID).modelChoices(fallback: chat(), switchable: true)
-        XCTAssertEqual(offered.switching?.blocked, ChatProviderSwitch.busyReason)
-        let failure = await rig.model.switchChatProvider(chat(), model: nil)
+        XCTAssertEqual(offered.switches.map(\.blocked), [ChatProviderSwitch.busyReason, ChatProviderSwitch.busyReason], "every other provider waits for the turn")
+        let failure = await rig.model.switchChatProvider(chat(), to: .muse, model: nil)
         XCTAssertEqual(failure, .failed(ChatProviderSwitch.busyReason))
         XCTAssertEqual(rig.model.conversation(chatID).notice, ChatProviderSwitch.busyReason)
         let sent = await rig.transport.commands()

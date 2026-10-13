@@ -7,9 +7,9 @@ import Foundation
 // pure and `Sendable`; the app owns the timing.
 
 /// What a new terminal runs: the Mac's default shell, or one of the agents RiWork launches. Or, with the same sheet, a native chat
-/// (`chat.create`, not `shell.create`): one kind for both providers, whose model says which (`NewTerminalForm.chatProvider`).
+/// (`chat.create`, not `shell.create`): one kind for every provider, whose model says which (`NewTerminalForm.chatProvider`).
 public enum NewTerminalKind: String, CaseIterable, Sendable, Codable, Identifiable {
-    case shell, codex, claude, grok
+    case shell, codex, claude, grok, muse
     case chat
     /// The orchestrator of the project on screen, or the global one: opened (or started, if it is not there yet) by `orchestrator.create`,
     /// neither `shell.create` nor `chat.create`. Whether it is a terminal or a chat is the Mac's setting.
@@ -17,7 +17,7 @@ public enum NewTerminalKind: String, CaseIterable, Sendable, Codable, Identifiab
     public var id: String { rawValue }
     /// The kinds that make a tab of their own, a terminal or a chat. The orchestrators are not among them: there is one of each, and
     /// asking for it again opens the one that is there (`orchestratorKinds`).
-    public static var allCases: [NewTerminalKind] { [.shell, .codex, .claude, .grok, .chat] }
+    public static var allCases: [NewTerminalKind] { [.shell, .codex, .claude, .grok, .muse, .chat] }
     public static let orchestratorKinds: [NewTerminalKind] = [.projectOrchestrator, .globalOrchestrator]
     public var title: String {
         switch self {
@@ -25,6 +25,7 @@ public enum NewTerminalKind: String, CaseIterable, Sendable, Codable, Identifiab
         case .codex: "Codex"
         case .claude: "Claude"
         case .grok: "Grok"
+        case .muse: "Muse"
         case .chat: "Chat"
         case .projectOrchestrator: "Project orchestrator"
         case .globalOrchestrator: "Global orchestrator"
@@ -53,7 +54,7 @@ public enum NewTerminalKind: String, CaseIterable, Sendable, Codable, Identifiab
         }
     }
     /// What every desktop can open.
-    public static let terminalKinds: [NewTerminalKind] = [.shell, .codex, .claude, .grok]
+    public static let terminalKinds: [NewTerminalKind] = [.shell, .codex, .claude, .grok, .muse]
     /// What the sheet offers: the chats only on a desktop that has them, the orchestrators only on one that opens them.
     public static func offered(chats: Bool, orchestrators: Bool = false) -> [NewTerminalKind] {
         (chats ? allCases : terminalKinds) + (orchestrators ? orchestratorKinds : [])
@@ -141,7 +142,7 @@ public enum NewTerminalValidationError: Error, Equatable, Sendable, LocalizedErr
         switch self {
         case .needsOneTarget: "Choose a project or a worktree."
         case .invalidID: "The project or worktree is not a full UUID."
-        case .unknownKind: "Choose Shell, Codex, Claude or Grok."
+        case .unknownKind: "Choose Shell, Codex, Claude, Grok or Muse."
         case .unrestrictedNeedsAgent: "Only an agent can run unrestricted."
         case .unrestrictedOrAsSettings: "Ask for unrestricted, or leave it to the Mac’s Settings, not both."
         case .commandNeedsShell: "A command can only start a plain shell."
@@ -393,7 +394,7 @@ public struct NewTerminalForm: Equatable, Sendable {
     /// The provider of a new chat: the one whose model row is chosen (`NewChatChoice.swift`).
     public private(set) var chatProvider: ChatProvider
     /// The desktop starts an agent terminal unrestricted or not as its own Settings say when asked to (`as_settings`, with
-    /// `features.shell_create_as_settings`): Codex, Claude and Grok then have no switch here. A chat keeps its own (Full mode).
+    /// `features.shell_create_as_settings`): Codex, Claude, Grok and Muse then have no switch here. A chat keeps its own (Full mode).
     public var agentsFollowDesktop = false
 
     public init(targets: [NewTerminalTarget], targetIndex: Int = 0, kind: NewTerminalKind = .standard, kinds: [NewTerminalKind] = NewTerminalKind.terminalKinds,

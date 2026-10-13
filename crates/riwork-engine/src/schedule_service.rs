@@ -329,7 +329,12 @@ pub fn chat_options(
     let provider = match provider {
         None | Some("codex") => Provider::Codex,
         Some("claude") => Provider::Claude,
-        _ => return Err(ScheduleError::invalid("provider must be codex or claude")),
+        Some("muse") => Provider::Muse,
+        _ => {
+            return Err(ScheduleError::invalid(
+                "provider must be codex, claude, or muse",
+            ));
+        }
     };
     let permission = match permission {
         None | Some("supervised") => ApprovalMode::Supervised,
@@ -388,6 +393,26 @@ fn parse_at(value: &str) -> Result<u64, ScheduleError> {
 
 fn timing(value: &str, every_minutes: Option<u64>) -> Result<Timing, ScheduleError> {
     timing_at(parse_at(value)?, every_minutes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::chat_options;
+    use crate::chat::model::{ApprovalMode, Provider};
+
+    #[test]
+    fn chat_options_names_every_provider() {
+        assert_eq!(
+            chat_options(None, None).unwrap(),
+            (Provider::Codex, ApprovalMode::Supervised)
+        );
+        assert_eq!(
+            chat_options(Some("claude"), None).unwrap().0,
+            Provider::Claude
+        );
+        assert_eq!(chat_options(Some("muse"), None).unwrap().0, Provider::Muse);
+        assert!(chat_options(Some("grok"), None).is_err());
+    }
 }
 
 fn timing_at(at: u64, every_minutes: Option<u64>) -> Result<Timing, ScheduleError> {

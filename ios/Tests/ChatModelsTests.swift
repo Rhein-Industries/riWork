@@ -309,10 +309,11 @@ final class ChatModelsTests: XCTestCase {
         }
         XCTAssertFalse(claude.first { $0.id == "haiku" }!.supportsFast)
         XCTAssertTrue(claude.first { $0.id == "haiku" }!.efforts.isEmpty)
+        XCTAssertEqual(ChatBundledModels.models(for: .muse), [], "no snapshot recorded for Muse yet")
     }
 
 
-    // MARK: Going on with the other provider
+    // MARK: Going on with another provider
 
     func testTheOtherProvidersRowsAreItsDefaultThenItsModelsAndEachSendsASwitch() {
         let opus = ChatModelOption(id: "opus", name: "Opus")
@@ -333,22 +334,28 @@ final class ChatModelsTests: XCTestCase {
         XCTAssertNil(ChatProviderSwitch(provider: .claude, models: [], transcript: transcript([.state(.idle)])).blocked)
         XCTAssertNil(ChatProviderSwitch(provider: .claude, models: [], transcript: transcript([.state(.stopped)])).blocked, "a stopped chat can go on with either")
         // It is not a configure.
-        XCTAssertNil(choices().configuration(for: .provider("opus")))
+        XCTAssertNil(choices().configuration(for: .provider(.claude, "opus")))
     }
     func testTheKeyboardReachesTheOtherProvidersRowsAfterFastAndOnlyWhenTheyCanBeChosen() {
         var withSwitch = choices(model: "gpt-5.5")
-        withSwitch.switching = ChatProviderSwitch(provider: .claude, models: [ChatModelOption(id: "opus", name: "Opus")])
+        withSwitch.switches = [ChatProviderSwitch(provider: .claude, models: [ChatModelOption(id: "opus", name: "Opus")]),
+                                ChatProviderSwitch(provider: .muse, models: [ChatModelOption(id: "wonder", name: "Wonder")])]
         var cursor = ChatModelCursor(for: withSwitch)
-        XCTAssertEqual(cursor.stops(in: withSwitch), [.model(0), .model(1), .model(2), .effort, .fast, .other(0), .other(1)])
-        cursor.place(.other(1), in: withSwitch)
-        XCTAssertEqual(cursor.handle(.return, in: withSwitch), .provider("opus"))
-        cursor.place(.other(0), in: withSwitch)
-        XCTAssertEqual(cursor.handle(.space, in: withSwitch), .provider(nil))
-        // Applying a choice keeps the other provider's rows.
-        XCTAssertEqual(withSwitch.applying(.init(model: "bare")).switching, withSwitch.switching)
+        XCTAssertEqual(cursor.stops(in: withSwitch), [.model(0), .model(1), .model(2), .effort, .fast, .other(.claude, 0), .other(.claude, 1), .other(.muse, 0), .other(.muse, 1)],
+                       "both other providers, each default first")
+        cursor.place(.other(.claude, 1), in: withSwitch)
+        XCTAssertEqual(cursor.handle(.return, in: withSwitch), .provider(.claude, "opus"))
+        cursor.place(.other(.claude, 0), in: withSwitch)
+        XCTAssertEqual(cursor.handle(.space, in: withSwitch), .provider(.claude, nil))
+        cursor.place(.other(.muse, 1), in: withSwitch)
+        XCTAssertEqual(cursor.handle(.return, in: withSwitch), .provider(.muse, "wonder"))
+        XCTAssertEqual(withSwitch.switchTarget(.muse)?.provider, .muse); XCTAssertNil(withSwitch.switchTarget(.codex), "its own provider is not a target")
+        // Applying a choice keeps the other providers' rows.
+        XCTAssertEqual(withSwitch.applying(.init(model: "bare")).switches, withSwitch.switches)
         // While they cannot be chosen, the ring does not go there.
         var blocked = withSwitch
-        blocked.switching = ChatProviderSwitch(provider: .claude, models: [ChatModelOption(id: "opus", name: "Opus")], blocked: ChatProviderSwitch.busyReason)
+        blocked.switches = [ChatProviderSwitch(provider: .claude, models: [ChatModelOption(id: "opus", name: "Opus")], blocked: ChatProviderSwitch.busyReason),
+                            ChatProviderSwitch(provider: .muse, models: [], blocked: ChatProviderSwitch.busyReason)]
         XCTAssertEqual(cursor.stops(in: blocked), [.model(0), .model(1), .model(2), .effort, .fast])
         cursor.reconcile(with: blocked)
         XCTAssertEqual(cursor.stop, .model(0), "a ring on a row that went away goes back to the models")

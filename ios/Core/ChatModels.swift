@@ -65,14 +65,16 @@ public struct ChatModelChoices: Sendable, Equatable {
     public let effort: String?
     /// Fast was asked for (`ChatInfo.fast`).
     public let fast: Bool
-    /// The other provider's models, on a desktop that lets a chat go on with it (`features.chat_provider_switch`); nil otherwise.
-    public var switching: ChatProviderSwitch?
+    /// The other providers' models, on a desktop that lets a chat go on with one of them (`features.chat_provider_switch`); empty otherwise.
+    public var switches: [ChatProviderSwitch]
 
-    public init(models: [ChatModelOption], model: String?, effort: String?, fast: Bool, switching: ChatProviderSwitch? = nil) {
+    public init(models: [ChatModelOption], model: String?, effort: String?, fast: Bool, switches: [ChatProviderSwitch] = []) {
         var seen = Set<String>()
         self.models = models.filter { seen.insert($0.id).inserted }
-        self.modelID = model; self.effort = effort; self.fast = fast; self.switching = switching
+        self.modelID = model; self.effort = effort; self.fast = fast; self.switches = switches
     }
+    /// The part of the picker for going on with `provider`, when it is on offer.
+    public func switchTarget(_ provider: ChatProvider) -> ChatProviderSwitch? { switches.first { $0.provider == provider } }
     /// From a transcript, with a choice that has been sent and not yet confirmed by the desktop laid over what the chat says.
     public init(transcript: ChatTranscript, fallback: ChatInfo? = nil, pending: Configuration? = nil) {
         let info = transcript.info ?? fallback
@@ -135,8 +137,8 @@ public struct ChatModelChoices: Sendable, Equatable {
         case model(String)
         case effort(String)
         case fast(Bool)
-        /// Go on with the other provider, on this model of it (nil: its default). Not a `Configure`: see `ChatProviderSwitch.command`.
-        case provider(String?)
+        /// Go on with another provider, on this model of it (nil: its default). Not a `Configure`: see `ChatProviderSwitch.command`.
+        case provider(ChatProvider, String?)
     }
 
     /// What one choice sends: one `Configure`. Each field is a change; a field left out stays as it is.
@@ -187,14 +189,14 @@ public struct ChatModelChoices: Sendable, Equatable {
 
     /// The same chat with a choice made: what the picker shows at once, before the desktop has said so.
     public func applying(_ configuration: Configuration) -> ChatModelChoices {
-        ChatModelChoices(models: models, model: configuration.model ?? modelID, effort: configuration.effort ?? effort, fast: configuration.fast ?? fast, switching: switching)
+        ChatModelChoices(models: models, model: configuration.model ?? modelID, effort: configuration.effort ?? effort, fast: configuration.fast ?? fast, switches: switches)
     }
 }
 
-// MARK: - Going on with the other provider
+// MARK: - Going on with another provider
 
-/// The other provider's part of a chat's picker: its default and its models. Choosing one sends `switch`, which keeps the chat, its tab and its
-/// conversation and starts the other provider's agent with the conversation so far. Not while a turn runs or waits: the desktop refuses
+/// One other provider's part of a chat's picker: its default and its models. Choosing one sends `switch`, which keeps the chat, its tab and its
+/// conversation and starts that provider's agent with the conversation so far. Not while a turn runs or waits: the desktop refuses
 /// that, so the rows say why instead.
 public struct ChatProviderSwitch: Sendable, Equatable {
     /// One row: the provider's default (`model` nil) or one of its models.
@@ -238,11 +240,11 @@ public struct ChatProviderSwitch: Sendable, Equatable {
 // MARK: - The keyboard
 
 /// Where the ring is in the picker, and what the arrows do. The picker is one column of stops: a row per model, then the effort row (when
-/// the model takes efforts), then Fast (when it has one), then the other provider's rows (when the chat can go on with it now). Up, down and
+/// the model takes efforts), then Fast (when it has one), then each other provider's rows (when the chat can go on with it now). Up, down and
 /// tab move between them (and wrap), left and right move along the efforts, Return and space choose what the ring is on. Choosing sends one
-/// `Configure`, or a `switch` for the other provider's rows; moving sends nothing.
+/// `Configure`, or a `switch` for another provider's rows; moving sends nothing.
 public struct ChatModelCursor: Equatable, Sendable {
-    public enum Stop: Equatable, Sendable { case model(Int), effort, fast, other(Int) }
+    public enum Stop: Equatable, Sendable { case model(Int), effort, fast, other(ChatProvider, Int) }
     public enum Key: Equatable, Sendable { case up, down, left, right, tab, backTab, space, `return` }
 
     public private(set) var stop: Stop
@@ -256,7 +258,7 @@ public struct ChatModelCursor: Equatable, Sendable {
     }
 
     public func stops(in choices: ChatModelChoices) -> [Stop] {
-        let others = choices.switching.flatMap { $0.blocked == nil ? $0.rows.indices.map(Stop.other) : nil } ?? []
+        let others = choices.switches.flatMap { target in target.blocked == nil ? target.rows.indices.map { Stop.other(target.provider, $0) } : [] }
         return choices.models.indices.map(Stop.model) + (choices.efforts.isEmpty ? [] : [.effort]) + (choices.showsFast ? [.fast] : []) + others
     }
 
@@ -289,9 +291,9 @@ public struct ChatModelCursor: Equatable, Sendable {
             case .model(let index): return choices.models.indices.contains(index) ? .model(choices.models[index].id) : nil
             case .effort: return choices.efforts.indices.contains(effortIndex) ? .effort(choices.efforts[effortIndex]) : nil
             case .fast: return .fast(!choices.fastIsOn)
-            case .other(let index):
-                guard let rows = choices.switching?.rows, rows.indices.contains(index) else { return nil }
-                return .provider(rows[index].model?.id)
+            case .other(let provider, let index):
+                guard let rows = choices.switchTarget(provider)?.rows, rows.indices.contains(index) else { return nil }
+                return .provider(provider, rows[index].model?.id)
             }
         }
         return nil
@@ -329,6 +331,8 @@ public enum ChatBundledModels {
             ChatModelOption(id: "sonnet", name: "Sonnet", description: "Sonnet 5.5 · Efficient for routine tasks", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: nil, supportsFast: false, isDefault: false),
             ChatModelOption(id: "haiku", name: "Haiku", description: "Haiku 4.5 · Fastest for quick answers", efforts: [], defaultEffort: nil, supportsFast: false, isDefault: false),
         ]
+        // No snapshot recorded yet: the live list is the only offer beyond the default.
+        case .muse: return []
         }
     }
 }

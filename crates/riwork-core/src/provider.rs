@@ -8,4 +8,5 @@ use serde::{Deserialize, Serialize};
 pub enum Provider {
     Codex,
     Claude,
+    Muse,
 }

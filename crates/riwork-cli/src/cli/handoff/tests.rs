@@ -133,6 +133,11 @@ fn the_whole_command_line_is_read() {
             note: None,
         }
     );
+    let to_muse = parse(words("--to chat --provider muse")).unwrap();
+    assert_eq!(
+        (to_muse.kind, to_muse.provider),
+        (Kind::Chat, HarnessKind::Muse)
+    );
     for (word, mode) in [
         ("supervised", ApprovalMode::Supervised),
         ("auto-edit", ApprovalMode::AutoEdit),
@@ -185,7 +190,7 @@ fn what_cannot_be_understood_is_refused_with_the_usage() {
             .starts_with("--to must be shell or chat\nUsage: riwork handoff")
     );
     assert!(refused("--to robot --provider codex").starts_with("--to must be shell or chat"));
-    assert!(refused("--to chat").starts_with("--provider must be codex, claude or grok"));
+    assert!(refused("--to chat").starts_with("--provider must be codex, claude, grok or muse"));
     assert!(refused("--to chat --provider gemini").starts_with("--provider must be"));
     assert_eq!(
         refused("--to chat --provider codex --mode reckless"),

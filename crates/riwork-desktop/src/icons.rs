@@ -466,7 +466,7 @@ fn layout_glyph(path: &mut PathBuilder) {
     }
 }
 
-/// Codex is a shell prompt, `>_`; Claude is a spark of four crossing strokes.
+/// Codex is a shell prompt, `>_` ; Claude is a spark of four crossing strokes; Muse is the letter M.
 fn provider_glyph(path: &mut PathBuilder, provider: Provider) {
     match provider {
         Provider::Codex => {
@@ -480,6 +480,12 @@ fn provider_glyph(path: &mut PathBuilder, provider: Provider) {
             line(path, (1.5, 7.0), (12.5, 7.0));
             line(path, (3.1, 3.1), (10.9, 10.9));
             line(path, (10.9, 3.1), (3.1, 10.9));
+        }
+        Provider::Muse => {
+            line(path, (2.0, 11.5), (2.0, 2.5));
+            line(path, (2.0, 2.5), (7.0, 8.0));
+            line(path, (7.0, 8.0), (12.0, 2.5));
+            line(path, (12.0, 2.5), (12.0, 11.5));
         }
     }
 }

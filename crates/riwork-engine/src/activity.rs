@@ -765,14 +765,14 @@ pub(crate) fn bound_rollout(home: &Path, shell: &ShellSession) -> Option<PathBuf
 /// this one call, which is what a CLI process has. Needs nothing from the GUI;
 /// the rollouts, bindings and hook cursors are all on disk.
 ///
-/// Grok has no activity tracking: a live Grok shell is `Unknown` and a dead
-/// one `Exited`. A plain shell has no entry unless it holds a bound Codex.
+/// Grok and Muse have no activity tracking: a live one is `Unknown` and a
+/// dead one `Exited`. A plain shell has no entry unless it holds a bound Codex.
 pub fn states_once(home: &Path, shells: &[ShellSession], now: u64) -> BTreeMap<String, AgentState> {
     let mut tracker = ActivityTracker::at(home.to_path_buf());
     tracker.seed_over = COLD_SEED_OVER;
     let mut states = tracker.sample_states(shells, now);
     for shell in shells {
-        if shell.harness == Some(HarnessKind::Grok) {
+        if matches!(shell.harness, Some(HarnessKind::Grok | HarnessKind::Muse)) {
             let activity = if shell.alive {
                 AgentActivity::Unknown
             } else {
@@ -2303,7 +2303,7 @@ mod tests {
     }
 
     #[test]
-    fn the_cold_cli_view_adds_grok_as_unknown_and_leaves_plain_shells_out() {
+    fn the_cold_cli_view_adds_grok_and_muse_as_unknown_and_leaves_plain_shells_out() {
         let fixture = Fixture::new();
         let (claude, mut grok, plain) = (
             claude_shell(true),
@@ -2311,6 +2311,8 @@ mod tests {
             shell(None),
         );
         grok.alive = true;
+        let mut muse = shell(Some(HarnessKind::Muse));
+        muse.alive = true;
         write_cursor(
             &fixture,
             &claude,
@@ -2325,6 +2327,7 @@ mod tests {
             &[
                 claude.clone(),
                 grok.clone(),
+                muse.clone(),
                 plain.clone(),
                 dead_grok.clone(),
             ],
@@ -2332,6 +2335,7 @@ mod tests {
         );
         assert_eq!(states[&claude.id].activity, AgentActivity::Done);
         assert_eq!(states[&grok.id], AgentState::plain(AgentActivity::Unknown));
+        assert_eq!(states[&muse.id], AgentState::plain(AgentActivity::Unknown));
         assert_eq!(
             states[&dead_grok.id],
             AgentState::plain(AgentActivity::Exited)

@@ -682,7 +682,7 @@ impl CuaManager {
         let bin = self.home.join("cua/harness-bin");
         fs::create_dir_all(&bin)
             .map_err(|error| format!("Cannot create Cua harness directory: {error}"))?;
-        for harness in ["codex", "claude", "grok"] {
+        for harness in ["codex", "claude", "grok", "muse"] {
             let content = harness_shim(harness, &executable, &bin);
             atomic_executable(&bin.join(harness), content.as_bytes())?;
         }
@@ -3219,7 +3219,7 @@ else:
         fake_driver(&executable, "echo riwork \"$@\"");
         let manager = manager(temp.path.join("home"));
         let bin = manager.ensure_harness_shims(&executable).unwrap();
-        for harness in ["codex", "claude", "grok"] {
+        for harness in ["codex", "claude", "grok", "muse"] {
             fake_driver(
                 &temp.path.join("real").join(harness),
                 &format!("echo real {harness} \"$@\""),
@@ -3243,7 +3243,7 @@ else:
         let present = run("codex", &search);
         assert!(String::from_utf8_lossy(&present.stdout).starts_with("riwork cua harness codex"));
         fs::remove_file(&executable).unwrap();
-        for harness in ["codex", "claude", "grok"] {
+        for harness in ["codex", "claude", "grok", "muse"] {
             let output = run(harness, &search);
             assert!(output.status.success(), "{output:?}");
             assert_eq!(

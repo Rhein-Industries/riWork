@@ -86,6 +86,7 @@ impl CompletionNotice {
             HarnessKind::Codex => "Codex",
             HarnessKind::Claude => "Claude",
             HarnessKind::Grok => "Grok",
+            HarnessKind::Muse => "Muse",
         };
         let scope = self
             .worktree

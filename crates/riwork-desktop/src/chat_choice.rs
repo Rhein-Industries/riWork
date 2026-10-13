@@ -1,5 +1,5 @@
 //! Explicit new-chat choices: one list of every provider's models, where the model chosen
-//! decides whether the chat is Codex's or Claude's. Reading saved model metadata
+//! decides which provider's the chat is. Reading saved model metadata
 //! (`chat::catalog`) never contacts the host.
 
 use crate::{
@@ -74,7 +74,7 @@ pub struct ChatChoice {
     mode: ApprovalMode,
     effort: Option<String>,
     fast: bool,
-    models: [Models; 2],
+    models: [Models; 3],
     loading: bool,
     error: Option<String>,
     confirmation: Confirmation,
@@ -89,12 +89,17 @@ pub struct ChatChoice {
 impl EventEmitter<ChoiceEvent> for ChatChoice {}
 
 fn provider_index(provider: Provider) -> usize {
-    usize::from(provider == Provider::Claude)
+    match provider {
+        Provider::Codex => 0,
+        Provider::Claude => 1,
+        Provider::Muse => 2,
+    }
 }
 fn provider_label(provider: Provider) -> &'static str {
     match provider {
         Provider::Codex => "Codex",
         Provider::Claude => "Claude",
+        Provider::Muse => "Muse",
     }
 }
 
@@ -130,6 +135,7 @@ impl ChatChoice {
             [
                 catalog::saved(&home, Some(&metadata_project), Provider::Codex),
                 catalog::saved(&home, Some(&metadata_project), Provider::Claude),
+                catalog::saved(&home, Some(&metadata_project), Provider::Muse),
             ]
         });
         cx.spawn(async move |this, cx| {
@@ -170,6 +176,7 @@ impl ChatChoice {
         for key in [
             "model-default-0",
             "model-default-1",
+            "model-default-2",
             "mode-0",
             "mode-1",
             "mode-2",
@@ -214,7 +221,7 @@ impl ChatChoice {
         }
     }
 
-    fn apply_models(&mut self, models: [Models; 2], cx: &mut Context<Self>) {
+    fn apply_models(&mut self, models: [Models; 3], cx: &mut Context<Self>) {
         self.models = models;
         self.loading = false;
         for (provider, models) in self.models.iter().enumerate() {
@@ -489,7 +496,7 @@ impl Render for ChatChoice {
             .collect();
         let query = self.search.read(cx).value().trim().to_lowercase();
         let current = self.model.read(cx).value().trim().to_owned();
-        let model_groups: Vec<AnyElement> = [Provider::Codex, Provider::Claude]
+        let model_groups: Vec<AnyElement> = [Provider::Codex, Provider::Claude, Provider::Muse]
             .into_iter()
             .map(|provider| {
                 let group = provider_index(provider);
@@ -760,6 +767,7 @@ mod tests {
                 [
                     models("codex-fixture", "Codex fixture"),
                     models("claude-fixture", "Claude fixture"),
+                    models("muse-fixture", "Muse fixture"),
                 ],
                 cx,
             );

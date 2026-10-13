@@ -1,0 +1,11 @@
+# A turn the server queues behind other work: the start ack names it with disposition "queued" and
+# no turn/started; the driver must adopt it only when turn/started arrives. TurnStartResult and
+# TurnStartDisposition from msp.d.ts (started | queued | steered).
+{"type":"expect","frame":{"id":"<any>","method":"initialize","params":{"clientInfo":{"name":"riwork"}}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"serverInfo":{"name":"muse","version":"1.4.6"}}}]}
+{"type":"expect","frame":{"method":"initialized"}}
+{"type":"expect","frame":{"id":"<any>","method":"session/start","params":{"commandId":"<any>","workspaceRoot":"<any>","approvalMode":"promptUnmatched"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"session":{"sessionId":"sess-1"},"viewCursor":""}}]}
+{"type":"expect","frame":{"id":"<any>","method":"model/list","params":{"sessionId":"sess-1"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"providerId":"fake","profileId":null,"source":"fakeCatalog","models":[]}}]}
+{"type":"expect","frame":{"id":"<any>","method":"turn/start","params":{"commandId":"<any>","sessionId":"sess-1","input":[{"type":"text","text":"later"}]}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"commandId":"c1","status":"accepted","turnId":"turn-2","startedNewTurn":false,"disposition":"queued"}}]}
+{"type":"emit","frame":{"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":"sess-1","turnId":"turn-2","commandId":"c1"}}}
+{"type":"emit","frame":{"jsonrpc":"2.0","method":"item/completed","params":{"sessionId":"sess-1","item":{"itemId":"msg-1","kind":"agentMessage","turnId":"turn-2","revision":1,"status":"completed","text":"done later"}}}}
+{"type":"emit","frame":{"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":"sess-1","turnId":"turn-2","terminal":"completed"}}}

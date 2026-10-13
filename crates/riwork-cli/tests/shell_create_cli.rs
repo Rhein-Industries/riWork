@@ -387,7 +387,7 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
             "bash",
             "--json"
         ]),
-        "riwork: --harness must be codex, claude, or grok"
+        "riwork: --harness must be codex, claude, grok, or muse"
     );
     // The reason the connector never sends a command that begins with `-`.
     assert_eq!(

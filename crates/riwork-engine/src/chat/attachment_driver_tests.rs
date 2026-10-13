@@ -252,6 +252,7 @@ fn start(fake: &Fake, provider: Provider) -> (Box<dyn Driver>, mpsc::Receiver<Ch
     let driver = match provider {
         Provider::Codex => super::codex::start(fake.config(provider), tx),
         Provider::Claude => super::claude::start(fake.config(provider), tx),
+        Provider::Muse => super::muse::start(fake.config(provider), tx),
     }
     .unwrap();
     until(&rx, |e| {

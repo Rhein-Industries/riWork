@@ -38,6 +38,7 @@ pub enum Program {
     Claude,
     Codex,
     Grok,
+    Muse,
 }
 
 /// The agent a process name stands for. Claude Code's process is named after its version
@@ -49,6 +50,7 @@ fn agent(name: &str) -> Option<Program> {
         "claude" => Some(Program::Claude),
         "codex" => Some(Program::Codex),
         "grok" => Some(Program::Grok),
+        "muse" => Some(Program::Muse),
         _ if name.starts_with("grok-") => Some(Program::Grok),
         _ if !name.is_empty() && name.chars().all(|c| c.is_ascii_digit() || c == '.') => {
             Some(Program::Claude)
@@ -89,6 +91,7 @@ pub fn program(
         Some(HarnessKind::Claude) => Program::Claude,
         Some(HarnessKind::Codex) => Program::Codex,
         Some(HarnessKind::Grok) => Program::Grok,
+        Some(HarnessKind::Muse) => Program::Muse,
         None => Program::Shell,
     }
 }

@@ -1192,6 +1192,11 @@ async fn the_cli_failures_the_phone_acts_on_have_their_own_codes() {
             "claude is not installed or is not on PATH".into(),
         ),
         (
+            "muse is not installed or is not on PATH",
+            "harness_unavailable",
+            "muse is not installed or is not on PATH".into(),
+        ),
+        (
             "Cua Driver is not installed. Open RiWork Settings, or run `riwork setup`.",
             "harness_unavailable",
             "Cua Driver is not installed. Open RiWork Settings, or run `riwork setup`.".into(),
@@ -2328,4 +2333,68 @@ async fn chat_models_passes_on_a_providers_saved_list_and_nothing_else() {
         let response = f.call("chat.models", bad.clone()).await;
         assert_eq!(code(&response), "invalid_request", "{bad}: {response}");
     }
+}
+
+#[tokio::test]
+async fn muse_chats_are_created_listed_switched_to_and_listed_by_models() {
+    let f = Fixture::new();
+    f.says(
+        "capabilities.out",
+        &json!({"v":1,"chat":true,"chat_provider_switch":true,"chat_models":true}),
+    );
+    // Creation: the CLI is asked for a Muse chat, and the Muse chat it prints is
+    // accepted as the chat asked for.
+    let mut info = f.info(&f.chat);
+    info["provider"] = json!("muse");
+    info["title"] = json!("Muse chat");
+    f.says("create.json", &info);
+    let response = f
+        .call(
+            "chat.create",
+            json!({"provider":"muse","project_id":f.project}),
+        )
+        .await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(
+        f.calls_of("chat", "new").pop().unwrap(),
+        words(&[
+            "chat",
+            "new",
+            "--provider",
+            "muse",
+            "--project",
+            &f.project,
+            "--mode",
+            "supervised",
+            "--json"
+        ])
+    );
+    // The same chat in a list is let through, not dropped as an unknown provider.
+    f.says("list.json", &json!([info]));
+    let listed = f.call("chats.list", json!({})).await;
+    assert_eq!(listed["ok"], true, "{listed}");
+    assert_eq!(listed["result"]["chats"][0]["provider"], "muse");
+    // A switch to Muse is rebuilt from what was checked, as for Claude.
+    let response = f
+        .call(
+            "chat.command",
+            json!({"chat_id":f.chat,"command":{"command":"switch","provider":"muse"}}),
+        )
+        .await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&f.calls_of("chat", "command").pop().unwrap()[4]).unwrap(),
+        json!({"command":"switch","provider":"muse"})
+    );
+    // And Muse's saved models are listed as Claude's are.
+    f.says(
+        "models.json",
+        &json!({"provider":"muse","models":[{"id":"muse-1","name":"Muse 1"}],
+                "configured":[],"account_label":null,"error":null}),
+    );
+    let response = f.call("chat.models", json!({"provider":"muse"})).await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(response["result"]["provider"], "muse");
+    let call = f.calls_of("chat", "models").pop().unwrap();
+    assert_eq!(call[..4], ["chat", "models", "--provider", "muse"]);
 }

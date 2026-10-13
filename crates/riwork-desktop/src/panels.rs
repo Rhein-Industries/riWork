@@ -311,6 +311,12 @@ fn project_tree(
     project_order: &[usize],
 ) -> ProjectTree {
     let query = query.trim().to_lowercase();
+    let mut project_order = project_order.to_vec();
+    if !query.is_empty() {
+        // Name matches lead each folder; keep the chosen sort within both match groups.
+        project_order
+            .sort_by_key(|&index| !state.projects[index].name.to_lowercase().contains(&query));
+    }
     let folders = &state.project_folders;
     let indices: BTreeMap<_, _> = folders
         .iter()
@@ -389,7 +395,7 @@ fn project_tree(
     }
     let mut projects = vec![Vec::new(); folders.len()];
     let mut unfiled = Vec::new();
-    for &index in project_order {
+    for &index in &project_order {
         let project = &state.projects[index];
         match project.folder_id.as_deref().and_then(|id| indices.get(id)) {
             Some(&folder) => projects[folder].push(index),
@@ -3634,6 +3640,53 @@ mod tests {
     }
 
     #[test]
+    fn project_search_puts_names_before_paths_and_ids_while_preserving_the_selected_sort() {
+        for folder_id in [None, Some("team")] {
+            let mut state = State {
+                project_folders: vec![folder("team", "Team", None)],
+                projects: vec![
+                    project("path", "Aardvark", folder_id),
+                    project("name-a", "APP server", folder_id),
+                    project("name-z", "Zulu app", folder_id),
+                    project("app-id", "Backend", folder_id),
+                    project("other", "Viewer", folder_id),
+                ],
+                ..State::default()
+            };
+            state.projects[0].root = "/work/apps/deploy".into();
+            let edits = BTreeMap::from([
+                ("path".into(), 100),
+                ("name-a".into(), 10),
+                ("name-z".into(), 20),
+                ("app-id".into(), 50),
+            ]);
+            let names = ProjectOrder::for_sort(ProjectSort::Name);
+            let recent = ProjectOrder::for_sort(ProjectSort::LastEdited);
+            for (order, expected) in [
+                (names, ["name-a", "name-z", "path", "app-id"]),
+                (names.toggled(), ["name-z", "name-a", "app-id", "path"]),
+                (recent, ["name-z", "name-a", "path", "app-id"]),
+                (recent.toggled(), ["name-a", "name-z", "app-id", "path"]),
+            ] {
+                let indices = sorted_project_indices(&state, order, &edits, &[]);
+                let tree = super::project_tree(&state, " App ", &HashSet::new(), &indices);
+                let found: Vec<_> = tree
+                    .rows
+                    .iter()
+                    .filter_map(|row| match row {
+                        ProjectTreeRow::Project { index, .. } => {
+                            Some(state.projects[*index].id.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(found, expected, "{folder_id:?} {order:?}");
+                assert_eq!(tree.matched_projects, 4);
+            }
+        }
+    }
+
+    #[test]
     fn folder_search_includes_descendants_but_excludes_ancestor_projects() {
         let state = nested_state();
         let tree = project_tree(&state, "Tools", &HashSet::new());
@@ -3729,7 +3782,7 @@ mod tests {
         let tree = super::project_tree(&state, "Alpha", &collapsed, &order);
         assert_eq!(
             labels(&state, &tree),
-            ["unfiled", "u-old", "a", "a-new", "a-old", "nested", "n"]
+            ["unfiled", "u-old", "a", "a-old", "a-new", "nested", "n"]
         );
         assert_eq!(tree.matched_projects, 4);
         assert!(!tree.rows.iter().any(|row| matches!(

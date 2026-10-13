@@ -1741,5 +1741,50 @@ fn a_new_project_that_cannot_be_written_down_takes_its_folder_back() {
     assert!(store.create_new_project(&root, None, true).is_ok());
 }
 
+#[test]
+fn snapshot_reuses_the_last_parse_until_the_state_file_changes() {
+    use std::io::Write as _;
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let path = fixture.path("state/state.json");
+    let write_in_place = |bytes: &[u8]| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(bytes).unwrap();
+    };
+    let state_with = |id: &str| {
+        serde_json::to_vec(&State {
+            active_project_id: Some(id.to_owned()),
+            ..State::default()
+        })
+        .unwrap()
+    };
+    let active = |store: &Store| store.snapshot().unwrap().active_project_id;
+    write_in_place(&state_with("aaaa"));
+    assert_eq!(active(&store).as_deref(), Some("aaaa"));
+    // Same length, same inode, restored mtime: the file's stamp is unchanged,
+    // so the cached parse is served instead of reading the file again.
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    write_in_place(&state_with("bbbb"));
+    OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    assert_eq!(active(&store).as_deref(), Some("aaaa"));
+    // A real change is seen at once, as are removal and recreation.
+    write_in_place(&state_with("cc"));
+    assert_eq!(active(&store).as_deref(), Some("cc"));
+    fs::remove_file(&path).unwrap();
+    assert_eq!(store.snapshot().unwrap(), State::default());
+    write_in_place(&state_with("dddd"));
+    assert_eq!(active(&store).as_deref(), Some("dddd"));
+}
+
 #[path = "store_scan_tests.rs"]
 mod scan_tests;

@@ -201,6 +201,7 @@ pub enum NewShellKind {
     Codex,
     Claude,
     Grok,
+    Muse,
 }
 
 impl NewShellKind {
@@ -211,6 +212,7 @@ impl NewShellKind {
             Self::Codex => "codex",
             Self::Claude => "claude",
             Self::Grok => "grok",
+            Self::Muse => "muse",
         }
     }
 }
@@ -1121,8 +1123,9 @@ impl RemoteTree {
     }
 
     /// The folders to draw for `query` (already lowercased and trimmed; empty shows
-    /// everything), in the registry's order. Projects are ordered as `order` says, as local
-    /// ones are, and a folder collapsed in `collapsed` hides them unless a search is on.
+    /// everything), in the registry's order. As in local folders, search puts project-name
+    /// matches first and keeps `order` within each match group. A folder collapsed in
+    /// `collapsed` hides its projects unless a search is on.
     pub fn folders(
         &self,
         query: &str,
@@ -1219,7 +1222,12 @@ impl HostNode {
                 }
             })
             .collect::<Vec<_>>();
-        let projects = sorted_remote_indices(&keys, order)
+        let mut indices = sorted_remote_indices(&keys, order);
+        if searching {
+            // Match local folders: names lead id-only or host-name matches.
+            indices.sort_by_key(|&index| !listed[index].name.to_lowercase().contains(query));
+        }
+        let projects = indices
             .into_iter()
             .map(|index| &listed[index])
             .filter(|project| {
@@ -1681,6 +1689,38 @@ mod tests {
         assert_eq!(names(&folders(&tree, "p1")[0]), ["app"]);
         assert_eq!(names(&folders(&tree, "studio")[0]), ["app", "Web"]);
         assert!(folders(&tree, "zzz").is_empty());
+    }
+
+    #[test]
+    fn search_prioritizes_project_names_over_ids_and_keeps_the_selected_sort() {
+        let mut tree = studio();
+        tree.apply(
+            &Request::Projects { host: "h1".into() },
+            Reply::Projects(Ok(vec![
+                project("app-id", "Aardvark", 100),
+                project("name-a", "APP server", 10),
+                project("name-z", "Zulu app", 20),
+            ])),
+        );
+        let names_order = ProjectOrder::for_sort(ProjectSort::Name);
+        for (order, expected) in [
+            (names_order, ["APP server", "Zulu app", "Aardvark"]),
+            (
+                names_order.toggled(),
+                ["Zulu app", "APP server", "Aardvark"],
+            ),
+            (
+                ProjectOrder::default(),
+                ["Zulu app", "APP server", "Aardvark"],
+            ),
+        ] {
+            let found = tree.folders("app", order, &HashSet::new(), None);
+            assert_eq!(names(&found[0]), expected);
+        }
+        assert_eq!(
+            names(&folders(&tree, "")[0]),
+            ["Aardvark", "APP server", "Zulu app"]
+        );
     }
 
     #[test]
@@ -2340,9 +2380,10 @@ mod tests {
             NewShellKind::Codex,
             NewShellKind::Claude,
             NewShellKind::Grok,
+            NewShellKind::Muse,
         ]
         .map(NewShellKind::wire);
-        assert_eq!(kinds, ["shell", "codex", "claude", "grok"]);
+        assert_eq!(kinds, ["shell", "codex", "claude", "grok", "muse"]);
         assert_eq!(project_create_params("App"), json!({"name": "App"}));
     }
 

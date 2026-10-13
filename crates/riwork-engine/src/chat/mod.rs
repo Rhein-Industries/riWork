@@ -1,13 +1,13 @@
-//! Chat tabs: Codex and Claude driven through their structured interfaces
+//! Chat tabs: Codex, Claude and Muse driven through their structured interfaces
 //! instead of their terminal TUIs.
 //!
 //! - `model` is the provider-neutral vocabulary every part speaks: what a chat
 //!   is, the items of its transcript, the events that build it, and the commands
 //!   a user sends. `Transcript` folds events into what a tab draws.
 //! - `driver` is the seam between a chat and one provider process (`codex
-//!   app-server` over JSON-RPC, `claude` over stream-json). `codex` and
-//!   `claude` are the two drivers; `child` is what they share (the process in
-//!   its own group, a size-capped line reader).
+//!   app-server` over JSON-RPC, `claude` over stream-json, `muse serve` over
+//!   MSP JSON-RPC). `codex`, `claude` and `muse` are the drivers; `child` is
+//!   what they share (the process in its own group, a size-capped line reader).
 //! - `client` is the blocking client a window and the CLI use to reach it.
 //! - `wire` is the line protocol of the chat host (`riwork chat serve`), the
 //!   background process that owns the provider processes so chats keep running
@@ -37,6 +37,7 @@ pub mod launch;
 pub mod log;
 pub mod media;
 pub mod model;
+pub mod muse;
 mod notice_dismissals;
 mod rate_limits;
 pub mod remote_payload;

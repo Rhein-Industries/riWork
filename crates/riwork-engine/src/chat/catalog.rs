@@ -130,6 +130,7 @@ pub fn saved(home: &Path, project: Option<&str>, provider: Provider) -> Catalog 
             }
         },
         Provider::Claude => None,
+        Provider::Muse => None,
     };
     let mut result = Catalog {
         account: binding.as_ref().and_then(|binding| binding.id.clone()),

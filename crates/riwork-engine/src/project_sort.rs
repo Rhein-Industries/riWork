@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn name_sort_is_case_insensitive_with_name_and_id_tie_breaks() {
-        let state = State {
+        let mut state = State {
             projects: vec![
                 project("b", "beta", 0),
                 project("a2", "Alpha", 0),
@@ -197,6 +197,15 @@ mod tests {
             ],
             ..State::default()
         };
+        // A renamed project's old directory must never affect the name sort.
+        for (project, root) in state.projects.iter_mut().zip([
+            "/projects/Alpha",
+            "/projects/Zulu",
+            "/projects/omega",
+            "/projects/Delta",
+        ]) {
+            project.root = root.into();
+        }
         let order = ProjectOrder::for_sort(ProjectSort::Name);
         assert_eq!(
             ids(&state, order, &BTreeMap::new(), &[]),

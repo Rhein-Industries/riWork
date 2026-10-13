@@ -811,7 +811,7 @@ fn schedule_tool(
 ) -> Value {
     let mut properties = json!({
         "destination":{"type":"string","enum":["new_chat","existing_shell"],"description":"new_chat creates an ordinary project chat per run. existing_shell pins a live AI shell's kind, including ordinary project-root shells. Omitted preserves legacy orchestrator-only project behavior."},
-        "provider":{"type":"string","enum":["codex","claude"],"default":"codex"},
+        "provider":{"type":"string","enum":["codex","claude","muse"],"default":"codex"},
         "model":{"type":"string"}, "effort":{"type":"string"}, "fast":{"type":"boolean"},
         "permission":{"type":"string","enum":["supervised","auto_edit","full","plan"],"default":"supervised"},
         "codex_account_id":{"type":"string","description":"Optional saved account; otherwise pin the selected project account."},
@@ -900,13 +900,13 @@ fn schedule_tool(
     let target = json!({"type":"object","properties":{
         "scope":scope,"shell_id":{"type":"string","format":"uuid"},
         "created_at":{"type":"integer","minimum":0},"command":{"type":["string","null"]},
-        "harness":{"type":"string","enum":["codex","claude"]},
+        "harness":{"type":"string","enum":["codex","claude","muse"]},
         "codex_home":{"type":["string","null"]},"pane_identity":{"type":"string"},
         "shell_kind":{"type":"string","enum":["project","orchestrator"]},
         "provider_session":{"type":"string"},
         "chat":{"type":"object","properties":{"codex_account_id":{"type":["string","null"]}}},
         "new_chat":{"type":"object","properties":{
-            "root":{"type":"string"},"provider":{"type":"string","enum":["codex","claude"]},
+            "root":{"type":"string"},"provider":{"type":"string","enum":["codex","claude","muse"]},
             "codex_account_id":{"type":["string","null"]},"model":{"type":["string","null"]},"effort":{"type":["string","null"]},
             "fast":{"type":"boolean"},"approval_mode":{"type":"string","enum":["supervised","auto_edit","full","plan"]}
         }}
@@ -1051,7 +1051,7 @@ fn tools() -> Vec<Value> {
         tool(
             "riwork_shell_create",
             "Create shell",
-            "Start a persistent project shell in a project or worktree. command runs as an arbitrary program with your user's permissions; set it to codex, claude, or grok to launch an official CLI session. worktree_id may be a UUID, unique prefix, branch, or path; with project_id it is looked up in that project first.",
+            "Start a persistent project shell in a project or worktree. command runs as an arbitrary program with your user's permissions; set it to codex, claude, grok, or muse to launch an official CLI session. worktree_id may be a UUID, unique prefix, branch, or path; with project_id it is looked up in that project first.",
             json!({"project_id":{"type":"string"},"worktree_id":{"type":"string"},"command":{"type":"string"}}),
             &[],
             false,
@@ -1363,6 +1363,28 @@ mod tests {
             .unwrap();
         // Listing refreshes worktrees into state.json.
         assert_eq!(list["annotations"]["readOnlyHint"], false);
+    }
+
+    #[test]
+    fn schedule_tools_offer_muse_chats() {
+        let create = tools()
+            .into_iter()
+            .find(|tool| tool["name"] == "riwork_schedule_create")
+            .unwrap();
+        assert_eq!(
+            create["inputSchema"]["properties"]["provider"]["enum"],
+            json!(["codex", "claude", "muse"])
+        );
+        let target =
+            &create["outputSchema"]["properties"]["schedule"]["properties"]["target"]["properties"];
+        assert_eq!(
+            target["harness"]["enum"],
+            json!(["codex", "claude", "muse"])
+        );
+        assert_eq!(
+            target["new_chat"]["properties"]["provider"]["enum"],
+            json!(["codex", "claude", "muse"])
+        );
     }
 
     #[test]

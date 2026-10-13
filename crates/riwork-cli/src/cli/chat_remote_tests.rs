@@ -1298,6 +1298,9 @@ fn models_lists_what_saved_chats_of_a_provider_reported_without_a_host() {
     assert_eq!(claude["error"], Value::Null);
     let codex = run_json(&host.home, &["models", "--provider", "codex"]);
     assert_eq!(codex["models"], json!([]), "no Codex chat has said");
+    let muse = run_json(&host.home, &["models", "--provider", "muse"]);
+    assert_eq!(muse["provider"], "muse");
+    assert_eq!(muse["models"], json!([]), "no Muse chat has said");
     assert_eq!(
         run(&host.home, &["models", "--provider", "claude"], false).unwrap(),
         "opus\tOpus\n"

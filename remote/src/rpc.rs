@@ -296,7 +296,7 @@ fn additive_shape_ok(field: &str, value: &Value) -> bool {
         }),
         // How a session runs. Only these two words are the phone's to act on.
         "mode" => matches!(value.as_str(), Some("terminal" | "chat")),
-        "provider" => matches!(value.as_str(), Some("codex" | "claude")),
+        "provider" => matches!(value.as_str(), Some("codex" | "claude" | "muse")),
         "parent_id" | "chat_id" => value.as_str().is_some_and(|chat| uuid(chat).is_ok()),
         "subagent_kinds" => value.as_array().is_some_and(|kinds| {
             kinds.len() <= 8
@@ -398,6 +398,7 @@ enum CreateKind {
     Codex,
     Claude,
     Grok,
+    Muse,
 }
 impl CreateKind {
     fn parse(name: &str) -> Option<Self> {
@@ -406,6 +407,7 @@ impl CreateKind {
             "codex" => Self::Codex,
             "claude" => Self::Claude,
             "grok" => Self::Grok,
+            "muse" => Self::Muse,
             _ => return None,
         })
     }
@@ -416,6 +418,7 @@ impl CreateKind {
             Self::Codex => Some("codex"),
             Self::Claude => Some("claude"),
             Self::Grok => Some("grok"),
+            Self::Muse => Some("muse"),
         }
     }
 }
@@ -475,10 +478,10 @@ fn create_spec(params: &Value) -> std::result::Result<CreateSpec, Fault> {
         }
         _ => return Err(invalid("give exactly one of project_id and worktree_id")),
     };
-    let kind =
-        text("kind")?.ok_or_else(|| invalid("kind is required: shell, codex, claude or grok"))?;
+    let kind = text("kind")?
+        .ok_or_else(|| invalid("kind is required: shell, codex, claude, grok or muse"))?;
     let kind = CreateKind::parse(kind)
-        .ok_or_else(|| invalid("kind must be shell, codex, claude or grok"))?;
+        .ok_or_else(|| invalid("kind must be shell, codex, claude, grok or muse"))?;
     let flag = |name: &str| -> std::result::Result<Option<bool>, Fault> {
         match object.get(name) {
             None => Ok(None),
@@ -581,7 +584,9 @@ fn create_fault(fault: Fault) -> Fault {
         Fault::new("not_found", "project not found on the desktop")
     } else if line.starts_with("No worktree matches '") {
         Fault::new("not_found", "worktree not found on the desktop")
-    } else if ["codex", "claude", "grok"].into_iter().any(installed)
+    } else if ["codex", "claude", "grok", "muse"]
+        .into_iter()
+        .any(installed)
         || line.starts_with("Cua Driver is not installed")
     {
         Fault::new("harness_unavailable", line)

@@ -14,7 +14,7 @@ pub enum ProjectSort {
 impl ProjectSort {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Name => "Name",
+            Self::Name => "Project name",
             Self::LastEdited => "Last edited",
             Self::DateAdded => "Date added",
             Self::LiveSessions => "Live sessions",

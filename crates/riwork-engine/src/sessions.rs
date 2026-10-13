@@ -50,6 +50,7 @@ pub enum HarnessKind {
     Codex,
     Claude,
     Grok,
+    Muse,
 }
 
 impl HarnessKind {
@@ -58,6 +59,7 @@ impl HarnessKind {
             Self::Codex => "codex",
             Self::Claude => "claude",
             Self::Grok => "grok",
+            Self::Muse => "muse",
         }
     }
 
@@ -1557,7 +1559,7 @@ impl SessionManager {
                             .filter(|(id, _)| id == &target.provider_session)
                             .and_then(|(_, token)| token)
                     }
-                    Some(HarnessKind::Grok) => None,
+                    Some(HarnessKind::Grok | HarnessKind::Muse) => None,
                     None => None,
                 };
                 let ready = (|| {
@@ -1586,7 +1588,7 @@ impl SessionManager {
                                 .filter(|(id, _)| id == &target.provider_session)
                                 .and_then(|(_, t)| t)
                         }
-                        Some(HarnessKind::Grok) => None,
+                        Some(HarnessKind::Grok | HarnessKind::Muse) => None,
                         None => None,
                     };
                     if second_token.as_ref() != Some(&token) {
@@ -3100,7 +3102,7 @@ impl HarnessChoices {
         use crate::chat::model::ApprovalMode;
         let mut arguments = Vec::new();
         if let Some(model) = &self.model {
-            let flag = if harness == HarnessKind::Claude {
+            let flag = if matches!(harness, HarnessKind::Claude | HarnessKind::Muse) {
                 "--model"
             } else {
                 "-m"
@@ -3114,7 +3116,9 @@ impl HarnessChoices {
                     format!("model_reasoning_effort={}", toml_string(effort)),
                 ],
                 HarnessKind::Claude => vec!["--effort".to_owned(), effort.clone()],
-                HarnessKind::Grok => vec!["--reasoning-effort".to_owned(), effort.clone()],
+                HarnessKind::Grok | HarnessKind::Muse => {
+                    vec!["--reasoning-effort".to_owned(), effort.clone()]
+                }
             });
         }
         let mode = |name: &str| ["--permission-mode".to_owned(), name.to_owned()];
@@ -3136,6 +3140,11 @@ impl HarnessChoices {
             }
             (HarnessKind::Claude | HarnessKind::Grok, Some(ApprovalMode::Plan)) => {
                 arguments.extend(mode("plan"))
+            }
+            // Muse has no permission modes; its read-only posture is a
+            // switch of its own. AutoEdit is its supervised default.
+            (HarnessKind::Muse, Some(ApprovalMode::Plan)) => {
+                arguments.push("--disable-write".to_owned())
             }
             _ => {}
         }
@@ -3245,6 +3254,17 @@ fn harness_command(
             }
             arguments.extend(choices.prompt.clone());
         }
+        HarnessKind::Muse => {
+            if unrestricted {
+                arguments.push("--yolo".to_owned());
+            }
+            // No system-prompt switch is wired for Muse, so guidance rides
+            // the first message, as it does for Codex.
+            arguments.push(match &choices.prompt {
+                Some(prompt) => format!("{prompt}\n\n{CUA_GUIDANCE}"),
+                None => cua_startup_prompt(),
+            });
+        }
     }
     let command = format!(
         "exec {}",
@@ -3287,7 +3307,14 @@ pub(crate) fn chat_launch(
     let shim_directory = cua.ensure_harness_shims(&executable)?;
     let program =
         find_harness_program(harness, &shim_directory).ok_or_else(|| harness_missing(harness))?;
-    let mut arguments = cua_harness_arguments(harness, &executable, &state_home);
+    // Muse's chat host is a subcommand that must come first (`muse serve …`),
+    // and these arguments lead the command line, so the Muse driver appends
+    // the Cua config after `serve` itself instead of taking it from here.
+    let mut arguments = if harness == HarnessKind::Muse {
+        Vec::new()
+    } else {
+        cua_harness_arguments(harness, &executable, &state_home)
+    };
     if harness == HarnessKind::Codex
         && let Some(home) = codex_home
     {
@@ -3318,7 +3345,7 @@ fn inline_arguments(harness: HarnessKind) -> Vec<String> {
     match harness {
         HarnessKind::Codex => vec!["--no-alt-screen".to_owned()],
         HarnessKind::Grok => vec!["--minimal".to_owned()],
-        HarnessKind::Claude => Vec::new(),
+        HarnessKind::Claude | HarnessKind::Muse => Vec::new(),
     }
 }
 
@@ -3328,7 +3355,7 @@ fn screen_choice_arguments(harness: HarnessKind) -> &'static [&'static str] {
     match harness {
         HarnessKind::Codex => &["--no-alt-screen"],
         HarnessKind::Grok => &["--minimal", "--fullscreen", "--no-alt-screen"],
-        HarnessKind::Claude => &[],
+        HarnessKind::Claude | HarnessKind::Muse => &[],
     }
 }
 
@@ -3352,7 +3379,7 @@ fn starts_interactive_screen(harness: HarnessKind, arguments: &[String]) -> bool
                 let name = argument.split('=').next().unwrap_or(argument);
                 matches!(name, "-p" | "--single" | "--prompt-file" | "--prompt-json")
             }),
-        HarnessKind::Claude => false,
+        HarnessKind::Claude | HarnessKind::Muse => false,
     }
 }
 
@@ -3401,7 +3428,7 @@ fn cua_startup_prompt() -> String {
 
 /// Return actual CLI arguments so wrappers and tmux launches share one MCP
 /// target without replacing the user's profile, authentication, or model.
-fn cua_harness_arguments(
+pub(crate) fn cua_harness_arguments(
     harness: HarnessKind,
     executable: &Path,
     state_home: &Path,
@@ -3481,6 +3508,25 @@ fn cua_harness_arguments_with(
                 .to_string_lossy()
                 .into_owned(),
         ],
+        HarnessKind::Muse => {
+            // One server per `-c` key: addressing the whole `mcpServers`
+            // map is refused, one server's JSON value is not. Env values are
+            // secret leaves to Muse's config: each must be one whole-value
+            // `${VAR}` naming a variable set in Muse's own environment
+            // (a RiWork pane and a chat both carry RIWORK_HOME), never a
+            // literal path — a literal is refused at startup.
+            let _ = state_home;
+            let mut environment = serde_json::json!({ "RIWORK_HOME": "${RIWORK_HOME}" });
+            if custom_driver.is_some() {
+                environment["RIWORK_CUA_DRIVER"] = "${RIWORK_CUA_DRIVER}".into();
+            }
+            let server = serde_json::json!({
+                "command": executable.to_string_lossy(),
+                "args": ["cua", "mcp"],
+                "env": environment
+            });
+            vec!["-c".to_owned(), format!("mcpServers.cua-driver={server}")]
+        }
     }
 }
 
@@ -4570,6 +4616,28 @@ fn harness_utility_invocation(harness: HarnessKind, arguments: &[String]) -> boo
                 | "worktree"
                 | "wrap"
         ),
+        // Every subcommand but `resume`, which opens the interactive screen.
+        HarnessKind::Muse => matches!(
+            first,
+            "help"
+                | "exec"
+                | "config"
+                | "export"
+                | "trace"
+                | "model-profile"
+                | "skills"
+                | "voice"
+                | "plugins"
+                | "sandbox"
+                | "schema"
+                | "serve"
+                | "session-message"
+                | "mcp"
+                | "auth"
+                | "login"
+                | "logout"
+                | "init"
+        ),
     }
 }
 
@@ -4658,18 +4726,13 @@ fn cua_proxy_arguments(
             result.extend_from_slice(&arguments[separator..]);
             result
         }
-        HarnessKind::Claude => {
-            let mut result = additions;
-            result.extend_from_slice(arguments);
-            result
-        }
-        HarnessKind::Grok => {
+        HarnessKind::Claude | HarnessKind::Grok | HarnessKind::Muse => {
             let mut result = additions;
             result.extend_from_slice(arguments);
             result
         }
     };
-    if arguments.is_empty() && harness == HarnessKind::Codex {
+    if arguments.is_empty() && matches!(harness, HarnessKind::Codex | HarnessKind::Muse) {
         result.push(cua_startup_prompt());
     }
     result
@@ -4773,6 +4836,14 @@ fn codex_proxy_binding(
 }
 
 pub fn run_cua_harness(harness: HarnessKind, arguments: &[String]) -> Result<(), String> {
+    if harness == HarnessKind::Muse
+        && !harness_utility_invocation(harness, arguments)
+        && arguments
+            .iter()
+            .any(|argument| argument.starts_with("mcpServers.cua-driver"))
+    {
+        return Err("RiWork's Muse launcher sets mcpServers.cua-driver for its Cua connection; a second one cannot be combined with it".to_owned());
+    }
     if harness == HarnessKind::Grok
         && !harness_utility_invocation(harness, arguments)
         && arguments
@@ -5644,7 +5715,7 @@ fn schedule_empty_prompt_at(
     let expected = match harness {
         Some(HarnessKind::Codex) => "›",
         Some(HarnessKind::Claude) => "❯",
-        Some(HarnessKind::Grok) => return false,
+        Some(HarnessKind::Grok | HarnessKind::Muse) => return false,
         None => return false,
     };
     // Codex paints its empty composer placeholder dim, at the initial cursor.
@@ -6817,7 +6888,12 @@ mod tests {
     fn inline_agents_get_the_screen_flag_before_their_startup_prompt() {
         let executable = Path::new("/Applications/RiWork's App/riwork");
         let home = Path::new("/Users/test/RiWork's State");
-        for harness in [HarnessKind::Codex, HarnessKind::Grok, HarnessKind::Claude] {
+        for harness in [
+            HarnessKind::Codex,
+            HarnessKind::Grok,
+            HarnessKind::Claude,
+            HarnessKind::Muse,
+        ] {
             let launch = |inline| {
                 shell_arguments(
                     &harness_command(
@@ -6840,8 +6916,8 @@ mod tests {
             let flag = match harness {
                 HarnessKind::Codex => "--no-alt-screen",
                 HarnessKind::Grok => "--minimal",
-                HarnessKind::Claude => {
-                    // Claude Code takes its screen from the environment.
+                HarnessKind::Claude | HarnessKind::Muse => {
+                    // Neither has an inline switch wired here.
                     assert_eq!(full_screen, inline);
                     continue;
                 }
@@ -7275,7 +7351,12 @@ mod tests {
 
     #[test]
     fn managed_wrappers_pass_utilities_through_but_integrate_sessions() {
-        for harness in [HarnessKind::Codex, HarnessKind::Claude, HarnessKind::Grok] {
+        for harness in [
+            HarnessKind::Codex,
+            HarnessKind::Claude,
+            HarnessKind::Grok,
+            HarnessKind::Muse,
+        ] {
             for argument in ["--help", "--version", "mcp", "login"] {
                 assert!(harness_utility_invocation(harness, &[argument.to_owned()]));
             }
@@ -7299,6 +7380,16 @@ mod tests {
                 &[argument.to_owned()]
             ));
         }
+        for argument in ["exec", "serve", "schema", "session-message"] {
+            assert!(harness_utility_invocation(
+                HarnessKind::Muse,
+                &[argument.to_owned()]
+            ));
+        }
+        assert!(!harness_utility_invocation(
+            HarnessKind::Muse,
+            &["resume".to_owned()]
+        ));
     }
 
     #[test]
@@ -7349,6 +7440,92 @@ mod tests {
         )));
         assert!(definition.contains(CUA_GUIDANCE));
         assert!(!definition.contains("startup_timeout"), "{definition}");
+    }
+
+    #[test]
+    fn muse_launch_wires_cua_as_a_config_server_and_carries_guidance_in_the_prompt() {
+        let executable = Path::new("/Applications/RiWork's App/riwork");
+        let home = Path::new("/Users/test/RiWork State");
+        for unrestricted in [false, true] {
+            let command = harness_command(
+                HarnessKind::Muse,
+                HarnessOptions {
+                    unrestricted,
+                    inline: false,
+                    choices: &HarnessChoices::default(),
+                },
+                Path::new("/Users/test/.local/bin/muse"),
+                executable,
+                home,
+                "shell-id",
+                None,
+            )
+            .unwrap();
+            let arguments = shell_arguments(&command);
+            assert_eq!(arguments[0], "/Users/test/.local/bin/muse");
+            assert_eq!(arguments[1], "-c");
+            let server: serde_json::Value = serde_json::from_str(
+                arguments[2]
+                    .strip_prefix("mcpServers.cua-driver=")
+                    .expect("the Cua server is addressed by name"),
+            )
+            .unwrap();
+            assert_eq!(
+                server["command"].as_str(),
+                Some(executable.to_string_lossy().as_ref())
+            );
+            assert_eq!(server["args"], serde_json::json!(["cua", "mcp"]));
+            // A whole-value reference, never the literal path: Muse's
+            // config refuses literal secret leaves at startup.
+            assert_eq!(
+                server["env"]["RIWORK_HOME"].as_str(),
+                Some("${RIWORK_HOME}")
+            );
+            assert_eq!(arguments.contains(&"--yolo".to_owned()), unrestricted);
+            assert!(arguments.last().unwrap().contains(CUA_GUIDANCE));
+            assert!(
+                arguments
+                    .last()
+                    .unwrap()
+                    .contains("wait for the user's objective")
+            );
+        }
+        // A chosen prompt keeps the guidance after it, and the handoff
+        // choices land on Muse's own flags.
+        let choices = HarnessChoices {
+            model: Some("muse-test".into()),
+            effort: Some("low".into()),
+            prompt: Some("Fix it".into()),
+            ..HarnessChoices::default()
+        };
+        let arguments = shell_arguments(
+            &harness_command(
+                HarnessKind::Muse,
+                HarnessOptions {
+                    unrestricted: false,
+                    inline: false,
+                    choices: &choices,
+                },
+                Path::new("/bin/muse"),
+                executable,
+                home,
+                "shell-id",
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair[0] == "--model" && pair[1] == "muse-test")
+        );
+        assert!(
+            arguments
+                .windows(2)
+                .any(|pair| pair[0] == "--reasoning-effort" && pair[1] == "low")
+        );
+        let last = arguments.last().unwrap();
+        assert!(last.starts_with("Fix it\n\n") && last.contains(CUA_GUIDANCE));
     }
 
     #[test]

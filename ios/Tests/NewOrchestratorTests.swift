@@ -197,7 +197,7 @@ final class NewOrchestratorTests: XCTestCase {
         XCTAssertEqual(NewTerminalKind.offered(chats: true), NewTerminalKind.allCases)
         XCTAssertEqual(NewTerminalKind.offered(chats: false, orchestrators: true), NewTerminalKind.terminalKinds + [.projectOrchestrator, .globalOrchestrator])
         XCTAssertEqual(NewTerminalKind.offered(chats: true, orchestrators: true).map(\.title),
-                       ["Shell", "Codex", "Claude", "Grok", "Chat", "Project orchestrator", "Global orchestrator"])
+                       ["Shell", "Codex", "Claude", "Grok", "Muse", "Chat", "Project orchestrator", "Global orchestrator"])
         XCTAssertEqual(NewTerminalKind.orchestratorKinds.map(\.isOrchestrator), [true, true])
         XCTAssertEqual(NewTerminalKind.allCases.map(\.isOrchestrator), Array(repeating: false, count: 5))
     }

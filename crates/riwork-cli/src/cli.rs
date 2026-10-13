@@ -50,7 +50,8 @@ macro_rules! println {
 const HELP: &str = "\
 riwork [PROJECT_PATH]                  Open the GPUI workspace
 riwork open [PROJECT_OR_PATH]           Open an independent project window
-riwork reload [--all] [--session] [--shell ID]   Reload windows; optionally resume a Codex session
+riwork restart [--session] [--shell ID]  Restart all RiWork apps and restore their windows
+riwork reload [--all] [--session] [--shell ID]   Alias of restart; optionally resume a Codex session
 riwork update [--source PATH] [--release | --debug] [--no-reload]   Build release by default, install, and reload all windows
 riwork instances                        List running RiWork apps and their windows
 riwork usage [--shell ID]               Read harness usage (Grok: session tokens and cost)
@@ -58,7 +59,7 @@ riwork appearance [--json]              Show the colors RiWork publishes to the 
 riwork setup                            Install and start Cua.ai Driver
 riwork cua setup|status|permissions      Manage native computer use
 riwork cua mcp                          Serve Cua.ai Driver over MCP stdio
-riwork cua harness codex|claude|grok -- ARG...   Start a harness with shared Cua
+riwork cua harness codex|claude|grok|muse -- ARG...   Start a harness with shared Cua
 riwork import orca [--preview]          Import local Orca projects and worktrees once
 riwork project add PATH [--name NAME]   Register a project and its root worktree
 riwork project create [PATH] [--name NAME] [--no-git] [--exclusive]   Create a project (Git by default)
@@ -84,7 +85,7 @@ riwork version | --version              Print the RiWork version
 riwork remote pair|revoke|devices|start|relay   Encrypted mobile access (standalone binary)
 riwork remote --help                    Pairing, relay and connector command options
 riwork shell create [--project ID | --worktree ID] [--command CMD] [--no-parent]
-riwork shell create [--worktree ID] --harness codex|claude|grok [--unrestricted | --as-settings]
+riwork shell create [--worktree ID] --harness codex|claude|grok|muse [--unrestricted | --as-settings]
 riwork shell list [--project ID | --all]
 riwork shell output ID [--lines N] [--styled]   Read current shell output by UUID
 riwork shell output ID --json [--lines N] [--styled] [--if-changed HASH [--wait-ms N]]
@@ -98,18 +99,18 @@ riwork shell cwd|metrics|attach|close ID
 riwork shell attach ID --exec [--ignore-size] [--read-only]   Become a tmux client of the shell (for remote terminals)
 riwork chat serve [--idle-seconds N]    Run the chat host in the foreground (exits after 15 idle minutes by default)
 riwork chat ensure                      Start the chat host if it is not running; print its socket
-riwork chat list [--project ID] [--json]   List Codex and Claude chats, running or not
+riwork chat list [--project ID] [--json]   List Codex, Claude and Muse chats, running or not
 riwork chat open CHAT_ID                 Reopen an ordinary chat in its Mac project window
-riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
+riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
                 [--model NAME] [--effort LEVEL] [--fast] [--title TEXT]
-riwork chat models --provider codex|claude [--project ID] [--json]
+riwork chat models --provider codex|claude|muse [--project ID] [--json]
                                         The models chats of that provider reported, read from saved chats
 riwork chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
 riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [--json]
                                         Read a chat's events after N, waiting up to M ms for the first
 riwork chat command CHAT_ID (--command-json JSON | -- JSON) [--json]   Send one chat command (JSON)
 riwork chat stop CHAT_ID                Stop a chat's provider process and keep its history
-riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok
+riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok|muse
                [--model NAME] [--effort LEVEL] [--account LABEL_OR_ID]
                [--mode supervised|auto-edit|full|plan] [--context transcript|summary] [--note TEXT]
                                         Pass a conversation to a new shell or chat
@@ -132,7 +133,7 @@ need their full UUID. Project, worktree, and task data lives in RIWORK_HOME
 or ~/.local/share/riwork. Shell processes stay alive independently of the UI.
 Only no arguments or one existing project directory open the workspace; any
 other unknown command or option exits with an error.
-The chat host (`chat serve`) owns the Codex and Claude processes behind chats so
+The chat host (`chat serve`) owns the Codex, Claude and Muse processes behind chats so
 they outlive app windows; `chat ensure` starts it detached, and it exits after
 15 minutes with no client and no chat at work. Chats are kept in RIWORK_HOME/chats.
 chat new --no-parent explicitly starts a root; otherwise a same-project caller is its parent.
@@ -219,7 +220,7 @@ history_size gives an empty page. --styled filters like shell output --styled.
 Orchestrator commands without --project use the global session; list shows all
 scopes. For send, place --project before the text; use send -- TEXT to send a
 global literal line beginning with --project.
-An orchestrator runs in a terminal or as a chat (a Codex or Claude chat of the chat
+An orchestrator runs in a terminal or as a chat (a Codex, Claude or Muse chat of the chat
 host), as Settings > Agent sessions > Orchestrator runs as said when it was created,
 unless create --mode terminal|chat overrides it for that creation. Chat uses the
 configured chat provider. The override does not change Settings.
@@ -244,7 +245,7 @@ The remote connector creates the phone's projects this way.
 
 const SCHEDULE_HELP: &str = "\
 Automations (schedule and automation are aliases):
-  riwork automation create --new-chat --scope project --project UUID --title TITLE --prompt TEXT --at RFC3339 [--provider codex|claude] [--model MODEL] [--effort EFFORT] [--fast] [--permission supervised|auto-edit|full|plan] [--account ID] [--every-minutes N]
+  riwork automation create --new-chat --scope project --project UUID --title TITLE --prompt TEXT --at RFC3339 [--provider codex|claude|muse] [--model MODEL] [--effort EFFORT] [--fast] [--permission supervised|auto-edit|full|plan] [--account ID] [--every-minutes N]
   riwork automation create --existing-shell --scope app|project|workspace --shell UUID --title TITLE --prompt TEXT --at RFC3339 [--project UUID] [--worktree UUID] [--every-minutes N]
 Explicit existing-shell mode pins the selected shell kind; project scope also
  accepts an ordinary project-root AI shell. Omitted preserves legacy semantics.
@@ -350,6 +351,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
     if !matches!(
         command.as_str(),
         "open"
+            | "restart"
             | "reload"
             | "update"
             | "instances"
@@ -408,7 +410,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
             }
         }
         "open" => open_command(args, json, invocation)?,
-        "reload" => reload_command(args, json, invocation)?,
+        "restart" | "reload" => reload_command(args, json, invocation)?,
         "update" => update_command(args, json)?,
         "instances" => {
             ensure_empty(&args)?;
@@ -786,7 +788,10 @@ fn cua_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             Some("codex") => HarnessKind::Codex,
             Some("claude") => HarnessKind::Claude,
             Some("grok") => HarnessKind::Grok,
-            _ => return Err("Usage: riwork cua harness codex|claude|grok -- ARG...".to_owned()),
+            Some("muse") => HarnessKind::Muse,
+            _ => {
+                return Err("Usage: riwork cua harness codex|claude|grok|muse -- ARG...".to_owned());
+            }
         };
         args.remove(0);
         if args.first().map(String::as_str) == Some("--") {
@@ -1741,7 +1746,8 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                     "codex" => Ok(HarnessKind::Codex),
                     "claude" => Ok(HarnessKind::Claude),
                     "grok" => Ok(HarnessKind::Grok),
-                    _ => Err("--harness must be codex, claude, or grok".to_owned()),
+                    "muse" => Ok(HarnessKind::Muse),
+                    _ => Err("--harness must be codex, claude, grok, or muse".to_owned()),
                 })
                 .transpose()?;
             let unrestricted = take_flag(&mut args, "--unrestricted");
@@ -2112,6 +2118,7 @@ fn chat_client_command(
             let provider = match take_option(&mut args, "--provider")?.as_deref() {
                 Some("codex") => crate::chat::model::Provider::Codex,
                 Some("claude") => crate::chat::model::Provider::Claude,
+                Some("muse") => crate::chat::model::Provider::Muse,
                 _ => return Err(CHAT_NEW_USAGE.to_owned()),
             };
             let project = take_option(&mut args, "--project")?;
@@ -2310,6 +2317,7 @@ fn chat_client_command(
             let provider = match take_option(&mut args, "--provider")?.as_deref() {
                 Some("codex") => crate::chat::model::Provider::Codex,
                 Some("claude") => crate::chat::model::Provider::Claude,
+                Some("muse") => crate::chat::model::Provider::Muse,
                 _ => return Err(CHAT_MODELS_USAGE.to_owned()),
             };
             let project = take_option(&mut args, "--project")?;
@@ -2358,9 +2366,9 @@ fn chat_client_command(
 }
 
 const CHAT_MODELS_USAGE: &str =
-    "Usage: riwork chat models --provider codex|claude [--project ID] [--json]";
+    "Usage: riwork chat models --provider codex|claude|muse [--project ID] [--json]";
 
-const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--title TEXT]";
+const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--title TEXT]";
 
 /// A chat's ID as typed: whole, or a unique prefix of at least eight characters.
 fn resolve_chat(
@@ -2400,6 +2408,7 @@ fn chat_line(chat: &crate::chat::model::ChatInfo) -> String {
         match chat.provider {
             Provider::Codex => "codex",
             Provider::Claude => "claude",
+            Provider::Muse => "muse",
         },
         state,
         terminal_safe(&chat.title),

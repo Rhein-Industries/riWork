@@ -235,8 +235,10 @@ impl Session {
             (PROVIDER, title)
         } else if let Some(title) = named(&info.first_user_message) {
             (DERIVED, title)
-        } else if !matches!(info.title.as_str(), "Codex chat" | "Claude chat" | "")
-            && !given(&info.title)
+        } else if !matches!(
+            info.title.as_str(),
+            "Codex chat" | "Claude chat" | "Muse chat" | ""
+        ) && !given(&info.title)
         {
             (DEFAULT, info.title.clone())
         } else {
@@ -245,6 +247,7 @@ impl Session {
                 match info.provider {
                     Provider::Claude => "Claude chat".into(),
                     Provider::Codex => "Codex chat".into(),
+                    Provider::Muse => "Muse chat".into(),
                 },
             )
         };

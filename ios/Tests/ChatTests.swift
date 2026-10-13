@@ -38,7 +38,7 @@ final class ChatTests: XCTestCase {
     }
     func testEveryCommandWeSendEncodesToTheFormTheDesktopWrites() throws {
         let commands = try fixture()["commands"].array
-        XCTAssertEqual(commands.count, 15)
+        XCTAssertEqual(commands.count, 16)
         for original in commands {
             let command = try original.decode(ChatCommand.self)
             XCTAssertEqual(try wire(command), original, "\(original)")
@@ -86,6 +86,8 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual(switched.id, full.id); XCTAssertEqual(switched.provider, .claude); XCTAssertEqual(switched.model, "opus")
         XCTAssertEqual(switched.carriedOver?.from, #"Codex chat "Codex chat" (11111111)"#)
         XCTAssertTrue(switched.carriedOver?.document.hasSuffix("/context.md") == true)
+        let muse = try chats[3].decode(ChatInfo.self)
+        XCTAssertEqual(muse.provider, .muse); XCTAssertEqual(muse.title, "Muse chat")
     }
     func testTheWordsOfTheEnumsAreTheDesktops() throws {
         let doc = try fixture()
@@ -95,6 +97,8 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual(ChatApprovalMode.allCases.map(\.title), ["Supervised", "Auto-edit", "Full", "Plan"])
         XCTAssertEqual(ChatProvider.codex.chatTitle, "Codex chat")
         XCTAssertEqual(ChatProvider.claude.chatTitle, "Claude chat", "never “Claude Code”")
+        XCTAssertEqual(ChatProvider.muse.chatTitle, "Muse chat")
+        XCTAssertEqual(ChatProvider.allCases.map(\.title), ["Codex", "Claude", "Muse"])
     }
     func testWhatEachEventCarriesIsReadExactly() throws {
         let events = try fixture()["events"].array.map { try $0.decode(ChatEvent.self) }

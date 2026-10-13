@@ -822,6 +822,7 @@ impl GlobalWindow {
         }
         self.refresh_image_scope(cx);
         let heartbeat = self.view == GlobalView::Dashboard
+            && self.window_visible
             && self.ticks.is_multiple_of(DASHBOARD_HEARTBEAT_TICKS);
         if changed || heartbeat {
             cx.notify();

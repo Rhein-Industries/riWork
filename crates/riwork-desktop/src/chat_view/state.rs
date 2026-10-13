@@ -199,6 +199,7 @@ pub fn provider_name(provider: Provider) -> &'static str {
     match provider {
         Provider::Codex => "Codex",
         Provider::Claude => "Claude",
+        Provider::Muse => "Muse",
     }
 }
 

@@ -189,7 +189,8 @@ pub(super) fn new_spec(params: &Value) -> std::result::Result<NewSpec, Fault> {
     let provider = match required(object, "provider")? {
         "codex" => "codex",
         "claude" => "claude",
-        _ => return Err(invalid("provider must be codex or claude")),
+        "muse" => "muse",
+        _ => return Err(invalid("provider must be codex, claude or muse")),
     };
     let target = match (
         uuid_field(object, "project_id")?,
@@ -380,7 +381,8 @@ pub(super) fn models_spec(params: &Value) -> std::result::Result<ModelsSpec, Fau
     let provider = match required(object, "provider")? {
         "codex" => "codex",
         "claude" => "claude",
-        _ => return Err(invalid("provider must be codex or claude")),
+        "muse" => "muse",
+        _ => return Err(invalid("provider must be codex, claude or muse")),
     };
     Ok(ModelsSpec {
         provider,
@@ -539,7 +541,8 @@ fn command_json(command: &Value) -> std::result::Result<Value, Fault> {
             let provider = match required(object, "provider")? {
                 "codex" => "codex",
                 "claude" => "claude",
-                _ => return Err(invalid("provider must be codex or claude")),
+                "muse" => "muse",
+                _ => return Err(invalid("provider must be codex, claude or muse")),
             };
             let mut switch = Map::from_iter([
                 ("command".to_owned(), json!("switch")),
@@ -651,7 +654,7 @@ fn chat_fault(fault: Fault) -> Fault {
         Fault::new("not_found", "chat not found on the desktop")
     } else if let Some(reason) = line.strip_prefix("invalid_request: ") {
         Fault::new("invalid_request", reason)
-    } else if ["codex", "claude"].into_iter().any(installed)
+    } else if ["codex", "claude", "muse"].into_iter().any(installed)
         || line.starts_with("Cua Driver is not installed")
     {
         Fault::new("harness_unavailable", line)
@@ -694,7 +697,7 @@ fn create_chat_fault(fault: Fault) -> Fault {
 fn chat_info(value: &Value) -> bool {
     let text = |name: &str| value.get(name).and_then(Value::as_str);
     text("id").is_some_and(|chat| id(chat).is_ok())
-        && matches!(text("provider"), Some("codex" | "claude"))
+        && matches!(text("provider"), Some("codex" | "claude" | "muse"))
         && text("title").is_some()
         && text("cwd").is_some()
         && value.get("created_at_unix").is_some_and(Value::is_u64)

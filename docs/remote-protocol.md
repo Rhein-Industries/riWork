@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-13: Additive, in the same "Chat extension": a third chat provider, Muse. Every chat `provider` in this document (`chat.create`, `chat.models`, the `switch` command, `ChatInfo`, and a chat orchestrator's `provider` in `orchestrators.list` and `shells.list`) also takes `muse`, beside `codex` and `claude`; a chat created without a title is called "Muse chat", and `muse is not installed or is not on PATH` maps to `harness_unavailable` as it does for the other providers. Muse chats take no attachments for now: the chat host refuses them. No new method, no new error code, and no `features.*` flag: a desktop or connector from before it refuses `muse` creates, models and switches with `invalid_request`, drops a Muse chat from validated chat results, and leaves a Muse orchestrator's `provider` out, and an older phone leaves Muse chats out of its lists, so each side degrades to absence, never corruption. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
 - 2026-10-08: Additive, in the same "Chat extension": one chat for both providers. A `switch` command for `chat.command` (`{"command":"switch","provider":"codex|claude"}`, optional `model`, `effort`, `fast`) moves a chat to the other provider in place: the same `chat_id`, the same events, a new agent on a thread of its own that is given the conversation so far; refused while a turn runs or waits. The log says so with an `info` event naming the new `provider` and an `item_completed` `notice` ("Continued with Claude (opus), which has the conversation so far."); `ChatInfo` gains optional `carried_over` (`{document, from}`). One new method, `chat.models` (`{"provider":"codex|claude"}`, optional `project_id`), lists the models saved chats of a provider reported, for a provider the chat does not run yet. `features.chat_provider_switch` and `features.chat_models` in `ready` say the installed CLI has them (`riwork capabilities --json`). No new error code. A desktop from before it refuses `switch` (`invalid_request`, unknown command) and `chat.models` ("unsupported RPC method"); an older phone sees the switch as an ordinary `info` and `notice` and follows the chat as before. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-08: Additive, in the "Terminal creation extension", no new method and no new error code: `shell.create` takes an optional `as_settings` boolean: an agent asked for with `"as_settings": true` starts unrestricted or not as the desktop's **Agent terminals run unrestricted** setting says (on by default), and `ready.features.shell_create_as_settings` (`true`) says the desktop does that. Without the feature (an older connector or `riwork` CLI) such an agent starts restricted. `unrestricted` keeps its meaning, left out included (restricted), so an older phone, which leaves it out for its switch's off, is unaffected; `as_settings` with `unrestricted` is `invalid_request`. The desktop's New Tab menu now has one entry per agent, unrestricted as that setting says. Applies to v1 and v2 sessions. Existing bytes and fixtures are unchanged.
 - 2026-10-08: Additive, in the same "Chat extension": how a chat's agent signed in. A new `account` event (`account`: `{api_key_source?, plan?}`), sent by the Claude driver after its agent starts and again if that changes, so it is in the chat's history like any event. `api_key_source` set means the agent bills an Anthropic API key, not a subscription, and names where the key came from (`ANTHROPIC_API_KEY`, `apiKeyHelper`, ...); `plan` names the subscription (`Claude Max`). Never an email, an organization or a credential. It is not among the `controls` of `chat.snapshot`, which a phone reads as one list. No new method, no new error code. A phone that does not know it skips it alone, as every unknown event; a desktop from before it never sends it. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
@@ -183,7 +184,7 @@ unsolicited response except handshake `ready`.
 | `project.create` | `{"name":"My App"}` optionally `"git":false` (Project creation) | `{"project_id":"UUID","project":Project}` |
 | `orchestrator.create` | `{}` or `{"project_id":"UUID"}` (Orchestrator creation) | `{"orchestrator":Session,"created":true}` |
 | `chats.list` | `{}` or `{"project_id":"UUID"}` (Chat) | `{"chats":[ChatInfo]}` |
-| `chat.create` | `{"provider":"codex\|claude","project_id":"UUID"}` or `"worktree_id":"UUID"` instead, optionally `"approval_mode"`, `"model"`, `"effort"`, `"fast"`, `"title"` (Chat) | `{"chat":ChatInfo}` |
+| `chat.create` | `{"provider":"codex\|claude\|muse","project_id":"UUID"}` or `"worktree_id":"UUID"` instead, optionally `"approval_mode"`, `"model"`, `"effort"`, `"fast"`, `"title"` (Chat) | `{"chat":ChatInfo}` |
 | `chat.events` | `{"chat_id":"UUID","since":0,"wait_ms":25000}` optionally `"max_events":500` (Chat) | `{"chat_id":"UUID","events":[{"seq":1,"event":ChatEvent}],"next":1,"more":false}` |
 | `chat.command` | `{"chat_id":"UUID","command":ChatCommand}` (Chat) | `{"status":"ok"}` |
 | `chat.stop` | `{"chat_id":"UUID"}` (Chat) | `{"status":"stopped"}` |
@@ -202,7 +203,7 @@ Session: `id` UUID, `project_id,worktree_id` UUID or null, `kind` `project|orche
 `cwd` string, `harness` `codex|claude|grok|null`, `alive` boolean, `created_at_unix` number; and,
 optionally, `last_activity_unix`, `activity`, `activity_since_unix`, `subagents_working` and
 `subagent_kinds` (see "Activity and recency extension"), and `mode` `terminal|chat` and, for a
-session with `mode` `chat`, `chat_id` (a UUID, equal to `id`) and `provider` `codex|claude` (see
+session with `mode` `chat`, `chat_id` (a UUID, equal to `id`) and `provider` `codex|claude|muse` (see
 "Chat orchestrators" under "Chat extension").
 Clients tolerate additive result/entity fields but must reject unknown protocol
 versions. Lists expose existing CLI entities; output/input resolve a full shell
@@ -1240,7 +1241,7 @@ the CLI prints it (the keys of an object come in no particular order). A client 
 decode it leniently: an unknown event, item type, state or field is skipped, never a
 reason to fail a page.
 
-- `ChatInfo`: `id` (UUID), `provider` (`codex|claude`), `project_id` and `worktree_id`
+- `ChatInfo`: `id` (UUID), `provider` (`codex|claude|muse`), `project_id` and `worktree_id`
   (UUID, either may be absent), `cwd`, `title`, `created_at_unix`, `approval_mode`
   (`supervised|auto_edit|full|plan`), `state`, `fast` (boolean: the person asked for the
   provider's fast mode; absent, so `false`, in a chat from before 2026-10-05) and, when
@@ -1311,7 +1312,7 @@ new` does. Params (an object; unknown fields, nulls and wrong types fail
 {"provider":"codex","project_id":"UUID","model":"gpt-5.5","effort":"high","fast":true}
 ```
 
-- `provider` (required): `codex` or `claude`, spelled exactly.
+- `provider` (required): `codex`, `claude` or `muse`, spelled exactly.
 - Exactly one of `project_id` and `worktree_id`, a full lowercase canonical UUID, as for
   `shell.create`. A `project_id` starts the chat in the project's root and primary
   worktree, a `worktree_id` in that worktree.
@@ -1324,7 +1325,7 @@ new` does. Params (an object; unknown fields, nulls and wrong types fail
 - `model` (at most 100 characters), `effort` (at most 32) and `title` (at most 200):
   optional strings with no control character; one that is blank is the same as leaving
   it out. A model and effort the provider does not know fail the chat's first turn, not
-  the creation. Without a title the chat is called "Codex chat" or "Claude chat".
+  the creation. Without a title the chat is called "Codex chat", "Claude chat" or "Muse chat".
 - `fast` (optional boolean, default `false`; null and other types are refused): start with
   the provider's fast mode on. A model without one ignores it. It is the person's choice
   and stays in `ChatInfo.fast`; the provider may still not grant it (Claude pauses fast
@@ -1498,7 +1499,7 @@ fields of its kind, none null and none unknown:
 | `dismiss_notice` | `item_id`: 1 to 512 bytes, no control characters | persists a sticky notice dismissal on the host across chats of the provider; re-emits matching notice items with optional `dismissed: true`, included in `chat.snapshot`; see [Chat notices](chat-notices.md#dismissal) |
 | `compact` | | compacts the context |
 | `stop` | | stops the agent process, like `chat.stop` |
-| `switch` | `provider` (`codex` or `claude`), optional `model` (at most 100 characters), `effort` (at most 32), `fast` (boolean); since 2026-10-08 | goes on with the other provider in the same chat (see "Switching provider" below); with the provider the chat has, the same as `configure` |
+| `switch` | `provider` (`codex`, `claude` or `muse`), optional `model` (at most 100 characters), `effort` (at most 32), `fast` (boolean); since 2026-10-08 | goes on with another provider in the same chat (see "Switching provider" below); with the provider the chat has, the same as `configure` |
 
 Result `{"status":"ok"}`: the chat host accepted the command, which says nothing about
 how the agent takes it; the effect arrives as events. An approval or a question is
@@ -1514,7 +1515,7 @@ should allow about 90.
 `invalid_request` and `not_found` as for the other methods.
 
 **Switching provider** (since 2026-10-08, `features.chat_provider_switch`). One chat is
-Codex's or Claude's at a time, and `switch` moves it to the other one in place: the
+Codex's, Claude's or Muse's at a time, and `switch` moves it to another one in place: the
 `chat_id`, the event log, its `seq` numbers and the approval mode stay. The host stops the
 agent, writes the conversation so far down from the chat's own log, and starts the new
 agent on a thread of its own with that conversation in its instructions, at every start
@@ -1536,7 +1537,7 @@ provider; update RiWork", and an older connector refuses the command as unknown
 
 **`chat.models`** (since 2026-10-08, `features.chat_models`) lists what a chat of a provider
 can be set to, for a provider the chat does not run yet (the running provider's own list
-is its `models` event). Params `{"provider":"codex|claude"}` and optionally
+is its `models` event). Params `{"provider":"codex|claude|muse"}` and optionally
 `"project_id":"UUID"` (the project whose Codex account the list is for; without it, the
 desktop's own selection). Result `{"provider", "models": [ModelOption], "configured":
 [model id], "account_label": string|null, "error": string|null}`: the newest list a driver
@@ -1628,13 +1629,13 @@ code, envelope or fixture, for v1 and v2 sessions alike.
 
 - *Recognizing one.* Entries of `orchestrators.list` (and `shells.list`) gain optional
   `mode`: `terminal` for the tmux orchestrator there has always been, `chat` for a chat
-  orchestrator. A `chat` entry also has `chat_id` (a UUID) and `provider` (`codex|claude`).
+  orchestrator. A `chat` entry also has `chat_id` (a UUID) and `provider` (`codex|claude|muse`).
   Its `id` **is** its `chat_id`, so the phone needs no mapping: it opens a chat tab on that
   UUID and follows it with `chat.events` and `chat.command`, as for any chat. `alive` is true
   while the chat exists, even with its agent stopped, because a message resumes it. An entry
   without `mode` (an older desktop) is a terminal orchestrator.
-- *What the connector passes.* `mode` only as `terminal` or `chat`, `provider` only as `codex`
-  or `claude`, `chat_id` only as a full lowercase canonical UUID. Each is checked on its own
+- *What the connector passes.* `mode` only as `terminal` or `chat`, `provider` only as `codex`,
+  `claude` or `muse`, `chat_id` only as a full lowercase canonical UUID. Each is checked on its own
   and a malformed one is left out, never failing the list; `chat_id` and `provider` are also
   left out of an entry whose `mode` is not `chat`. The rest of what the CLI prints for an
   entry (its `state`, `command`) does not reach the phone, as before.
@@ -2033,6 +2034,14 @@ ready response. Values are test-only and must never provision production devices
   and `ready.features.chat_models` when the CLI says `"chat_provider_switch": true` and
   `"chat_models": true` in `riwork capabilities --json`. No new error code. Needs the iOS
   worker's agreement; the iOS side implements the same text.
+- 2026-10-13: additive and backward compatible. A third chat provider, Muse, in the
+  Chat extension: `provider` `codex|claude|muse` in `chat.create`, `chat.models`, the
+  `switch` command, `ChatInfo` and a chat orchestrator's entry in `orchestrators.list`
+  and `shells.list`, and `muse is not installed or is not on PATH` as
+  `harness_unavailable`. Muse chats take no attachments for now. No new method, no
+  new error code and no new `features.*` flag. An older connector refuses or drops
+  `muse` as described in the changelog above. Needs the iOS worker's agreement; the
+  iOS side implements the same text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),

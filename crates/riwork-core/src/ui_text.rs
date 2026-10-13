@@ -105,8 +105,8 @@ pub const STEP_POINTS: f32 = 1.0;
 pub const GHOSTTY_DEFAULT_FONT_SIZE: f32 = 13.0;
 
 /// Names that keep their capital in sentence case.
-const PROPER_NOUNS: [&str; 12] = [
-    "Codex", "Claude", "Grok", "Orca", "Cua", "Mac", "Ghostty", "RiWork", "Vim", "Finder",
+const PROPER_NOUNS: [&str; 13] = [
+    "Codex", "Claude", "Grok", "Muse", "Orca", "Cua", "Mac", "Ghostty", "RiWork", "Vim", "Finder",
     "GitHub", "Git",
 ];
 

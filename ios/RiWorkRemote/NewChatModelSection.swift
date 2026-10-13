@@ -1,7 +1,7 @@
 import SwiftUI
 import RiWorkCore
 
-/// The model of a new chat: one list for both providers, Codex and Claude each under its own heading with its default first. The model
+/// The model of a new chat: one list for every provider, each under its own heading with its default first. The model
 /// chosen decides which provider the chat runs (`NewTerminalForm.chatRows`). The lists are the providers' own Models events, read from saved
 /// chats (`chat.models`, or the chats of this project on an older Mac); each provider's default stays on offer while its list is not known.
 /// Effort and Fast use the shared controls.

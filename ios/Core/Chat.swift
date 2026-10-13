@@ -31,12 +31,18 @@ extension KeyedDecodingContainer {
 // MARK: - Chats
 
 public enum ChatProvider: String, Codable, Sendable, CaseIterable, Hashable {
-    case codex, claude
-    public var title: String { self == .codex ? "Codex" : "Claude" }
-    /// "Codex chat", "Claude chat": what a tab or a row calls it. Never "Claude Code".
+    case codex, claude, muse
+    public var title: String {
+        switch self {
+        case .codex: "Codex"
+        case .claude: "Claude"
+        case .muse: "Muse"
+        }
+    }
+    /// "Codex chat", "Claude chat", "Muse chat": what a tab or a row calls it. Never "Claude Code".
     public var chatTitle: String { title + " chat" }
-    /// The provider a chat of this one can go on with (`switch`).
-    public var other: ChatProvider { self == .codex ? .claude : .codex }
+    /// The providers a chat of this one can go on with (`switch`): every other one, in order.
+    public var others: [ChatProvider] { Self.allCases.filter { $0 != self } }
 }
 
 /// How much the agent may do without asking (`ApprovalMode`).

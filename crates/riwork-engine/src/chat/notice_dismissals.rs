@@ -37,6 +37,7 @@ fn prefix(provider: Provider, account: Option<&str>) -> String {
     let provider = match provider {
         Provider::Claude => "claude",
         Provider::Codex => "codex",
+        Provider::Muse => "muse",
     };
     format!("{provider}:{}|", account.unwrap_or("default"))
 }
@@ -74,7 +75,12 @@ impl Entry {
         else {
             return None;
         };
-        let account = Some(account?);
+        // Without a known login, Codex/Claude notices never key (a default
+        // dismissal must not suppress another login's notice). Muse has no
+        // login at all, so the default scope is its only scope.
+        if account.is_none() && provider != Provider::Muse {
+            return None;
+        }
         sticky_notice(Some(kind)).then(|| Self {
             key: occurrence_key(provider, account, kind, *resets_at, &item.id),
             resets_at: *resets_at,
@@ -429,9 +435,17 @@ impl Dismissals {
         item: &Item,
         now: u64,
     ) -> Result<(), String> {
-        let account =
-            account.ok_or("provider account identity is unavailable for persistent dismissal")?;
-        let account = self.canonical_scope(provider, account);
+        // Muse has no account identity; its notices dismiss under the default
+        // scope, which is what `prefix` uses when no account is supplied.
+        let account = match (account, provider) {
+            (Some(account), _) => self.canonical_scope(provider, account),
+            (None, Provider::Muse) => self.canonical_scope(provider, "default"),
+            (None, _) => {
+                return Err(
+                    "provider account identity is unavailable for persistent dismissal".into(),
+                );
+            }
+        };
         let key =
             Entry::for_item(provider, Some(&account), item).ok_or("item is not a sticky notice")?;
         self.prune(now)?;
@@ -593,6 +607,22 @@ mod legacy_scope_tests {
         for scope in [None, Some("sha256:ba7816bf8f01cfea414140de5dae2223")] {
             assert!(!store.mark(Provider::Claude, scope, &mut item, now()));
         }
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn muse_notices_dismiss_without_a_login() {
+        let home = crate::chat::testing::short_home();
+        fs::create_dir_all(home.join("chats")).unwrap();
+        let mut store = Dismissals::open(&home).unwrap();
+        let item = super::tests::notice("muse-auth", "auth_required", None);
+        store
+            .dismiss(Provider::Muse, None, &item, now())
+            .expect("muse dismisses under its default scope");
+        let mut again = item.clone();
+        assert!(store.mark(Provider::Muse, None, &mut again, now()));
+        // The same no-login dismissal stays refused for providers with logins.
+        assert!(store.dismiss(Provider::Claude, None, &item, now()).is_err());
         fs::remove_dir_all(home).unwrap();
     }
 }

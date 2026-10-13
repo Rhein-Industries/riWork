@@ -402,6 +402,7 @@ async fn every_value_is_its_own_argument_and_the_cli_gets_json() {
         ("codex", None, vec!["--harness", "codex"]),
         ("claude", None, vec!["--harness", "claude"]),
         ("grok", None, vec!["--harness", "grok"]),
+        ("muse", None, vec!["--harness", "muse"]),
         ("codex", Some(false), vec!["--harness", "codex"]),
         (
             "codex",
@@ -417,6 +418,11 @@ async fn every_value_is_its_own_argument_and_the_cli_gets_json() {
             "grok",
             Some(true),
             vec!["--harness", "grok", "--unrestricted"],
+        ),
+        (
+            "muse",
+            Some(true),
+            vec!["--harness", "muse", "--unrestricted"],
         ),
     ] {
         f.cli_says(json!({
@@ -469,6 +475,12 @@ async fn an_agent_left_to_the_desktop_follows_its_settings_when_the_cli_can_ask_
             "grok",
             json!({"as_settings": true}),
             vec!["--harness", "grok", "--as-settings"],
+            true,
+        ),
+        (
+            "muse",
+            json!({"as_settings": true}),
+            vec!["--harness", "muse", "--as-settings"],
             true,
         ),
         // Said: honored as it always was, without a question.

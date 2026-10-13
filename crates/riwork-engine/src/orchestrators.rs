@@ -447,6 +447,7 @@ pub fn provider_word(provider: Provider) -> &'static str {
     match provider {
         Provider::Codex => "codex",
         Provider::Claude => "claude",
+        Provider::Muse => "muse",
     }
 }
 

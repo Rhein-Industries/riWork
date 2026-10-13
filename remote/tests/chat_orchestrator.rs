@@ -298,6 +298,12 @@ async fn a_chat_orchestrator_is_listed_with_its_mode_chat_id_and_provider() {
     claude["harness"] = json!("claude");
     f.says("orchestrators.json", json!([claude]));
     assert_eq!(f.orchestrators().await[0]["provider"], "claude");
+    // And Muse passes as a chat provider too.
+    let mut muse = chat_orchestrator(&global, None);
+    muse["provider"] = json!("muse");
+    muse["harness"] = json!("muse");
+    f.says("orchestrators.json", json!([muse]));
+    assert_eq!(f.orchestrators().await[0]["provider"], "muse");
     // The same projection serves `shells.list`.
     f.says("shells.json", json!([chat_orchestrator(&global, None)]));
     let shells = f

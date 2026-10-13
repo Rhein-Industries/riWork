@@ -189,6 +189,7 @@ pub fn agent_name(harness: HarnessKind) -> &'static str {
         HarnessKind::Codex => "Codex",
         HarnessKind::Claude => "Claude",
         HarnessKind::Grok => "Grok",
+        HarnessKind::Muse => "Muse",
     }
 }
 
@@ -196,6 +197,7 @@ fn provider_name(provider: Provider) -> &'static str {
     match provider {
         Provider::Codex => "Codex",
         Provider::Claude => "Claude",
+        Provider::Muse => "Muse",
     }
 }
 

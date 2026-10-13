@@ -37,6 +37,7 @@ pub fn efforts(provider: Provider) -> &'static [&'static str] {
     match provider {
         Provider::Codex => &["low", "medium", "high", "xhigh"],
         Provider::Claude => &["low", "medium", "high", "xhigh", "max"],
+        Provider::Muse => &["low", "medium", "high", "xhigh"],
     }
 }
 
@@ -47,6 +48,7 @@ pub fn model_suggestions(provider: Provider) -> &'static [&'static str] {
     match provider {
         Provider::Codex => &[],
         Provider::Claude => &["opus", "sonnet", "haiku"],
+        Provider::Muse => &[],
     }
 }
 

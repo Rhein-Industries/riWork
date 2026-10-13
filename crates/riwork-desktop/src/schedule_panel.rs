@@ -266,6 +266,10 @@ pub struct SchedulePanel {
     error: Option<String>,
     pending: bool,
     refreshing: bool,
+    /// Whether the panel's tab is the one showing in its pane. The refresh
+    /// loop reads the store, the session sample and every chat each second,
+    /// which nobody needs while another tab covers the panel.
+    on_screen: bool,
     delete_confirm: Option<String>,
     input_states: Vec<Entity<InputState>>,
     input_subscriptions: Vec<Subscription>,
@@ -287,7 +291,12 @@ impl SchedulePanel {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
-                if this.update(cx, |panel, cx| panel.refresh(cx)).is_err() {
+                let alive = this.update(cx, |panel, cx| {
+                    if panel.on_screen {
+                        panel.refresh(cx);
+                    }
+                });
+                if alive.is_err() {
                     break;
                 }
             }
@@ -312,6 +321,9 @@ impl SchedulePanel {
             error: None,
             pending: false,
             refreshing: false,
+            // The panel is made when its tab opens, so it starts on screen;
+            // the workspace reports later tab switches.
+            on_screen: true,
             delete_confirm: None,
             input_states: Vec::new(),
             input_subscriptions: Vec::new(),
@@ -319,8 +331,19 @@ impl SchedulePanel {
         panel.refresh(cx);
         panel
     }
-    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_on_screen(true, cx);
         self.focus_control(window, cx);
+    }
+    /// The workspace reports whether this panel's tab is the one showing.
+    /// Coming forward refreshes at once, so whatever changed while hidden
+    /// is not waited on.
+    pub fn set_on_screen(&mut self, on_screen: bool, cx: &mut Context<Self>) {
+        let came_forward = on_screen && !self.on_screen;
+        self.on_screen = on_screen;
+        if came_forward {
+            self.refresh(cx);
+        }
     }
     fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.refreshing || self.pending {
@@ -1100,7 +1123,11 @@ impl Render for SchedulePanel {
                 .child(self.field(1, "Prompt · Single line", window, cx));
             if fresh {
                 let mut choices = div().flex().flex_wrap().gap(ui_text::space(5.0));
-                for (value, label) in [(Provider::Codex, "Codex"), (Provider::Claude, "Claude")] {
+                for (value, label) in [
+                    (Provider::Codex, "Codex"),
+                    (Provider::Claude, "Claude"),
+                    (Provider::Muse, "Muse"),
+                ] {
                     choices = choices.child(self.button(
                         label.to_string(),
                         Control::Provider(value),
@@ -1166,10 +1193,10 @@ impl Render for SchedulePanel {
                         .text_color(rgb(colors.muted))
                         .child(format!(
                             "Account: {}",
-                            if provider == Provider::Claude {
-                                "Claude system login"
-                            } else {
-                                &account
+                            match provider {
+                                Provider::Claude => "Claude system login",
+                                Provider::Muse => "Muse system login",
+                                Provider::Codex => &account,
                             }
                         )),
                 );
@@ -1477,13 +1504,14 @@ impl Render for SchedulePanel {
                         .child(format!(
                             "Permission: {:?} · Account: {} · Model: {} · Effort: {}{}",
                             fresh.approval_mode,
-                            fresh.codex_account_id.as_deref().unwrap_or(
-                                if fresh.provider == Provider::Claude {
-                                    "Claude login"
-                                } else {
-                                    "System default"
-                                }
-                            ),
+                            fresh
+                                .codex_account_id
+                                .as_deref()
+                                .unwrap_or(match fresh.provider {
+                                    Provider::Claude => "Claude login",
+                                    Provider::Muse => "Muse login",
+                                    Provider::Codex => "System default",
+                                }),
                             fresh.model.as_deref().unwrap_or("Default"),
                             fresh.effort.as_deref().unwrap_or("Default"),
                             if fresh.fast { " · Fast" } else { "" }
@@ -1958,6 +1986,43 @@ mod tests {
             selected_timing(0, 1000, "0").unwrap(),
             Timing::Once { at: 1000 }
         );
+    }
+
+    #[gpui::test]
+    fn hidden_panel_skips_its_refresh_until_it_comes_forward(cx: &mut gpui::TestAppContext) {
+        // A plain temp home (not TestHost): this test needs only the store,
+        // so it also runs where the chat host's socket cannot be bound.
+        let home = std::env::temp_dir().join(format!(
+            "riwork-schedule-panel-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let store = Store::open(home.clone()).unwrap();
+        let root = home.join("project");
+        fs::create_dir(&root).unwrap();
+        let project = store.add_project(&root, None).unwrap();
+        let sessions = SessionManager::at(home.clone()).unwrap();
+        cx.update(|app| app.set_global(crate::schedules::RuntimeStatus(None)));
+        let (_window, panel) = crate::form_input::test_window(cx, move |_, cx| {
+            SchedulePanel::new(store, sessions, project.id.clone(), None, cx)
+        });
+        cx.run_until_parked();
+        let projects =
+            |cx: &mut gpui::TestAppContext| cx.update(|app| panel.read(app).state.projects.len());
+        assert_eq!(projects(cx), 1);
+        panel.update(cx, |panel, cx| panel.set_on_screen(false, cx));
+        let second = home.join("second");
+        fs::create_dir(&second).unwrap();
+        Store::open(home.clone())
+            .unwrap()
+            .add_project(&second, None)
+            .unwrap();
+        cx.executor().advance_clock(Duration::from_secs(3));
+        cx.run_until_parked();
+        assert_eq!(projects(cx), 1, "a covered panel does not refresh");
+        panel.update(cx, |panel, cx| panel.set_on_screen(true, cx));
+        cx.run_until_parked();
+        assert_eq!(projects(cx), 2, "coming forward refreshes at once");
+        fs::remove_dir_all(home).unwrap();
     }
 }
 

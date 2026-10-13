@@ -8,16 +8,20 @@ import RiWorkCore
 extension ChatConversation {
     /// What the picker shows for this chat: the transcript's models and the chat's own model, effort and Fast, with a choice that was
     /// sent and has not come back yet laid over them. `fallback` is the tab list's entry, until the chat has told its own. With `switchable`
-    /// (a desktop that lets a chat go on with the other provider) the other provider's rows come too.
+    /// (a desktop that lets a chat go on with another provider) every other provider's rows come too.
     func modelChoices(fallback: ChatInfo?, switchable: Bool = false) -> ChatModelChoices {
         let info = transcript.info ?? fallback
         var choices = ChatModelChoices(models: transcript.models.isEmpty ? modelCatalogue : transcript.models,
                                        model: pendingModel?.model ?? info?.model, effort: pendingModel?.effort ?? info?.effort,
                                        fast: pendingModel?.fast ?? info?.fast ?? false)
         if switchable, let provider = info?.provider {
-            choices.switching = switching
-                ? ChatProviderSwitch(provider: provider.other, models: switchCatalogue, blocked: "Going on with \(provider.other.title)…")
-                : ChatProviderSwitch(provider: provider.other, models: switchCatalogue, transcript: transcript)
+            choices.switches = provider.others.map { other in
+                if let switchingTo {
+                    ChatProviderSwitch(provider: other, models: switchCatalogue(for: other), blocked: "Going on with \(switchingTo.title)…")
+                } else {
+                    ChatProviderSwitch(provider: other, models: switchCatalogue(for: other), transcript: transcript)
+                }
+            }
         }
         return choices
     }
@@ -59,42 +63,48 @@ extension RemoteModel {
         return nil
     }
 
-    // MARK: Going on with the other provider
+    // MARK: Going on with another provider
 
-    /// Moves a chat to the other provider, on one of its models (nil: its default), in place: the chat keeps its tab and its conversation
+    /// Moves a chat to another provider, on one of its models (nil: its default), in place: the chat keeps its tab and its conversation
     /// (`switch`). Sent once. Refused here, as on the Mac, while a turn runs or waits; what went wrong is said above the composer.
     @discardableResult
-    func switchChatProvider(_ chat: ChatInfo, model id: String?) async -> ChatControlError? {
+    func switchChatProvider(_ chat: ChatInfo, to provider: ChatProvider, model id: String?) async -> ChatControlError? {
         let conversation = conversation(chat.id)
-        guard !conversation.switching else { return .busy }
-        guard let switching = conversation.modelChoices(fallback: chat, switchable: true).switching else { return .unsupported }
+        guard conversation.switchingTo == nil else { return .busy }
+        guard let switching = conversation.modelChoices(fallback: chat, switchable: true).switchTarget(provider) else { return .unsupported }
         if let blocked = switching.blocked { conversation.notice = blocked; return .failed(blocked) }
         guard let command = switching.command(model: id) else { return nil }
-        conversation.switching = true
-        defer { conversation.switching = false }
+        conversation.switchingTo = provider
+        defer { conversation.switchingTo = nil }
         let failure = await sendChatCommand(chat.id, command)
         conversation.notice = failure?.message
         return failure
     }
 
-    /// The other provider's rows of a chat's picker, from the phone's catalogue at once (`prepareSwitchCatalogue`) and then the desktop's
+    /// The other providers' rows of a chat's picker, from the phone's catalogue at once (`prepareSwitchCatalogue`) and then the desktop's
     /// (`loadSwitchCatalogue`).
     func prepareSwitchCatalogue(_ chat: ChatInfo) {
+        for other in (conversation(chat.id).transcript.info ?? chat).provider.others { prepareSwitchCatalogue(chat, for: other) }
+    }
+    func prepareSwitchCatalogue(_ chat: ChatInfo, for other: ChatProvider) {
         let conversation = conversation(chat.id)
-        guard conversation.switchCatalogue.isEmpty else { return }
-        let fallback = cachedOrBundledModels(provider: (conversation.transcript.info ?? chat).provider.other)
-        conversation.switchCatalogue = fallback.models
-        conversation.switchCatalogueSource = fallback.source
+        guard conversation.switchCatalogue(for: other).isEmpty else { return }
+        let fallback = cachedOrBundledModels(provider: other)
+        conversation.switchCatalogues[other] = fallback.models
+        conversation.switchCatalogueSources[other] = fallback.source
     }
     func loadSwitchCatalogue(_ chat: ChatInfo) async {
         prepareSwitchCatalogue(chat)
+        for other in (conversation(chat.id).transcript.info ?? chat).provider.others { await loadSwitchCatalogue(chat, for: other) }
+    }
+    func loadSwitchCatalogue(_ chat: ChatInfo, for other: ChatProvider) async {
+        prepareSwitchCatalogue(chat, for: other)
         let conversation = conversation(chat.id)
-        let other = (conversation.transcript.info ?? chat).provider.other
         let token = generation
         guard let models = try? await providerModels(other), generation == token,
-              (conversation.transcript.info ?? chat).provider.other == other else { return }
-        conversation.switchCatalogue = models
-        conversation.switchCatalogueSource = .live
+              (conversation.transcript.info ?? chat).provider.others.contains(other) else { return }
+        conversation.switchCatalogues[other] = models
+        conversation.switchCatalogueSources[other] = .live
         rememberModelCatalogue(models, provider: other)
     }
 
@@ -135,7 +145,7 @@ extension RemoteModel {
         guard choice != chatChoice(for: provider), let data = try? JSONEncoder().encode(choice) else { return }
         defaults.set(data, forKey: Self.newChatChoiceKey(provider))
     }
-    /// What the New terminal sheet starts with, for both providers.
+    /// What the New terminal sheet starts with, for every provider.
     func rememberedChatChoices() -> [ChatProvider: NewChatChoice] {
         Dictionary(uniqueKeysWithValues: ChatProvider.allCases.map { ($0, chatChoice(for: $0)) })
     }
@@ -277,7 +287,7 @@ extension RemoteModel {
 }
 
 extension NewTerminalSheetModel {
-    /// Reads the models of a new chat, both providers' unless one is named. Each shows its fallback at once and its live list when that
+    /// Reads the models of a new chat, every provider's unless one is named. Each shows its fallback at once and its live list when that
     /// comes; one provider's failure is said under its own rows and never touches the other's.
     func loadChatModels(_ only: ChatProvider? = nil) async {
         let providers = only.map { [$0] } ?? ChatProvider.allCases

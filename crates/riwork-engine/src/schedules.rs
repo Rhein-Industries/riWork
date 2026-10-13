@@ -279,6 +279,7 @@ pub fn chat_harness(provider: Provider) -> HarnessKind {
     match provider {
         Provider::Codex => HarnessKind::Codex,
         Provider::Claude => HarnessKind::Claude,
+        Provider::Muse => HarnessKind::Muse,
     }
 }
 fn refuse_unschedulable(harness: HarnessKind) -> Result<(), String> {
@@ -615,7 +616,12 @@ impl ScheduleStore {
         if timing.first() <= now {
             return Err("First run must be in the future".into());
         }
-        refuse_unschedulable(target.harness)?;
+        // Terminal destinations need the terminal turn signal only Codex and
+        // Claude expose; a chat destination's turns end as host events,
+        // which every chat driver emits.
+        if target.new_chat.is_none() && target.chat.is_none() {
+            refuse_unschedulable(target.harness)?;
+        }
         // Only the trimmed title is stored, so only it needs to be clean.
         if title.trim().is_empty() || title.len() > 120 || !single_line(title.trim()) {
             return Err("Enter a title (up to 120 bytes, no control characters)".into());

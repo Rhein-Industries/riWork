@@ -27,17 +27,25 @@ pub enum Filter {
     All,
     Codex,
     Claude,
+    Muse,
     Shells,
 }
 
 impl Filter {
-    pub const ALL: [Self; 4] = [Self::All, Self::Codex, Self::Claude, Self::Shells];
+    pub const ALL: [Self; 5] = [
+        Self::All,
+        Self::Codex,
+        Self::Claude,
+        Self::Muse,
+        Self::Shells,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::All => "All sessions",
             Self::Codex => "Codex chats",
             Self::Claude => "Claude chats",
+            Self::Muse => "Muse chats",
             Self::Shells => "Shells",
         }
     }
@@ -47,6 +55,7 @@ impl Filter {
             Self::All => true,
             Self::Codex => provider == Provider::Codex,
             Self::Claude => provider == Provider::Claude,
+            Self::Muse => provider == Provider::Muse,
             Self::Shells => false,
         }
     }
@@ -60,6 +69,7 @@ pub fn provider_label(provider: Provider) -> &'static str {
     match provider {
         Provider::Codex => "Codex",
         Provider::Claude => "Claude",
+        Provider::Muse => "Muse",
     }
 }
 

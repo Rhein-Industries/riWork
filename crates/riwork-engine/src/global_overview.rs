@@ -294,6 +294,7 @@ pub fn shell_agent(shell: &ShellSession) -> &'static str {
         Some(HarnessKind::Codex) => "Codex",
         Some(HarnessKind::Claude) => "Claude",
         Some(HarnessKind::Grok) => "Grok",
+        Some(HarnessKind::Muse) => "Muse",
         None if shell.kind == ShellKind::Orchestrator => "Orchestrator",
         None => "Shell",
     }
@@ -303,6 +304,7 @@ fn provider_agent(provider: Provider) -> &'static str {
     match provider {
         Provider::Codex => "Codex",
         Provider::Claude => "Claude",
+        Provider::Muse => "Muse",
     }
 }
 

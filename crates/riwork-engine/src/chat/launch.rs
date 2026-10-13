@@ -28,6 +28,10 @@ pub fn account_for(
             Err("a Claude chat has no Codex account; it uses the system login".into())
         }
         (Provider::Claude, None) => Ok(None),
+        (Provider::Muse, Some(_)) => {
+            Err("a Muse chat has no Codex account; it uses the system login".into())
+        }
+        (Provider::Muse, None) => Ok(None),
     }
 }
 
@@ -51,6 +55,7 @@ pub fn driver_config(
             (HarnessKind::Codex, Some(binding.home))
         }
         Provider::Claude => (HarnessKind::Claude, None),
+        Provider::Muse => (HarnessKind::Muse, None),
     };
     let launch = sessions::chat_launch(harness, &home, codex_home.as_deref())?;
     let ignore_api_key = crate::settings::claude_chat_ignores_api_key(&home);
@@ -112,6 +117,13 @@ fn assemble(
         // Settings asked that a stray key not switch the chat to API billing.
         // Otherwise `claude` keeps every sign-in method it has, as published.
         env_remove.push("ANTHROPIC_API_KEY".into());
+    }
+    if info.provider == Provider::Muse
+        && let Some(driver) = crate::cua::driver_override_for_harness()
+    {
+        // Muse's Cua config names this variable (`${RIWORK_CUA_DRIVER}`);
+        // it must be set in the serve process for the reference to resolve.
+        env.push(("RIWORK_CUA_DRIVER".into(), driver.into_os_string()));
     }
     // What a terminal orchestrator's session exports, for the skill that reads it.
     match &info.orchestrator {

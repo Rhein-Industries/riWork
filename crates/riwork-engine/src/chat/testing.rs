@@ -287,6 +287,7 @@ pub fn fake_providers() -> Providers {
     Providers {
         codex: fake_start,
         claude: fake_start,
+        muse: fake_start,
         account: fake_account,
         config: fake_config,
     }

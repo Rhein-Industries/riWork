@@ -50,6 +50,12 @@ fn main() {
         state: ChatState::default(),
         carried_over: None,
     };
+    let muse_chat = ChatInfo {
+        provider: Provider::Muse,
+        id: "55555555-5555-4555-8555-555555555555".into(),
+        title: "Muse chat".into(),
+        ..minimal.clone()
+    };
     // A chat that went on with the other provider (`switch`): the same id, the new provider, and what it was given.
     let switched = ChatInfo {
         provider: Provider::Claude,
@@ -160,16 +166,17 @@ fn main() {
         ChatCommand::Stop,
         ChatCommand::Switch { provider: Provider::Claude, model: None, effort: None, fast: None },
         ChatCommand::Switch { provider: Provider::Codex, model: Some("gpt-5.5".into()), effort: Some("high".into()), fast: Some(false) },
+        ChatCommand::Switch { provider: Provider::Muse, model: None, effort: None, fast: None },
     ];
     let events: Vec<Value> = events.iter().map(|e| to_value(e).unwrap()).collect();
     let commands: Vec<Value> = commands.iter().map(|c| to_value(c).unwrap()).collect();
     let modes: Vec<Value> = [ApprovalMode::Supervised, ApprovalMode::AutoEdit, ApprovalMode::Full, ApprovalMode::Plan].iter().map(|m| to_value(m).unwrap()).collect();
-    let providers: Vec<Value> = [Provider::Codex, Provider::Claude].iter().map(|p| to_value(p).unwrap()).collect();
+    let providers: Vec<Value> = [Provider::Codex, Provider::Claude, Provider::Muse].iter().map(|p| to_value(p).unwrap()).collect();
     let doc = json!({
         "generated_by": "ios/scripts/gen-chat-fixtures.sh from crates/riwork-engine/src/chat/model.rs; do not edit by hand",
         "events": events,
         "commands": commands,
-        "chats": [to_value(&info).unwrap(), to_value(&minimal).unwrap(), to_value(&switched).unwrap()],
+        "chats": [to_value(&info).unwrap(), to_value(&minimal).unwrap(), to_value(&switched).unwrap(), to_value(&muse_chat).unwrap()],
         "modes": modes,
         "providers": providers,
         "model_options": model_options.iter().map(|m| to_value(m).unwrap()).collect::<Vec<Value>>(),

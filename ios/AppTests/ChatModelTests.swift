@@ -347,10 +347,15 @@ import RiWorkCore
         sheet.setUnrestricted(true)
         sheet.create()
         await sheet.pending?.value
+        sheet.selectChat(.muse)
+        sheet.setUnrestricted(false)
+        sheet.create()
+        await sheet.pending?.value
         let sent = await rig.transport.params(of: "chat.create")
-        XCTAssertEqual(sent.map { $0["provider"]?.string }, ["codex", "claude"])
-        XCTAssertEqual(sent.map { $0["approval_mode"]?.string }, [nil, "full"])
-        XCTAssertEqual(rig.model.chats.count, 2)
+        XCTAssertEqual(sent.map { $0["provider"]?.string }, ["codex", "claude", "muse"])
+        XCTAssertEqual(sent.map { $0["approval_mode"]?.string }, [nil, "full", nil])
+        XCTAssertEqual(rig.model.chats.count, 3)
+        XCTAssertEqual(rig.model.lastChatProvider, .muse)
         await rig.model.disconnect()
     }
     func testASecondCreateWhileOneIsOnTheWireIsRefusedNotSent() async throws {

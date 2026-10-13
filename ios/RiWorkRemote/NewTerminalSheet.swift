@@ -110,6 +110,7 @@ struct NewTerminalSheet: View {
         case .codex: "chevron.left.forwardslash.chevron.right"
         case .claude: "sparkles"
         case .grok: "bolt"
+        case .muse: "infinity"
         case .chat: "bubble.left.and.bubble.right"
         case .projectOrchestrator: "point.3.connected.trianglepath.dotted"
         case .globalOrchestrator: "globe"
@@ -117,7 +118,7 @@ struct NewTerminalSheet: View {
     }
     private func detail(_ kind: NewTerminalKind) -> String {
         if kind.isOrchestrator { return "Orchestrator" }
-        return kind == .shell ? "The Mac’s login shell" : (kind.isChat ? "Codex or Claude" : "Agent")
+        return kind == .shell ? "The Mac’s login shell" : (kind.isChat ? "Codex, Claude or Muse" : "Agent")
     }
     private func kindRow(_ kind: NewTerminalKind) -> some View {
         let selected = sheet.form.kind == kind

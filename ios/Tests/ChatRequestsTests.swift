@@ -271,7 +271,7 @@ final class ChatRequestsTests: XCTestCase {
         XCTAssertTrue(ChatControlError.outcomeUnknown(.command).message.contains("may or may not have gone through"))
         XCTAssertEqual(ChatControlError.notFound(.create(.codex)).message, "That project or worktree no longer exists on the Mac. Refresh and try again.")
     }
-    // MARK: One chat for both providers
+    // MARK: One chat for every provider
 
     func testASwitchNamesTheProviderAndOnlyWhatWasChosen() throws {
         let bare = try ChatCommandRequest(chatID: chat, command: .switchProvider(provider: .claude))
@@ -287,7 +287,10 @@ final class ChatRequestsTests: XCTestCase {
         XCTAssertThrowsError(try ChatCommandRequest(chatID: chat, command: .switchProvider(provider: .claude, effort: String(repeating: "e", count: 33)))) {
             XCTAssertEqual($0 as? ChatValidationError, .textTooLong(field: "effort", limit: 32))
         }
-        XCTAssertEqual(ChatProvider.codex.other, .claude); XCTAssertEqual(ChatProvider.claude.other, .codex)
+        XCTAssertEqual(ChatProvider.codex.others, [.claude, .muse]); XCTAssertEqual(ChatProvider.claude.others, [.codex, .muse])
+        XCTAssertEqual(ChatProvider.muse.others, [.codex, .claude])
+        XCTAssertEqual(ChatProvider.muse.title, "Muse"); XCTAssertEqual(try create(.muse).params["provider"], .string("muse"))
+        XCTAssertEqual(try ChatCommandRequest(chatID: chat, command: .switchProvider(provider: .muse)).params["command"], try value(#"{"command":"switch","provider":"muse"}"#))
     }
     func testAModelsRequestIsAProviderAndMaybeAProjectAndItsAnswerIsForThatProvider() throws {
         let request = try ChatModelsRequest(provider: .claude, projectID: project)

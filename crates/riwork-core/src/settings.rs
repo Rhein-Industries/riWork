@@ -5,6 +5,7 @@ use crate::{
     project_sort::ProjectOrder,
     provider::Provider,
     status_bar::StatusBarSettings,
+    store::FileStamp,
     theme::ThemeChoice,
     ui_text::{InterfaceFont, TextPoints},
 };
@@ -17,6 +18,7 @@ use std::{
     fs::{File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, PoisonError},
 };
 use uuid::Uuid;
 
@@ -106,10 +108,10 @@ pub struct Settings {
     /// scroll locally. Off leaves every agent on its own default screen. A
     /// session that is already running keeps the mode it started in.
     pub agent_inline_mode: bool,
-    /// Codex, Claude and Grok terminals opened from the New tab menu, their shortcuts and
+    /// Codex, Claude, Grok and Muse terminals opened from the New tab menu, their shortcuts and
     /// the paired phone start without approval prompts (Codex
     /// `--dangerously-bypass-approvals-and-sandbox`, Claude `--dangerously-skip-permissions`,
-    /// Grok `--always-approve`). Off, they ask before they act. A session that is already
+    /// Grok `--always-approve`, Muse `--yolo`). Off, they ask before they act. A session that is already
     /// running keeps the mode it started in.
     pub agent_terminals_unrestricted: bool,
     /// How orchestrators created from now on run. An orchestrator that exists
@@ -316,7 +318,7 @@ pub fn agent_inline_mode(home: &Path) -> bool {
         })
 }
 
-/// Whether a Codex, Claude or Grok terminal opened now from a menu, a shortcut or the
+/// Whether a Codex, Claude, Grok or Muse terminal opened now from a menu, a shortcut or the
 /// phone runs unrestricted, read from the file of the state directory `home` each time,
 /// like `agent_inline_mode`, so every window and the CLI follow a change at once. A
 /// missing or unreadable file means the default, unrestricted.
@@ -359,6 +361,9 @@ pub fn orchestrator_runs(home: &Path) -> OrchestratorRuns {
 #[derive(Clone)]
 pub struct SettingsStore {
     dir: PathBuf,
+    /// The last `settings.json` parse and the stamp it was read under,
+    /// shared by every clone of this store.
+    load_cache: Arc<Mutex<Option<(Option<FileStamp>, Settings)>>>,
 }
 
 impl SettingsStore {
@@ -373,13 +378,44 @@ impl SettingsStore {
         }
         crate::paths::create_private_dir(&dir)
             .map_err(|error| format!("Cannot create settings directory: {error}"))?;
-        Ok(Self { dir })
+        Ok(Self {
+            dir,
+            load_cache: Arc::new(Mutex::new(None)),
+        })
     }
 
     pub fn load(&self) -> Result<Settings, String> {
+        let path = self.dir.join("settings.json");
+        // Windows poll this every couple of seconds; while the file's stamp
+        // stands, the last parse is the answer and no lock or read is needed.
+        if let Some(stamp) = FileStamp::of(&path)
+            && let Some(settings) = self.cached_load(&stamp)
+        {
+            return Ok(settings);
+        }
         let lock = self.lock_file()?;
         FileExt::lock_shared(&lock).map_err(|error| format!("Cannot lock settings: {error}"))?;
-        self.read()
+        let before = FileStamp::of(&path);
+        let settings = self.read()?;
+        // Cache only when the file stood still across the read.
+        if let Some(stamp) = before
+            && FileStamp::of(&path) == Some(stamp)
+        {
+            *self
+                .load_cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some((stamp, settings.clone()));
+        }
+        Ok(settings)
+    }
+
+    fn cached_load(&self, stamp: &Option<FileStamp>) -> Option<Settings> {
+        self.load_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .filter(|(cached, _)| cached == stamp)
+            .map(|(_, settings)| settings.clone())
     }
 
     pub fn update(&self, change: impl FnOnce(&mut Settings)) -> Result<Settings, String> {
@@ -412,6 +448,13 @@ impl SettingsStore {
             let _ = fs::remove_file(temporary);
         }
         result?;
+        // The document just written parses back to these settings (unknown
+        // keys carried forward are not modeled), so seed the load cache.
+        *self
+            .load_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) =
+            FileStamp::of(&path).map(|stamp| (stamp, settings.clone()));
         Ok(settings)
     }
 
@@ -1297,6 +1340,53 @@ mod tests {
         );
         assert!(!moved.remember_window_size);
         assert_eq!(moved.theme, ThemeChoice::TokyoNight);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn load_reuses_the_last_parse_until_the_settings_file_changes() {
+        use std::io::Write as _;
+        let dir = env::temp_dir().join(format!("riwork-settings-cache-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let write_in_place = |bytes: &[u8]| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path)
+                .unwrap();
+            file.write_all(bytes).unwrap();
+        };
+        // Pad the shorter encoding with trailing spaces so both files have
+        // the same length and only the value differs.
+        let bytes = |preview: bool| {
+            serde_json::to_vec(
+                &serde_json::json!({"schema_version": 1, "open_preview_on_select": preview}),
+            )
+            .unwrap()
+        };
+        let (mut on, mut off) = (bytes(true), bytes(false));
+        let len = on.len().max(off.len());
+        on.resize(len, b' ');
+        off.resize(len, b' ');
+        write_in_place(&on);
+        assert!(store.load().unwrap().open_preview_on_select);
+        // Same length, same inode, restored mtime: the cached parse stands.
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        write_in_place(&off);
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert!(store.load().unwrap().open_preview_on_select);
+        // The store's own update is visible to the next load.
+        store
+            .update(|settings| settings.open_preview_on_select = false)
+            .unwrap();
+        assert!(!store.load().unwrap().open_preview_on_select);
         fs::remove_dir_all(dir).unwrap();
     }
 }

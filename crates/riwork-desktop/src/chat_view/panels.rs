@@ -1957,7 +1957,7 @@ impl ChatView {
 
     /// The model or effort menu's rows, in order: the efforts; or the chat's own provider's
     /// models (or names to type, for a driver that has not listed them), then the other
-    /// provider's, which move the chat to it, then New chat.
+    /// providers', which move the chat to them, then New chat.
     fn choice_groups(&self, menu: Menu, cx: &gpui::App) -> Vec<ChoiceGroup> {
         let info = self.model.transcript.info.as_ref();
         let models = &self.model.transcript.models;
@@ -2021,68 +2021,69 @@ impl ChatView {
             note: None,
             rows: own,
         }];
-        // One chat, every provider's models: the other one's move the chat to it, once no
-        // turn runs.
-        let other = super::other_provider(provider);
+        // One chat, every provider's models: the other providers' move the chat to them,
+        // once no turn runs.
         let busy = self.running();
-        // Typing in the field names the chat's own provider's model; the field searches both
-        // lists only when it is a search.
+        // Typing in the field names the chat's own provider's model; the field searches every
+        // list only when it is a search.
         let query = if models.is_empty() {
             String::new()
         } else {
             self.model_input.read(cx).value().trim().to_lowercase()
         };
-        let mut rows: Vec<(String, String, Option<String>)> = vec![(
-            String::new(),
-            format!("{} default", provider_name(other)),
-            None,
-        )];
-        if let Some(catalog) = self.other_models() {
-            rows.extend(catalog.supported.iter().map(|model| {
-                (
-                    model.id.clone(),
-                    model.name.clone(),
-                    Some(model.description.clone()).filter(|text| !text.is_empty()),
-                )
-            }));
-            rows.extend(catalog.configured.iter().map(|id| {
-                (
-                    id.clone(),
-                    id.clone(),
-                    Some("Previously configured".to_owned()),
-                )
-            }));
+        for other in super::other_providers(provider) {
+            let mut rows: Vec<(String, String, Option<String>)> = vec![(
+                String::new(),
+                format!("{} default", provider_name(other)),
+                None,
+            )];
+            if let Some(catalog) = self.other_models(other) {
+                rows.extend(catalog.supported.iter().map(|model| {
+                    (
+                        model.id.clone(),
+                        model.name.clone(),
+                        Some(model.description.clone()).filter(|text| !text.is_empty()),
+                    )
+                }));
+                rows.extend(catalog.configured.iter().map(|id| {
+                    (
+                        id.clone(),
+                        id.clone(),
+                        Some("Previously configured".to_owned()),
+                    )
+                }));
+            }
+            groups.push(ChoiceGroup {
+                heading: Some(provider_name(other).to_owned()),
+                note: Some(if busy {
+                    "Finish or interrupt the turn first".to_owned()
+                } else {
+                    "Continues this conversation".to_owned()
+                }),
+                rows: rows
+                    .into_iter()
+                    .filter(|(id, label, more)| {
+                        query.is_empty()
+                            || id.is_empty()
+                            || format!("{id} {label} {}", more.as_deref().unwrap_or(""))
+                                .to_lowercase()
+                                .contains(&query)
+                    })
+                    .map(|(id, label, detail)| ChoiceRow {
+                        name: format!(
+                            "switch-{}-{}",
+                            provider_name(other).to_lowercase(),
+                            if id.is_empty() { "default" } else { &id }
+                        ),
+                        label,
+                        detail,
+                        current: false,
+                        choice: (!busy)
+                            .then(|| MenuChoice::Switch(other, (!id.is_empty()).then_some(id))),
+                    })
+                    .collect(),
+            });
         }
-        groups.push(ChoiceGroup {
-            heading: Some(provider_name(other).to_owned()),
-            note: Some(if busy {
-                "Finish or interrupt the turn first".to_owned()
-            } else {
-                "Continues this conversation".to_owned()
-            }),
-            rows: rows
-                .into_iter()
-                .filter(|(id, label, more)| {
-                    query.is_empty()
-                        || id.is_empty()
-                        || format!("{id} {label} {}", more.as_deref().unwrap_or(""))
-                            .to_lowercase()
-                            .contains(&query)
-                })
-                .map(|(id, label, detail)| ChoiceRow {
-                    name: format!(
-                        "switch-{}-{}",
-                        provider_name(other).to_lowercase(),
-                        if id.is_empty() { "default" } else { &id }
-                    ),
-                    label,
-                    detail,
-                    current: false,
-                    choice: (!busy)
-                        .then(|| MenuChoice::Switch(other, (!id.is_empty()).then_some(id))),
-                })
-                .collect(),
-        });
         groups.push(ChoiceGroup {
             heading: None,
             note: None,
@@ -3060,7 +3061,7 @@ mod tests {
                     view.model.transcript.info = Some(info.clone());
                     view.model.transcript.state = state.clone();
                     // As the saved chats would tell it; the fixture reads no files.
-                    view.others = Some((
+                    view.others = vec![(
                         Provider::Claude,
                         Catalog {
                             supported: vec![ModelOption {
@@ -3070,7 +3071,7 @@ mod tests {
                             }],
                             ..Default::default()
                         },
-                    ));
+                    )];
                     cx.notify();
                 })
             })
@@ -3089,6 +3090,7 @@ mod tests {
                 for (id, label) in [
                     ("switch-claude-default", "Claude default"),
                     ("switch-claude-opus", "Opus"),
+                    ("switch-muse-default", "Muse default"),
                 ] {
                     assert_eq!(window.find(id).label(), Some(label), "{id}");
                 }

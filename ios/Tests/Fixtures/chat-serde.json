@@ -49,6 +49,19 @@
         "state": "idle"
       },
       "title": "Claude chat"
+    },
+    {
+      "approval_mode": "supervised",
+      "created_at_unix": 1,
+      "cwd": "/c",
+      "fast": false,
+      "id": "55555555-5555-4555-8555-555555555555",
+      "provider": "muse",
+      "state": {
+        "state": "starting"
+      },
+      "title": "Muse chat",
+      "worktree_id": "44444444-4444-4444-8444-444444444444"
     }
   ],
   "commands": [
@@ -125,6 +138,10 @@
       "fast": false,
       "model": "gpt-5.5",
       "provider": "codex"
+    },
+    {
+      "command": "switch",
+      "provider": "muse"
     }
   ],
   "events": [
@@ -699,7 +716,7 @@
       }
     }
   ],
-  "generated_by": "ios/scripts/gen-chat-fixtures.sh from src/chat/model.rs; do not edit by hand",
+  "generated_by": "ios/scripts/gen-chat-fixtures.sh from crates/riwork-engine/src/chat/model.rs; do not edit by hand",
   "model_options": [
     {
       "default_effort": "medium",
@@ -746,6 +763,7 @@
   ],
   "providers": [
     "codex",
-    "claude"
+    "claude",
+    "muse"
   ]
 }

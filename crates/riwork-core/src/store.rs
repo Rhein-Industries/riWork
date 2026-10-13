@@ -7,6 +7,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Command,
+    sync::{Arc, Mutex, PoisonError},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -509,9 +510,43 @@ fn restore_unknown_state_fields(original: &Value, current: &mut Value) {
     }
 }
 
+/// What identifies one written file. Every writer here replaces the file
+/// (temp file + rename, so a new inode) or at least moves its length or
+/// mtime, so an equal stamp means the bytes a parse already read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FileStamp {
+    len: u64,
+    modified: SystemTime,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl FileStamp {
+    /// The stamp of `path`: `Some(None)` when it does not exist, `None` when
+    /// that cannot be told (callers then skip any cache).
+    pub(crate) fn of(path: &Path) -> Option<Option<Self>> {
+        match fs::metadata(path) {
+            Ok(metadata) => Some(Some(Self {
+                len: metadata.len(),
+                modified: metadata.modified().ok()?,
+                #[cfg(unix)]
+                inode: {
+                    use std::os::unix::fs::MetadataExt;
+                    metadata.ino()
+                },
+            })),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
+            Err(_) => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Store {
     dir: PathBuf,
+    /// The last `state.json` parse and the stamp it was read under, shared by
+    /// every clone of this store.
+    snapshot_cache: Arc<Mutex<Option<(Option<FileStamp>, State)>>>,
 }
 
 impl Store {
@@ -526,13 +561,46 @@ impl Store {
         }
         crate::paths::create_private_dir(&dir)
             .map_err(|error| format!("Cannot create {}: {error}", dir.display()))?;
-        Ok(Self { dir })
+        Ok(Self {
+            dir,
+            snapshot_cache: Arc::new(Mutex::new(None)),
+        })
     }
 
     pub fn snapshot(&self) -> Result<State, String> {
+        let path = self.dir.join("state.json");
+        // Windows poll this every couple of seconds; while the file's stamp
+        // stands, the last parse is the answer and no lock or read is needed.
+        // A writer mid-transaction has not renamed its file yet, so serving
+        // the cached state is just reading before that commit.
+        if let Some(stamp) = FileStamp::of(&path)
+            && let Some(state) = self.cached_snapshot(&stamp)
+        {
+            return Ok(state);
+        }
         let lock = self.lock_file()?;
         FileExt::lock_shared(&lock).map_err(|error| format!("Cannot lock store: {error}"))?;
-        self.read_state()
+        let before = FileStamp::of(&path);
+        let state = self.read_state()?;
+        // Cache only when the file stood still across the read.
+        if let Some(stamp) = before
+            && FileStamp::of(&path) == Some(stamp)
+        {
+            *self
+                .snapshot_cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some((stamp, state.clone()));
+        }
+        Ok(state)
+    }
+
+    fn cached_snapshot(&self, stamp: &Option<FileStamp>) -> Option<State> {
+        self.snapshot_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .filter(|(cached, _)| cached == stamp)
+            .map(|(_, state)| state.clone())
     }
 
     pub(crate) fn transaction<T>(
@@ -554,6 +622,13 @@ impl Store {
         let (result, changed) = operation(&mut state)?;
         if changed {
             self.write_state(&state, original.as_ref())?;
+            // The bytes just written parse back to this state (unknown fields
+            // carried forward are not modeled), so seed the snapshot cache.
+            *self
+                .snapshot_cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) =
+                FileStamp::of(&self.dir.join("state.json")).map(|stamp| (stamp, state.clone()));
         }
         Ok(result)
     }

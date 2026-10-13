@@ -2880,7 +2880,7 @@ import RiWorkCore
             try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
             try? data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("new-chat-sheet.png"))
         }
-        XCTAssertEqual(sheet.form.kinds.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Chat"], "one chat for both providers")
+        XCTAssertEqual(sheet.form.kinds.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Muse", "Chat"], "one chat for both providers")
         await finish(rig)
     }
 
@@ -2942,7 +2942,7 @@ import RiWorkCore
             try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
             try? data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("new-orchestrator-sheet.png"))
         }
-        XCTAssertEqual(sheet.form.kinds.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Chat", "Project orchestrator", "Global orchestrator"])
+        XCTAssertEqual(sheet.form.kinds.map(\.title), ["Shell", "Codex", "Claude", "Grok", "Muse", "Chat", "Project orchestrator", "Global orchestrator"])
         XCTAssertFalse(sheet.form.fields.contains(.target))
         // The keyboard reaches both rows from the kind list, and Return opens.
         sheet.press(.down)
@@ -3216,8 +3216,8 @@ import RiWorkCore
             func press(_ input: String, times: Int = 1) {
                 for _ in 0..<times { if let command = keyView.keyCommands?.first(where: { $0.input == input && $0.modifierFlags == [] }) { keyView.fired(command) } }
             }
-            // Shell, Codex, Claude, Grok, Codex chat, Claude chat.
-            press(UIKeyCommand.inputDownArrow, times: 5)
+            // Shell, Codex, Claude, Grok, Muse, Codex chat, Claude chat.
+            press(UIKeyCommand.inputDownArrow, times: 6)
             try await Task.sleep(for: .milliseconds(700))
             // The model section is under the kinds: scrolled to, as a thumb would.
             if let presented = rig.host.presentedViewController,

@@ -114,15 +114,18 @@ final class NewChatChoiceTests: XCTestCase {
         var chat = form()
         chat.chatChoices[.claude] = NewChatChoice(model: opus)
         chat.focus = .chatModel
-        // The rows: Codex's default, Claude's default, Claude's last model (no list is known in this test).
-        XCTAssertEqual(chat.chatRows, [.providerDefault(.codex), .providerDefault(.claude), .last(.claude, opus)])
+        // The rows: Codex's default, Claude's default, Claude's last model, Muse's default (no list is known in this test).
+        XCTAssertEqual(chat.chatRows, [.providerDefault(.codex), .providerDefault(.claude), .last(.claude, opus), .providerDefault(.muse)])
         XCTAssertEqual(chat.chosenChatRow, .providerDefault(.claude))
         chat.handle(.down)
         XCTAssertEqual(chat.chatChoice?.usesModel, true); XCTAssertEqual(chat.kind, .chat, "the arrows did not change the kind")
         XCTAssertEqual(chat.chosenChatRow, .last(.claude, opus))
         XCTAssertEqual(chat.focus, .chatModel)
+        chat.handle(.down); XCTAssertEqual(chat.chatProvider, .muse, "next is Muse's default")
+        XCTAssertEqual(chat.chosenChatRow, .providerDefault(.muse))
         chat.handle(.down); XCTAssertEqual(chat.chatProvider, .codex, "past the last row is the first, which is Codex's")
         XCTAssertEqual(chat.chosenChatRow, .providerDefault(.codex))
+        chat.handle(.up); XCTAssertEqual(chat.chatProvider, .muse)
         chat.handle(.up); XCTAssertEqual(chat.chatProvider, .claude); XCTAssertEqual(chat.chatChoice?.usesModel, true)
         chat.handle(.up); XCTAssertEqual(chat.chatChoice?.usesModel, false)
         chat.handle(.down)
@@ -175,16 +178,16 @@ final class NewChatChoiceTests: XCTestCase {
         XCTAssertEqual(chat.chatChoices[.codex]?.effort, "low", "no chat is selected: nothing changed")
     }
 
-    // MARK: One list for both providers
+    // MARK: One list for every provider
 
-    func testBothProvidersAreOneListAndTheRowChosenIsTheProvider() throws {
+    func testEveryProviderIsOneListAndTheRowChosenIsTheProvider() throws {
         let gpt = ChatModelOption(id: "gpt-5.5", name: "GPT-5.5", efforts: ["low", "high"], defaultEffort: "low", supportsFast: true, isDefault: true)
         let mini = ChatModelOption(id: "gpt-5.4-mini", name: "GPT-5.4 mini", efforts: ["low"], defaultEffort: "low")
         var chat = form(.chat, .codex)
         chat.chatModels = [.codex: [gpt, mini], .claude: [opus, haiku]]
         chat.chatChoices[.claude] = NewChatChoice(model: opus)
-        XCTAssertEqual(chat.chatRows, [.providerDefault(.codex), .model(.codex, gpt), .model(.codex, mini), .providerDefault(.claude), .model(.claude, opus), .model(.claude, haiku)],
-                       "Codex first, each provider under its default, no 'last used' row while the list is known")
+        XCTAssertEqual(chat.chatRows, [.providerDefault(.codex), .model(.codex, gpt), .model(.codex, mini), .providerDefault(.claude), .model(.claude, opus), .model(.claude, haiku), .providerDefault(.muse)],
+                       "Codex first, each provider under its default, no 'last used' row while the list is known; Muse has no list here, so only its default")
         XCTAssertEqual(Set(chat.chatRows.map(\.id)).count, chat.chatRows.count, "row ids are unique")
         chat.chooseChatRow(.model(.claude, haiku))
         XCTAssertEqual(chat.chatProvider, .claude)
@@ -197,6 +200,9 @@ final class NewChatChoiceTests: XCTestCase {
         XCTAssertEqual(chat.chatChoices[.claude]?.chosen, haiku, "and each keeps its own")
         chat.chooseChatRow(.providerDefault(.codex))
         XCTAssertEqual(try request(chat).params, ["provider": .string("codex"), "project_id": .string(project)])
+        chat.chooseChatRow(.providerDefault(.muse))
+        XCTAssertEqual(chat.chatProvider, .muse)
+        XCTAssertEqual(try request(chat).params, ["provider": .string("muse"), "project_id": .string(project)])
         // A model a provider's list no longer names is chosen still, but no row shows it.
         chat.chatChoices[.claude] = NewChatChoice(model: ChatModelOption(id: "gone", name: "Gone"), usesModel: true)
         chat.selectChatProvider(.claude)

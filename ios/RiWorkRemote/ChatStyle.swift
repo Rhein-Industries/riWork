@@ -33,9 +33,15 @@ extension DesktopStyle {
 }
 
 extension ChatProvider {
-    /// The glyph of a provider in tabs and in the New terminal sheet: the same ones the terminal kinds use, so Codex and Claude look alike
-    /// wherever they are.
-    var glyph: String { self == .codex ? "chevron.left.forwardslash.chevron.right" : "sparkles" }
+    /// The glyph of a provider in tabs and in the New terminal sheet: the same ones the terminal kinds use, so Codex, Claude and Muse
+    /// look alike wherever they are.
+    var glyph: String {
+        switch self {
+        case .codex: "chevron.left.forwardslash.chevron.right"
+        case .claude: "sparkles"
+        case .muse: "infinity"
+        }
+    }
 }
 
 extension View {

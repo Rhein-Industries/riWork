@@ -16,7 +16,7 @@ use crate::{
     sessions::HarnessKind,
 };
 
-pub(super) const USAGE: &str = "Usage: riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok [--model NAME] [--effort LEVEL] [--account LABEL_OR_ID] [--mode supervised|auto-edit|full|plan] [--context transcript|summary] [--note TEXT] [--json]";
+pub(super) const USAGE: &str = "Usage: riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok|muse [--model NAME] [--effort LEVEL] [--account LABEL_OR_ID] [--mode supervised|auto-edit|full|plan] [--context transcript|summary] [--note TEXT] [--json]";
 
 /// The longest note, in characters.
 const MAX_NOTE_CHARS: usize = 2000;
@@ -60,7 +60,12 @@ pub(super) fn parse(mut args: Vec<String>) -> Result<Arguments, String> {
         Some("codex") => HarnessKind::Codex,
         Some("claude") => HarnessKind::Claude,
         Some("grok") => HarnessKind::Grok,
-        _ => return Err(format!("--provider must be codex, claude or grok\n{USAGE}")),
+        Some("muse") => HarnessKind::Muse,
+        _ => {
+            return Err(format!(
+                "--provider must be codex, claude, grok or muse\n{USAGE}"
+            ));
+        }
     };
     let mode = match take_verbatim_option(&mut args, "--mode")?.as_deref() {
         None => None,

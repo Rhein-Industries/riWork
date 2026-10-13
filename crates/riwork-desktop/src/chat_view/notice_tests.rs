@@ -855,7 +855,7 @@ fn a_provider_switch_clears_the_old_limit_banner_and_meter_windows(cx: &mut Test
         let mut next = old;
         next.provider = match next.provider {
             Provider::Claude => Provider::Codex,
-            Provider::Codex => Provider::Claude,
+            Provider::Codex | Provider::Muse => Provider::Claude,
         };
         view.model.transcript.apply(&ChatEvent::Info { info: next });
         view.model.transcript.apply(&ChatEvent::Usage {
