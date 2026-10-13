@@ -2661,3 +2661,293 @@ fn subagent_synthetic_and_meta_user_frames_are_not_the_users_messages() {
         ItemStatus::Completed
     );
 }
+
+// What the CLI took, refused and reports of itself reaches the host through reporters.
+
+/// What one reporter heard, in order. The single place that builds a recording
+/// `DriverReporter` from the shared contract.
+#[derive(Clone, Default)]
+struct Heard(Arc<Mutex<Vec<DriverReport>>>);
+
+fn recorder() -> (DriverReporter, Heard) {
+    let heard = Heard::default();
+    let sink = heard.0.clone();
+    let reporter = DriverReporter::new(move |report| sink.lock().unwrap().push(report));
+    (reporter, heard)
+}
+
+impl Heard {
+    fn count(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+    fn models(&self) -> Vec<Option<String>> {
+        let reports = self.0.lock().unwrap();
+        reports.iter().filter_map(|r| r.model.clone()).collect()
+    }
+    fn efforts(&self) -> Vec<Option<String>> {
+        let reports = self.0.lock().unwrap();
+        reports.iter().filter_map(|r| r.effort.clone()).collect()
+    }
+    fn modes(&self) -> Vec<ApprovalMode> {
+        let reports = self.0.lock().unwrap();
+        reports.iter().filter_map(|r| r.approval_mode).collect()
+    }
+    fn fasts(&self) -> Vec<bool> {
+        let reports = self.0.lock().unwrap();
+        reports.iter().filter_map(|r| r.fast).collect()
+    }
+    fn threads(&self) -> Vec<String> {
+        let reports = self.0.lock().unwrap();
+        reports
+            .iter()
+            .filter_map(|r| r.provider_thread_id.clone())
+            .collect()
+    }
+}
+
+fn model_change(model: &str) -> ChatCommand {
+    ChatCommand::Configure {
+        model: Some(model.into()),
+        effort: None,
+        approval_mode: None,
+        fast: None,
+    }
+}
+
+#[test]
+fn a_session_with_history_that_claude_cannot_find_is_an_error_not_a_new_session() {
+    let fake = Fake::new(&[&fixture("claude/fails_at_start.ndjson")]);
+    let mut config = fake.config(Provider::Claude);
+    config.resume = Some("sess-1".into());
+    config.resume_has_history = true;
+    let (sender, events) = mpsc::channel();
+    let error = start_with(config, sender, fast())
+        .err()
+        .expect("the start fails");
+    assert!(
+        error.contains("sess-1") && error.contains("Nothing was started"),
+        "{error}"
+    );
+    // One launch, the resume: no session was started in its place.
+    assert_eq!(fake.starts().len(), 1);
+    assert!(has_pair(&argv(&fake.starts()[0]), "--resume", "sess-1"));
+    let events: Vec<ChatEvent> = events.try_iter().collect();
+    assert!(
+        events.iter().any(|event| matches!(event, ChatEvent::State { state: ChatState::Failed { message } } if *message == error)),
+        "{events:#?}"
+    );
+    assert!(completed_notices(&events).is_empty(), "{events:#?}");
+}
+
+#[test]
+fn an_answer_to_an_overtaken_model_change_neither_settles_nor_rolls_it_back() {
+    let mut rig = Rig::new(&["settings_overtaken"]);
+    let (first, heard_first) = recorder();
+    let (second, heard_second) = recorder();
+    // The first answer comes late: both requests are out before it.
+    rig.driver
+        .configure(model_change("model-a"), first)
+        .unwrap();
+    rig.driver
+        .configure(model_change("model-b"), second)
+        .unwrap();
+    wait_for("model-b settles", || heard_second.count() == 1);
+    assert_eq!(heard_second.models(), [Some("model-b".to_owned())]);
+    assert_eq!(heard_first.count(), 0, "an overtaken change says nothing");
+    // Asked for again, model-b is what the CLI has, at once.
+    let (third, heard_third) = recorder();
+    rig.driver
+        .configure(model_change("model-b"), third)
+        .unwrap();
+    assert_eq!(heard_third.models(), [Some("model-b".to_owned())]);
+    assert!(!rig.fake.saw("mismatch"));
+    // The refusal is still said.
+    let said = notices(&rig.events.try_iter().collect::<Vec<_>>());
+    assert!(
+        said.iter()
+            .any(|(_, text)| text.contains("model-a is not available")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_refused_model_change_reports_the_model_claude_kept() {
+    let mut rig = Rig::new(&["settings_refused"]);
+    let (first, heard_first) = recorder();
+    rig.driver
+        .configure(model_change("model-a"), first)
+        .unwrap();
+    wait_for("model-a settles", || heard_first.count() == 1);
+    assert_eq!(heard_first.models(), [Some("model-a".to_owned())]);
+    // Two refused changes; the first is answered after the second is out. What the
+    // CLI keeps is model-a, never the overtaken model-b.
+    let (second, heard_second) = recorder();
+    let (third, heard_third) = recorder();
+    rig.driver
+        .configure(model_change("model-b"), second)
+        .unwrap();
+    rig.driver
+        .configure(model_change("model-c"), third)
+        .unwrap();
+    wait_for("model-c settles", || heard_third.count() == 1);
+    assert_eq!(heard_third.models(), [Some("model-a".to_owned())]);
+    assert_eq!(heard_second.count(), 0);
+    assert!(!rig.fake.saw("mismatch"));
+}
+
+#[test]
+fn a_permission_mode_and_fast_mode_claude_takes_are_reported_when_it_answers() {
+    let mut rig = Rig::new(&["settings_accepted"]);
+    let (reporter, heard) = recorder();
+    rig.driver
+        .configure(
+            ChatCommand::Configure {
+                model: None,
+                effort: None,
+                approval_mode: Some(ApprovalMode::AutoEdit),
+                fast: Some(true),
+            },
+            reporter,
+        )
+        .unwrap();
+    wait_for("both settle", || heard.count() == 2);
+    assert_eq!(heard.modes(), [ApprovalMode::AutoEdit]);
+    assert_eq!(heard.fasts(), [true]);
+    assert!(!rig.fake.saw("mismatch"));
+}
+
+#[test]
+fn an_effort_is_reported_at_once_and_the_restart_for_it_settles_what_the_old_process_left() {
+    let mut rig = Rig::new(&["settings_unanswered", "idle_only"]);
+    let (model, heard_model) = recorder();
+    rig.driver
+        .configure(model_change("model-b"), model)
+        .unwrap();
+    wait_for("the model change is out", || {
+        rig.fake
+            .received()
+            .iter()
+            .any(|frame| frame["request"]["subtype"] == "set_model")
+    });
+    assert_eq!(heard_model.count(), 0, "not answered yet");
+    let (effort, heard_effort) = recorder();
+    rig.driver
+        .configure(
+            ChatCommand::Configure {
+                model: None,
+                effort: Some("high".into()),
+                approval_mode: None,
+                fast: None,
+            },
+            effort,
+        )
+        .unwrap();
+    // Only a launch sets the effort: it is the chat's from now on.
+    assert_eq!(heard_effort.efforts(), [Some("high".to_owned())]);
+    // The new process starts with both, which settles the unanswered change.
+    rig.until_idle();
+    wait_for("the model change settles", || heard_model.count() == 1);
+    assert_eq!(heard_model.models(), [Some("model-b".to_owned())]);
+    let starts = rig.fake.starts();
+    assert_eq!(starts.len(), 2);
+    let args = argv(&starts[1]);
+    assert!(has_pair(&args, "--model", "model-b"), "{args:?}");
+    assert!(has_pair(&args, "--effort", "high"), "{args:?}");
+}
+
+#[test]
+fn the_session_and_mode_claude_reports_are_observed_and_its_resolved_model_is_not() {
+    let (reporter, heard) = recorder();
+    let mut config = bare_config();
+    config.resume = Some("sess-1".into());
+    config.approval_mode = ApprovalMode::Supervised;
+    config.reporter = reporter;
+    let (sender, _events) = mpsc::channel();
+    let mut core = Core::new(&config, sender, "sess-1".into());
+    core.ready = true;
+    // A resumed chat on the default model: the model claude resolves it to is
+    // its own business, not the chat's choice.
+    core.on_frame(
+        &json!({"type":"system","subtype":"init","session_id":"sess-2",
+        "model":"claude-sonnet-4-6","permissionMode":"acceptEdits","tools":[]}),
+    );
+    assert_eq!(heard.threads(), ["sess-2"]);
+    assert_eq!(core.session_id, "sess-2");
+    assert_eq!(heard.modes(), [ApprovalMode::AutoEdit]);
+    assert!(heard.models().is_empty(), "the default stays the default");
+    assert_eq!(core.settings.model, None);
+    // An approval "for the session" moves the CLI to another mode on its own.
+    core.on_frame(&json!({"type":"system","subtype":"status","permissionMode":"plan"}));
+    assert_eq!(heard.modes(), [ApprovalMode::AutoEdit, ApprovalMode::Plan]);
+    // A mode RiWork has no name for is not reported as one it has.
+    core.on_frame(&json!({"type":"system","subtype":"status","permissionMode":"dontAsk"}));
+    assert_eq!(heard.modes(), [ApprovalMode::AutoEdit, ApprovalMode::Plan]);
+    // The same session again is nothing new.
+    core.on_frame(
+        &json!({"type":"system","subtype":"init","session_id":"sess-2",
+        "model":"claude-sonnet-4-6","permissionMode":"plan","tools":[]}),
+    );
+    assert_eq!(heard.threads(), ["sess-2"]);
+
+    // A chosen alias stays the alias, whatever it resolves to.
+    let (reporter, heard) = recorder();
+    let mut config = bare_config();
+    config.model = Some("opus".into());
+    config.reporter = reporter;
+    let (sender, _events) = mpsc::channel();
+    let mut core = Core::new(&config, sender, "sess-1".into());
+    core.ready = true;
+    core.on_frame(
+        &json!({"type":"system","subtype":"init","session_id":"sess-1",
+        "model":"claude-opus-4-6","permissionMode":"plan","tools":[]}),
+    );
+    assert!(heard.models().is_empty());
+    assert!(heard.threads().is_empty());
+    assert_eq!(core.settings.model.as_deref(), Some("opus"));
+}
+
+/// Ask for `model` through `core` and return the request id the CLI would answer.
+fn ask_model(
+    core: &mut Core,
+    written: &Receiver<Outgoing>,
+    model: &str,
+    reporter: DriverReporter,
+) -> String {
+    core.command(model_change(model), reporter).unwrap();
+    let frame: Value = serde_json::from_str(&written.try_recv().unwrap().line).unwrap();
+    assert_eq!(frame["request"]["model"], model);
+    frame["request_id"].as_str().unwrap().to_owned()
+}
+
+fn answer(core: &mut Core, request_id: &str, accepted: bool) {
+    let response = if accepted {
+        json!({"subtype":"success","request_id":request_id,"response":{}})
+    } else {
+        json!({"subtype":"error","request_id":request_id,"error":"not available"})
+    };
+    core.on_frame(&json!({"type":"control_response","response":response}));
+}
+
+#[test]
+fn a_late_answer_to_an_older_change_does_not_become_what_claude_keeps() {
+    let (sender, _events) = mpsc::channel();
+    let mut core = Core::new(&bare_config(), sender, "session".into());
+    core.ready = true;
+    let (out, written) = mpsc::channel();
+    core.out = Some(out);
+    let (a, heard_a) = recorder();
+    let (b, heard_b) = recorder();
+    let request_a = ask_model(&mut core, &written, "model-a", a);
+    let request_b = ask_model(&mut core, &written, "model-b", b);
+    // The newer change is answered first, the older one late.
+    answer(&mut core, &request_b, true);
+    answer(&mut core, &request_a, true);
+    assert_eq!(heard_b.models(), [Some("model-b".to_owned())]);
+    assert_eq!(heard_a.count(), 0);
+    // A refused change goes back to what the CLI has: model-b, not the late model-a.
+    let (c, heard_c) = recorder();
+    let request_c = ask_model(&mut core, &written, "model-c", c);
+    answer(&mut core, &request_c, false);
+    assert_eq!(heard_c.models(), [Some("model-b".to_owned())]);
+    assert_eq!(core.settings.model.as_deref(), Some("model-b"));
+}
