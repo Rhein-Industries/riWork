@@ -121,6 +121,14 @@ impl RpcError {
 
 type Reply = Box<dyn FnOnce(&Muse, Result<Value, RpcError>) + Send>;
 
+/// A frame that did not reach Muse whole: why, whether part of it did, and
+/// the typed message it carried.
+struct Unwritten {
+    error: String,
+    partial: bool,
+    text: Option<String>,
+}
+
 fn command_id() -> String {
     Uuid::now_v7().to_string()
 }
@@ -271,20 +279,84 @@ impl Muse {
     /// Send frames collected under the lock; a failed write is a notice, like
     /// Codex's — the reader's exit path reports the death itself.
     fn send_all(&self, frames: Vec<Value>) {
-        for frame in frames {
-            if self.proc.send(&frame).is_err() {
-                self.with(|session| {
-                    if !session.stopping && !session.finished {
-                        session.notice(
-                            NoticeLevel::Error,
-                            notice_kind::SETTING_REFUSED,
-                            "RiWork could not write to muse; the message was not sent.".to_owned(),
-                        );
-                    }
-                });
+        let mut frames = frames.into_iter();
+        let Some(failed) = frames.by_ref().find_map(|frame| self.write(&frame).err()) else {
+            return;
+        };
+        // Frames after a failed write were never sent: undo what they set up.
+        let rest: Vec<Value> = frames.collect();
+        let (more, mut unsent) = self.with(|session| {
+            let mut more = Vec::new();
+            let mut unsent = Vec::new();
+            for frame in &rest {
+                let (frames, text) = session.unwrite(frame);
+                more.extend(frames);
+                unsent.extend(text);
+            }
+            (more, unsent)
+        });
+        self.with(|session| {
+            if session.stopping || session.finished {
                 return;
             }
+            match failed.text {
+                Some(text) if failed.partial => session.undelivered(
+                    &format!(
+                        "RiWork's write to muse broke off ({}); this message may have reached it, so check the transcript before sending it again:",
+                        failed.error
+                    ),
+                    &[text],
+                ),
+                Some(text) => unsent.insert(0, text),
+                None => {}
+            }
+            if unsent.is_empty() {
+                session.notice(
+                    NoticeLevel::Error,
+                    notice_kind::SETTING_REFUSED,
+                    format!("RiWork could not write to muse ({}).", failed.error),
+                );
+            } else {
+                session.undelivered(
+                    &format!("RiWork could not write to muse ({}); not sent:", failed.error),
+                    &unsent,
+                );
+            }
+        });
+        // Messages that waited behind an unwritten start; a second failure
+        // leaves nothing queued to retry.
+        self.send_all(more);
+    }
+
+    /// Writes one frame. When none of it reached Muse, what it set up is
+    /// undone (`Session::unwrite`); when part of it did, it is an unknown
+    /// submission, never written again.
+    fn write(&self, frame: &Value) -> Result<(), Unwritten> {
+        let Err(error) = self
+            .proc
+            .send_line_until(&frame.to_string(), Instant::now() + child::WRITE_WAIT)
+        else {
+            return Ok(());
+        };
+        if error.written > 0 {
+            let text = self.with(|session| {
+                frame["id"]
+                    .as_i64()
+                    .and_then(|id| session.in_flight.remove(&id))
+            });
+            return Err(Unwritten {
+                error: error.to_string(),
+                partial: true,
+                text,
+            });
         }
+        let (more, text) = self.with(|session| session.unwrite(frame));
+        self.send_all(more);
+        Err(Unwritten {
+            error: error.to_string(),
+            partial: false,
+            text,
+        })
     }
 
     /// One request waited on inline; the handshake is the only caller.
@@ -627,7 +699,10 @@ impl Muse {
                 } else {
                     Ok(frame["result"].clone())
                 };
-                if let Some(reply) = self.with(|session| session.waiting.remove(&id)) {
+                if let Some(reply) = self.with(|session| {
+                    session.in_flight.remove(&id);
+                    session.waiting.remove(&id)
+                }) {
                     reply(self, outcome);
                 }
             }
@@ -854,6 +929,9 @@ struct Session {
     context_in_flight: Option<(u64, String)>,
     /// How recent submissions show, by `commandId`.
     shown: VecDeque<(String, Shown)>,
+    /// Typed messages riding a request Muse has not answered, by request id:
+    /// if the process ends first, they are given back in a notice, never resent.
+    in_flight: HashMap<i64, String>,
 }
 
 impl Session {
@@ -898,6 +976,7 @@ impl Session {
             context: None,
             context_in_flight: None,
             shown: VecDeque::new(),
+            in_flight: HashMap::new(),
         }
     }
 
@@ -908,8 +987,107 @@ impl Session {
         self.shown.push_back((command_id.to_owned(), shown));
     }
 
+    /// `text`, typed by the user, rides `frame` until Muse answers it.
+    fn track(&mut self, frame: &Value, text: String) {
+        if let Some(id) = frame["id"].as_i64() {
+            self.in_flight.insert(id, text);
+        }
+    }
+
+    /// Typed messages given back to the user, whole, when they did not or
+    /// may not have reached Muse.
+    fn undelivered(&mut self, lead: &str, texts: &[String]) {
+        if texts.is_empty() {
+            return;
+        }
+        let quoted: Vec<String> = texts.iter().map(|text| format!("“{text}”")).collect();
+        self.notice(
+            NoticeLevel::Warning,
+            notice_kind::UNDELIVERED,
+            format!("{lead}\n\n{}", quoted.join("\n\n")),
+        );
+    }
+
+    /// The process is over: say which typed messages it never took (waiting
+    /// for a turn) and which it never confirmed (their request unanswered).
+    fn give_back(&mut self) {
+        let waiting = std::mem::take(&mut self.queued);
+        self.undelivered("Muse stopped before these messages were sent:", &waiting);
+        let mut unconfirmed: Vec<(i64, String)> = self.in_flight.drain().collect();
+        unconfirmed.sort();
+        let unconfirmed: Vec<String> = unconfirmed.into_iter().map(|(_, text)| text).collect();
+        self.undelivered(
+            "Muse stopped before confirming these messages; check the transcript before sending them again:",
+            &unconfirmed,
+        );
+    }
+
     fn forget(&mut self, command_id: &str) {
         self.shown.retain(|(id, _)| id != command_id);
+    }
+
+    /// `frame` never reached Muse: forget its reply and its on-screen form;
+    /// an interrupt is not under way, and a start is not starting (messages
+    /// that waited for it start a turn of their own, the frames returned).
+    /// The typed message it carried, if any, is returned to be given back.
+    fn unwrite(&mut self, frame: &Value) -> (Vec<Value>, Option<String>) {
+        let text = frame["id"].as_i64().and_then(|id| {
+            self.waiting.remove(&id);
+            self.in_flight.remove(&id)
+        });
+        if let Some(command) = frame["params"]["commandId"].as_str() {
+            self.forget(command);
+        }
+        let frames = match frame["method"].as_str() {
+            Some("turn/interrupt") => {
+                self.interrupting = false;
+                self.refresh_state();
+                Vec::new()
+            }
+            Some("turn/start") if self.turn.is_none() => {
+                self.unsend_context();
+                self.settle_start()
+            }
+            _ => Vec::new(),
+        };
+        (frames, text)
+    }
+
+    /// A start is over without a turn of its own (refused, withdrawn,
+    /// absorbed, unwritten, or its turn already over): nothing is starting,
+    /// an interrupt meant for it is moot, and messages that waited for it
+    /// start a turn of their own (the frames returned).
+    fn settle_start(&mut self) -> Vec<Value> {
+        self.starting = false;
+        self.interrupt_wanted = false;
+        if self.turn.is_some() {
+            // The open turn takes them (`begin_turn` steered them already).
+            self.refresh_state();
+            return Vec::new();
+        }
+        let queued = std::mem::take(&mut self.queued);
+        match (queued.is_empty(), self.session_id.clone()) {
+            (false, Some(session_id)) => {
+                vec![self.start_frame(&session_id, Submission::text(queued.join("\n\n")), None)]
+            }
+            _ => {
+                self.refresh_state();
+                Vec::new()
+            }
+        }
+    }
+
+    /// What a sender that stopped waiting for `what` is told when Muse's
+    /// answer comes after all.
+    fn late_outcome(&mut self, what: &str, message: &str) {
+        let text = if message.starts_with(UNKNOWN_SUBMISSION) {
+            format!(
+                "Muse answered the {what} sent earlier without naming a turn that took it; check the transcript before sending it again."
+            )
+        } else {
+            format!("Muse did not take the {what}: {message}")
+        };
+        self.notice(NoticeLevel::Error, notice_kind::SETTING_REFUSED, text);
     }
 
     /// The current start did not reach Muse: its carried-over conversation
@@ -1055,8 +1233,7 @@ impl Session {
             || self.completed_before_receipt.contains(turn_id)
         {
             if self.turn.is_none() {
-                self.starting = false;
-                self.refresh_state();
+                return self.settle_start();
             }
             return frames;
         }
@@ -1072,7 +1249,9 @@ impl Session {
         if self.turn.is_none() && self.last_finished_turn.as_deref() != Some(turn_id) {
             self.starting = false;
             if self.pending_turn.as_deref() == Some(turn_id) {
+                // Our queued start runs: what it carried is in now.
                 self.pending_turn = None;
+                self.context_in_flight = None;
             }
             self.turn = Some(turn_id.to_owned());
             self.error_shown = false;
@@ -1103,6 +1282,7 @@ impl Session {
     }
 
     fn steer_frame(&mut self, session: &str, turn: &str, text: String) -> Value {
+        let typed = text.clone();
         let params = json!({
             "commandId": command_id(),
             "sessionId": session,
@@ -1110,26 +1290,44 @@ impl Session {
             "input": [{"type": "text", "text": text}],
         });
         let turn = turn.to_owned();
-        self.request(
+        let frame = self.request(
             "turn/steer",
             params,
             Box::new(move |muse, outcome| {
-                // In only when Muse names the turn that absorbed it. Muse
-                // 1.4.7 answers a steer that came too late as accepted under
-                // the steer's own id, and its log records it rejected.
-                if outcome.is_ok_and(|result| result["turnId"].as_str() == Some(turn.as_str())) {
-                    return;
-                }
-                // The turn may have ended just as the message was sent: then
-                // the message starts the next one; else it queues for it.
-                let ended = muse.with(|session| session.turn.as_deref() != Some(turn.as_str()));
-                if ended {
-                    let _ = muse.send_text(text);
-                } else {
-                    muse.with(|session| session.queued.push(text));
+                match outcome {
+                    // In: Muse names the turn that absorbed it.
+                    Ok(result) if result["turnId"].as_str() == Some(turn.as_str()) => {}
+                    // Acknowledged but not for this turn: Muse 1.4.7 answers
+                    // so a steer that came after the turn's last model call,
+                    // and drops it. Whether it is in is not certain, so it is
+                    // not sent again; the user has it back to decide.
+                    Ok(_) => muse.with(|session| {
+                        session.undelivered(
+                            "Muse acknowledged this message without taking it into the running turn, so it may not have reached the model; it was not sent again:",
+                            &[text],
+                        )
+                    }),
+                    // Refused, so certainly not in: it starts the next turn
+                    // if this one is over, else it waits for that.
+                    Err(_) => {
+                        let ended =
+                            muse.with(|session| session.turn.as_deref() != Some(turn.as_str()));
+                        if !ended {
+                            muse.with(|session| session.queued.push(text));
+                        } else if let Err(error) = muse.send_text(text.clone()) {
+                            muse.with(|session| {
+                                session.undelivered(
+                                    &format!("A message for Muse was not sent ({error}):"),
+                                    &[text],
+                                )
+                            });
+                        }
+                    }
                 }
             }),
-        )
+        );
+        self.track(&frame, typed);
+        frame
     }
 
     /// A `turn/start` for `submission`, marking the chat busy. The
@@ -1153,6 +1351,9 @@ impl Session {
         self.context_in_flight = context.clone().map(|context| (serial, context));
         let raw = submission.joined();
         let Submission { mut input, shown } = submission;
+        // What the user typed, for a notice if Muse never takes it (an
+        // attachment sender hears the outcome itself).
+        let typed = answer.is_none().then(|| shown.text.clone());
         if let Some(context) = &context {
             input.insert(0, json!({"type": "text", "text": format!("{context}\n\n")}));
         }
@@ -1168,29 +1369,27 @@ impl Session {
         if let Some(effort) = self.effort_to_send() {
             params["reasoningEffort"] = json!(effort);
         }
-        self.request(
+        let given_back = typed.clone();
+        let frame = self.request(
             "turn/start",
             params,
             Box::new(move |muse, outcome| {
-                let waited = answer.is_some();
                 let (frames, result) =
-                    muse.with(|session| session.started(serial, &command, outcome, waited));
+                    muse.with(|session| session.started(serial, &command, outcome, given_back));
                 muse.send_all(frames);
                 // A sender that stopped waiting was told the outcome is
                 // unknown; a refusal that comes after is still said.
                 if let Some(answer) = answer
                     && let Err(mpsc::SendError(Err(message))) = answer.send(result)
                 {
-                    muse.with(|session| {
-                        session.notice(
-                            NoticeLevel::Error,
-                            notice_kind::SETTING_REFUSED,
-                            format!("Muse did not start the turn: {message}"),
-                        )
-                    });
+                    muse.with(|session| session.late_outcome("attachments", &message));
                 }
             }),
-        )
+        );
+        if let Some(typed) = typed {
+            self.track(&frame, typed);
+        }
+        frame
     }
 
     /// How Muse took the `turn/start` numbered `serial`: frames to send, and
@@ -1203,14 +1402,17 @@ impl Session {
         serial: u64,
         command: &str,
         outcome: Result<Value, RpcError>,
-        waited: bool,
+        typed: Option<String>,
     ) -> (Vec<Value>, Result<(), String>) {
         let result = match outcome {
             Ok(result) => {
-                if self
-                    .context_in_flight
-                    .as_ref()
-                    .is_some_and(|(sent, _)| *sent == serial)
+                // Taken with the input, unless only queued: then it is in
+                // once the turn starts (`begin_turn`), and back if withdrawn.
+                if result["disposition"].as_str() != Some("queued")
+                    && self
+                        .context_in_flight
+                        .as_ref()
+                        .is_some_and(|(sent, _)| *sent == serial)
                 {
                     self.context_in_flight = None;
                 }
@@ -1218,6 +1420,13 @@ impl Session {
             }
             Err(error) => {
                 if self.start_serial != serial {
+                    // Refused all the same: the typed message is given back.
+                    if let Some(typed) = typed {
+                        self.undelivered(
+                            &format!("Muse did not start the turn ({}); not sent:", error.message),
+                            &[typed],
+                        );
+                    }
                     return (
                         Vec::new(),
                         Err(format!(
@@ -1226,32 +1435,17 @@ impl Session {
                         )),
                     );
                 }
-                self.starting = false;
-                self.interrupt_wanted = false;
                 self.unsend_context();
                 self.forget(command);
-                if !waited {
-                    self.notice(
-                        NoticeLevel::Error,
-                        notice_kind::SETTING_REFUSED,
-                        format!("Muse did not start the turn: {}", error.message),
+                if let Some(typed) = typed {
+                    self.undelivered(
+                        &format!("Muse did not start the turn ({}); not sent:", error.message),
+                        &[typed],
                     );
                 }
                 // A message accepted behind this start still deserves a
                 // turn of its own, not the bin.
-                let queued = std::mem::take(&mut self.queued);
-                let frames = match (queued.is_empty(), self.session_id.clone()) {
-                    (false, Some(session_id)) => vec![self.start_frame(
-                        &session_id,
-                        Submission::text(queued.join("\n\n")),
-                        None,
-                    )],
-                    _ => {
-                        self.refresh_state();
-                        Vec::new()
-                    }
-                };
-                return (frames, Err(error.message));
+                return (self.settle_start(), Err(error.message));
             }
         };
         if self.start_serial != serial {
@@ -1263,17 +1457,14 @@ impl Session {
             );
         }
         let Some(turn_id) = result["turnId"].as_str().filter(|id| !id.trim().is_empty()) else {
-            self.starting = false;
-            if !waited {
-                self.notice(
-                    NoticeLevel::Error,
-                    notice_kind::SETTING_REFUSED,
-                    "Muse took the message without naming a turn.".to_owned(),
+            if let Some(typed) = typed {
+                self.undelivered(
+                    "Muse took this message without naming a turn, so it may not run; check the transcript before sending it again:",
+                    &[typed],
                 );
             }
-            self.refresh_state();
             return (
-                Vec::new(),
+                self.settle_start(),
                 Err(format!(
                     "{UNKNOWN_SUBMISSION} Muse took the message without naming a turn; inspect the transcript before resending"
                 )),
@@ -1287,11 +1478,8 @@ impl Session {
                 self.pending_turn = Some(turn_id.to_owned());
                 Vec::new()
             }
-            Some("steered") => {
-                self.starting = false;
-                self.refresh_state();
-                Vec::new()
-            }
+            // Folded into a turn this driver does not hold open.
+            Some("steered") => self.settle_start(),
             _ => self.begin_turn(turn_id),
         };
         (frames, Ok(()))
@@ -1354,6 +1542,7 @@ impl Session {
 
     /// The chat has stopped on purpose.
     fn finish_stopped(&mut self) {
+        self.give_back();
         self.finished = true;
         self.waiting.clear();
         self.requests.clear();
@@ -1370,6 +1559,7 @@ impl Session {
 
     /// The process ended by itself.
     fn finish_failed(&mut self, message: String) {
+        self.give_back();
         self.finished = true;
         self.waiting.clear();
         self.requests.clear();
@@ -1445,10 +1635,20 @@ impl Muse {
                 )))
             }
         })?;
-        if let Some(frame) = frame {
-            self.send_all(vec![frame]);
+        match frame {
+            // The sender hears it, and keeps the message.
+            Some(frame) => self.write(&frame).map_err(|unwritten| {
+                if unwritten.partial {
+                    format!(
+                        "{UNKNOWN_SUBMISSION} {}; inspect the transcript before resending",
+                        unwritten.error
+                    )
+                } else {
+                    unwritten.error
+                }
+            }),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// Attachments go only when Muse can take them now: into the open turn
@@ -1462,7 +1662,7 @@ impl Muse {
         }
         let submission = Submission::attachments(text, attachments)?;
         let (answer, wait) = mpsc::channel();
-        let (frame, command, starting) = self.with(|session| -> Result<_, String> {
+        let frame = self.with(|session| -> Result<_, String> {
             let Some(session_id) = session.session_id.clone() else {
                 return Err("muse has no session yet; keep the draft".to_owned());
             };
@@ -1497,15 +1697,16 @@ impl Muse {
                                     Err(error.message)
                                 }
                             };
-                            let _ = answer.send(result);
+                            // A sender that stopped waiting still hears of it.
+                            if let Err(mpsc::SendError(Err(message))) = answer.send(result) {
+                                muse.with(|session| session.late_outcome("attachments", &message));
+                            }
                         }),
                     );
-                    Ok((frame, command, false))
+                    Ok(frame)
                 }
                 None => {
-                    let frame = session.start_frame(&session_id, submission, Some(answer));
-                    let command = frame["params"]["commandId"].as_str().unwrap_or_default().to_owned();
-                    Ok((frame, command, true))
+                    Ok(session.start_frame(&session_id, submission, Some(answer)))
                 }
             }
         })?;
@@ -1514,17 +1715,8 @@ impl Muse {
             if error.written == 0 {
                 // Nothing reached Muse: undo what the send set up, so a late
                 // unrelated reply cannot read as this message's.
-                self.with(|session| {
-                    if let Some(id) = frame["id"].as_i64() {
-                        session.waiting.remove(&id);
-                    }
-                    session.forget(&command);
-                    if starting {
-                        session.starting = false;
-                        session.unsend_context();
-                        session.refresh_state();
-                    }
-                });
+                let (more, _) = self.with(|session| session.unwrite(&frame));
+                self.send_all(more);
                 return Err(error.to_string());
             }
             return Err(format!(
@@ -2044,6 +2236,26 @@ impl Session {
         let Some(approval_id) = params["approvalId"].as_str().filter(|id| !id.is_empty()) else {
             return;
         };
+        let fresh = wire_choices(params);
+        let offered = offered_of(&fresh);
+        // A stage RiWork cannot answer: the old buttons would aim old choices
+        // at the new requirement, so the prompt closes here and says why;
+        // Muse's turn waits for an interrupt or a decision in Muse itself.
+        if params["availableChoices"].is_array()
+            && offered.is_empty()
+            && self
+                .requests
+                .iter()
+                .any(|open| open.request_id == approval_id)
+        {
+            self.notice(
+                NoticeLevel::Warning,
+                notice_kind::PROVIDER_WARNING,
+                "Muse's approval moved to a step RiWork cannot answer without saving a rule; interrupt the turn, or decide in Muse itself.".to_owned(),
+            );
+            self.close_approval(approval_id, Decision::Cancel);
+            return;
+        }
         let Some(open) = self
             .requests
             .iter_mut()
@@ -2069,8 +2281,6 @@ impl Session {
                 request[field] = params[field].clone();
             }
         }
-        let fresh = wire_choices(params);
-        let offered = offered_of(&fresh);
         if !offered.is_empty() {
             presented.choices = offered;
             *choices = fresh;
@@ -2313,16 +2523,17 @@ impl Session {
                     && self.pending_turn.as_deref() == Some(turn)
                 {
                     self.pending_turn = None;
-                    if self.turn.is_none() {
-                        self.starting = false;
-                    }
                     self.notice(
                         NoticeLevel::Warning,
                         notice_kind::UNDELIVERED,
                         "A message waiting for its turn was withdrawn from Muse and will not run."
                             .to_owned(),
                     );
-                    self.refresh_state();
+                    // What it carried never ran: the conversation from before a
+                    // switch goes with the next start, and so do the messages
+                    // that waited behind it.
+                    self.unsend_context();
+                    return self.settle_start();
                 }
             }
             "session/todoListChanged" => self.todos(params),

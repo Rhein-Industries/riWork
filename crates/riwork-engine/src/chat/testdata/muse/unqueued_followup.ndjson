@@ -1,0 +1,12 @@
+# A first start that carried the conversation from before a switch is queued, then withdrawn
+# elsewhere (turn/unqueued) while a follow-up message and an interrupt wait for it. The withdrawn
+# start never ran: the conversation goes with the follow-up, which starts a turn of its own, and
+# the interrupt meant for the withdrawn start does not stop it.
+{"type":"expect","frame":{"id":"<any>","method":"initialize","params":{"clientInfo":{"name":"riwork"},"capabilities":{"requestedCapabilities":["sessionMcp"]}}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"serverInfo":{"name":"muse","version":"1.4.7"},"grantedCapabilities":["sessionMcp"]}}]}
+{"type":"expect","frame":{"method":"initialized"},"reply":[]}
+{"type":"expect","frame":{"id":"<any>","method":"session/start","params":{"commandId":"<any>","workspaceRoot":"<any>","approvalMode":"promptUnmatched"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"session":{"sessionId":"sess-1","activeTurnId":null,"turnCount":0},"viewCursor":""}}]}
+{"type":"expect","frame":{"id":"<any>","method":"model/list","params":{"sessionId":"sess-1"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"providerId":"fake","profileId":null,"source":"fakeCatalog","models":[]}}]}
+{"type":"expect","frame":{"id":"<any>","method":"turn/start","params":{"commandId":"<any>","sessionId":"sess-1","input":[{"type":"text","text":"EARLIER TALK\n\n"},{"type":"text","text":"A"}],"displayText":"A"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"commandId":"$command_id","status":"accepted","turnId":"turn-2","startedNewTurn":false,"disposition":"queued"}}]}
+{"type":"sleep","ms":400}
+{"type":"emit","frame":{"jsonrpc":"2.0","method":"turn/unqueued","params":{"sessionId":"sess-1","turnId":"turn-2","commandId":"c"}}}
+{"type":"expect","frame":{"id":"<any>","method":"turn/start","params":{"commandId":"<any>","sessionId":"sess-1","input":[{"type":"text","text":"EARLIER TALK\n\n"},{"type":"text","text":"B"}],"displayText":"B"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"commandId":"$command_id","status":"accepted","turnId":"turn-3","startedNewTurn":true,"disposition":"started"}},{"jsonrpc":"2.0","method":"turn/started","params":{"sessionId":"sess-1","turnId":"turn-3","commandId":"c"}},{"jsonrpc":"2.0","method":"turn/completed","params":{"sessionId":"sess-1","turnId":"turn-3","terminal":"completed"}}]}

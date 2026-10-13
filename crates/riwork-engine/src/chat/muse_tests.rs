@@ -873,10 +873,15 @@ fn the_carried_over_conversation_goes_once_and_the_user_sees_only_their_words() 
         "nothing says the conversation was lost: {:?}",
         run.notices()
     );
-    // A refused start keeps it for the next.
+    // A refused start keeps it for the next, and gives the typed message back.
     run.send("first try");
     run.until(is_notice);
     run.until(is_state(ChatState::Idle));
+    assert!(
+        run.notices()[0].1.ends_with("“first try”"),
+        "{:?}",
+        run.notices()
+    );
     run.send("hello");
     run.finish_turn();
     run.send("again");
@@ -1110,29 +1115,162 @@ fn a_steer_refused_as_its_turn_ends_starts_the_next_turn_once() {
 }
 
 #[test]
-fn a_steer_muse_acknowledges_for_another_turn_is_not_in_and_starts_the_next_turn_once() {
+fn a_steer_muse_acknowledges_for_another_turn_comes_back_and_is_not_sent_again() {
     let mut run = Run::start("steer_not_absorbed");
     run.send("one");
     run.until(is_turn_started);
     run.send("more");
-    run.until(|event| matches!(event, ChatEvent::TurnStarted { turn_id } if turn_id == "turn-2"));
+    run.until(is_notice);
     run.finish_turn();
-    let starts = run.fake.received_method("turn/start");
-    assert_eq!(starts.len(), 2);
+    let notices = run.notices();
+    assert!(
+        notices
+            .iter()
+            .any(|(_, text)| text.contains("not sent again") && text.ends_with("“more”")),
+        "{notices:?}"
+    );
     assert_eq!(
-        starts[1]["params"]["input"],
-        json!([{"type": "text", "text": "more"}])
+        run.fake.received_method("turn/start").len(),
+        1,
+        "never resent"
     );
     assert_eq!(run.fake.received_method("turn/steer").len(), 1);
-    let shown: Vec<String> = run
-        .transcript()
-        .items
-        .iter()
-        .filter(|item| matches!(item.body, ItemBody::UserMessage { .. }))
-        .map(|item| user_text(item).to_owned())
-        .collect();
-    assert_eq!(shown, ["more"]);
     run.end();
+}
+
+#[test]
+fn a_withdrawn_queued_start_hands_on_its_context_and_waiting_message_without_a_stale_interrupt() {
+    let mut run = Run::start_with("unqueued_followup", |config| {
+        config.instructions = Some("EARLIER TALK".into());
+    });
+    run.send("A");
+    run.send("B");
+    // Meant for "A", which never runs.
+    run.driver.command(ChatCommand::Interrupt).unwrap();
+    run.until(|event| matches!(event, ChatEvent::TurnStarted { turn_id } if turn_id == "turn-3"));
+    run.finish_turn();
+    assert!(
+        run.fake.received_method("turn/interrupt").is_empty(),
+        "the interrupt meant for the withdrawn start does not stop the next turn"
+    );
+    assert_eq!(run.fake.received_method("turn/start").len(), 2);
+    assert!(run.notices().iter().any(|(_, t)| t.contains("withdrawn")));
+    run.end();
+}
+
+#[test]
+fn an_approval_stage_riwork_cannot_answer_closes_the_prompt_and_old_choices_are_gone() {
+    let mut run = Run::start("approval_unanswerable");
+    run.send("go");
+    run.until(is_approval);
+    run.until(|event| {
+        matches!(
+            event,
+            ChatEvent::ApprovalResolved { request_id, decision: Decision::Cancel } if request_id == "ap-1"
+        )
+    });
+    assert!(
+        run.notices()
+            .iter()
+            .any(|(_, text)| text.contains("cannot answer without saving a rule")),
+        "{:?}",
+        run.notices()
+    );
+    for decision in [
+        Decision::Accept,
+        Decision::AcceptForSession,
+        Decision::Decline,
+    ] {
+        assert!(
+            run.driver
+                .command(ChatCommand::Approve {
+                    request_id: "ap-1".into(),
+                    decision,
+                })
+                .is_err()
+        );
+    }
+    assert!(run.fake.received_method("approval/decide").is_empty());
+    run.end();
+}
+
+#[test]
+fn a_typed_message_that_never_reaches_muse_is_the_senders_and_the_chat_is_idle() {
+    let script = fixture("muse/carry_over.ndjson")
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .take(4)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let fake = Fake::new(&[&script]);
+    let (sender, events) = mpsc::channel();
+    let mut driver = start(fake.config(Provider::Muse), sender).unwrap();
+    let mut seen = until(&events, is_state(ChatState::Idle));
+    // Every write fails before a byte goes out, as when the host cancels I/O.
+    driver.cancel_io().unwrap()();
+    let error = driver
+        .command(ChatCommand::Send {
+            text: "lost".into(),
+        })
+        .unwrap_err();
+    assert!(!error.starts_with(UNKNOWN_SUBMISSION), "{error}");
+    seen.extend(events.try_iter());
+    assert_eq!(fold(&seen).state, ChatState::Idle, "{seen:?}");
+    assert!(!seen.iter().any(is_notice), "the sender has it back");
+    driver.shutdown();
+}
+
+#[test]
+fn messages_muse_never_took_or_never_confirmed_come_back_when_it_dies_or_stops() {
+    fn given_back(events: &[ChatEvent]) -> (String, String) {
+        let notices: Vec<String> = fold(events)
+            .items
+            .into_iter()
+            .filter_map(|item| match item.body {
+                ItemBody::Notice { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        let find = |lead: &str| {
+            notices
+                .iter()
+                .find(|text| text.starts_with(lead))
+                .cloned()
+                .unwrap_or_else(|| panic!("no {lead:?} in {notices:?}"))
+        };
+        (
+            find("Muse stopped before these messages were sent"),
+            find("Muse stopped before confirming"),
+        )
+    }
+    // Muse dies after reading the first start.
+    let mut run = Run::start("exit_while_starting");
+    run.send("first");
+    run.send("second");
+    run.until(|event| {
+        matches!(
+            event,
+            ChatEvent::State {
+                state: ChatState::Failed { .. }
+            }
+        )
+    });
+    let (unsent, unconfirmed) = given_back(&run.seen);
+    assert!(
+        unsent.ends_with("“second”") && !unsent.contains("“first”"),
+        "{unsent}"
+    );
+    assert!(unconfirmed.ends_with("“first”"), "{unconfirmed}");
+    run.driver.shutdown();
+    // The chat is stopped instead.
+    let mut run = Run::start("stop_while_starting");
+    run.send("first");
+    run.send("second");
+    run.driver.shutdown();
+    run.drain();
+    let (unsent, unconfirmed) = given_back(&run.seen);
+    assert!(unsent.ends_with("“second”"), "{unsent}");
+    assert!(unconfirmed.ends_with("“first”"), "{unconfirmed}");
 }
 
 #[test]
@@ -1558,8 +1696,9 @@ fn live_echo_chat_carries_context_attachments_steers_and_resumes_with_cua_mcp() 
         assert_eq!(item.presentation.attachments, attachments);
     }
 
-    // A message sent into a running turn arrives once, steered or (if the turn
-    // ended first) as the next turn.
+    // A message sent into a running turn is taken by it, or (Muse 1.4.7, once
+    // the turn's last model call has begun) acknowledged for no turn and given
+    // back to the user; it is never sent twice.
     driver
         .command(ChatCommand::Send {
             text: "long one".into(),
@@ -1574,29 +1713,28 @@ fn live_echo_chat_carries_context_attachments_steers_and_resumes_with_cua_mcp() 
             text: "steer me".into(),
         })
         .unwrap();
-    until_all(&events, &mut seen, |seen| {
+    let given_back = |seen: &[ChatEvent]| {
+        fold(seen).items.iter().any(|item| {
+            matches!(&item.body, ItemBody::Notice { text, .. } if text.ends_with("“steer me”"))
+        })
+    };
+    let taken = |seen: &[ChatEvent]| {
         fold(seen)
             .items
             .iter()
-            .any(|item| user_text(item) == "steer me")
-            && idle_now(seen)
+            .filter(|item| user_text(item) == "steer me")
+            .count()
+    };
+    until_all(&events, &mut seen, |seen| {
+        (taken(seen) > 0 || given_back(seen)) && idle_now(seen)
     });
-    let steered = fold(&seen)
-        .items
-        .iter()
-        .filter(|item| user_text(item) == "steer me")
-        .count();
-    assert_eq!(steered, 1);
-    let turns = seen[before..]
-        .iter()
-        .filter(|event| is_turn_started(event))
-        .count();
+    assert!(taken(&seen) + usize::from(given_back(&seen)) == 1);
     eprintln!(
         "live steer: {}",
-        if turns == 1 {
-            "absorbed by the running turn"
+        if taken(&seen) == 1 {
+            "taken by the running turn"
         } else {
-            "not absorbed; sent as the next turn"
+            "acknowledged for no turn; given back, not resent"
         }
     );
 
