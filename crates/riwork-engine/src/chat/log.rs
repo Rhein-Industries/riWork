@@ -132,6 +132,7 @@ impl ChatLog {
         let mut history = false;
         let mut any_history = false;
         let mut boundary = false;
+        let mut turn = None;
         let mut seq = 0;
         let mut line = Vec::new();
         loop {
@@ -152,13 +153,42 @@ impl ChatLog {
                         || matches!((thread, &said.provider_thread_id), (Some(a), Some(b)) if a != b)
                 });
                 if changed {
-                    history = false;
+                    // The provider can adopt its real identity in system/init
+                    // after the host has logged the first accepted input.
+                    // Activity in the still-open turn follows that identity;
+                    // a switch or an idle /clear starts a new history segment.
+                    let continuing = binding
+                        .as_ref()
+                        .is_some_and(|(provider, _)| *provider == said.provider)
+                        && (turn.is_some()
+                            || matches!(
+                                said.state,
+                                super::model::ChatState::Running | super::model::ChatState::Waiting
+                            ));
+                    if !continuing {
+                        history = false;
+                        turn = None;
+                    }
                     boundary = true;
                 }
                 binding = Some((said.provider, said.provider_thread_id.clone()));
+                if matches!(
+                    said.state,
+                    super::model::ChatState::Running | super::model::ChatState::Waiting
+                ) {
+                    history = true;
+                    any_history = true;
+                }
             } else if is_session_history(&envelope.event) {
                 history = true;
                 any_history = true;
+            }
+            match envelope.event {
+                ChatEvent::TurnStarted { turn_id } => turn = Some(turn_id),
+                ChatEvent::TurnCompleted { turn_id, .. } if turn.as_ref() == Some(&turn_id) => {
+                    turn = None
+                }
+                _ => {}
             }
         }
         if binding.is_none() && info.provider_thread_id.is_some() {
@@ -204,7 +234,10 @@ impl ChatLog {
 
 fn is_session_history(event: &ChatEvent) -> bool {
     match event {
-        ChatEvent::TurnStarted { .. }
+        ChatEvent::State {
+            state: super::model::ChatState::Running | super::model::ChatState::Waiting,
+        }
+        | ChatEvent::TurnStarted { .. }
         | ChatEvent::TurnCompleted { .. }
         | ChatEvent::ItemDelta { .. }
         | ChatEvent::ApprovalRequested { .. }

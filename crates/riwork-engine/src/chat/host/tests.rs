@@ -3059,3 +3059,102 @@ fn metadata_only_legacy_sessions_are_unknown_rather_than_proven_never_used() {
         before.provider_thread_id
     );
 }
+
+#[test]
+fn identity_adoption_during_an_open_turn_keeps_its_history_but_an_idle_clear_resets_it() {
+    let host = NoticeHost::new();
+    let chat = host.create(Provider::Claude);
+    let mut inner = lock(&chat.inner);
+    inner.info.provider_thread_id = Some("initial-session".into());
+    inner.publish_info();
+    inner.append(ChatEvent::TurnStarted {
+        turn_id: "first-turn".into(),
+    });
+    inner.append(ChatEvent::ItemCompleted {
+        item: Item {
+            id: "first-input".into(),
+            turn_id: Some("first-turn".into()),
+            status: ItemStatus::Completed,
+            body: ItemBody::UserMessage {
+                text: "accepted before system/init".into(),
+            },
+            presentation: Default::default(),
+        },
+    });
+    inner.info.provider_thread_id = Some("actual-provider-session".into());
+    inner.publish_info();
+    assert!(
+        inner.log.provider_session_has_history(&inner.info).unwrap(),
+        "an adopted id does not discard its open turn's accepted input"
+    );
+    inner.append(ChatEvent::TurnCompleted {
+        turn_id: "first-turn".into(),
+        outcome: TurnOutcome::Completed,
+    });
+    inner.info.provider_thread_id = Some("cleared-idle-session".into());
+    inner.publish_info();
+    assert!(
+        !inner.log.provider_session_has_history(&inner.info).unwrap(),
+        "a later idle session has not been used"
+    );
+}
+
+#[test]
+fn legacy_running_state_guards_resume_even_when_no_turn_items_were_saved() {
+    let mut host = TestHost::new();
+    let chat = host.create(Provider::Codex);
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    host.client().close(&chat.id).unwrap();
+    let before = host.info(&chat.id);
+    assert_eq!(before.first_user_message, None);
+    host.stop();
+    let events = [
+        ChatEvent::Info {
+            info: before.clone(),
+        },
+        ChatEvent::State {
+            state: ChatState::Running,
+        },
+        ChatEvent::State {
+            state: ChatState::Stopped,
+        },
+    ];
+    let mut bytes = Vec::new();
+    for (i, event) in events.into_iter().enumerate() {
+        serde_json::to_writer(
+            &mut bytes,
+            &Envelope {
+                chat_id: chat.id.clone(),
+                seq: i as u64 + 1,
+                event,
+            },
+        )
+        .unwrap();
+        bytes.push(b'\n');
+    }
+    fs::write(
+        host.home.join("chats").join(&chat.id).join("events.jsonl"),
+        bytes,
+    )
+    .unwrap();
+    host.restart(quick_options());
+    host.fake().resume_missing.store(true, Ordering::SeqCst);
+    assert!(
+        host.client()
+            .command(&chat.id, choose(None, None, None))
+            .is_err()
+    );
+    assert!(
+        host.fake()
+            .starts
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .resume_has_history
+    );
+    assert_eq!(
+        host.info(&chat.id).provider_thread_id,
+        before.provider_thread_id
+    );
+}
