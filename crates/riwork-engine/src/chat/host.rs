@@ -26,12 +26,20 @@
 //!
 //! **Events.** One reader thread per driver appends what the driver sends to the
 //! log (the line number is the `seq`), and broadcasts it to the chat's
-//! subscribers. A driver's `Info` is merged into the host's own `ChatInfo` (the
-//! driver only knows the thread id and model), and the host publishes its own
-//! `Info` whenever a field other than the state changes; state changes travel as
-//! `State` events, which `Transcript` folds into the info too. A subscriber
+//! subscribers. Internal driver reports update the host's own `ChatInfo` (only
+//! provider identity and settings); legacy driver's `Info` is still accepted.
+//! The host publishes its own `Info` whenever a field other than the state
+//! changes; state changes travel as `State` events, which `Transcript` folds
+//! into the info too. A subscriber
 //! reads from a bounded queue: one that falls too far behind is dropped, and
 //! resubscribes with the `seq` it last saw.
+//!
+//! **Configuration.** Command delivery alone confirms no live settings: a
+//! driver reports accepted selections or effective observations. Reports are
+//! scoped to a run, with Configure replies also pinned to per-field revisions.
+//! Deferred selections and stopped-chat choices remain available for the next
+//! turn/start. Startup reports are committed only after successful attachment;
+//! historical missing resumes preserve their original identity and transcript.
 //!
 //! **Lifetime.** `ensure` starts the host detached (own session, output to
 //! `run/chat.log`). The host exits by itself when no client has been connected

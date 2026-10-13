@@ -2508,6 +2508,11 @@ fn missing_resume_preserves_used_sessions_and_allows_never_used_sessions_for_eve
             let mut host = TestHost::new();
             let mut new = host.new_chat(provider);
             new.project_id = Some(PROJECT.into());
+            let mut parent = host.new_chat(provider);
+            parent.project_id = Some(PROJECT.into());
+            parent.cwd = host.home.join("parent");
+            fs::create_dir_all(&parent.cwd).unwrap();
+            new.parent_id = Some(host.client().create(parent).unwrap().id);
             new.worktree_id = Some("33333333-3333-4333-8333-333333333333".into());
             new.title = Some("Keep this conversation".into());
             new.approval_mode = ApprovalMode::Plan;
@@ -2521,6 +2526,10 @@ fn missing_resume_preserves_used_sessions_and_allows_never_used_sessions_for_eve
             }
             host.client().close(&chat.id).unwrap();
             let before = host.info(&chat.id);
+            assert!(
+                before.parent_id.is_some(),
+                "same-project parent remains attached"
+            );
             let prefix = host.log(&chat.id);
             let tabs_path = host
                 .home
@@ -3146,4 +3155,72 @@ fn stop_cancels_a_blocked_configure_before_waiting_on_lifecycle_or_driver_locks(
     assert_eq!(chat.info().model, None);
     assert_eq!(chat.info().approval_mode, ApprovalMode::Supervised);
     assert!(lock(&chat.inner).run.is_none());
+}
+
+#[test]
+fn a_provider_reported_new_session_has_its_own_history_even_with_an_old_auto_title() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Claude);
+    send(&mut host.client(), &chat.id, "history before clear");
+    host.wait_for_log(&chat.id, |log| {
+        turns_completed(log) == 1 && last_state(log) == Some(ChatState::Idle)
+    });
+    let before = host.info(&chat.id);
+    assert!(before.first_user_message.is_some());
+    let report = host.fake().starts.lock().unwrap()[0].reporter.clone();
+    report.report(DriverReport {
+        provider_thread_id: Some("cleared-session".into()),
+        ..Default::default()
+    });
+    host.client().close(&chat.id).unwrap();
+    host.fake().resume_missing.store(true, Ordering::SeqCst);
+    host.client()
+        .command(&chat.id, choose(None, None, None))
+        .unwrap();
+    let info = host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    let config = host.fake().starts.lock().unwrap().last().unwrap().clone();
+    assert_eq!(config.resume.as_deref(), Some("cleared-session"));
+    assert!(
+        !config.resume_has_history,
+        "the previous session's turns and auto title are not the new session's history"
+    );
+    assert_ne!(info.provider_thread_id.as_deref(), Some("cleared-session"));
+    assert_eq!(info.first_user_message, before.first_user_message);
+    assert_eq!(turns_completed(&host.log(&chat.id)), 1);
+}
+
+#[test]
+fn metadata_only_legacy_sessions_are_unknown_rather_than_proven_never_used() {
+    let mut host = TestHost::new();
+    let chat = host.create(Provider::Codex);
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    host.client().close(&chat.id).unwrap();
+    let before = host.info(&chat.id);
+    assert_eq!(before.first_user_message, None);
+    host.stop();
+    fs::write(
+        host.home.join("chats").join(&chat.id).join("events.jsonl"),
+        b"",
+    )
+    .unwrap();
+    host.restart(quick_options());
+    host.fake().resume_missing.store(true, Ordering::SeqCst);
+    assert!(
+        host.client()
+            .command(&chat.id, choose(None, None, None))
+            .is_err()
+    );
+    assert!(
+        host.fake()
+            .starts
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .resume_has_history
+    );
+    assert_eq!(
+        host.info(&chat.id).provider_thread_id,
+        before.provider_thread_id
+    );
 }

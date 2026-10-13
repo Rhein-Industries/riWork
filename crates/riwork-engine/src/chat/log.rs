@@ -161,6 +161,11 @@ impl ChatLog {
                 any_history = true;
             }
         }
+        if binding.is_none() && info.provider_thread_id.is_some() {
+            // Metadata-only legacy chats (including a missing/recreated log)
+            // cannot prove that their provider session was never used.
+            return Ok(true);
+        }
         if binding.as_ref().is_some_and(|(provider, thread)| {
             *provider != info.provider
                 || matches!((thread, &info.provider_thread_id), (Some(a), Some(b)) if a != b)
