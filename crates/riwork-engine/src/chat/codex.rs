@@ -158,7 +158,7 @@
 //! (modelled on T3 Code's, which Codex acts on).
 
 use super::child::{self, Frame, FrameReader, MAX_FRAME_BYTES, Proc};
-use super::driver::{Driver, DriverConfig, StartDriver};
+use super::driver::{Driver, DriverConfig, DriverReport, DriverReporter, StartDriver};
 use super::model::notice_kind;
 use super::model::{
     Approval, ApprovalKind, ApprovalMode, ChangeKind, ChatCommand, ChatEvent, ChatState, Decision,
@@ -263,7 +263,16 @@ impl Driver for CodexDriver {
             self.shutdown();
             return Ok(());
         }
-        self.codex.command(command)
+        self.codex.command(command, DriverReporter::default())
+    }
+
+    /// A `Configure` whose outcome `reporter` hears: chosen at once (Codex takes
+    /// it with the next `turn/start`), then taken or put back with that start.
+    fn configure(&mut self, command: ChatCommand, reporter: DriverReporter) -> Result<(), String> {
+        if !matches!(command, ChatCommand::Configure { .. }) {
+            return self.command(command);
+        }
+        self.codex.command(command, reporter)
     }
 
     fn provider_thread_id(&self) -> Option<String> {
@@ -323,12 +332,36 @@ struct Streamed {
     summary: Option<bool>,
 }
 
+#[derive(Clone)]
 struct Settings {
     model: Option<String>,
     effort: Option<String>,
     mode: ApprovalMode,
     /// The user wants the Fast service tier, on a model that has one.
     fast: bool,
+}
+
+/// A setting a `Configure` chose. Codex takes settings with each `turn/start`, so
+/// a choice waits for the next one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Field {
+    Model,
+    Effort,
+    Mode,
+    Fast,
+}
+
+/// The newest choice of one `Field` no `turn/start` has carried yet: its number
+/// and the reporter of the `Configure` that made it.
+struct Chosen {
+    request: u64,
+    reporter: DriverReporter,
+}
+
+/// The choices one `turn/start` carries, and the settings it was sent with.
+struct Carried {
+    sent: Settings,
+    chosen: HashMap<Field, Chosen>,
 }
 
 struct Session {
@@ -373,6 +406,20 @@ struct Session {
     in_flight: HashMap<i64, Vec<String>>,
     /// The `turn/start` in flight, which a `turn/started` confirms before its receipt.
     start_request: Option<i64>,
+    /// The settings Codex last took: those the thread opened with, then those of
+    /// each `turn/start` it accepted. A refused choice goes back to these.
+    validated: Settings,
+    /// Choices made since the last `turn/start`, by field: the next one carries them.
+    chosen: HashMap<Field, Chosen>,
+    choices: u64,
+    /// The number of the newest choice of each field, whether it waits in `chosen`
+    /// or rides a `turn/start`: only that choice may be put back or carried again.
+    latest: HashMap<Field, u64>,
+    /// The request id of the `turn/start` whose settings `validated` holds: an
+    /// older start taken late does not take them back.
+    validated_start: i64,
+    /// The choices each `turn/start` in flight carries, by request id.
+    carried: HashMap<i64, Carried>,
     interrupt_wanted: bool,
     /// An interrupt was sent for the open turn: messages wait for the next one.
     interrupting: bool,
@@ -427,6 +474,17 @@ impl Session {
             queued: Vec::new(),
             in_flight: HashMap::new(),
             start_request: None,
+            validated: Settings {
+                model: config.model.clone(),
+                effort: config.effort.clone(),
+                mode: config.approval_mode,
+                fast: config.fast,
+            },
+            chosen: HashMap::new(),
+            choices: 0,
+            latest: HashMap::new(),
+            validated_start: 0,
+            carried: HashMap::new(),
             interrupt_wanted: false,
             interrupting: false,
             last_finished_turn: None,
@@ -474,6 +532,96 @@ impl Session {
             ChatState::Waiting
         };
         self.set_state(state);
+    }
+
+    /// Tell `reporter` what `field` is in `settings`.
+    fn report_field(field: Field, settings: &Settings, reporter: &DriverReporter) {
+        let mut report = DriverReport::default();
+        match field {
+            Field::Model => report.model = Some(settings.model.clone()),
+            Field::Effort => report.effort = Some(settings.effort.clone()),
+            Field::Mode => report.approval_mode = Some(settings.mode),
+            Field::Fast => report.fast = Some(settings.fast),
+        }
+        reporter.report(report);
+    }
+
+    /// A choice of `field` the next `turn/start` carries, reported at once: the
+    /// chat runs with it from then on, even if nothing is sent before it stops.
+    fn choose(&mut self, field: Field, reporter: &DriverReporter) {
+        self.choices += 1;
+        self.latest.insert(field, self.choices);
+        self.chosen.insert(
+            field,
+            Chosen {
+                request: self.choices,
+                reporter: reporter.clone(),
+            },
+        );
+        Self::report_field(field, &self.settings, reporter);
+    }
+
+    /// The `turn/start` with request id `id` carries the choices made so far.
+    fn carry(&mut self, id: i64) {
+        let chosen = std::mem::take(&mut self.chosen);
+        self.carried.insert(
+            id,
+            Carried {
+                sent: self.settings.clone(),
+                chosen,
+            },
+        );
+    }
+
+    /// Codex took the `turn/start` `id`, and with it the settings it carried.
+    fn settings_taken(&mut self, id: i64) {
+        let Some(carried) = self.carried.remove(&id) else {
+            return;
+        };
+        if id > self.validated_start {
+            self.validated_start = id;
+            self.validated = carried.sent.clone();
+        }
+        for (field, chosen) in carried.chosen {
+            Self::report_field(field, &carried.sent, &chosen.reporter);
+        }
+    }
+
+    /// Codex refused the `turn/start` `id`: the choices it carried go back to what
+    /// Codex last took, unless a newer choice of the same field has been made,
+    /// waiting or already riding a later `turn/start`.
+    fn settings_refused(&mut self, id: i64) -> Vec<Field> {
+        let Some(carried) = self.carried.remove(&id) else {
+            return Vec::new();
+        };
+        let mut restored = Vec::new();
+        for (field, chosen) in carried.chosen {
+            if self.latest.get(&field) != Some(&chosen.request) {
+                continue;
+            }
+            match field {
+                Field::Model => self.settings.model = self.validated.model.clone(),
+                Field::Effort => self.settings.effort = self.validated.effort.clone(),
+                Field::Mode => self.settings.mode = self.validated.mode,
+                Field::Fast => self.settings.fast = self.validated.fast,
+            }
+            Self::report_field(field, &self.settings, &chosen.reporter);
+            restored.push(field);
+        }
+        restored
+    }
+
+    /// The `turn/start` `id` never reached Codex, or nothing says it did: its
+    /// choices wait for the next one, unless newer ones have taken their place.
+    fn settings_unsent(&mut self, id: i64) {
+        let Some(carried) = self.carried.remove(&id) else {
+            return;
+        };
+        for (field, chosen) in carried.chosen {
+            if self.latest.get(&field) == Some(&chosen.request) {
+                self.chosen.entry(field).or_insert(chosen);
+            }
+        }
     }
 
     /// The words of the request `id`, which has been answered or never will be.
@@ -527,6 +675,7 @@ impl Session {
     /// Nothing more will be sent or answered (`why`): what was written and not
     /// answered is in doubt, what was waiting to be written never left.
     fn keep_unsent(&mut self, why: &str) {
+        self.carried.clear();
         let mut written: Vec<(i64, Vec<String>)> = self.in_flight.drain().collect();
         written.sort_by_key(|(id, _)| *id);
         self.start_request = None;
@@ -631,8 +780,10 @@ impl Session {
             if self.starting
                 && let Some(start) = self.start_request.take()
             {
-                // The turn the start asked for is running: Codex has its words.
+                // The turn the start asked for is running: Codex has its words and
+                // its settings.
                 self.in_flight.remove(&start);
+                self.settings_taken(start);
             }
             self.starting = false;
             self.turn = Some(turn_id.to_owned());
@@ -878,12 +1029,16 @@ impl Session {
         let id = self.next_request + 1;
         self.in_flight.insert(id, texts);
         self.start_request = Some(id);
+        self.carry(id);
         self.request(
             "turn/start",
             params,
             Box::new(move |codex, outcome| match outcome {
                 Ok(result) => {
-                    codex.with(|session| session.taken(id));
+                    codex.with(|session| {
+                        session.taken(id);
+                        session.settings_taken(id);
+                    });
                     if let Some(turn_id) = result["turn"]["id"].as_str() {
                         let frames = codex.with(|session| {
                             if session.start_serial == serial {
@@ -896,18 +1051,21 @@ impl Session {
                     }
                 }
                 Err(message) => codex.with(|session| {
-                    // Refused: Codex took none of it. The words are kept, never resent.
+                    // Refused: Codex took none of it. The words are kept, never resent,
+                    // and the settings it carried are back at those Codex has.
                     let refused = session.taken(id).unwrap_or_default();
+                    let restored = session.settings_refused(id);
                     if session.start_serial != serial {
                         session.not_delivered(refused, "Codex did not start its turn");
                         return;
                     }
                     session.starting = false;
                     session.interrupt_wanted = false;
+                    let restored = restored_text(&restored);
                     session.notice(
                         NoticeLevel::Error,
                         notice_kind::SETTING_REFUSED,
-                        format!("Codex did not start the turn: {message}"),
+                        format!("Codex did not start the turn: {message}{restored}"),
                     );
                     let mut texts = refused;
                     texts.extend(std::mem::take(&mut session.queued));
@@ -970,10 +1128,12 @@ impl Codex {
                     // The words this frame and those after it carried: none of the
                     // later ones left, and this one left only if part of it did.
                     let words = |session: &mut Session, frame: &Value| {
-                        frame["id"]
-                            .as_i64()
-                            .and_then(|id| session.taken(id))
-                            .unwrap_or_default()
+                        let id = frame["id"].as_i64()?;
+                        session.settings_unsent(id);
+                        session.taken(id)
+                    };
+                    let words = |session: &mut Session, frame: &Value| {
+                        words(session, frame).unwrap_or_default()
                     };
                     let mut lost = words(session, &frame);
                     if error.starts_with(super::attachments::UNKNOWN_SUBMISSION) {
@@ -1075,6 +1235,17 @@ impl Codex {
                 resume["excludeTurns"] = json!(true);
                 match self.call("thread/resume", resume, THREAD_TIMEOUT) {
                     Ok(result) => result,
+                    // This chat has a conversation in that thread: a new thread in
+                    // its place would leave it behind unseen, so none is opened.
+                    Err(error)
+                        if error.contains("no rollout found") && config.resume_has_history =>
+                    {
+                        return Err(format!(
+                            "Codex has no saved thread {thread} to resume, though this chat has \
+                             one. Nothing was started in its place: check that Codex runs with the \
+                             same account (CODEX_HOME) as before, or continue in a new conversation."
+                        ));
+                    }
                     // A thread that never ran a turn has nothing saved to resume,
                     // and there is nothing in it to lose: open a new one.
                     Err(error) if error.contains("no rollout found") => {
@@ -1101,6 +1272,9 @@ impl Codex {
                     title: title.to_owned(),
                 });
             }
+            // The model the thread opened with is only Codex's resolution of the
+            // chat's choice, or of its default: it is not reported, so a chat on
+            // the default stays on it, and every turn/start sends the chat's own.
             session.thread_model = result["model"].as_str().map(str::to_owned);
             session.tier_sent = config.fast;
             // A resumed thread may still be in the plan mode it was left in.
@@ -1240,7 +1414,7 @@ impl Codex {
 
     // ---- Commands ----
 
-    fn command(&self, command: ChatCommand) -> Result<(), String> {
+    fn command(&self, command: ChatCommand, reporter: DriverReporter) -> Result<(), String> {
         if self.with(|session| session.finished) {
             return Err("the Codex process is not running".into());
         }
@@ -1270,12 +1444,14 @@ impl Codex {
                 self.with(|session| {
                     if model.is_some() {
                         session.settings.model = model;
+                        session.choose(Field::Model, &reporter);
                     }
                     // Against the model just chosen, if there is a new one.
                     if let Some(effort) = effort {
                         let chosen = session.effective_model();
                         if session.takes_effort(chosen.as_deref(), &effort) {
                             session.settings.effort = Some(effort);
+                            session.choose(Field::Effort, &reporter);
                         } else {
                             let chosen = chosen.unwrap_or_default();
                             session.notice(
@@ -1286,13 +1462,17 @@ impl Codex {
                                      so it was not changed."
                                 ),
                             );
+                            // Refused: the effort stays what it was.
+                            Session::report_field(Field::Effort, &session.settings, &reporter);
                         }
                     }
                     if let Some(mode) = approval_mode {
                         session.settings.mode = mode;
+                        session.choose(Field::Mode, &reporter);
                     }
                     if let Some(fast) = fast {
                         session.settings.fast = fast;
+                        session.choose(Field::Fast, &reporter);
                     }
                 });
                 Ok(())
@@ -1346,9 +1526,11 @@ impl Codex {
         let sent = self.proc.send(&frame);
         if sent.is_err() {
             self.with(|session| {
-                // The caller has the error and the words: nothing is kept twice.
+                // The caller has the error and the words: nothing is kept twice. The
+                // settings it carried wait for the next start.
                 if let Some(id) = frame["id"].as_i64() {
                     session.taken(id);
+                    session.settings_unsent(id);
                 }
                 session.starting = false;
                 session.refresh_state();
@@ -1373,6 +1555,8 @@ impl Codex {
             } else {
                 let mut params = session.turn_params(&thread, "");
                 params["input"] = input;
+                let id = session.next_request + 1;
+                session.carry(id);
                 session.starting = true;
                 session.start_serial += 1;
                 session.completed_before_receipt.clear();
@@ -1381,6 +1565,7 @@ impl Codex {
                 ("turn/start", params, true)
             };
             let serial = session.start_serial;
+            let request = session.next_request + 1;
             Ok(session.request(method, params, Box::new(move |codex, outcome| {
                 let result = match outcome {
                     Ok(value) => {
@@ -1388,11 +1573,16 @@ impl Codex {
                             if let Some(id) = value["turn"]["id"].as_str().filter(|id| !id.trim().is_empty()) {
                                 let frames = codex.with(|s| {
                                     if s.finished || s.start_serial != serial || s.completion_overflow || s.turn.as_deref().is_some_and(|current| current != id) {
+                                        s.settings_unsent(request);
                                         Err(format!("{} Codex start receipt arrived after another lifecycle; inspect the transcript before resending", super::attachments::UNKNOWN_SUBMISSION))
-                                    } else { Ok(s.begin_turn(id)) }
+                                    } else {
+                                        s.settings_taken(request);
+                                        Ok(s.begin_turn(id))
+                                    }
                                 });
                                 frames.map(|frames| codex.send_all(frames))
                             } else {
+                                codex.with(|s| s.settings_unsent(request));
                                 Err(format!("{} Codex acknowledged a turn without its id; inspect the transcript before resending", super::attachments::UNKNOWN_SUBMISSION))
                             }
                         } else if value["turnId"].as_str() == expected_turn.as_deref() {
@@ -1405,8 +1595,10 @@ impl Codex {
                         if starting {
                             codex.with(|s| {
                                 if s.start_serial != serial || s.turn.is_some() {
+                                    s.settings_unsent(request);
                                     Err(format!("{} Codex refusal arrived after a different lifecycle ({message}); inspect the transcript before resending", super::attachments::UNKNOWN_SUBMISSION))
                                 } else {
+                                    s.settings_refused(request);
                                     s.starting = false; s.refresh_state(); Err(message)
                                 }
                             })
@@ -1424,6 +1616,7 @@ impl Codex {
                 self.with(|s| {
                     if let Some(id) = frame["id"].as_i64() {
                         s.waiting.remove(&id);
+                        s.settings_unsent(id);
                     }
                     if frame["method"] == "turn/start" {
                         s.starting = false;
@@ -2298,6 +2491,27 @@ fn model_option(model: &Value) -> Option<ModelOption> {
         supports_fast,
         is_default: model["isDefault"].as_bool() == Some(true),
     })
+}
+
+/// What a refused `turn/start` put back, for its notice; empty when nothing.
+fn restored_text(fields: &[Field]) -> String {
+    let names: Vec<&str> = [
+        (Field::Model, "model"),
+        (Field::Effort, "reasoning effort"),
+        (Field::Mode, "approval mode"),
+        (Field::Fast, "Fast mode"),
+    ]
+    .iter()
+    .filter(|(field, _)| fields.contains(field))
+    .map(|(_, name)| *name)
+    .collect();
+    if names.is_empty() {
+        return String::new();
+    }
+    format!(
+        ". The {} chosen for it went back to what Codex last took",
+        names.join(", ")
+    )
 }
 
 /// A notice's text that keeps messages word for word after `lead`, so they can be

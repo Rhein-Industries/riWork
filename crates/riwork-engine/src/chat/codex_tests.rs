@@ -2300,3 +2300,324 @@ fn a_queued_message_whose_steer_cannot_be_written_keeps_its_text() {
     driver.shutdown();
     assert!(fake.received_method("turn/steer").is_empty());
 }
+
+// What Codex took, refused and kept reaches the host through reporters.
+
+/// What one reporter heard, in order. The single place that builds a recording
+/// `DriverReporter` from the shared contract.
+#[derive(Clone, Default)]
+struct Heard(Arc<Mutex<Vec<DriverReport>>>);
+
+fn recorder() -> (DriverReporter, Heard) {
+    let heard = Heard::default();
+    let sink = heard.0.clone();
+    let reporter = DriverReporter::new(move |report| sink.lock().unwrap().push(report));
+    (reporter, heard)
+}
+
+impl Heard {
+    fn count(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+    fn models(&self) -> Vec<Option<String>> {
+        let reports = self.0.lock().unwrap();
+        reports.iter().filter_map(|r| r.model.clone()).collect()
+    }
+    fn efforts(&self) -> Vec<Option<String>> {
+        let reports = self.0.lock().unwrap();
+        reports.iter().filter_map(|r| r.effort.clone()).collect()
+    }
+    fn modes(&self) -> Vec<ApprovalMode> {
+        let reports = self.0.lock().unwrap();
+        reports.iter().filter_map(|r| r.approval_mode).collect()
+    }
+    fn fasts(&self) -> Vec<bool> {
+        let reports = self.0.lock().unwrap();
+        reports.iter().filter_map(|r| r.fast).collect()
+    }
+}
+
+fn started(turn: &str) -> Value {
+    json!([{"id":"$id","result":{"turn":{"id":turn,"items":[],"status":"inProgress"}}}])
+}
+
+#[test]
+fn a_thread_with_history_that_codex_cannot_find_is_an_error_not_a_new_thread() {
+    let fake = Fake::new(&[&fixture("codex/resume_missing.ndjson")]);
+    let mut config = fake.config(Provider::Codex);
+    config.resume = Some("thread-9".into());
+    config.resume_has_history = true;
+    let (sender, events) = mpsc::channel();
+    let error = start(config, sender).err().expect("the start fails");
+    assert!(
+        error.contains("thread-9") && error.contains("Nothing was started"),
+        "{error}"
+    );
+    // The resume was asked for, and no thread was opened in its place.
+    assert_eq!(fake.received_method("thread/resume").len(), 1);
+    assert!(fake.received_method("thread/start").is_empty());
+    let events: Vec<ChatEvent> = events.try_iter().collect();
+    assert!(completed_notices(&events).is_empty(), "{events:#?}");
+    assert!(
+        events.iter().any(|event| matches!(event, ChatEvent::State { state: ChatState::Failed { message } } if *message == error)),
+        "{events:#?}"
+    );
+}
+
+#[test]
+fn a_choice_is_reported_at_once_and_again_when_the_turn_that_carries_it_is_taken() {
+    let script = format!(
+        "{}\n{}",
+        fixture("codex/idle.ndjson"),
+        json!({"type":"expect","frame":{"method":"turn/start",
+            "params":{"model":"gpt-y","effort":"high","approvalPolicy":"on-request"}},
+            "reply":started("turn-1")})
+    );
+    let fake = Fake::new(&[&script]);
+    let (sender, events) = mpsc::channel();
+    let mut driver = start(fake.config(Provider::Codex), sender).unwrap();
+    until(&events, is_state(ChatState::Idle));
+    let (reporter, heard) = recorder();
+    driver
+        .configure(
+            ChatCommand::Configure {
+                model: Some("gpt-y".into()),
+                effort: Some("high".into()),
+                approval_mode: Some(ApprovalMode::AutoEdit),
+                fast: Some(true),
+            },
+            reporter,
+        )
+        .unwrap();
+    // Chosen before the first turn: the chat has them even if none is ever sent.
+    assert_eq!(heard.models(), [Some("gpt-y".to_owned())]);
+    assert_eq!(heard.efforts(), [Some("high".to_owned())]);
+    assert_eq!(heard.modes(), [ApprovalMode::AutoEdit]);
+    assert_eq!(heard.fasts(), [true]);
+    driver
+        .command(ChatCommand::Send { text: "go".into() })
+        .unwrap();
+    super::super::testing::eventually(|| heard.count() == 8);
+    assert_eq!(
+        heard.models(),
+        [Some("gpt-y".to_owned()), Some("gpt-y".to_owned())]
+    );
+    driver.shutdown();
+    assert!(!fake.saw("mismatch"), "{:#?}", fake.entries());
+}
+
+#[test]
+fn a_refused_turn_start_puts_back_the_choices_it_carried() {
+    let script = format!(
+        "{}\n{}",
+        fixture("codex/idle.ndjson"),
+        json!({"type":"expect","frame":{"method":"turn/start","params":{"model":"gpt-y"}},
+            "reply":[{"id":"$id","error":{"code":-32602,"message":"unknown model gpt-y"}}]})
+    );
+    let fake = Fake::new(&[&script]);
+    let mut config = fake.config(Provider::Codex);
+    config.model = Some("gpt-x".into());
+    let (sender, events) = mpsc::channel();
+    let mut driver = start(config, sender).unwrap();
+    until(&events, is_state(ChatState::Idle));
+    let (reporter, heard) = recorder();
+    driver
+        .configure(configure(Some("gpt-y"), None, None), reporter)
+        .unwrap();
+    assert_eq!(heard.models(), [Some("gpt-y".to_owned())]);
+    driver
+        .command(ChatCommand::Send { text: "go".into() })
+        .unwrap();
+    let seen = until(&events, is_state(ChatState::Idle));
+    // Codex took none of it: the chat is back on the model Codex has.
+    assert_eq!(
+        heard.models(),
+        [Some("gpt-y".to_owned()), Some("gpt-x".to_owned())]
+    );
+    let refused = &completed_notices(&seen)[0];
+    assert_notice(refused, notice_kind::SETTING_REFUSED, false);
+    assert!(
+        matches!(&refused.body, ItemBody::Notice { text, .. } if text.contains("unknown model gpt-y") && text.contains("model chosen for it went back")),
+        "{refused:?}"
+    );
+    driver.shutdown();
+}
+
+#[test]
+fn a_newer_choice_is_not_put_back_by_the_refusal_of_an_older_turn_start() {
+    let script = format!(
+        "{}\n{}\n{}",
+        fixture("codex/idle.ndjson"),
+        json!({"type":"expect","frame":{"method":"turn/start","params":{"model":"gpt-y"}},
+            "delay_ms":300,
+            "reply":[{"id":"$id","error":{"code":-32602,"message":"refused"}}]}),
+        json!({"type":"expect","frame":{"method":"turn/start","params":{"model":"gpt-z"}},
+            "reply":started("turn-2")})
+    );
+    let fake = Fake::new(&[&script]);
+    let mut config = fake.config(Provider::Codex);
+    config.model = Some("gpt-x".into());
+    let (sender, events) = mpsc::channel();
+    let mut driver = start(config, sender).unwrap();
+    until(&events, is_state(ChatState::Idle));
+    let (older, heard_older) = recorder();
+    driver
+        .configure(configure(Some("gpt-y"), None, None), older)
+        .unwrap();
+    driver
+        .command(ChatCommand::Send { text: "go".into() })
+        .unwrap();
+    super::super::testing::eventually(|| fake.received_method("turn/start").len() == 1);
+    // Chosen while the start that carries gpt-y waits for its answer.
+    let (newer, heard_newer) = recorder();
+    driver
+        .configure(configure(Some("gpt-z"), None, None), newer)
+        .unwrap();
+    until(&events, is_state(ChatState::Idle));
+    assert_eq!(heard_older.models(), [Some("gpt-y".to_owned())]);
+    assert_eq!(heard_newer.models(), [Some("gpt-z".to_owned())]);
+    // The next turn carries the newer choice, and Codex takes it.
+    driver
+        .command(ChatCommand::Send {
+            text: "again".into(),
+        })
+        .unwrap();
+    super::super::testing::eventually(|| heard_newer.count() == 2);
+    assert_eq!(
+        heard_newer.models(),
+        [Some("gpt-z".to_owned()), Some("gpt-z".to_owned())]
+    );
+    assert_eq!(heard_older.count(), 1);
+    driver.shutdown();
+    assert!(!fake.saw("mismatch"), "{:#?}", fake.entries());
+}
+
+#[test]
+fn an_effort_the_model_does_not_take_is_reported_as_the_effort_kept() {
+    let mut run = Run::start_with("models_fast", |config| {
+        config.model = Some("gpt-6.1-sol".into());
+        config.effort = Some("high".into());
+        config.fast = true;
+    });
+    run.until(is_models);
+    let (model, heard_model) = recorder();
+    run.driver
+        .configure(configure(Some("plain-model"), None, None), model)
+        .unwrap();
+    assert_eq!(heard_model.models(), [Some("plain-model".to_owned())]);
+    let (effort, heard_effort) = recorder();
+    run.driver
+        .configure(configure(None, Some("max"), None), effort)
+        .unwrap();
+    // Refused at once: the effort stays the one the chat had.
+    assert_eq!(heard_effort.efforts(), [Some("high".to_owned())]);
+    run.driver.shutdown();
+}
+
+#[test]
+fn an_older_start_never_puts_back_or_takes_back_a_choice_a_later_start_carries() {
+    let (events, _unused) = mpsc::channel();
+    let fake = Fake::new(&[]);
+    let mut config = fake.config(Provider::Codex);
+    config.model = Some("gpt-x".into());
+    let mut session = Session::new(&config, events);
+    let choose = |session: &mut Session, model: &str| {
+        let (reporter, heard) = recorder();
+        session.settings.model = Some(model.into());
+        session.choose(Field::Model, &reporter);
+        heard
+    };
+    // Start 10 carries gpt-y; gpt-z is chosen after it and rides start 11.
+    let heard_y = choose(&mut session, "gpt-y");
+    session.carry(10);
+    let heard_z = choose(&mut session, "gpt-z");
+    session.carry(11);
+    // Start 10 is refused late, while start 11 waits: gpt-z stays, unreported.
+    assert!(session.settings_refused(10).is_empty());
+    assert_eq!(session.settings.model.as_deref(), Some("gpt-z"));
+    assert_eq!(heard_y.models(), [Some("gpt-y".to_owned())]);
+    // Start 11 is taken; then an older start's late acceptance does not move what
+    // Codex has back to gpt-y.
+    session.settings_taken(11);
+    assert_eq!(
+        heard_z.models(),
+        [Some("gpt-z".to_owned()), Some("gpt-z".to_owned())]
+    );
+    let heard_old = choose(&mut session, "gpt-old");
+    session.carry(9);
+    let heard_w = choose(&mut session, "gpt-w");
+    session.carry(12);
+    session.settings_taken(9);
+    assert_eq!(heard_old.count(), 2);
+    assert!(session.settings_refused(12).contains(&Field::Model));
+    // Refused, gpt-w goes back to the newest settings Codex took: start 11's.
+    assert_eq!(session.settings.model.as_deref(), Some("gpt-z"));
+    assert_eq!(
+        heard_w.models(),
+        [Some("gpt-w".to_owned()), Some("gpt-z".to_owned())]
+    );
+    // A start that never left gives its choice back only while it is the newest.
+    let _heard_a = choose(&mut session, "gpt-a");
+    session.carry(13);
+    let _heard_b = choose(&mut session, "gpt-b");
+    session.carry(14);
+    session.settings_unsent(13);
+    assert!(session.chosen.is_empty(), "gpt-a is not carried again");
+    session.settings_unsent(14);
+    assert!(session.chosen.contains_key(&Field::Model));
+}
+
+#[test]
+fn a_late_refusal_of_a_finished_start_leaves_the_newer_choice_alone() {
+    let turn = |method: &str, status: &str| {
+        json!({"method":method,"params":{"threadId":"thread-1","turn":{"id":"turn-1",
+            "items":[],"itemsView":"notLoaded","status":status,"error":null}}})
+    };
+    let script = format!(
+        "{}\n{}\n{}",
+        fixture("codex/idle.ndjson"),
+        // The turn runs and ends before Codex answers the turn/start itself.
+        json!({"type":"expect","frame":{"method":"turn/start","params":{"model":"gpt-y"}},
+            "reply":[turn("turn/started","inProgress"), turn("turn/completed","completed")]}),
+        // That answer, a refusal, comes while the next start, with gpt-z, waits.
+        json!({"type":"expect","frame":{"method":"turn/start","params":{"model":"gpt-z"}},
+            "reply":[{"id":6,"error":{"code":-32603,"message":"late"}},
+                     {"id":"$id","result":{"turn":{"id":"turn-2","items":[],"status":"inProgress"}}}]})
+    );
+    let fake = Fake::new(&[&script]);
+    let mut config = fake.config(Provider::Codex);
+    config.model = Some("gpt-x".into());
+    let (sender, events) = mpsc::channel();
+    let mut driver = start(config, sender).unwrap();
+    until(&events, is_state(ChatState::Idle));
+    let (older, heard_older) = recorder();
+    driver
+        .configure(configure(Some("gpt-y"), None, None), older)
+        .unwrap();
+    driver
+        .command(ChatCommand::Send { text: "go".into() })
+        .unwrap();
+    until(&events, is_turn_completed);
+    assert_eq!(fake.received_method("turn/start")[0]["id"], 6);
+    let (newer, heard_newer) = recorder();
+    driver
+        .configure(configure(Some("gpt-z"), None, None), newer)
+        .unwrap();
+    driver
+        .command(ChatCommand::Send {
+            text: "again".into(),
+        })
+        .unwrap();
+    super::super::testing::eventually(|| heard_newer.count() == 2);
+    assert_eq!(
+        heard_newer.models(),
+        [Some("gpt-z".to_owned()), Some("gpt-z".to_owned())]
+    );
+    // gpt-y was taken with its turn; the late refusal changes nothing.
+    assert_eq!(
+        heard_older.models(),
+        [Some("gpt-y".to_owned()), Some("gpt-y".to_owned())]
+    );
+    driver.shutdown();
+    assert!(!fake.saw("mismatch"), "{:#?}", fake.entries());
+}

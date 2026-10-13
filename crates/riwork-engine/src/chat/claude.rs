@@ -157,7 +157,7 @@
 //! when the tool call is seen).
 
 use super::child::{self, Frame, FrameReader, MAX_FRAME_BYTES, Proc};
-use super::driver::{Driver, DriverConfig};
+use super::driver::{Driver, DriverConfig, DriverReport, DriverReporter};
 use super::model::notice_kind;
 use super::model::{
     Account, Approval, ApprovalKind, ApprovalMode, ChangeKind, ChatCommand, ChatEvent, ChatState,
@@ -247,6 +247,22 @@ fn start_with(
     // resumed. Start it again under the same id, and say so; only the last
     // failure is announced.
     match launch(&shared, resuming) {
+        Err(error)
+            if resuming && error.contains(NO_CONVERSATION) && shared.config.resume_has_history =>
+        {
+            // This chat has a conversation in that session. A new session in its
+            // place would leave it behind unseen, so nothing is started.
+            let message = format!(
+                "Claude has no saved conversation {session_id} to resume, though this chat \
+                 has one. Nothing was started in its place: check that claude runs with the \
+                 same account, configuration directory (CLAUDE_CONFIG_DIR) and folder as \
+                 before, or continue in a new conversation."
+            );
+            shared.lock().set_state(ChatState::Failed {
+                message: message.clone(),
+            });
+            return Err(message);
+        }
         Err(error) if resuming && error.contains(NO_CONVERSATION) => {
             shared.lock().session_used = false;
             launch(&shared, false)?;
@@ -284,6 +300,19 @@ fn start_with(
 
 struct ClaudeDriver {
     shared: Arc<Shared>,
+}
+
+impl ClaudeDriver {
+    fn run(&mut self, command: ChatCommand, reporter: DriverReporter) -> Result<(), String> {
+        let mut core = self.shared.lock();
+        let result = core.command(command, reporter);
+        let restart = core.restart_due();
+        drop(core);
+        if restart {
+            spawn_restart(&self.shared);
+        }
+        result
+    }
 }
 
 impl Driver for ClaudeDriver {
@@ -412,14 +441,15 @@ impl Driver for ClaudeDriver {
             }
             return result;
         }
-        let mut core = self.shared.lock();
-        let result = core.command(command);
-        let restart = core.restart_due();
-        drop(core);
-        if restart {
-            spawn_restart(&self.shared);
+        self.run(command, DriverReporter::default())
+    }
+
+    /// A `Configure` whose outcome `reporter` hears: what the CLI took, or kept.
+    fn configure(&mut self, command: ChatCommand, reporter: DriverReporter) -> Result<(), String> {
+        if !matches!(command, ChatCommand::Configure { .. }) {
+            return self.command(command);
         }
-        result
+        self.run(command, reporter)
     }
 
     fn provider_thread_id(&self) -> Option<String> {
@@ -462,6 +492,7 @@ impl Shared {
 /// thread with the state locked.
 type Reply = Box<dyn FnOnce(&mut Core, Result<Value, String>) + Send>;
 
+#[derive(Clone)]
 struct Settings {
     /// The CLI's own name for the mode (`default`, `acceptEdits`, ...).
     permission_mode: String,
@@ -470,6 +501,22 @@ struct Settings {
     /// The user wants Fast mode. Whether the CLI grants it is another matter
     /// (`Core::fast_reported`).
     fast: bool,
+}
+
+/// A setting the running CLI is asked to change with a control request. The
+/// effort is not one: only a flag at start-up sets it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Field {
+    Mode,
+    Model,
+    Fast,
+}
+
+/// The newest change of one `Field` the CLI has not answered yet: its number and
+/// the reporter of the `Configure` that asked for it, which hears how it ends.
+struct Unsettled {
+    request: u64,
+    reporter: DriverReporter,
 }
 
 /// A turn in progress.
@@ -575,6 +622,19 @@ struct Core {
     /// Whether the session has a transcript on disk to resume from.
     session_used: bool,
     settings: Settings,
+    /// The settings the running process is known to have: those it was started
+    /// with, and changes it accepted since. A refused change goes back to these.
+    confirmed: Settings,
+    /// For each field, the newest change still waiting for the CLI's answer.
+    /// Answers to older changes of a field never settle or roll it back.
+    unsettled: HashMap<Field, Unsettled>,
+    setting_requests: u64,
+    /// For each field, the change `confirmed` holds (by its number): an answer to
+    /// an older change that comes late cannot take the field back to it.
+    confirmed_request: HashMap<Field, u64>,
+    /// Where observations of the provider go (`DriverConfig::reporter`): the
+    /// session id and permission mode the CLI says it has.
+    reporter: DriverReporter,
     restart_wanted: bool,
     // The chat.
     state: ChatState,
@@ -645,6 +705,16 @@ impl Core {
                 effort: config.effort.clone(),
                 fast: config.fast,
             },
+            confirmed: Settings {
+                permission_mode: permission_mode(config.approval_mode).to_owned(),
+                model: config.model.clone(),
+                effort: config.effort.clone(),
+                fast: config.fast,
+            },
+            unsettled: HashMap::new(),
+            setting_requests: 0,
+            confirmed_request: HashMap::new(),
+            reporter: config.reporter.clone(),
             restart_wanted: false,
             // No process yet; `launch` announces `Starting`.
             state: ChatState::Stopped,
@@ -980,7 +1050,7 @@ impl Core {
 
     // Commands.
 
-    fn command(&mut self, command: ChatCommand) -> Result<(), String> {
+    fn command(&mut self, command: ChatCommand, reporter: DriverReporter) -> Result<(), String> {
         if self.stopped {
             return Err("the chat has been stopped".into());
         }
@@ -1025,7 +1095,7 @@ impl Core {
                 approval_mode,
                 fast,
             } => {
-                self.configure(model, effort, approval_mode, fast);
+                self.configure(model, effort, approval_mode, fast, reporter);
                 Ok(())
             }
             ChatCommand::Stop => Ok(()),
@@ -1206,69 +1276,213 @@ impl Core {
         self.reset_silence();
     }
 
+    /// Ask for the settings a `Configure` names. Each field the running CLI changes
+    /// by a control request settles when it answers, through `reporter`: accepted,
+    /// or refused and back at what the CLI has. The effort, and a change the CLI
+    /// cannot make in place, apply at the next launch and are reported at once.
     fn configure(
         &mut self,
         model: Option<String>,
         effort: Option<String>,
         approval_mode: Option<ApprovalMode>,
         fast: Option<bool>,
+        reporter: DriverReporter,
     ) {
         if let Some(mode) = approval_mode {
             let mode = permission_mode(mode).to_owned();
-            if mode != self.settings.permission_mode {
-                let before = std::mem::replace(&mut self.settings.permission_mode, mode.clone());
+            if mode == self.settings.permission_mode {
+                self.already(Field::Mode, &reporter);
+            } else {
+                self.settings.permission_mode = mode.clone();
+                let request = self.ask(Field::Mode, &reporter);
                 self.change_setting(
                     json!({"subtype": "set_permission_mode", "mode": mode}),
                     "the permission mode",
-                    move |core| core.settings.permission_mode = before,
+                    Field::Mode,
+                    request,
                 );
             }
         }
-        if let Some(model) = model
-            && self.settings.model.as_deref() != Some(model.as_str())
-        {
-            let before = self.settings.model.replace(model.clone());
-            self.change_setting(
-                json!({"subtype": "set_model", "model": model}),
-                "the model",
-                move |core| core.settings.model = before,
-            );
+        if let Some(model) = model {
+            if self.settings.model.as_deref() == Some(model.as_str()) {
+                self.already(Field::Model, &reporter);
+            } else {
+                self.settings.model = Some(model.clone());
+                let request = self.ask(Field::Model, &reporter);
+                self.change_setting(
+                    json!({"subtype": "set_model", "model": model}),
+                    "the model",
+                    Field::Model,
+                    request,
+                );
+            }
         }
-        if let Some(effort) = effort
-            && self.settings.effort.as_deref() != Some(effort.as_str())
-        {
-            // Only a flag at start-up sets it.
-            self.settings.effort = Some(effort);
-            self.restart_wanted = true;
+        if let Some(effort) = effort {
+            if self.settings.effort.as_deref() != Some(effort.as_str()) {
+                // Only a flag at start-up sets it: the next launch has it.
+                self.settings.effort = Some(effort);
+                self.restart_wanted = true;
+            }
+            reporter.report(DriverReport {
+                effort: Some(self.settings.effort.clone()),
+                ..Default::default()
+            });
         }
-        if let Some(fast) = fast
-            && self.settings.fast != fast
-        {
-            self.settings.fast = fast;
-            self.fast_reported = None;
-            self.change_fast(fast);
+        if let Some(fast) = fast {
+            if self.settings.fast == fast {
+                self.already(Field::Fast, &reporter);
+            } else {
+                self.settings.fast = fast;
+                self.fast_reported = None;
+                let request = self.ask(Field::Fast, &reporter);
+                self.change_fast(fast, request);
+            }
+        }
+    }
+
+    /// A field asked for as it already is: settled now, unless a change of it is
+    /// still waiting, whose answer this request hears instead.
+    fn already(&mut self, field: Field, reporter: &DriverReporter) {
+        match self.unsettled.get_mut(&field) {
+            Some(waiting) => waiting.reporter = reporter.clone(),
+            None => self.report_field(field, reporter),
+        }
+    }
+
+    /// Note a new change of `field`, the newest from now on; returns its number.
+    fn ask(&mut self, field: Field, reporter: &DriverReporter) -> u64 {
+        self.setting_requests += 1;
+        let request = self.setting_requests;
+        self.unsettled.insert(
+            field,
+            Unsettled {
+                request,
+                reporter: reporter.clone(),
+            },
+        );
+        request
+    }
+
+    /// The newest change of `field`, if `request` is it: taken out, to settle.
+    fn settle(&mut self, field: Field, request: u64) -> Option<DriverReporter> {
+        if self.unsettled.get(&field)?.request != request {
+            return None;
+        }
+        self.unsettled
+            .remove(&field)
+            .map(|waiting| waiting.reporter)
+    }
+
+    /// Tell `reporter` what `field` is now. A permission mode RiWork has no name
+    /// for is not reported.
+    fn report_field(&self, field: Field, reporter: &DriverReporter) {
+        let mut report = DriverReport::default();
+        match field {
+            Field::Mode => match approval_mode_of(&self.settings.permission_mode) {
+                Some(mode) => report.approval_mode = Some(mode),
+                None => return,
+            },
+            Field::Model => report.model = Some(self.settings.model.clone()),
+            Field::Fast => report.fast = Some(self.settings.fast),
+        }
+        reporter.report(report);
+    }
+
+    /// The CLI took change `request` of `field`. What it has is that change unless
+    /// it already took a newer one, whose answer came first.
+    fn setting_accepted(&mut self, field: Field, request: u64, value: &Settings) {
+        let held = self.confirmed_request.get(&field).copied().unwrap_or(0);
+        if request > held {
+            self.confirmed_request.insert(field, request);
+            match field {
+                Field::Mode => self.confirmed.permission_mode = value.permission_mode.clone(),
+                Field::Model => self.confirmed.model = value.model.clone(),
+                Field::Fast => self.confirmed.fast = value.fast,
+            }
+        }
+        if let Some(reporter) = self.settle(field, request) {
+            self.report_field(field, &reporter);
+        }
+    }
+
+    /// The CLI cannot make change `request` in place: the next launch makes it.
+    fn setting_deferred(&mut self, field: Field, request: u64) {
+        self.restart_wanted = true;
+        if let Some(reporter) = self.settle(field, request) {
+            self.report_field(field, &reporter);
+        }
+    }
+
+    /// The CLI refused change `request` of `field`. The newest change goes back to
+    /// what the CLI has; an older one was overtaken, and the newer one settles it.
+    fn setting_refused(&mut self, field: Field, request: u64, what: &str, error: &str) {
+        if let Some(reporter) = self.settle(field, request) {
+            match field {
+                Field::Mode => {
+                    self.settings.permission_mode = self.confirmed.permission_mode.clone()
+                }
+                Field::Model => self.settings.model = self.confirmed.model.clone(),
+                Field::Fast => self.settings.fast = self.confirmed.fast,
+            }
+            self.report_field(field, &reporter);
+        }
+        self.notice(
+            NoticeLevel::Warning,
+            notice_kind::SETTING_REFUSED,
+            format!("claude did not change {what}: {error}"),
+        );
+    }
+
+    /// A process started with `settings`: it has every one of them, and the
+    /// changes still waiting for the old process's answers are settled by it.
+    fn launched(&mut self) {
+        self.confirmed = self.settings.clone();
+        // Newer than any change asked for so far, whose answers are gone with the
+        // old process anyway.
+        for field in [Field::Mode, Field::Model, Field::Fast] {
+            self.confirmed_request.insert(field, self.setting_requests);
+        }
+        for (field, waiting) in std::mem::take(&mut self.unsettled) {
+            self.report_field(field, &waiting.reporter);
+        }
+    }
+
+    /// No process took the changes still waiting: they are back at what the
+    /// last one had.
+    fn not_launched(&mut self) {
+        for (field, waiting) in std::mem::take(&mut self.unsettled) {
+            match field {
+                Field::Mode => {
+                    self.settings.permission_mode = self.confirmed.permission_mode.clone()
+                }
+                Field::Model => self.settings.model = self.confirmed.model.clone(),
+                Field::Fast => self.settings.fast = self.confirmed.fast,
+            }
+            self.report_field(field, &waiting.reporter);
         }
     }
 
     /// Turn Fast mode on or off in the running process: a flag-layer setting, which
     /// the process keeps until it ends (a restart passes it at launch). Its answer
     /// never says whether Fast mode is available, so the state is asked for again.
-    fn change_fast(&mut self, fast: bool) {
+    fn change_fast(&mut self, fast: bool, request: u64) {
+        let value = self.settings.clone();
         let reply: Reply = Box::new(move |core, result| match result {
-            Ok(_) => core.ask_state(),
-            Err(error) if error.contains("Unsupported") => core.restart_wanted = true,
+            Ok(_) => {
+                core.setting_accepted(Field::Fast, request, &value);
+                core.ask_state();
+            }
+            Err(error) if error.contains("Unsupported") => {
+                core.setting_deferred(Field::Fast, request)
+            }
             Err(error) => {
-                core.settings.fast = !fast;
-                core.notice(
-                    NoticeLevel::Warning,
-                    notice_kind::SETTING_REFUSED,
-                    format!("claude did not change Fast mode: {error}"),
-                );
+                core.setting_refused(Field::Fast, request, "Fast mode", &error);
             }
         });
-        let request = json!({"subtype": "apply_flag_settings", "settings": {"fastMode": fast}});
-        if self.control(request, reply).is_err() {
-            self.restart_wanted = true;
+        let request_frame =
+            json!({"subtype": "apply_flag_settings", "settings": {"fastMode": fast}});
+        if self.control(request_frame, reply).is_err() {
+            self.setting_deferred(Field::Fast, request);
         }
     }
 
@@ -1346,31 +1560,18 @@ impl Core {
         }
     }
 
-    /// Ask the running process for a change. If it cannot (an unsupported
-    /// request), restart it with the new settings; if it refuses, put the old
-    /// value back and say so.
-    fn change_setting(
-        &mut self,
-        request: Value,
-        what: &'static str,
-        revert: impl FnOnce(&mut Core) + Send + 'static,
-    ) {
-        let reply: Reply = Box::new(move |core, result| {
-            if let Err(error) = result {
-                if error.contains("Unsupported") {
-                    core.restart_wanted = true;
-                } else {
-                    revert(core);
-                    core.notice(
-                        NoticeLevel::Warning,
-                        notice_kind::SETTING_REFUSED,
-                        format!("claude did not change {what}: {error}"),
-                    );
-                }
-            }
+    /// Ask the running process for change `request` of `field`. If it cannot (an
+    /// unsupported request), restart it with the new settings; if it refuses, put
+    /// back what it has and say so.
+    fn change_setting(&mut self, frame: Value, what: &'static str, field: Field, request: u64) {
+        let value = self.settings.clone();
+        let reply: Reply = Box::new(move |core, result| match result {
+            Ok(_) => core.setting_accepted(field, request, &value),
+            Err(error) if error.contains("Unsupported") => core.setting_deferred(field, request),
+            Err(error) => core.setting_refused(field, request, what, &error),
         });
-        if self.control(request, reply).is_err() {
-            self.restart_wanted = true;
+        if self.control(frame, reply).is_err() {
+            self.setting_deferred(field, request);
         }
     }
 
@@ -1413,14 +1614,23 @@ impl Core {
         }
         match frame.get("subtype").and_then(Value::as_str) {
             Some("init") => {
-                if let Some(id) = str_of(frame, "session_id")
+                if let Some(id) = str_of(frame, "session_id").filter(|id| !id.is_empty())
                     && id != self.session_id
                 {
+                    // The CLI runs another session than the one it was given: that
+                    // is the one to resume from now on.
                     self.session_id = id.to_owned();
+                    self.reporter.report(DriverReport {
+                        provider_thread_id: Some(id.to_owned()),
+                        ..Default::default()
+                    });
                 }
                 if let Some(mode) = str_of(frame, "permissionMode") {
-                    self.settings.permission_mode = mode.to_owned();
+                    self.observe_mode(mode);
                 }
+                // The model it names is not reported: a chat on the default, or on
+                // an alias such as `opus`, keeps that choice rather than the name
+                // it resolves to today.
                 if let Some(model) = str_of(frame, "model") {
                     self.model = Some(model.to_owned());
                 }
@@ -1431,7 +1641,7 @@ impl Core {
             }
             Some("status") => {
                 if let Some(mode) = str_of(frame, "permissionMode") {
-                    self.settings.permission_mode = mode.to_owned();
+                    self.observe_mode(mode);
                 }
             }
             Some("session_state_changed") => {
@@ -1484,6 +1694,28 @@ impl Core {
                 ));
             }
             _ => {}
+        }
+    }
+
+    /// The permission mode the CLI says it is in, which an approval "for the
+    /// session" can change on its own. RiWork's name for it is reported; one it has
+    /// no name for is kept as the CLI's and not reported.
+    fn observe_mode(&mut self, mode: &str) {
+        if self.unsettled.contains_key(&Field::Mode) {
+            // A change of mode is on its way; its answer says where it ends.
+            return;
+        }
+        let changed = mode != self.confirmed.permission_mode;
+        self.settings.permission_mode = mode.to_owned();
+        self.confirmed.permission_mode = mode.to_owned();
+        // What the CLI says now outranks a late answer to an older change.
+        self.confirmed_request
+            .insert(Field::Mode, self.setting_requests);
+        if changed && let Some(approval_mode) = approval_mode_of(mode) {
+            self.reporter.report(DriverReport {
+                approval_mode: Some(approval_mode),
+                ..Default::default()
+            });
         }
     }
 
@@ -2462,6 +2694,7 @@ fn restart(shared: &Arc<Shared>) {
     match result {
         Ok(()) if core.stopped => core.undelivered("the chat was stopped first"),
         Ok(()) => {
+            core.launched();
             core.set_state(ChatState::Idle);
             for (text, echo) in std::mem::take(&mut core.queued) {
                 let _ = core.send_user(text, echo);
@@ -2469,6 +2702,7 @@ fn restart(shared: &Arc<Shared>) {
         }
         Err(_) if core.stopped => core.undelivered("the chat was stopped first"),
         Err(error) => {
+            core.not_launched();
             core.undelivered("claude did not start again");
             core.dead = Some(error.clone());
             core.set_state(ChatState::Failed { message: error });
@@ -2530,6 +2764,18 @@ fn supervise(shared: Weak<Shared>) {
 }
 
 // Translation.
+
+/// RiWork's name for a permission mode the CLI reports, when it has one. `manual`
+/// is how newer CLIs list `default`; `auto` and `dontAsk` have no RiWork mode.
+fn approval_mode_of(mode: &str) -> Option<ApprovalMode> {
+    match mode {
+        "default" | "manual" => Some(ApprovalMode::Supervised),
+        "acceptEdits" => Some(ApprovalMode::AutoEdit),
+        "bypassPermissions" => Some(ApprovalMode::Full),
+        "plan" => Some(ApprovalMode::Plan),
+        _ => None,
+    }
+}
 
 fn permission_mode(mode: ApprovalMode) -> &'static str {
     match mode {
