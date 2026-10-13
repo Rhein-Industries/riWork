@@ -160,6 +160,17 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual(try wire(full)["fast"], .bool(true))
         XCTAssertEqual(try wire(minimal)["fast"], .bool(false), "serde writes it always")
     }
+    func testContributorOptOutIsReadFromAChatInfoAndWrittenOnlyWhenOn() throws {
+        // Absent in a chat that did not opt out, and from a desktop that predates it.
+        let plain = try decode(ChatInfo.self, #"{"id":"i","provider":"muse","cwd":"/w","title":"t","created_at_unix":1}"#)
+        XCTAssertFalse(plain.contributorOptOut)
+        guard case .object(let fields) = try wire(plain) else { return XCTFail("an object") }
+        XCTAssertNil(fields["contributor_opt_out"], "left out when off, as serde does")
+        let opted = try decode(ChatInfo.self, #"{"id":"i","provider":"muse","cwd":"/w","title":"t","created_at_unix":1,"contributor_opt_out":true}"#)
+        XCTAssertTrue(opted.contributorOptOut)
+        XCTAssertEqual(try wire(opted)["contributor_opt_out"], .bool(true))
+        XCTAssertFalse(try decode(ChatInfo.self, #"{"id":"i","provider":"muse","contributor_opt_out":"yes"}"#).contributorOptOut, "an odd value reads as off")
+    }
     func testAnInfoOrAModelOptionWrittenBeforeTheNewFieldsExistedStillReads() throws {
         // A desktop that predates Fast and the models: no `fast` in the info, no `models` events.
         let info = try decode(ChatInfo.self, #"{"id":"i","provider":"codex","cwd":"/w","title":"t","created_at_unix":1,"model":"gpt-5","effort":"high"}"#)

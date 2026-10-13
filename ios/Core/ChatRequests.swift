@@ -164,16 +164,21 @@ public struct ChatCreateRequest: Sendable, Equatable {
     public let effort: String?
     /// Start with the provider's fast mode on. Sent only when on: a desktop that predates it denies the unknown field, and off is the default.
     public let fast: Bool
+    /// Muse only: start the chat with Muse's contributor mode off. Sent only when on, like `fast`: a desktop that predates it denies the
+    /// unknown field rather than make a chat without it.
+    public let contributorOptOut: Bool
     public let title: String?
 
-    public init(provider: ChatProvider, target: Target, approvalMode: ChatApprovalMode? = nil, model: String? = nil, effort: String? = nil, fast: Bool = false, title: String? = nil) throws {
+    public init(provider: ChatProvider, target: Target, approvalMode: ChatApprovalMode? = nil, model: String? = nil, effort: String? = nil, fast: Bool = false,
+                contributorOptOut: Bool = false, title: String? = nil) throws {
         switch target {
         case .project(let id), .worktree(let id): guard NewTerminalRequest.isCanonicalUUID(id) else { throw ChatValidationError.invalidID }
         }
         for (field, value, limit) in [("model", model, ChatLimits.modelBytes), ("effort", effort, ChatLimits.effortBytes), ("title", title, ChatLimits.titleBytes)] {
             if let value, value.utf8.count > limit { throw ChatValidationError.textTooLong(field: field, limit: limit) }
         }
-        self.provider = provider; self.target = target; self.approvalMode = approvalMode; self.model = model; self.effort = effort; self.fast = fast; self.title = title
+        self.provider = provider; self.target = target; self.approvalMode = approvalMode; self.model = model; self.effort = effort; self.fast = fast
+        self.contributorOptOut = contributorOptOut; self.title = title
     }
 
     public var params: [String: JSONValue] {
@@ -186,13 +191,14 @@ public struct ChatCreateRequest: Sendable, Equatable {
         if let model { params["model"] = .string(model) }
         if let effort { params["effort"] = .string(effort) }
         if fast { params["fast"] = .bool(true) }
+        if contributorOptOut { params["contributor_opt_out"] = .bool(true) }
         if let title { params["title"] = .string(title) }
         return params
     }
 
     /// Reads wire parameters back through the same rules (the transport checks every request this way).
     public init(params: [String: JSONValue]) throws {
-        guard Set(params.keys).isSubset(of: ["provider", "project_id", "worktree_id", "approval_mode", "model", "effort", "fast", "title"]) else { throw ChatValidationError.malformed }
+        guard Set(params.keys).isSubset(of: ["provider", "project_id", "worktree_id", "approval_mode", "model", "effort", "fast", "contributor_opt_out", "title"]) else { throw ChatValidationError.malformed }
         let target: Target
         switch (params["project_id"], params["worktree_id"]) {
         case (.string(let id)?, nil): target = .project(id)
@@ -216,7 +222,13 @@ public struct ChatCreateRequest: Sendable, Equatable {
             guard case .bool(let flag) = value else { throw ChatValidationError.malformed }
             fast = flag
         }
-        try self.init(provider: provider, target: target, approvalMode: mode, model: try text("model"), effort: try text("effort"), fast: fast, title: try text("title"))
+        var contributorOptOut = false
+        if let value = params["contributor_opt_out"] {
+            guard case .bool(let flag) = value else { throw ChatValidationError.malformed }
+            contributorOptOut = flag
+        }
+        try self.init(provider: provider, target: target, approvalMode: mode, model: try text("model"), effort: try text("effort"), fast: fast,
+                      contributorOptOut: contributorOptOut, title: try text("title"))
     }
 
     /// The new chat of the answer. It must be the kind that was asked for, in the place that was asked for: anything else is treated as

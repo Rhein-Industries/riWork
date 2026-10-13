@@ -130,6 +130,9 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
     /// Fast mode was asked for (Codex's fast service tier, Claude's `fastMode`): the person's choice, not what the provider granted. A
     /// desktop that predates it never says, which reads as off.
     public var fast: Bool
+    /// Muse only: the chat was opted out of Muse's contributor mode when it was made, so every start runs with it off. Absent (a chat that
+    /// did not opt out, or a desktop that predates it) reads as false, and the person's Muse settings decide.
+    public var contributorOptOut: Bool
     public var approvalMode: ChatApprovalMode
     public var codexAccountID: String?
     public var state: ChatState
@@ -138,11 +141,12 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
 
     public init(id: String, provider: ChatProvider, parentID: String? = nil, projectID: String? = nil, worktreeID: String? = nil, cwd: String = "", title: String = "",
                 createdAtUnix: UInt64 = 0, providerThreadID: String? = nil, model: String? = nil, effort: String? = nil, fast: Bool = false,
-                approvalMode: ChatApprovalMode = .supervised, codexAccountID: String? = nil, state: ChatState = .starting, carriedOver: ChatCarriedOver? = nil) {
+                contributorOptOut: Bool = false, approvalMode: ChatApprovalMode = .supervised, codexAccountID: String? = nil, state: ChatState = .starting,
+                carriedOver: ChatCarriedOver? = nil) {
         self.parentID = parentID
         self.id = id; self.provider = provider; self.projectID = projectID; self.worktreeID = worktreeID; self.cwd = cwd; self.title = title
         self.createdAtUnix = createdAtUnix; self.providerThreadID = providerThreadID; self.model = model; self.effort = effort; self.fast = fast
-        self.approvalMode = approvalMode; self.codexAccountID = codexAccountID; self.state = state; self.carriedOver = carriedOver
+        self.contributorOptOut = contributorOptOut; self.approvalMode = approvalMode; self.codexAccountID = codexAccountID; self.state = state; self.carriedOver = carriedOver
     }
 
     private enum Keys: String, CodingKey {
@@ -150,6 +154,7 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
         case parentID = "parent_id"
         case projectID = "project_id", worktreeID = "worktree_id", createdAtUnix = "created_at_unix", providerThreadID = "provider_thread_id"
         case approvalMode = "approval_mode", codexAccountID = "codex_account_id", carriedOver = "carried_over"
+        case contributorOptOut = "contributor_opt_out"
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -165,6 +170,7 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
         model = try c.decodeIfPresent(String.self, forKey: .model)
         effort = try c.decodeIfPresent(String.self, forKey: .effort)
         fast = c.tolerant(Bool.self, forKey: .fast) ?? false
+        contributorOptOut = c.tolerant(Bool.self, forKey: .contributorOptOut) ?? false
         approvalMode = c.lenient(ChatApprovalMode.self, forKey: .approvalMode, default: .supervised)
         codexAccountID = try c.decodeIfPresent(String.self, forKey: .codexAccountID)
         state = c.tolerant(ChatState.self, forKey: .state) ?? .starting
@@ -184,6 +190,7 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
         try c.encodeIfPresent(model, forKey: .model)
         try c.encodeIfPresent(effort, forKey: .effort)
         try c.encode(fast, forKey: .fast)
+        if contributorOptOut { try c.encode(true, forKey: .contributorOptOut) }
         try c.encode(approvalMode, forKey: .approvalMode)
         try c.encodeIfPresent(codexAccountID, forKey: .codexAccountID)
         try c.encode(state, forKey: .state)

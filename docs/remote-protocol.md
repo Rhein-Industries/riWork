@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-13: Additive, in the same "Chat extension", no new method and no new error code: a new Muse chat can opt out of Muse's contributor mode. `chat.create` takes an optional `contributor_opt_out` boolean (sent only when true; the desktop's CLI gets `--contributor-opt-out`), and `ChatInfo` gains `contributor_opt_out`, present and `true` only for a chat that opted out. Such a chat runs every `muse serve` it starts with `--contributor-mode off`, an override Muse never saves; a chat without it follows the person's Muse settings. A Codex or Claude chat has no contributor mode: it is made without it, with a `notice` item, and the connector answers `cli_error` because the chat is not the one asked for (as for `fast` on Muse). A desktop from before it refuses the field (`invalid_request`, unknown field); an older phone never sends it and skips the `ChatInfo` field. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-13: Additive, in the same "Chat extension": a third chat provider, Muse. Every chat `provider` in this document (`chat.create`, `chat.models`, the `switch` command, `ChatInfo`, and a chat orchestrator's `provider` in `orchestrators.list` and `shells.list`) also takes `muse`, beside `codex` and `claude`; a chat created without a title is called "Muse chat", and `muse is not installed or is not on PATH` maps to `harness_unavailable` as it does for the other providers. Muse chats take no attachments for now: the chat host refuses them. No new method, no new error code, and no `features.*` flag: a desktop or connector from before it refuses `muse` creates, models and switches with `invalid_request`, drops a Muse chat from validated chat results, and leaves a Muse orchestrator's `provider` out, and an older phone leaves Muse chats out of its lists, so each side degrades to absence, never corruption. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
 - 2026-10-08: Additive, in the same "Chat extension": one chat for both providers. A `switch` command for `chat.command` (`{"command":"switch","provider":"codex|claude"}`, optional `model`, `effort`, `fast`) moves a chat to the other provider in place: the same `chat_id`, the same events, a new agent on a thread of its own that is given the conversation so far; refused while a turn runs or waits. The log says so with an `info` event naming the new `provider` and an `item_completed` `notice` ("Continued with Claude (opus), which has the conversation so far."); `ChatInfo` gains optional `carried_over` (`{document, from}`). One new method, `chat.models` (`{"provider":"codex|claude"}`, optional `project_id`), lists the models saved chats of a provider reported, for a provider the chat does not run yet. `features.chat_provider_switch` and `features.chat_models` in `ready` say the installed CLI has them (`riwork capabilities --json`). No new error code. A desktop from before it refuses `switch` (`invalid_request`, unknown command) and `chat.models` ("unsupported RPC method"); an older phone sees the switch as an ordinary `info` and `notice` and follows the chat as before. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-08: Additive, in the "Terminal creation extension", no new method and no new error code: `shell.create` takes an optional `as_settings` boolean: an agent asked for with `"as_settings": true` starts unrestricted or not as the desktop's **Agent terminals run unrestricted** setting says (on by default), and `ready.features.shell_create_as_settings` (`true`) says the desktop does that. Without the feature (an older connector or `riwork` CLI) such an agent starts restricted. `unrestricted` keeps its meaning, left out included (restricted), so an older phone, which leaves it out for its switch's off, is unaffected; `as_settings` with `unrestricted` is `invalid_request`. The desktop's New Tab menu now has one entry per agent, unrestricted as that setting says. Applies to v1 and v2 sessions. Existing bytes and fixtures are unchanged.
@@ -184,7 +185,7 @@ unsolicited response except handshake `ready`.
 | `project.create` | `{"name":"My App"}` optionally `"git":false` (Project creation) | `{"project_id":"UUID","project":Project}` |
 | `orchestrator.create` | `{}` or `{"project_id":"UUID"}` (Orchestrator creation) | `{"orchestrator":Session,"created":true}` |
 | `chats.list` | `{}` or `{"project_id":"UUID"}` (Chat) | `{"chats":[ChatInfo]}` |
-| `chat.create` | `{"provider":"codex\|claude\|muse","project_id":"UUID"}` or `"worktree_id":"UUID"` instead, optionally `"approval_mode"`, `"model"`, `"effort"`, `"fast"`, `"title"` (Chat) | `{"chat":ChatInfo}` |
+| `chat.create` | `{"provider":"codex\|claude\|muse","project_id":"UUID"}` or `"worktree_id":"UUID"` instead, optionally `"approval_mode"`, `"model"`, `"effort"`, `"fast"`, `"contributor_opt_out"`, `"title"` (Chat) | `{"chat":ChatInfo}` |
 | `chat.events` | `{"chat_id":"UUID","since":0,"wait_ms":25000}` optionally `"max_events":500` (Chat) | `{"chat_id":"UUID","events":[{"seq":1,"event":ChatEvent}],"next":1,"more":false}` |
 | `chat.command` | `{"chat_id":"UUID","command":ChatCommand}` (Chat) | `{"status":"ok"}` |
 | `chat.stop` | `{"chat_id":"UUID"}` (Chat) | `{"status":"stopped"}` |
@@ -1244,7 +1245,9 @@ reason to fail a page.
 - `ChatInfo`: `id` (UUID), `provider` (`codex|claude|muse`), `project_id` and `worktree_id`
   (UUID, either may be absent), `cwd`, `title`, `created_at_unix`, `approval_mode`
   (`supervised|auto_edit|full|plan`), `state`, `fast` (boolean: the person asked for the
-  provider's fast mode; absent, so `false`, in a chat from before 2026-10-05) and, when
+  provider's fast mode; absent, so `false`, in a chat from before 2026-10-05),
+  `contributor_opt_out` (boolean, since 2026-10-13: a Muse chat opted out of Muse's
+  contributor mode; absent, so `false`, in any other chat) and, when
   known, `provider_thread_id`, `model`, `effort`, `codex_account_id`, for an
   orchestrator's chat, `orchestrator` (see "Chat orchestrators") and, for a chat that
   switched provider, `carried_over` (see "Switching provider"). `provider` can change
@@ -1330,14 +1333,20 @@ new` does. Params (an object; unknown fields, nulls and wrong types fail
   the provider's fast mode on. A model without one ignores it. It is the person's choice
   and stays in `ChatInfo.fast`; the provider may still not grant it (Claude pauses fast
   mode after a rate limit and says so in a `notice` item).
+- `contributor_opt_out` (optional boolean, default `false`, since 2026-10-13; null and other
+  types are refused): a Muse chat starts, and resumes, with Muse's contributor mode off
+  (`muse serve --contributor-mode off`, which Muse never saves). Muse says that with
+  contributor mode off, content won't be used for product improvement. Without it the
+  person's Muse settings decide. It stays in `ChatInfo.contributor_opt_out`; a Codex or
+  Claude chat has no contributor mode and is made without it.
 
 Result `{"chat":ChatInfo}`, with the state it has when the CLI returns: `idle` once the
 agent is up, or `starting`. **A chat whose agent could not be started is created all the
 same and is the answer**, with `{"state":"failed","message":"..."}` (for example `codex
 is not installed or is not on PATH`): the phone shows it and the next `Send` tries
 again, so a failed start does not invite a second creation. The connector checks that the
-chat is the one asked for (provider, project or worktree, mode, and model, effort and fast
-mode when sent) and answers `cli_error` if not, after stopping that stray chat's agent.
+chat is the one asked for (provider, project or worktree, mode, and model, effort, fast
+mode and contributor opt-out when sent) and answers `cli_error` if not, after stopping that stray chat's agent.
 
 **`chat.snapshot`** (additive, v1). Params `{"chat_id":"UUID","limit":50}`;
 optional `limit` is 1–100. Both `chat.snapshot` and `chat.events` accept an optional
@@ -1567,9 +1576,9 @@ the other methods:
   prefix, a title or a path.
 - The CLI is run with its argument vector built from validated values, one argument per
   value (`chat new --provider P --project ID --mode M [--model=X] [--effort=X] [--fast]
-  [--title=X] --json`, `chat events ID --since N --wait-ms N --max N --max-bytes N
-  --json`, `chat command ID --command-json JSON --json`, `chat stop ID --json`, `chat
-  list [--project ID] --json`). Nothing is concatenated into a shell string. Free text
+  [--contributor-opt-out] [--title=X] --json`, `chat events ID --since N --wait-ms N --max N
+  --max-bytes N --json`, `chat command ID --command-json JSON --json`, `chat stop ID
+  --json`, `chat list [--project ID] --json`). Nothing is concatenated into a shell string. Free text
   uses the `--name=VALUE` form so that a value that begins with `-` stays a value, and a
   command is rebuilt from the validated fields as one JSON argument, so nothing the
   connector did not check can travel in it.

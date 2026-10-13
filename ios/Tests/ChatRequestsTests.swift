@@ -58,6 +58,18 @@ final class ChatRequestsTests: XCTestCase {
         XCTAssertNoThrow(try RequestValidation.validate(method: "chat.create", params: on.params, id: requestID))
         XCTAssertThrowsError(try RequestValidation.validate(method: "chat.create", params: on.params.merging(["fast": .string("yes")]) { $1 }, id: requestID))
     }
+    func testContributorOptOutIsSentOnlyWhenItIsOn() throws {
+        // Like Fast: a desktop that predates it denies the field rather than make a chat without it, so off is not spelled out.
+        XCTAssertNil(try create().params["contributor_opt_out"])
+        let on = try ChatCreateRequest(provider: .muse, target: .project(project), contributorOptOut: true)
+        XCTAssertEqual(on.params, ["provider": .string("muse"), "project_id": .string(project), "contributor_opt_out": .bool(true)])
+        XCTAssertEqual(try ChatCreateRequest(params: on.params), on)
+        XCTAssertFalse(try ChatCreateRequest(params: ["provider": .string("muse"), "project_id": .string(project), "contributor_opt_out": .bool(false)]).contributorOptOut)
+        for bad in [JSONValue.string("off"), .number(0), .null] {
+            XCTAssertThrowsError(try ChatCreateRequest(params: on.params.merging(["contributor_opt_out": bad]) { $1 }), "\(bad)") { XCTAssertEqual($0 as? ChatValidationError, .malformed) }
+        }
+        XCTAssertNoThrow(try RequestValidation.validate(method: "chat.create", params: on.params, id: requestID))
+    }
     func testTheTargetIsExactlyOneFullLowercaseUUID() throws {
         for bad in ["", "nope", String(project.prefix(8)), letters.uppercased(), project.replacingOccurrences(of: "-", with: ""), project + " "] {
             XCTAssertThrowsError(try create(.codex, .project(bad)), bad) { XCTAssertEqual($0 as? ChatValidationError, .invalidID) }

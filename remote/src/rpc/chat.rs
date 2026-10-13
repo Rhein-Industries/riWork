@@ -170,6 +170,7 @@ pub(super) struct NewSpec {
     model: Option<String>,
     effort: Option<String>,
     fast: bool,
+    contributor_opt_out: bool,
     title: Option<String>,
 }
 pub(super) fn new_spec(params: &Value) -> std::result::Result<NewSpec, Fault> {
@@ -183,6 +184,7 @@ pub(super) fn new_spec(params: &Value) -> std::result::Result<NewSpec, Fault> {
             "model",
             "effort",
             "fast",
+            "contributor_opt_out",
             "title",
         ],
     )?;
@@ -207,6 +209,7 @@ pub(super) fn new_spec(params: &Value) -> std::result::Result<NewSpec, Fault> {
         model: label("model", text(object, "model")?, MODEL_MAX_CHARS)?,
         effort: label("effort", text(object, "effort")?, EFFORT_MAX_CHARS)?,
         fast: flag(object, "fast")?.unwrap_or(false),
+        contributor_opt_out: flag(object, "contributor_opt_out")?.unwrap_or(false),
         title: label("title", text(object, "title")?, TITLE_MAX_CHARS)?,
     })
 }
@@ -240,6 +243,9 @@ fn new_args(spec: &NewSpec) -> Vec<String> {
     }
     if spec.fast {
         args.push("--fast".into());
+    }
+    if spec.contributor_opt_out {
+        args.push("--contributor-opt-out".into());
     }
     args
 }
@@ -707,7 +713,7 @@ fn chat_info(value: &Value) -> bool {
 }
 /// The `chat.create` result for the chat the CLI printed, or `None` if it is not the chat
 /// that was asked for: the provider, the project or worktree, the mode, and the model,
-/// effort and fast mode when they were sent.
+/// effort, fast mode and Muse contributor opt-out when they were sent.
 fn new_result(spec: &NewSpec, cli: &Value) -> Option<Value> {
     let text = |name: &str| cli.get(name).and_then(Value::as_str);
     let in_target = match &spec.target {
@@ -725,7 +731,9 @@ fn new_result(spec: &NewSpec, cli: &Value) -> Option<Value> {
         && text("approval_mode") == Some(spec.mode)
         && same("model", &spec.model)
         && same("effort", &spec.effort)
-        && (!spec.fast || cli.get("fast") == Some(&Value::Bool(true))))
+        && (!spec.fast || cli.get("fast") == Some(&Value::Bool(true)))
+        && (!spec.contributor_opt_out
+            || cli.get("contributor_opt_out") == Some(&Value::Bool(true))))
     .then(|| json!({ "chat": cli }))
 }
 
@@ -1609,6 +1617,42 @@ mod tests {
                 fault.message
             );
         }
+    }
+
+    #[test]
+    fn contributor_opt_out_becomes_the_cli_flag_only_when_on_and_must_come_back() {
+        let spec = |extra: Value| {
+            let mut params = json!({"provider": "muse", "project_id": PROJECT});
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            new_spec(&params)
+        };
+        let flag = "--contributor-opt-out".to_owned();
+        assert!(!spec(json!({})).unwrap().contributor_opt_out);
+        assert!(!new_args(&spec(json!({"contributor_opt_out": false})).unwrap()).contains(&flag));
+        let opted_out = spec(json!({"contributor_opt_out": true})).unwrap();
+        assert!(new_args(&opted_out).contains(&flag));
+        for bad in [json!(null), json!(1), json!("off")] {
+            let fault = spec(json!({"contributor_opt_out": bad})).unwrap_err();
+            assert_eq!(fault.code, "invalid_request", "{bad}");
+        }
+        // A chat printed without it (a host that predates it) is not the chat asked for.
+        let printed = |extra: Value| {
+            let mut chat = json!({
+                "id": "11111111-2222-4333-8444-666666666666", "provider": "muse",
+                "project_id": PROJECT, "approval_mode": "supervised", "title": "Muse chat",
+                "cwd": "/w", "created_at_unix": 1, "state": {"state": "idle"},
+            });
+            chat.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            chat
+        };
+        assert!(new_result(&opted_out, &printed(json!({}))).is_none());
+        assert!(new_result(&opted_out, &printed(json!({"contributor_opt_out": true}))).is_some());
+        assert!(new_result(&spec(json!({})).unwrap(), &printed(json!({}))).is_some());
     }
 
     #[test]
