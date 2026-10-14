@@ -77,6 +77,11 @@ struct ChatScreen: View {
                             ChatNoticeBanners(model: model, chat: info, conversation: conversation, state: state, showHistory: { showNotices = true })
                         }
                         .background(style.background)
+                        if let choice = conversation.contributorState.choice(fallback: info) {
+                            ChatContributorButton(choice: choice, connected: connected, changing: conversation.changingContributor) {
+                                Task { await model.setChatContributor(chat.id, choice.nextMode) }
+                            }
+                        }
                         ChatComposer(conversation: conversation, provider: info.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
                                      send: { Task { await model.sendChatDraft(chat.id) } }, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } },
                                      attach: { picking = $0 }, pasteFiles: pasteFiles,

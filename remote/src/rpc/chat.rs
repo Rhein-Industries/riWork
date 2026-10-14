@@ -1780,6 +1780,34 @@ mod tests {
     }
 
     #[test]
+    fn paired_contributor_commands_keep_the_exact_allowlist_and_refuse_privileged_neighbors() {
+        let chat = "44444444-4444-4444-8444-444444444444";
+        // Already allowed on the paired-device lane: iOS needs no broader Configure or
+        // provider settings permission. The CLI/engine still enforce Muse and idle state.
+        for mode in ["on", "off"] {
+            let command = json!({"command": "configure", "contributor_mode": mode});
+            let spec = command_spec(&json!({"chat_id": chat, "command": command})).unwrap();
+            assert_eq!(spec.chat, chat);
+            assert_eq!(spec.command, command);
+        }
+        for extra in [
+            json!({"claude_billing": "api_key"}),
+            json!({"claude_billing": "subscription"}),
+            json!({"trust_workspace": true}),
+            json!({"settings": {"contributor_mode": "on"}}),
+            json!({"contributor_opt_out": false}),
+        ] {
+            let mut command = json!({"command": "configure", "contributor_mode": "on"});
+            command
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let fault = command_spec(&json!({"chat_id": chat, "command": command})).unwrap_err();
+            assert_eq!(fault.code, "invalid_request", "{extra}");
+        }
+    }
+
+    #[test]
     fn configure_takes_contributor_mode_on_or_off_and_an_older_phones_off_but_never_its_false() {
         for mode in ["on", "off"] {
             assert_eq!(

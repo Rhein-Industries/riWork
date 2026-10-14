@@ -623,6 +623,72 @@ fn command(host: &TestHost, id: &str, json_text: &str) -> Result<String, String>
 }
 
 #[test]
+fn contributor_command_resumes_muse_on_the_same_session_and_surfaces_refusals() {
+    use crate::chat::model::ContributorMode::{Off, On};
+    let host = TestHost::new();
+    let chat = host.create(Provider::Muse);
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    assert_eq!(host.info(&chat.id).reported_contributor_mode(), Some(Off));
+    let on = r#"{"command":"configure","contributor_mode":"on"}"#;
+    let off = r#"{"command":"configure","contributor_mode":"off"}"#;
+    let session = host.info(&chat.id).provider_thread_id.unwrap();
+    for (text, mode) in [(on, On), (off, Off)] {
+        let reply: Value = serde_json::from_str(&command(&host, &chat.id, text).unwrap()).unwrap();
+        assert_eq!(reply, json!({"id": chat.id, "status": "ok"}));
+        let info = host.wait_for_info(&chat.id, |i| i.state == ChatState::Idle);
+        assert_eq!(info.reported_contributor_mode(), Some(mode));
+        assert_eq!(info.provider_thread_id.as_deref(), Some(session.as_str()));
+        let starts = host.fake();
+        let starts = starts.starts.lock().unwrap();
+        let config = starts.last().unwrap();
+        assert_eq!(config.resume.as_deref(), Some(session.as_str()));
+        assert_eq!(config.contributor_mode, mode);
+    }
+    // A different setting beside a changed mode is still refused by the engine.
+    let mixed = r#"{"command":"configure","contributor_mode":"on","effort":"low"}"#;
+    assert!(
+        command(&host, &chat.id, mixed)
+            .unwrap_err()
+            .contains("on its own")
+    );
+    assert_eq!(host.fake().start_count(), 3);
+    command(&host, &chat.id, r#"{"command":"send","text":"hang"}"#).unwrap();
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Running);
+    let busy = command(&host, &chat.id, on).unwrap_err();
+    assert!(
+        busy.contains("Wait for the turn to finish, or interrupt it"),
+        "{busy}"
+    );
+    assert_eq!(host.info(&chat.id).reported_contributor_mode(), Some(Off));
+    assert_eq!(host.fake().start_count(), 3);
+    // This fake's interrupt does not emit completion events; close and resume its turn.
+    command(&host, &chat.id, r#"{"command":"stop"}"#).unwrap();
+    command(
+        &host,
+        &chat.id,
+        r#"{"command":"send","text":"ready again"}"#,
+    )
+    .unwrap();
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    *host.fake().fail_start.lock().unwrap() = Some("test resume refused".into());
+    let failed = command(&host, &chat.id, on).unwrap_err();
+    assert!(failed.contains("test resume refused"), "{failed}");
+    assert!(failed.contains("keeps contributor mode off"), "{failed}");
+    assert_eq!(host.info(&chat.id).reported_contributor_mode(), Some(Off));
+    // The info a relaunched phone reads remains the rolled-back value.
+    let listed = run_json(&host.home, &["list"]);
+    assert_eq!(listed[0]["contributor_opt_out"], true);
+    assert!(listed[0].get("contributor_mode").is_none());
+    let other = host.create_in("other-provider", Provider::Claude);
+    host.wait_for_state(&other.id, |s| *s == ChatState::Idle);
+    assert!(
+        command(&host, &other.id, on)
+            .unwrap_err()
+            .contains("Only Muse")
+    );
+}
+
+#[test]
 fn every_command_reaches_the_driver_in_either_argument_form() {
     let host = TestHost::new();
     let (chat, _) = idle_chat(&host);
@@ -820,6 +886,8 @@ fn a_command_that_is_not_strictly_a_command_is_refused_before_a_host_is_asked() 
         // Billing is chosen in the Mac's window, never by a command.
         r#"{"command":"configure","claude_billing":"api_key"}"#,
         r#"{"command":"configure","claude_billing":"subscription"}"#,
+        r#"{"command":"configure","contributor_mode":"on","claude_billing":"api_key"}"#,
+        r#"{"command":"configure","contributor_mode":"on","trust_workspace":true}"#,
         r#"{"command":"configure","claude_billing":"free"}"#,
         r#"{"command":"switch","provider":"claude","claude_billing":"api_key"}"#,
         r#"{"command":"approve","request_id":"r","decision":"yes"}"#,
