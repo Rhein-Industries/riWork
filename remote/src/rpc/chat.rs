@@ -994,6 +994,7 @@ impl Rpc {
                         (&self.shell_create_as_settings, "shell_create_as_settings"),
                         (&self.chat_provider_switch, "chat_provider_switch"),
                         (&self.chat_models, "chat_models"),
+                        (&self.dashboard, "dashboard"),
                     ] {
                         if reply.get(name) == Some(&Value::Bool(true)) {
                             flag.store(true, Ordering::Relaxed);

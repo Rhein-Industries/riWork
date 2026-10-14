@@ -184,48 +184,10 @@ impl DashboardReads {
     }
 }
 
-/// The chats whose log time tells a recent failure or wait from history: a few hundred at most.
-pub(crate) fn timed_chats(chats: Option<&[ChatInfo]>) -> Vec<String> {
-    chats
-        .into_iter()
-        .flatten()
-        .filter(|chat| {
-            matches!(
-                chat.state,
-                chat::model::ChatState::Failed { .. } | chat::model::ChatState::Waiting
-            )
-        })
-        .map(|chat| chat.id.clone())
-        .take(256)
-        .collect()
-}
-
-/// The automations, and when each of `chats` last wrote its log. Read off the window; it
-/// starts no agent, chat or chat host.
-pub(crate) fn read_extras(
-    home: &Path,
-    chats: Vec<String>,
-) -> (
-    Result<Vec<schedules::Schedule>, String>,
-    BTreeMap<String, u64>,
-) {
-    let schedules = schedules::ScheduleStore::at(home.to_path_buf()).and_then(|store| store.list());
-    let written = chats
-        .into_iter()
-        .filter_map(|id| {
-            let log = chat::log::chat_dir(home, &id)?.join("events.jsonl");
-            let at = std::fs::metadata(log)
-                .ok()?
-                .modified()
-                .ok()?
-                .duration_since(UNIX_EPOCH)
-                .ok()?
-                .as_secs();
-            Some((id, at))
-        })
-        .collect();
-    (schedules, written)
-}
+/// The chats whose log times are read, and the reading itself (the automations and those
+/// times), off the window: the engine's, which `riwork dashboard` uses too, so the phone's
+/// dashboard is sampled as this one is. It starts no agent, chat or chat host.
+pub(crate) use global_overview::{read_extras, timed_chats};
 
 // ---- Where a dashboard row goes ------------------------------------------------------------
 

@@ -1,0 +1,1282 @@
+{
+  "busy": {
+    "attention": [
+      {
+        "at": 1799999990,
+        "kind": "waiting",
+        "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "project_name": "alpha",
+        "session": {
+          "agent": "Claude",
+          "is_chat": true,
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "project_name": "alpha",
+          "target": {
+            "id": "c4a70000-0000-4000-8000-000000000004",
+            "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+            "type": "chat"
+          },
+          "title": "Chat c-alpha-waits"
+        },
+        "target": {
+          "id": "c4a70000-0000-4000-8000-000000000004",
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "type": "chat"
+        }
+      },
+      {
+        "at": 1799999880,
+        "kind": "waiting",
+        "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "project_name": "alpha",
+        "session": {
+          "agent": "Claude",
+          "is_chat": false,
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "project_name": "alpha",
+          "target": {
+            "id": "5e110000-0000-4000-8000-000000000002",
+            "type": "shell"
+          }
+        },
+        "target": {
+          "id": "5e110000-0000-4000-8000-000000000002",
+          "type": "shell"
+        }
+      },
+      {
+        "kind": "waiting",
+        "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "project_name": "beta",
+        "session": {
+          "agent": "Muse",
+          "is_chat": true,
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "project_name": "beta",
+          "target": {
+            "id": "c4a70000-0000-4000-8000-000000000005",
+            "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+            "type": "chat"
+          },
+          "title": "Chat c-beta-waits"
+        },
+        "target": {
+          "id": "c4a70000-0000-4000-8000-000000000005",
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "type": "chat"
+        }
+      },
+      {
+        "at": 1799999940,
+        "kind": "chat_failed",
+        "message": "provider exited with status 1",
+        "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "project_name": "beta",
+        "session": {
+          "agent": "Codex",
+          "is_chat": true,
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "project_name": "beta",
+          "target": {
+            "id": "c4a70000-0000-4000-8000-000000000006",
+            "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+            "type": "chat"
+          },
+          "title": "Chat c-beta-failed"
+        },
+        "target": {
+          "id": "c4a70000-0000-4000-8000-000000000006",
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "type": "chat"
+        }
+      },
+      {
+        "at": 1799996500,
+        "kind": "automation",
+        "message": "failed at the last run",
+        "outcome": "failed",
+        "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "project_name": "beta",
+        "target": {
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "type": "automations"
+        },
+        "title": "Nightly tests"
+      },
+      {
+        "at": 1799993000,
+        "kind": "automation",
+        "message": "missed at the last run",
+        "outcome": "missed",
+        "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "project_name": "alpha",
+        "target": {
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "type": "automations"
+        },
+        "title": "Release notes"
+      },
+      {
+        "kind": "chat_failed",
+        "message": "orchestrator crashed",
+        "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "project_name": "alpha",
+        "session": {
+          "agent": "Claude",
+          "is_chat": true,
+          "orchestrator": "project",
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "project_name": "alpha",
+          "target": {
+            "id": "c4a70000-0000-4000-8000-000000000008",
+            "orchestrator": "project",
+            "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+            "type": "chat"
+          },
+          "title": "Chat c-alpha-orch"
+        },
+        "target": {
+          "id": "c4a70000-0000-4000-8000-000000000008",
+          "orchestrator": "project",
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "type": "chat"
+        }
+      }
+    ],
+    "attention_total": 7,
+    "automations": {
+      "items": [
+        {
+          "id": "5c4e0000-0000-4000-8000-000000000001",
+          "last_run": {
+            "at": 1799996500,
+            "outcome": "failed"
+          },
+          "next_run": 1800000600,
+          "paused": false,
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "project_name": "beta",
+          "title": "Nightly tests"
+        },
+        {
+          "id": "5c4e0000-0000-4000-8000-000000000002",
+          "last_run": {
+            "at": 1799996400,
+            "outcome": "submitted"
+          },
+          "next_run": 1800007200,
+          "paused": false,
+          "title": "Morning summary"
+        },
+        {
+          "id": "5c4e0000-0000-4000-8000-000000000004",
+          "last_run": {
+            "at": 1799993000,
+            "outcome": "missed"
+          },
+          "paused": false,
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "project_name": "alpha",
+          "title": "Release notes"
+        },
+        {
+          "id": "5c4e0000-0000-4000-8000-000000000003",
+          "last_run": {
+            "at": 1799991000,
+            "outcome": "missed"
+          },
+          "paused": true,
+          "title": "Weekly cleanup"
+        }
+      ],
+      "items_total": 4,
+      "next": {
+        "at": 1800000600,
+        "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "title": "Nightly tests"
+      },
+      "paused": 1,
+      "state": "read",
+      "total": 4
+    },
+    "chats_known": true,
+    "finished": [
+      {
+        "activity": "done",
+        "session": {
+          "agent": "Codex",
+          "is_chat": false,
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "project_name": "beta",
+          "target": {
+            "id": "5e110000-0000-4000-8000-000000000004",
+            "type": "shell"
+          }
+        },
+        "since_unix": 1799999700,
+        "subagents": 0
+      }
+    ],
+    "finished_total": 1,
+    "generated_at": 1800000000,
+    "global": {
+      "chat_id": "c4a70000-0000-4000-8000-000000000001",
+      "chat_state": "idle",
+      "kind": "chat",
+      "provider": "claude"
+    },
+    "projects": [
+      {
+        "agents": {
+          "done": 0,
+          "exited": 0,
+          "subagents": 2,
+          "unknown": 0,
+          "waiting": 2,
+          "working": 1
+        },
+        "attention": 4,
+        "folder": "Clients",
+        "id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "last_activity": 1799999990,
+        "live_chats": 1,
+        "live_shells": 3,
+        "name": "alpha",
+        "orchestrator": {
+          "chat_state": "failed",
+          "message": "orchestrator crashed",
+          "mode": "chat",
+          "provider": "claude"
+        },
+        "tasks": {
+          "done": 1,
+          "in_progress": 1,
+          "todo": 0
+        },
+        "worktrees": 2
+      },
+      {
+        "agents": {
+          "done": 1,
+          "exited": 0,
+          "subagents": 0,
+          "unknown": 0,
+          "waiting": 1,
+          "working": 2
+        },
+        "attention": 3,
+        "id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "last_activity": 1799999940,
+        "live_chats": 2,
+        "live_shells": 2,
+        "name": "beta",
+        "orchestrator": {
+          "activity": "working",
+          "mode": "terminal"
+        },
+        "tasks": {
+          "done": 0,
+          "in_progress": 1,
+          "todo": 1
+        },
+        "worktrees": 1
+      },
+      {
+        "agents": {
+          "done": 0,
+          "exited": 0,
+          "subagents": 0,
+          "unknown": 0,
+          "waiting": 0,
+          "working": 0
+        },
+        "attention": 0,
+        "id": "dddddddd-0000-4000-8000-000000000004",
+        "live_chats": 0,
+        "live_shells": 0,
+        "name": "delta",
+        "tasks": {
+          "done": 0,
+          "in_progress": 0,
+          "todo": 0
+        },
+        "worktrees": 0
+      },
+      {
+        "agents": {
+          "done": 0,
+          "exited": 0,
+          "subagents": 0,
+          "unknown": 0,
+          "waiting": 0,
+          "working": 0
+        },
+        "attention": 0,
+        "id": "dddddddd-0000-4000-8000-000000000005",
+        "live_chats": 0,
+        "live_shells": 0,
+        "name": "Delta",
+        "tasks": {
+          "done": 0,
+          "in_progress": 0,
+          "todo": 0
+        },
+        "worktrees": 0
+      },
+      {
+        "agents": {
+          "done": 0,
+          "exited": 0,
+          "subagents": 0,
+          "unknown": 0,
+          "waiting": 0,
+          "working": 0
+        },
+        "attention": 0,
+        "id": "cccccccc-0000-4000-8000-000000000003",
+        "live_chats": 0,
+        "live_shells": 0,
+        "name": "quiet",
+        "tasks": {
+          "done": 0,
+          "in_progress": 0,
+          "todo": 0
+        },
+        "worktrees": 0
+      }
+    ],
+    "projects_total": 5,
+    "tasks_in_progress": [
+      {
+        "id": "7a5c0000-0000-4000-8000-000000000004",
+        "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "project_name": "beta",
+        "title": "Task t4",
+        "updated_at": 30
+      },
+      {
+        "branch": "feat/x",
+        "id": "7a5c0000-0000-4000-8000-000000000001",
+        "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "project_name": "alpha",
+        "title": "Task t1",
+        "updated_at": 20
+      }
+    ],
+    "tasks_in_progress_total": 2,
+    "totals": {
+      "active_projects": 2,
+      "agents": {
+        "done": 2,
+        "exited": 0,
+        "subagents": 2,
+        "unknown": 0,
+        "waiting": 3,
+        "working": 3
+      },
+      "attention": 7,
+      "live_chats": 4,
+      "live_shells": 5,
+      "projects": 5,
+      "tasks": {
+        "done": 1,
+        "in_progress": 2,
+        "todo": 1
+      }
+    },
+    "v": 1,
+    "working": [
+      {
+        "activity": "working",
+        "session": {
+          "agent": "Codex",
+          "branch": "feat/x",
+          "is_chat": false,
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "project_name": "alpha",
+          "target": {
+            "id": "5e110000-0000-4000-8000-000000000001",
+            "type": "shell"
+          }
+        },
+        "since_unix": 1799999400,
+        "subagents": 2
+      },
+      {
+        "activity": "working",
+        "session": {
+          "agent": "Codex",
+          "is_chat": false,
+          "orchestrator": "project",
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "project_name": "beta",
+          "target": {
+            "id": "5e110000-0000-4000-8000-000000000005",
+            "type": "shell"
+          }
+        },
+        "since_unix": 1799999940,
+        "subagents": 0
+      },
+      {
+        "activity": "working",
+        "session": {
+          "agent": "Codex",
+          "is_chat": true,
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "project_name": "beta",
+          "target": {
+            "id": "c4a70000-0000-4000-8000-000000000002",
+            "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+            "type": "chat"
+          },
+          "title": "Fix the login flow"
+        },
+        "subagents": 0
+      }
+    ],
+    "working_total": 3
+  },
+  "chats_unknown": {
+    "attention": [
+      {
+        "at": 1799999880,
+        "kind": "waiting",
+        "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "project_name": "alpha",
+        "session": {
+          "agent": "Claude",
+          "is_chat": false,
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "project_name": "alpha",
+          "target": {
+            "id": "5e110000-0000-4000-8000-000000000002",
+            "type": "shell"
+          }
+        },
+        "target": {
+          "id": "5e110000-0000-4000-8000-000000000002",
+          "type": "shell"
+        }
+      },
+      {
+        "at": 1799996500,
+        "kind": "automation",
+        "message": "failed at the last run",
+        "outcome": "failed",
+        "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "project_name": "beta",
+        "target": {
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "type": "automations"
+        },
+        "title": "Nightly tests"
+      },
+      {
+        "at": 1799993000,
+        "kind": "automation",
+        "message": "missed at the last run",
+        "outcome": "missed",
+        "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "project_name": "alpha",
+        "target": {
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "type": "automations"
+        },
+        "title": "Release notes"
+      }
+    ],
+    "attention_total": 3,
+    "automations": {
+      "items": [
+        {
+          "id": "5c4e0000-0000-4000-8000-000000000001",
+          "last_run": {
+            "at": 1799996500,
+            "outcome": "failed"
+          },
+          "next_run": 1800000600,
+          "paused": false,
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "project_name": "beta",
+          "title": "Nightly tests"
+        },
+        {
+          "id": "5c4e0000-0000-4000-8000-000000000002",
+          "last_run": {
+            "at": 1799996400,
+            "outcome": "submitted"
+          },
+          "next_run": 1800007200,
+          "paused": false,
+          "title": "Morning summary"
+        },
+        {
+          "id": "5c4e0000-0000-4000-8000-000000000004",
+          "last_run": {
+            "at": 1799993000,
+            "outcome": "missed"
+          },
+          "paused": false,
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "project_name": "alpha",
+          "title": "Release notes"
+        },
+        {
+          "id": "5c4e0000-0000-4000-8000-000000000003",
+          "last_run": {
+            "at": 1799991000,
+            "outcome": "missed"
+          },
+          "paused": true,
+          "title": "Weekly cleanup"
+        }
+      ],
+      "items_total": 4,
+      "next": {
+        "at": 1800000600,
+        "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "title": "Nightly tests"
+      },
+      "paused": 1,
+      "state": "read",
+      "total": 4
+    },
+    "chats_known": false,
+    "finished": [
+      {
+        "activity": "done",
+        "session": {
+          "agent": "Codex",
+          "is_chat": false,
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "project_name": "beta",
+          "target": {
+            "id": "5e110000-0000-4000-8000-000000000004",
+            "type": "shell"
+          }
+        },
+        "since_unix": 1799999700,
+        "subagents": 0
+      }
+    ],
+    "finished_total": 1,
+    "generated_at": 1800000000,
+    "global": {
+      "kind": "unknown"
+    },
+    "projects": [
+      {
+        "agents": {
+          "done": 0,
+          "exited": 0,
+          "subagents": 2,
+          "unknown": 0,
+          "waiting": 1,
+          "working": 1
+        },
+        "attention": 2,
+        "folder": "Clients",
+        "id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "last_activity": 1799999880,
+        "live_shells": 3,
+        "name": "alpha",
+        "tasks": {
+          "done": 1,
+          "in_progress": 1,
+          "todo": 0
+        },
+        "worktrees": 2
+      },
+      {
+        "agents": {
+          "done": 1,
+          "exited": 0,
+          "subagents": 0,
+          "unknown": 0,
+          "waiting": 0,
+          "working": 1
+        },
+        "attention": 1,
+        "id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "last_activity": 1799999940,
+        "live_shells": 2,
+        "name": "beta",
+        "orchestrator": {
+          "activity": "working",
+          "mode": "terminal"
+        },
+        "tasks": {
+          "done": 0,
+          "in_progress": 1,
+          "todo": 1
+        },
+        "worktrees": 1
+      },
+      {
+        "agents": {
+          "done": 0,
+          "exited": 0,
+          "subagents": 0,
+          "unknown": 0,
+          "waiting": 0,
+          "working": 0
+        },
+        "attention": 0,
+        "id": "dddddddd-0000-4000-8000-000000000004",
+        "live_shells": 0,
+        "name": "delta",
+        "tasks": {
+          "done": 0,
+          "in_progress": 0,
+          "todo": 0
+        },
+        "worktrees": 0
+      },
+      {
+        "agents": {
+          "done": 0,
+          "exited": 0,
+          "subagents": 0,
+          "unknown": 0,
+          "waiting": 0,
+          "working": 0
+        },
+        "attention": 0,
+        "id": "dddddddd-0000-4000-8000-000000000005",
+        "live_shells": 0,
+        "name": "Delta",
+        "tasks": {
+          "done": 0,
+          "in_progress": 0,
+          "todo": 0
+        },
+        "worktrees": 0
+      },
+      {
+        "agents": {
+          "done": 0,
+          "exited": 0,
+          "subagents": 0,
+          "unknown": 0,
+          "waiting": 0,
+          "working": 0
+        },
+        "attention": 0,
+        "id": "cccccccc-0000-4000-8000-000000000003",
+        "live_shells": 0,
+        "name": "quiet",
+        "tasks": {
+          "done": 0,
+          "in_progress": 0,
+          "todo": 0
+        },
+        "worktrees": 0
+      }
+    ],
+    "projects_total": 5,
+    "tasks_in_progress": [
+      {
+        "id": "7a5c0000-0000-4000-8000-000000000004",
+        "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "project_name": "beta",
+        "title": "Task t4",
+        "updated_at": 30
+      },
+      {
+        "branch": "feat/x",
+        "id": "7a5c0000-0000-4000-8000-000000000001",
+        "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "project_name": "alpha",
+        "title": "Task t1",
+        "updated_at": 20
+      }
+    ],
+    "tasks_in_progress_total": 2,
+    "totals": {
+      "active_projects": 2,
+      "agents": {
+        "done": 1,
+        "exited": 0,
+        "subagents": 2,
+        "unknown": 0,
+        "waiting": 1,
+        "working": 2
+      },
+      "attention": 3,
+      "live_shells": 5,
+      "projects": 5,
+      "tasks": {
+        "done": 1,
+        "in_progress": 2,
+        "todo": 1
+      }
+    },
+    "v": 1,
+    "working": [
+      {
+        "activity": "working",
+        "session": {
+          "agent": "Codex",
+          "branch": "feat/x",
+          "is_chat": false,
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "project_name": "alpha",
+          "target": {
+            "id": "5e110000-0000-4000-8000-000000000001",
+            "type": "shell"
+          }
+        },
+        "since_unix": 1799999400,
+        "subagents": 2
+      },
+      {
+        "activity": "working",
+        "session": {
+          "agent": "Codex",
+          "is_chat": false,
+          "orchestrator": "project",
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "project_name": "beta",
+          "target": {
+            "id": "5e110000-0000-4000-8000-000000000005",
+            "type": "shell"
+          }
+        },
+        "since_unix": 1799999940,
+        "subagents": 0
+      }
+    ],
+    "working_total": 2
+  },
+  "empty": {
+    "attention": [],
+    "attention_total": 0,
+    "automations": {
+      "items": [],
+      "items_total": 0,
+      "paused": 0,
+      "state": "read",
+      "total": 0
+    },
+    "chats_known": true,
+    "finished": [],
+    "finished_total": 0,
+    "generated_at": 1800000000,
+    "global": {
+      "exited_terminal": false,
+      "kind": "none"
+    },
+    "projects": [],
+    "projects_total": 0,
+    "tasks_in_progress": [],
+    "tasks_in_progress_total": 0,
+    "totals": {
+      "active_projects": 0,
+      "agents": {
+        "done": 0,
+        "exited": 0,
+        "subagents": 0,
+        "unknown": 0,
+        "waiting": 0,
+        "working": 0
+      },
+      "attention": 0,
+      "live_chats": 0,
+      "live_shells": 0,
+      "projects": 0,
+      "tasks": {
+        "done": 0,
+        "in_progress": 0,
+        "todo": 0
+      }
+    },
+    "v": 1,
+    "working": [],
+    "working_total": 0
+  },
+  "global_exited": {
+    "attention": [],
+    "attention_total": 0,
+    "automations": {
+      "state": "not_read"
+    },
+    "chats_known": true,
+    "finished": [],
+    "finished_total": 0,
+    "generated_at": 1800000000,
+    "global": {
+      "exited_terminal": true,
+      "kind": "none"
+    },
+    "projects": [
+      {
+        "agents": {
+          "done": 0,
+          "exited": 0,
+          "subagents": 0,
+          "unknown": 0,
+          "waiting": 0,
+          "working": 0
+        },
+        "attention": 0,
+        "id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "last_activity": 30,
+        "live_chats": 0,
+        "live_shells": 0,
+        "name": "beta",
+        "tasks": {
+          "done": 0,
+          "in_progress": 1,
+          "todo": 1
+        },
+        "worktrees": 1
+      },
+      {
+        "agents": {
+          "done": 0,
+          "exited": 0,
+          "subagents": 0,
+          "unknown": 0,
+          "waiting": 0,
+          "working": 0
+        },
+        "attention": 0,
+        "folder": "Clients",
+        "id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "last_activity": 20,
+        "live_chats": 0,
+        "live_shells": 0,
+        "name": "alpha",
+        "tasks": {
+          "done": 1,
+          "in_progress": 1,
+          "todo": 0
+        },
+        "worktrees": 2
+      },
+      {
+        "agents": {
+          "done": 0,
+          "exited": 0,
+          "subagents": 0,
+          "unknown": 0,
+          "waiting": 0,
+          "working": 0
+        },
+        "attention": 0,
+        "id": "cccccccc-0000-4000-8000-000000000003",
+        "live_chats": 0,
+        "live_shells": 0,
+        "name": "quiet",
+        "tasks": {
+          "done": 0,
+          "in_progress": 0,
+          "todo": 0
+        },
+        "worktrees": 0
+      }
+    ],
+    "projects_total": 3,
+    "tasks_in_progress": [
+      {
+        "id": "t4",
+        "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "project_name": "beta",
+        "title": "Task t4",
+        "updated_at": 30
+      },
+      {
+        "branch": "feat/x",
+        "id": "t1",
+        "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "project_name": "alpha",
+        "title": "Task t1",
+        "updated_at": 20
+      }
+    ],
+    "tasks_in_progress_total": 2,
+    "totals": {
+      "active_projects": 2,
+      "agents": {
+        "done": 0,
+        "exited": 0,
+        "subagents": 0,
+        "unknown": 0,
+        "waiting": 0,
+        "working": 0
+      },
+      "attention": 0,
+      "live_chats": 0,
+      "live_shells": 0,
+      "projects": 3,
+      "tasks": {
+        "done": 1,
+        "in_progress": 2,
+        "todo": 1
+      }
+    },
+    "v": 1,
+    "working": [],
+    "working_total": 0
+  },
+  "global_terminal": {
+    "attention": [
+      {
+        "at": 1799999990,
+        "kind": "waiting",
+        "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "project_name": "alpha",
+        "session": {
+          "agent": "Claude",
+          "is_chat": true,
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "project_name": "alpha",
+          "target": {
+            "id": "c4a70000-0000-4000-8000-000000000004",
+            "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+            "type": "chat"
+          },
+          "title": "Chat c-alpha-waits"
+        },
+        "target": {
+          "id": "c4a70000-0000-4000-8000-000000000004",
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "type": "chat"
+        }
+      },
+      {
+        "at": 1799999880,
+        "kind": "waiting",
+        "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "project_name": "alpha",
+        "session": {
+          "agent": "Claude",
+          "is_chat": false,
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "project_name": "alpha",
+          "target": {
+            "id": "5e110000-0000-4000-8000-000000000002",
+            "type": "shell"
+          }
+        },
+        "target": {
+          "id": "5e110000-0000-4000-8000-000000000002",
+          "type": "shell"
+        }
+      },
+      {
+        "kind": "waiting",
+        "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "project_name": "beta",
+        "session": {
+          "agent": "Muse",
+          "is_chat": true,
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "project_name": "beta",
+          "target": {
+            "id": "c4a70000-0000-4000-8000-000000000005",
+            "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+            "type": "chat"
+          },
+          "title": "Chat c-beta-waits"
+        },
+        "target": {
+          "id": "c4a70000-0000-4000-8000-000000000005",
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "type": "chat"
+        }
+      },
+      {
+        "at": 1799999940,
+        "kind": "chat_failed",
+        "message": "provider exited with status 1",
+        "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "project_name": "beta",
+        "session": {
+          "agent": "Codex",
+          "is_chat": true,
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "project_name": "beta",
+          "target": {
+            "id": "c4a70000-0000-4000-8000-000000000006",
+            "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+            "type": "chat"
+          },
+          "title": "Chat c-beta-failed"
+        },
+        "target": {
+          "id": "c4a70000-0000-4000-8000-000000000006",
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "type": "chat"
+        }
+      },
+      {
+        "kind": "chat_failed",
+        "message": "orchestrator crashed",
+        "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "project_name": "alpha",
+        "session": {
+          "agent": "Claude",
+          "is_chat": true,
+          "orchestrator": "project",
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "project_name": "alpha",
+          "target": {
+            "id": "c4a70000-0000-4000-8000-000000000008",
+            "orchestrator": "project",
+            "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+            "type": "chat"
+          },
+          "title": "Chat c-alpha-orch"
+        },
+        "target": {
+          "id": "c4a70000-0000-4000-8000-000000000008",
+          "orchestrator": "project",
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "type": "chat"
+        }
+      }
+    ],
+    "attention_total": 5,
+    "automations": {
+      "message": "Invalid schedule store: expected value at line 1 column 1",
+      "state": "unreadable"
+    },
+    "chats_known": true,
+    "finished": [
+      {
+        "activity": "done",
+        "session": {
+          "agent": "Codex",
+          "is_chat": false,
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "project_name": "beta",
+          "target": {
+            "id": "5e110000-0000-4000-8000-000000000004",
+            "type": "shell"
+          }
+        },
+        "since_unix": 1799999700,
+        "subagents": 0
+      }
+    ],
+    "finished_total": 1,
+    "generated_at": 1800000000,
+    "global": {
+      "kind": "terminal",
+      "shell_id": "5e110000-0000-4000-8000-000000000007"
+    },
+    "projects": [
+      {
+        "agents": {
+          "done": 0,
+          "exited": 0,
+          "subagents": 2,
+          "unknown": 0,
+          "waiting": 2,
+          "working": 1
+        },
+        "attention": 3,
+        "folder": "Clients",
+        "id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "last_activity": 1799999990,
+        "live_chats": 1,
+        "live_shells": 3,
+        "name": "alpha",
+        "orchestrator": {
+          "chat_state": "failed",
+          "message": "orchestrator crashed",
+          "mode": "chat",
+          "provider": "claude"
+        },
+        "tasks": {
+          "done": 1,
+          "in_progress": 1,
+          "todo": 0
+        },
+        "worktrees": 2
+      },
+      {
+        "agents": {
+          "done": 1,
+          "exited": 0,
+          "subagents": 0,
+          "unknown": 0,
+          "waiting": 1,
+          "working": 2
+        },
+        "attention": 2,
+        "id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "last_activity": 1799999940,
+        "live_chats": 2,
+        "live_shells": 2,
+        "name": "beta",
+        "orchestrator": {
+          "activity": "working",
+          "mode": "terminal"
+        },
+        "tasks": {
+          "done": 0,
+          "in_progress": 1,
+          "todo": 1
+        },
+        "worktrees": 1
+      },
+      {
+        "agents": {
+          "done": 0,
+          "exited": 0,
+          "subagents": 0,
+          "unknown": 0,
+          "waiting": 0,
+          "working": 0
+        },
+        "attention": 0,
+        "id": "dddddddd-0000-4000-8000-000000000004",
+        "live_chats": 0,
+        "live_shells": 0,
+        "name": "delta",
+        "tasks": {
+          "done": 0,
+          "in_progress": 0,
+          "todo": 0
+        },
+        "worktrees": 0
+      },
+      {
+        "agents": {
+          "done": 0,
+          "exited": 0,
+          "subagents": 0,
+          "unknown": 0,
+          "waiting": 0,
+          "working": 0
+        },
+        "attention": 0,
+        "id": "dddddddd-0000-4000-8000-000000000005",
+        "live_chats": 0,
+        "live_shells": 0,
+        "name": "Delta",
+        "tasks": {
+          "done": 0,
+          "in_progress": 0,
+          "todo": 0
+        },
+        "worktrees": 0
+      },
+      {
+        "agents": {
+          "done": 0,
+          "exited": 0,
+          "subagents": 0,
+          "unknown": 0,
+          "waiting": 0,
+          "working": 0
+        },
+        "attention": 0,
+        "id": "cccccccc-0000-4000-8000-000000000003",
+        "live_chats": 0,
+        "live_shells": 0,
+        "name": "quiet",
+        "tasks": {
+          "done": 0,
+          "in_progress": 0,
+          "todo": 0
+        },
+        "worktrees": 0
+      }
+    ],
+    "projects_total": 5,
+    "tasks_in_progress": [
+      {
+        "id": "7a5c0000-0000-4000-8000-000000000004",
+        "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+        "project_name": "beta",
+        "title": "Task t4",
+        "updated_at": 30
+      },
+      {
+        "branch": "feat/x",
+        "id": "7a5c0000-0000-4000-8000-000000000001",
+        "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "project_name": "alpha",
+        "title": "Task t1",
+        "updated_at": 20
+      }
+    ],
+    "tasks_in_progress_total": 2,
+    "totals": {
+      "active_projects": 2,
+      "agents": {
+        "done": 2,
+        "exited": 0,
+        "subagents": 2,
+        "unknown": 0,
+        "waiting": 3,
+        "working": 3
+      },
+      "attention": 5,
+      "live_chats": 4,
+      "live_shells": 6,
+      "projects": 5,
+      "tasks": {
+        "done": 1,
+        "in_progress": 2,
+        "todo": 1
+      }
+    },
+    "v": 1,
+    "working": [
+      {
+        "activity": "working",
+        "session": {
+          "agent": "Codex",
+          "branch": "feat/x",
+          "is_chat": false,
+          "project_id": "aaaaaaaa-0000-4000-8000-000000000001",
+          "project_name": "alpha",
+          "target": {
+            "id": "5e110000-0000-4000-8000-000000000001",
+            "type": "shell"
+          }
+        },
+        "since_unix": 1799999400,
+        "subagents": 2
+      },
+      {
+        "activity": "working",
+        "session": {
+          "agent": "Codex",
+          "is_chat": false,
+          "orchestrator": "project",
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "project_name": "beta",
+          "target": {
+            "id": "5e110000-0000-4000-8000-000000000005",
+            "type": "shell"
+          }
+        },
+        "since_unix": 1799999940,
+        "subagents": 0
+      },
+      {
+        "activity": "working",
+        "session": {
+          "agent": "Codex",
+          "is_chat": true,
+          "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+          "project_name": "beta",
+          "target": {
+            "id": "c4a70000-0000-4000-8000-000000000002",
+            "project_id": "bbbbbbbb-0000-4000-8000-000000000002",
+            "type": "chat"
+          },
+          "title": "Fix the login flow"
+        },
+        "subagents": 0
+      }
+    ],
+    "working_total": 3
+  }
+}

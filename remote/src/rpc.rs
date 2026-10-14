@@ -26,9 +26,12 @@ use tokio::{
 };
 
 mod chat;
+mod dashboard;
 mod orchestrator;
 mod tabs;
 mod upload;
+
+pub use dashboard::{DASHBOARD_AUTOMATIONS_MAX, DASHBOARD_KEYS, DASHBOARD_LISTS};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1116,6 +1119,8 @@ pub struct Rpc {
     chat_provider_switch: AtomicBool,
     /// Whether the CLI said it has `chat models` (see `chat_models_supported`).
     chat_models: AtomicBool,
+    /// Whether the CLI said it has `dashboard` (see `dashboard_supported`).
+    dashboard: AtomicBool,
     /// Held while the CLI is asked what it can do (`capability_known`), so that two askers at
     /// once run it once.
     asking_chat: tokio::sync::Mutex<()>,
@@ -1141,6 +1146,7 @@ impl Rpc {
             shell_create_as_settings: AtomicBool::new(false),
             chat_provider_switch: AtomicBool::new(false),
             chat_models: AtomicBool::new(false),
+            dashboard: AtomicBool::new(false),
             asking_chat: tokio::sync::Mutex::new(()),
             capability_answers: AtomicU64::new(0),
             shell_paste: AtomicBool::new(false),
@@ -1812,6 +1818,15 @@ impl Rpc {
             "appearance.get" => {
                 let _: Empty = params(r)?;
                 self.appearance().await
+            }
+            // The global dashboard; see `dashboard`. Exactly `{}`, before any CLI runs: `Empty`
+            // alone would also take `[]`.
+            "dashboard.get" => {
+                if !r.params.is_object() {
+                    return Err(invalid("params must be an empty object"));
+                }
+                let _: Empty = params(r)?;
+                self.dashboard(reply_limit).await
             }
             "shell.keys" => {
                 let p: Keys = params(r)?;

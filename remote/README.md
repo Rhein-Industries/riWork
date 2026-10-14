@@ -292,6 +292,20 @@ entry of another scope. `"orchestrator_create": true` in `riwork capabilities --
 `features.orchestrator_create` in `ready`; the same answer serves `features.chat`. The tests are
 `tests/orchestrator_create.rs` (a stub CLI) and `tests/chat_link.rs` (the real connector).
 
+`dashboard.get` (`src/rpc/dashboard.rs`) answers the desktop's global dashboard in one read (the
+contract is in [remote-protocol.md](../docs/remote-protocol.md), "Dashboard extension"). Its params
+are exactly `{}`, checked before any CLI runs; it is `riwork dashboard --json`, which samples what
+the desktop's dashboard samples and starts nothing (no chat host, chat, shell or tmux server), and
+it runs in a shared read slot. The CLI arranges, orders and cuts the reply
+(`riwork_engine::global_overview::wire`); the connector only checks it: version 1, the contract's
+top-level keys and nothing else, each list an array of objects within its limit (`DASHBOARD_LISTS`,
+the engine's own numbers), under the session's reply limit. `"dashboard": true` in `riwork
+capabilities --json` decides `features.dashboard` in `ready`; without it the method answers
+`invalid_request` "unsupported RPC method", as a connector from before it does. The tests are
+`tests/dashboard.rs` (a stub CLI, the shared fixture `ios/Tests/Fixtures/dashboard.json` and the
+real connector) and `../crates/riwork-cli/tests/dashboard_cli.rs` (the real CLI in a throwaway
+`RIWORK_HOME`).
+
 ## Pairing another Mac (desktop devices)
 
 A second Mac running RiWork can show this Mac's shells as real terminals (the contract is

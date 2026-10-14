@@ -57,7 +57,7 @@ echo "$*" >> "$D/calls.log"
 case "$1 $2" in
 'capabilities --json')
   if [ -e "$D/capabilities.unknown" ]; then echo "riwork: Unknown invocation 'capabilities'" >&2; exit 2; fi
-  if [ -e "$D/capabilities.out" ]; then cat "$D/capabilities.out"; else printf '{"v":1,"chat":true,"orchestrator_create":true,"shell_create_as_settings":true,"chat_provider_switch":true,"chat_models":true}'; fi;;
+  if [ -e "$D/capabilities.out" ]; then cat "$D/capabilities.out"; else printf '{"v":1,"chat":true,"orchestrator_create":true,"shell_create_as_settings":true,"chat_provider_switch":true,"chat_models":true,"dashboard":true}'; fi;;
 'project show') printf '{"id":"%s"}' "$3";;
 'chat list') echo '[]';;
 'chat events')

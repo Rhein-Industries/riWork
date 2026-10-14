@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-14: Additive dashboard extension: one new read-only method, `dashboard.get` (params exactly `{}`), that answers the desktop's global dashboard in one bounded reply: totals, the global orchestrator, what needs attention, agents working and recently finished, every project's row, tasks in progress and the automations, ordered as the desktop orders them, each list cut to a fixed length with `<list>_total` giving its full length, and a figure that is not known left out rather than written as zero. `features.dashboard` in `ready` says the installed CLI has it (`"dashboard": true` in `riwork capabilities --json`). It reads and starts nothing: no chat host, chat, shell, orchestrator or tmux server. It runs in a shared (read) slot. No new error code. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and so does a newer connector whose `riwork` CLI predates it; a client then falls back to `projects.list` and `orchestrators.list` and says why. No `model` and no project root path are part of it. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged; `ios/Tests/Fixtures/dashboard.json` is a new shared fixture. See "Dashboard extension" below. Needs the iOS worker's agreement.
 - 2026-10-13: Additive, in the same "Chat extension", no new method and no new error code: an existing Muse chat can turn contributor mode off and on. The `configure` command of `chat.command` takes an optional `contributor_opt_out` boolean (`false` hands the mode back to the person's Muse settings; it never forces it on). Muse fixes the mode for a `muse serve` process, so the desktop restarts an idle chat's agent and resumes the same Muse session with its model, effort and approval mode; a stopped chat keeps the value for its next start; it is refused (`cli_error`) while a turn runs or waits or the agent still starts, beside other settings in one `configure`, and for a Codex or Claude chat, and the chat keeps its value. If Muse does not start again with it, the chat fails as a failed start does, keeps its old value and says so in a `notice` item, and the answer is `cli_error`. A connector or desktop CLI from before it refuses the field (`invalid_request`, unknown field); a chat host from before it would read past it and start a stopped chat as for a retry, which the desktop CLI detects: it stops that chat again and answers `cli_error` without claiming the change. An older phone never sends it. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
 - 2026-10-13: Additive, in the same "Chat extension", no new method and no new error code: a new Muse chat can opt out of Muse's contributor mode. `chat.create` takes an optional `contributor_opt_out` boolean (sent only when true; the desktop's CLI gets `--contributor-opt-out`), and `ChatInfo` gains `contributor_opt_out`, present and `true` only for a chat that opted out. Such a chat runs every `muse serve` it starts with `--contributor-mode off`, an override Muse never saves; a chat without it follows the person's Muse settings. A Codex or Claude chat has no contributor mode: it is made without it, with a `notice` item, and the connector answers `cli_error` because the chat is not the one asked for (as for `fast` on Muse). A desktop from before it refuses the field (`invalid_request`, unknown field); an older phone never sends it and skips the `ChatInfo` field. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-13: Additive, in the same "Chat extension": a third chat provider, Muse. Every chat `provider` in this document (`chat.create`, `chat.models`, the `switch` command, `ChatInfo`, and a chat orchestrator's `provider` in `orchestrators.list` and `shells.list`) also takes `muse`, beside `codex` and `claude`; a chat created without a title is called "Muse chat", and `muse is not installed or is not on PATH` maps to `harness_unavailable` as it does for the other providers. Muse chats take no attachments for now: the chat host refuses them. No new method, no new error code, and no `features.*` flag: a desktop or connector from before it refuses `muse` creates, models and switches with `invalid_request`, drops a Muse chat from validated chat results, and leaves a Muse orchestrator's `provider` out, and an older phone leaves Muse chats out of its lists, so each side degrades to absence, never corruption. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
@@ -190,6 +191,7 @@ unsolicited response except handshake `ready`.
 | `chat.events` | `{"chat_id":"UUID","since":0,"wait_ms":25000}` optionally `"max_events":500` (Chat) | `{"chat_id":"UUID","events":[{"seq":1,"event":ChatEvent}],"next":1,"more":false}` |
 | `chat.command` | `{"chat_id":"UUID","command":ChatCommand}` (Chat) | `{"status":"ok"}` |
 | `chat.stop` | `{"chat_id":"UUID"}` (Chat) | `{"status":"stopped"}` |
+| `dashboard.get` | `{}` (Dashboard, with `features.dashboard`) | `{"v":1,"generated_at":1790000000,"chats_known":true,"totals":{...},"global":{...},"attention":[Attention],"attention_total":0,...,"automations":{...}}` (see Dashboard extension) |
 | `upload.begin` | `{"upload":"UUID","shell_id":"UUID","name":"IMG_0001.jpg","size":123456,"sha256":"HEX"}` or `"chat_id"` instead of `"shell_id"`, optionally `"type":"image/jpeg"` (File upload) | `{"upload":"UUID","status":"partial\|complete","received":0,"chunk_bytes":92160}` plus `"path","name"` when complete |
 | `upload.chunk` | `{"upload":"UUID","offset":0,"data":"BASE64URL"}` (File upload) | `{"upload":"UUID","status":"partial\|complete","received":92160}` |
 | `upload.finish` | `{"upload":"UUID"}` (File upload) | `{"upload":"UUID","status":"complete","received":123456,"path":"/…/uploads/UUID/IMG_0001-1a2b3c4d.jpg","name":"IMG_0001-1a2b3c4d.jpg"}` |
@@ -1860,6 +1862,127 @@ but it is validated as strictly as the rest: every field before anything is writ
 limit on the desktop (never only on the phone), no name from the phone in a path, files private
 to the desktop user, and a paste names only this device's own finished uploads for that shell.
 
+### Dashboard extension (v1 and v2, 2026-10-14)
+
+Additive and compatible: one new read-only method and one new `ready` feature. No new error
+code and no change to the handshake, envelopes, fixtures or any existing method; it applies to
+protocol v1 and v2 sessions alike. A client that never calls the method is unaffected.
+
+**`dashboard.get`** answers the desktop's global dashboard (the Mac's own **Global Dashboard**
+window) in one read, so a phone can show the same picture without listing every project's
+shells, chats and tasks. The desktop builds it exactly as its own dashboard does
+(`riwork_engine::global_overview::build`) and the phone is sent its projection
+(`global_overview::wire`), through `riwork dashboard --json`.
+
+**Feature detection.** `ready.features.dashboard` is `true` when the installed `riwork` CLI
+reports `"dashboard": true` in `riwork capabilities --json`; the connector asks as it asks for
+`features.chat` (one run of the CLI answers every such question) and remembers a yes. Without
+the flag, the method answers `invalid_request` "unsupported RPC method", exactly as a connector
+from before the extension answers it.
+
+**Request.** Params are exactly `{}`: anything else (another JSON type, `[]` or any field) is
+`invalid_request`, before any CLI runs.
+
+**Reply.** Every optional key (`?` below) is left out when absent, never `null`:
+
+```
+{
+  "v": 1,
+  "generated_at": 1790000000,          // Unix seconds the desktop sampled at
+  "chats_known": true,                  // whether the chats could be read
+  "totals": {"projects":n, "active_projects":n, "live_shells":n, "live_chats"?:n,
+             "agents": {"working":n,"waiting":n,"done":n,"unknown":n,"exited":n,"subagents":n},
+             "tasks": {"todo":n,"in_progress":n,"done":n}, "attention":n},
+  "global": {"kind":"unknown"}
+          | {"kind":"none","exited_terminal":bool}
+          | {"kind":"terminal","shell_id":"UUID","activity"?:"working|waiting|done|unknown|exited"}
+          | {"kind":"chat","chat_id":"UUID","provider":"codex|claude|muse",
+             "chat_state":"starting|idle|running|waiting|stopped|failed","message"?:"..."},
+  "attention": [Attention], "attention_total": n,                    // at most 40 rows
+  "working": [Work], "working_total": n,                             // at most 40
+  "finished": [Work], "finished_total": n,                           // at most 20
+  "projects": [Project], "projects_total": n,                        // at most 150
+  "tasks_in_progress": [Task], "tasks_in_progress_total": n,         // at most 50
+  "automations": {"state":"not_read"}
+               | {"state":"unreadable","message":"..."}
+               | {"state":"read","total":n,"paused":n,
+                  "next"?:{"title":"...","at":n,"project_id"?:"UUID"},
+                  "items":[Automation],"items_total":n}              // at most 30 items
+}
+
+Target     {"type":"shell","id":"UUID"}
+         | {"type":"chat","id":"UUID","project_id"?:"UUID","orchestrator"?:"global|project"}
+         | {"type":"project","id":"UUID"} | {"type":"task","id":"UUID"}
+         | {"type":"automations","project_id"?:"UUID"}
+Session    {"target":Target,"agent":"Codex|Claude|Grok|Muse|Orchestrator|Shell","title"?,
+            "project_id"?,"project_name"?,"branch"?,"orchestrator"?:"global|project","is_chat":bool}
+Work       {"session":Session,"activity":"working|done|waiting|unknown|exited",
+            "since_unix"?:n,"subagents":n}
+Attention  {"kind":"waiting|chat_failed|automation","target":Target,"session"?:Session,
+            "project_id"?,"project_name"?,"at"?:n,
+            "message"? (chat_failed, automation),"title"? (automation),
+            "outcome"?:"dispatching|submitted|deferred|missed|failed|uncertain" (automation)}
+Project    {"id":"UUID","name","folder"?,"agents":{...as in totals},"live_shells":n,"live_chats"?:n,
+            "tasks":{"todo","in_progress","done"},"worktrees":n,"attention":n,
+            "orchestrator"?:{"mode":"terminal","activity"?} | {"mode":"chat","provider","chat_state","message"?},
+            "last_activity"?:n}
+Task       {"id","title","project_id","project_name","branch"?,"updated_at":n}
+Automation {"id","title","project_id"?,"project_name"?,"paused":bool,"next_run"?:n,
+            "last_run"?:{"outcome":"...","at":n}}
+```
+
+- **Omission means unknown.** A figure the desktop does not know is absent, never `0`: without
+  the chats (`chats_known` false: no chat host runs and the saved chats cannot be read) there is
+  no `totals.live_chats` and no project `live_chats`, `global` is `{"kind":"unknown"}` unless a
+  live global terminal orchestrator is there, and the agent and attention figures count only
+  terminals and automations. A time nothing recorded (`at`, `since_unix`, `last_activity`, a
+  `next_run`) and an agent state that was not sampled (`activity`) are absent. A project with
+  no orchestrator has no `orchestrator`; an app automation has no `project_id`. `message` is a
+  failed chat's failure, in `global` and a project's `orchestrator` only when `chat_state` is
+  `failed`.
+- **Ordering.** `attention`: waiting agents first, then failures and automations, each the
+  newest first and those with no `at` last. `working`: the longest-running first, those with
+  no `since_unix` (chats) last. `finished` (agents done within the last hour): the most recent
+  first. `projects`: the busiest first (attention rows, then working agents, then live
+  sessions, then tasks in progress, then open tasks, each descending), then by name ignoring
+  case, then by `id`. `tasks_in_progress`: the most recently updated first, then by `id`.
+  Automation `items`: the next to run first, those with no next run after them, paused ones
+  last, then by title ignoring case, then by `id`; `next` is the soonest unpaused run.
+- **Bounds.** Each list is cut after ordering to the length above, and `<list>_total` is its
+  full length (always present). The totals (`totals`, `automations.total`, `paused`) count
+  everything, not the rows sent. Titles, names, branches and folders are at most 120 Unicode
+  scalar values and messages at most 300, cut without an ellipsis, never inside a scalar.
+- **Contents.** Ids are the desktop's own (a shell's, a chat's, a project's, a task's, an
+  automation's) and work with the existing methods (`shells.list`, `chats.list`,
+  `chat.events`, `tasks.list`). No project root path (`projects.list` has it) and no `model`
+  are part of the reply.
+- **What the connector checks.** The reply must be an object with `"v": 1`, else `cli_error`;
+  only the top-level keys above are passed on; each list must be an array (else `cli_error`),
+  of which only objects are kept, at most the limit above (also `automations.items`), with
+  `<list>_total` as the desktop said. The reply is held to the session's reply limit like any
+  other: a desktop with very many rows needs compression (`link.configure`), otherwise the
+  answer is `response_too_large`.
+
+**Starts nothing.** The read runs in a shared (`Read`) slot. The desktop samples the store,
+the shells tmux has (it never starts a tmux server), each agent's state from its own files,
+the chats a chat host that runs knows (or, with none running, the saved chats; it never starts
+a chat host), the automations' ledger and when failed or waiting chats last wrote their logs.
+It creates, resumes or changes no chat, shell, orchestrator, task or automation.
+
+**Compatibility.** A desktop whose connector or `riwork` CLI predates the extension sends no
+`features.dashboard` and answers `dashboard.get` with `invalid_request` "unsupported RPC
+method". A client must then fall back to `projects.list` and `orchestrators.list` (and the
+per-project lists) and tell the person why the full dashboard is missing (update RiWork on the
+Mac). An older phone never sends the method. The `v` of the reply is the reply's own version;
+a client refuses any other.
+
+The shared fixture `ios/Tests/Fixtures/dashboard.json` holds named cases (`busy`,
+`chats_unknown`, `empty`, `global_terminal`, `global_exited`) that the desktop's test
+(`crates/riwork-engine/src/global_overview/tests.rs`) checks `wire` against, and that the
+phone's tests decode; `RIWORK_UPDATE_FIXTURES=1 cargo test -p riwork-engine global_overview`
+rewrites it. The connector's tests are `remote/tests/dashboard.rs`, the CLI's
+`crates/riwork-cli/tests/dashboard_cli.rs`.
+
 ## Fixtures and change log
 
 `remote/fixtures/v1.json` supplies deterministic PSK, UUIDs, nonces, proof MACs,
@@ -2073,6 +2196,18 @@ ready response. Values are test-only and must never provision production devices
   `ChatInfo`. No new method, no new error code. A desktop or connector from before it
   refuses the field (`invalid_request`, unknown field). Needs the iOS worker's
   agreement; the iOS side implements the same text.
+- 2026-10-14: additive and backward compatible. Dashboard extension: `dashboard.get`
+  (params exactly `{}`, read-only, in a shared slot) answers the desktop's global dashboard
+  (`v` 1, `generated_at`, `chats_known`, `totals`, `global`, `attention`, `working`,
+  `finished`, `projects`, `tasks_in_progress` and `automations`), each list cut to a fixed
+  length (40, 40, 20, 150, 50; 30 automation items) after the desktop's ordering with
+  `<list>_total` giving its full length, text bounded by Unicode scalars, and unknown figures
+  left out, never zero or `null`; `ready.features.dashboard` when the CLI says `"dashboard":
+  true` in `riwork capabilities --json`. It starts nothing. No `model` and no project root are
+  part of it. No new error code. An older desktop answers `invalid_request` "unsupported RPC
+  method" and a client falls back to `projects.list` and `orchestrators.list`. New shared
+  fixture `ios/Tests/Fixtures/dashboard.json`. Needs the iOS worker's agreement; the iOS side
+  implements the same text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),

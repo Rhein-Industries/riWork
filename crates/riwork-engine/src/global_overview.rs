@@ -3,13 +3,18 @@
 //! Everything here is derived from records RiWork already keeps: the store's projects,
 //! worktrees and tasks, the sessions tmux has, the agent activity the window samples, the
 //! chats the chat host (or, with no host running, the saved chats) knows, and the
-//! automations' ledger. Nothing is estimated, and nothing reads a file or starts a process:
-//! the caller samples, this only arranges. Looking never starts an agent or a chat host.
+//! automations' ledger. Nothing is estimated, and arranging reads no file and starts no
+//! process: the caller samples, `build` only arranges. The one reader here, `read_extras`
+//! (the automations and the chat logs' times), is shared by the desktop windows and
+//! `riwork dashboard`, so both sample alike. Looking never starts an agent or a chat host.
+//!
+//! `wire` is the dashboard as the phone reads it (`dashboard.get`).
 
 use std::{
     cmp::Reverse,
     collections::{BTreeMap, HashMap},
-    path::PathBuf,
+    path::{Path, PathBuf},
+    time::UNIX_EPOCH,
 };
 
 use crate::{
@@ -20,11 +25,20 @@ use crate::{
     store::{State, TaskStatus},
 };
 
+mod wire;
+pub use wire::{
+    WIRE_MAX_ATTENTION, WIRE_MAX_AUTOMATIONS, WIRE_MAX_FINISHED, WIRE_MAX_MESSAGE_CHARS,
+    WIRE_MAX_NAME_CHARS, WIRE_MAX_PROJECTS, WIRE_MAX_TASKS_IN_PROGRESS, WIRE_MAX_WORKING,
+    WIRE_VERSION, wire,
+};
+
 /// An agent that finished its turn this recently is listed under recent work.
 pub const FINISHED_WINDOW_SECS: u64 = 60 * 60;
 /// A failed chat that has written nothing for this long is history, not something to do.
 /// Orchestrator chats are always listed while they are failed.
 pub const FAILED_CHAT_WINDOW_SECS: u64 = 3 * 24 * 60 * 60;
+/// The most chats whose log time `read_extras` reads in one go.
+pub const TIMED_CHATS_MAX: usize = 256;
 
 /// What the dashboard is drawn from. Each list is the window's own latest sample.
 pub struct Inputs<'a> {
@@ -278,6 +292,44 @@ pub struct Overview {
     pub automations: Automations,
     /// Whether the chats were read; until then chat figures are missing, not zero.
     pub chats_known: bool,
+}
+
+/// The chats whose log time tells a recent failure or wait from history: a few hundred at most.
+pub fn timed_chats(chats: Option<&[ChatInfo]>) -> Vec<String> {
+    chats
+        .into_iter()
+        .flatten()
+        .filter(|chat| matches!(chat.state, ChatState::Failed { .. } | ChatState::Waiting))
+        .map(|chat| chat.id.clone())
+        .take(TIMED_CHATS_MAX)
+        .collect()
+}
+
+/// The automations, and when each of `chats` last wrote its log (Unix seconds), for
+/// `Inputs::schedules` and `Inputs::chat_activity`. Reads the schedule ledger and the logs'
+/// modification times; it starts no agent, chat or chat host. A chat whose id is not a
+/// canonical UUID, or whose log cannot be read, has no time.
+pub fn read_extras(
+    home: &Path,
+    chats: Vec<String>,
+) -> (Result<Vec<Schedule>, String>, BTreeMap<String, u64>) {
+    let schedules =
+        crate::schedules::ScheduleStore::at(home.to_path_buf()).and_then(|store| store.list());
+    let written = chats
+        .into_iter()
+        .filter_map(|id| {
+            let log = crate::chat::log::chat_dir(home, &id)?.join("events.jsonl");
+            let at = std::fs::metadata(log)
+                .ok()?
+                .modified()
+                .ok()?
+                .duration_since(UNIX_EPOCH)
+                .ok()?
+                .as_secs();
+            Some((id, at))
+        })
+        .collect();
+    (schedules, written)
 }
 
 /// A chat whose agent process exists: it is starting, ready, or in a turn.

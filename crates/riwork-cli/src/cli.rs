@@ -80,6 +80,7 @@ riwork task assign WORKTREE_ID TASK_ID...    Assign tasks as one batch
 riwork task unassign TASK_ID...         Remove worktree assignment
 riwork task status TASK_ID todo|in_progress|done
 riwork search QUERY                     Search projects, worktrees, and tasks
+riwork dashboard [--json]               The global dashboard: what needs you, what works, every project
 riwork mcp                              Serve workspace tools over MCP stdio
 riwork version | --version              Print the RiWork version
 riwork remote pair|revoke|devices|start|relay   Encrypted mobile access (standalone binary)
@@ -174,7 +175,13 @@ other settings, while a turn runs or waits or Muse still starts, and for a Codex
 chat models lists what a chat of that provider can be set to, read from saved chats; a
 project selects the Codex account the list is for.
 capabilities --json has \"chat\": true, \"orchestrator_create\": true,
-\"chat_provider_switch\": true and \"chat_models\": true.
+\"chat_provider_switch\": true, \"chat_models\": true and \"dashboard\": true.
+dashboard reads what the desktop's global dashboard shows (the store, the shells and
+their agents, the chats of a chat host that runs or else the saved chats, and the
+automations) and starts nothing: no chat host, chat, shell or orchestrator.
+dashboard --json prints one line, the remote connector's dashboard.get reply: lists cut
+to a fixed length with *_total giving the full one, a figure that is not known left out
+(no live_chats while the chats cannot be read). See docs/remote-protocol.md.
 handoff writes the source conversation into RIWORK_HOME/handoffs/ID.md (owner-only) and
 starts the target in the same project, worktree and directory with a first message that
 points at it (a chat gets a short document inline); the source is neither stopped nor
@@ -378,6 +385,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
             | "schedule"
             | "automation"
             | "search"
+            | "dashboard"
             | "usage"
             | "appearance"
             | "capabilities"
@@ -471,6 +479,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
         "handoff" => handoff::command(args, json)?,
         "schedule" | "automation" => schedule_command(args, json)?,
         "search" => search_command(args, json)?,
+        "dashboard" => dashboard_command(args, json)?,
         "mcp" => {
             ensure_empty(&args)?;
             crate::mcp::run()?;
@@ -936,6 +945,10 @@ fn open_command(args: Vec<String>, json: bool, invocation: Invocation) -> Result
 /// unrestricted or not as **Agent terminals run unrestricted** in Settings says, which is how
 /// the remote connector answers a phone that leaves `unrestricted` out. An older CLI would
 /// refuse the flag as a usage error.
+///
+/// `dashboard`: `dashboard --json` prints the global dashboard as the remote connector's
+/// `dashboard.get` passes it on (`global_overview::wire`), reading what the desktop's dashboard
+/// reads and starting nothing. An older CLI has no such command.
 fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     ensure_empty(&args)?;
     if json {
@@ -950,7 +963,8 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
             "shell_paste": true,
             "shell_create_as_settings": true,
             "chat_provider_switch": true,
-            "chat_models": true
+            "chat_models": true,
+            "dashboard": true
         }));
     }
     println!("verifies_shell yes");
@@ -962,7 +976,208 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     println!("shell_create_as_settings yes");
     println!("chat_provider_switch yes");
     println!("chat_models yes");
+    println!("dashboard yes");
     Ok(())
+}
+
+/// `riwork dashboard [--json]`: the desktop's global dashboard, sampled here as the desktop
+/// samples it, and `--json` the remote connector's `dashboard.get` reply
+/// (`global_overview::wire`). Reading starts nothing: no chat host (a running one is asked
+/// for its chats, else the saved chats are read), chat, shell, orchestrator or tmux server.
+fn dashboard_command(args: Vec<String>, json: bool) -> Result<(), String> {
+    ensure_empty(&args)?;
+    let (overview, now) = dashboard_overview()?;
+    if json {
+        // One line, not pretty-printed: the connector reads it under the reply limit.
+        let line = serde_json::to_string(&crate::global_overview::wire(&overview, now))
+            .map_err(|error| error.to_string())?;
+        println!("{line}");
+    } else {
+        print!("{}", dashboard_summary(&overview, now));
+    }
+    Ok(())
+}
+
+/// What the desktop's dashboard is drawn from, read once: the store, the shells and their
+/// directories, each agent's state read cold (`activity::states_once`), the chats, and the
+/// automations and the log times of failed and waiting chats (`global_overview::read_extras`).
+fn dashboard_overview() -> Result<(crate::global_overview::Overview, u64), String> {
+    use crate::global_overview::{Inputs, build, read_extras, timed_chats};
+    let state = Store::open_default()?.snapshot()?;
+    let sessions = SessionManager::open_default()?;
+    let sample = sessions.sample(false)?;
+    let home = sessions.state_home();
+    let now = crate::activity::unix_now();
+    let activity = crate::activity::states_once(home, &sample.shells, now);
+    // Only a host that runs is asked; this never starts one. Without it the saved chats
+    // are read, and chats that cannot be read are unknown, not none.
+    let never_start =
+        |_: &Path| -> Result<PathBuf, String> { Err("the dashboard starts no chat host".into()) };
+    let host = crate::orchestrators::ChatHost {
+        home,
+        ensure: &never_start,
+    };
+    let chats = crate::orchestrators::running_chats(&host)
+        .or_else(|| crate::chat::log::read_infos_checked(home).ok());
+    let (schedules, chat_activity) = read_extras(home, timed_chats(chats.as_deref()));
+    let cwds = sample.directories.unwrap_or_default();
+    let overview = build(&Inputs {
+        state: &state,
+        shells: &sample.shells,
+        cwds: &cwds,
+        activity: &activity,
+        chats: chats.as_deref(),
+        chat_activity: &chat_activity,
+        schedules: Some(&schedules),
+        now,
+    });
+    Ok((overview, now))
+}
+
+/// The dashboard as a few lines of text.
+fn dashboard_summary(overview: &crate::global_overview::Overview, now: u64) -> String {
+    use crate::global_overview::{Automations, GlobalOrchestrator, short_duration};
+    use std::fmt::Write as _;
+    let ago = |at: Option<u64>| {
+        at.map_or_else(String::new, |at| {
+            format!("  {}", short_duration(now.saturating_sub(at)))
+        })
+    };
+    let count = |n: usize, one: &str| {
+        if n == 1 {
+            format!("1 {one}")
+        } else {
+            format!("{n} {one}s")
+        }
+    };
+    let totals = &overview.totals;
+    let mut text = String::new();
+    let chats = if overview.chats_known {
+        format!(", {}", count(totals.live_chats, "live chat"))
+    } else {
+        ", chats not read".to_owned()
+    };
+    let _ = writeln!(
+        text,
+        "{} ({} active), {}{chats}",
+        count(totals.projects, "project"),
+        totals.active_projects,
+        count(totals.live_shells, "live terminal")
+    );
+    let _ = writeln!(
+        text,
+        "Agents: {} working, {} waiting, {} done. Tasks: {} to do, {} in progress, {} done.",
+        totals.agents.working,
+        totals.agents.waiting,
+        totals.agents.done,
+        totals.tasks.todo,
+        totals.tasks.in_progress,
+        totals.tasks.done
+    );
+    let global = match &overview.global {
+        GlobalOrchestrator::Unknown => "not known yet".to_owned(),
+        GlobalOrchestrator::None { exited_terminal } => {
+            if *exited_terminal {
+                "none (its terminal has exited)".to_owned()
+            } else {
+                "none".to_owned()
+            }
+        }
+        GlobalOrchestrator::Terminal { activity, .. } => format!(
+            "terminal, {}",
+            activity.map_or("not sampled", |activity| activity.as_str())
+        ),
+        GlobalOrchestrator::Chat {
+            provider, state, ..
+        } => format!(
+            "{} chat, {}",
+            match provider {
+                crate::provider::Provider::Codex => "Codex",
+                crate::provider::Provider::Claude => "Claude",
+                crate::provider::Provider::Muse => "Muse",
+            },
+            chat_state_word(state)
+        ),
+    };
+    let _ = writeln!(text, "Global orchestrator: {global}");
+    let place = |session: &crate::global_overview::SessionSummary| {
+        let mut place = session
+            .project_name
+            .clone()
+            .unwrap_or_else(|| "global".to_owned());
+        if let Some(branch) = &session.branch {
+            place.push_str(&format!(" ({branch})"));
+        }
+        let title = session
+            .title
+            .as_deref()
+            .map_or_else(String::new, |title| format!(": {title}"));
+        format!("{place} · {}{title}", session.agent)
+    };
+    if overview.attention.is_empty() {
+        let _ = writeln!(text, "Nothing waits for you.");
+    } else {
+        let _ = writeln!(text, "Needs you ({}):", overview.attention.len());
+        for item in &overview.attention {
+            use crate::global_overview::AttentionKind;
+            let what = match &item.kind {
+                AttentionKind::Waiting => item.session.as_ref().map_or_else(
+                    || "waiting".to_owned(),
+                    |session| format!("waiting  {}", place(session)),
+                ),
+                AttentionKind::ChatFailed { message } => format!(
+                    "failed  {}  {message}",
+                    item.session.as_ref().map_or_else(String::new, place)
+                ),
+                AttentionKind::Automation { title, message, .. } => format!(
+                    "automation  {}{title}: {message}",
+                    item.project_name
+                        .as_deref()
+                        .map_or_else(String::new, |name| format!("{name} · "))
+                ),
+            };
+            let _ = writeln!(text, "  {what}{}", ago(item.at));
+        }
+    }
+    if !overview.working.is_empty() {
+        let _ = writeln!(text, "Working ({}):", overview.working.len());
+        for work in &overview.working {
+            let _ = writeln!(text, "  {}{}", place(&work.session), ago(work.since_unix));
+        }
+    }
+    let automations = match &overview.automations {
+        Automations::NotRead => "not read".to_owned(),
+        Automations::Unreadable(error) => format!("unreadable: {error}"),
+        Automations::Read {
+            total,
+            paused,
+            next,
+            ..
+        } => {
+            let next = next.as_ref().map_or_else(String::new, |next| {
+                format!(
+                    ", next \"{}\" in {}",
+                    next.title,
+                    short_duration(next.at.saturating_sub(now))
+                )
+            });
+            format!("{total} ({paused} paused){next}")
+        }
+    };
+    let _ = writeln!(text, "Automations: {automations}");
+    text
+}
+
+fn chat_state_word(state: &crate::chat::model::ChatState) -> &'static str {
+    use crate::chat::model::ChatState;
+    match state {
+        ChatState::Starting => "starting",
+        ChatState::Idle => "idle",
+        ChatState::Running => "running",
+        ChatState::Waiting => "waiting",
+        ChatState::Stopped => "stopped",
+        ChatState::Failed { .. } => "failed",
+    }
 }
 
 fn appearance_command(args: Vec<String>, json: bool) -> Result<(), String> {
