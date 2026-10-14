@@ -1,4 +1,6 @@
 import XCTest
+import SwiftUI
+import UIKit
 import RiWorkCore
 @testable import RiWorkRemote
 
@@ -218,6 +220,11 @@ import RiWorkCore
         await rig.transport.setOrchestrators([globalTerminalEntry, projectEntry])
         await relaunched.refreshGlobalQuietly()
         XCTAssertEqual(relaunched.sessionID, globalTerminal)
+        XCTAssertEqual(relaunched.desktop?.globalTabKey, "shell:\(secondGlobal)", "the choice is kept while it is missing")
+        // Listed again (a list read while the Mac was busy): the choice comes back.
+        await rig.transport.setOrchestrators([globalTerminalEntry, orchestrator(secondGlobal, project: nil, at: 1), projectEntry])
+        await relaunched.refreshGlobalQuietly()
+        XCTAssertEqual(relaunched.sessionID, secondGlobal)
         relaunched.leaveGlobal()
         XCTAssertEqual(relaunched.sessionID, shell)
         await relaunched.disconnect()
@@ -234,7 +241,8 @@ import RiWorkCore
         XCTAssertNil(failure)
         let sent = await rig.transport.params(of: "orchestrator.create")
         XCTAssertEqual(sent, [[:]], "no project in the request")
-        XCTAssertEqual(model.globalScreenRequests, requests + 1, "the Global screen is put up; Back from it is the dashboard")
+        XCTAssertEqual(model.globalScreenRequests, requests, "the Dashboard put the Global screen up itself: a late answer moves nobody")
+        XCTAssertNotNil(model.desktop?.globalTabKey, "what it opened is remembered for the Global screen")
         XCTAssertEqual(projectState(model), before, "no project selected, switched or adopted")
         XCTAssertFalse(model.tabs.contains { $0.session?.project_id == nil })
         let made = try XCTUnwrap(model.globalOrchestrators.first)
@@ -244,6 +252,27 @@ import RiWorkCore
         XCTAssertEqual(projectState(model), before)
         let unhides = await rig.transport.count("tabs.open") + rig.transport.count("tabs.update")
         XCTAssertEqual(unhides, 0)
+        await model.disconnect()
+    }
+
+    func testAnExitedGlobalTerminalOffersStartRatherThanAnOpenThatNeverOpens() async throws {
+        let rig = try await connected(orchestrators: [orchestrator(globalTerminal, project: nil, alive: false), projectEntry], dashboard: true)
+        let model = rig.model
+        XCTAssertTrue(model.globalTabs.isEmpty, "nothing to open")
+        XCTAssertTrue(model.globalTerminalExited)
+        let status = GlobalOrchestratorStatus.decide(entry: model.globalTabs.first?.session, dashboard: .none(exitedTerminal: true), canStart: model.orchestratorsOffered,
+                                                     exitedTerminal: model.globalTerminalExited)
+        XCTAssertEqual(status.action, .start)
+        model.enterGlobal()
+        XCTAssertNil(model.sessionID, "an ended terminal is never read")
+        XCTAssertNil(model.selectedChatID); XCTAssertNil(model.selectedBlockedID)
+        let failure = await model.startGlobalOrchestrator()
+        XCTAssertNil(failure)
+        let sent = await rig.transport.params(of: "orchestrator.create")
+        XCTAssertEqual(sent, [[:]])
+        XCTAssertNotNil(model.selectedChatID, "the started one is on the Global screen")
+        model.leaveGlobal()
+        XCTAssertEqual(model.sessionID, shell)
         await model.disconnect()
     }
 
@@ -364,6 +393,99 @@ import RiWorkCore
         await model.chooseProject(project)
         await eventually("the shell is on screen") { model.selectedChatID == nil && model.sessionID == self.shell }
         await noCreation(rig)
+        await model.disconnect()
+    }
+
+    func testARowForAChatMadeSinceTheProjectWasLoadedStillOpensIt() async throws {
+        let rig = try await connected(orchestrators: [projectEntry])
+        let model = rig.model
+        XCTAssertEqual(model.loadedProjectID, project)
+        // A chat started on the Mac while the phone was on the dashboard: the project's lists on the phone do not have it yet.
+        let later = "cccccccc-0005-4000-8000-000000000005"
+        await rig.transport.setChats([ChatInfo(id: later, provider: .claude, projectID: project, cwd: "/fixture", title: "Started on the Mac", createdAtUnix: 20, state: .waiting)])
+        XCTAssertFalse(model.projectChats.contains { $0.id == later })
+        model.requestProjectTab(project, key: "chat:\(later)")
+        await model.chooseProject(project)
+        XCTAssertEqual(model.selectedChatID, later, "the lists are read again before the row's tab is put up")
+        XCTAssertNil(model.requestedTab)
+        await model.disconnect()
+    }
+
+    func testARequestedTabDoesNotOutliveItsVisit() async throws {
+        let rig = try await connected(orchestrators: [projectEntry], extraProjects: [other])
+        let model = rig.model
+        // Another project entered instead: the request is not that project's, and goes.
+        model.requestProjectTab(project, key: "shell:\(shell)")
+        await model.chooseProject(other)
+        XCTAssertNil(model.requestedTab)
+        // The person chose a tab before the request was put up: their choice wins, and the request goes.
+        await model.chooseProject(project)
+        model.requestProjectTab(project, key: "shell:\(projectOrchestrator)")
+        await model.chooseSession(try XCTUnwrap(model.openSessions.first { $0.id == self.shell }))
+        XCTAssertNil(model.requestedTab)
+        XCTAssertEqual(model.sessionID, shell)
+        await model.disconnect()
+    }
+
+    // MARK: The path replacement from a project to the Global screen
+
+    @MainActor @Observable final class Path { var routes: [String] = ["terminals"] }
+    private struct Replacing: View {
+        let model: RemoteModel
+        let project: RemoteProject
+        @Bindable var path: Path
+        var body: some View {
+            NavigationStack(path: $path.routes) {
+                Color.clear.navigationDestination(for: String.self) { route in
+                    if route == "terminals" { TerminalTabsView(model: model, project: project, onBack: {}).toolbar(.hidden, for: .navigationBar) }
+                    else { GlobalOrchestratorScreen(model: model, onBack: {}).toolbar(.hidden, for: .navigationBar) }
+                }
+            }
+            .desktopThemed(model.theme.style)
+        }
+    }
+    private func host(_ model: RemoteModel, path: Path) throws -> UIWindow {
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene") }
+        let projectValue = try JSONDecoder().decode(RemoteProject.self, from: Data("{\"id\":\"\(project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}".utf8))
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
+        window.rootViewController = UIHostingController(rootView: Replacing(model: model, project: projectValue, path: path))
+        window.makeKeyAndVisible()
+        return window
+    }
+
+    func testReplacingTheProjectWithTheGlobalChatKeepsItFollowedByTheGlobalScreenAlone() async throws {
+        let rig = try await connected(orchestrators: [globalChatEntry, projectEntry])
+        let model = rig.model
+        await rig.transport.append(globalChat, [.state(.running)])
+        let path = Path()
+        let window = try host(model, path: path)
+        defer { window.isHidden = true }
+        await eventually("the project's terminal is up") { model.terminalVisible }
+        // What the project's menu and New terminal sheet do: the path is replaced by the Global screen.
+        path.routes = ["global"]
+        await eventually("the Global screen took over") { model.scope == .global && model.conversation(self.globalChat).following }
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertTrue(model.conversation(globalChat).following, "the outgoing project screen neither follows the global chat nor stops it")
+        XCTAssertEqual(model.selectedChatID, globalChat)
+        XCTAssertEqual(model.desktop?.selectedSessionID, shell, "the project's selection is as it was")
+        await model.disconnect()
+    }
+
+    func testReplacingTheProjectWithTheGlobalTerminalLeavesItVisibleAndRead() async throws {
+        let rig = try await connected(orchestrators: [globalTerminalEntry, projectEntry])
+        let model = rig.model
+        let path = Path()
+        let window = try host(model, path: path)
+        defer { window.isHidden = true }
+        await eventually("the project's terminal is up") { model.terminalVisible && model.outputSessionID == self.shell }
+        path.routes = ["global"]
+        await eventually("the global terminal is on screen") { model.scope == .global && model.outputSessionID == self.globalTerminal }
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertTrue(model.terminalVisible, "the outgoing project screen does not hide the global terminal")
+        XCTAssertEqual(model.sessionID, globalTerminal)
+        let released = await rig.transport.params(of: "shell.resize.clear").compactMap { $0["shell_id"]?.string }
+        XCTAssertFalse(released.contains(globalTerminal), "its size is not let go while it is on screen")
         await model.disconnect()
     }
 }

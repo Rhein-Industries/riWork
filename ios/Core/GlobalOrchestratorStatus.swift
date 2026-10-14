@@ -32,9 +32,11 @@ public struct GlobalOrchestratorStatus: Sendable, Equatable {
         }
     }
 
-    /// - `entry`: the global orchestrator in `orchestrators.list` (the newest, when there are several), nil when it lists none.
+    /// - `entry`: the global orchestrator the phone can open from `orchestrators.list` (a live terminal, or a chat; `globalTabs`), nil
+    ///   when there is none: one whose terminal has ended is not one to open, and Start is offered for it.
     /// - `dashboard`: the dashboard's `global`, nil without a dashboard. - `canStart`: the desktop offers `orchestrator.create`.
-    public static func decide(entry: RemoteSession?, dashboard: DashboardGlobal?, canStart: Bool) -> GlobalOrchestratorStatus {
+    /// - `exitedTerminal`: the list has a global terminal that has ended (or that the desktop no longer has).
+    public static func decide(entry: RemoteSession?, dashboard: DashboardGlobal?, canStart: Bool, exitedTerminal: Bool = false) -> GlobalOrchestratorStatus {
         if let entry {
             let mode = entry.mode
             var provider = entry.provider
@@ -68,7 +70,7 @@ public struct GlobalOrchestratorStatus: Sendable, Equatable {
         case .terminal(_, let known)?:
             return GlobalOrchestratorStatus(mode: .terminal, provider: nil, state: DashboardText.activity(known), activity: known ?? .unknown,
                                             summary: ["Runs in a terminal", DashboardText.activity(known)].compactMap { $0 }.joined(separator: " · "), action: .open)
-        case .unknown?, nil: return none("No global orchestrator listed")
+        case .unknown?, nil: return none(exitedTerminal ? "Its last terminal has exited" : "No global orchestrator listed")
         }
     }
 }

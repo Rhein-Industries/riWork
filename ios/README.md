@@ -17,8 +17,9 @@ scale in the RiWork and Native looks:
 - **How current it is**: Live, "Last read 2m ago" after 30 s, "Showing the read from … · why" when a read failed, or the connection's
   state with the age of the last read; the last read stays on screen while a new one fails or the link is down.
 - **Global**: the global orchestrator, how it runs (a chat with its provider, or a terminal), its state and activity, with **Open** (the
-  Global screen) or, when the Mac has none, **Start** (an explicit tap; `orchestrator.create {}` with no project). No model is shown: the
-  wire does not carry one.
+  Global screen) or, when the Mac has none to open (none, or its terminal has ended), **Start** (an explicit tap that puts the Global
+  screen up at once and sends `orchestrator.create {}` with no project; a late answer never moves a person who has gone elsewhere). No
+  model is shown: the wire does not carry one.
 - **Overview**: agents working (and their subagents), what needs you, live sessions (terminals only, "chats not read yet", until the Mac
   has read its chats), active projects and the task totals.
 - **Needs you** (waiting agents first, then failed chats and automations whose last run did not go through, newest first), **Working

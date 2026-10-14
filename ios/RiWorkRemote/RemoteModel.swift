@@ -98,10 +98,14 @@ enum ConnectionState: Equatable {
     var scope = SelectionScope.project
     /// The chat on screen; nil while a terminal is. With shared tabs, the tab on screen is remembered per project
     /// (`SavedDesktop.projectTabKeys`) and put back on entering the project, on relaunch and on reconnect. On the Global screen it is the
-    /// global orchestrator's chat, remembered apart from every project (`SavedDesktop.globalTabKey`).
+    /// global orchestrator's chat (`shownGlobalKey`), remembered apart from every project (`SavedDesktop.globalTabKey`). There, a chosen
+    /// chat is remembered and nil changes nothing: the Global screen always shows the global orchestrator there is.
     var selectedChatID: String? {
-        get { scope == .global ? OrchestratorScope.id(in: desktop?.globalTabKey, kind: "chat") : projectChatID }
-        set { if scope == .global { setGlobalSelection(newValue.map { "chat:\($0)" }, replacing: "chat") } else { projectChatID = newValue } }
+        get { scope == .global ? OrchestratorScope.id(in: shownGlobalKey, kind: "chat") : projectChatID }
+        set {
+            guard scope == .global else { projectChatID = newValue; return }
+            if let newValue { rememberGlobalSelection("chat:\(newValue)") }
+        }
     }
     /// The chat on screen in the chosen project (`selectedChatID` while the project's tabs are the scope).
     var projectChatID: String?
@@ -110,8 +114,11 @@ enum ConnectionState: Equatable {
     /// The orchestrator whose tab is on screen although it can be opened as neither a terminal nor a chat (it runs as a chat on a
     /// desktop that has none): the screen says so. Nil while a terminal or a chat is; see `selectedBlocked`.
     var selectedBlockedID: String? {
-        get { scope == .global ? OrchestratorScope.id(in: desktop?.globalTabKey, kind: "orchestrator") : projectBlockedID }
-        set { if scope == .global { setGlobalSelection(newValue.map { "orchestrator:\($0)" }, replacing: "orchestrator") } else { projectBlockedID = newValue } }
+        get { scope == .global ? OrchestratorScope.id(in: shownGlobalKey, kind: "orchestrator") : projectBlockedID }
+        set {
+            guard scope == .global else { projectBlockedID = newValue; return }
+            if let newValue { rememberGlobalSelection("orchestrator:\(newValue)") }
+        }
     }
     /// The blocked orchestrator on screen in the chosen project (`selectedBlockedID` while the project's tabs are the scope).
     var projectBlockedID: String?
@@ -431,7 +438,7 @@ enum ConnectionState: Equatable {
     /// terminal (`SavedDesktop.globalTabKey`). The terminal pipeline (output, size, keys) follows this, so the global one is read and typed
     /// into exactly as a project's is, without ever being a project's selection.
     var sessionID: String? {
-        scope == .global ? OrchestratorScope.id(in: desktop?.globalTabKey, kind: "shell") : desktop?.selectedSessionID
+        scope == .global ? OrchestratorScope.id(in: shownGlobalKey, kind: "shell") : desktop?.selectedSessionID
     }
     var session: RemoteSession? { sessions.first(where: { $0.id == sessionID }) }
     var pendingInput: PendingInput? { desktop?.pendingInput }
@@ -724,9 +731,17 @@ enum ConnectionState: Equatable {
     func chooseProject(_ id: String) async {
         // A project's screen is up: its tabs are the scope again (the Global screen has gone, and left the project's selection as it was).
         if scope == .global { leaveGlobal() }
+        // A tab a dashboard row asked for in another project is not this visit's.
+        if let request = requestedTab, request.project != id { requestedTab = nil }
         // Re-entering a project whose load was cancelled (Back during loading) must load it again. One already loaded only puts up the
-        // tab a dashboard row asked for, if any.
-        guard projectID != id || (state == .connected && !loading && loadedProjectID != id) else { applyRequestedTab(project: id); return }
+        // tab a dashboard row asked for, if any, from its lists read again (they were not read while the dashboard was up).
+        guard projectID != id || (state == .connected && !loading && loadedProjectID != id) else {
+            if requestedTab?.project == id {
+                await refreshSessionsQuietly()
+                applyRequestedTab(project: id)
+            }
+            return
+        }
         do {
             if state == .connected { try? await synchronizeViewport(token: generation, forceRelease: true) }
             if projectID != id {
@@ -804,8 +819,10 @@ enum ConnectionState: Equatable {
         guard openSessions.contains(where: { $0.id == session.id }) else { return }
         // The global orchestrator's terminal, on the Global screen: remembered as the global selection, never as a project's.
         if scope == .global { await chooseGlobalTerminal(session); return }
-        // A tab the person chose, even the one already on screen: a restore still waiting for the shared list is not wanted now.
+        // A tab the person chose, even the one already on screen: a restore still waiting for the shared list is not wanted now, nor a
+        // tab a dashboard row asked for that has not been put up yet.
         restoreTabPending = false
+        requestedTab = nil
         // Already the terminal on screen (a tap on its own tab, opening it from the picker): nothing to change, and the line being
         // typed into it is kept.
         if sessionID == session.id, selectedChatID == nil, selectedBlockedID == nil, !terminalCovered, outputSessionID == session.id { return }
@@ -1164,8 +1181,10 @@ extension RemoteModel {
         // On the Global screen the selection is the global one (`SavedDesktop.globalTabKey`, already written by the choice): a project's
         // remembered tab, and its restore still waiting, are left as they are.
         guard scope == .project else { return }
-        // A tab chosen by the person (or put back) settles the screen: a restore still waiting for the shared list is not wanted now.
+        // A tab chosen by the person (or put back) settles the screen: a restore still waiting for the shared list is not wanted now,
+        // nor a tab a dashboard row asked for that has not been put up yet.
         restoreTabPending = false
+        requestedTab = nil
         guard desktopFeatures.tabs, let project = projectID, desktop?.projectTabKeys?[project] != key,
               sharedTabs?.allEntries.contains(where: { $0.key == key }) == true else { return }
         try? updateDesktop { var keys = $0.projectTabKeys ?? [:]; keys[project] = key; $0.projectTabKeys = keys }
@@ -1303,11 +1322,19 @@ extension RemoteModel {
     /// never as a project's.
     func chooseGlobalTerminal(_ session: RemoteSession) async {
         let key = "shell:\(session.id)"
-        if desktop?.globalTabKey == key, outputSessionID == session.id { return }
+        if shownGlobalKey == key, outputSessionID == session.id { return }
         do { try updateDesktop { $0.globalTabKey = key } } catch { handle(error); return }
         if outputSessionID != session.id { resetOutput() }
         draft = ""; deliveryNotice = nil
         await readOutput()
         wakeLive()
+    }
+    /// The global tab on screen changed under the Global screen (the one it showed went, or another was chosen): the screen of the
+    /// terminal it no longer shows goes, and nothing is sent to it.
+    func globalShownChanged() {
+        guard scope == .global, let shown = outputSessionID, shown != sessionID else { return }
+        resetOutput(); snapshotStale = true; draft = ""; deliveryNotice = nil; error = nil; viewportError = nil; failedViewport = nil
+        sessionAutoSwitches &+= 1
+        if sessionID == nil { let token = generation; Task { try? await synchronizeViewport(token: token) } }
     }
 }

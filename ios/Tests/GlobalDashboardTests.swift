@@ -252,6 +252,11 @@ final class GlobalDashboardTests: XCTestCase {
         XCTAssertEqual(GlobalOrchestratorStatus.decide(entry: nil, dashboard: nil, canStart: false).action, .unavailable)
         // The dashboard knows one the orchestrator list does not show yet: opened, never started a second time.
         XCTAssertEqual(GlobalOrchestratorStatus.decide(entry: nil, dashboard: .chat(chatID: globalChat, provider: .codex, state: .idle), canStart: true).action, .open)
+        // A global terminal that has ended is nothing to open (the caller passes only what can be opened): Start is offered, and says why.
+        let exited = GlobalOrchestratorStatus.decide(entry: nil, dashboard: nil, canStart: true, exitedTerminal: true)
+        XCTAssertEqual(exited.action, .start)
+        XCTAssertEqual(exited.summary, "Its last terminal has exited")
+        XCTAssertEqual(GlobalOrchestratorStatus.decide(entry: nil, dashboard: .unknown, canStart: true, exitedTerminal: false).summary, "No global orchestrator listed")
     }
 
     // MARK: Helpers

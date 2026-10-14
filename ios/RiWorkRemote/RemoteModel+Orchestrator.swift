@@ -16,8 +16,11 @@ extension RemoteModel {
     /// Opens the orchestrator of `request`'s scope (starting it if the desktop does not have one) and puts it on screen: a chat when the
     /// desktop runs it as one (by its `chat_id`), otherwise a terminal. Returns nil on success, otherwise why not. `onOpened` runs as soon
     /// as the desktop has answered, so a sheet can go away at once.
+    /// - `showGlobal`: for the global one asked from a project (its New terminal sheet, which stays up until the answer), the root view
+    ///   then goes to the Global screen. Starts that put the Global screen up themselves pass false, so a late answer never moves a
+    ///   person who has gone elsewhere meanwhile.
     @discardableResult
-    func createOrchestrator(_ request: NewOrchestratorRequest, onOpened: @MainActor (RemoteSession) -> Void = { _ in }) async -> OrchestratorControlError? {
+    func createOrchestrator(_ request: NewOrchestratorRequest, showGlobal: Bool = true, onOpened: @MainActor (RemoteSession) -> Void = { _ in }) async -> OrchestratorControlError? {
         guard !creatingOrchestrator else { return .busy }
         guard state == .connected else { return .notConnected }
         guard orchestratorCreateSupport != .unsupported else { return .unsupported }
@@ -45,7 +48,7 @@ extension RemoteModel {
             if let index = orchestrators.firstIndex(where: { $0.id == entry.id }) { orchestrators[index] = entry } else { orchestrators.append(entry) }
             onOpened(entry)
             if let tab = globalTabs.first(where: { $0.session?.id == entry.id }) { await openGlobalTab(tab) }
-            if scope == .global { reconcileGlobalSelection() } else { requestGlobalScreen() }
+            if scope == .global { reconcileGlobalSelection() } else if showGlobal { requestGlobalScreen() }
             if !reply.created { noteOrchestrator("\(entry.title) is already running.") }
             await refreshGlobalQuietly()
             return nil

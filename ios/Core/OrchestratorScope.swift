@@ -85,6 +85,15 @@ public enum OrchestratorScope {
         return SharedTabStrip.openable(shared).filter { !global.contains($0.tab.sessionID) }
     }
 
+    /// The Edit tabs sheet's groups of a project, without any tab that names a global orchestrator (a group left empty goes).
+    public static func projectGroups(_ shared: SharedTabsReply, orchestrators: [RemoteSession]) -> [SharedTabStrip.Group] {
+        let global = globalIDs(orchestrators)
+        return SharedTabStrip.groups(shared).compactMap { group in
+            let tabs = group.tabs.filter { !global.contains($0.sessionID) }
+            return tabs.isEmpty ? nil : SharedTabStrip.Group(parent: group.parent, title: group.title, tabs: tabs)
+        }
+    }
+
     /// The Global screen's tabs: each global orchestrator as a terminal, a chat (by its `chat_id`) or a notice, newest first. Nothing of a
     /// project is ever among them.
     public static func globalTabs(orchestrators: [RemoteSession], chatsAvailable: Bool, missing: Set<String> = []) -> [ProjectTab] {

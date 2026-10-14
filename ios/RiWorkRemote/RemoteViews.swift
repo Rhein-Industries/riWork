@@ -351,6 +351,11 @@ struct TerminalTabsView: View {
     @ViewBuilder private var screen: some View {
         let chrome = chrome
         VStack(spacing: 0) {
+            // The Global screen has taken over (the global orchestrator was opened from this project and the path replaced): for the
+            // moment this screen is still in the hierarchy it draws nothing, so nothing global is shown, followed or sized from here.
+            if model.scope == .global {
+                Spacer(minLength: 0)
+            } else {
             // Focus mode drops all of this: only the shell (and its keyboard) stays.
             if chrome.header == .navigationRow {
                 navigationRow(chrome)
@@ -372,6 +377,7 @@ struct TerminalTabsView: View {
                     ConnectionPanel(model: model).padding()
                 }
             } else { SessionConsole(model: model, followOutput: $followOutput) }
+            }
         }
         .background((focused ? style.terminalBackground : style.background).ignoresSafeArea())
         .statusBarHidden(chrome.statusBarHidden)
@@ -439,7 +445,12 @@ struct TerminalTabsView: View {
         .task(id: project.id) { await model.keepFresh(.sessions) }
         // The terminal is released (its long poll, its pinned size) the moment a chat takes the screen, and picked up again when a terminal tab does.
         .onAppear { onScreen = true; syncTerminalVisible(); openRequestedNewTerminal() }
-        .onDisappear { onScreen = false; syncTerminalVisible(); if model.newTerminalRequestedProject == project.id { model.newTerminalRequestedProject = nil } }
+        .onDisappear {
+            onScreen = false; syncTerminalVisible()
+            if model.newTerminalRequestedProject == project.id { model.newTerminalRequestedProject = nil }
+            // A tab a dashboard row asked for belongs to this visit (Back during the load): it is not put up on a later one.
+            if model.requestedTab?.project == project.id { model.requestedTab = nil }
+        }
         .onChange(of: model.terminalCovered) { _, _ in syncTerminalVisible() }
         .onChange(of: model.newTerminalRequestedProject) { _, _ in openRequestedNewTerminal() }
         .onChange(of: model.projectID) { _, _ in openRequestedNewTerminal() }
@@ -596,7 +607,12 @@ struct TerminalTabsView: View {
             sessionInfo = SessionInfo(id: blocked.session.id, title: blocked.session.title, cwd: blocked.session.cwd, kind: blocked.session.kind, activity: nil, since: nil)
         } else if let session = model.session { sessionInfo = SessionInfo(id: session.id, title: session.title, cwd: session.cwd, kind: session.kind, activity: session.activitySummary, since: session.activity_since_unix) }
     }
-    private func syncTerminalVisible() { model.setTerminalVisible(onScreen && !model.terminalCovered) }
+    /// The terminal is this screen's only while the project's tabs are the scope: the Global screen, coming up over a path replacement
+    /// before this one has gone, owns it then.
+    private func syncTerminalVisible() {
+        guard model.scope == .project else { return }
+        model.setTerminalVisible(onScreen && !model.terminalCovered)
+    }
     private func openNewTerminal() {
         guard newTerminal == nil, model.state == .connected, model.projectID == project.id, let sheet = NewTerminalSheetModel(model: model) else { return }
         let binding = $newTerminal
@@ -1397,7 +1413,7 @@ struct EditTabsSheet: View {
         NavigationStack {
             List {
                 if let shared = model.sharedTabs {
-                    ForEach(SharedTabStrip.groups(shared)) { group in
+                    ForEach(OrchestratorScope.projectGroups(shared, orchestrators: model.orchestrators)) { group in
                         Section(group.title) {
                             ForEach(group.tabs) { tab in
                                 HStack(spacing: 10) {

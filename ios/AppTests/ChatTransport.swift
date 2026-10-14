@@ -305,8 +305,9 @@ actor ChatTransport: RemoteTransport {
         case .garbled: return .object(["orchestrator": .object(["id": .string("nope")]), "created": .bool(true)])
         case .ok, .gated:
             let project = params["project_id"]?.string
+            // The scope's orchestrator if it runs (a chat, or a live terminal); one whose terminal has ended is replaced by a new one.
             if let existing = orchestratorEntries.first(where: { entry in
-                guard entry["kind"].string == "orchestrator" else { return false }
+                guard entry["kind"].string == "orchestrator", entry["alive"] != .bool(false) else { return false }
                 return entry["project_id"].string == project
             }) {
                 return .object(["orchestrator": existing, "created": .bool(false)])

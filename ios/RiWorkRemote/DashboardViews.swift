@@ -69,8 +69,8 @@ struct DashboardView: View {
     // MARK: The global orchestrator
 
     private var globalStatus: GlobalOrchestratorStatus {
-        GlobalOrchestratorStatus.decide(entry: model.globalOrchestrators.first, dashboard: model.dashboardSupport == .unsupported ? nil : model.dashboard?.global,
-                                        canStart: model.orchestratorsOffered)
+        GlobalOrchestratorStatus.decide(entry: model.globalTabs.first?.session, dashboard: model.dashboardSupport == .unsupported ? nil : model.dashboard?.global,
+                                        canStart: model.orchestratorsOffered, exitedTerminal: model.globalTerminalExited)
     }
     private var globalSection: some View {
         let status = globalStatus
@@ -105,10 +105,12 @@ struct DashboardView: View {
             Text(status.actionTitle).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted).multilineTextAlignment(.trailing)
         }
     }
-    /// An explicit Start: sent once; the root view puts the Global screen up once the Mac answers, and what went wrong is said.
+    /// An explicit Start: the Global screen comes up at once (it says it is starting) and the request is sent once; the answer is
+    /// shown there, or what went wrong is said. A person who leaves meanwhile is not moved back by the answer.
     private func start() {
         guard !starting else { return }
         starting = true
+        openGlobal()
         Task {
             if let failure = await model.startGlobalOrchestrator() { model.error = failure.message }
             starting = false
@@ -475,21 +477,29 @@ struct GlobalOrchestratorScreen: View {
             sessionInfo = SessionInfo(id: session.id, title: session.title, cwd: session.cwd, kind: session.kind, activity: session.activitySummary, since: session.activity_since_unix)
         }
     }
-    /// No global orchestrator to show: there is none (Start, on a tap), or the list is still being read.
+    /// No global orchestrator to show (the list has none to open): Start, on a tap, while the desktop can; a Start on its way says so.
+    /// Never a wait without end: when the dashboard knows one the list does not show yet, Start opens the one the Mac has
+    /// (`orchestrator.create` returns it unchanged) and the next read of the list shows it anyway.
     private var emptyState: some View {
-        let status = GlobalOrchestratorStatus.decide(entry: model.globalOrchestrators.first, dashboard: model.dashboard?.global, canStart: model.orchestratorsOffered)
+        let busy = starting || model.creatingOrchestrator
+        let listedElsewhere: Bool = { switch model.dashboard?.global { case .chat?, .terminal?: true; default: false } }()
+        let detail: String = {
+            if busy { return "Starting it on your Mac…" }
+            if listedElsewhere { return "Your Mac's dashboard has one that its orchestrator list does not show yet. Start opens the one your Mac has." }
+            if model.globalTerminalExited { return "Its last terminal has exited. Starting it again opens it on this screen, not in a project." }
+            return "It works across every project and belongs to none. Starting it here opens it on this screen, not in a project."
+        }()
         return VStack {
             VStack(alignment: .leading, spacing: 12) {
-                Label(style.cased(status.action == .open ? "Global orchestrator" : "No global orchestrator"), systemImage: "globe").font(style.face(14, bold: true, relativeTo: .headline))
-                Text(status.action == .open ? "Reading it from your Mac…" : "It works across every project and belongs to none. Starting it here opens it on this screen, not in a project.")
-                    .foregroundStyle(style.muted)
-                switch status.action {
-                case .start:
-                    Button(starting || model.creatingOrchestrator ? "Starting…" : status.actionTitle, systemImage: "play") { start() }
+                Label(style.cased("No global orchestrator"), systemImage: "globe").font(style.face(14, bold: true, relativeTo: .headline))
+                Text(detail).foregroundStyle(style.muted)
+                if model.orchestratorsOffered {
+                    Button(busy ? "Starting…" : "Start global orchestrator", systemImage: "play") { start() }
                         .buttonStyle(DesktopButtonStyle(prominent: true))
-                        .disabled(model.state != .connected || starting || model.creatingOrchestrator)
-                case .unavailable: Text(OrchestratorControlError.unsupportedMessage).font(style.system(.footnote)).foregroundStyle(style.warning)
-                case .open: ProgressView()
+                        .disabled(model.state != .connected || busy)
+                        .accessibilityIdentifier("global-start")
+                } else {
+                    Text(OrchestratorControlError.unsupportedMessage).font(style.system(.footnote)).foregroundStyle(style.warning)
                 }
             }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             ConnectionPanel(model: model).padding()

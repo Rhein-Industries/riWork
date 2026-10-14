@@ -13,18 +13,23 @@ enum SelectionScope: Equatable { case project, global }
 extension RemoteModel {
     /// The global orchestrators the desktop lists (normally one).
     var globalOrchestrators: [RemoteSession] { OrchestratorScope.globalEntries(orchestrators) }
-    /// The global orchestrator's tab on screen while the Global screen is up, else the one it would show.
+    /// The global orchestrator's tab on screen while the Global screen is up, else the one it would show: the remembered one while the
+    /// desktop lists it, else the first (normally the only one). Derived, never written back: a remembered choice that is missing for a
+    /// moment (a list read while a chat host restarts) comes back with it.
     var globalTab: ProjectTab? { OrchestratorScope.restoredGlobalTab(remembered: desktop?.globalTabKey, in: globalTabs) }
+    /// `globalTab`'s key (`shell:`, `chat:` or `orchestrator:`): what `sessionID`, `selectedChatID` and `selectedBlockedID` read on the
+    /// Global screen.
+    var shownGlobalKey: String? { globalTab.map(OrchestratorScope.key) }
+    /// Global orchestrators whose terminal has ended, or that the desktop no longer has: what Start is offered for (there is nothing to
+    /// open), as the desktop's "its last terminal has exited".
+    var globalTerminalExited: Bool {
+        globalOrchestrators.contains { $0.mode != .chat && (!$0.alive || missingSessionIDs.contains($0.id)) }
+    }
 
-    /// Writes the global selection, or clears it when `key` is nil and the selection is of `kind` (a chat cleared leaves a terminal
-    /// selection alone). A global terminal that stops being the selection stops being read.
-    func setGlobalSelection(_ key: String?, replacing kind: String) {
-        let current = desktop?.globalTabKey
-        if key == nil, OrchestratorScope.id(in: current, kind: kind) == nil { return }
-        guard key != current else { return }
-        let previousTerminal = OrchestratorScope.id(in: current, kind: "shell")
-        try? updateDesktop { $0.globalTabKey = key }
-        if scope == .global, previousTerminal != nil, previousTerminal != sessionID { resetOutput(); snapshotStale = true; draft = ""; deliveryNotice = nil }
+    /// Remembers a choice on the Global screen (`SavedDesktop.globalTabKey`) and shows it.
+    func rememberGlobalSelection(_ key: String) {
+        if desktop?.globalTabKey != key { try? updateDesktop { $0.globalTabKey = key } }
+        globalShownChanged()
     }
 
     /// The Global screen came up: its tabs are the scope until it goes. The remembered global orchestrator (or the only one) is put on
@@ -33,9 +38,8 @@ extension RemoteModel {
         guard scope != .global else { reconcileGlobalSelection(); return }
         let previous = sessionID
         scope = .global
-        reconcileGlobalSelection()
-        if let chat = selectedChatID { _ = conversation(chat) }
         switchedScope(from: previous)
+        reconcileGlobalSelection()
     }
     /// The Global screen went: the project's tabs are the scope again, with the selection they had. What changed in the project's lists
     /// meanwhile is reconciled now (only for a project whose lists are in), and a restore that waited runs.
@@ -52,19 +56,13 @@ extension RemoteModel {
         switchedScope(from: previous)
     }
 
-    /// Keeps the global selection on a global orchestrator the desktop still lists: the remembered one, else the first, else none. The
-    /// selection is the global one's own; a project's is never read or written here.
+    /// After the global orchestrators were read again: the Global screen shows the one there is now (`globalTab`), and what it showed
+    /// before, if it went, is let go. Nothing remembered yet: what is shown is remembered. The selection is the global one's own; a
+    /// project's is never read or written here.
     func reconcileGlobalSelection() {
-        let remembered = desktop?.globalTabKey
-        let chosen = OrchestratorScope.restoredGlobalTab(remembered: remembered, in: globalTabs).map(OrchestratorScope.key)
-        guard chosen != remembered else { return }
-        let previousTerminal = OrchestratorScope.id(in: remembered, kind: "shell")
-        try? updateDesktop { $0.globalTabKey = chosen }
         guard scope == .global else { return }
-        if previousTerminal != sessionID {
-            resetOutput(); snapshotStale = true; draft = ""; deliveryNotice = nil
-            if previousTerminal != nil { sessionAutoSwitches &+= 1 }
-        }
+        if desktop?.globalTabKey == nil, let shown = shownGlobalKey { try? updateDesktop { $0.globalTabKey = shown } }
+        globalShownChanged()
         if let chat = selectedChatID { _ = conversation(chat) }
     }
 
@@ -84,11 +82,12 @@ extension RemoteModel {
     func requestGlobalScreen() { globalScreenRequests &+= 1 }
 
     /// Starts the global orchestrator (or opens the one the Mac already has: `orchestrator.create` returns it unchanged), asked only by an
-    /// explicit Start. The request carries no project.
+    /// explicit Start on the Dashboard or the Global screen, which put the Global screen up themselves first. The request carries no
+    /// project.
     @discardableResult
     func startGlobalOrchestrator() async -> OrchestratorControlError? {
         guard let request = try? NewOrchestratorRequest(projectID: nil) else { return .invalid("The global orchestrator could not be asked for.") }
-        return await createOrchestrator(request)
+        return await createOrchestrator(request, showGlobal: false)
     }
 
     /// The global orchestrators read again (the Global screen's own refresh): nothing of a project is read or changed.

@@ -83,6 +83,10 @@ final class OrchestratorScopeTests: XCTestCase {
         XCTAssertTrue(openable.isEmpty, "hidden global entries are not offered or counted: \(openable.map(\.id))")
         // The plain shared helper would have counted them: the project's count goes through the scope.
         XCTAssertEqual(SharedTabStrip.openable(list).count, 2)
+        // Nor are they among the tabs the Edit tabs sheet reorders.
+        let groups = OrchestratorScope.projectGroups(list, orchestrators: all)
+        XCTAssertEqual(groups.flatMap(\.tabs).map(\.key), ["shell:\(alphaOrchestrator)", "shell:\(alphaShell)", "chat:\(alphaChat)"])
+        XCTAssertEqual(SharedTabStrip.groups(list).flatMap(\.tabs).count, 5, "the plain helper still has the two visible global ones")
     }
 
     // MARK: The Global screen
