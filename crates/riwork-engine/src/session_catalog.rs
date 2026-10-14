@@ -366,6 +366,7 @@ mod tests {
             fast: false,
             contributor_mode: Default::default(),
             contributor_opt_out: false,
+            claude_billing: None,
             approval_mode: ApprovalMode::default(),
             codex_account_id: None,
             state,

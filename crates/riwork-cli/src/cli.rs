@@ -904,6 +904,7 @@ fn gui_command(executable: PathBuf, root: &std::path::Path) -> Command {
     // Run from an account-bound session, `open` must not turn that session's
     // Codex home into the new window's system default.
     crate::codex_accounts::scrub_injected_environment(&mut command);
+    riwork_engine::anthropic_key::scrub_injected(&mut command);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -2486,6 +2487,8 @@ fn chat_client_command(
                     crate::chat::model::ContributorMode::Off
                 },
                 contributor_opt_out,
+                // A Claude chat bills as Settings say.
+                claude_billing: None,
             })?;
             if json {
                 // A chat whose provider did not start still exists, and the

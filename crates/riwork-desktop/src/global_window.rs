@@ -210,6 +210,8 @@ pub(crate) enum Step {
     Chat(ChatInfo),
     Task(String),
     Panel(PanelKind),
+    /// Settings, at the Anthropic API key field.
+    ApiKeySettings,
 }
 
 pub(crate) fn route(
@@ -285,6 +287,7 @@ impl Workspace {
                 self.open_panel(PanelKind::Tasks, self.active_pane, window, cx);
             }
             Step::Panel(panel) => self.open_panel(panel, self.active_pane, window, cx),
+            Step::ApiKeySettings => self.reveal_api_key_settings(window, cx),
         }
         cx.notify();
     }
@@ -1228,6 +1231,9 @@ impl GlobalWindow {
             }
             ChatViewEvent::ShowUsage => {
                 self.go(Route::AnyProject(Step::Panel(PanelKind::Usage)), cx)
+            }
+            ChatViewEvent::OpenApiKeySettings => {
+                self.go(Route::AnyProject(Step::ApiKeySettings), cx)
             }
         }
     }

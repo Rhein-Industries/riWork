@@ -8,6 +8,7 @@ pub use riwork_core::{
 
 pub mod activity;
 pub mod agent_hooks;
+pub mod anthropic_key;
 pub mod chat;
 pub mod cli_agents;
 pub mod cua;

@@ -4,8 +4,8 @@ use std::{cell::Cell, collections::BTreeMap, path::PathBuf, rc::Rc};
 
 use gpui::{
     AnyElement, App, Bounds, Context, Div, Entity, EventEmitter, FocusHandle, FontWeight, Global,
-    IntoElement, KeyDownEvent, Pixels, Render, SharedString, Subscription, Window, canvas, div,
-    prelude::*, px, rgb,
+    IntoElement, KeyDownEvent, Pixels, Render, ScrollAnchor, ScrollHandle, SharedString,
+    Subscription, Window, canvas, div, prelude::*, px, rgb,
 };
 #[cfg(test)]
 use serde_json::Value;
@@ -15,8 +15,8 @@ use std::fs;
 use uuid::Uuid;
 
 use crate::{
-    behavior_controls as behavior,
-    chat::model::Provider,
+    api_key, behavior_controls as behavior,
+    chat::model::{ClaudeBilling, Provider},
     codex_accounts::{self, AccountsSnapshot},
     controls,
     cua::{CuaManager, CuaSkills, CuaStatus, SkillLinkState},
@@ -127,7 +127,7 @@ fn run_cua_action(action: CuaAction, cx: &mut App) {
 
 pub use riwork_core::settings::{
     AUTOMATIC_ORCHESTRATORS, OrchestratorMode, OrchestratorRuns, TabCloseBehavior,
-    agent_terminals_unrestricted, claude_chat_ignores_api_key, recommended_model, valid_model_id,
+    agent_terminals_unrestricted, claude_chat_billing, recommended_model, valid_model_id,
 };
 
 /// The window's settings global. Serialization and persistence stay in core.
@@ -204,7 +204,6 @@ enum Toggle {
     AgentInline,
     AgentsUnrestricted,
     DictationMic,
-    ClaudeChatApiKey,
     WindowSize,
 }
 
@@ -217,7 +216,6 @@ impl Toggle {
             Self::AgentInline => "agent-inline-mode",
             Self::AgentsUnrestricted => "agent-terminals-unrestricted",
             Self::DictationMic => "dictation-mic",
-            Self::ClaudeChatApiKey => "claude-chat-ignores-api-key",
             Self::WindowSize => "remember-window-size",
         }
     }
@@ -233,7 +231,6 @@ impl Toggle {
             Self::AgentInline => &mut settings.agent_inline_mode,
             Self::AgentsUnrestricted => &mut settings.agent_terminals_unrestricted,
             Self::DictationMic => &mut settings.dictation_mic,
-            Self::ClaudeChatApiKey => &mut settings.claude_chat_ignores_api_key,
             Self::WindowSize => &mut settings.remember_window_size,
         };
         *value = !*value;
@@ -249,7 +246,6 @@ impl Toggle {
             Self::AgentInline => &mut settings.agent_inline_mode,
             Self::AgentsUnrestricted => &mut settings.agent_terminals_unrestricted,
             Self::DictationMic => &mut settings.dictation_mic,
-            Self::ClaudeChatApiKey => &mut settings.claude_chat_ignores_api_key,
             Self::WindowSize => &mut settings.remember_window_size,
         };
         *value = checked;
@@ -285,7 +281,18 @@ pub struct SettingsPanel {
     inline_focus: FocusHandle,
     unrestricted_focus: FocusHandle,
     mic_focus: FocusHandle,
-    api_key_focus: FocusHandle,
+    /// "Claude chats bill": Subscription or API key.
+    billing_focus: FocusHandle,
+    /// The Anthropic API key field, masked. Made at the first draw, which has a window;
+    /// its focus handle is kept for `focus_order`. It holds a paste only until it is saved.
+    api_key_input: Option<(Entity<InputState>, FocusHandle, Subscription)>,
+    api_key_save_focus: FocusHandle,
+    api_key_remove_focus: FocusHandle,
+    /// Why the key was not saved or removed, or why the Keychain cannot say whether one is.
+    api_key_error: Option<String>,
+    /// The page's scroll, and the key row's place in it, for `reveal_api_key`.
+    scroll: ScrollHandle,
+    api_key_anchor: ScrollAnchor,
     orchestrator_mode_focus: FocusHandle,
     orchestrator_provider_focus: FocusHandle,
     orchestrator_model_focus: FocusHandle,
@@ -861,6 +868,10 @@ impl SettingsPanel {
             cx.notify();
         })
         .detach();
+        // Whether a key is saved shows in the key row, and is asked when it is first drawn.
+        cx.observe_global::<api_key::ApiKeyState>(|_, cx| cx.notify())
+            .detach();
+        let scroll = ScrollHandle::new();
         Self {
             store,
             cua_focus: cx.focus_handle(),
@@ -879,7 +890,13 @@ impl SettingsPanel {
             inline_focus: cx.focus_handle(),
             unrestricted_focus: cx.focus_handle(),
             mic_focus: cx.focus_handle(),
-            api_key_focus: cx.focus_handle(),
+            billing_focus: cx.focus_handle(),
+            api_key_input: None,
+            api_key_save_focus: cx.focus_handle(),
+            api_key_remove_focus: cx.focus_handle(),
+            api_key_error: None,
+            api_key_anchor: ScrollAnchor::for_handle(scroll.clone()),
+            scroll,
             orchestrator_mode_focus: cx.focus_handle(),
             orchestrator_provider_focus: cx.focus_handle(),
             orchestrator_model_focus: cx.focus_handle(),
@@ -914,6 +931,8 @@ impl SettingsPanel {
         if !self.orca_initialized {
             self.preview_orca(cx);
         }
+        // The key may have been saved by another window, or removed in Keychain Access.
+        self.api_key_error = api_key::refresh(cx).err();
         let settings = cx.global::<Settings>();
         if self
             .focus_order(settings)
@@ -955,7 +974,14 @@ impl SettingsPanel {
         handles.push(self.inline_focus.clone());
         handles.push(self.unrestricted_focus.clone());
         handles.push(self.mic_focus.clone());
-        handles.push(self.api_key_focus.clone());
+        handles.push(self.billing_focus.clone());
+        handles.extend(
+            self.api_key_input
+                .as_ref()
+                .map(|(_, focus, _)| focus.clone()),
+        );
+        handles.push(self.api_key_save_focus.clone());
+        handles.push(self.api_key_remove_focus.clone());
         handles.push(self.orchestrator_mode_focus.clone());
         if settings.orchestrator_mode == OrchestratorMode::Chat {
             handles.push(self.orchestrator_provider_focus.clone());
@@ -1003,6 +1029,73 @@ impl SettingsPanel {
             }
         });
         self.orchestrator_model_input = Some((state, focus, subscription));
+    }
+
+    /// The Anthropic API key field exists from the first draw on: a text field needs a window.
+    fn ensure_api_key_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.api_key_input.is_some() {
+            return;
+        }
+        let state = text_input::single_line("", "Paste an Anthropic API key", window, cx);
+        // Shown as dots, and never copied or cut to the clipboard.
+        state.update(cx, |input, cx| input.set_masked(true, window, cx));
+        let focus = gpui::Focusable::focus_handle(state.read(cx), cx);
+        let subscription = cx.subscribe_in(&state, window, |view, _, event, window, cx| {
+            if text_input::is_submit(event, EnterBehavior::Submit) {
+                view.save_api_key(window, cx);
+            }
+        });
+        self.api_key_input = Some((state, focus, subscription));
+    }
+
+    /// Save or Return in the key field: the paste goes to the Keychain, and the field is
+    /// emptied once it is there. Refused or failed, nothing changes and the row says why;
+    /// the paste stays in the field (masked) to try again.
+    fn save_api_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((state, _, _)) = &self.api_key_input else {
+            return;
+        };
+        let state = state.clone();
+        let pasted = state.read(cx).value().to_string();
+        let result = riwork_engine::anthropic_key::normalized(&pasted).and_then(|key| {
+            let store = api_key::store(cx);
+            store.save(&key)?;
+            api_key::remember(cx, store, Ok(true));
+            Ok(())
+        });
+        match result {
+            Ok(()) => {
+                self.api_key_error = None;
+                crate::form_input::set_value(&state, String::new(), window, cx);
+            }
+            Err(error) => self.api_key_error = Some(error),
+        }
+        cx.notify();
+    }
+
+    /// Remove: the Keychain item goes. Chats on API key then run as Claude is installed.
+    fn remove_api_key(&mut self, cx: &mut Context<Self>) {
+        let store = api_key::store(cx);
+        match store.remove() {
+            Ok(()) => {
+                self.api_key_error = None;
+                api_key::remember(cx, store, Ok(false));
+            }
+            Err(error) => self.api_key_error = Some(error),
+        }
+        cx.notify();
+    }
+
+    /// Settings as a usage-limit banner's **Enter API key** opens it: at the key field,
+    /// scrolled into view and focused.
+    pub fn reveal_api_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_api_key_input(window, cx);
+        self.api_key_error = api_key::refresh(cx).err();
+        if let Some((_, focus, _)) = &self.api_key_input {
+            focus.focus(window, cx);
+        }
+        self.api_key_anchor.scroll_to(window, cx);
+        cx.notify();
     }
 
     /// Return in "Other model ID": the typed id becomes the chat orchestrator's model.
@@ -1635,7 +1728,7 @@ impl SettingsPanel {
         label: &'static str,
         focus: &FocusHandle,
         accent: u32,
-        on_press: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        on_press: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = palette(cx);
@@ -1666,7 +1759,7 @@ impl SettingsPanel {
                     }
                 })
             })
-            .on_click(cx.listener(move |view, _, _, cx| on_press(view, cx)))
+            .on_click(cx.listener(move |view, _, window, cx| on_press(view, window, cx)))
             .into_any_element()
     }
 
@@ -1737,7 +1830,7 @@ impl SettingsPanel {
                         } else {
                             colors.muted
                         },
-                        move |view, cx| view.remove_host(&id, cx),
+                        move |view, _, cx| view.remove_host(&id, cx),
                         cx,
                     ))
                     .into_any_element()
@@ -1804,7 +1897,7 @@ impl SettingsPanel {
                         "Pair another Mac",
                         &self.remote_pair_focus,
                         colors.text,
-                        |view, cx| {
+                        |view, _, cx| {
                             view.remote_confirm = None;
                             cx.emit(SettingsEvent::PairMac);
                         },
@@ -1815,7 +1908,7 @@ impl SettingsPanel {
                         "Add host",
                         &self.remote_add_focus,
                         colors.cyan,
-                        |view, cx| {
+                        |view, _, cx| {
                             view.remote_confirm = None;
                             cx.emit(SettingsEvent::AddHost);
                         },
@@ -2150,7 +2243,6 @@ impl SettingsPanel {
             Toggle::AgentInline => &self.inline_focus,
             Toggle::AgentsUnrestricted => &self.unrestricted_focus,
             Toggle::DictationMic => &self.mic_focus,
-            Toggle::ClaudeChatApiKey => &self.api_key_focus,
             Toggle::WindowSize => &self.size_focus,
         };
         behavior::switch_content(
@@ -2244,13 +2336,30 @@ impl SettingsPanel {
                 settings.dictation_mic,
                 cx,
             ))
-            .child(self.toggle_row(
-                Toggle::ClaudeChatApiKey,
-                "Claude chats ignore ANTHROPIC_API_KEY",
-                "Starts Claude chats without ANTHROPIC_API_KEY, so a key exported in your shell cannot switch them from your Claude subscription to API billing. Off runs Claude as installed, with every sign-in method it has. Applies to new chats, and to an open chat after Stop chat. Claude terminal tabs are not affected.",
-                settings.claude_chat_ignores_api_key,
+            .child(self.choice_row(
+                "claude-billing",
+                &self.billing_focus,
+                "Claude chats bill",
+                "Who new Claude chats bill. Subscription runs them on your Claude sign-in and starts them without ANTHROPIC_API_KEY, so a key exported in your shell cannot switch them to API billing. API key bills the Anthropic API key saved below to your Anthropic API account, so a chat can go on with API credits, such as free credits that came with your account, when the subscription's usage limit is reached. With no key saved, API key runs Claude as installed: a key your shell exports, or else your Claude sign-in. Each chat keeps the choice it was made with, and its composer switches it. Claude terminal tabs are not affected.",
+                settings.claude_chat_billing,
+                ClaudeBilling::ALL
+                    .into_iter()
+                    .map(|billing| {
+                        (
+                            billing,
+                            billing.label().into(),
+                            match billing {
+                                ClaudeBilling::Subscription => "claude-billing-subscription",
+                                ClaudeBilling::ApiKey => "claude-billing-api-key",
+                            }
+                            .into(),
+                        )
+                    })
+                    .collect(),
+                |settings, billing| settings.claude_chat_billing = billing,
                 cx,
             ))
+            .child(self.api_key_row(window, cx))
             .child(self.choice_row(
                 "orchestrator-mode",
                 &self.orchestrator_mode_focus,
@@ -2346,6 +2455,117 @@ impl SettingsPanel {
                     .text_size(ui_text::text(10.0))
                     .text_color(rgb(colors.muted))
                     .child("Applies to orchestrators created from now on, except a project's whose Project Settings choose otherwise. An existing orchestrator keeps its mode, provider and model until it is closed and created again."),
+            )
+            .into_any_element()
+    }
+
+    /// The Anthropic API key: a masked field, Save and Remove, and whether one is saved.
+    /// The key itself is never drawn.
+    fn api_key_row(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
+        let input = self
+            .api_key_input
+            .as_ref()
+            .map(|(state, _, _)| state.clone());
+        let saved = api_key::status(cx);
+        let (state_text, state_color) = match &saved {
+            Ok(true) => ("API key saved", colors.cyan),
+            Ok(false) => ("No API key saved", colors.muted),
+            Err(_) => (
+                "The Keychain cannot say whether an API key is saved",
+                colors.gold,
+            ),
+        };
+        let saved = saved.unwrap_or(false);
+        div()
+            .id("claude-api-key")
+            .anchor_scroll(Some(self.api_key_anchor.clone()))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(ui_text::space(12.0))
+            .px(ui_text::space(ROW_PAD_X))
+            .py(ui_text::space(ROW_PAD_Y))
+            .bg(rgb(colors.panel))
+            .border_1()
+            .border_color(rgb(colors.divider))
+            .map(|row| controls::native(row, |row| controls::row(row, false, colors)))
+            .child(
+                row_text()
+                    .child(
+                        div()
+                            .text_size(ui_text::text(12.0))
+                            .text_color(rgb(colors.text))
+                            .child("Anthropic API key"),
+                    )
+                    .child(
+                        div()
+                            .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                            .text_size(ui_text::text(10.0))
+                            .text_color(rgb(colors.muted))
+                            .child("Kept in your macOS Keychain, nowhere else, and given to Claude chats on API key when they start, as a key exported in your shell would be. Paste a key and press Return or Save."),
+                    )
+                    .child(
+                        div()
+                            .id("claude-api-key-state")
+                            .text_size(ui_text::text(10.0))
+                            .text_color(rgb(state_color))
+                            .child(state_text),
+                    )
+                    // Saving a key changes more than the chat that asked for it: say so.
+                    .children(
+                        (cx.global::<Settings>().claude_chat_billing == ClaudeBilling::ApiKey)
+                            .then(|| {
+                                div()
+                                    .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                                    .text_size(ui_text::text(10.0))
+                                    .text_color(rgb(colors.muted))
+                                    .child("New Claude chats bill API key, so a saved key is billed by every Claude chat set to API key from its next start, chats made before it was saved too. Choose Subscription above to keep new chats on your subscription.")
+                            }),
+                    )
+                    .children(self.api_key_error.clone().map(|error| {
+                        div()
+                            .id("claude-api-key-error")
+                            .text_size(ui_text::text(10.0))
+                            .text_color(rgb(colors.gold))
+                            .child(error)
+                    })),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(ui_text::space(7.0))
+                    .children(input.map(|state| {
+                        div().w(ui_text::space(220.0)).flex_none().child(
+                            crate::form_input::frame(
+                                "claude-api-key-input",
+                                &state,
+                                false,
+                                window,
+                                cx,
+                            ),
+                        )
+                    }))
+                    .child(self.remote_button(
+                        "claude-api-key-save".into(),
+                        "Save",
+                        &self.api_key_save_focus,
+                        colors.cyan,
+                        |view, window, cx| view.save_api_key(window, cx),
+                        cx,
+                    ))
+                    .children(saved.then(|| {
+                        self.remote_button(
+                            "claude-api-key-remove".into(),
+                            "Remove",
+                            &self.api_key_remove_focus,
+                            colors.gold,
+                            |view, _, cx| view.remove_api_key(cx),
+                            cx,
+                        )
+                    })),
             )
             .into_any_element()
     }
@@ -2931,6 +3151,7 @@ impl Render for SettingsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_remote_focus(cx);
         self.ensure_model_input(window, cx);
+        self.ensure_api_key_input(window, cx);
         let settings = cx.global::<Settings>().clone();
         let colors = palette(cx);
         let width = self.bounds.get().size.width.as_f32();
@@ -3001,6 +3222,7 @@ impl Render for SettingsPanel {
                     .size_full()
                     .when(native, |scroll| scroll.flex_1().min_h_0())
                     .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
                     .child(
                         div()
                             .w_full()
@@ -3322,39 +3544,196 @@ mod tests {
     }
 
     #[test]
-    fn claude_chats_keep_their_api_key_unless_settings_say_to_ignore_it() {
+    fn claude_chats_bill_api_key_unless_settings_choose_subscription_saved_as_the_old_switch() {
         let dir = env::temp_dir().join(format!("riwork-settings-api-key-{}", Uuid::new_v4()));
         let store = SettingsStore::open(&dir).unwrap();
-        assert!(!Settings::default().claude_chat_ignores_api_key);
+        let path = dir.join("settings.json");
+        assert_eq!(
+            Settings::default().claude_chat_billing,
+            ClaudeBilling::ApiKey
+        );
         // No file, or one from a build without the setting: Claude runs as published.
-        assert!(!claude_chat_ignores_api_key(&dir));
-        fs::write(
-            dir.join("settings.json"),
-            r#"{"schema_version":1,"theme":"native"}"#,
-        )
-        .unwrap();
-        assert!(!claude_chat_ignores_api_key(&dir));
+        assert_eq!(claude_chat_billing(&dir), ClaudeBilling::ApiKey);
+        fs::write(&path, r#"{"schema_version":1,"theme":"native"}"#).unwrap();
+        assert_eq!(claude_chat_billing(&dir), ClaudeBilling::ApiKey);
 
-        // Turning it on is seen by the next launch, and off again too.
+        // Choosing is seen by the next launch, in the key every build reads.
         store
-            .update(|settings| Toggle::ClaudeChatApiKey.flip(settings))
+            .update(|settings| settings.claude_chat_billing = ClaudeBilling::Subscription)
             .unwrap();
-        assert!(claude_chat_ignores_api_key(&dir));
+        assert_eq!(claude_chat_billing(&dir), ClaudeBilling::Subscription);
+        let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["claude_chat_ignores_api_key"], true);
         store
-            .update(|settings| Toggle::ClaudeChatApiKey.flip(settings))
+            .update(|settings| settings.claude_chat_billing = ClaudeBilling::ApiKey)
             .unwrap();
-        assert!(!claude_chat_ignores_api_key(&dir));
+        assert_eq!(claude_chat_billing(&dir), ClaudeBilling::ApiKey);
 
-        // A value of another shape, or an unreadable file, reads as off.
+        // A value of another shape, or an unreadable file, reads as API key.
         fs::write(
-            dir.join("settings.json"),
+            &path,
             r#"{"schema_version":1,"claude_chat_ignores_api_key":"yes"}"#,
         )
         .unwrap();
-        assert!(!claude_chat_ignores_api_key(&dir));
-        fs::write(dir.join("settings.json"), "{not json").unwrap();
-        assert!(!claude_chat_ignores_api_key(&dir));
+        assert_eq!(claude_chat_billing(&dir), ClaudeBilling::ApiKey);
+        fs::write(&path, "{not json").unwrap();
+        assert_eq!(claude_chat_billing(&dir), ClaudeBilling::ApiKey);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A Settings panel on `dir`, with the key kept in `keys`, never the Keychain.
+    fn api_key_panel(
+        cx: &mut gpui::TestAppContext,
+        dir: &std::path::Path,
+        keys: std::sync::Arc<riwork_engine::anthropic_key::MemoryStore>,
+    ) -> (gpui::AnyWindowHandle, Entity<SettingsPanel>) {
+        cx.update(|app| {
+            app.set_global(CodexAccountsState {
+                snapshot: None,
+                pending: true,
+            });
+            app.set_global(RemoteState::default());
+            app.set_global(CuaSetupState::default());
+            app.set_global(api_key::ApiKeyState::with_store(keys));
+            app.set_global(Settings::default());
+            app.set_global(Appearance::resolve(ThemeChoice::RiWork, false));
+            ui_text::init(app);
+            crate::tooltip::init(app);
+        });
+        let store = SettingsStore::open(dir).unwrap();
+        crate::form_input::test_window(cx, move |_, cx| SettingsPanel::new(store, cx))
+    }
+
+    #[gpui::test]
+    fn the_api_key_row_saves_a_masked_paste_to_the_store_and_shows_only_whether_one_is_saved(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::form_input::test_turn;
+        use gpui::ClipboardItem;
+        use gpui_kit::test::TestWindowExt as _;
+        use riwork_engine::anthropic_key::{KeyStore, MemoryStore};
+        const DUMMY: &str = "sk-ant-dummy-settings";
+        let dir = env::temp_dir().join(format!("riwork-settings-key-ui-{}", Uuid::new_v4()));
+        let keys = std::sync::Arc::new(MemoryStore::default());
+        let (handle, panel) = api_key_panel(cx, &dir, keys.clone());
+        let field = |app: &App| panel.read(app).api_key_input.as_ref().unwrap().0.clone();
+        let shown = |window: &mut Window, id: &'static str| window.try_find(id).is_some();
+        let error = |app: &App| panel.read(app).api_key_error.clone();
+        // The rows sit below the first screen of the test window; a chat's Enter API key
+        // brings them into view.
+        test_turn(cx, handle, |window, app| {
+            panel.update(app, |panel, cx| panel.reveal_api_key(window, cx));
+        });
+        test_turn(cx, handle, |window, app| {
+            assert!(window.find("claude-api-key-save").visible());
+            assert!(window.find("claude-billing-subscription").visible());
+            assert!(!shown(window, "claude-api-key-remove"), "nothing to remove");
+            assert_eq!(error(app), None);
+            assert_eq!(api_key::status(app), Ok(false));
+            // The billing default is a choice of two, saved at once.
+            window.click("claude-billing-subscription", app);
+        });
+        assert_eq!(claude_chat_billing(&dir), ClaudeBilling::Subscription);
+
+        // A paste is masked and never copied out; Return saves it and empties the field.
+        test_turn(cx, handle, |window, app| {
+            window.click("claude-api-key-input", app);
+            window.input(DUMMY, app);
+        });
+        test_turn(cx, handle, |window, app| {
+            assert!(field(app).read(app).presentation().is_masked());
+            window.press("cmd-a", app);
+            app.write_to_clipboard(ClipboardItem::new_string("sentinel".into()));
+            window.press("cmd-c", app);
+            window.press("cmd-x", app);
+        });
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(
+                app.read_from_clipboard().unwrap().text().as_deref(),
+                Some("sentinel")
+            );
+            assert_eq!(field(app).read(app).value(), DUMMY);
+            window.press("enter", app);
+        });
+        assert_eq!(keys.read().unwrap().as_deref(), Some(DUMMY));
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(field(app).read(app).value(), "");
+            assert_eq!(api_key::status(app), Ok(true));
+            assert!(shown(window, "claude-api-key-remove"));
+            assert_eq!(error(app), None);
+        });
+
+        // Not a key: refused, nothing saved, and the refusal does not repeat the paste.
+        test_turn(cx, handle, |window, app| {
+            window.click("claude-api-key-input", app);
+            window.input("two words", app);
+        });
+        test_turn(cx, handle, |window, app| {
+            window.click("claude-api-key-save", app)
+        });
+        test_turn(cx, handle, |window, app| {
+            let error = error(app).unwrap();
+            assert!(
+                error.contains("not an API key") && !error.contains("two words"),
+                "{error}"
+            );
+            crate::form_input::set_value(&field(app), String::new(), window, app);
+        });
+        assert_eq!(keys.read().unwrap().as_deref(), Some(DUMMY));
+
+        // The Keychain fails: a plain error, and the saved key stays as it was.
+        keys.fail(Some(
+            "The Keychain could not save the Anthropic API key: User interaction is not allowed",
+        ));
+        test_turn(cx, handle, |window, app| {
+            window.click("claude-api-key-input", app);
+            window.input("sk-ant-dummy-other", app);
+        });
+        test_turn(cx, handle, |window, app| {
+            window.click("claude-api-key-save", app)
+        });
+        test_turn(cx, handle, |window, app| {
+            assert!(
+                error(app)
+                    .unwrap()
+                    .contains("User interaction is not allowed")
+            );
+            // The paste stays, masked, to try again.
+            assert_eq!(field(app).read(app).value(), "sk-ant-dummy-other");
+            window.click("claude-api-key-remove", app);
+        });
+        keys.fail(None);
+        assert_eq!(keys.read().unwrap().as_deref(), Some(DUMMY), "unchanged");
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(api_key::status(app), Ok(true));
+            window.click("claude-api-key-remove", app);
+        });
+        assert_eq!(keys.read().unwrap(), None);
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(api_key::status(app), Ok(false));
+            assert!(!shown(window, "claude-api-key-remove"));
+            assert_eq!(error(app), None);
+        });
+        // No key in the settings file, ever.
+        let file = fs::read_to_string(dir.join("settings.json")).unwrap();
+        assert!(!file.contains("sk-ant"), "{file}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[gpui::test]
+    fn reveal_api_key_focuses_the_key_field(cx: &mut gpui::TestAppContext) {
+        use crate::form_input::test_turn;
+        use riwork_engine::anthropic_key::MemoryStore;
+        let dir = env::temp_dir().join(format!("riwork-settings-reveal-{}", Uuid::new_v4()));
+        let (handle, panel) = api_key_panel(cx, &dir, std::sync::Arc::new(MemoryStore::default()));
+        test_turn(cx, handle, |window, app| {
+            panel.update(app, |panel, cx| panel.reveal_api_key(window, cx));
+        });
+        test_turn(cx, handle, |window, app| {
+            let (_, focus, _) = panel.read(app).api_key_input.as_ref().unwrap();
+            assert!(focus.is_focused(window));
+        });
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -3597,7 +3976,6 @@ mod tests {
             (Toggle::AgentInline, "agent_inline_mode"),
             (Toggle::AgentsUnrestricted, "agent_terminals_unrestricted"),
             (Toggle::DictationMic, "dictation_mic"),
-            (Toggle::ClaudeChatApiKey, "claude_chat_ignores_api_key"),
             (Toggle::WindowSize, "remember_window_size"),
         ] {
             let mut flipped = base.clone();
@@ -3624,7 +4002,6 @@ mod tests {
             Toggle::AgentInline,
             Toggle::AgentsUnrestricted,
             Toggle::DictationMic,
-            Toggle::ClaudeChatApiKey,
             Toggle::WindowSize,
         ];
         // Every toggle has an id of its own.

@@ -2532,6 +2532,8 @@ impl SessionManager {
             .env_remove("TMUX_TMPDIR")
             .env_remove("RIWORK_RESTORE_TICKET")
             .env("PATH", effective_path());
+        // A client that starts the server hands it its environment: never a Claude chat's key.
+        crate::anthropic_key::scrub_injected(&mut command);
         command
     }
 

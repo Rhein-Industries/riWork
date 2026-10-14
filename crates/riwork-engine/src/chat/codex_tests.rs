@@ -573,6 +573,7 @@ fn configure_applies_on_the_next_turn_and_plan_mode_is_left_explicitly() {
             fast: None,
             contributor_mode: None,
             contributor_opt_out: None,
+            claude_billing: None,
         })
         .unwrap();
     run.send("plan it");
@@ -585,6 +586,7 @@ fn configure_applies_on_the_next_turn_and_plan_mode_is_left_explicitly() {
             fast: None,
             contributor_mode: None,
             contributor_opt_out: None,
+            claude_billing: None,
         })
         .unwrap();
     run.send("do it");
@@ -1104,6 +1106,7 @@ fn configure(model: Option<&str>, effort: Option<&str>, fast: Option<bool>) -> C
         fast,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     }
 }
 
@@ -2397,6 +2400,7 @@ fn a_choice_is_reported_at_once_and_again_when_the_turn_that_carries_it_is_taken
                 fast: Some(true),
                 contributor_mode: None,
                 contributor_opt_out: None,
+                claude_billing: None,
             },
             reporter,
         )

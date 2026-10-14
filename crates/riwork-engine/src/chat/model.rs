@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-pub use riwork_core::provider::Provider;
+pub use riwork_core::provider::{ClaudeBilling, Provider};
 
 /// How much the agent may do without asking.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -150,6 +150,16 @@ pub struct ChatInfo {
     /// says it runs with (`ChatInfo::reported_contributor_mode`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub contributor_opt_out: bool,
+    /// Who the chat's Claude bills (`ClaudeBilling`): every `claude` it starts, first, on
+    /// each resume and after a switch back to Claude, gets the saved Anthropic API key or
+    /// loses `ANTHROPIC_API_KEY` by it (`launch`). A Claude chat is made with the Settings
+    /// default, and the user changes it for the chat later (`ChatCommand::Configure`). None
+    /// for a chat made before chats had it, which follows the Settings default at each
+    /// start as every Claude chat did then, and for another provider's chat until it is
+    /// chosen. It stays with a chat that switches provider. Only the choice is kept here,
+    /// never a key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_billing: Option<ClaudeBilling>,
     #[serde(default)]
     pub approval_mode: ApprovalMode,
     /// The Codex account (RiWork's account id) the chat runs under.
@@ -168,6 +178,12 @@ pub struct ChatInfo {
 }
 
 impl ChatInfo {
+    /// Who the chat's Claude bills at its next start: its own choice, else `default`, the
+    /// Settings default (`settings::claude_chat_billing`).
+    pub fn claude_billing_or(&self, default: ClaudeBilling) -> ClaudeBilling {
+        self.claude_billing.unwrap_or(default)
+    }
+
     /// Keeps `contributor_opt_out` what a reader from before `contributor_mode` should see:
     /// true for a Muse chat that is off. The host settles every chat it loads, makes or
     /// changes.
@@ -251,6 +267,11 @@ pub struct NewChat {
     /// `contributor_mode` on it is refused.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub contributor_opt_out: bool,
+    /// Who a Claude chat bills (`ChatInfo::claude_billing`); none is the Settings default.
+    /// Another provider's chat is made without one. A host from before it reads past the
+    /// field and makes the chat follow the Settings default, as chats did then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_billing: Option<ClaudeBilling>,
 }
 
 /// A model the provider offers, as its driver found it out (Codex `model/list`,
@@ -756,6 +777,14 @@ pub enum ChatCommand {
         /// longer follows, and is refused (`ChatCommand::requested_contributor_mode`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         contributor_opt_out: Option<bool>,
+        /// Claude only (`ChatInfo::claude_billing`), and on its own: the environment is
+        /// fixed when `claude` starts, so the host restarts an idle chat's `claude` and resumes
+        /// its session, stores it for a stopped chat's next start, and refuses it while a
+        /// turn runs, waits or the process still starts, as a contributor mode change. A host
+        /// from before it reads past the field: the client checks the chat afterwards
+        /// (`Client::command`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claude_billing: Option<ClaudeBilling>,
     },
     Compact,
     /// Stop the provider process; the chat resumes with the next message.
@@ -1204,6 +1233,7 @@ mod tests {
                 fast: None,
                 contributor_mode: None,
                 contributor_opt_out: None,
+                claude_billing: None,
             }
         );
         // Leaving it out stays out of the JSON; turning it off is a change that is sent.
@@ -1219,6 +1249,7 @@ mod tests {
                 fast: Some(fast),
                 contributor_mode: None,
                 contributor_opt_out: None,
+                claude_billing: None,
             };
             let line = serde_json::to_string(&command).unwrap();
             assert_eq!(line, format!(r#"{{"command":"configure","fast":{fast}}}"#));
@@ -1310,6 +1341,7 @@ mod tests {
                 fast: Some(false),
                 contributor_mode: None,
                 contributor_opt_out: None,
+                claude_billing: None,
             }
         );
         assert_eq!(old.requested_contributor_mode(), Ok(None));
@@ -1327,6 +1359,7 @@ mod tests {
                 fast: None,
                 contributor_mode: mode,
                 contributor_opt_out: opt_out,
+                claude_billing: None,
             };
         for (mode, opt_out, line, requested) in [
             (
@@ -1447,6 +1480,7 @@ mod tests {
             fast: false,
             contributor_mode: ContributorMode::Off,
             contributor_opt_out: false,
+            claude_billing: None,
             approval_mode: ApprovalMode::Supervised,
             codex_account_id: None,
             state: ChatState::Idle,

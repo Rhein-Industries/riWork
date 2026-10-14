@@ -2,8 +2,9 @@
 //! Agent SDK does, with no SDK in between.
 //!
 //! The process runs unmodified and logged in (never given a token; its
-//! environment is the configuration's, which removes `ANTHROPIC_API_KEY` only
-//! when Settings asks Claude chats to ignore it) as
+//! environment is the configuration's, which removes `ANTHROPIC_API_KEY` for a
+//! chat on its subscription and sets it to the key saved in the Keychain for one
+//! on API key, `launch`) as
 //!
 //! ```text
 //! claude <extra_args> --output-format stream-json --verbose --input-format stream-json
@@ -1096,6 +1097,7 @@ impl Core {
                 fast,
                 contributor_mode: _,
                 contributor_opt_out: _,
+                claude_billing: _,
             } => {
                 self.configure(model, effort, approval_mode, fast, reporter);
                 Ok(())

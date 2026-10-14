@@ -37,7 +37,8 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 [dev-dependencies]
 # Cross-crate compatibility tests exercise the production headless APIs.
 riwork-core = { path = "../crates/riwork-core" }
-riwork-engine = { path = "../crates/riwork-engine" }
+# test-support: a test build never reaches the real Keychain (`anthropic_key`).
+riwork-engine = { path = "../crates/riwork-engine", features = ["test-support"] }
 # tokio-rustls defaults include aws-lc-rs. Leave them off so the ring provider stays unambiguous.
 rcgen = { version = "0.13", default-features = false, features = ["ring"] }
 tempfile = "3"

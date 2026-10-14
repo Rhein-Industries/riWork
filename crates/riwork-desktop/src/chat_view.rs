@@ -29,8 +29,8 @@ use crate::{
     chat::{
         client::Client,
         model::{
-            ApprovalMode, ChatCommand, ChatInfo, ContributorMode, Decision, ItemBody, NewChat,
-            NoticeLevel, Provider, Question,
+            ApprovalMode, ChatCommand, ChatInfo, ChatState, ClaudeBilling, ContributorMode,
+            Decision, ItemBody, NewChat, NoticeLevel, Provider, Question,
         },
     },
     text_input::{self, EnterBehavior, InputState, TextareaState},
@@ -108,6 +108,8 @@ pub enum ChatViewEvent {
     },
     /// A usage-limit notice's **Show usage** was pressed.
     ShowUsage,
+    /// A usage-limit notice's **Enter API key** was pressed: Settings, at the key field.
+    OpenApiKeySettings,
 }
 
 impl EventEmitter<ChatViewEvent> for ChatView {}
@@ -278,6 +280,20 @@ pub struct ChatView {
     /// dictation listens for; set by the window.
     speech_names: Vec<String>,
     speech_paths: Vec<String>,
+    /// A usage limit's **Use API key** waits for the host to say the chat bills its API key,
+    /// then sends this again, if anything (`billing::rejected_prompt`).
+    limit_switch: Option<LimitSwitch>,
+}
+
+/// What a usage limit's **Use API key** still has to do once the switch holds.
+struct LimitSwitch {
+    /// The limit's notice: its turn's message goes again if, once the switch holds, nothing
+    /// happened since (`billing::rejected_prompt`).
+    notice_id: String,
+    /// The chat had a process: the switch holds once it is ready again on the key. The
+    /// host says the new billing while the old process is already stopped and the new one
+    /// not yet started, and a restart that fails takes it back.
+    restart: bool,
 }
 
 impl ChatView {
@@ -408,6 +424,9 @@ impl ChatView {
             view.follow_display_setting(cx);
         })
         .detach();
+        // A key saved or removed in Settings changes what a usage limit's banner offers.
+        cx.observe_global::<crate::api_key::ApiKeyState>(|_, cx| cx.notify())
+            .detach();
         cx.on_release(|view, cx| {
             view.transcript_selection.retire(view.window_handle, cx);
             view.release_images(cx);
@@ -505,6 +524,7 @@ impl ChatView {
             dictation: dictate::Dictation::default(),
             speech_names: Vec::new(),
             speech_paths: Vec::new(),
+            limit_switch: None,
         }
     }
 
@@ -728,6 +748,7 @@ impl ChatView {
             }
         }
         let applied = self.model.apply(&events);
+        self.finish_limit_switch();
         self.notices.observe(self.model.transcript.items.len());
         self.schedule_notice_expiry(cx);
         self.sync_list(&applied, cx);
@@ -945,6 +966,24 @@ impl ChatView {
                 );
                 return;
             }
+            // The host's refusals name the billing themselves; a re-send waiting for the
+            // switch is not sent.
+            ChatCommand::Configure {
+                claude_billing: Some(_),
+                ..
+            } => {
+                self.limit_switch = None;
+                self.notices.set(
+                    notices::LocalKey::Settings,
+                    crate::chat::model::NoticeLevel::Error,
+                    if error.contains("bill") {
+                        error
+                    } else {
+                        format!("Could not change who this chat bills: {error}")
+                    },
+                );
+                return;
+            }
             // The host's refusals name contributor mode themselves.
             ChatCommand::Configure {
                 contributor_mode: Some(_),
@@ -1074,6 +1113,7 @@ impl ChatView {
             fast,
             contributor_mode: None,
             contributor_opt_out: None,
+            claude_billing: None,
         });
         cx.notify();
     }
@@ -1126,8 +1166,135 @@ impl ChatView {
                 ContributorMode::Off
             }),
             contributor_opt_out: None,
+            claude_billing: None,
         });
         cx.notify();
+    }
+
+    /// Who the chat's Claude bills from its next start: its own choice, else Settings'.
+    fn billing(&self, cx: &gpui::App) -> ClaudeBilling {
+        let default = cx.global::<crate::settings::Settings>().claude_chat_billing;
+        self.model
+            .transcript
+            .info
+            .as_ref()
+            .map_or(default, |info| info.claude_billing_or(default))
+    }
+
+    /// Move a Claude chat between the subscription and the API key, from what it bills now
+    /// (`toolbar::billing_control`). The host restarts an idle chat's Claude on the same
+    /// session, and refuses while it works. With no key saved, the way to an API key is
+    /// Settings.
+    fn toggle_billing(&mut self, cx: &mut Context<Self>) {
+        let control = toolbar::billing_control(
+            self.billing(cx),
+            self.model.transcript.account.as_ref(),
+            crate::api_key::saved(cx),
+        );
+        self.menu = None;
+        // Chosen by hand: a banner's switch that has not held yet sends nothing after it.
+        self.limit_switch = None;
+        match control.click {
+            toolbar::BillingClick::Configure(billing) => {
+                self.focus_composer = true;
+                self.configure_billing(billing);
+            }
+            toolbar::BillingClick::Restart => {
+                self.focus_composer = true;
+                self.command(ChatCommand::Stop);
+                self.notices.set(
+                    notices::LocalKey::Settings,
+                    NoticeLevel::Info,
+                    "Stopped: this chat's next message starts Claude on the saved API key.",
+                );
+            }
+            toolbar::BillingClick::EnterKey => cx.emit(ChatViewEvent::OpenApiKeySettings),
+        }
+        cx.notify();
+    }
+
+    fn configure_billing(&mut self, billing: ClaudeBilling) {
+        self.command(ChatCommand::Configure {
+            model: None,
+            effort: None,
+            approval_mode: None,
+            fast: None,
+            contributor_mode: None,
+            contributor_opt_out: None,
+            claude_billing: Some(billing),
+        });
+    }
+
+    /// A usage limit's **Use API key**: the chat bills its API key, as the composer's switch
+    /// does, and once that holds, the message the limit turned away is sent again if the turn
+    /// had produced nothing (`billing::rejected_prompt`). A chat set to API key already
+    /// started without the key (none was saved then): it is stopped, and its next start has
+    /// it.
+    fn use_api_key(&mut self, notice_id: &str, cx: &mut Context<Self>) {
+        self.menu = None;
+        self.focus_composer = true;
+        if self.billing(cx) == ClaudeBilling::ApiKey {
+            let resend =
+                crate::chat::billing::rejected_prompt(&self.model.transcript.items, notice_id);
+            self.limit_switch = None;
+            self.command(ChatCommand::Stop);
+            if let Some(text) = resend.clone() {
+                self.command(ChatCommand::Send { text });
+            }
+            self.say_switched(resend.is_some());
+        } else {
+            let restart = self
+                .model
+                .transcript
+                .info
+                .as_ref()
+                .is_some_and(|info| info.state == ChatState::Idle);
+            self.limit_switch = Some(LimitSwitch {
+                notice_id: notice_id.to_owned(),
+                restart,
+            });
+            self.configure_billing(ClaudeBilling::ApiKey);
+        }
+        cx.notify();
+    }
+
+    /// The banner's switch held once the host says the chat bills its API key and no start
+    /// is under way: the message goes again, and the banner says what happened.
+    fn finish_limit_switch(&mut self) {
+        let Some(info) = self.model.transcript.info.as_ref() else {
+            return;
+        };
+        let Some(switch) = &self.limit_switch else {
+            return;
+        };
+        if info.claude_billing != Some(ClaudeBilling::ApiKey)
+            || (switch.restart && info.state != ChatState::Idle)
+        {
+            return;
+        }
+        let Some(LimitSwitch { notice_id, .. }) = self.limit_switch.take() else {
+            return;
+        };
+        // Asked again now: the transcript may have moved on during the restart.
+        let resend =
+            crate::chat::billing::rejected_prompt(&self.model.transcript.items, &notice_id);
+        let resent = resend.is_some();
+        if let Some(text) = resend {
+            self.command(ChatCommand::Send { text });
+        }
+        self.say_switched(resent);
+    }
+
+    fn say_switched(&mut self, resent: bool) {
+        self.notices.set(
+            notices::LocalKey::Settings,
+            NoticeLevel::Info,
+            if resent {
+                "This chat now bills your API key; your message was sent again."
+            } else {
+                "This chat now bills your API key. Nothing was sent again: the limited turn had already begun. Send your message when you are ready."
+            },
+        );
     }
 
     /// Start the provider process again for a chat that stopped or failed. Any command

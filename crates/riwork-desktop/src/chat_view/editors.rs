@@ -428,6 +428,8 @@ impl ChatView {
         if self.pending_submission.is_some() || !self.accepts_input() {
             return;
         }
+        // A message of the user's own: a usage limit's switch sends nothing after it.
+        self.limit_switch = None;
         self.next_submission = self
             .next_submission
             .checked_add(1)

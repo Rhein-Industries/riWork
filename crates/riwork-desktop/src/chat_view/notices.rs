@@ -66,6 +66,18 @@ pub(super) struct Banner {
 }
 
 impl Banner {
+    /// The notice it shows, as the transcript has it.
+    pub fn body(&self) -> ItemBody {
+        ItemBody::Notice {
+            level: self.level,
+            text: self.text.clone(),
+            kind: self.kind.clone(),
+            resolved: self.resolved,
+            dismissed: false,
+            resets_at: self.resets_at,
+        }
+    }
+
     pub fn usage_limit(&self) -> bool {
         self.kind
             .as_deref()
@@ -365,6 +377,8 @@ fn ranked_provider_banners(
                 && !dismissed.contains(&item.id)
                 // Nearing a limit is the usage chip's; only a reached one blocks.
                 && !(notice.usage_limit() && notice.level != NoticeLevel::Error)
+                // A subscription's limit is over for a Claude chat that bills an API key now.
+                && !billing_moved_past(transcript, &item.body)
                 && notice.resets_at.is_none_or(|reset| reset > now)
                 && (at >= exchange || sticky(notice.kind.as_deref()))
         })
@@ -376,6 +390,19 @@ fn ranked_provider_banners(
             banner(&transcript.items[at].id, &transcript.items[at].body).map(|b| (at, b))
         })
         .collect()
+}
+
+/// Whether `notice` is a subscription usage limit of a Claude chat whose Claude says it bills
+/// an API key now (`billing::limit_banner`).
+fn billing_moved_past(transcript: &Transcript, notice: &ItemBody) -> bool {
+    transcript.info.as_ref().is_some_and(|info| {
+        crate::chat::billing::limit_banner(
+            info.provider,
+            notice,
+            transcript.account.as_ref(),
+            false,
+        ) == crate::chat::billing::LimitBanner::Hidden
+    })
 }
 
 /// How many of the newest notices the history lists; the rest are counted, not drawn.

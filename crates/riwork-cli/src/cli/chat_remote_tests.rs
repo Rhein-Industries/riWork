@@ -662,6 +662,7 @@ fn every_command_reaches_the_driver_in_either_argument_form() {
                 fast: None,
                 contributor_mode: None,
                 contributor_opt_out: None,
+                claude_billing: None,
             },
             ChatCommand::Configure {
                 model: Some("gpt-5.6".into()),
@@ -670,6 +671,7 @@ fn every_command_reaches_the_driver_in_either_argument_form() {
                 fast: None,
                 contributor_mode: None,
                 contributor_opt_out: None,
+                claude_billing: None,
             },
             ChatCommand::Configure {
                 model: None,
@@ -678,6 +680,7 @@ fn every_command_reaches_the_driver_in_either_argument_form() {
                 fast: Some(true),
                 contributor_mode: None,
                 contributor_opt_out: None,
+                claude_billing: None,
             },
             ChatCommand::Configure {
                 model: None,
@@ -686,6 +689,7 @@ fn every_command_reaches_the_driver_in_either_argument_form() {
                 fast: Some(false),
                 contributor_mode: None,
                 contributor_opt_out: None,
+                claude_billing: None,
             },
         ]
     );
@@ -813,6 +817,11 @@ fn a_command_that_is_not_strictly_a_command_is_refused_before_a_host_is_asked() 
         r#"{"command":"configure","contributor_mode":"on","contributor_opt_out":true}"#,
         r#"{"command":"send","text":"hi","contributor_opt_out":true}"#,
         r#"{"command":"switch","provider":"muse","contributor_opt_out":true}"#,
+        // Billing is chosen in the Mac's window, never by a command.
+        r#"{"command":"configure","claude_billing":"api_key"}"#,
+        r#"{"command":"configure","claude_billing":"subscription"}"#,
+        r#"{"command":"configure","claude_billing":"free"}"#,
+        r#"{"command":"switch","provider":"claude","claude_billing":"api_key"}"#,
         r#"{"command":"approve","request_id":"r","decision":"yes"}"#,
         r#"{"command":"approve","request_id":"r"}"#,
         r#"{"command":"answer","request_id":"r","answers":["a"]}"#,
@@ -842,6 +851,7 @@ fn a_command_that_is_not_strictly_a_command_is_refused_before_a_host_is_asked() 
             fast: None,
             contributor_mode: mode,
             contributor_opt_out: opt_out,
+            claude_billing: None,
         })
     };
     use crate::chat::model::ContributorMode::{Off, On};

@@ -67,6 +67,7 @@ pub fn chat_info(model: Option<&str>) -> ChatInfo {
         fast: false,
         contributor_mode: Default::default(),
         contributor_opt_out: false,
+        claude_billing: None,
         state: ChatState::Idle,
         carried_over: None,
     }

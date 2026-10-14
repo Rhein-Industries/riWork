@@ -50,9 +50,9 @@ use super::client;
 use super::driver::{Driver, DriverConfig, DriverReport, DriverReporter, StartDriver};
 use super::log::{self, ChatLog};
 use super::model::{
-    CarriedOver, ChatCommand, ChatEvent, ChatInfo, ChatState, ContributorMode, Decision, Item,
-    ItemBody, ItemStatus, NewChat, NoticeLevel, ORCHESTRATOR_EXISTS, OrchestratorScope, Provider,
-    Transcript, TurnOutcome, notice_kind,
+    CarriedOver, ChatCommand, ChatEvent, ChatInfo, ChatState, ClaudeBilling, ContributorMode,
+    Decision, Item, ItemBody, ItemStatus, NewChat, NoticeLevel, ORCHESTRATOR_EXISTS,
+    OrchestratorScope, Provider, Transcript, TurnOutcome, notice_kind,
 };
 use super::wire::{Envelope, Request, Response};
 use fs2::FileExt;
@@ -1504,6 +1504,12 @@ fn create_identified(
         fast: new.fast,
         contributor_mode: new.contributor_mode,
         contributor_opt_out: false,
+        // A Claude chat has its billing from the start, the Settings default unless asked:
+        // a later change of the default leaves it as it was made.
+        claude_billing: (new.provider == Provider::Claude).then(|| {
+            new.claude_billing
+                .unwrap_or_else(|| crate::settings::claude_chat_billing(&shared.home))
+        }),
         approval_mode: new.approval_mode,
         codex_account_id: account,
         state: ChatState::Starting,
@@ -1638,7 +1644,14 @@ fn load_chats(
             continue;
         }
         let previous = super::account_identity::read(&dir);
-        let identity = (providers.config)(home, &info, info.provider_thread_id.clone())
+        // Who a chat bills plays no part in whom it is signed in as. Asked as Subscription,
+        // its configuration never reads the API key: starting the host asks the Keychain
+        // nothing, and cannot wait on a Keychain prompt before it serves.
+        let mut probe = info.clone();
+        if probe.provider == Provider::Claude {
+            probe.claude_billing = Some(ClaudeBilling::Subscription);
+        }
+        let identity = (providers.config)(home, &probe, info.provider_thread_id.clone())
             .ok()
             .and_then(|config| super::account_identity::canonical(&config, None, previous.as_ref()))
             .or_else(|| previous.filter(|identity| identity.rank() > 0));
@@ -2174,11 +2187,13 @@ fn configure_command_locked(
     muse_refusal(&chat.info(), &command)?;
     let contributor = command.requested_contributor_mode()?;
     contributor_refusal(&chat.info(), &command, contributor)?;
+    billing_refusal(&chat.info(), &command)?;
     let ChatCommand::Configure {
         model,
         effort,
         approval_mode,
         fast,
+        claude_billing,
         ..
     } = &command
     else {
@@ -2187,7 +2202,7 @@ fn configure_command_locked(
     let settings = model.is_some() || effort.is_some() || approval_mode.is_some() || fast.is_some();
     // A tab's Retry has no settings, and is the only Configure that starts a
     // stopped provider. Choices made before first use remain saved for start.
-    if !settings && contributor.is_none() {
+    if !settings && contributor.is_none() && claude_billing.is_none() {
         ensure_running_locked(shared, chat)?;
     }
     {
@@ -2204,6 +2219,13 @@ fn configure_command_locked(
             return Ok(());
         }
     }
+    // Alone too (`billing_refusal`).
+    if let Some(billing) = *claude_billing {
+        configure_billing_locked(shared, chat, billing)?;
+        if !settings {
+            return Ok(());
+        }
+    }
     // A driver has no contributor mode to set: that is the process's, chosen above.
     let command = ChatCommand::Configure {
         model: model.clone(),
@@ -2212,6 +2234,7 @@ fn configure_command_locked(
         fast: *fast,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     };
     let Some((generation, driver)) = live_driver(chat) else {
         configure(chat, model.clone(), effort.clone(), *approval_mode, *fast);
@@ -2399,6 +2422,143 @@ fn configure_contributor_locked(
     Err(text)
 }
 
+/// A billing change that is refused before anything changes: for a chat that is not
+/// Claude's, which bills no Anthropic account, and together with other settings or a
+/// contributor mode, which the Claude started again for it could still refuse, leaving the
+/// change made and the command failed. Asking for the billing the chat already has changes
+/// nothing and is not refused.
+fn billing_refusal(info: &ChatInfo, command: &ChatCommand) -> Result<(), String> {
+    let ChatCommand::Configure {
+        model,
+        effort,
+        approval_mode,
+        fast,
+        contributor_mode,
+        contributor_opt_out,
+        claude_billing: Some(billing),
+    } = command
+    else {
+        return Ok(());
+    };
+    if info.provider != Provider::Claude {
+        return Err(format!(
+            "Only a Claude chat bills a subscription or an API key; this {} chat has no such choice.",
+            provider_name(info.provider)
+        ));
+    }
+    if info.claude_billing == Some(*billing) {
+        return Ok(());
+    }
+    if model.is_some()
+        || effort.is_some()
+        || approval_mode.is_some()
+        || fast.is_some()
+        || contributor_mode.is_some()
+        || contributor_opt_out.is_some()
+    {
+        return Err("Change billing on its own: Claude starts again for it.".into());
+    }
+    Ok(())
+}
+
+/// Moves a Claude chat between the subscription and the API key (`ChatInfo::claude_billing`).
+/// The key is in the environment `claude` starts with (`launch`), so no driver can be
+/// configured with it, as with Muse's contributor mode (`configure_contributor_locked`), whose
+/// discipline this follows: a chat with no process keeps the value for its next start; an idle
+/// one has its process stopped and started again with the value, and the start resumes the same
+/// Claude session with the standing model, effort and approval mode. While a turn runs or waits
+/// for the user, or the process still starts, the change is refused and the chat keeps its
+/// value. A start that fails leaves the chat failed, with the value it had, and a notice says
+/// so.
+fn configure_billing_locked(
+    shared: &Shared,
+    chat: &Arc<Chat>,
+    billing: ClaudeBilling,
+) -> Result<(), String> {
+    let before = {
+        let mut inner = lock(&chat.inner);
+        if inner.info.claude_billing == Some(billing) {
+            return Ok(());
+        }
+        let at_work = matches!(inner.info.state, ChatState::Running | ChatState::Waiting)
+            || inner.open.turn.is_some()
+            || !inner.open.approvals.is_empty()
+            || !inner.open.questions.is_empty();
+        if at_work {
+            return Err(
+                "Wait for the turn to finish, or interrupt it, before changing who this chat bills."
+                    .into(),
+            );
+        }
+        if inner.busy() {
+            return Err("Claude is still starting; change billing once it is ready.".into());
+        }
+        if !inner.live() {
+            inner.info.claude_billing = Some(billing);
+            inner.publish_info();
+            return Ok(());
+        }
+        inner.info.claude_billing
+    };
+    if shared.quit.load(Ordering::SeqCst) {
+        return Err("the chat host is shutting down".into());
+    }
+    // What the new start would be told, before the running Claude is stopped for it: a
+    // configuration that cannot be made (a key the Keychain will not give) leaves the chat
+    // running as it was.
+    let kept = || {
+        before
+            .unwrap_or_else(|| crate::settings::claude_chat_billing(&shared.home))
+            .label()
+    };
+    let mut planned = chat.info();
+    planned.claude_billing = Some(billing);
+    if let Err(error) =
+        (shared.providers.config)(&shared.home, &planned, planned.provider_thread_id.clone())
+    {
+        return Err(format!(
+            "Billing was not changed: {}. This chat stays on {}.",
+            error.trim_end_matches('.'),
+            kept()
+        ));
+    }
+    stop_locked(chat);
+    {
+        let mut inner = lock(&chat.inner);
+        if inner.deleted || inner.broken {
+            return Err("this chat cannot be configured".into());
+        }
+        inner.info.claude_billing = Some(billing);
+        inner.publish_info();
+    }
+    let Err(error) = ensure_running_locked(shared, chat) else {
+        return Ok(());
+    };
+    let mut inner = lock(&chat.inner);
+    inner.info.claude_billing = before;
+    inner.publish_info();
+    let text = format!(
+        "Billing was not changed: the restart for it did not complete ({error}). \
+         This chat stays on {}.",
+        kept()
+    );
+    let id = format!("billing-refused-{}", inner.next_seq);
+    inner.append(ChatEvent::ItemCompleted {
+        item: Item {
+            presentation: Default::default(),
+            id,
+            turn_id: None,
+            status: ItemStatus::Completed,
+            body: ItemBody::notice(
+                NoticeLevel::Warning,
+                text.clone(),
+                Some(notice_kind::SETTING_REFUSED),
+            ),
+        },
+    });
+    Err(text)
+}
+
 /// What a Muse chat cannot be asked, refused before anything changes whether or not its
 /// process runs: a fast tier (Muse has none), or moving a conversation it already has into
 /// or out of Plan (Muse fixes the read-only profile when a conversation starts).
@@ -2470,6 +2630,7 @@ fn switch(
                 fast,
                 contributor_mode: None,
                 contributor_opt_out: None,
+                claude_billing: None,
             },
         );
     }
@@ -2531,6 +2692,11 @@ fn switch(
         info.effort = effort.filter(|effort| !effort.is_empty());
         info.fast = fast.unwrap_or(false);
         info.codex_account_id = account;
+        // Its first Claude session bills as a new Claude chat would, unless it already chose
+        // while it was Claude's before.
+        if provider == Provider::Claude && info.claude_billing.is_none() {
+            info.claude_billing = Some(crate::settings::claude_chat_billing(&shared.home));
+        }
         if info.title == default_title(before.provider) {
             info.title = default_title(provider).to_owned();
         }
@@ -2724,6 +2890,7 @@ fn spawn_host(exe: &Path, home: &Path, paths: &Paths) -> Result<std::process::Ch
         ))
         .stderr(Stdio::from(log));
     crate::codex_accounts::scrub_injected_environment(&mut command);
+    crate::anthropic_key::scrub_injected(&mut command);
     // SAFETY: setsid is async-signal-safe and touches no memory of ours. The
     // host gets a session and process group of its own, so the terminal or
     // app that started it can close without taking it along.

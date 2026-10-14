@@ -1,7 +1,7 @@
 //! The words and numbers of the chat toolbar: the approval modes, the choices for model and
 //! effort, the context meter and the thread id.
 
-use crate::chat::model::{Account, ApprovalMode, ModelOption, Provider, Usage};
+use crate::chat::model::{Account, ApprovalMode, ClaudeBilling, ModelOption, Provider, Usage};
 
 /// The modes in the order the picker lists them, with what each lets the agent do.
 pub const MODES: [(ApprovalMode, &str, &str); 4] = [
@@ -324,11 +324,109 @@ pub fn ring_arc(fraction: f32, center: (f32, f32), radius: f32) -> Vec<(f32, f32
 pub fn api_key_badge(account: Option<&Account>) -> Option<(&'static str, String)> {
     let source = account?.api_key_source.as_deref()?;
     let hint = if source == "ANTHROPIC_API_KEY" {
-        "Billed to the Anthropic API key in ANTHROPIC_API_KEY, not a Claude subscription. To use your subscription, turn on Claude chats ignore ANTHROPIC_API_KEY in Settings, then Stop chat.".to_owned()
+        "Billed to the Anthropic API key in ANTHROPIC_API_KEY, not a Claude subscription. To use your subscription, switch this chat to Subscription beside its message box.".to_owned()
     } else {
         format!("Billed to an Anthropic API key ({source}), not a Claude subscription.")
     };
     Some(("API key", hint))
+}
+
+/// What a Claude chat's billing switch shows and does. It shows what the running Claude says
+/// it bills (`account`, once its handshake has said), else the chat's choice (`billing`), which
+/// is what the chat's next start uses; `mismatch` when the two disagree in a way the user did
+/// not ask for. No key is ever part of it.
+pub struct BillingControl {
+    pub label: &'static str,
+    pub short: &'static str,
+    pub hint: String,
+    /// Shown as on: the chat bills an API key.
+    pub on: bool,
+    pub mismatch: bool,
+    pub click: BillingClick,
+}
+
+/// What one click on the billing switch does: move to the other billing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BillingClick {
+    /// Change the chat's choice; the host restarts Claude on the same conversation.
+    Configure(ClaudeBilling),
+    /// The chat is set to API key already, but its Claude started before a key was saved:
+    /// stop it, and its next start has the key.
+    Restart,
+    /// No key is saved to bill: Settings, at the key field.
+    EnterKey,
+}
+
+pub fn billing_control(
+    billing: ClaudeBilling,
+    account: Option<&Account>,
+    key_saved: bool,
+) -> BillingControl {
+    use ClaudeBilling::{ApiKey, Subscription};
+    let source = account.and_then(|account| account.api_key_source.as_deref());
+    let shown = match account {
+        Some(_) if source.is_some() => ApiKey,
+        Some(_) => Subscription,
+        None => billing,
+    };
+    let to_subscription =
+        "Switch to your Claude subscription; Claude restarts on the same conversation.";
+    let (hint, mismatch, click) = match (shown, billing) {
+        (ApiKey, ApiKey) => (
+            match (source, key_saved) {
+                (Some(source), _) => format!(
+                    "This chat bills an Anthropic API key ({source}), not your Claude subscription. {to_subscription}"
+                ),
+                (None, true) => format!(
+                    "This chat bills the Anthropic API key saved in Settings. {to_subscription}"
+                ),
+                (None, false) => format!(
+                    "No API key is saved in Settings, so this chat runs Claude as installed: a key your shell exports, or else your Claude sign-in. {to_subscription}"
+                ),
+            },
+            false,
+            BillingClick::Configure(Subscription),
+        ),
+        (ApiKey, Subscription) => (
+            format!(
+                "Set to Subscription, but Claude still bills an API key ({}) that RiWork does not remove, such as an apiKeyHelper in Claude's own settings.",
+                source.unwrap_or("of its own")
+            ),
+            true,
+            BillingClick::Configure(Subscription),
+        ),
+        (Subscription, ApiKey) if key_saved => (
+            "Set to API key, but this Claude started before a key was saved and bills your Claude subscription. Switch to stop it; its next message starts on the key.".to_owned(),
+            true,
+            BillingClick::Restart,
+        ),
+        (Subscription, ApiKey) => (
+            "This chat bills your Claude subscription: no API key is saved, so Claude uses your sign-in. Switch to enter a key in Settings and bill it instead.".to_owned(),
+            false,
+            BillingClick::EnterKey,
+        ),
+        (Subscription, Subscription) if key_saved => (
+            "This chat bills your Claude subscription. Switch to your Anthropic API key; Claude restarts on the same conversation.".to_owned(),
+            false,
+            BillingClick::Configure(ApiKey),
+        ),
+        (Subscription, Subscription) => (
+            "This chat bills your Claude subscription. Switch to enter an Anthropic API key in Settings and bill it instead.".to_owned(),
+            false,
+            BillingClick::EnterKey,
+        ),
+    };
+    BillingControl {
+        label: match shown {
+            Subscription => "Billing: Subscription",
+            ApiKey => "Billing: API key",
+        },
+        short: shown.label(),
+        hint,
+        on: shown == ApiKey,
+        mismatch,
+        click,
+    }
 }
 
 /// Everything the meter knows, for its hover hint.
@@ -448,6 +546,138 @@ mod tests {
     }
 
     #[test]
+    fn the_billing_switch_shows_what_claude_bills_and_its_click_moves_to_the_other() {
+        use BillingClick::{Configure, EnterKey, Restart};
+        use ClaudeBilling::{ApiKey, Subscription};
+        let subscription = Account {
+            api_key_source: None,
+            plan: Some("Claude Max".into()),
+        };
+        let helper = Account {
+            api_key_source: Some("apiKeyHelper".into()),
+            plan: None,
+        };
+        let key = Account {
+            api_key_source: Some("ANTHROPIC_API_KEY".into()),
+            plan: None,
+        };
+        // (choice, what Claude said, key saved) -> (shown on, gold, click, hint says)
+        for (billing, account, saved, on, mismatch, click, says) in [
+            // Before Claude says: the choice.
+            (
+                Subscription,
+                None,
+                true,
+                false,
+                false,
+                Configure(ApiKey),
+                "Switch to your Anthropic API key",
+            ),
+            (
+                Subscription,
+                None,
+                false,
+                false,
+                false,
+                EnterKey,
+                "enter an Anthropic API key in Settings",
+            ),
+            (
+                ApiKey,
+                None,
+                true,
+                true,
+                false,
+                Configure(Subscription),
+                "saved in Settings",
+            ),
+            (
+                ApiKey,
+                None,
+                false,
+                true,
+                false,
+                Configure(Subscription),
+                "runs Claude as installed",
+            ),
+            // What Claude says it bills.
+            (
+                Subscription,
+                Some(&subscription),
+                true,
+                false,
+                false,
+                Configure(ApiKey),
+                "bills your Claude subscription",
+            ),
+            (
+                Subscription,
+                Some(&helper),
+                true,
+                true,
+                true,
+                Configure(Subscription),
+                "apiKeyHelper",
+            ),
+            (
+                ApiKey,
+                Some(&key),
+                true,
+                true,
+                false,
+                Configure(Subscription),
+                "ANTHROPIC_API_KEY",
+            ),
+            (
+                ApiKey,
+                Some(&key),
+                false,
+                true,
+                false,
+                Configure(Subscription),
+                "ANTHROPIC_API_KEY",
+            ),
+            (
+                ApiKey,
+                Some(&subscription),
+                true,
+                false,
+                true,
+                Restart,
+                "started before a key was saved",
+            ),
+            // A user who never saved a key: the subscription Claude uses, no warning.
+            (
+                ApiKey,
+                Some(&subscription),
+                false,
+                false,
+                false,
+                EnterKey,
+                "no API key is saved",
+            ),
+        ] {
+            let control = billing_control(billing, account, saved);
+            let case = format!("{billing:?} {account:?} {saved}");
+            assert_eq!(control.on, on, "{case}");
+            assert_eq!(
+                control.label,
+                if on {
+                    "Billing: API key"
+                } else {
+                    "Billing: Subscription"
+                },
+                "{case}"
+            );
+            assert_eq!(control.short, if on { "API key" } else { "Subscription" });
+            assert_eq!(control.mismatch, mismatch, "{case}");
+            assert_eq!(control.click, click, "{case}");
+            assert!(control.hint.contains(says), "{case}: {}", control.hint);
+            assert!(!control.hint.contains("sk-ant"));
+        }
+    }
+
+    #[test]
     fn only_a_chat_that_bills_an_api_key_shows_the_badge() {
         assert_eq!(api_key_badge(None), None);
         let plan = Account {
@@ -464,10 +694,7 @@ mod tests {
         let (label, hint) = api_key_badge(Some(&env)).unwrap();
         assert_eq!(label, "API key");
         // The setting that keeps a shell's key out is named only where it helps.
-        assert!(
-            hint.contains("Claude chats ignore ANTHROPIC_API_KEY"),
-            "{hint}"
-        );
+        assert!(hint.contains("switch this chat to Subscription"), "{hint}");
         let helper = Account {
             api_key_source: Some("apiKeyHelper".into()),
             plan: None,

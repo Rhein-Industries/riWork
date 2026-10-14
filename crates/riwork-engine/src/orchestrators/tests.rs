@@ -442,6 +442,7 @@ fn chat_orchestrators_are_found_from_disk_while_no_host_runs() {
         fast: false,
         contributor_mode: Default::default(),
         contributor_opt_out: false,
+        claude_billing: None,
         carried_over: None,
     };
     let plain = ChatInfo {

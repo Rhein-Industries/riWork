@@ -166,6 +166,7 @@ pub(super) fn info(id: &str) -> ChatInfo {
         fast: false,
         contributor_mode: Default::default(),
         contributor_opt_out: false,
+        claude_billing: None,
         carried_over: None,
     }
 }

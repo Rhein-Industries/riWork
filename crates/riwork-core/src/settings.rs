@@ -3,7 +3,7 @@
 
 use crate::{
     project_sort::ProjectOrder,
-    provider::Provider,
+    provider::{ClaudeBilling, Provider},
     status_bar::StatusBarSettings,
     store::FileStamp,
     theme::ThemeChoice,
@@ -267,11 +267,28 @@ pub struct Settings {
     /// `mic`. Off, the Mac's chats show no mic, ⌃⌥D does nothing in them, and no speech
     /// helper runs or asks for a permission.
     pub dictation_mic: bool,
-    /// Claude chats start without `ANTHROPIC_API_KEY`, so a key exported in the shell
-    /// cannot switch them from the user's Claude subscription to API billing. Off, the
-    /// default, runs `claude` as published, with every sign-in method it has; Anthropic's
-    /// terms for products that run Claude Code ask that none be removed.
-    pub claude_chat_ignores_api_key: bool,
+    /// Who a new Claude chat bills (`ClaudeBilling`); each chat then keeps its own choice
+    /// (`ChatInfo::claude_billing`). `Subscription` starts chats without
+    /// `ANTHROPIC_API_KEY`, so a key exported in the shell cannot switch them to API
+    /// billing. `ApiKey`, the default, gives them the key saved in the Keychain, or runs
+    /// `claude` as published, with every sign-in method it has; Anthropic's terms for
+    /// products that run Claude Code ask that none be removed.
+    ///
+    /// Saved as the switch it grew from, `claude_chat_ignores_api_key` (true is
+    /// `Subscription`), so builds before the choice, and a chat host of one still
+    /// running, read the same choice from the same key, and no second key can disagree.
+    #[serde(
+        rename = "claude_chat_ignores_api_key",
+        serialize_with = "serialize_billing_as_flag"
+    )]
+    pub claude_chat_billing: ClaudeBilling,
+}
+
+fn serialize_billing_as_flag<S: serde::Serializer>(
+    billing: &ClaudeBilling,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_bool(billing.ignores_api_key())
 }
 
 impl Settings {
@@ -381,7 +398,7 @@ impl Default for Settings {
             native_terminal_colors: true,
             interface_font: InterfaceFont::default(),
             dictation_mic: false,
-            claude_chat_ignores_api_key: false,
+            claude_chat_billing: ClaudeBilling::default(),
         }
     }
 }
@@ -510,11 +527,13 @@ impl<'de> Deserialize<'de> for Settings {
             ),
             interface_font: lenient_field(&object, "interface_font", defaults.interface_font),
             dictation_mic: lenient_field(&object, "dictation_mic", defaults.dictation_mic),
-            claude_chat_ignores_api_key: lenient_field(
+            // The switch the choice grew from: true is Subscription; false, a file
+            // without it and a value of another shape are the default, API key.
+            claude_chat_billing: ClaudeBilling::from_ignores_api_key(lenient_field(
                 &object,
                 "claude_chat_ignores_api_key",
-                defaults.claude_chat_ignores_api_key,
-            ),
+                defaults.claude_chat_billing.ignores_api_key(),
+            )),
         })
     }
 }
@@ -578,17 +597,17 @@ pub fn agent_terminals_unrestricted(home: &Path) -> bool {
         )
 }
 
-/// Whether a Claude chat started from the state directory `home` loses
-/// `ANTHROPIC_API_KEY`, read from the file each time, like `agent_inline_mode`:
-/// the chat host outlives the window that changed it. A missing or unreadable
-/// file means the default, which leaves the key to `claude`.
-pub fn claude_chat_ignores_api_key(home: &Path) -> bool {
+/// Who a Claude chat of the state directory `home` bills when it has no choice of its
+/// own (a new chat, or one made before chats had one), read from the file each time, like
+/// `agent_inline_mode`: the chat host outlives the window that changed it. A missing or
+/// unreadable file means the default, API key, which leaves the environment to `claude`
+/// when no key is saved.
+pub fn claude_chat_billing(home: &Path) -> ClaudeBilling {
     SettingsStore::open(home)
         .and_then(|store| store.load())
-        .map_or(
-            Settings::default().claude_chat_ignores_api_key,
-            |settings| settings.claude_chat_ignores_api_key,
-        )
+        .map_or(Settings::default().claude_chat_billing, |settings| {
+            settings.claude_chat_billing
+        })
 }
 
 /// What an orchestrator created now runs as by Settings, read from the file of the
@@ -825,7 +844,6 @@ mod tests {
         AgentInline,
         AgentsUnrestricted,
         DictationMic,
-        ClaudeChatApiKey,
         WindowSize,
     }
 
@@ -838,7 +856,6 @@ mod tests {
                 Self::AgentInline => "agent-inline-mode",
                 Self::AgentsUnrestricted => "agent-terminals-unrestricted",
                 Self::DictationMic => "dictation-mic",
-                Self::ClaudeChatApiKey => "claude-chat-ignores-api-key",
                 Self::WindowSize => "remember-window-size",
             }
         }
@@ -854,7 +871,6 @@ mod tests {
                 Self::AgentInline => &mut settings.agent_inline_mode,
                 Self::AgentsUnrestricted => &mut settings.agent_terminals_unrestricted,
                 Self::DictationMic => &mut settings.dictation_mic,
-                Self::ClaudeChatApiKey => &mut settings.claude_chat_ignores_api_key,
                 Self::WindowSize => &mut settings.remember_window_size,
             };
             *value = !*value;
@@ -1132,38 +1148,99 @@ mod tests {
     }
 
     #[test]
-    fn claude_chats_keep_their_api_key_unless_settings_say_to_ignore_it() {
+    fn the_claude_billing_default_is_the_switch_it_grew_from_in_every_form_a_file_has() {
+        use ClaudeBilling::{ApiKey, Subscription};
         let dir = env::temp_dir().join(format!("riwork-settings-api-key-{}", Uuid::new_v4()));
         let store = SettingsStore::open(&dir).unwrap();
-        assert!(!Settings::default().claude_chat_ignores_api_key);
-        // No file, or one from a build without the setting: Claude runs as published.
-        assert!(!claude_chat_ignores_api_key(&dir));
-        fs::write(
-            dir.join("settings.json"),
-            r#"{"schema_version":1,"theme":"native"}"#,
-        )
-        .unwrap();
-        assert!(!claude_chat_ignores_api_key(&dir));
+        let path = dir.join("settings.json");
+        let document = || serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(Settings::default().claude_chat_billing, ApiKey);
+        // No file, a file from a build without the switch, the switch off, a value of
+        // another shape: API key, which with no saved key leaves the environment to
+        // Claude, as these builds and files always did. The switch on is Subscription.
+        assert_eq!(claude_chat_billing(&dir), ApiKey);
+        for (saved, billing) in [
+            (r#"{"schema_version":1,"theme":"native"}"#, ApiKey),
+            (
+                r#"{"schema_version":1,"claude_chat_ignores_api_key":false}"#,
+                ApiKey,
+            ),
+            (
+                r#"{"schema_version":1,"claude_chat_ignores_api_key":true}"#,
+                Subscription,
+            ),
+            (
+                r#"{"schema_version":1,"claude_chat_ignores_api_key":"yes"}"#,
+                ApiKey,
+            ),
+            (
+                r#"{"schema_version":1,"claude_chat_ignores_api_key":null}"#,
+                ApiKey,
+            ),
+            (
+                r#"{"schema_version":1,"claude_chat_ignores_api_key":1}"#,
+                ApiKey,
+            ),
+        ] {
+            fs::write(&path, saved).unwrap();
+            assert_eq!(claude_chat_billing(&dir), billing, "{saved}");
+            assert_eq!(
+                store.load().unwrap().claude_chat_billing,
+                billing,
+                "{saved}"
+            );
+        }
+        // An unreadable file reads as the default.
+        fs::write(&path, "{not json").unwrap();
+        assert_eq!(claude_chat_billing(&dir), ApiKey);
 
-        // Turning it on is seen by the next launch, and off again too.
-        store
-            .update(|settings| Toggle::ClaudeChatApiKey.flip(settings))
-            .unwrap();
-        assert!(claude_chat_ignores_api_key(&dir));
-        store
-            .update(|settings| Toggle::ClaudeChatApiKey.flip(settings))
-            .unwrap();
-        assert!(!claude_chat_ignores_api_key(&dir));
-
-        // A value of another shape, or an unreadable file, reads as off.
+        // A value of another shape stays as saved until the choice is made, and another
+        // setting changing does not write the choice.
         fs::write(
-            dir.join("settings.json"),
+            &path,
             r#"{"schema_version":1,"claude_chat_ignores_api_key":"yes"}"#,
         )
         .unwrap();
-        assert!(!claude_chat_ignores_api_key(&dir));
-        fs::write(dir.join("settings.json"), "{not json").unwrap();
-        assert!(!claude_chat_ignores_api_key(&dir));
+        store
+            .update(|settings| settings.dictation_mic = true)
+            .unwrap();
+        assert_eq!(document()["claude_chat_ignores_api_key"], "yes");
+        // Choosing writes the one key, as the switch every build reads, and no other: a
+        // build from before the choice, or its chat host still running, reads the same.
+        store
+            .update(|settings| settings.claude_chat_billing = Subscription)
+            .unwrap();
+        assert_eq!(document()["claude_chat_ignores_api_key"], true);
+        assert_eq!(claude_chat_billing(&dir), Subscription);
+        store
+            .update(|settings| settings.claude_chat_billing = ApiKey)
+            .unwrap();
+        assert_eq!(document()["claude_chat_ignores_api_key"], false);
+        assert_eq!(claude_chat_billing(&dir), ApiKey);
+        let keys = document()
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|key| key.contains("claude") || key.contains("billing"))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(keys, ["claude_chat_ignores_api_key"]);
+
+        // The choice changes only its own key.
+        let base = serde_json::to_value(Settings::default()).unwrap();
+        let chosen = serde_json::to_value(Settings {
+            claude_chat_billing: Subscription,
+            ..Settings::default()
+        })
+        .unwrap();
+        let changed: Vec<_> = base
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(key, value)| chosen[key.as_str()] != **value)
+            .map(|(key, _)| key.as_str())
+            .collect();
+        assert_eq!(changed, ["claude_chat_ignores_api_key"]);
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1563,7 +1640,6 @@ mod tests {
             (Toggle::AgentInline, "agent_inline_mode"),
             (Toggle::AgentsUnrestricted, "agent_terminals_unrestricted"),
             (Toggle::DictationMic, "dictation_mic"),
-            (Toggle::ClaudeChatApiKey, "claude_chat_ignores_api_key"),
             (Toggle::WindowSize, "remember_window_size"),
         ] {
             let mut flipped = base.clone();
@@ -1590,7 +1666,6 @@ mod tests {
             Toggle::AgentInline,
             Toggle::AgentsUnrestricted,
             Toggle::DictationMic,
-            Toggle::ClaudeChatApiKey,
             Toggle::WindowSize,
         ];
         // Every toggle has an id of its own.

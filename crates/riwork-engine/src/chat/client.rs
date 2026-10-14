@@ -4,7 +4,9 @@
 //! Plain std sockets and threads, no async runtime: a window runs these calls on
 //! its background executor and a subscription on a thread of its own.
 
-use super::model::{ChatCommand, ChatInfo, ChatState, ContributorMode, NewChat, Provider};
+use super::model::{
+    ChatCommand, ChatInfo, ChatState, ClaudeBilling, ContributorMode, NewChat, Provider,
+};
 use super::wire::{Envelope, Request, Response};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::Shutdown;
@@ -203,21 +205,25 @@ impl Client {
     pub fn command(&mut self, chat_id: &str, mut command: ChatCommand) -> Result<(), String> {
         // What the host refuses as unreadable is not checked: it changed nothing.
         let contributor = command.requested_contributor_mode().ok().flatten();
+        let billing = match &command {
+            ChatCommand::Configure { claude_billing, .. } => *claude_billing,
+            _ => None,
+        };
         // Whether the chat runs no process now, for a host that would start it (below), and
         // whether it is Muse's.
-        let (stopped, muse) =
-            match contributor {
-                Some(_) => self.list()?.iter().find(|info| info.id == chat_id).map_or(
-                    (false, false),
-                    |info| {
-                        (
-                            matches!(info.state, ChatState::Stopped | ChatState::Failed { .. }),
-                            info.provider == Provider::Muse,
-                        )
-                    },
-                ),
-                None => (false, false),
-            };
+        let (stopped, muse) = if contributor.is_some() || billing.is_some() {
+            self.list()?
+                .iter()
+                .find(|info| info.id == chat_id)
+                .map_or((false, false), |info| {
+                    (
+                        matches!(info.state, ChatState::Stopped | ChatState::Failed { .. }),
+                        info.provider == Provider::Muse,
+                    )
+                })
+        } else {
+            (false, false)
+        };
         // A Muse chat's off says so the older way too, so a host that reads only that turns it
         // off as well. Another provider's chat is not sent it: such a host refuses it there.
         if muse
@@ -234,9 +240,38 @@ impl Client {
             chat_id: chat_id.into(),
             command,
         })?;
-        match contributor {
-            Some(mode) => self.confirm_contributor(chat_id, mode, stopped),
-            None => Ok(()),
+        match (contributor, billing) {
+            (Some(mode), _) => self.confirm_contributor(chat_id, mode, stopped),
+            (None, Some(billing)) => self.confirm_billing(chat_id, billing, stopped),
+            (None, None) => Ok(()),
+        }
+    }
+
+    /// A host from before chats had a billing reads past the field, takes the Configure for
+    /// a Retry and says yes. The chat's own word tells: a host that changed it shows it. A
+    /// chat that was `stopped` before is stopped again, so the Claude that host started for
+    /// it does not go on running as it was.
+    fn confirm_billing(
+        &mut self,
+        chat_id: &str,
+        billing: ClaudeBilling,
+        stopped: bool,
+    ) -> Result<(), String> {
+        let chats = self.list().map_err(|error| {
+            format!("The chat host could not be asked whether the chat's billing changed: {error}")
+        })?;
+        match chats.iter().find(|info| info.id == chat_id) {
+            Some(info) if info.claude_billing != Some(billing) => Err(format!(
+                "The running chat host predates choosing a Claude chat's billing, so the chat \
+                 still bills as Settings said when it started{}. Try again once the chat host \
+                 runs this version of RiWork.",
+                match stopped.then(|| self.close(chat_id)) {
+                    None => String::new(),
+                    Some(Ok(())) => "; the chat it started for this is stopped again".to_owned(),
+                    Some(Err(error)) => format!("; stopping the chat it started failed ({error})"),
+                }
+            )),
+            _ => Ok(()),
         }
     }
 
@@ -519,6 +554,7 @@ mod tests {
             fast: false,
             contributor_mode: Default::default(),
             contributor_opt_out: false,
+            claude_billing: None,
             carried_over: None,
         };
         let served = info.clone();
@@ -569,6 +605,7 @@ mod tests {
                 fast: false,
                 contributor_mode: ContributorMode::Off,
                 contributor_opt_out: false,
+                claude_billing: None,
             })
             .unwrap();
         assert_eq!(created, info);
@@ -641,6 +678,7 @@ mod tests {
                     fast: false,
                     contributor_mode: mode,
                     contributor_opt_out: false,
+                    claude_billing: None,
                 });
                 drop(client);
                 let seen = host.join().unwrap();
@@ -768,6 +806,7 @@ mod tests {
                 fast: None,
                 contributor_mode: mode,
                 contributor_opt_out: None,
+                claude_billing: None,
             };
             // Stopped, on is not set, and the chat it started is stopped again: no host before
             // `contributor_mode` can turn it on.
@@ -845,6 +884,103 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    #[test]
+    fn a_billing_an_older_host_read_past_is_not_reported_as_changed() {
+        let dir = std::env::temp_dir().join(format!("rwchat-{}", &new_id()[..8]));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("c.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let cwd = dir.clone();
+        let host = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            let mut seen = Vec::new();
+            let mut state = "stopped";
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() > 0 {
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let result = match request["op"].as_str().unwrap() {
+                    // It reads past `claude_billing`: what is left is a Retry, which starts
+                    // the chat.
+                    "command" => {
+                        state = "idle";
+                        serde_json::Value::Null
+                    }
+                    "close" => {
+                        state = "stopped";
+                        serde_json::Value::Null
+                    }
+                    "list" => serde_json::json!([{
+                        "id": "chat-1", "provider": "claude", "cwd": cwd, "title": "Claude chat",
+                        "created_at_unix": 1, "fast": false, "approval_mode": "supervised",
+                        "state": {"state": state},
+                    }]),
+                    other => panic!("unexpected {other}"),
+                };
+                let response =
+                    serde_json::json!({"id": request["id"], "ok": true, "result": result});
+                writeln!(writer, "{response}").unwrap();
+                seen.push(request);
+                line.clear();
+            }
+            seen
+        });
+        let mut client = Client::connect(&socket).unwrap();
+        let configure = |billing| ChatCommand::Configure {
+            model: None,
+            effort: None,
+            approval_mode: None,
+            fast: None,
+            contributor_mode: None,
+            contributor_opt_out: None,
+            claude_billing: Some(billing),
+        };
+        // Stopped: not changed, and the chat it started is stopped again.
+        let error = client
+            .command("chat-1", configure(ClaudeBilling::Subscription))
+            .unwrap_err();
+        assert!(
+            error.contains("predates choosing a Claude chat's billing")
+                && error.contains("stopped again"),
+            "{error}"
+        );
+        // Running: not changed, and it runs on.
+        client
+            .command(
+                "chat-1",
+                ChatCommand::Configure {
+                    model: None,
+                    effort: None,
+                    approval_mode: None,
+                    fast: None,
+                    contributor_mode: None,
+                    contributor_opt_out: None,
+                    claude_billing: None,
+                },
+            )
+            .unwrap();
+        let error = client
+            .command("chat-1", configure(ClaudeBilling::ApiKey))
+            .unwrap_err();
+        assert!(error.contains("predates"), "{error}");
+        assert!(!error.contains("stopped again"), "{error}");
+        drop(client);
+        let seen = host.join().unwrap();
+        let ops: Vec<_> = seen.iter().map(|r| r["op"].as_str().unwrap()).collect();
+        assert_eq!(
+            ops,
+            [
+                "list", "command", "list", "close", "command", "list", "command", "list"
+            ]
+        );
+        assert_eq!(
+            seen[1]["command"],
+            serde_json::json!({"command": "configure", "claude_billing": "subscription"})
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A host stand-in that answers one `Subscribe` and then writes what the

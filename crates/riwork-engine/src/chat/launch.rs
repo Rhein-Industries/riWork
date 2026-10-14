@@ -3,9 +3,14 @@
 //! terminal launch of the same agent resolves them (`sessions::chat_launch`).
 //! A Muse chat's Cua server is the driver's own, named for its session
 //! (`muse::cua_servers`), so nothing here reaches Muse's command line.
+//!
+//! A Claude chat's `ANTHROPIC_API_KEY` follows its billing (`ChatInfo::claude_billing`,
+//! else the Settings default): Subscription removes it; API key sets the key saved in the
+//! Keychain (`anthropic_key`), or, with none saved, leaves the environment as it is.
 
 use super::driver::DriverConfig;
-use super::model::{ChatInfo, ContributorMode, OrchestratorScope, Provider};
+use super::model::{ChatInfo, ClaudeBilling, ContributorMode, OrchestratorScope, Provider};
+use crate::anthropic_key::KeyStore;
 use crate::sessions::{self, HarnessKind};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -45,6 +50,16 @@ pub fn driver_config(
     info: &ChatInfo,
     resume: Option<String>,
 ) -> Result<DriverConfig, String> {
+    driver_config_with(home, info, resume, &crate::anthropic_key::Keychain)
+}
+
+/// `driver_config`, with the saved API key from `keys`.
+pub(crate) fn driver_config_with(
+    home: &Path,
+    info: &ChatInfo,
+    resume: Option<String>,
+    keys: &dyn KeyStore,
+) -> Result<DriverConfig, String> {
     let home = home
         .canonicalize()
         .map_err(|error| format!("resolve RiWork state: {error}"))?;
@@ -60,7 +75,7 @@ pub fn driver_config(
         Provider::Muse => (HarnessKind::Muse, None),
     };
     let launch = sessions::chat_launch(harness, &home, codex_home.as_deref())?;
-    let ignore_api_key = crate::settings::claude_chat_ignores_api_key(&home);
+    let api_key = api_key_for(&home, info, keys)?;
     let mut config = assemble(
         info,
         resume,
@@ -69,10 +84,107 @@ pub fn driver_config(
         launch.path,
         &home,
         codex_home,
-        ignore_api_key,
+        api_key,
     );
     trust_folder(&mut config);
     Ok(config)
+}
+
+/// What a chat's start does with `ANTHROPIC_API_KEY`. Its `Debug` never shows a key.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum ApiKeyEnv {
+    /// The environment as inherited: not a Claude chat, or a Claude chat on API key with
+    /// no key saved, which uses a key the shell exports, or else Claude's own sign-in.
+    Inherit,
+    /// Removed, so the chat runs on the user's Claude sign-in (Subscription).
+    Remove,
+    /// Set to the key saved in the Keychain (API key).
+    Set(String),
+}
+
+impl std::fmt::Debug for ApiKeyEnv {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Inherit => "Inherit",
+            Self::Remove => "Remove",
+            Self::Set(_) => "Set(<key>)",
+        })
+    }
+}
+
+impl ApiKeyEnv {
+    /// Makes `config` start its process with `ANTHROPIC_API_KEY` as this says.
+    pub(crate) fn apply(self, config: &mut DriverConfig) {
+        const NAME: &str = "ANTHROPIC_API_KEY";
+        match self {
+            // `claude` keeps every sign-in method it has, as published.
+            ApiKeyEnv::Inherit => {}
+            // Subscription: a stray key must not switch the chat to API billing.
+            ApiKeyEnv::Remove => {
+                config.env.retain(|(name, _)| name != NAME);
+                config.env_remove.push(NAME.into());
+            }
+            ApiKeyEnv::Set(key) => {
+                let marker = crate::anthropic_key::INJECTED_MARKER;
+                config
+                    .env_remove
+                    .retain(|name| name != NAME && name != marker);
+                config
+                    .env
+                    .retain(|(name, _)| name != NAME && name != marker);
+                config.env.push((NAME.into(), key.into()));
+                config.env.push((marker.into(), "1".into()));
+            }
+        }
+    }
+}
+
+/// `ANTHROPIC_API_KEY` for a Claude chat billed by `billing`, `saved` being the key in the
+/// Keychain.
+pub(crate) fn api_key_env(billing: ClaudeBilling, saved: Option<String>) -> ApiKeyEnv {
+    match (billing, saved) {
+        (ClaudeBilling::Subscription, _) => ApiKeyEnv::Remove,
+        (ClaudeBilling::ApiKey, Some(key)) => ApiKeyEnv::Set(key),
+        (ClaudeBilling::ApiKey, None) => ApiKeyEnv::Inherit,
+    }
+}
+
+/// `ANTHROPIC_API_KEY` for the start of `info`: its billing, else the Settings default of
+/// `home`. The Keychain is asked only for a Claude chat on API key, and first only whether
+/// a key is saved, which needs no access to the key: with none saved, or no answer, the
+/// start is as it always was (`Inherit`), so a user who never saved a key meets no new
+/// failure. A key that is saved but cannot be read fails the start: the chat asked for the
+/// key, and starting on another sign-in could bill another account.
+pub(crate) fn api_key_for(
+    home: &Path,
+    info: &ChatInfo,
+    keys: &dyn KeyStore,
+) -> Result<ApiKeyEnv, String> {
+    if info.provider != Provider::Claude {
+        return Ok(ApiKeyEnv::Inherit);
+    }
+    let billing = info.claude_billing_or(crate::settings::claude_chat_billing(home));
+    let saved = match billing {
+        ClaudeBilling::Subscription => None,
+        ClaudeBilling::ApiKey => match keys.is_saved() {
+            Ok(true) => keys.read().map_err(|error| {
+                format!(
+                    "{}. Unlock the Keychain and send again, or switch this chat to Subscription.",
+                    error.trim_end_matches('.')
+                )
+            })?,
+            Ok(false) => None,
+            Err(error) => {
+                eprintln!(
+                    "riwork chat: {}: cannot tell whether an Anthropic API key is saved ({error}); \
+                     the chat starts with the environment as it is",
+                    info.id
+                );
+                None
+            }
+        },
+    };
+    Ok(api_key_env(billing, saved))
 }
 
 /// Trust the chat's folder for its provider process, as a terminal's is
@@ -156,7 +268,7 @@ fn assemble(
     path: OsString,
     home: &Path,
     codex_home: Option<PathBuf>,
-    ignore_api_key: bool,
+    api_key: ApiKeyEnv,
 ) -> DriverConfig {
     let mut env = vec![
         (OsString::from("PATH"), path),
@@ -189,11 +301,6 @@ fn assemble(
             codex_home.into_os_string(),
         ));
     }
-    if info.provider == Provider::Claude && ignore_api_key {
-        // Settings asked that a stray key not switch the chat to API billing.
-        // Otherwise `claude` keeps every sign-in method it has, as published.
-        env_remove.push("ANTHROPIC_API_KEY".into());
-    }
     // What a terminal orchestrator's session exports, for the skill that reads it.
     match &info.orchestrator {
         Some(OrchestratorScope::Global) => {
@@ -207,7 +314,7 @@ fn assemble(
         }
         None => {}
     }
-    DriverConfig {
+    let mut config = DriverConfig {
         provider: info.provider,
         program,
         cwd: info.cwd.clone(),
@@ -225,7 +332,9 @@ fn assemble(
         instructions: instructions(info),
         env,
         env_remove,
-    }
+    };
+    api_key.apply(&mut config);
+    config
 }
 
 /// What the agent is told of the conversation the chat had before it switched provider.
@@ -267,6 +376,7 @@ mod tests {
             fast: true,
             contributor_mode: ContributorMode::Off,
             contributor_opt_out: false,
+            claude_billing: None,
             approval_mode: ApprovalMode::AutoEdit,
             codex_account_id: None,
             state: ChatState::Stopped,
@@ -314,7 +424,7 @@ mod tests {
             "/shims:/bin".into(),
             Path::new("/riwork"),
             Some("/accounts/a".into()),
-            true,
+            ApiKeyEnv::Inherit,
         );
         assert_eq!(codex.resume.as_deref(), Some("thread"));
         assert_eq!(
@@ -350,10 +460,11 @@ mod tests {
             "/shims".into(),
             Path::new("/riwork"),
             None,
-            false,
+            ApiKeyEnv::Inherit,
         );
-        // Claude runs as published unless Settings asks it to ignore the key.
+        // Claude runs as published unless its billing removes or sets the key.
         assert!(!claude.env_remove.contains(&"ANTHROPIC_API_KEY".into()));
+        assert!(value(&claude, "ANTHROPIC_API_KEY").is_none());
         let ignoring = assemble(
             &info(Provider::Claude),
             None,
@@ -362,7 +473,7 @@ mod tests {
             "/shims".into(),
             Path::new("/riwork"),
             None,
-            true,
+            ApiKeyEnv::Remove,
         );
         assert!(ignoring.env_remove.contains(&"ANTHROPIC_API_KEY".into()));
         assert_eq!(value(&claude, "RIWORK_CHAT_ID").unwrap(), "id");
@@ -396,7 +507,7 @@ mod tests {
                 "/shims".into(),
                 Path::new("/riwork"),
                 None,
-                false,
+                ApiKeyEnv::Inherit,
             );
             trust_folder(&mut config);
             config
@@ -432,7 +543,7 @@ mod tests {
                 "/shims".into(),
                 Path::new("/riwork"),
                 None,
-                false,
+                ApiKeyEnv::Inherit,
             )
         };
         for resume in [None, Some("sess")] {
@@ -481,7 +592,7 @@ mod tests {
                 "/shims".into(),
                 Path::new("/riwork"),
                 None,
-                false,
+                ApiKeyEnv::Inherit,
             )
         };
         let project = configure(OrchestratorScope::Project {
@@ -502,5 +613,153 @@ mod tests {
         );
         assert!(value(&global, "RIWORK_PROJECT_ID").is_none());
         assert!(global.env_remove.contains(&"RIWORK_PROJECT_ID".into()));
+    }
+
+    /// What the start of `chat` does with `ANTHROPIC_API_KEY`, by the Settings default of
+    /// `home` and the key in `keys`.
+    fn key_of(home: &Path, chat: &ChatInfo, keys: &dyn KeyStore) -> Result<ApiKeyEnv, String> {
+        api_key_for(home, chat, keys)
+    }
+
+    #[test]
+    fn a_claude_chat_bills_its_choice_or_the_settings_default_and_only_api_key_reads_the_key() {
+        use crate::anthropic_key::MemoryStore;
+        use ClaudeBilling::{ApiKey, Subscription};
+        const SAVED: &str = "sk-ant-dummy-saved";
+        let home = std::env::temp_dir().join(format!("riwork-billing-{}", uuid::Uuid::new_v4()));
+        let store = crate::settings::SettingsStore::open(&home).unwrap();
+        let set_default = |billing| {
+            store
+                .update(|settings| settings.claude_chat_billing = billing)
+                .unwrap();
+        };
+        for default in [None, Some(ApiKey), Some(Subscription)] {
+            match default {
+                // A home with no settings file: the default, API key.
+                None => {
+                    let _ = std::fs::remove_file(home.join("settings.json"));
+                }
+                Some(billing) => set_default(billing),
+            }
+            for own in [None, Some(ApiKey), Some(Subscription)] {
+                let mut chat = info(Provider::Claude);
+                chat.claude_billing = own;
+                let billing = own.or(default).unwrap_or(ApiKey);
+                for saved in [None, Some(SAVED)] {
+                    let keys = saved.map_or_else(MemoryStore::default, MemoryStore::with_key);
+                    let expected = match (billing, saved) {
+                        (Subscription, _) => ApiKeyEnv::Remove,
+                        (ApiKey, Some(key)) => ApiKeyEnv::Set(key.into()),
+                        (ApiKey, None) => ApiKeyEnv::Inherit,
+                    };
+                    let case = format!(
+                        "default {default:?}, own {own:?}, saved {}",
+                        saved.is_some()
+                    );
+                    assert_eq!(key_of(&home, &chat, &keys), Ok(expected), "{case}");
+                    // A saved key the Keychain will not give fails the start on API key; with
+                    // none saved there is nothing to give. Subscription never asks.
+                    keys.fail_reads(Some(
+                        "The Keychain could not read the Anthropic API key: locked.",
+                    ));
+                    let failed = key_of(&home, &chat, &keys);
+                    match (billing, saved) {
+                        (Subscription, _) => assert_eq!(failed, Ok(ApiKeyEnv::Remove), "{case}"),
+                        (ApiKey, None) => assert_eq!(failed, Ok(ApiKeyEnv::Inherit), "{case}"),
+                        (ApiKey, Some(_)) => {
+                            let error = failed.unwrap_err();
+                            assert!(error.contains("locked"), "{case}: {error}");
+                            assert!(
+                                error.contains("switch this chat to Subscription"),
+                                "{error}"
+                            );
+                            assert!(!error.contains(".."), "{error}");
+                        }
+                    }
+                    // A Keychain that cannot even say whether a key is saved: the start is as
+                    // it always was, so a user who never saved a key meets no new failure.
+                    keys.fail_reads(None);
+                    keys.fail(Some(
+                        "The Keychain could not look up the Anthropic API key.",
+                    ));
+                    let unknown = key_of(&home, &chat, &keys);
+                    match billing {
+                        Subscription => assert_eq!(unknown, Ok(ApiKeyEnv::Remove), "{case}"),
+                        ApiKey => assert_eq!(unknown, Ok(ApiKeyEnv::Inherit), "{case}"),
+                    }
+                }
+            }
+        }
+        // Another provider's chat is left as it is, whatever it was given, and never asks.
+        let failing = MemoryStore::with_key(SAVED);
+        failing.fail(Some("must not be asked"));
+        for provider in [Provider::Codex, Provider::Muse] {
+            for own in [None, Some(ApiKey), Some(Subscription)] {
+                let mut chat = info(provider);
+                chat.claude_billing = own;
+                assert_eq!(key_of(&home, &chat, &failing), Ok(ApiKeyEnv::Inherit));
+            }
+        }
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn the_key_is_set_or_removed_in_the_environment_alone_and_debug_never_shows_it() {
+        const SAVED: &str = "sk-ant-dummy-saved";
+        let start = |api_key: ApiKeyEnv| {
+            assemble(
+                &info(Provider::Claude),
+                None,
+                "/bin/claude".into(),
+                Vec::new(),
+                "/shims".into(),
+                Path::new("/riwork"),
+                None,
+                api_key,
+            )
+        };
+        let set = start(ApiKeyEnv::Set(SAVED.into()));
+        assert_eq!(value(&set, "ANTHROPIC_API_KEY").unwrap(), SAVED);
+        // Marked as RiWork's, so a RiWork process the agent starts drops it again.
+        assert_eq!(
+            value(&set, crate::anthropic_key::INJECTED_MARKER).unwrap(),
+            "1"
+        );
+        assert!(!set.env_remove.contains(&"ANTHROPIC_API_KEY".into()));
+        assert!(
+            !set.extra_args
+                .iter()
+                .any(|argument| argument.contains(SAVED))
+        );
+        for shown in [
+            format!("{set:?}"),
+            format!("{:?}", ApiKeyEnv::Set(SAVED.into())),
+        ] {
+            assert!(!shown.contains(SAVED), "{shown}");
+        }
+        assert!(format!("{set:?}").contains("ANTHROPIC_API_KEY"));
+        let removed = start(ApiKeyEnv::Remove);
+        assert!(value(&removed, "ANTHROPIC_API_KEY").is_none());
+        assert!(removed.env_remove.contains(&"ANTHROPIC_API_KEY".into()));
+        let inherited = start(ApiKeyEnv::Inherit);
+        assert!(value(&inherited, "ANTHROPIC_API_KEY").is_none());
+        assert!(!inherited.env_remove.contains(&"ANTHROPIC_API_KEY".into()));
+        // Applied over an environment that has a key, Set replaces it and Remove drops it.
+        let mut over = removed.clone();
+        over.env_remove.clear();
+        over.env
+            .push(("ANTHROPIC_API_KEY".into(), "sk-ant-dummy-env".into()));
+        let mut replaced = over.clone();
+        ApiKeyEnv::Set(SAVED.into()).apply(&mut replaced);
+        let keys: Vec<_> = replaced
+            .env
+            .iter()
+            .filter(|(name, _)| name == "ANTHROPIC_API_KEY")
+            .collect();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].1, SAVED);
+        ApiKeyEnv::Remove.apply(&mut over);
+        assert!(value(&over, "ANTHROPIC_API_KEY").is_none());
+        assert!(over.env_remove.contains(&"ANTHROPIC_API_KEY".into()));
     }
 }

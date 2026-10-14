@@ -26,6 +26,7 @@ mod account_identity;
 #[cfg(test)]
 mod attachment_driver_tests;
 pub mod attachments;
+pub mod billing;
 pub mod catalog;
 pub mod child;
 pub mod claude;

@@ -457,6 +457,7 @@ fn create_chat(
         // An orchestrator chat starts off, as every Muse RiWork starts unless asked on.
         contributor_mode: crate::chat::model::ContributorMode::Off,
         contributor_opt_out: false,
+        claude_billing: None,
     });
     let info = match created {
         Ok(info) => info,

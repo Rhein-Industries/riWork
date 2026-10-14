@@ -137,6 +137,7 @@ impl Driver for FakeDriver {
                 fast,
                 contributor_mode: _,
                 contributor_opt_out: _,
+                claude_billing: _,
             } = command
             {
                 reporter.report(DriverReport {
@@ -299,6 +300,7 @@ pub fn placeholder_info(config: &DriverConfig, thread_id: &str) -> ChatInfo {
         fast: config.fast,
         contributor_mode: config.contributor_mode,
         contributor_opt_out: false,
+        claude_billing: None,
         approval_mode: config.approval_mode,
         codex_account_id: None,
         state: ChatState::Idle,
@@ -307,12 +309,26 @@ pub fn placeholder_info(config: &DriverConfig, thread_id: &str) -> ChatInfo {
     }
 }
 
+/// The saved Anthropic API key of a test host's home, in memory: no test reaches the
+/// Keychain. Fake starts take the key from here, through the launch's own billing.
+pub fn keys_for(home: &Path) -> Arc<crate::anthropic_key::MemoryStore> {
+    static KEYS: OnceLock<Mutex<HashMap<PathBuf, Arc<crate::anthropic_key::MemoryStore>>>> =
+        OnceLock::new();
+    KEYS.get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .entry(home.to_owned())
+        .or_default()
+        .clone()
+}
+
 fn fake_config(
-    _home: &Path,
+    home: &Path,
     info: &ChatInfo,
     resume: Option<String>,
 ) -> Result<DriverConfig, String> {
-    Ok(DriverConfig {
+    let api_key = super::launch::api_key_for(home, info, &*keys_for(home))?;
+    let mut config = DriverConfig {
         provider: info.provider,
         program: format!("/fake/{:?}", info.provider).into(),
         cwd: info.cwd.clone(),
@@ -330,7 +346,9 @@ fn fake_config(
         instructions: super::launch::instructions(info),
         env: Vec::new(),
         env_remove: Vec::new(),
-    })
+    };
+    api_key.apply(&mut config);
+    Ok(config)
 }
 
 fn fake_account(
@@ -528,6 +546,7 @@ impl TestHost {
             fast: false,
             contributor_mode: Default::default(),
             contributor_opt_out: false,
+            claude_billing: None,
         }
     }
 

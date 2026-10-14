@@ -178,6 +178,7 @@ fn a_refused_contributor_change_says_the_hosts_reason_among_the_settings(cx: &mu
         fast: None,
         contributor_mode: Some(mode),
         contributor_opt_out: None,
+        claude_billing: None,
     };
     let busy = "Wait for the turn to finish, or interrupt it, before changing contributor mode.";
     view.update(cx, |view, _| {
@@ -1103,4 +1104,510 @@ fn a_long_history_draws_only_the_newest_and_says_how_many_there_are(cx: &mut Tes
             "newest first"
         );
     });
+}
+
+/// A Claude chat billed as `own` that said it runs on its subscription, with the key `saved`
+/// kept in memory, never the Keychain.
+fn claude_chat(cx: &mut TestAppContext, view: &Entity<ChatView>, own: ClaudeBilling, saved: bool) {
+    use riwork_engine::anthropic_key::MemoryStore;
+    cx.update(|app| {
+        let keys = if saved {
+            MemoryStore::with_key("sk-ant-dummy-banner")
+        } else {
+            MemoryStore::default()
+        };
+        app.set_global(crate::api_key::ApiKeyState::with_store(
+            std::sync::Arc::new(keys),
+        ))
+    });
+    view.update(cx, |view, cx| {
+        let mut info = super::testing::info("fixture-chat");
+        info.provider = Provider::Claude;
+        info.claude_billing = Some(own);
+        view.model.transcript.apply(&ChatEvent::Info { info });
+        view.model.transcript.apply(&ChatEvent::Account {
+            account: crate::chat::model::Account {
+                api_key_source: None,
+                plan: Some("Claude Max".into()),
+            },
+        });
+        cx.notify();
+    });
+}
+
+fn limit(kind: &str, resets_at: u64) -> ItemBody {
+    let mut body = ItemBody::notice(
+        NoticeLevel::Error,
+        "This account has reached the five-hour usage limit.",
+        Some(kind),
+    );
+    if let ItemBody::Notice { resets_at: at, .. } = &mut body {
+        *at = Some(resets_at);
+    }
+    body
+}
+
+/// What the host says next, through the feed as it arrives.
+fn arrive(
+    cx: &mut TestAppContext,
+    handle: gpui::WindowHandle<gpui_kit::base::Root>,
+    view: &Entity<ChatView>,
+    events: Vec<ChatEvent>,
+) {
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |view, cx| {
+            // Each event is new to the tab: sequence numbers only grow.
+            thread_local!(static SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(1000) });
+            let envelopes = events
+                .into_iter()
+                .map(|event| crate::chat::wire::Envelope {
+                    chat_id: "fixture-chat".into(),
+                    seq: SEQ.with(|seq| {
+                        seq.set(seq.get() + 1);
+                        seq.get()
+                    }),
+                    event,
+                })
+                .collect();
+            view.accept(vec![feed::FeedMsg::Events(envelopes)], window, cx);
+        })
+    })
+    .unwrap();
+}
+
+fn billed(own: ClaudeBilling, state: ChatState) -> ChatEvent {
+    let mut info = super::testing::info("fixture-chat");
+    info.provider = Provider::Claude;
+    info.claude_billing = Some(own);
+    info.state = state;
+    ChatEvent::Info { info }
+}
+
+fn commands(recording: &std::sync::mpsc::Receiver<feed::Delivery>) -> Vec<ChatCommand> {
+    recording
+        .try_iter()
+        .filter_map(|delivery| match delivery {
+            feed::Delivery::Command(command) => Some(command),
+            _ => None,
+        })
+        .collect()
+}
+
+fn to_api_key() -> ChatCommand {
+    ChatCommand::Configure {
+        model: None,
+        effort: None,
+        approval_mode: None,
+        fast: None,
+        contributor_mode: None,
+        contributor_opt_out: None,
+        claude_billing: Some(ClaudeBilling::ApiKey),
+    }
+}
+
+#[gpui::test]
+fn a_subscription_limit_switches_to_the_saved_key_and_sends_the_rejected_message_once_it_holds(
+    cx: &mut TestAppContext,
+) {
+    let start = 1_800_000_000;
+    notices::TEST_NOW.with(|now| now.set(Some(start)));
+    let (handle, view, recording) = mount(cx);
+    claude_chat(cx, &view, ClaudeBilling::Subscription, true);
+    push(
+        &view,
+        cx,
+        "u",
+        ItemBody::UserMessage {
+            text: "fix the build".into(),
+        },
+    );
+    push(
+        &view,
+        cx,
+        "limit",
+        limit("rate_limit:five_hour", start + 3600),
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(shown(window, "limit"));
+        assert!(window.try_find("chat-notice-enter-api-key:limit").is_none());
+        assert!(window.try_find("chat-notice-usage:limit").is_some());
+        window.click("chat-notice-use-api-key:limit", cx);
+    })
+    .unwrap();
+    // The switch first; the message only once it holds on a Claude ready again.
+    assert_eq!(commands(&recording), [to_api_key()]);
+    arrive(
+        cx,
+        handle,
+        &view,
+        vec![billed(ClaudeBilling::ApiKey, ChatState::Stopped)],
+    );
+    arrive(
+        cx,
+        handle,
+        &view,
+        vec![ChatEvent::State {
+            state: ChatState::Starting,
+        }],
+    );
+    assert_eq!(commands(&recording), []);
+    arrive(
+        cx,
+        handle,
+        &view,
+        vec![
+            ChatEvent::State {
+                state: ChatState::Idle,
+            },
+            ChatEvent::Account {
+                account: crate::chat::model::Account {
+                    api_key_source: Some("ANTHROPIC_API_KEY".into()),
+                    plan: None,
+                },
+            },
+        ],
+    );
+    assert_eq!(
+        commands(&recording),
+        [ChatCommand::Send {
+            text: "fix the build".into()
+        }]
+    );
+    // On the key, the subscription's limit is no banner; the switch says what it did.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!shown(window, "limit"));
+        assert!(shown(window, "local:settings"));
+    })
+    .unwrap();
+    view.read_with(cx, |view, _| {
+        assert!(
+            view.notices
+                .local(notices::LocalKey::Settings)
+                .is_some_and(|said| said.contains("sent again"))
+        )
+    });
+    // Later changes of state send nothing more.
+    arrive(
+        cx,
+        handle,
+        &view,
+        vec![billed(ClaudeBilling::ApiKey, ChatState::Idle)],
+    );
+    assert_eq!(commands(&recording), []);
+    notices::TEST_NOW.with(|now| now.set(None));
+}
+
+#[gpui::test]
+fn a_turn_that_had_begun_is_not_sent_again_and_a_refused_switch_sends_nothing(
+    cx: &mut TestAppContext,
+) {
+    let start = 1_800_000_000;
+    notices::TEST_NOW.with(|now| now.set(Some(start)));
+    // The turn had produced an item before the limit: the switch alone, and it says so.
+    let (handle, view, recording) = mount(cx);
+    claude_chat(cx, &view, ClaudeBilling::Subscription, true);
+    push(&view, cx, "u", ItemBody::UserMessage { text: "go".into() });
+    push(
+        &view,
+        cx,
+        "a",
+        ItemBody::AgentMessage {
+            text: "on it".into(),
+        },
+    );
+    push(
+        &view,
+        cx,
+        "limit",
+        limit("rate_limit:seven_day", start + 3600),
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("chat-notice-use-api-key:limit", cx);
+    })
+    .unwrap();
+    assert_eq!(commands(&recording), [to_api_key()]);
+    arrive(
+        cx,
+        handle,
+        &view,
+        vec![billed(ClaudeBilling::ApiKey, ChatState::Idle)],
+    );
+    assert_eq!(commands(&recording), []);
+    view.read_with(cx, |view, _| {
+        let said = view.notices.local(notices::LocalKey::Settings).unwrap();
+        assert!(said.contains("Nothing was sent again"), "{said}");
+    });
+
+    // The host refuses the switch: no message goes, and the refusal is the banner.
+    let (handle, view, recording) = mount(cx);
+    claude_chat(cx, &view, ClaudeBilling::Subscription, true);
+    push(&view, cx, "u", ItemBody::UserMessage { text: "go".into() });
+    push(
+        &view,
+        cx,
+        "limit",
+        limit("rate_limit:five_hour", start + 3600),
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("chat-notice-use-api-key:limit", cx);
+        view.update(cx, |view, cx| {
+            view.accept(
+                vec![feed::FeedMsg::CommandFailed {
+                    command: to_api_key(),
+                    error: "Wait for the turn to finish, or interrupt it, before changing who this chat bills.".into(),
+                }],
+                window,
+                cx,
+            )
+        });
+    })
+    .unwrap();
+    assert_eq!(commands(&recording), [to_api_key()]);
+    arrive(
+        cx,
+        handle,
+        &view,
+        vec![billed(ClaudeBilling::ApiKey, ChatState::Idle)],
+    );
+    assert_eq!(commands(&recording), [], "nothing after a refusal");
+    view.read_with(cx, |view, _| {
+        let said = view.notices.local(notices::LocalKey::Settings).unwrap();
+        assert!(said.contains("changing who this chat bills"), "{said}");
+    });
+
+    // Set to API key already, but this Claude started without one: it is stopped, and the
+    // message goes with its next start.
+    let (handle, view, recording) = mount(cx);
+    claude_chat(cx, &view, ClaudeBilling::ApiKey, true);
+    push(&view, cx, "u", ItemBody::UserMessage { text: "go".into() });
+    push(
+        &view,
+        cx,
+        "limit",
+        limit("rate_limit:five_hour", start + 3600),
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("chat-notice-use-api-key:limit", cx);
+    })
+    .unwrap();
+    assert_eq!(
+        commands(&recording),
+        [ChatCommand::Stop, ChatCommand::Send { text: "go".into() }]
+    );
+    notices::TEST_NOW.with(|now| now.set(None));
+}
+
+#[gpui::test]
+fn with_no_key_saved_the_limit_opens_settings_and_a_dismissal_lasts_for_that_limit_and_reset(
+    cx: &mut TestAppContext,
+) {
+    let start = 1_800_000_000;
+    notices::TEST_NOW.with(|now| now.set(Some(start)));
+    let (handle, view, recording) = mount(cx);
+    claude_chat(cx, &view, ClaudeBilling::Subscription, false);
+    let opened = std::rc::Rc::new(std::cell::Cell::new(false));
+    let seen = opened.clone();
+    cx.update(|cx| {
+        cx.subscribe(&view, move |_, event: &ChatViewEvent, _| {
+            if matches!(event, ChatViewEvent::OpenApiKeySettings) {
+                seen.set(true);
+            }
+        })
+        .detach()
+    });
+    push(&view, cx, "u", ItemBody::UserMessage { text: "go".into() });
+    push(
+        &view,
+        cx,
+        "limit",
+        limit("rate_limit:five_hour", start + 3600),
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("chat-notice-use-api-key:limit").is_none());
+        window.click("chat-notice-enter-api-key:limit", cx);
+    })
+    .unwrap();
+    assert!(opened.get(), "Enter API key opens Settings at the key");
+    assert_eq!(commands(&recording), [], "and changes nothing in the chat");
+
+    // Dismissed, this limit stays dismissed, and the host is told.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("chat-notice-close:limit", cx);
+        window.render_frame(cx);
+        assert!(!shown(window, "limit"));
+    })
+    .unwrap();
+    assert_eq!(
+        commands(&recording),
+        [ChatCommand::DismissNotice {
+            item_id: "limit".into()
+        }]
+    );
+    // The next limit, with its own reset time, is a banner again, with its offer.
+    push(
+        &view,
+        cx,
+        "u2",
+        ItemBody::UserMessage {
+            text: "go on".into(),
+        },
+    );
+    push(
+        &view,
+        cx,
+        "limit-2",
+        limit("rate_limit:five_hour", start + 7200),
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(shown(window, "limit-2"));
+        assert!(
+            window
+                .try_find("chat-notice-enter-api-key:limit-2")
+                .is_some()
+        );
+    })
+    .unwrap();
+
+    // Extra usage, a model's weekly window and another provider's limit keep the plain banner.
+    for (provider, kind) in [
+        (Provider::Claude, "rate_limit:overage"),
+        (Provider::Claude, "rate_limit:seven_day_opus"),
+        (Provider::Codex, "rate_limit:five_hour"),
+    ] {
+        let (handle, view, _recording) = mount(cx);
+        claude_chat(cx, &view, ClaudeBilling::Subscription, true);
+        view.update(cx, |view, _| {
+            view.model.transcript.info.as_mut().unwrap().provider = provider;
+        });
+        push(&view, cx, "u", ItemBody::UserMessage { text: "go".into() });
+        push(&view, cx, "limit", limit(kind, start + 3600));
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(shown(window, "limit"), "{provider:?} {kind}");
+            assert!(window.try_find("chat-notice-use-api-key:limit").is_none());
+            assert!(window.try_find("chat-notice-enter-api-key:limit").is_none());
+        })
+        .unwrap();
+    }
+    notices::TEST_NOW.with(|now| now.set(None));
+}
+
+#[gpui::test]
+fn a_message_the_user_sends_during_the_switch_is_not_followed_by_the_old_one(
+    cx: &mut TestAppContext,
+) {
+    let start = 1_800_000_000;
+    notices::TEST_NOW.with(|now| now.set(Some(start)));
+    // Sent from the message box while Claude restarts: the banner's switch sends nothing after.
+    let (handle, view, recording) = mount(cx);
+    claude_chat(cx, &view, ClaudeBilling::Subscription, true);
+    push(
+        &view,
+        cx,
+        "u",
+        ItemBody::UserMessage {
+            text: "fix the build".into(),
+        },
+    );
+    push(
+        &view,
+        cx,
+        "limit",
+        limit("rate_limit:five_hour", start + 3600),
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("chat-notice-use-api-key:limit", cx);
+        window.click("chat-composer", cx);
+        window.input("fix the build please", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
+        .unwrap();
+    cx.run_until_parked();
+    let deliveries: Vec<_> = recording.try_iter().collect();
+    assert!(
+        deliveries.iter().any(|delivery| matches!(
+            delivery,
+            feed::Delivery::Submission { command: ChatCommand::Send { text }, .. } if text == "fix the build please"
+        )),
+        "the user's own message went"
+    );
+    arrive(
+        cx,
+        handle,
+        &view,
+        vec![billed(ClaudeBilling::ApiKey, ChatState::Idle)],
+    );
+    assert_eq!(commands(&recording), [], "nothing after it");
+
+    // The transcript moved on before the switch held: the old message is not sent either.
+    let (handle, view, recording) = mount(cx);
+    claude_chat(cx, &view, ClaudeBilling::Subscription, true);
+    push(&view, cx, "u", ItemBody::UserMessage { text: "go".into() });
+    push(
+        &view,
+        cx,
+        "limit",
+        limit("rate_limit:five_hour", start + 3600),
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("chat-notice-use-api-key:limit", cx);
+    })
+    .unwrap();
+    assert_eq!(commands(&recording), [to_api_key()]);
+    push(
+        &view,
+        cx,
+        "u2",
+        ItemBody::UserMessage {
+            text: "from the phone".into(),
+        },
+    );
+    arrive(
+        cx,
+        handle,
+        &view,
+        vec![billed(ClaudeBilling::ApiKey, ChatState::Idle)],
+    );
+    assert_eq!(commands(&recording), []);
+    notices::TEST_NOW.with(|now| now.set(None));
+}
+
+#[gpui::test]
+fn with_no_key_saved_the_composer_switch_opens_settings_and_shows_the_subscription_claude_bills(
+    cx: &mut TestAppContext,
+) {
+    let (handle, view, recording) = mount(cx);
+    // Set to API key, the default, with no key saved: Claude says it bills the subscription.
+    claude_chat(cx, &view, ClaudeBilling::ApiKey, false);
+    let opened = std::rc::Rc::new(std::cell::Cell::new(false));
+    let seen = opened.clone();
+    cx.update(|cx| {
+        cx.subscribe(&view, move |_, event: &ChatViewEvent, _| {
+            if matches!(event, ChatViewEvent::OpenApiKeySettings) {
+                seen.set(true);
+            }
+        })
+        .detach()
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let toggle = window.find("chat-billing");
+        assert_eq!(toggle.label(), Some("Billing: Subscription"));
+        assert_eq!(toggle.checked(), Some(false));
+        window.click("chat-billing", cx);
+    })
+    .unwrap();
+    assert!(opened.get(), "a key is entered in Settings first");
+    assert_eq!(commands(&recording), [], "and the chat is left as it is");
 }

@@ -12,7 +12,8 @@ use gpui_kit::base::TestSupportExt as _;
 
 use crate::{
     chat::model::{
-        ApprovalKind, ApprovalMode, ChatState, ContributorMode, Decision, Provider, Question,
+        ApprovalKind, ApprovalMode, ChatState, ClaudeBilling, ContributorMode, Decision, Provider,
+        Question,
     },
     controls::{self, Button},
     dictation::{self, Phase},
@@ -1867,6 +1868,90 @@ impl ChatView {
                     || info.is_some_and(|info| info.contributor_mode == ContributorMode::On))
                 .then(|| self.composer_contributor(look, side, narrow, cx)),
             )
+            .children(
+                info.is_some_and(|info| info.provider == Provider::Claude)
+                    .then(|| self.composer_billing(look, side, narrow, cx)),
+            )
+            .into_any_element()
+    }
+
+    /// A Claude chat's billing: its subscription, or its API key (tinted), as the chat chose;
+    /// gold when the running Claude says it bills otherwise. One click switches it, and the
+    /// host restarts Claude on the same conversation.
+    fn composer_billing(
+        &self,
+        look: Look,
+        side: gpui::Pixels,
+        narrow: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = look.colors;
+        let control = toolbar::billing_control(
+            self.billing(cx),
+            self.model.transcript.account.as_ref(),
+            crate::api_key::saved(cx),
+        );
+        let on = control.on;
+        let tint = if control.mismatch {
+            Some(colors.gold)
+        } else {
+            on.then_some(if look.native {
+                colors.working
+            } else {
+                colors.cyan
+            })
+        };
+        let toggle = if look.native || look.hermes() {
+            let content = div()
+                .flex()
+                .items_center()
+                .gap(ui_text::space(4.0))
+                .child(icons::symbol(
+                    if on { "key.fill" } else { "person.crop.circle" },
+                    10.0,
+                    None,
+                ))
+                // A narrow pane keeps the symbol; the billing is in its label and tip.
+                .when(!narrow, |content| content.child(control.short));
+            quiet_control(
+                crate::behavior_controls::toggle_content(
+                    "chat-billing",
+                    control.label,
+                    content,
+                    on,
+                ),
+                side,
+                false,
+                tint,
+                look,
+            )
+            .when(narrow, |toggle| toggle.px(ui_text::space(6.0)))
+        } else {
+            widgets::toggle_button(
+                "chat-billing",
+                if narrow {
+                    if on { "Key" } else { "Sub" }
+                } else {
+                    control.short
+                },
+                tint,
+                on,
+                look,
+            )
+            .h(side)
+            .flex()
+            .items_center()
+        };
+        toggle
+            .debug_selector(|| "composer-billing".into())
+            .accessibility_label(control.label)
+            .child(tooltip::anchor(control.hint, TipLook::Control))
+            .on_change({
+                let owner = cx.weak_entity();
+                move |_, _, _, cx| {
+                    let _ = owner.update(cx, |view, cx| view.toggle_billing(cx));
+                }
+            })
             .into_any_element()
     }
 
@@ -3160,6 +3245,7 @@ mod tests {
                 fast: false,
                 contributor_mode: Default::default(),
                 contributor_opt_out: false,
+                claude_billing: None,
                 approval_mode: ApprovalMode::Supervised,
                 codex_account_id: None,
                 state: state.clone(),
@@ -3253,6 +3339,7 @@ mod tests {
             fast,
             contributor_mode: Default::default(),
             contributor_opt_out: false,
+            claude_billing: None,
             approval_mode: ApprovalMode::Supervised,
             codex_account_id: None,
             state,
@@ -3354,6 +3441,7 @@ mod tests {
                 "chat-model",
                 "chat-effort",
                 "chat-fast",
+                "chat-billing",
                 "chat-dictate",
             ]
             .into_iter()
@@ -3588,6 +3676,7 @@ mod tests {
                     fast: None,
                     contributor_mode: Some(ContributorMode::Off),
                     contributor_opt_out: None,
+                    claude_billing: None,
                 }),
                 "{design:?}"
             );
@@ -3631,6 +3720,7 @@ mod tests {
                         fast: None,
                         contributor_mode: Some(asks),
                         contributor_opt_out: None,
+                        claude_billing: None,
                     }),
                     "{design:?} {label}"
                 );
@@ -3684,6 +3774,112 @@ mod tests {
                         );
                     })
                     .unwrap();
+                }
+            }
+            ui_text::set_for_tests(previous.0, previous.1);
+        }
+    }
+
+    #[gpui::test]
+    fn only_a_claude_chat_has_the_billing_switch_in_a_wide_and_a_narrow_pane_and_it_asks_for_the_other(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::chat::model::ChatCommand;
+        use riwork_engine::anthropic_key::MemoryStore;
+        let configured =
+            |recording: &std::sync::mpsc::Receiver<super::super::feed::Delivery>| match recording
+                .try_recv()
+            {
+                Ok(super::super::feed::Delivery::Command(command)) => Some(command),
+                _ => None,
+            };
+        let billing = |billing| ChatCommand::Configure {
+            model: None,
+            effort: None,
+            approval_mode: None,
+            fast: None,
+            contributor_mode: None,
+            contributor_opt_out: None,
+            claude_billing: Some(billing),
+        };
+        cx.update(|app| {
+            app.set_global(crate::api_key::ApiKeyState::with_store(
+                std::sync::Arc::new(MemoryStore::with_key("sk-ant-dummy-composer")),
+            ))
+        });
+        for (face, design) in [
+            (ui_text::Face::System, theme::ThemeChoice::Native),
+            (ui_text::Face::Hermes, theme::ThemeChoice::Hermes),
+            (ui_text::Face::System, theme::ThemeChoice::RiWork),
+        ] {
+            let previous = ui_text::set_for_tests(1.0, face);
+            for width in [760.0, 300.0] {
+                let (handle, view, recording) =
+                    composer_fixture(cx, width, design, ChatState::Idle);
+                for provider in [Provider::Codex, Provider::Muse, Provider::Claude] {
+                    update_info(cx, handle, &view, |view| {
+                        view.model.transcript.info.as_mut().unwrap().provider = provider;
+                    });
+                    cx.update_window(handle.into(), |_, window, _| {
+                        assert_eq!(
+                            window.try_find("chat-billing").is_some(),
+                            provider == Provider::Claude,
+                            "{design:?} {width} {provider:?}"
+                        );
+                    })
+                    .unwrap();
+                }
+                // No choice of its own (a chat from before): the Settings default, API key.
+                for (own, label, on, asks) in [
+                    (None, "Billing: API key", true, ClaudeBilling::Subscription),
+                    (
+                        Some(ClaudeBilling::Subscription),
+                        "Billing: Subscription",
+                        false,
+                        ClaudeBilling::ApiKey,
+                    ),
+                    (
+                        Some(ClaudeBilling::ApiKey),
+                        "Billing: API key",
+                        true,
+                        ClaudeBilling::Subscription,
+                    ),
+                ] {
+                    update_info(cx, handle, &view, |view| {
+                        view.model.transcript.info.as_mut().unwrap().claude_billing = own;
+                    });
+                    cx.update_window(handle.into(), |_, window, cx| {
+                        let toggle = window.find("chat-billing");
+                        assert_eq!(toggle.label(), Some(label.into()), "{design:?} {width}");
+                        assert_eq!(toggle.checked(), Some(on), "{design:?} {width} {label}");
+                        let shell = window.find("chat-composer-shell").bounds();
+                        let model = window.find("chat-model").bounds();
+                        let bounds = toggle.bounds();
+                        assert!(
+                            (bounds.size.height - model.size.height).abs() < px(0.5),
+                            "{design:?} {width}: {bounds:?} beside {model:?}"
+                        );
+                        assert!(
+                            bounds.left() >= shell.left() && bounds.right() <= shell.right(),
+                            "{design:?} {width} {label}: {bounds:?} outside {shell:?}"
+                        );
+                        window.click("chat-billing", cx);
+                    })
+                    .unwrap();
+                    draw_hermes(cx, handle);
+                    assert_eq!(
+                        configured(&recording),
+                        Some(billing(asks)),
+                        "{design:?} {width} {label}"
+                    );
+                    assert!(configured(&recording).is_none());
+                    // The chat says what holds once the host has made it so.
+                    assert_eq!(
+                        view.read_with(cx, |view, _| {
+                            view.model.transcript.info.as_ref().unwrap().claude_billing
+                        }),
+                        own
+                    );
                 }
             }
             ui_text::set_for_tests(previous.0, previous.1);
@@ -3765,6 +3961,7 @@ mod tests {
                     fast: None,
                     contributor_mode: None,
                     contributor_opt_out: None,
+                    claude_billing: None,
                 })
             );
 
@@ -3835,6 +4032,7 @@ mod tests {
                     fast: None,
                     contributor_mode: None,
                     contributor_opt_out: None,
+                    claude_billing: None,
                 })
             );
             // ⏎ on a search takes this provider's first match; with none it does nothing,
@@ -3866,6 +4064,7 @@ mod tests {
                     fast: None,
                     contributor_mode: None,
                     contributor_opt_out: None,
+                    claude_billing: None,
                 })
             );
             ui_text::set_for_tests(previous.0, previous.1);
@@ -4006,6 +4205,7 @@ mod tests {
                     fast: None,
                     contributor_mode: None,
                     contributor_opt_out: None,
+                    claude_billing: None,
                 }
             ),
             _ => panic!("⏎ chose nothing"),
@@ -4097,6 +4297,7 @@ mod tests {
                     fast: None,
                     contributor_mode: None,
                     contributor_opt_out: None,
+                    claude_billing: None,
                 }
             ),
             _ => panic!("⏎ did not name the model"),

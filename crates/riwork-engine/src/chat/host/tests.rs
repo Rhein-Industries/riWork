@@ -1,4 +1,5 @@
 use super::*;
+use crate::anthropic_key::KeyStore;
 use crate::chat::client::{Client, Subscription};
 use crate::chat::model::{
     Approval, ApprovalKind, ApprovalMode, Item, ItemBody, ItemStatus, ModelOption, Transcript,
@@ -323,6 +324,7 @@ fn settings_change_the_chat_even_while_it_is_stopped() {
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     };
     client.command(&chat.id, configure.clone()).unwrap();
     assert_eq!(host.fake().commands(), vec![configure.clone()]);
@@ -344,6 +346,7 @@ fn settings_change_the_chat_even_while_it_is_stopped() {
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     };
     client.command(&chat.id, again).unwrap();
     assert_eq!(host.fake().start_count(), 1);
@@ -368,6 +371,7 @@ fn configure_fast(fast: bool) -> ChatCommand {
         fast: Some(fast),
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     }
 }
 
@@ -389,6 +393,7 @@ fn only_a_configure_that_changes_nothing_at_all_is_a_retry_and_fast_alone_is_not
                 fast: None,
                 contributor_mode: None,
                 contributor_opt_out: None,
+                claude_billing: None,
             },
         )
         .unwrap();
@@ -410,6 +415,7 @@ fn a_muse_chat_refuses_fast_and_moving_its_conversation_into_or_out_of_plan() {
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     };
     for (command, refusal) in [
         (configure_fast(true), "no fast mode"),
@@ -443,6 +449,7 @@ fn a_muse_chat_refuses_fast_and_moving_its_conversation_into_or_out_of_plan() {
                 fast: Some(false),
                 contributor_mode: None,
                 contributor_opt_out: None,
+                claude_billing: None,
             },
         )
         .unwrap();
@@ -716,6 +723,7 @@ fn configure_contributor(mode: ContributorMode) -> ChatCommand {
         fast: None,
         contributor_mode: Some(mode),
         contributor_opt_out: None,
+        claude_billing: None,
     }
 }
 
@@ -728,6 +736,7 @@ fn configure_opt_out(opt_out: bool) -> ChatCommand {
         fast: None,
         contributor_mode: None,
         contributor_opt_out: Some(opt_out),
+        claude_billing: None,
     }
 }
 
@@ -755,6 +764,7 @@ fn a_contributor_change_either_way_waits_for_a_quiet_muse_chat_and_a_stopped_one
             fast: None,
             contributor_mode: Some(mode),
             contributor_opt_out: None,
+            claude_billing: None,
         };
         refused(&mut client, with_effort(to), "on its own", from);
         assert_eq!(host.info(&chat.id).effort, None);
@@ -775,6 +785,7 @@ fn a_contributor_change_either_way_waits_for_a_quiet_muse_chat_and_a_stopped_one
             fast: None,
             contributor_mode: Some(On),
             contributor_opt_out: Some(true),
+            claude_billing: None,
         };
         refused(&mut client, both, "cannot be combined", from);
         assert_eq!(host.fake().start_count(), 1);
@@ -862,6 +873,7 @@ fn a_contributor_change_either_way_waits_for_a_quiet_muse_chat_and_a_stopped_one
                     ChatCommand::Configure {
                         contributor_mode: None,
                         contributor_opt_out: None,
+                        claude_billing: None,
                         ..
                     }
                 )),
@@ -938,6 +950,7 @@ fn a_contributor_change_either_way_waits_for_a_quiet_muse_chat_and_a_stopped_one
         fast: None,
         contributor_mode: Some(Off),
         contributor_opt_out: None,
+        claude_billing: None,
     };
     client.command(&chat.id, off_and_effort).unwrap();
     let info = host.wait_for_info(&chat.id, |info| info.effort.as_deref() == Some("low"));
@@ -1309,6 +1322,7 @@ fn a_chat_that_died_in_the_middle_of_a_turn_is_made_tidy_when_the_next_host_load
         fast: false,
         contributor_mode: Default::default(),
         contributor_opt_out: false,
+        claude_billing: None,
         carried_over: None,
     };
     let dir = log::chat_dir(&home, &id).unwrap();
@@ -1680,6 +1694,7 @@ fn an_idle_host_exits_but_not_while_a_client_is_connected_or_a_chat_is_at_work()
             fast: false,
             contributor_mode: Default::default(),
             contributor_opt_out: false,
+            claude_billing: None,
         })
         .unwrap();
     busy.command(
@@ -2743,6 +2758,7 @@ fn a_muse_chat_made_on_says_so_to_every_serve_and_turning_it_off_and_on_resumes_
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     };
     let mut client = host.client();
     client.command(&chat.id, retry).unwrap();
@@ -3251,6 +3267,7 @@ fn choose(model: Option<&str>, effort: Option<&str>, mode: Option<ApprovalMode>)
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     }
 }
 
@@ -3558,6 +3575,7 @@ fn unconfirmed_or_rejected_configuration_does_not_persist_the_requested_values()
                     fast: (provider != Provider::Muse).then_some(true),
                     contributor_mode: None,
                     contributor_opt_out: None,
+                    claude_billing: None,
                 },
             )
             .unwrap();
@@ -4088,4 +4106,423 @@ fn legacy_running_state_guards_resume_even_when_no_turn_items_were_saved() {
         host.info(&chat.id).provider_thread_id,
         before.provider_thread_id
     );
+}
+
+fn configure_billing(billing: ClaudeBilling) -> ChatCommand {
+    ChatCommand::Configure {
+        model: None,
+        effort: None,
+        approval_mode: None,
+        fast: None,
+        contributor_mode: None,
+        contributor_opt_out: None,
+        claude_billing: Some(billing),
+    }
+}
+
+fn set_billing_default(host: &TestHost, billing: ClaudeBilling) {
+    crate::settings::SettingsStore::open(&host.home)
+        .unwrap()
+        .update(|settings| settings.claude_chat_billing = billing)
+        .unwrap();
+}
+
+/// What a start did with `ANTHROPIC_API_KEY`: the key it set, `removed`, or `inherited`.
+fn api_key_of(config: &DriverConfig) -> String {
+    let set = config
+        .env
+        .iter()
+        .rev()
+        .find(|(name, _)| name == "ANTHROPIC_API_KEY")
+        .map(|(_, value)| value.to_string_lossy().into_owned());
+    let removed = config
+        .env_remove
+        .iter()
+        .any(|name| name == "ANTHROPIC_API_KEY");
+    match (set, removed) {
+        (Some(key), false) => key,
+        (None, true) => "removed".into(),
+        (None, false) => "inherited".into(),
+        (Some(_), true) => panic!("both set and removed: {config:?}"),
+    }
+}
+
+const HOST_KEY: &str = "sk-ant-dummy-host";
+
+#[test]
+fn a_claude_chat_is_made_with_the_settings_billing_and_keeps_its_own_through_resumes_restarts_and_switches()
+ {
+    use ClaudeBilling::{ApiKey, Subscription};
+    let mut host = TestHost::new();
+    keys_for(&host.home).save(HOST_KEY).unwrap();
+    set_billing_default(&host, Subscription);
+    let chat = host.create(Provider::Claude);
+    assert_eq!(chat.claude_billing, Some(Subscription));
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    // A later default leaves the chat as it was made: stopped and resumed, and after the host
+    // itself restarted.
+    set_billing_default(&host, ApiKey);
+    let mut client = host.client();
+    client.close(&chat.id).unwrap();
+    send(&mut client, &chat.id, "after a stop");
+    host.wait_for_log(&chat.id, |log| turns_completed(log) == 1);
+    host.restart(quick_options());
+    assert_eq!(host.info(&chat.id).claude_billing, Some(Subscription));
+    assert_eq!(
+        saved_info(&host, &chat.id).claude_billing,
+        Some(Subscription)
+    );
+    send(&mut host.client(), &chat.id, "after a restart");
+    host.wait_for_log(&chat.id, |log| {
+        turns_completed(log) == 2 && last_state(log) == Some(ChatState::Idle)
+    });
+    let starts = host.fake().starts.lock().unwrap().clone();
+    assert_eq!(starts.len(), 3);
+    assert_eq!(starts[2].resume.as_deref(), Some("thread-1"));
+    assert!(starts.iter().all(|config| api_key_of(config) == "removed"));
+    // It stays with the chat through a switch away, and holds again back on Claude.
+    for provider in [Provider::Codex, Provider::Claude] {
+        host.client()
+            .command(&chat.id, switch(provider, None))
+            .unwrap();
+        assert_eq!(host.info(&chat.id).claude_billing, Some(Subscription));
+    }
+    let starts = host.fake().starts.lock().unwrap().clone();
+    let codex = &starts[starts.len() - 2];
+    assert_eq!(
+        (codex.provider, api_key_of(codex).as_str()),
+        (Provider::Codex, "inherited")
+    );
+    let last = starts.last().unwrap();
+    assert_eq!(
+        (last.provider, last.resume.clone(), api_key_of(last)),
+        (Provider::Claude, None, "removed".to_owned())
+    );
+
+    // Made on the default API key, a chat's Claude gets the saved key; asked for Subscription,
+    // it loses the key. Another provider's chat is made without a billing, whatever it asks.
+    for (directory, asked, wanted, key) in [
+        ("default", None, ApiKey, HOST_KEY),
+        ("asked", Some(Subscription), Subscription, "removed"),
+    ] {
+        let mut new = host.new_chat(Provider::Claude);
+        new.cwd = host.home.join(directory);
+        fs::create_dir_all(&new.cwd).unwrap();
+        new.claude_billing = asked;
+        let created = host.client().create(new).unwrap();
+        assert_eq!(created.claude_billing, Some(wanted), "{directory}");
+        host.wait_for_state(&created.id, |s| *s == ChatState::Idle);
+        assert_eq!(
+            api_key_of(&fake_for(&created.cwd).starts.lock().unwrap()[0]),
+            key,
+            "{directory}"
+        );
+    }
+    for provider in [Provider::Codex, Provider::Muse] {
+        let mut new = host.new_chat(provider);
+        new.cwd = host.home.join(format!("{provider:?}"));
+        fs::create_dir_all(&new.cwd).unwrap();
+        new.claude_billing = Some(Subscription);
+        let created = host.client().create(new).unwrap();
+        assert_eq!(created.claude_billing, None, "{provider:?}");
+        host.wait_for_state(&created.id, |s| *s == ChatState::Idle);
+        assert_eq!(
+            api_key_of(&fake_for(&created.cwd).starts.lock().unwrap()[0]),
+            "inherited"
+        );
+    }
+}
+
+#[test]
+fn a_claude_chat_saved_before_chats_had_a_billing_follows_the_settings_default_at_each_start() {
+    use ClaudeBilling::{ApiKey, Subscription};
+    let mut host = TestHost::new();
+    keys_for(&host.home).save(HOST_KEY).unwrap();
+    let chat = host.create(Provider::Claude);
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    host.stop();
+    // What hosts before the choice wrote: no `claude_billing`, in the info and the log.
+    let dir = host.home.join("chats").join(&chat.id);
+    let path = dir.join("info.json");
+    let mut info: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    info.as_object_mut().unwrap().remove("claude_billing");
+    fs::write(&path, info.to_string()).unwrap();
+    let log = dir.join("events.jsonl");
+    let lines: Vec<String> = fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let mut envelope: serde_json::Value = serde_json::from_str(line).unwrap();
+            if envelope["event"]["event"] == "info" {
+                envelope["event"]["info"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("claude_billing");
+            }
+            envelope.to_string()
+        })
+        .collect();
+    fs::write(&log, lines.join("\n") + "\n").unwrap();
+    host.restart(quick_options());
+    assert_eq!(host.info(&chat.id).claude_billing, None);
+    // Each start bills the default of the moment, as every Claude chat did before.
+    for (turn, (default, key)) in [(Subscription, "removed"), (ApiKey, HOST_KEY)]
+        .into_iter()
+        .enumerate()
+    {
+        set_billing_default(&host, default);
+        let mut client = host.client();
+        client.close(&chat.id).unwrap();
+        send(&mut client, &chat.id, "next");
+        host.wait_for_log(&chat.id, |log| {
+            turns_completed(log) == turn + 1 && last_state(log) == Some(ChatState::Idle)
+        });
+        let last = host.fake().starts.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(api_key_of(&last), key, "{default:?}");
+        assert_eq!(last.resume.as_deref(), Some("thread-1"));
+    }
+    // Chosen once, it is the chat's own.
+    let mut client = host.client();
+    client.close(&chat.id).unwrap();
+    client
+        .command(&chat.id, configure_billing(Subscription))
+        .unwrap();
+    assert_eq!(
+        saved_info(&host, &chat.id).claude_billing,
+        Some(Subscription)
+    );
+}
+
+#[test]
+fn a_billing_change_waits_for_a_quiet_claude_chat_restarts_it_on_its_session_and_a_stopped_one_keeps_it()
+ {
+    use ClaudeBilling::{ApiKey, Subscription};
+    for (from, to) in [(Subscription, ApiKey), (ApiKey, Subscription)] {
+        let host = TestHost::new();
+        keys_for(&host.home).save(HOST_KEY).unwrap();
+        let key = |billing| match billing {
+            Subscription => "removed",
+            ApiKey => HOST_KEY,
+        };
+        let mut new = host.new_chat(Provider::Claude);
+        new.claude_billing = Some(from);
+        let chat = host.client().create(new).unwrap();
+        host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+        let mut client = host.client();
+        let refused = |client: &mut Client, command: ChatCommand, reason: &str| {
+            let error = client.command(&chat.id, command).unwrap_err();
+            assert!(error.contains(reason), "{from:?} to {to:?}: {error}");
+            assert_eq!(host.info(&chat.id).claude_billing, Some(from));
+        };
+        // A change comes alone: the Claude started again for it could refuse the rest.
+        let mut with_effort = configure_billing(to);
+        if let ChatCommand::Configure { effort, .. } = &mut with_effort {
+            *effort = Some("low".into());
+        }
+        refused(&mut client, with_effort, "on its own");
+        // Asking for what it has is no change, and restarts nothing.
+        client.command(&chat.id, configure_billing(from)).unwrap();
+        assert_eq!(host.fake().start_count(), 1);
+        // Still starting, a turn running, a request waiting for the user: refused.
+        host.fake().emit(ChatEvent::State {
+            state: ChatState::Starting,
+        });
+        host.wait_for_state(&chat.id, |s| *s == ChatState::Starting);
+        refused(&mut client, configure_billing(to), "still starting");
+        host.fake().emit(ChatEvent::State {
+            state: ChatState::Idle,
+        });
+        host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+        send(&mut client, &chat.id, "hang");
+        host.wait_for_log(&chat.id, |log| {
+            log.iter().any(|e| {
+                matches!(
+                    &e.event,
+                    ChatEvent::ItemStarted { item } if matches!(item.body, ItemBody::AgentMessage { .. })
+                )
+            })
+        });
+        refused(
+            &mut client,
+            configure_billing(to),
+            "Wait for the turn to finish",
+        );
+        assert_eq!(host.fake().start_count(), 1);
+        assert_eq!(host.fake().shutdowns.load(Ordering::SeqCst), 0);
+        // The turn ends, as an interrupted one does.
+        host.fake().emit(ChatEvent::TurnCompleted {
+            turn_id: "turn-1-1".into(),
+            outcome: TurnOutcome::Interrupted,
+        });
+        host.fake().emit(ChatEvent::State {
+            state: ChatState::Idle,
+        });
+        host.wait_for_log(&chat.id, |log| {
+            turns_completed(log) == 1 && last_state(log) == Some(ChatState::Idle)
+        });
+
+        // Idle: the process is stopped and started again with the change, on the same session.
+        client.command(&chat.id, configure_billing(to)).unwrap();
+        let info = host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+        assert_eq!(info.claude_billing, Some(to));
+        assert_eq!(saved_info(&host, &chat.id).claude_billing, Some(to));
+        let starts = host.fake().starts.lock().unwrap().clone();
+        assert_eq!(starts.len(), 2);
+        assert_eq!(host.fake().shutdowns.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            (starts[1].resume.as_deref(), api_key_of(&starts[1])),
+            (Some("thread-1"), key(to).to_owned())
+        );
+        assert_eq!(api_key_of(&starts[0]), key(from));
+
+        // Stopped, the chat keeps it for its next start and starts nothing.
+        client.close(&chat.id).unwrap();
+        for _ in 0..2 {
+            client.command(&chat.id, configure_billing(from)).unwrap();
+        }
+        assert_eq!(host.info(&chat.id).claude_billing, Some(from));
+        assert_eq!(host.fake().start_count(), 2, "nothing started");
+        send(&mut client, &chat.id, "next");
+        host.wait_for_log(&chat.id, |log| {
+            turns_completed(log) == 2 && last_state(log) == Some(ChatState::Idle)
+        });
+        let started = host.fake().starts.lock().unwrap()[2].clone();
+        assert_eq!(
+            (started.resume.as_deref(), api_key_of(&started)),
+            (Some("thread-1"), key(from).to_owned())
+        );
+        // No driver is configured with it: it is the process's.
+        assert!(
+            host.fake()
+                .configurations
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(command, _)| !matches!(
+                    command,
+                    ChatCommand::Configure {
+                        claude_billing: Some(_),
+                        ..
+                    }
+                ))
+        );
+    }
+    // Another provider's chat has no billing to change.
+    let host = TestHost::new();
+    let codex = host.create(Provider::Codex);
+    let error = host
+        .client()
+        .command(&codex.id, configure_billing(ClaudeBilling::ApiKey))
+        .unwrap_err();
+    assert!(error.contains("Only a Claude chat"), "{error}");
+    assert_eq!(host.info(&codex.id).claude_billing, None);
+}
+
+#[test]
+fn a_billing_change_the_keychain_or_a_restart_refuses_leaves_the_chat_as_it_was() {
+    use ClaudeBilling::{ApiKey, Subscription};
+    let host = TestHost::new();
+    let keys = keys_for(&host.home);
+    keys.save(HOST_KEY).unwrap();
+    let mut new = host.new_chat(Provider::Claude);
+    new.claude_billing = Some(Subscription);
+    let chat = host.client().create(new).unwrap();
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    let mut client = host.client();
+    // A saved key the Keychain will not give: refused before the running Claude is stopped,
+    // so the chat goes on as it was, and no Claude starts on another sign-in for it.
+    keys.fail_reads(Some(
+        "The Keychain could not read the Anthropic API key: User interaction is not allowed.",
+    ));
+    let error = client
+        .command(&chat.id, configure_billing(ApiKey))
+        .unwrap_err();
+    assert!(
+        error.contains("Billing was not changed")
+            && error.contains("User interaction is not allowed")
+            && error.contains("stays on Subscription")
+            && !error.contains(".."),
+        "{error}"
+    );
+    let info = host.info(&chat.id);
+    assert_eq!(info.claude_billing, Some(Subscription));
+    assert_eq!(
+        saved_info(&host, &chat.id).claude_billing,
+        Some(Subscription)
+    );
+    assert_eq!(info.state, ChatState::Idle, "still running as it was");
+    assert_eq!(host.fake().start_count(), 1);
+    assert_eq!(host.fake().shutdowns.load(Ordering::SeqCst), 0);
+    keys.fail_reads(None);
+
+    // A restart that fails on its own leaves the chat failed, as any failed start does,
+    // with the billing it had, and says so; the next message resumes with that billing.
+    *host.fake().fail_start.lock().unwrap() = Some("claude exited".into());
+    let error = client
+        .command(&chat.id, configure_billing(ApiKey))
+        .unwrap_err();
+    assert!(
+        error.contains("Billing was not changed")
+            && error.contains("claude exited")
+            && error.contains("stays on Subscription"),
+        "{error}"
+    );
+    let info = host.info(&chat.id);
+    assert_eq!(info.claude_billing, Some(Subscription));
+    assert_eq!(
+        saved_info(&host, &chat.id).claude_billing,
+        Some(Subscription)
+    );
+    assert!(
+        matches!(info.state, ChatState::Failed { .. }),
+        "{:?}",
+        info.state
+    );
+    assert!(
+        notices(&host.log(&chat.id))
+            .iter()
+            .any(|notice| notice.contains("Billing was not changed")),
+        "{:?}",
+        notices(&host.log(&chat.id))
+    );
+    send(&mut client, &chat.id, "again");
+    host.wait_for_log(&chat.id, |log| {
+        turns_completed(log) == 1 && last_state(log) == Some(ChatState::Idle)
+    });
+    let last = host.fake().starts.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(
+        (last.resume.as_deref(), api_key_of(&last).as_str()),
+        (Some("thread-1"), "removed")
+    );
+}
+
+#[test]
+fn starting_the_host_asks_the_keychain_nothing() {
+    use ClaudeBilling::ApiKey;
+    let mut host = TestHost::new();
+    let keys = keys_for(&host.home);
+    keys.save(HOST_KEY).unwrap();
+    let mut new = host.new_chat(Provider::Claude);
+    new.claude_billing = Some(ApiKey);
+    let chat = host.client().create(new).unwrap();
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    host.stop();
+    let asked = keys.lookups();
+    host.restart(quick_options());
+    let info = host.info(&chat.id);
+    assert_eq!(
+        (info.claude_billing, info.state),
+        (Some(ApiKey), ChatState::Stopped)
+    );
+    assert_eq!(
+        keys.lookups(),
+        asked,
+        "loading the chats asked the Keychain"
+    );
+    send(&mut host.client(), &chat.id, "go");
+    host.wait_for_log(&chat.id, |log| {
+        turns_completed(log) == 1 && last_state(log) == Some(ChatState::Idle)
+    });
+    let last = host.fake().starts.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(api_key_of(&last), HOST_KEY);
 }

@@ -12,6 +12,7 @@ pub use riwork_engine::{
 };
 mod chat;
 
+mod api_key;
 mod appearance_sync;
 mod behavior_controls;
 mod chat_choice;
@@ -8157,7 +8158,15 @@ impl Workspace {
             ChatViewEvent::ShowUsage => {
                 self.open_panel(PanelKind::Usage, self.active_pane, window, cx)
             }
+            ChatViewEvent::OpenApiKeySettings => self.reveal_api_key_settings(window, cx),
         }
+    }
+
+    /// Settings, at the Anthropic API key field: a usage limit's **Enter API key**.
+    fn reveal_api_key_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_panel(PanelKind::Settings, self.active_pane, window, cx);
+        self.settings_panel
+            .update(cx, |panel, cx| panel.reveal_api_key(window, cx));
     }
 
     /// What the orchestrator of `scope` is doing, if it runs as a chat: what its tab says

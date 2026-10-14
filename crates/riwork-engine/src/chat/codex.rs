@@ -1442,6 +1442,7 @@ impl Codex {
                 fast,
                 contributor_mode: _,
                 contributor_opt_out: _,
+                claude_billing: _,
             } => {
                 self.with(|session| {
                     if model.is_some() {

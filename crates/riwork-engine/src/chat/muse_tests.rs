@@ -1350,6 +1350,7 @@ fn plan_starts_read_only_and_cannot_be_left_and_fast_is_refused() {
             fast: None,
             contributor_mode: None,
             contributor_opt_out: None,
+            claude_billing: None,
         },
         ChatCommand::Configure {
             model: None,
@@ -1358,6 +1359,7 @@ fn plan_starts_read_only_and_cannot_be_left_and_fast_is_refused() {
             fast: Some(true),
             contributor_mode: None,
             contributor_opt_out: None,
+            claude_billing: None,
         },
     ] {
         assert!(run.driver.command(refused).is_err());
@@ -1381,6 +1383,7 @@ fn plan_starts_read_only_and_cannot_be_left_and_fast_is_refused() {
             fast: Some(false),
             contributor_mode: None,
             contributor_opt_out: None,
+            claude_billing: None,
         })
         .unwrap();
     super::super::testing::eventually(|| {
@@ -1869,6 +1872,7 @@ fn live_plan_chat_runs_under_the_read_only_profile() {
                 fast: None,
                 contributor_mode: None,
                 contributor_opt_out: None,
+                claude_billing: None,
             })
             .is_err()
     );

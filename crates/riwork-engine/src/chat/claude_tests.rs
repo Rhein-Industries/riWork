@@ -603,6 +603,7 @@ fn a_message_sent_while_the_process_restarts_waits_for_the_new_one() {
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     });
     // The restart is claimed by now, so this does not go to the old process.
     rig.send("after");
@@ -646,6 +647,7 @@ fn a_setting_goes_to_the_running_process_as_a_control_request() {
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     });
     wait_for("both requests", || rig.fake.received().len() == 3);
     let sent = rig.fake.received();
@@ -663,6 +665,7 @@ fn a_setting_goes_to_the_running_process_as_a_control_request() {
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     });
     thread::sleep(Duration::from_millis(100));
     assert_eq!(rig.fake.received().len(), 3);
@@ -678,6 +681,7 @@ fn a_setting_the_cli_cannot_change_restarts_it_with_the_new_flags() {
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     });
     rig.until(|event| {
         matches!(
@@ -709,6 +713,7 @@ fn an_effort_change_restarts_the_process_and_a_refused_model_does_not() {
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     });
     rig.until(|event| {
         matches!(
@@ -731,6 +736,7 @@ fn an_effort_change_restarts_the_process_and_a_refused_model_does_not() {
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     });
     let events = rig.until(|event| {
         matches!(event, ChatEvent::ItemCompleted { item } if matches!(item.body, ItemBody::Notice { .. }))
@@ -755,6 +761,7 @@ fn an_effort_change_restarts_the_process_and_a_refused_model_does_not() {
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     });
     wait_for("the second request", || rig.fake.received().len() == 3);
 }
@@ -777,6 +784,7 @@ fn configure_fast(fast: bool) -> ChatCommand {
         fast: Some(fast),
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     }
 }
 
@@ -944,6 +952,7 @@ fn a_model_without_fast_mode_does_not_make_the_chat_complain_about_it() {
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     });
     rig.send("go");
     rig.until_idle();
@@ -1547,6 +1556,7 @@ fn stopping_during_a_restart_stops_the_process_being_replaced_too() {
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     });
     // The restart has begun stopping the old process, which will not leave
     // by itself for a while.
@@ -1573,6 +1583,7 @@ fn messages_queued_for_a_restart_that_fails_are_reported_not_lost() {
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     });
     rig.send("hello?");
     rig.command(ChatCommand::Compact);
@@ -2511,6 +2522,7 @@ fn messages_queued_for_a_restart_the_user_stops_keep_their_text() {
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     });
     let text = "sent while it restarts ✓";
     rig.send(text);
@@ -2741,6 +2753,7 @@ fn model_change(model: &str) -> ChatCommand {
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     }
 }
 
@@ -2838,6 +2851,7 @@ fn a_permission_mode_and_fast_mode_claude_takes_are_reported_when_it_answers() {
                 fast: Some(true),
                 contributor_mode: None,
                 contributor_opt_out: None,
+                claude_billing: None,
             },
             reporter,
         )
@@ -2872,6 +2886,7 @@ fn an_effort_is_reported_at_once_and_the_restart_for_it_settles_what_the_old_pro
                 fast: None,
                 contributor_mode: None,
                 contributor_opt_out: None,
+                claude_billing: None,
             },
             effort,
         )
@@ -2984,4 +2999,53 @@ fn a_late_answer_to_an_older_change_does_not_become_what_claude_keeps() {
     answer(&mut core, &request_c, false);
     assert_eq!(heard_c.models(), [Some("model-b".to_owned())]);
     assert_eq!(core.settings.model.as_deref(), Some("model-b"));
+}
+
+#[test]
+fn a_claude_chat_starts_with_the_saved_key_on_api_key_and_with_no_key_on_subscription() {
+    use crate::anthropic_key::MemoryStore;
+    use crate::chat::launch::api_key_for;
+    use crate::chat::model::{ChatInfo, ClaudeBilling};
+    let text = fixture("claude/idle_only.ndjson");
+    let home = std::env::temp_dir().join(format!("riwork-billing-start-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    // Billing × a key saved in the store × a key the host's environment exports. The record
+    // says only whether the process has a key, never which.
+    for billing in ClaudeBilling::ALL {
+        for saved in [false, true] {
+            for exported in [false, true] {
+                let fake = Fake::new(&[text.as_str()]);
+                let mut config = fake.config(Provider::Claude);
+                if exported {
+                    config.env_remove.retain(|name| name != "ANTHROPIC_API_KEY");
+                    config
+                        .env
+                        .push(("ANTHROPIC_API_KEY".into(), "sk-ant-dummy-exported".into()));
+                }
+                let info: ChatInfo = serde_json::from_value(json!({
+                    "id": "chat", "provider": "claude", "cwd": fake.dir, "title": "Claude chat",
+                    "created_at_unix": 1, "claude_billing": billing,
+                }))
+                .unwrap();
+                let keys = if saved {
+                    MemoryStore::with_key("sk-ant-dummy-saved")
+                } else {
+                    MemoryStore::default()
+                };
+                api_key_for(&home, &info, &keys).unwrap().apply(&mut config);
+                let (sender, _events) = mpsc::channel();
+                let mut driver = start_with(config, sender, fast()).unwrap();
+                let start = fake.starts().remove(0);
+                let has_key = billing == ClaudeBilling::ApiKey && (saved || exported);
+                let case = format!("{billing:?}, saved {saved}, exported {exported}: {start}");
+                match has_key {
+                    true => assert_eq!(start["env"]["ANTHROPIC_API_KEY"], "<set>", "{case}"),
+                    false => assert!(start["env"].get("ANTHROPIC_API_KEY").is_none(), "{case}"),
+                }
+                assert!(!start.to_string().contains("sk-ant-dummy"), "{case}");
+                driver.shutdown();
+            }
+        }
+    }
+    std::fs::remove_dir_all(home).unwrap();
 }

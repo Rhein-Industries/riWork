@@ -269,6 +269,7 @@ pub fn deliver_new(
             // A scheduled chat starts off, as every Muse RiWork starts unless asked on.
             contributor_mode: chat::model::ContributorMode::Off,
             contributor_opt_out: false,
+            claude_billing: None,
             orchestrator: None,
         },
     ) {

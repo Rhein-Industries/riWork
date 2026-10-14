@@ -460,7 +460,15 @@ pub(super) fn parse_command(text: &str) -> Result<ChatCommand, String> {
             fast,
             contributor_mode,
             contributor_opt_out,
+            claude_billing,
         } => {
+            // Who a Claude chat bills is the person's choice in RiWork's window on the Mac,
+            // where its key is: never a command's, a paired device's or an agent's.
+            if claude_billing.is_some() {
+                return Err(invalid(
+                    "a chat's billing is chosen in RiWork's window on the Mac, not by a command",
+                ));
+            }
             if model.is_none()
                 && effort.is_none()
                 && approval_mode.is_none()

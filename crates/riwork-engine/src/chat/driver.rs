@@ -59,8 +59,9 @@ impl std::fmt::Debug for DriverReporter {
     }
 }
 
-/// How to start a provider process for one chat.
-#[derive(Clone, Debug)]
+/// How to start a provider process for one chat. Its `Debug` names the environment
+/// variables it sets, never their values: one may be the saved Anthropic API key.
+#[derive(Clone)]
 pub struct DriverConfig {
     pub provider: Provider,
     /// The `codex` or `claude` executable.
@@ -96,10 +97,55 @@ pub struct DriverConfig {
     /// appended to its system prompt, Codex as the thread's developer instructions, at
     /// every start and resume.
     pub instructions: Option<String>,
-    /// Environment to set and to remove (e.g. `CODEX_HOME`; `ANTHROPIC_API_KEY`
-    /// is always removed for Claude so a stray key cannot switch billing).
+    /// Environment to set and to remove (e.g. `CODEX_HOME`; a Claude chat's
+    /// `ANTHROPIC_API_KEY`, set to the saved key or removed by its billing, `launch`).
     pub env: Vec<(OsString, OsString)>,
     pub env_remove: Vec<OsString>,
+}
+
+impl std::fmt::Debug for DriverConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            provider,
+            program,
+            cwd,
+            approval_mode,
+            model,
+            effort,
+            fast,
+            contributor_mode,
+            trust_workspace,
+            resume,
+            resume_has_history,
+            reporter,
+            outstanding_notices,
+            extra_args,
+            instructions,
+            env,
+            env_remove,
+        } = self;
+        let env: Vec<_> = env.iter().map(|(name, _)| (name, "<set>")).collect();
+        formatter
+            .debug_struct("DriverConfig")
+            .field("provider", provider)
+            .field("program", program)
+            .field("cwd", cwd)
+            .field("approval_mode", approval_mode)
+            .field("model", model)
+            .field("effort", effort)
+            .field("fast", fast)
+            .field("contributor_mode", contributor_mode)
+            .field("trust_workspace", trust_workspace)
+            .field("resume", resume)
+            .field("resume_has_history", resume_has_history)
+            .field("reporter", reporter)
+            .field("outstanding_notices", outstanding_notices)
+            .field("extra_args", extra_args)
+            .field("instructions", instructions)
+            .field("env", &env)
+            .field("env_remove", env_remove)
+            .finish()
+    }
 }
 
 /// A running provider process for one chat.

@@ -827,6 +827,7 @@ fn placeholder_source() -> handoff::Source {
         fast: false,
         contributor_mode: Default::default(),
         contributor_opt_out: false,
+        claude_billing: None,
         state: Default::default(),
         carried_over: None,
     })

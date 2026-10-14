@@ -53,6 +53,7 @@ fn configure(model: Option<&str>, effort: Option<&str>, mode: Option<ApprovalMod
         fast: None,
         contributor_mode: None,
         contributor_opt_out: None,
+        claude_billing: None,
     }
 }
 

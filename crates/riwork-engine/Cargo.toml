@@ -19,3 +19,5 @@ base64 = "0.22"
 libc = "0.2"
 toml_edit = "0.22"
 unicode-normalization = "0.1"
+# Already in the lockfile (rustls-native-certs); the Anthropic API key's Keychain item.
+security-framework = "3"

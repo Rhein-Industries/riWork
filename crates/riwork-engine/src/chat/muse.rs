@@ -307,6 +307,7 @@ impl Driver for MuseDriver {
             fast,
             contributor_mode: _,
             contributor_opt_out: _,
+            claude_billing: _,
         } = command
         else {
             return self.command(command);
@@ -1776,6 +1777,7 @@ impl Muse {
                 fast,
                 contributor_mode: _,
                 contributor_opt_out: _,
+                claude_billing: _,
             } => self.configure(
                 model,
                 effort,

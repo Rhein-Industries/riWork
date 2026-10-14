@@ -4,7 +4,11 @@
 use gpui::{AnyElement, Context, KeyDownEvent, Pixels, Window, div, prelude::*, px, rgb};
 use gpui_kit::base::TestSupportExt as _;
 
-use crate::{chat::model::NoticeLevel, icons, ui_text};
+use crate::{
+    chat::billing::{LimitBanner, LimitOffer},
+    chat::model::NoticeLevel,
+    icons, ui_text,
+};
 
 use super::{
     ChatView, ChatViewEvent, cards,
@@ -266,6 +270,23 @@ impl ChatView {
                         .into_any_element(),
                 )
             }))
+            .children(self.limit_offer(notice, cx).map(|offer| {
+                let id = notice.id.clone();
+                let (name, label) = match offer {
+                    LimitOffer::UseApiKey => ("chat-notice-use-api-key", "Use API key"),
+                    LimitOffer::EnterApiKey => ("chat-notice-enter-api-key", "Enter API key"),
+                };
+                beside(
+                    button(format!("{name}:{}", notice.id), label, None, look)
+                        .py(px(0.0))
+                        .line_height(line)
+                        .on_click(cx.listener(move |view, _, _, cx| match offer {
+                            LimitOffer::UseApiKey => view.use_api_key(&id, cx),
+                            LimitOffer::EnterApiKey => cx.emit(ChatViewEvent::OpenApiKeySettings),
+                        }))
+                        .into_any_element(),
+                )
+            }))
             .children(notice.usage_limit().then(|| {
                 beside(
                     button(
@@ -308,6 +329,25 @@ impl ChatView {
                 cx,
             )))
             .into_any_element()
+    }
+
+    /// The way past a subscription usage limit a Claude chat's banner offers: its API key,
+    /// or Settings to enter one (`billing::limit_banner`).
+    fn limit_offer(&self, notice: &Banner, cx: &mut Context<Self>) -> Option<LimitOffer> {
+        let provider = self.provider()?;
+        if !notice.usage_limit() || provider != crate::chat::model::Provider::Claude {
+            return None;
+        }
+        let body = notice.body();
+        match crate::chat::billing::limit_banner(
+            provider,
+            &body,
+            self.model.transcript.account.as_ref(),
+            crate::api_key::saved(cx),
+        ) {
+            LimitBanner::Offer(offer) => Some(offer),
+            LimitBanner::Plain | LimitBanner::Hidden => None,
+        }
     }
 
     /// The banners, newest on top: two, then "n more", or all of them once it is pressed;

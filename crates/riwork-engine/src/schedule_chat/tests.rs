@@ -413,6 +413,7 @@ fn standin_rig(on_send: OnSend, wait: Duration) -> (PathBuf, ScheduleStore, Chat
         fast: false,
         contributor_mode: Default::default(),
         contributor_opt_out: false,
+        claude_billing: None,
         carried_over: None,
     };
     chat::log::ChatLog::create(&chat::log::chat_dir(&home, &chat.id).unwrap(), &chat).unwrap();
