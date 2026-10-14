@@ -8199,6 +8199,48 @@ else:
         assert!(pasted.contains(CUA_GUIDANCE));
     }
 
+    /// A terminal orchestrator started with an older skill is offered LOAD SKILL, and what
+    /// LOAD SKILL pastes into either scope is this build's skill with its model routing and
+    /// dashboard briefs.
+    #[test]
+    fn a_terminal_orchestrator_with_an_older_skill_is_offered_this_one_in_either_scope() {
+        let manager = SessionManager::at(
+            std::env::temp_dir().join(format!("riwork-skill-version-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let project = "11111111-1111-4111-8111-111111111111";
+        let older = format!("{:016x}", stable_hash(b"the skill before model routing"));
+        assert_ne!(older, orchestrator_skill_version());
+        for scope in [None, Some(project)] {
+            let mut session = scope_session(ShellKind::Orchestrator, scope);
+            session.orchestrator_skill_loaded = true;
+            session.orchestrator_skill_version = Some(older.clone());
+            assert!(!manager.orchestrator_skill_is_current(&session));
+            session.orchestrator_skill_version = Some(orchestrator_skill_version());
+            assert!(manager.orchestrator_skill_is_current(&session));
+
+            let skill =
+                Path::new("/state/orchestrator/.agents/skills/riwork-orchestrator/SKILL.md");
+            let root = Path::new("/projects/app");
+            let pasted = orchestrator_prompt(
+                skill,
+                Path::new("/bin/riwork"),
+                scope,
+                scope.map(|_| root),
+                true,
+            );
+            assert!(pasted.contains(ORCHESTRATOR_SKILL));
+            for section in [
+                "## Model routing",
+                "## Dashboard briefs",
+                "muse-wonder-full-1.0",
+            ] {
+                assert!(pasted.contains(section), "{section}");
+            }
+        }
+        manager.kill_server();
+    }
+
     fn scope_session(kind: ShellKind, project_id: Option<&str>) -> ShellSession {
         serde_json::from_value(serde_json::json!({
             "id": "00000000-0000-4000-8000-000000000001",

@@ -879,3 +879,71 @@ fn an_existing_orchestrator_is_reused_as_it_runs_whatever_the_settings_say_now()
     assert_eq!(sent_texts(&first).len(), 1, "never told again");
     assert_eq!(host.client().list().unwrap().len(), 1);
 }
+
+#[test]
+fn both_scopes_are_given_the_skill_with_model_routing_and_dashboard_briefs() {
+    let skill = include_str!("../../skills/riwork-orchestrator/SKILL.md");
+    for needle in [
+        "## Model routing",
+        "`muse`, `muse-wonder-full-1.0`",
+        "`claude`, `opus`",
+        "`codex`, `gpt-6.1-sol`",
+        "riwork chat new --provider",
+        "riwork shell create --worktree WORKTREE_ID --harness codex|claude|muse|grok --model MODEL",
+        "riwork handoff --from SHELL_OR_CHAT_ID",
+        "riwork chat list --project PROJECT_ID --json",
+        "Never fall back silently",
+        "## Dashboard briefs",
+        "RIWORK BRIEF REQUEST",
+        "END RIWORK BRIEF",
+        "Never assigns work directly to a project's workers",
+        "without delegating",
+    ] {
+        assert!(skill.contains(needle), "the skill lacks {needle:?}");
+    }
+    let host = TestHost::new();
+    let (sessions, _server) = sessions(&host);
+    let root = project_root(&host);
+    let (global, _) = chat_of(create_planned(&sessions, &host.home, None).unwrap());
+    // A project's orchestrator, as Automatic makes it (PROJECT is not in the store).
+    let (project, _) = chat_of(
+        create(
+            &sessions,
+            &chat_host(&host.home),
+            &scope_of(Some(PROJECT)),
+            Some(root.clone()),
+            root.clone(),
+            None,
+            &OrchestratorRuns::Automatic,
+        )
+        .unwrap(),
+    );
+    for (chat, scope) in [(&global, None), (&project, Some(PROJECT))] {
+        let installed = sessions.orchestrator_skill_path_scoped(scope).unwrap();
+        assert_eq!(fs::read_to_string(&installed).unwrap(), skill);
+        assert!(sent_texts(chat)[0].contains(&installed.to_string_lossy().into_owned()));
+        assert!(chat_skill_is_current(&host.home, chat));
+        // LOAD SKILL after an update sends this text, whole, to either scope.
+        host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
+        fs::write(
+            skill_mark_path(&host.home, scope),
+            serde_json::to_vec(&SkillMark {
+                chat_id: chat.id.clone(),
+                version: "0000000000000000".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        load_chat_skill(
+            &sessions,
+            &chat_host(&host.home),
+            chat,
+            Some(root.as_path()),
+        )
+        .unwrap();
+        let loaded = sent_texts(chat).last().unwrap().clone();
+        assert!(loaded.contains("## Model routing") && loaded.contains("## Dashboard briefs"));
+        assert!(loaded.contains(skill));
+        assert!(chat_skill_is_current(&host.home, chat));
+    }
+}
