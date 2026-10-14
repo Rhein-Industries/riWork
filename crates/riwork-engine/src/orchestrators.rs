@@ -42,6 +42,7 @@ use crate::{
             OrchestratorScope, Provider,
         },
     },
+    delegation::{self, Delegation},
     sessions::{
         SessionManager, ShellSession, orchestrator_context, orchestrator_prompt,
         orchestrator_skill_version,
@@ -291,6 +292,34 @@ pub fn plan(home: &Path, project_id: Option<&str>) -> Result<Plan, String> {
     Ok(plan_for(&settings, project.as_ref()))
 }
 
+/// The delegation policy of `project`'s orchestrator (none: the global one's): the
+/// project's own choices, then Settings', then RiWork's, field by field. The global
+/// orchestrator follows Settings.
+pub fn delegation_for(settings: &Settings, project: Option<&Project>) -> Delegation {
+    delegation::resolve(
+        &settings.delegation_policy,
+        project.map(|project| &project.delegation_policy),
+    )
+}
+
+/// `delegation_for` as the files of `home` say now, read each time as `plan` reads
+/// them. It never fails: unreadable settings read as their defaults, and a project the
+/// store cannot name (or a store that cannot be read) adds nothing to Settings.
+pub fn delegation(home: &Path, project_id: Option<&str>) -> Delegation {
+    let settings = SettingsStore::open(home)
+        .and_then(|store| store.load())
+        .unwrap_or_default();
+    let project = project_id.and_then(|id| {
+        Store::open(home)
+            .and_then(|store| store.snapshot())
+            .ok()?
+            .project(id)
+            .ok()
+            .cloned()
+    });
+    delegation_for(&settings, project.as_ref())
+}
+
 /// What `create` did.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Created {
@@ -439,7 +468,14 @@ fn create_chat(
                 .map_err(|error| format!("resolve {}: {error}", root.display()))
         })
         .transpose()?;
-    let first = orchestrator_prompt(&skill, &executable, project_id, root.as_deref(), false);
+    let first = orchestrator_prompt(
+        &skill,
+        &executable,
+        project_id,
+        root.as_deref(),
+        &delegation(host.home, project_id),
+        false,
+    );
     let mut client = host.connect()?;
     let created = client.create(NewChat {
         parent_id: None,
@@ -535,7 +571,14 @@ pub fn load_chat_skill(
     let skill = sessions.orchestrator_skill_path_scoped(project_id)?;
     let executable =
         env::current_exe().map_err(|error| format!("resolve RiWork executable: {error}"))?;
-    let message = orchestrator_prompt(&skill, &executable, project_id, project_root, true);
+    let message = orchestrator_prompt(
+        &skill,
+        &executable,
+        project_id,
+        project_root,
+        &delegation(host.home, project_id),
+        true,
+    );
     client.command(&chat.id, ChatCommand::Send { text: message })?;
     record_chat_skill(host.home, &chat)?;
     Ok(chat)

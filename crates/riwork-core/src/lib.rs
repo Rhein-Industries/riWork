@@ -2,6 +2,7 @@
 
 pub mod appearance_file;
 pub mod codex_accounts;
+pub mod delegation;
 pub mod global_window;
 pub mod layouts;
 pub mod orca_import;

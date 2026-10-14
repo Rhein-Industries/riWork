@@ -21,6 +21,7 @@ mod chat_tabs;
 mod chat_view;
 mod controls;
 mod dashboard;
+mod delegation_choice;
 mod dictation;
 mod dock_menu;
 mod file_explorer;

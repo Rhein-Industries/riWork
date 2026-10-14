@@ -2,8 +2,8 @@
 
 // Keep the shared data namespaces identical for backend callers.
 pub use riwork_core::{
-    appearance_file, codex_accounts, global_window, layouts, orca_import, paths, project_recency,
-    provider, recency_file, settings, status_bar, store, theme, ui_text,
+    appearance_file, codex_accounts, delegation, global_window, layouts, orca_import, paths,
+    project_recency, provider, recency_file, settings, status_bar, store, theme, ui_text,
 };
 
 pub mod activity;

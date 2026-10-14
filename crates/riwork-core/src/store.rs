@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::settings::OrchestratorRuns;
+use crate::{delegation::DelegationPolicy, settings::OrchestratorRuns};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -39,6 +39,11 @@ pub struct Project {
     /// chooses. Only this project's orchestrator follows it.
     #[serde(default)]
     pub orchestrator: ProjectOrchestrator,
+    /// This project's own delegation policy: each field it chooses wins over Settings'
+    /// (`delegation::resolve`) for this project's orchestrator only. Older projects
+    /// choose nothing.
+    #[serde(default)]
+    pub delegation_policy: DelegationPolicy,
     pub created_at: u64,
 }
 
@@ -1124,6 +1129,7 @@ impl Store {
                     notify_on_agent_done: false,
                     wake_orchestrators_on_agent_done: false,
                     orchestrator: Default::default(),
+                    delegation_policy: Default::default(),
                     codex_account: ProjectCodexAccount::default(),
                     created_at: now(),
                 };
@@ -1398,6 +1404,28 @@ impl Store {
                 .expect("resolved project remains in the transaction");
             let changed = project.orchestrator != choice;
             project.orchestrator = choice;
+            Ok((project.clone(), changed))
+        })
+    }
+
+    /// Change only this project's delegation policy, by `change` applied to the policy
+    /// as the store holds it now, so another window's change to another field stands.
+    /// Its orchestrator hears of it when it is next created or loads its skill.
+    pub fn set_project_delegation_policy(
+        &self,
+        selector: &str,
+        change: impl FnOnce(&mut DelegationPolicy),
+    ) -> Result<Project, String> {
+        self.transaction_if_changed(|state| {
+            let project_id = state.project(selector)?.id.clone();
+            let project = state
+                .projects
+                .iter_mut()
+                .find(|project| project.id == project_id)
+                .expect("resolved project remains in the transaction");
+            let before = project.delegation_policy.clone();
+            change(&mut project.delegation_policy);
+            let changed = project.delegation_policy != before;
             Ok((project.clone(), changed))
         })
     }

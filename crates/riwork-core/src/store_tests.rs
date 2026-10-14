@@ -492,6 +492,129 @@ fn an_unreadable_project_orchestrator_choice_is_kept_shown_and_inherits() {
 }
 
 #[test]
+fn a_project_delegation_policy_is_its_own_field_by_field_and_older_projects_choose_nothing() {
+    use crate::delegation::{Delegation, DelegationPolicy, Route, Work, resolve};
+    use crate::provider::Provider;
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let root = fixture.directory("main");
+    let other_root = fixture.directory("other");
+    let id = Uuid::new_v4().to_string();
+    let other = Uuid::new_v4().to_string();
+    // Projects from before the policy, and one whose policy another build wrote.
+    let document = serde_json::json!({
+        "schema_version": 1,
+        "active_project_id": id,
+        "projects": [
+            {"id": id, "name": "Main", "root": root, "created_at": 7},
+            {"id": other, "name": "Other", "root": other_root, "created_at": 8,
+             "delegation_policy": {"spread_work": "maybe", "parallel_shells": 64,
+                                   "future_field": [1, 2]}},
+        ],
+        "worktrees": [],
+        "tasks": [],
+    });
+    let state_path = store.dir.join("state.json");
+    fs::write(&state_path, serde_json::to_vec(&document).unwrap()).unwrap();
+    let saved = || -> Value { serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap() };
+
+    let state = store.snapshot().unwrap();
+    assert!(state.project(&id).unwrap().delegation_policy.is_empty());
+    let odd = &state.project(&other).unwrap().delegation_policy;
+    assert_eq!(odd.spread_work, None);
+    assert_eq!(odd.parallel_shells, None);
+    assert_eq!(odd.unreadable.len(), 3);
+    assert_eq!(
+        resolve(&DelegationPolicy::default(), Some(odd)),
+        Delegation::built_in()
+    );
+
+    // A choice saves, reopens as itself, and touches only its project and field.
+    let changed = store
+        .set_project_delegation_policy("Main", |policy| policy.set_spread_work(Some(false)))
+        .unwrap();
+    assert_eq!(changed.delegation_policy.spread_work, Some(false));
+    store
+        .set_project_delegation_policy(&id, |policy| {
+            policy.set_route(Work::Workhorse, Some(Route::recommended(Provider::Claude)))
+        })
+        .unwrap();
+    let reopened = fixture.store().snapshot().unwrap();
+    let main = &reopened.project(&id).unwrap().delegation_policy;
+    assert_eq!(main.spread_work, Some(false));
+    assert_eq!(main.workhorse, Some(Route::recommended(Provider::Claude)));
+    assert_eq!(main.parallel_shells, None);
+    assert_eq!(
+        saved()["projects"][0]["delegation_policy"],
+        serde_json::json!({"spread_work": false, "workhorse": {"provider": "claude", "model": "opus"}})
+    );
+    // What another build wrote stays as written through another project's change.
+    assert_eq!(
+        saved()["projects"][1]["delegation_policy"],
+        document["projects"][1]["delegation_policy"]
+    );
+    // Over Settings, the project's choices win field by field.
+    let settings = DelegationPolicy {
+        parallel_shells: Some(7),
+        spread_work: Some(true),
+        ..Default::default()
+    };
+    let scoped = resolve(&settings, Some(main));
+    assert!(!scoped.spread_work);
+    assert_eq!(scoped.parallel_shells, 7);
+    assert_eq!(scoped.workhorse, Route::recommended(Provider::Claude));
+    assert_eq!(scoped.design, Work::Design.built_in());
+
+    // An unchanged value writes nothing; other per-project choices are left alone.
+    let unchanged = fs::read(&state_path).unwrap();
+    store
+        .set_project_delegation_policy(&id, |policy| policy.set_spread_work(Some(false)))
+        .unwrap();
+    assert_eq!(fs::read(&state_path).unwrap(), unchanged);
+    store.set_project_orchestrator_wakes(&id, true).unwrap();
+    store.set_project_notifications(&other, true).unwrap();
+    let reopened = fixture.store().snapshot().unwrap();
+    assert_eq!(
+        reopened.project(&id).unwrap().delegation_policy.spread_work,
+        Some(false)
+    );
+    assert_eq!(
+        saved()["projects"][1]["delegation_policy"],
+        document["projects"][1]["delegation_policy"]
+    );
+    assert!(
+        store
+            .set_project_delegation_policy("missing", |policy| policy.set_spread_work(None))
+            .is_err()
+    );
+    // Choosing over an unreadable value replaces just it; following Settings again
+    // leaves an empty policy.
+    let chosen = store
+        .set_project_delegation_policy(&other, |policy| policy.set_parallel_shells(Some(3)))
+        .unwrap();
+    assert_eq!(chosen.delegation_policy.parallel_shells, Some(3));
+    assert_eq!(
+        saved()["projects"][1]["delegation_policy"]["parallel_shells"],
+        3
+    );
+    assert_eq!(
+        saved()["projects"][1]["delegation_policy"]["spread_work"],
+        "maybe"
+    );
+    let inherited = store
+        .set_project_delegation_policy(&id, |policy| {
+            policy.set_spread_work(None);
+            policy.set_route(Work::Workhorse, None);
+        })
+        .unwrap();
+    assert!(inherited.delegation_policy.is_empty());
+    assert_eq!(
+        saved()["projects"][0]["delegation_policy"],
+        serde_json::json!({})
+    );
+}
+
+#[test]
 fn concurrent_notification_and_display_updates_preserve_each_other() {
     use std::sync::{Arc, Barrier};
     use std::thread;
