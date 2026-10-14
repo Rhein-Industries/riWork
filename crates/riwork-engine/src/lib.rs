@@ -36,6 +36,7 @@ pub mod session_reload;
 pub mod session_viewport;
 pub mod sessions;
 pub mod sgr;
+pub mod subshells;
 pub mod terminal_drop;
 pub mod terminal_links;
 pub mod upload_inbox;

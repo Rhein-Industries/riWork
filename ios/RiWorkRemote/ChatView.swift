@@ -50,6 +50,7 @@ struct ChatScreen: View {
         let barShown = !approvals.isEmpty || !questions.isEmpty || !elidedRequests.isEmpty
         VStack(spacing: 0) {
             ChatToolbar(model: model, chat: info, conversation: conversation, state: state, showModels: $showModels)
+            ChatWorkerShells(model: model, project: info.projectID)
             ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, dismissesKeyboard: !model.keyboard.hardware.isAttached || model.keyboard.software.isShown, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) })
                 .id(chat.id)
                 .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { transcriptTop = $0; transcriptChanged(barShown: barShown) }
@@ -652,7 +653,7 @@ private struct ChatTranscriptList: View {
                 }
                 // The provider's notices are the banner row's (and the history's), not rows of the transcript.
                 ForEach(transcript.items.filter(ChatNotices.isTranscriptRow)) { item in
-                    ChatItemRow(item: item, provider: provider, open: open(for: item), toggle: toggle).equatable()
+                    ChatItemRow(item: item, provider: provider, subagent: ChatSubagent.inTranscript(item, items: transcript.items, provider: provider), open: open(for: item), toggle: toggle).equatable()
                         .id(item.id)
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frame in
                             viewport.frames[item.id] = frame

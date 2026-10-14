@@ -71,6 +71,10 @@ mod selection_document;
 #[cfg(test)]
 mod selection_tests;
 mod state;
+mod subshells;
+#[cfg(test)]
+mod subshells_tests;
+pub use subshells::ShellAction;
 #[cfg(test)]
 mod testing;
 mod toolbar;
@@ -92,6 +96,10 @@ actions!(riwork_chat, [InterruptChat, ToggleDictation]);
 
 /// What a chat tab tells the window.
 pub enum ChatViewEvent {
+    WorkerShell {
+        shell_id: String,
+        action: ShellAction,
+    },
     /// The title, the agent behind it, or what it is doing changed: the tab and the counts
     /// of agents are drawn again.
     Changed,
@@ -178,6 +186,7 @@ struct DrawnDiff {
 }
 
 pub struct ChatView {
+    workers: subshells::WorkerUi,
     config: HostConfig,
     window_handle: gpui::AnyWindowHandle,
     /// The host's id for the chat; none while a new chat is being made.
@@ -454,6 +463,7 @@ impl ChatView {
             select::TranscriptSelection::new(window.window_handle(), cx.weak_entity(), cx);
         Self {
             config,
+            workers: Default::default(),
             window_handle: window.window_handle(),
             chat_id: None,
             creation: None,
@@ -761,6 +771,13 @@ impl ChatView {
     /// Tell the list about the rows that came or changed. Rows are measured when they are
     /// drawn, so a row that changed must be measured again.
     fn sync_list(&mut self, applied: &Applied, cx: &mut Context<Self>) {
+        if applied.touched.iter().any(|at| {
+            self.model.transcript.items.get(*at).is_some_and(|item| {
+                crate::chat::subagents::of(item, self.info().map(|info| info.provider)).is_some()
+            })
+        }) {
+            self.list.remeasure();
+        }
         self.transcript_selection.changed();
         // Streaming content cannot leave an old copied projection. Unrelated
         // tail updates preserve selection and participant/editor identities.

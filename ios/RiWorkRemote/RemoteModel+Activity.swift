@@ -76,7 +76,8 @@ extension RemoteModel {
         // The chats are tabs in the same strip, and have states of their own.
         async let tabList = sharedTabsOfProject(project)
         async let talks = chatsOfProject(project)
-        let (listedShells, listedManagers, listedChats, listedTabs) = await (workers, managers, talks, tabList)
+        async let titles: [RemoteTask]? = shells.contains(where: { $0.parent_id != nil && $0.kind != "orchestrator" }) ? try? rpc("tasks.list", ["project_id": .string(project)])["tasks"].decode([RemoteTask].self) : nil
+        let (listedShells, listedManagers, listedChats, listedTabs, listedTasks) = await (workers, managers, talks, tabList, titles)
         guard generation == token, projectID == project, loadedProjectID == project, state == .connected else { return }
         // Something newer was installed while these were read (a chat or terminal made here, a tab change's reply): this read is older
         // than the screen, its lists with it; the next refresh brings them. Its tab list is only believed if not older either.
@@ -84,6 +85,8 @@ extension RemoteModel {
         if let listedTabs, !acceptSharedTabs(listedTabs) { return }
         if let listedChats { installChats(listedChats, project: project) }
         if let listedShells, listedShells != shells { shells = listedShells }
+        if listedShells != nil { workerShellsCheckedAt = .now; workerShellListFailed = false } else { workerShellListFailed = true }
+        if let listedTasks { workerTasks = listedTasks }
         if let listedManagers, listedManagers != orchestrators { orchestrators = listedManagers }
         // The project's first shared list arrives late (its first read failed): the remembered tab comes back now.
         if listedTabs != nil { restorePendingTab(project: project) }

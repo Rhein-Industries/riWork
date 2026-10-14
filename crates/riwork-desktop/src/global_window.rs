@@ -1219,7 +1219,7 @@ impl GlobalWindow {
                 self.focus_view(window, cx);
                 cx.notify();
             }
-            ChatViewEvent::HandOff | ChatViewEvent::NewChat => {
+            ChatViewEvent::HandOff | ChatViewEvent::NewChat | ChatViewEvent::WorkerShell { .. } => {
                 self.notice = Some("That works on a project's chats, in its window.".into());
                 cx.notify();
             }

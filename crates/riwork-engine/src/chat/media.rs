@@ -67,6 +67,7 @@ pub fn presentation(value: &Value) -> Presentation {
     let mut bytes = 0;
     collect(value, 0, &mut images, &mut bytes);
     Presentation {
+        subagent: (value["type"] == "collabAgentToolCall").then(|| super::subagents::codex(value)),
         phase,
         images,
         ..Default::default()

@@ -1139,6 +1139,16 @@ impl SessionManager {
         self.capture_text(id, lines, false)
     }
 
+    /// Capture a shell from a successful live sample without another liveness query.
+    /// A pane that exits after sampling returns the normal tmux error.
+    pub fn capture_sampled(&self, shell: &ShellSession, lines: usize) -> Result<String, String> {
+        validate_uuid(&shell.id)?;
+        if !shell.alive {
+            return Err("Shell has exited".into());
+        }
+        self.capture_text(&shell.id, lines, false)
+    }
+
     /// The scrollback capture of a shell known to be live. `styled` keeps the
     /// SGR sequences of `capture-pane -e` and removes every other escape.
     fn capture_text(&self, id: &str, lines: usize, styled: bool) -> Result<String, String> {
@@ -1978,7 +1988,7 @@ impl SessionManager {
 
     /// Called wherever this process changes sessions, so the next `sample` reads
     /// tmux again instead of showing the old state for the rest of its TTL.
-    fn invalidate_sample(&self) {
+    pub fn invalidate_sample(&self) {
         sample::cache_for(&self.socket_name).invalidate();
     }
 

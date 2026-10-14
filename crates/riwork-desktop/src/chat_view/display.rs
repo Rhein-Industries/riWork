@@ -181,6 +181,8 @@ pub(super) fn rows(
                 .as_deref()
                 .is_some_and(|turn| done.contains(turn) && final_turns.contains(turn));
         waiting_message == Some(at)
+            || crate::chat::subagents::of(item, transcript.info.as_ref().map(|info| info.provider))
+                .is_some()
             || matches!(item.body, ItemBody::UserMessage { .. })
             || (!recovered
                 && matches!(

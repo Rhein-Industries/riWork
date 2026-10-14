@@ -43,6 +43,9 @@ enum ConnectionState: Equatable {
     }
 
     var shells: [RemoteSession] = [] { didSet { inventoryStamp &+= 1 } }
+    var workerTasks: [RemoteTask] = []
+    var workerShellsCheckedAt: Date?
+    var workerShellListFailed = false
     var orchestrators: [RemoteSession] = []
     var output = "" { didSet { hasOutput = !output.isEmpty } }
     /// Whether `output` holds anything. Views read this rather than `output`, which is a new string with every live answer and would
@@ -676,7 +679,7 @@ enum ConnectionState: Equatable {
     }
     private func clearSnapshot() {
         sharedTabs = nil
-        projects = []; touchedProjects = [:]; worktrees = []; shells = []; orchestrators = []; loadedProjectID = nil; resetOutput(); snapshotStale = true
+        projects = []; touchedProjects = [:]; worktrees = []; shells = []; workerTasks = []; workerShellsCheckedAt = nil; workerShellListFailed = false; orchestrators = []; loadedProjectID = nil; resetOutput(); snapshotStale = true
         chats = []; projectChatID = nil; projectBlockedID = nil; chatConversations = [:]
         // Another desktop: its Global screen is not up (the desktop list is), so the next selection is a project's.
         scope = .project; clearDashboard()
@@ -755,7 +758,7 @@ enum ConnectionState: Equatable {
             }
             resetOutput(); draft = ""; deliveryNotice = nil
             restoreTabPending = true
-            sharedTabs = nil; worktrees = []; shells = []; loadedProjectID = nil; snapshotStale = true
+            sharedTabs = nil; worktrees = []; shells = []; workerTasks = []; workerShellsCheckedAt = nil; workerShellListFailed = false; loadedProjectID = nil; snapshotStale = true
             chats = []; projectChatID = nil; projectBlockedID = nil
             clearOrchestratorNotice()
             if state == .connected {
@@ -786,6 +789,7 @@ enum ConnectionState: Equatable {
         guard generation == token, projectID == id else { return }
         if let tabs = listing.tabs { acceptSharedTabs(tabs) }
         worktrees = listing.worktrees; shells = listing.shells; loadedProjectID = id
+        workerShellsCheckedAt = .now; workerShellListFailed = false
         lastListRead[.sessions] = .now
         if let talks = listing.chats { installChats(talks, project: id) }
         // A shared list that could not be read keeps the restore pending for the next listing that succeeds.

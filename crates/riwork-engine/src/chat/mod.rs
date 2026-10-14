@@ -42,6 +42,7 @@ pub mod muse;
 mod notice_dismissals;
 mod rate_limits;
 pub mod remote_payload;
+pub mod subagents;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 #[cfg(test)]

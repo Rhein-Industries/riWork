@@ -5976,6 +5976,7 @@ dependencies = [
  "gpui-pre-platform",
  "image",
  "libc",
+ "notify",
  "objc2 0.6.4",
  "raw-window-handle",
  "riwork-cli",

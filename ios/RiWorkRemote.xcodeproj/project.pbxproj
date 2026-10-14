@@ -54,6 +54,7 @@
 		394DD7A61D44470452636EAD /* DictationMachineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D187C677F4F2FCCD3803112 /* DictationMachineTests.swift */; };
 		3B7F6CF054794F739D7CD2D1 /* NewChatChoiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CE0E276B3FE07A0EECF4A74 /* NewChatChoiceTests.swift */; };
 		3BC1C82C939F65395C0922F2 /* RemoteModel+NewTerminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DE79662C80229824FA51405 /* RemoteModel+NewTerminal.swift */; };
+		3CA65B0B6D04BA7486EAA100 /* SubshellCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA6F121414A560E60AA78761 /* SubshellCards.swift */; };
 		3CBEBD103406F820073DADFD /* ChatRequests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F94E782A153DC1EB5CDE51AD /* ChatRequests.swift */; };
 		3D32E8372959A9B6A382B7D6 /* LiveOutput.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1892832D49F94311B660EDA /* LiveOutput.swift */; };
 		3DD3B0F828EA200D3CE467DF /* DictationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93D30F510ED82931F8353415 /* DictationTests.swift */; };
@@ -78,6 +79,7 @@
 		5247C4E5FD73118DDA9D76A9 /* SpeechEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC5E68C2A06ED2380098191 /* SpeechEngine.swift */; };
 		5317A74C0F1FA0C549650E7A /* TerminalSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B35B96192EF288FCAA0048C /* TerminalSurface.swift */; };
 		534B27503C99098966C3B1FB /* RiWorkCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 761DEE92C9DC86427BFBBC1B /* RiWorkCore.framework */; };
+		54994D5FBE24450DC30DC030 /* SubshellViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B0613141282DC6EB74772BF /* SubshellViews.swift */; };
 		54E55FEEC955AA5D6FED55F3 /* KeyShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D842181F696AC877BE33EF /* KeyShortcuts.swift */; };
 		597AE908D38AEAF806828BAD /* TerminalLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11896652894328828D92B431 /* TerminalLinks.swift */; };
 		598129D425F25337AD53A8A9 /* PerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14BFAF10E68A302B420335AB /* PerformanceTests.swift */; };
@@ -206,6 +208,7 @@
 		E558366E6EA7C696E99CA6DE /* RiWorkCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 761DEE92C9DC86427BFBBC1B /* RiWorkCore.framework */; };
 		E6F443313427148D5435796B /* StateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1887ADBCCA10CC2DBDEEF365 /* StateTests.swift */; };
 		E8015A58DAB8EBC5C43E1EDF /* PerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E60E0568653802E8D9C7FCB /* PerformanceTests.swift */; };
+		E968A7FE028345A7F1F72F13 /* SubshellCardsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD707B4DA307C835AD03C72 /* SubshellCardsTests.swift */; };
 		EA96A8DF8C2BC8C7BF424ABE /* HotkeyPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3EBC9F6BDED0CFB669CA8E8 /* HotkeyPalette.swift */; };
 		EB3202FEB0683F945BEEA577 /* KeyboardFocusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78916261D1CAE11B5C1A4910 /* KeyboardFocusTests.swift */; };
 		EBAD4CF77F19EEB48B9A8BE3 /* Chat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F35167D87C329FBAF115AA3 /* Chat.swift */; };
@@ -431,6 +434,7 @@
 		969994643A38C41ADBEC678B /* KeyPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyPipelineTests.swift; sourceTree = "<group>"; };
 		978DF8F7B09020DF03858F67 /* SharedTabStripTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedTabStripTests.swift; sourceTree = "<group>"; };
 		987374D3F44B863275BDED01 /* HotkeyHelp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyHelp.swift; sourceTree = "<group>"; };
+		9B0613141282DC6EB74772BF /* SubshellViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubshellViews.swift; sourceTree = "<group>"; };
 		9BD045365B637F0BDAE55B36 /* NewTerminalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewTerminalTests.swift; sourceTree = "<group>"; };
 		9E60E0568653802E8D9C7FCB /* PerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceTests.swift; sourceTree = "<group>"; };
 		9FDAB4C740F4870DD0191610 /* LinkMeter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkMeter.swift; sourceTree = "<group>"; };
@@ -481,6 +485,7 @@
 		DB23F2C63B53F67197670104 /* ScriptedScrollback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptedScrollback.swift; sourceTree = "<group>"; };
 		DB55B14D7C791064D2248305 /* RemoteModel+Activity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteModel+Activity.swift"; sourceTree = "<group>"; };
 		DBB58DE07D23757B5555005A /* SessionCrypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionCrypto.swift; sourceTree = "<group>"; };
+		DBD707B4DA307C835AD03C72 /* SubshellCardsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubshellCardsTests.swift; sourceTree = "<group>"; };
 		E0916469295AFF6DC8D82DAB /* TabScreenChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabScreenChrome.swift; sourceTree = "<group>"; };
 		E207E60A5C8F7281A34D9711 /* GlobalDashboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalDashboard.swift; sourceTree = "<group>"; };
 		E2F7ED752E004AABE7DB4FC4 /* GlobalOrchestratorStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalOrchestratorStatus.swift; sourceTree = "<group>"; };
@@ -509,6 +514,7 @@
 		F9446B20BF8EAED730239995 /* DashboardViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardViews.swift; sourceTree = "<group>"; };
 		F94E782A153DC1EB5CDE51AD /* ChatRequests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatRequests.swift; sourceTree = "<group>"; };
 		F97F8313789F0AC866FEECF0 /* ChatDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatDiff.swift; sourceTree = "<group>"; };
+		FA6F121414A560E60AA78761 /* SubshellCards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubshellCards.swift; sourceTree = "<group>"; };
 		FABB42E29B8253DBD8CC60CD /* OrchestratorModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrchestratorModelTests.swift; sourceTree = "<group>"; };
 		FB6ADFF9E48CC529319EE696 /* GlobalDashboardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalDashboardTests.swift; sourceTree = "<group>"; };
 		FB886658C66B3E425D8EE32B /* ScrollingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollingUITests.swift; sourceTree = "<group>"; };
@@ -654,6 +660,7 @@
 				350A7673B13BBC5F1620A6A2 /* SharedTabStrip.swift */,
 				014FE893E22A3438F7464EC0 /* SpeechVocabulary.swift */,
 				F50A3A2530BF4ED68C336A29 /* StyledScreen.swift */,
+				FA6F121414A560E60AA78761 /* SubshellCards.swift */,
 				E0916469295AFF6DC8D82DAB /* TabScreenChrome.swift */,
 				E765AAE8C54CBD79052FEB13 /* TerminalBuffer.swift */,
 				7C08746383D30373A5163B50 /* TerminalCache.swift */,
@@ -730,6 +737,7 @@
 				D26A762F58B2703531A1E8CB /* SpeechVocabularyTests.swift */,
 				5AEC28965130AE2D7102BC19 /* StyledLineCacheTests.swift */,
 				D728F2D7B80D93B6A9D85DF5 /* StyledScreenTests.swift */,
+				DBD707B4DA307C835AD03C72 /* SubshellCardsTests.swift */,
 				C9D484FD3B585AFC6C87DB99 /* SyntheticTranscript.swift */,
 				7903F3C83C441EB1F6C2D2EC /* TabScreenChromeTests.swift */,
 				2D0C098FF2A5BFDC6ECC094B /* TerminalBufferTests.swift */,
@@ -807,6 +815,7 @@
 				52C50600894DE4ADA5E2A637 /* RemoteViews.swift */,
 				C267561622D90717BA4F7BE5 /* RiWorkRemoteApp.swift */,
 				4BC5E68C2A06ED2380098191 /* SpeechEngine.swift */,
+				9B0613141282DC6EB74772BF /* SubshellViews.swift */,
 				5D0360E631BEBC5256BD1F22 /* TerminalChrome.swift */,
 				00682FCE98709284A8147D26 /* TerminalDictation.swift */,
 				A81A095D55516FEF25B74FE7 /* TerminalRenderer.swift */,
@@ -1070,6 +1079,7 @@
 				F0C4822F075FE2067F6A72F4 /* RemoteViews.swift in Sources */,
 				9D08EC0340993D847842CCE0 /* RiWorkRemoteApp.swift in Sources */,
 				5247C4E5FD73118DDA9D76A9 /* SpeechEngine.swift in Sources */,
+				54994D5FBE24450DC30DC030 /* SubshellViews.swift in Sources */,
 				6411B66B5525C800AEE7007A /* TerminalChrome.swift in Sources */,
 				AD381640313766BCF28A4F03 /* TerminalDictation.swift in Sources */,
 				3265F4EE84937F2075BCC13D /* TerminalRenderer.swift in Sources */,
@@ -1130,6 +1140,7 @@
 				FF4360CDECBBD7F89ECBAA0E /* SpeechVocabularyTests.swift in Sources */,
 				223797DF5188B365B0635E31 /* StyledLineCacheTests.swift in Sources */,
 				98290989CA09F9AD3CE34C38 /* StyledScreenTests.swift in Sources */,
+				E968A7FE028345A7F1F72F13 /* SubshellCardsTests.swift in Sources */,
 				40FAFC6DECB58B27C8FED825 /* SyntheticTranscript.swift in Sources */,
 				ECE191F429408041421CF908 /* TabScreenChromeTests.swift in Sources */,
 				EDC258E1941325F12A80DC53 /* TerminalBufferTests.swift in Sources */,
@@ -1195,6 +1206,7 @@
 				AAD20D05256D983A7138C8ED /* SharedTabs.swift in Sources */,
 				258B6DD599D66E8ADCF25582 /* SpeechVocabulary.swift in Sources */,
 				F55E794DBA2716548B168D57 /* StyledScreen.swift in Sources */,
+				3CA65B0B6D04BA7486EAA100 /* SubshellCards.swift in Sources */,
 				959AA965B913F6BCF401B549 /* TabScreenChrome.swift in Sources */,
 				A4BA6F8FF8D8A7E8D878456B /* TerminalBuffer.swift in Sources */,
 				83FE45D2556424CAA3E637BB /* TerminalCache.swift in Sources */,

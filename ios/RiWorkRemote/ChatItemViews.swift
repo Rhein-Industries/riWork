@@ -34,11 +34,12 @@ struct ChatItemRow: View, Equatable {
     @Environment(\.desktopStyle) private var style
     let item: ChatItem
     let provider: ChatProvider
+    var subagent: ChatSubagent? = nil
     /// The ids of the parts of this item that are open: the item's own id, or "id#path" for a file of an edit.
     let open: Set<String>
     let toggle: @MainActor (String) -> Void
 
-    nonisolated static func == (lhs: ChatItemRow, rhs: ChatItemRow) -> Bool { lhs.item == rhs.item && lhs.provider == rhs.provider && lhs.open == rhs.open }
+    nonisolated static func == (lhs: ChatItemRow, rhs: ChatItemRow) -> Bool { lhs.item == rhs.item && lhs.provider == rhs.provider && lhs.open == rhs.open && lhs.subagent == rhs.subagent }
 
     /// The transcript's text margin: where its messages begin (and the composer's cards).
     static let horizontalInset: CGFloat = 16
@@ -56,6 +57,9 @@ struct ChatItemRow: View, Equatable {
     }
 
     @ViewBuilder private var content: some View {
+        if let run = subagent ?? ChatSubagent.of(item, provider: provider) {
+            ChatSubagentCard(run: run, isOpen: open.contains(item.id), toggle: { toggle(item.id) })
+        } else {
         switch item.body {
         case .userMessage(let text): UserBlock(text: text)
         case .agentMessage(let text):
@@ -87,6 +91,7 @@ struct ChatItemRow: View, Equatable {
             .accessibilityElement(children: .combine).accessibilityLabel("Context compacted")
         case .notice(let level, let text, _, _, _, _): NoticeBlock(level: level, text: text)
         case .elided: if let elision = ChatElision(item.body) { ElidedBlock(elision: elision, isOpen: open.contains(item.id), toggle: { toggle(item.id) }) }
+        }
         }
     }
 }
