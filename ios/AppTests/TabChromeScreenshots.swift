@@ -228,7 +228,7 @@ import RiWorkCore
     func testDashboardAndGlobalScreens() async throws {
         let projects = [project, "22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"]
         let globalChat = "cccccccc-0002-4000-8000-000000000002"
-        let global = "{\"id\":\"aaaaaaaa-0002-4000-8000-000000000002\",\"project_id\":null,\"worktree_id\":null,\"kind\":\"orchestrator\",\"cwd\":\"/\",\"harness\":\"claude\",\"alive\":true,\"created_at_unix\":3,\"mode\":\"chat\",\"chat_id\":\"\(globalChat)\",\"provider\":\"claude\",\"activity\":\"working\"}"
+        let global = "{\"id\":\"aaaaaaaa-0002-4000-8000-000000000002\",\"project_id\":null,\"worktree_id\":null,\"kind\":\"orchestrator\",\"cwd\":\"/\",\"harness\":\"claude\",\"alive\":true,\"created_at_unix\":3,\"mode\":\"chat\",\"chat_id\":\"\(globalChat)\",\"provider\":\"claude\",\"model\":\"claude-sonnet-5-5\",\"activity\":\"working\"}"
         for (look, older) in Look.allCases.map({ ($0, false) }) + [(Look.terminal, true)] {
             guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene") }
             let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")

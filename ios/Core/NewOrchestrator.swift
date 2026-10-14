@@ -135,6 +135,9 @@ public struct NewOrchestratorReply: Sendable, Equatable {
     public let session: RemoteSession
     /// False when the orchestrator was there already and the desktop returned it.
     public let created: Bool
+    /// For one made by this request: the desktop's note that it could not start its first choice and started another ("Muse could
+    /// not start: … It runs as a Codex chat on gpt-6.1-sol instead."). Nil when there is none, and from a desktop that does not say.
+    public var fallback: String? = nil
 
     /// Checks that the answer is the orchestrator that was asked for: an orchestrator entry, of the scope of the request. `created` is
     /// taken as true when the desktop does not say, because the only thing it changes is a note that says "already running".
@@ -146,7 +149,11 @@ public struct NewOrchestratorReply: Sendable, Equatable {
         if session.mode != .chat, !session.alive { throw OrchestratorControlError.exitedRightAway }
         var created = true
         if case .bool(let flag) = result["created"] { created = flag }
-        return NewOrchestratorReply(session: session, created: created)
+        // Read leniently, as every additive field: text that says something, without control characters, no longer than a note can be.
+        let fallback = created ? result["fallback"].string.map { text in
+            String(String.UnicodeScalarView(text.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })).trimmingCharacters(in: .whitespacesAndNewlines)
+        }.flatMap { $0.isEmpty ? nil : String($0.prefix(500)) } : nil
+        return NewOrchestratorReply(session: session, created: created, fallback: fallback)
     }
 }
 

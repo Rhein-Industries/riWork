@@ -300,6 +300,11 @@ fn additive_shape_ok(field: &str, value: &Value) -> bool {
         // How a session runs. Only these two words are the phone's to act on.
         "mode" => matches!(value.as_str(), Some("terminal" | "chat")),
         "provider" => matches!(value.as_str(), Some("codex" | "claude" | "muse")),
+        // A chat orchestrator's model, as the provider names it ("muse-wonder-full-1.0"); null
+        // (the provider's default) and anything that is not a short printable word are left out.
+        "model" => value.as_str().is_some_and(|model| {
+            (1..=120).contains(&model.len()) && model.bytes().all(|b| b.is_ascii_graphic())
+        }),
         "parent_id" | "chat_id" => value.as_str().is_some_and(|chat| uuid(chat).is_ok()),
         "subagent_kinds" => value.as_array().is_some_and(|kinds| {
             kinds.len() <= 8
@@ -352,10 +357,11 @@ const SESSION_FIELDS: &[&str] = &[
     "mode",
     "chat_id",
     "provider",
+    "model",
 ];
 /// A session as the phone may see it: `SESSION_FIELDS`, each checked on its own.
-/// `chat_id` and `provider` describe a chat, so they are passed on only for an
-/// entry whose own `mode` is `chat` (judged after its shape check: a `mode` that
+/// `chat_id`, `provider` and `model` describe a chat, so they are passed on only for
+/// an entry whose own `mode` is `chat` (judged after its shape check: a `mode` that
 /// was left out as malformed makes the entry one without a chat). They are the
 /// only fields whose meaning depends on another field of the same entry.
 fn session_fields(v: Value) -> Value {
@@ -365,6 +371,7 @@ fn session_fields(v: Value) -> Value {
     {
         map.remove("chat_id");
         map.remove("provider");
+        map.remove("model");
     }
     session
 }

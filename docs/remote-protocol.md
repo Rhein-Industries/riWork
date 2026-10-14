@@ -6,7 +6,8 @@ agreement with the iOS worker.
 
 ## Changelog
 
-- 2026-10-14: Additive dashboard extension: one new read-only method, `dashboard.get` (params exactly `{}`), that answers the desktop's global dashboard in one bounded reply: totals, the global orchestrator, what needs attention, agents working and recently finished, every project's row, tasks in progress and the automations, ordered as the desktop orders them, each list cut to a fixed length with `<list>_total` giving its full length, and a figure that is not known left out rather than written as zero. `features.dashboard` in `ready` says the installed CLI has it (`"dashboard": true` in `riwork capabilities --json`). It reads and starts nothing: no chat host, chat, shell, orchestrator or tmux server. It runs in a shared (read) slot. No new error code. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and so does a newer connector whose `riwork` CLI predates it; a client then falls back to `projects.list` and `orchestrators.list` and says why. No `model` and no project root path are part of it. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged; `ios/Tests/Fixtures/dashboard.json` is a new shared fixture. See "Dashboard extension" below. Needs the iOS worker's agreement.
+- 2026-10-14: Additive, in "Chat orchestrators" and the "Orchestrator creation extension", no new method and no new error code: a chat orchestrator's entry in `orchestrators.list` and `shells.list` (and in `orchestrator.create`'s result) gains an optional `model`, the model the chat runs on as its provider names it (1 to 120 printable ASCII characters, no spaces), passed only for an entry whose `mode` is `chat` and left out when the CLI writes null (the provider's default) or anything else; and `orchestrator.create`'s result gains an optional `fallback`, the desktop's note that Automatic could not start its first choice and started another, passed only when `created` is true, without control characters and cut to 500 Unicode scalars. The desktop's "Orchestrator runs as" setting itself is not on the wire. A connector from before it leaves both out, and an older phone ignores them. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
+- 2026-10-14: Additive dashboard extension: one new read-only method, `dashboard.get` (params exactly `{}`), that answers the desktop's global dashboard in one bounded reply: totals, the global orchestrator, what needs attention, agents working and recently finished, every project's row, tasks in progress and the automations, ordered as the desktop orders them, each list cut to a fixed length with `<list>_total` giving its full length, and a figure that is not known left out rather than written as zero. `features.dashboard` in `ready` says the installed CLI has it (`"dashboard": true` in `riwork capabilities --json`). It reads and starts nothing: no chat host, chat, shell, orchestrator or tmux server. It runs in a shared (read) slot. No new error code. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and so does a newer connector whose `riwork` CLI predates it; a client then falls back to `projects.list` and `orchestrators.list` and says why. No `model` and no project root path are part of it (a client takes a chat orchestrator's `model` from `orchestrators.list`, below). Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged; `ios/Tests/Fixtures/dashboard.json` is a new shared fixture. See "Dashboard extension" below. Needs the iOS worker's agreement.
 - 2026-10-14: In the same "Chat extension", no new method and no new error code: Muse contributor mode is off unless a chat turns it on, never the person's Muse settings. `chat.create` and the `configure` command take an optional `contributor_mode` (`"on"` or `"off"`), and `ChatInfo` gains `contributor_mode`, present (`"on"`) only for a chat that has it on (a Codex or Claude chat keeps it from Muse for a switch back, and can turn it off). Every chat's agent starts with `muse serve --contributor-mode off|on`; a chat from before, whatever its `contributor_opt_out`, is off. `contributor_opt_out: true` is still taken as off; on `configure` its `false`, which asked for the Muse settings, is refused (`invalid_request`), and on `chat.create` it is the off every chat has; `"on"` beside `contributor_opt_out: true` is refused. `contributor_mode` `"on"` in `chat.create` is for a Muse chat only (`invalid_request` otherwise). A desktop keeps `ChatInfo.contributor_opt_out` `true` for a Muse chat that is off, so an older phone still reads it as off; a Muse chat with neither field comes from a desktop before this, whose chat host leaves it to the Muse settings. A connector from before it refuses `contributor_mode` (`invalid_request`, unknown field). Changes the meaning of an absent or `false` `contributor_opt_out` (Muse settings before, off now). Applies to v1 and v2 sessions. Needs the iOS worker's agreement.
 - 2026-10-13: Additive, in the same "Chat extension", no new method and no new error code: an existing Muse chat can turn contributor mode off and on. The `configure` command of `chat.command` takes an optional `contributor_opt_out` boolean (`false` hands the mode back to the person's Muse settings; it never forces it on). Muse fixes the mode for a `muse serve` process, so the desktop restarts an idle chat's agent and resumes the same Muse session with its model, effort and approval mode; a stopped chat keeps the value for its next start; it is refused (`cli_error`) while a turn runs or waits or the agent still starts, beside other settings in one `configure`, and for a Codex or Claude chat, and the chat keeps its value. If Muse does not start again with it, the chat fails as a failed start does, keeps its old value and says so in a `notice` item, and the answer is `cli_error`. A connector or desktop CLI from before it refuses the field (`invalid_request`, unknown field); a chat host from before it would read past it and start a stopped chat as for a retry, which the desktop CLI detects: it stops that chat again and answers `cli_error` without claiming the change. An older phone never sends it. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
 - 2026-10-13: Additive, in the same "Chat extension", no new method and no new error code: a new Muse chat can opt out of Muse's contributor mode. `chat.create` takes an optional `contributor_opt_out` boolean (sent only when true; the desktop's CLI gets `--contributor-opt-out`), and `ChatInfo` gains `contributor_opt_out`, present and `true` only for a chat that opted out. Such a chat runs every `muse serve` it starts with `--contributor-mode off`, an override Muse never saves; a chat without it follows the person's Muse settings. A Codex or Claude chat has no contributor mode: it is made without it, with a `notice` item, and the connector answers `cli_error` because the chat is not the one asked for (as for `fast` on Muse). A desktop from before it refuses the field (`invalid_request`, unknown field); an older phone never sends it and skips the `ChatInfo` field. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
@@ -1668,15 +1669,19 @@ code, envelope or fixture, for v1 and v2 sessions alike.
 
 - *Recognizing one.* Entries of `orchestrators.list` (and `shells.list`) gain optional
   `mode`: `terminal` for the tmux orchestrator there has always been, `chat` for a chat
-  orchestrator. A `chat` entry also has `chat_id` (a UUID) and `provider` (`codex|claude|muse`).
+  orchestrator. A `chat` entry also has `chat_id` (a UUID) and `provider` (`codex|claude|muse`),
+  and, from 2026-10-14, an optional `model`: the model the chat runs on as its provider names it
+  (`"muse-wonder-full-1.0"`); absent when it runs on its provider's default or the desktop does
+  not say, and a client then shows no model rather than one it would have to guess.
   Its `id` **is** its `chat_id`, so the phone needs no mapping: it opens a chat tab on that
   UUID and follows it with `chat.events` and `chat.command`, as for any chat. `alive` is true
   while the chat exists, even with its agent stopped, because a message resumes it. An entry
   without `mode` (an older desktop) is a terminal orchestrator.
 - *What the connector passes.* `mode` only as `terminal` or `chat`, `provider` only as `codex`,
   `claude` or `muse`, `chat_id` only as a full lowercase canonical UUID. Each is checked on its own
-  and a malformed one is left out, never failing the list; `chat_id` and `provider` are also
-  left out of an entry whose `mode` is not `chat`. The rest of what the CLI prints for an
+  and a malformed one is left out, never failing the list; `model` only as 1 to 120 printable
+  ASCII characters without spaces (the CLI's null, the provider's default, is left out);
+  `chat_id`, `provider` and `model` are also left out of an entry whose `mode` is not `chat`. The rest of what the CLI prints for an
   entry (its `state`, `command`) does not reach the phone, as before.
 - *In `chats.list`.* A chat orchestrator is a chat, so `chats.list` (with or without a
   project) lists it among the others. Its `ChatInfo` has the extra optional field
@@ -1734,8 +1739,14 @@ runs):
   is changed. Older connectors reject a supplied mode with `invalid_request`; use the Mac setting
   option or update the desktop. The phone opens the returned mode ("Chat orchestrators").
 
-Result `{"orchestrator":Session,"created":true}`. `orchestrator` is the entry as
-`orchestrators.list` shows it, `mode` and, for a chat, `chat_id` and `provider` included.
+Result `{"orchestrator":Session,"created":true}`, and from 2026-10-14 optionally
+`"fallback":"…"`. `orchestrator` is the entry as `orchestrators.list` shows it, `mode` and, for a
+chat, `chat_id`, `provider` and `model` included. `fallback` is the desktop's note, for an
+orchestrator made by this call only, that it could not start its first choice and started another
+(Automatic: "Muse could not start: …. It runs as a Codex chat on gpt-6.1-sol instead."); the
+connector passes it without control characters, cut to 500 Unicode scalars, and leaves out one
+that says nothing. A client shows it as it shows "already running". The CLI's `source` and
+`notes` are not passed on.
 `created` is `true` if this call made the orchestrator and `false` if the scope already had one,
 in either mode, which is then returned as it is: a scope never gets a second. The connector
 checks the answer before it reaches the phone: an entry of the scope asked for (a canonical
@@ -1972,7 +1983,9 @@ Automation {"id","title","project_id"?,"project_name"?,"paused":bool,"next_run"?
 - **Contents.** Ids are the desktop's own (a shell's, a chat's, a project's, a task's, an
   automation's) and work with the existing methods (`shells.list`, `chats.list`,
   `chat.events`, `tasks.list`). No project root path (`projects.list` has it) and no `model`
-  are part of the reply.
+  are part of the reply: a client that shows the global orchestrator's model takes it from that
+  orchestrator's `orchestrators.list` entry ("Chat orchestrators"), and shows none when the entry
+  has none.
 - **What the connector checks.** The reply must be an object with `"v": 1`, else `cli_error`;
   only the top-level keys above are passed on; each list must be an array (else `cli_error`),
   of which only objects are kept, at most the limit above (also `automations.items`), with
@@ -2213,6 +2226,12 @@ ready response. Values are test-only and must never provision production devices
   `ChatInfo`. No new method, no new error code. A desktop or connector from before it
   refuses the field (`invalid_request`, unknown field). Needs the iOS worker's
   agreement; the iOS side implements the same text.
+- 2026-10-14: additive and backward compatible. A chat orchestrator's `model` in
+  `orchestrators.list`, `shells.list` and `orchestrator.create` entries (chat entries only, 1 to
+  120 printable ASCII characters, null left out), and `fallback` in `orchestrator.create`'s
+  result for one made now (no control characters, at most 500 Unicode scalars). The
+  "Orchestrator runs as" setting is not on the wire. No new method, no new error code.
+  Needs the iOS worker's agreement; the iOS side implements the same text.
 - 2026-10-14: additive and backward compatible. Dashboard extension: `dashboard.get`
   (params exactly `{}`, read-only, in a shared slot) answers the desktop's global dashboard
   (`v` 1, `generated_at`, `chats_known`, `totals`, `global`, `attention`, `working`,

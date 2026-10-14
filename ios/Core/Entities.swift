@@ -70,9 +70,12 @@ public struct RemoteSession: Codable, Sendable, Identifiable, Hashable {
     public let chat_id: String?
     /// Which agent the chat is.
     public let provider: ChatProvider?
+    /// The model a chat orchestrator runs on, as its provider names it ("muse-wonder-full-1.0"), from a desktop that says. Nil when it
+    /// runs on its provider's default, for a terminal, and from a desktop that does not say: the phone then shows no model at all.
+    public let model: String?
     private enum CodingKeys: String, CodingKey {
         case id, project_id, worktree_id, kind, cwd, harness, alive, created_at_unix, activity, activity_since_unix, subagents_working
-        case mode, chat_id, provider, parent_id
+        case mode, chat_id, provider, parent_id, model
     }
     public var title: String {
         if let sharedTitle { return sharedTitle }
@@ -106,6 +109,13 @@ extension RemoteSession {
         mode = SessionMode(wire: try? c.decode(JSONValue.self, forKey: .mode))
         chat_id = (try? c.decode(JSONValue.self, forKey: .chat_id)).flatMap(Self.chatID(wire:))
         provider = (try? c.decode(JSONValue.self, forKey: .provider))?.string.flatMap { ChatProvider(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
+        // The model came later still, and only for a chat: anything but a short printable word is no model.
+        model = mode == .chat ? (try? c.decode(JSONValue.self, forKey: .model)).flatMap(Self.model(wire:)) : nil
+    }
+    /// A model name as the wire has it: 1 to 120 printable ASCII characters with no spaces. Anything else is no model.
+    static func model(wire value: JSONValue) -> String? {
+        guard let text = value.string, (1...120).contains(text.utf8.count), text.utf8.allSatisfy({ $0 > 0x20 && $0 < 0x7f }) else { return nil }
+        return text
     }
     /// A chat id as the wire has it: a UUID, kept in the lowercase form every chat request needs. Anything else is no id.
     static func chatID(wire value: JSONValue) -> String? {

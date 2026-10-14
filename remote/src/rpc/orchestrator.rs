@@ -85,8 +85,22 @@ fn result(project: Option<&str>, cli: &Value) -> std::result::Result<Value, Faul
             "CLI returned an orchestrator that does not match the request",
         ));
     }
-    // `created` is not part of the entry: it is about this call, not about the session.
-    Ok(json!({"orchestrator": session_fields(cli.clone()), "created": created}))
+    // `created` is not part of the entry: it is about this call, not about the session. Nor is
+    // `fallback`, the CLI's note that Automatic started its second choice because the first
+    // could not start: passed on, bounded, only for an orchestrator made by this call.
+    let mut reply = json!({"orchestrator": session_fields(cli.clone()), "created": created});
+    if created && let Some(fallback) = text("fallback").and_then(fallback_note) {
+        reply["fallback"] = json!(fallback);
+    }
+    Ok(reply)
+}
+
+/// The CLI's fallback note as the phone may see it: text without control characters, cut to
+/// 500 Unicode scalars; nothing when it says nothing.
+fn fallback_note(text: &str) -> Option<String> {
+    let clean: String = text.chars().filter(|c| !c.is_control()).take(500).collect();
+    let clean = clean.trim();
+    (!clean.is_empty()).then(|| clean.to_owned())
 }
 
 impl Rpc {

@@ -525,3 +525,58 @@ async fn explicit_modes_are_forwarded_and_existing_orchestrators_keep_their_mode
         );
     }
 }
+
+#[tokio::test]
+async fn a_fallback_note_and_the_model_are_passed_on_for_one_made_now_only() {
+    let f = Fixture::new();
+    let id = new_uuid();
+    // Automatic could not start Muse and started Codex instead: the CLI says so, and the phone is told.
+    let mut made = with_created(chat(&id, None), json!(true));
+    made["provider"] = json!("codex");
+    made["model"] = json!("gpt-6.1-sol");
+    made["source"] = json!("settings");
+    made["fallback"] = json!(
+        "Muse could not start: muse is not installed or is not on PATH. It runs as a Codex chat on gpt-6.1-sol instead.\u{7}"
+    );
+    f.cli_says(made);
+    let reply = f.create(json!({})).await;
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["result"]["orchestrator"]["model"], "gpt-6.1-sol");
+    assert_eq!(
+        reply["result"]["fallback"],
+        "Muse could not start: muse is not installed or is not on PATH. It runs as a Codex chat on gpt-6.1-sol instead."
+    );
+    assert!(
+        reply["result"]["orchestrator"].get("fallback").is_none(),
+        "not part of the entry"
+    );
+    assert!(
+        reply["result"].get("source").is_none(),
+        "only what the phone uses is passed on"
+    );
+    // One that was there already has no fallback of this call, whatever the CLI wrote.
+    let mut existing = with_created(chat(&id, None), json!(false));
+    existing["fallback"] = json!("stale");
+    f.cli_says(existing);
+    let again = f.create(json!({})).await;
+    assert!(again["result"].get("fallback").is_none(), "{again}");
+    // A fallback that says nothing, or is not text, is left out; a long one is cut.
+    for (wrong, expected) in [
+        (json!("   "), None),
+        (json!(7), None),
+        (json!("é".repeat(600)), Some("é".repeat(500))),
+    ] {
+        let mut entry = with_created(chat(&id, None), json!(true));
+        entry["fallback"] = wrong.clone();
+        f.cli_says(entry);
+        let reply = f.create(json!({})).await;
+        assert_eq!(
+            reply["result"]
+                .get("fallback")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            expected,
+            "fallback={wrong}"
+        );
+    }
+}

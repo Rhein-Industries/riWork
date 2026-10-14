@@ -433,6 +433,11 @@ struct GlobalOrchestratorScreen: View {
             HStack(spacing: 6) {
                 Image(systemName: tab?.chatInfo.map { $0.provider.glyph } ?? "globe").foregroundStyle(style.magenta).accessibilityHidden(true)
                 Text("Global orchestrator").font(style.face(13, bold: true, relativeTo: .headline)).lineLimit(1).accessibilityAddTraits(.isHeader)
+                // The model it runs on, when the desktop says (`orchestrators.list`); nothing is shown for one it does not name.
+                if let runsOn = tab?.session?.model {
+                    Text(runsOn).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted).lineLimit(1).truncationMode(.middle)
+                        .accessibilityLabel("Model \(runsOn)").accessibilityIdentifier("global-model")
+                }
                 if let chat = tab?.chatInfo { ActivityIndicator(activity: model.chatActivity(chat)) }
                 else if let session = tab?.session { ActivityIndicator(activity: session.shownActivity, subagents: session.subagents_working) }
             }

@@ -536,3 +536,45 @@ async fn a_lookup_that_cannot_be_made_leaves_the_clis_refusal_as_it_was() {
     assert_eq!(code(&response), "not_found", "{response}");
     assert_eq!(message(&response), "existing shell ID not found");
 }
+
+#[tokio::test]
+async fn a_chat_orchestrators_model_is_passed_on_only_as_a_short_word_and_only_for_a_chat() {
+    let f = Fixture::new(Capabilities::Silent);
+    let global = new_uuid();
+    // The CLI names the model the chat runs on: passed on as it is.
+    let mut named = chat_orchestrator(&global, None);
+    named["model"] = json!("muse-wonder-full-1.0");
+    f.says("orchestrators.json", json!([named.clone()]));
+    assert_eq!(f.orchestrators().await[0]["model"], "muse-wonder-full-1.0");
+    // Null is the provider's default: left out, so the phone shows no model rather than one it would have to invent.
+    let mut default = chat_orchestrator(&global, None);
+    default["model"] = Value::Null;
+    f.says("orchestrators.json", json!([default]));
+    assert!(f.orchestrators().await[0].get("model").is_none());
+    // Anything that is not a short printable word is left out alone; the entry stays.
+    for wrong in [
+        json!(""),
+        json!("two words"),
+        json!("x".repeat(121)),
+        json!(4),
+        json!({"id": "m"}),
+        json!("line\nbreak"),
+    ] {
+        let mut entry = chat_orchestrator(&global, None);
+        entry["model"] = wrong.clone();
+        f.says("orchestrators.json", json!([entry]));
+        let listed = f.orchestrators().await;
+        assert!(
+            listed[0].get("model").is_none(),
+            "model={wrong} was passed on"
+        );
+        assert_eq!(listed[0]["chat_id"], global, "model={wrong}");
+    }
+    // A terminal entry has no model to pass on, whatever it carries.
+    let mut terminal = named;
+    terminal["mode"] = json!("terminal");
+    f.says("orchestrators.json", json!([terminal]));
+    let listed = f.orchestrators().await;
+    assert!(listed[0].get("model").is_none());
+    assert!(listed[0].get("provider").is_none());
+}

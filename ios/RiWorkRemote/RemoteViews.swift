@@ -821,7 +821,7 @@ struct NoteLine: View {
         Button(action: dismiss) {
             HStack(spacing: 6) {
                 Image(systemName: "info.circle").accessibilityHidden(true)
-                Text(text).lineLimit(2)
+                Text(text).lineLimit(4)
             }
             .font(style.system(.footnote)).foregroundStyle(style.muted)
             .padding(.horizontal, 12).padding(.vertical, 6).frame(maxWidth: .infinity, minHeight: style.target, alignment: .leading)

@@ -276,6 +276,33 @@ import RiWorkCore
         await model.disconnect()
     }
 
+    func testStartingGlobalShowsTheModelItRunsOnAndTheDesktopsFallbackNote() async throws {
+        let rig = try await connected(orchestrators: [projectEntry])
+        let model = rig.model
+        let note = "Muse could not start: muse is not installed or is not on PATH. It runs as a Claude chat on claude-sonnet-5-5 instead."
+        await rig.transport.setNewOrchestratorOutcome(model: "claude-sonnet-5-5", fallback: note)
+        model.enterGlobal()
+        let failure = await model.startGlobalOrchestrator()
+        XCTAssertNil(failure)
+        XCTAssertEqual(model.orchestratorNotice, note, "the desktop's own words, on the Global screen")
+        let made = try XCTUnwrap(model.globalOrchestrators.first)
+        XCTAssertEqual(made.model, "claude-sonnet-5-5")
+        XCTAssertEqual(model.globalTab?.session?.model, "claude-sonnet-5-5", "what the Global screen's header shows")
+        let status = GlobalOrchestratorStatus.decide(entry: model.globalTabs.first?.session, dashboard: nil, canStart: true)
+        XCTAssertEqual(status.model, "claude-sonnet-5-5")
+        XCTAssertTrue(status.summary.contains("claude-sonnet-5-5"), status.summary)
+        // Asked again: there is no fallback of this call, only "already running".
+        let again = await model.startGlobalOrchestrator()
+        XCTAssertNil(again)
+        XCTAssertEqual(model.orchestratorNotice, "Global orchestrator is already running.")
+        // A desktop that names no model: none is shown.
+        await rig.transport.setOrchestrators([orchestrator(globalEntry, project: nil, chat: globalChat), projectEntry])
+        await model.refreshGlobalQuietly()
+        XCTAssertNil(model.globalTab?.session?.model)
+        model.leaveGlobal()
+        await model.disconnect()
+    }
+
     // MARK: Notices that name no project
 
     func testANeedsUpdateGlobalChatSaysSoOnTheGlobalScreenOnly() async throws {

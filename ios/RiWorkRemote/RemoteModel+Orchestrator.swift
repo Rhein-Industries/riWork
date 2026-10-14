@@ -50,6 +50,8 @@ extension RemoteModel {
             if let tab = globalTabs.first(where: { $0.session?.id == entry.id }) { await openGlobalTab(tab) }
             if scope == .global { reconcileGlobalSelection() } else if showGlobal { requestGlobalScreen() }
             if !reply.created { noteOrchestrator("\(entry.title) is already running.") }
+            // The desktop started its second choice (Automatic: Muse could not start): said, in its own words.
+            else if let fallback = reply.fallback { noteOrchestrator(fallback, for: Self.fallbackNoticeDuration) }
             await refreshGlobalQuietly()
             return nil
         }
@@ -62,6 +64,7 @@ extension RemoteModel {
         onOpened(entry)
         await openOrchestratorTab(entry)
         if !reply.created { noteOrchestrator("\(entry.title) is already running.") }
+        else if let fallback = reply.fallback { noteOrchestrator(fallback, for: Self.fallbackNoticeDuration) }
         await refreshSessionsQuietly()
         return nil
     }
@@ -81,13 +84,15 @@ extension RemoteModel {
     // MARK: The note
 
     static let orchestratorNoticeDuration: Duration = .seconds(5)
+    /// A fallback note is a sentence or two: it stays long enough to be read.
+    static let fallbackNoticeDuration: Duration = .seconds(12)
 
-    /// Says something short under the tab strip for a few seconds.
-    func noteOrchestrator(_ text: String) {
+    /// Says something short under the tab strip (or on the Global screen) for a few seconds.
+    func noteOrchestrator(_ text: String, for duration: Duration = RemoteModel.orchestratorNoticeDuration) {
         orchestratorNotice = text
         orchestratorNoticeExpiry?.cancel()
         orchestratorNoticeExpiry = Task { [weak self] in
-            try? await Task.sleep(for: Self.orchestratorNoticeDuration)
+            try? await Task.sleep(for: duration)
             if !Task.isCancelled { self?.orchestratorNotice = nil }
         }
     }

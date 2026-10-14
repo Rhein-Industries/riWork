@@ -16,6 +16,9 @@ public struct GlobalOrchestratorStatus: Sendable, Equatable {
     /// How it runs, when known.
     public let mode: SessionMode?
     public let provider: ChatProvider?
+    /// The model it runs on, as the desktop names it; nil when the desktop does not say (a terminal, the provider's default, an older
+    /// desktop). Never made up.
+    public var model: String? = nil
     /// "Working", "Waiting for input", "Ready", "Failed", …; nil when nothing is known.
     public let state: String?
     /// What its agent is doing, for the activity mark.
@@ -53,10 +56,11 @@ public struct GlobalOrchestratorStatus: Sendable, Equatable {
             default:
                 state = DashboardText.activity(activity)
             }
+            let model = mode == .chat ? entry.model : nil
             let summary: String
-            if mode == .chat { summary = [(provider?.chatTitle ?? "Chat"), state].compactMap { $0 }.joined(separator: " · ") }
+            if mode == .chat { summary = [(provider?.chatTitle ?? "Chat"), model, state].compactMap { $0 }.joined(separator: " · ") }
             else { summary = ["Runs in a terminal", state].compactMap { $0 }.joined(separator: " · ") }
-            return GlobalOrchestratorStatus(mode: mode, provider: provider, state: state, activity: activity, summary: summary, action: .open)
+            return GlobalOrchestratorStatus(mode: mode, provider: provider, model: model, state: state, activity: activity, summary: summary, action: .open)
         }
         let none: (String) -> GlobalOrchestratorStatus = { text in
             GlobalOrchestratorStatus(mode: nil, provider: nil, state: nil, activity: .unknown, summary: text, action: canStart ? .start : .unavailable)

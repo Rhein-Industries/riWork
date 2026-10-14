@@ -33,6 +33,10 @@ actor ChatTransport: RemoteTransport {
     var orchestratorMode = OrchestratorMode.ok
     /// A new orchestrator runs as a chat (`mode: "chat"` with a `chat_id`) rather than in a terminal.
     var newOrchestratorsAreChats = true
+    /// The model a new chat orchestrator says it runs on, and the fallback note its creation reply carries (none unless a test says).
+    var newOrchestratorModel: String?
+    var newOrchestratorFallback: String?
+    func setNewOrchestratorOutcome(model: String?, fallback: String?) { newOrchestratorModel = model; newOrchestratorFallback = fallback }
     private var orchestratorsMade = 0
     var calls: [Call] = []
     /// The chats `chats.list` gives, as the wire has them.
@@ -321,10 +325,13 @@ actor ChatTransport: RemoteTransport {
             ]
             if newOrchestratorsAreChats {
                 entry["mode"] = .string("chat"); entry["chat_id"] = .string(chat); entry["provider"] = .string("claude")
+                if let newOrchestratorModel { entry["model"] = .string(newOrchestratorModel) }
                 log[chat] = log[chat] ?? []
             }
             orchestratorEntries.append(.object(entry))
-            return .object(["orchestrator": .object(entry), "created": .bool(true)])
+            var reply: [String: JSONValue] = ["orchestrator": .object(entry), "created": .bool(true)]
+            if let newOrchestratorFallback { reply["fallback"] = .string(newOrchestratorFallback) }
+            return .object(reply)
         }
     }
 
