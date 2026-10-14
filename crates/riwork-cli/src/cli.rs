@@ -56,8 +56,8 @@ riwork update [--source PATH] [--release | --debug] [--no-reload]   Build releas
 riwork instances                        List running RiWork apps and their windows
 riwork usage [--shell ID]               Read harness usage (Grok: session tokens and cost)
 riwork appearance [--json]              Show the colors RiWork publishes to the phone companion
-riwork setup                            Install and start Cua.ai Driver
-riwork cua setup|status|permissions      Manage native computer use
+riwork setup                            Install and start Cua.ai Driver; link its skill into each CLI
+riwork cua setup|status|permissions      Manage native computer use (status only reads)
 riwork cua mcp                          Serve Cua.ai Driver over MCP stdio
 riwork cua harness codex|claude|grok|muse -- ARG...   Start a harness with shared Cua
 riwork import orca [--preview]          Import local Orca projects and worktrees once
@@ -825,6 +825,32 @@ fn print_cua_status(status: &CuaStatus, json: bool) -> Result<(), String> {
             println!("Driver: {}", path.display());
         }
         println!("{}", status.message);
+        let skills = &status.skills;
+        match &skills.pack {
+            Some(pack) if skills.pack_installed => println!("Skill pack: {}", pack.display()),
+            Some(pack) => println!("Skill pack: {} (not installed)", pack.display()),
+            None => {}
+        }
+        for target in &skills.targets {
+            println!(
+                "  {:<34} {:<24} {}",
+                target.name,
+                target.state.label(),
+                target.path.display()
+            );
+            if let Some(detail) = &target.detail {
+                println!("    {detail}");
+            }
+            if target.homes.len() > 1 && target.cli == crate::cua::SkillCli::Codex {
+                let homes: Vec<String> = target
+                    .homes
+                    .iter()
+                    .map(|home| home.display().to_string())
+                    .collect();
+                println!("    read under every Codex home: {}", homes.join(", "));
+            }
+        }
+        println!("{}", skills.message);
     }
     Ok(())
 }

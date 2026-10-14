@@ -18,7 +18,7 @@ use crate::{
     chat::model::Provider,
     codex_accounts::{self, AccountsSnapshot},
     controls,
-    cua::{CuaManager, CuaStatus},
+    cua::{CuaManager, CuaSkills, CuaStatus, SkillLinkState},
     orca_import::{ImportManager, ImportPreview, ImportReceipt},
     project_sort::ProjectOrder,
     remote_service::{self, RemoteState},
@@ -639,7 +639,8 @@ fn button_kind(primary: bool, disabled: bool) -> controls::Button {
     }
 }
 
-fn status_chip(label: &'static str, color: u32, colors: Palette) -> AnyElement {
+fn status_chip(label: impl Into<gpui::SharedString>, color: u32, colors: Palette) -> AnyElement {
+    let label = label.into();
     if ui_text::is_native() {
         return controls::chip(label, color == colors.gold, colors);
     }
@@ -653,6 +654,67 @@ fn status_chip(label: &'static str, color: u32, colors: Palette) -> AnyElement {
         .text_size(ui_text::text(9.0))
         .text_color(rgb(color))
         .child(ui_text::cased(label))
+        .into_any_element()
+}
+
+/// The driver can be ready while a CLI still lacks the skill, which only setup
+/// links; setup is then the next step.
+fn skill_setup_pending(status: Option<&CuaStatus>) -> bool {
+    status.is_some_and(|status| status.ready && status.skills.setup_needed())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SkillTone {
+    Linked,
+    Attention,
+    /// Nothing to do: the CLI has no home here, or links are not made.
+    Idle,
+}
+
+/// One chip per skill location. A link says a session can find the skill when
+/// it starts, not that a running session has it.
+fn skill_chips(skills: &CuaSkills) -> Vec<(String, SkillTone)> {
+    skills
+        .targets
+        .iter()
+        .map(|target| {
+            let tone = match target.state {
+                SkillLinkState::Linked => SkillTone::Linked,
+                SkillLinkState::HomeAbsent | SkillLinkState::Unsupported => SkillTone::Idle,
+                _ => SkillTone::Attention,
+            };
+            (format!("{} {}", target.name, target.state.label()), tone)
+        })
+        .collect()
+}
+
+fn skill_block(skills: &CuaSkills, colors: Palette) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(ui_text::space(6.0))
+        .child(
+            div()
+                .text_size(ui_text::text(12.0))
+                .child("cua-driver skill"),
+        )
+        .child(div().flex().flex_wrap().gap(ui_text::space(6.0)).children(
+            skill_chips(skills).into_iter().map(|(label, tone)| {
+                let color = match tone {
+                    SkillTone::Linked => colors.cyan,
+                    SkillTone::Attention => colors.gold,
+                    SkillTone::Idle => colors.muted,
+                };
+                status_chip(label, color, colors)
+            }),
+        ))
+        .child(
+            div()
+                .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                .text_size(ui_text::text(11.0))
+                .text_color(rgb(colors.muted))
+                .child(skills.message.clone()),
+        )
         .into_any_element()
 }
 
@@ -1700,6 +1762,7 @@ impl SettingsPanel {
 
     fn primary_cua_action(cx: &App) -> CuaAction {
         match cx.global::<CuaSetupState>().status.as_ref() {
+            status if skill_setup_pending(status) => CuaAction::Install,
             Some(status) if status.ready => CuaAction::Check,
             Some(status) if status.version.is_none() || !status.running => CuaAction::Install,
             Some(status) if status.installed => CuaAction::Permissions,
@@ -1785,6 +1848,7 @@ impl SettingsPanel {
         let status = state.status.as_ref();
         let installed = status.is_some_and(|status| status.installed);
         let ready = status.is_some_and(|status| status.ready);
+        let link_skill = skill_setup_pending(status);
         let repair =
             installed && status.is_some_and(|status| status.version.is_none() || !status.running);
         let verify_capture = status.is_some_and(|status| {
@@ -1853,7 +1917,7 @@ impl SettingsPanel {
                     .gap(ui_text::space(10.0))
                     .child(div().flex_1().text_size(ui_text::text(13.0)).child("Cua.ai"))
                     .child(status_chip(
-                        if state.pending.is_some() { "Working" } else if ready { "Connected" } else { "Setup needed" },
+                        if state.pending.is_some() { "Working" } else if ready { "Driver ready" } else { "Setup needed" },
                         if ready { colors.cyan } else { colors.gold },
                         colors,
                     )),
@@ -1863,8 +1927,9 @@ impl SettingsPanel {
             .children((installed && !ready && !verify_capture).then(|| div().max_w(ui_text::space(DESCRIPTION_MAX_WIDTH)).text_size(ui_text::text(11.0)).text_color(rgb(colors.muted))
                 .child("Enable CuaDriver in macOS Accessibility and Screen Recording to connect all agents.")))
             .child(div().max_w(ui_text::space(DESCRIPTION_MAX_WIDTH)).text_size(ui_text::text(10.0)).text_color(rgb(colors.muted)).child("New agent sessions connect automatically. Restart existing sessions to connect them."))
+            .children(status.map(|status| skill_block(&status.skills, colors)))
             .child(action_bar(layout)
-                .child(self.cua_button(if ready { "Check Cua" } else if repair { "Repair Cua" } else if verify_capture { "Verify screen capture" } else if installed { "Grant macOS access" } else { "Set up Cua" }, true, state.pending.is_some(), cx))
+                .child(self.cua_button(if link_skill { "Link Cua skill" } else if ready { "Check Cua" } else if repair { "Repair Cua" } else if verify_capture { "Verify screen capture" } else if installed { "Grant macOS access" } else { "Set up Cua" }, true, state.pending.is_some(), cx))
                 .child(self.cua_button("Check again", false, state.pending.is_some(), cx)))
             .into_any_element()
     }
@@ -3560,5 +3625,103 @@ mod tests {
             let flat: Vec<_> = columns.iter().flatten().copied().collect();
             assert_eq!(flat, Section::ALL, "{layout:?}");
         }
+    }
+
+    fn cua_status(ready: bool, pack: Option<bool>, states: &[SkillLinkState]) -> CuaStatus {
+        use crate::cua::{SkillCli, SkillTarget};
+        let clis = [
+            SkillCli::Claude,
+            SkillCli::Codex,
+            SkillCli::Grok,
+            SkillCli::Muse,
+        ];
+        CuaStatus {
+            installed: true,
+            driver_path: Some(PathBuf::from(
+                "/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
+            )),
+            version: Some("cua-driver 0.30.4".into()),
+            accessibility: ready,
+            screen_recording: ready,
+            direct_capture_verified: ready,
+            running: true,
+            ready,
+            message: String::new(),
+            skills: CuaSkills {
+                pack: pack.map(|_| PathBuf::from("/u/.cua-driver/skills/cua-driver")),
+                pack_installed: pack == Some(true),
+                message: String::new(),
+                targets: clis
+                    .into_iter()
+                    .zip(states)
+                    .map(|(cli, state)| SkillTarget {
+                        cli,
+                        name: cli.label().to_owned(),
+                        path: PathBuf::from("/u/skills/cua-driver"),
+                        state: *state,
+                        variable: None,
+                        homes: vec![],
+                        detail: None,
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn computer_use_keeps_driver_readiness_apart_from_the_skill() {
+        use SkillLinkState::*;
+        let linked = cua_status(true, Some(true), &[Linked, Linked, HomeAbsent, Linked]);
+        assert!(!skill_setup_pending(Some(&linked)));
+        assert_eq!(
+            skill_chips(&linked.skills),
+            [
+                ("Claude Code linked".to_owned(), SkillTone::Linked),
+                ("Codex linked".to_owned(), SkillTone::Linked),
+                ("Grok no home".to_owned(), SkillTone::Idle),
+                ("Muse linked".to_owned(), SkillTone::Linked),
+            ]
+        );
+        // A ready driver with a CLI that setup can still link offers setup.
+        for states in [
+            [Missing, Linked, Linked, Linked],
+            [Linked, Stale, Linked, Linked],
+        ] {
+            assert!(skill_setup_pending(Some(&cua_status(
+                true,
+                Some(true),
+                &states
+            ))));
+        }
+        assert!(skill_setup_pending(Some(&cua_status(
+            true,
+            Some(false),
+            &[PackMissing; 4]
+        ))));
+        // What setup cannot change, and a driver that is not ready, do not.
+        let blocked = cua_status(
+            true,
+            Some(true),
+            &[BlockedByForeignPath, Linked, Linked, Linked],
+        );
+        assert!(!skill_setup_pending(Some(&blocked)));
+        assert_eq!(
+            skill_chips(&blocked.skills)[0],
+            (
+                "Claude Code blocked by foreign path".to_owned(),
+                SkillTone::Attention
+            )
+        );
+        assert!(!skill_setup_pending(Some(&cua_status(
+            true,
+            None,
+            &[PackMissing; 4]
+        ))));
+        assert!(!skill_setup_pending(Some(&cua_status(
+            false,
+            Some(true),
+            &[Missing; 4]
+        ))));
+        assert!(!skill_setup_pending(None));
     }
 }
