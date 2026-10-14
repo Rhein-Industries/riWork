@@ -135,6 +135,8 @@ impl Driver for FakeDriver {
                 effort,
                 approval_mode,
                 fast,
+                contributor_mode: _,
+                contributor_opt_out: _,
             } = command
             {
                 reporter.report(DriverReport {
@@ -295,7 +297,8 @@ pub fn placeholder_info(config: &DriverConfig, thread_id: &str) -> ChatInfo {
         model: config.model.clone(),
         effort: config.effort.clone(),
         fast: config.fast,
-        contributor_opt_out: config.contributor_opt_out,
+        contributor_mode: config.contributor_mode,
+        contributor_opt_out: false,
         approval_mode: config.approval_mode,
         codex_account_id: None,
         state: ChatState::Idle,
@@ -317,7 +320,7 @@ fn fake_config(
         model: info.model.clone(),
         effort: info.effort.clone(),
         fast: info.fast,
-        contributor_opt_out: info.contributor_opt_out,
+        contributor_mode: info.contributor_mode,
         resume,
         resume_has_history: false,
         reporter: Default::default(),
@@ -522,6 +525,7 @@ impl TestHost {
             effort: None,
             orchestrator: None,
             fast: false,
+            contributor_mode: Default::default(),
             contributor_opt_out: false,
         }
     }

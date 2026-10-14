@@ -22,6 +22,8 @@ fn main() {
         model: Some("gpt-5".into()),
         effort: Some("high".into()),
         fast: true,
+        contributor_mode: ContributorMode::Off,
+        contributor_opt_out: false,
         approval_mode: ApprovalMode::AutoEdit,
         codex_account_id: Some("acct".into()),
         orchestrator: None,
@@ -44,18 +46,31 @@ fn main() {
         model: None,
         effort: None,
         fast: false,
+        contributor_mode: ContributorMode::Off,
+        contributor_opt_out: false,
         approval_mode: ApprovalMode::default(),
         codex_account_id: None,
         orchestrator: None,
         state: ChatState::default(),
         carried_over: None,
     };
+    // A Muse chat turned on for Muse's contributor mode: `contributor_mode` is written only when on, and the older opt-out is not.
     let muse_chat = ChatInfo {
         provider: Provider::Muse,
         id: "55555555-5555-4555-8555-555555555555".into(),
         title: "Muse chat".into(),
+        contributor_mode: ContributorMode::On,
+        contributor_opt_out: false,
         ..minimal.clone()
     };
+    // A Muse chat off, as the host settles it: no `contributor_mode`, and the older opt-out for readers from before.
+    let mut muse_off = ChatInfo {
+        provider: Provider::Muse,
+        id: "66666666-6666-4666-8666-666666666666".into(),
+        title: "Muse chat".into(),
+        ..minimal.clone()
+    };
+    muse_off.settle_contributor();
     // A chat that went on with the other provider (`switch`): the same id, the new provider, and what it was given.
     let switched = ChatInfo {
         provider: Provider::Claude,
@@ -156,17 +171,25 @@ fn main() {
         ChatCommand::Approve { request_id: "r".into(), decision: Decision::AcceptForSession },
         ChatCommand::Approve { request_id: "r".into(), decision: Decision::Cancel },
         ChatCommand::Answer { request_id: "q".into(), answers: vec![vec!["A".into(), "B".into()], vec!["free".into()]] },
-        ChatCommand::Configure { model: None, effort: None, approval_mode: Some(ApprovalMode::Plan), fast: None },
-        ChatCommand::Configure { model: Some("m".into()), effort: Some("high".into()), approval_mode: None, fast: None },
-        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: None },
-        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: Some(true) },
-        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: Some(false) },
-        ChatCommand::Configure { model: Some("gpt-5.5".into()), effort: Some("xhigh".into()), approval_mode: Some(ApprovalMode::Full), fast: Some(true) },
+        ChatCommand::Configure { model: None, effort: None, approval_mode: Some(ApprovalMode::Plan), fast: None, contributor_mode: None, contributor_opt_out: None },
+        ChatCommand::Configure { model: Some("m".into()), effort: Some("high".into()), approval_mode: None, fast: None, contributor_mode: None, contributor_opt_out: None },
+        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: None, contributor_mode: None, contributor_opt_out: None },
+        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: Some(true), contributor_mode: None, contributor_opt_out: None },
+        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: Some(false), contributor_mode: None, contributor_opt_out: None },
+        ChatCommand::Configure { model: Some("gpt-5.5".into()), effort: Some("xhigh".into()), approval_mode: Some(ApprovalMode::Full), fast: Some(true), contributor_mode: None, contributor_opt_out: None },
+        // A Muse chat's contributor mode: on, and off again.
+        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: None, contributor_mode: Some(ContributorMode::On), contributor_opt_out: None },
+        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: None, contributor_mode: Some(ContributorMode::Off), contributor_opt_out: None },
         ChatCommand::Compact,
         ChatCommand::Stop,
         ChatCommand::Switch { provider: Provider::Claude, model: None, effort: None, fast: None },
         ChatCommand::Switch { provider: Provider::Codex, model: Some("gpt-5.5".into()), effort: Some("high".into()), fast: Some(false) },
         ChatCommand::Switch { provider: Provider::Muse, model: None, effort: None, fast: None },
+    ];
+    // What clients before `contributor_mode` sent: an off, and the Muse settings, which the desktop refuses. Read, never written.
+    let legacy_commands: Vec<ChatCommand> = vec![
+        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: None, contributor_mode: None, contributor_opt_out: Some(true) },
+        ChatCommand::Configure { model: None, effort: None, approval_mode: None, fast: None, contributor_mode: None, contributor_opt_out: Some(false) },
     ];
     let events: Vec<Value> = events.iter().map(|e| to_value(e).unwrap()).collect();
     let commands: Vec<Value> = commands.iter().map(|c| to_value(c).unwrap()).collect();
@@ -176,7 +199,8 @@ fn main() {
         "generated_by": "ios/scripts/gen-chat-fixtures.sh from crates/riwork-engine/src/chat/model.rs; do not edit by hand",
         "events": events,
         "commands": commands,
-        "chats": [to_value(&info).unwrap(), to_value(&minimal).unwrap(), to_value(&switched).unwrap(), to_value(&muse_chat).unwrap()],
+        "legacy_commands": legacy_commands.iter().map(|c| to_value(c).unwrap()).collect::<Vec<Value>>(),
+        "chats": [to_value(&info).unwrap(), to_value(&minimal).unwrap(), to_value(&switched).unwrap(), to_value(&muse_chat).unwrap(), to_value(&muse_off).unwrap()],
         "modes": modes,
         "providers": providers,
         "model_options": model_options.iter().map(|m| to_value(m).unwrap()).collect::<Vec<Value>>(),

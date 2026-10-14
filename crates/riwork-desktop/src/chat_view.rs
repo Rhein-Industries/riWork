@@ -29,8 +29,8 @@ use crate::{
     chat::{
         client::Client,
         model::{
-            ApprovalMode, ChatCommand, ChatInfo, Decision, ItemBody, NewChat, NoticeLevel,
-            Provider, Question,
+            ApprovalMode, ChatCommand, ChatInfo, ContributorMode, Decision, ItemBody, NewChat,
+            NoticeLevel, Provider, Question,
         },
     },
     text_input::{self, EnterBehavior, InputState, TextareaState},
@@ -82,6 +82,7 @@ pub use host::HostConfig;
 pub use image_scope::ImageScope;
 pub use links::resolve as resolve_file;
 pub use state::{Link, Summary};
+pub(crate) use toolbar::contributor_label;
 
 use feed::{Backoff, Feed, FeedMsg};
 use state::{Applied, ChatModel, provider_name};
@@ -944,6 +945,22 @@ impl ChatView {
                 );
                 return;
             }
+            // The host's refusals name contributor mode themselves.
+            ChatCommand::Configure {
+                contributor_mode: Some(_),
+                ..
+            } => {
+                self.notices.set(
+                    notices::LocalKey::Settings,
+                    crate::chat::model::NoticeLevel::Error,
+                    if error.contains("contributor mode") {
+                        error
+                    } else {
+                        format!("Could not change contributor mode: {error}")
+                    },
+                );
+                return;
+            }
             _ => {}
         }
         self.notices.set(
@@ -1055,6 +1072,8 @@ impl ChatView {
             effort,
             approval_mode,
             fast,
+            contributor_mode: None,
+            contributor_opt_out: None,
         });
         cx.notify();
     }
@@ -1081,6 +1100,34 @@ impl ChatView {
             .as_ref()
             .is_some_and(|info| info.fast);
         self.configure(None, None, None, Some(!on), cx);
+    }
+
+    /// Turn Muse's contributor mode on for the chat, or off again. The host restarts an idle
+    /// chat's Muse on the same conversation, and refuses while it works. A chat an older host
+    /// leaves to the Muse settings is turned off, which such a host can do too.
+    fn toggle_contributor(&mut self, cx: &mut Context<Self>) {
+        let on = self
+            .model
+            .transcript
+            .info
+            .as_ref()
+            .and_then(|info| info.reported_contributor_mode())
+            == Some(ContributorMode::Off);
+        self.menu = None;
+        self.focus_composer = true;
+        self.command(ChatCommand::Configure {
+            model: None,
+            effort: None,
+            approval_mode: None,
+            fast: None,
+            contributor_mode: Some(if on {
+                ContributorMode::On
+            } else {
+                ContributorMode::Off
+            }),
+            contributor_opt_out: None,
+        });
+        cx.notify();
     }
 
     /// Start the provider process again for a chat that stopped or failed. Any command

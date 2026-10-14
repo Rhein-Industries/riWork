@@ -113,6 +113,7 @@ fn the_whole_command_line_is_read() {
             effort: Some("high".into()),
             account: Some("Work".into()),
             mode: Some(ApprovalMode::AutoEdit),
+            contributor_on: false,
             context: Context::Summary,
             note: None,
         }
@@ -129,15 +130,24 @@ fn the_whole_command_line_is_read() {
             effort: None,
             account: None,
             mode: None,
+            contributor_on: false,
             context: Context::Transcript,
             note: None,
         }
     );
     let to_muse = parse(words("--to chat --provider muse")).unwrap();
     assert_eq!(
-        (to_muse.kind, to_muse.provider),
-        (Kind::Chat, HarnessKind::Muse)
+        (to_muse.kind, to_muse.provider, to_muse.contributor_on),
+        (Kind::Chat, HarnessKind::Muse, false)
     );
+    // Muse's contributor mode is off unless asked on, for a chat or a terminal alike.
+    for to in ["chat", "shell"] {
+        let on = parse(words(&format!(
+            "--to {to} --provider muse --contributor-on"
+        )))
+        .unwrap();
+        assert!(on.contributor_on, "{to}");
+    }
     for (word, mode) in [
         ("supervised", ApprovalMode::Supervised),
         ("auto-edit", ApprovalMode::AutoEdit),
@@ -204,6 +214,14 @@ fn what_cannot_be_understood_is_refused_with_the_usage() {
         refused("--to chat --provider codex extra words"),
         "Unexpected arguments: extra words"
     );
+    for provider in ["codex", "claude", "grok"] {
+        assert!(
+            refused(&format!(
+                "--to shell --provider {provider} --contributor-on"
+            ))
+            .contains("only Muse has a contributor mode")
+        );
+    }
     assert_eq!(
         refused("--to chat --provider codex --to shell"),
         "--to can only be given once"
@@ -281,6 +299,40 @@ fn a_chats_own_agent_hands_off_its_chat_by_saying_nothing_of_the_source() {
             documents[0].path().display()
         )
     );
+}
+
+#[test]
+fn a_muse_chat_handed_off_to_starts_off_unless_asked_on() {
+    use crate::chat::model::ContributorMode::{Off, On};
+    let rig = Rig::new();
+    for (directory, flag, mode) in [("off", "", Off), ("on", " --contributor-on", On)] {
+        let chat = rig.chat_in(directory);
+        let json = rig
+            .run(
+                &format!("--to chat --provider muse{flag}"),
+                true,
+                None,
+                Some(&chat.id),
+            )
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let target = value["target"]["id"].as_str().unwrap();
+        let info = rig.host.info(target);
+        assert_eq!(
+            (info.provider, info.contributor_mode),
+            (Provider::Muse, mode)
+        );
+        let starts = crate::chat::testing::fake_for(&info.cwd)
+            .starts
+            .lock()
+            .unwrap()
+            .clone();
+        let started = starts
+            .iter()
+            .rfind(|c| c.provider == Provider::Muse)
+            .unwrap();
+        assert_eq!(started.contributor_mode, mode, "{directory}");
+    }
 }
 
 #[test]

@@ -86,6 +86,7 @@ riwork remote pair|revoke|devices|start|relay   Encrypted mobile access (standal
 riwork remote --help                    Pairing, relay and connector command options
 riwork shell create [--project ID | --worktree ID] [--command CMD] [--no-parent]
 riwork shell create [--worktree ID] --harness codex|claude|grok|muse [--model NAME] [--unrestricted | --as-settings]
+                    [--contributor-on]   Muse runs with contributor mode off unless --contributor-on
 riwork shell list [--project ID | --all]
 riwork shell output ID [--lines N] [--styled]   Read current shell output by UUID
 riwork shell output ID --json [--lines N] [--styled] [--if-changed HASH [--wait-ms N]]
@@ -102,7 +103,8 @@ riwork chat ensure                      Start the chat host if it is not running
 riwork chat list [--project ID] [--json]   List Codex, Claude and Muse chats, running or not
 riwork chat open CHAT_ID                 Reopen an ordinary chat in its Mac project window
 riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
-                [--model NAME] [--effort LEVEL] [--fast] [--contributor-opt-out] [--title TEXT]
+                [--model NAME] [--effort LEVEL] [--fast] [--contributor-on | --contributor-opt-out]
+                [--title TEXT]
 riwork chat models --provider codex|claude|muse [--project ID] [--json]
                                         The models chats of that provider reported, read from saved chats
 riwork chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
@@ -112,7 +114,8 @@ riwork chat command CHAT_ID (--command-json JSON | -- JSON) [--json]   Send one 
 riwork chat stop CHAT_ID                Stop a chat's provider process and keep its history
 riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok|muse
                [--model NAME] [--effort LEVEL] [--account LABEL_OR_ID]
-               [--mode supervised|auto-edit|full|plan] [--context transcript|summary] [--note TEXT]
+               [--mode supervised|auto-edit|full|plan] [--contributor-on]
+               [--context transcript|summary] [--note TEXT]
                                         Pass a conversation to a new shell or chat
 riwork orchestrator [--project ID]       Show the selected orchestrator status
 riwork orchestrator create [--project ID | --cwd PATH] [--command CMD] [--mode automatic|terminal|chat]
@@ -145,11 +148,14 @@ chat new --json prints the chat as `chat list --json` shows it, also when its pr
 did not start (state failed); without --json that is an error. --model, --effort and
 --title (at most 100, 32 and 200 characters, no control characters) take their value
 as it is, also with `=`: --title=--draft. --fast turns on the provider's fast mode for
-a model that has one (Codex's fast tier, Claude's fast mode). --contributor-opt-out runs a
-Muse chat with Muse's contributor mode off, so its content won't be used for product
-improvement: every start and resume of that chat runs `muse serve --contributor-mode off`,
-which Muse never saves. Without it the chat follows your Muse settings; a Codex or Claude
-chat has no contributor mode and is made without it, with a notice.
+a model that has one (Codex's fast tier, Claude's fast mode). A Muse chat runs with Muse's
+contributor mode off, so its content won't be used for product improvement: every start and
+resume of it runs `muse serve --contributor-mode off`, which Muse never saves, whatever your
+Muse settings say. --contributor-on runs it with contributor mode on instead (`muse serve
+--contributor-mode on`) until it is turned off, and is refused for Codex and Claude, which
+have no contributor mode; --contributor-opt-out, the explicit off, is still taken. A chat host
+from before this is not trusted with it: a chat it started otherwise is removed, with an
+error.
 chat events --json prints one line, {\"chat_id\",\"events\":[{\"seq\",\"event\"}],\"next\",\"more\"}:
 the events with seq above --since (default 0), at most --max (500 by default, up to
 2000) and as many as fit --max-bytes (1 MiB by default, up to 2 MiB). With none yet it
@@ -168,6 +174,12 @@ answer, configure, compact, stop, dismiss_notice, switch) and refuses unknown fi
 `invalid_request:` are about the command, anything else about the host or the chat.
 {\"command\":\"switch\",\"provider\":\"claude\"} goes on with the other provider in the same chat
 (optional model, effort, fast); it is refused while a turn runs or waits.
+{\"command\":\"configure\",\"contributor_mode\":\"on\"} turns a Muse chat's contributor mode
+on, and \"off\" off again ({\"contributor_opt_out\":true} is still taken for off; false, which
+asked for your Muse settings, is refused). An idle chat's `muse serve` restarts and resumes its
+session; a stopped one keeps it for its next start. Send it on its own: it is refused beside
+other settings, while a turn runs or waits or Muse still starts. A Codex or Claude chat
+refuses on; one that kept on from Muse can turn it off before it goes back to Muse.
 chat models lists what a chat of that provider can be set to, read from saved chats; a
 project selects the Codex account the list is for.
 capabilities --json has \"chat\": true, \"orchestrator_create\": true,
@@ -183,14 +195,17 @@ transcript, or else its scrollback; --context summary first asks an idle Codex o
 source to write a summary (up to five minutes) and falls back to the transcript, saying so,
 if none comes. --account is a Codex account's label or id (only Codex has accounts); without
 it the project's own account is used, as in a new tab. For a shell target --mode supervised
-leaves the CLI's usual permissions. --json prints {handoff_id, document, target:{kind,id},
-context} and, if a summary was replaced by the transcript, fallback.
+leaves the CLI's usual permissions. A Muse target, chat or terminal, starts with contributor
+mode off unless --contributor-on (Muse only) asks for on. --json prints {handoff_id,
+document, target:{kind,id}, context} and, if a summary was replaced by the transcript,
+fallback.
 worktree create --base REF only chooses the start point of a new branch. If
 BRANCH already exists, it is checked out as is and --base is ignored.
 shell create --project ID --worktree SELECTOR looks SELECTOR up in that project
 first, so a branch name shared by several projects is not ambiguous.
 shell create --harness H --model NAME starts the CLI on that model (Codex and Grok -m,
-Claude and Muse --model, as handoff does); without it the CLI's own default runs.
+Claude and Muse --model, as handoff does); without it the CLI's own default runs. A Muse
+also says its contributor mode once, off unless --contributor-on, with or without --model.
 shell create --json prints the new session as `shell list --json` shows it (id,
 project_id, worktree_id, kind, cwd, harness, alive, ...). A running RiWork
 window adds a tab for it behind the current one without taking focus.
@@ -1738,12 +1753,22 @@ fn search_command(args: Vec<String>, json: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// What `shell create --harness H --model M` asks of the launch: the model, and the
-/// permission bypass the caller asked for (`Full`), as a handoff asks for them.
-fn harness_choices(model: Option<String>, unrestricted: bool) -> crate::sessions::HarnessChoices {
+/// What `shell create --harness H [--model M] [--contributor-on]` asks of the launch: the
+/// model, the permission bypass the caller asked for (`Full`), as a handoff asks for them,
+/// and Muse's contributor mode, off unless asked on.
+fn harness_choices(
+    model: Option<String>,
+    unrestricted: bool,
+    contributor_on: bool,
+) -> crate::sessions::HarnessChoices {
     crate::sessions::HarnessChoices {
         model,
         mode: unrestricted.then_some(crate::chat::model::ApprovalMode::Full),
+        contributor: if contributor_on {
+            crate::chat::model::ContributorMode::On
+        } else {
+            crate::chat::model::ContributorMode::Off
+        },
         ..Default::default()
     }
 }
@@ -1781,12 +1806,19 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 .transpose()?;
             let unrestricted = take_flag(&mut args, "--unrestricted");
             let as_settings = take_flag(&mut args, "--as-settings");
+            let contributor_on = take_flag(&mut args, "--contributor-on");
             ensure_empty(&args)?;
             if harness.is_some() && command.is_some() {
                 return Err("Use either --harness or --command".to_owned());
             }
             if model.is_some() && harness.is_none() {
                 return Err("--model requires --harness".to_owned());
+            }
+            if contributor_on && harness != Some(HarnessKind::Muse) {
+                return Err(
+                    "--contributor-on requires --harness muse: only Muse has a contributor mode"
+                        .to_owned(),
+                );
             }
             if unrestricted && as_settings {
                 return Err("Use either --unrestricted or --as-settings".to_owned());
@@ -1807,14 +1839,16 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             let (project_id, worktree_id, cwd) =
                 launch_scope(&state, project.as_deref(), worktree.as_deref())?;
             let shell = if let Some(harness) = harness
-                && model.is_some()
+                && (model.is_some() || contributor_on)
             {
+                // A model, or Muse's contributor mode asked on (which is off unless asked):
+                // the launch says them; the rest as without them.
                 manager.create_harness_with(
                     project_id,
                     worktree_id,
                     cwd,
                     harness,
-                    harness_choices(model, unrestricted),
+                    harness_choices(model, unrestricted, contributor_on),
                 )?
             } else if let Some(harness) = harness {
                 manager.create_harness(project_id, worktree_id, cwd, harness, unrestricted)?
@@ -2173,8 +2207,18 @@ fn chat_client_command(
                 Some(_) => return Err("--mode must be supervised, auto-edit, full, or plan".into()),
             };
             let fast = take_flag(&mut args, "--fast");
+            let contributor_on = take_flag(&mut args, "--contributor-on");
             let contributor_opt_out = take_flag(&mut args, "--contributor-opt-out");
             ensure_empty(&args)?;
+            if contributor_on && contributor_opt_out {
+                return Err("Use either --contributor-on or --contributor-opt-out".into());
+            }
+            if contributor_on && provider != crate::chat::model::Provider::Muse {
+                return Err(
+                    "--contributor-on needs --provider muse: only Muse has a contributor mode"
+                        .into(),
+                );
+            }
             let state = Store::open(home)?.snapshot()?;
             let (project_id, worktree_id, cwd) =
                 launch_scope(&state, project.as_deref(), worktree.as_deref())?;
@@ -2195,6 +2239,11 @@ fn chat_client_command(
                 effort,
                 orchestrator: None,
                 fast,
+                contributor_mode: if contributor_on {
+                    crate::chat::model::ContributorMode::On
+                } else {
+                    crate::chat::model::ContributorMode::Off
+                },
                 contributor_opt_out,
             })?;
             if json {
@@ -2412,7 +2461,7 @@ fn chat_client_command(
 const CHAT_MODELS_USAGE: &str =
     "Usage: riwork chat models --provider codex|claude|muse [--project ID] [--json]";
 
-const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--contributor-opt-out] [--title TEXT]";
+const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--contributor-on | --contributor-opt-out] [--title TEXT]";
 
 /// A chat's ID as typed: whole, or a unique prefix of at least eight characters.
 fn resolve_chat(

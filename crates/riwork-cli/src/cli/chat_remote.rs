@@ -361,7 +361,14 @@ fn collect_page(source: &mut impl Source, plan: &Plan) -> Result<Page, String> {
 
 /// The fields of `Configure` that may be left out, and so may be `null`. No other field of
 /// any command may be `null`: that is a field the command does not have.
-const OPTIONAL_FIELDS: [&str; 4] = ["model", "effort", "approval_mode", "fast"];
+const OPTIONAL_FIELDS: [&str; 6] = [
+    "model",
+    "effort",
+    "approval_mode",
+    "fast",
+    "contributor_mode",
+    "contributor_opt_out",
+];
 /// The same for `Switch`, whose `provider` is required.
 const SWITCH_OPTIONAL_FIELDS: [&str; 3] = ["model", "effort", "fast"];
 
@@ -451,12 +458,23 @@ pub(super) fn parse_command(text: &str) -> Result<ChatCommand, String> {
             effort,
             approval_mode,
             fast,
+            contributor_mode,
+            contributor_opt_out,
         } => {
-            if model.is_none() && effort.is_none() && approval_mode.is_none() && fast.is_none() {
+            if model.is_none()
+                && effort.is_none()
+                && approval_mode.is_none()
+                && fast.is_none()
+                && contributor_mode.is_none()
+                && contributor_opt_out.is_none()
+            {
                 return Err(invalid(
-                    "configure needs a model, an effort, an approval_mode or fast",
+                    "configure needs a model, an effort, an approval_mode, fast or contributor_mode",
                 ));
             }
+            // On or off, never the Muse settings an older client's false asked for, and never
+            // both at once.
+            command.requested_contributor_mode().map_err(invalid)?;
             if let Some(model) = model {
                 model_setting("model", model.clone()).map_err(invalid)?;
             }

@@ -688,10 +688,24 @@ fn a_project_choice_makes_its_own_orchestrator_and_create_flags_win_for_that_cre
 
 #[test]
 fn shell_create_model_asks_the_launch_for_that_model_and_keeps_the_permission_choice() {
-    let choices = harness_choices(Some("opus".into()), false);
+    use crate::chat::model::ContributorMode;
+    let choices = harness_choices(Some("opus".into()), false, false);
     assert_eq!(choices.model.as_deref(), Some("opus"));
     assert_eq!(choices.mode, None);
-    let choices = harness_choices(Some("gpt-6.1-sol".into()), true);
+    assert_eq!(choices.contributor, ContributorMode::Off);
+    let choices = harness_choices(Some("gpt-6.1-sol".into()), true, false);
     assert_eq!(choices.mode, Some(crate::chat::model::ApprovalMode::Full));
+    // Muse's contributor mode beside a model: off unless asked on.
+    let choices = harness_choices(Some("muse-wonder-full-1.0".into()), false, true);
+    assert_eq!(choices.model.as_deref(), Some("muse-wonder-full-1.0"));
+    assert_eq!(choices.contributor, ContributorMode::On);
+    let choices = harness_choices(None, true, true);
+    assert_eq!(
+        (choices.model, choices.contributor),
+        (None, ContributorMode::On)
+    );
     assert!(HELP.contains("--harness codex|claude|grok|muse [--model NAME]"));
+    assert!(HELP.contains(
+        "[--contributor-on]   Muse runs with contributor mode off unless --contributor-on"
+    ));
 }

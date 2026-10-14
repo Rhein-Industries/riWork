@@ -440,6 +440,46 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
         ]),
         "riwork: --model must not be blank"
     );
+    // Only Muse has a contributor mode to turn on.
+    for harness in [&["--harness", "codex"][..], &["--command", "muse"], &[]] {
+        let mut args = vec!["shell", "create", "--project", &project];
+        args.extend_from_slice(harness);
+        args.extend(["--contributor-on", "--json"]);
+        assert_eq!(
+            stderr(&args),
+            "riwork: --contributor-on requires --harness muse: only Muse has a contributor mode",
+            "{harness:?}"
+        );
+    }
+    // Each says what it needs, also when both are given.
+    assert_eq!(
+        stderr(&[
+            "shell",
+            "create",
+            "--project",
+            &project,
+            "--model",
+            "muse-wonder-full-1.0",
+            "--contributor-on",
+            "--json"
+        ]),
+        "riwork: --model requires --harness"
+    );
+    assert_eq!(
+        stderr(&[
+            "shell",
+            "create",
+            "--project",
+            &project,
+            "--harness",
+            "codex",
+            "--model",
+            "gpt-6.1-sol",
+            "--contributor-on",
+            "--json"
+        ]),
+        "riwork: --contributor-on requires --harness muse: only Muse has a contributor mode"
+    );
     // None of the failures left a terminal behind or started a window.
     assert!(home.shells().is_empty());
     assert!(!home.runtime().exists(), "a GUI instance was registered");
@@ -456,6 +496,7 @@ fn an_agent_asked_for_a_model_starts_on_it_with_the_permissions_it_was_asked_for
     for (name, body) in [
         ("claude", "exec sleep 300"),
         ("codex", "exec sleep 300"),
+        ("muse", "exec sleep 300"),
         ("cua-driver", "exit 0"),
     ] {
         let path = bin.join(name);
@@ -515,6 +556,51 @@ fn an_agent_asked_for_a_model_starts_on_it_with_the_permissions_it_was_asked_for
     assert!(command.contains("-m gpt-6.1-sol"), "{command}");
     assert_eq!(sol["unrestricted"], true);
     assert_eq!(sol["worktree_id"], worktree.as_str());
+    // A Muse on a model says the model and its contributor mode once each: off unless
+    // asked on, with --contributor-on beside --model too.
+    let count =
+        |shell: &Value, text: &str| shell["command"].as_str().unwrap().matches(text).count();
+    let wonder = agent(&[
+        "shell",
+        "create",
+        "--worktree",
+        &worktree,
+        "--harness",
+        "muse",
+        "--model",
+        "muse-wonder-full-1.0",
+        "--json",
+    ]);
+    assert_eq!(
+        count(&wonder, "--model muse-wonder-full-1.0"),
+        1,
+        "{wonder}"
+    );
+    assert_eq!(count(&wonder, "--contributor-mode off"), 1, "{wonder}");
+    assert_eq!(count(&wonder, "--contributor-mode on"), 0, "{wonder}");
+    let wonder_on = agent(&[
+        "shell",
+        "create",
+        "--worktree",
+        &worktree,
+        "--harness",
+        "muse",
+        "--model",
+        "muse-wonder-full-1.0",
+        "--contributor-on",
+        "--json",
+    ]);
+    assert_eq!(
+        count(&wonder_on, "--model muse-wonder-full-1.0"),
+        1,
+        "{wonder_on}"
+    );
+    assert_eq!(count(&wonder_on, "--contributor-mode on"), 1, "{wonder_on}");
+    assert_eq!(
+        count(&wonder_on, "--contributor-mode off"),
+        0,
+        "{wonder_on}"
+    );
 }
 
 #[test]
@@ -604,6 +690,77 @@ fn an_agent_is_restricted_unless_unrestricted_is_asked_for() {
             "{created} not in {listed:?}"
         );
     }
+}
+
+#[test]
+#[ignore = "slow: real tmux shells"]
+fn a_muse_terminal_runs_with_contributor_mode_off_unless_asked_on() {
+    let home = Home::new();
+    let (project, _, _) = home.project("app");
+    // A stand-in Muse and Cua driver, first on PATH, so the real ones are never started.
+    let bin = home.0.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    for (name, body) in [("muse", "exec sleep 300"), ("cua-driver", "exit 0")] {
+        let path = bin.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let agent = |extra: &[&str]| -> Value {
+        let mut argv = vec![
+            "shell",
+            "create",
+            "--project",
+            &project,
+            "--harness",
+            "muse",
+        ];
+        argv.extend_from_slice(extra);
+        argv.push("--json");
+        let mut command = home.command(&argv);
+        command
+            .env("PATH", &path)
+            .env("RIWORK_CUA_DRIVER", bin.join("cua-driver"));
+        let output = finish(command.spawn().unwrap(), &argv);
+        assert!(
+            output.status.success(),
+            "{argv:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let modes = |shell: &Value| {
+        let command = shell["command"].as_str().unwrap();
+        ["off", "on"]
+            .into_iter()
+            .map(|mode| {
+                command
+                    .matches(&format!("--contributor-mode {mode}"))
+                    .count()
+            })
+            .collect::<Vec<_>>()
+    };
+    let plain = agent(&[]);
+    assert_eq!(plain["harness"], "muse");
+    assert_eq!(modes(&plain), [1, 0], "{plain}");
+    let on = agent(&["--contributor-on"]);
+    assert_eq!(modes(&on), [0, 1], "{on}");
+    assert_eq!(on["unrestricted"], false);
+    let unrestricted_on = agent(&["--contributor-on", "--unrestricted"]);
+    assert_eq!(modes(&unrestricted_on), [0, 1], "{unrestricted_on}");
+    assert_eq!(unrestricted_on["unrestricted"], true);
+    assert!(
+        unrestricted_on["command"]
+            .as_str()
+            .unwrap()
+            .contains("--yolo"),
+        "{unrestricted_on}"
+    );
 }
 
 #[test]

@@ -454,6 +454,8 @@ fn create_chat(
         codex_account_id: None,
         orchestrator: Some(scope.clone()),
         fast: false,
+        // An orchestrator chat starts off, as every Muse RiWork starts unless asked on.
+        contributor_mode: crate::chat::model::ContributorMode::Off,
         contributor_opt_out: false,
     });
     let info = match created {

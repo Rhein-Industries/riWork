@@ -48,9 +48,9 @@
 //! permission profile with `denyUnmatched`, and since a profile is fixed when
 //! a session starts, a running conversation does not move into or out of
 //! Plan. Muse has no fast tier. Contributor mode is fixed for a `muse serve` process and
-//! MSP has no field for it: a chat opted out (`DriverConfig::contributor_opt_out`) starts
-//! every process, first and at each resume, with `--contributor-mode off`; any other chat
-//! passes nothing, so the user's Muse settings decide.
+//! MSP has no field for it: every process, first and at each resume, starts with
+//! `--contributor-mode` and the chat's mode (`DriverConfig::contributor_mode`), off unless the
+//! user turned it on, so the user's Muse settings never decide.
 //!
 //! Verified against `muse serve --provider echo` (Muse 1.4.7, schema
 //! `sha256:6de32db0…`): framing, the handshake and its `sessionMcp` grant, a
@@ -205,7 +205,7 @@ fn spawn_driver(
         state: ChatState::Starting,
     });
     let (proc, stdout) =
-        Proc::spawn(child::command(config, serve_args(config))).inspect_err(|error| {
+        Proc::spawn(child::command(config, &serve_args(config))).inspect_err(|error| {
             let _ = events.send(ChatEvent::State {
                 state: ChatState::Failed {
                     message: error.clone(),
@@ -226,14 +226,15 @@ fn spawn_driver(
     })
 }
 
-/// `muse serve`, with Muse's per-process contributor mode override when the chat opted
-/// out; the subcommand comes first, its flags after it.
-fn serve_args(config: &DriverConfig) -> &'static [&'static str] {
-    if config.contributor_opt_out {
-        &["serve", "--contributor-mode", "off"]
-    } else {
-        &["serve"]
-    }
+/// `muse serve` with Muse's per-process contributor mode override, always exactly once; the
+/// subcommand comes first, its flags after it (Muse 1.4.7 reads options before a subcommand as
+/// the interactive screen's).
+fn serve_args(config: &DriverConfig) -> [&'static str; 3] {
+    [
+        "serve",
+        "--contributor-mode",
+        config.contributor_mode.as_str(),
+    ]
 }
 
 /// Read the provider catalog before any chat exists. MSP model/list needs no
@@ -300,6 +301,8 @@ impl Driver for MuseDriver {
             effort,
             approval_mode,
             fast,
+            contributor_mode: _,
+            contributor_opt_out: _,
         } = command
         else {
             return self.command(command);
@@ -1767,6 +1770,8 @@ impl Muse {
                 effort,
                 approval_mode,
                 fast,
+                contributor_mode: _,
+                contributor_opt_out: _,
             } => self.configure(
                 model,
                 effort,

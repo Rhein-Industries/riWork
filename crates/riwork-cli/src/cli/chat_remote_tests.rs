@@ -660,24 +660,32 @@ fn every_command_reaches_the_driver_in_either_argument_form() {
                 effort: Some("low".into()),
                 approval_mode: Some(ApprovalMode::Plan),
                 fast: None,
+                contributor_mode: None,
+                contributor_opt_out: None,
             },
             ChatCommand::Configure {
                 model: Some("gpt-5.6".into()),
                 effort: None,
                 approval_mode: None,
                 fast: None,
+                contributor_mode: None,
+                contributor_opt_out: None,
             },
             ChatCommand::Configure {
                 model: None,
                 effort: None,
                 approval_mode: None,
                 fast: Some(true),
+                contributor_mode: None,
+                contributor_opt_out: None,
             },
             ChatCommand::Configure {
                 model: None,
                 effort: None,
                 approval_mode: None,
                 fast: Some(false),
+                contributor_mode: None,
+                contributor_opt_out: None,
             },
         ]
     );
@@ -790,6 +798,21 @@ fn a_command_that_is_not_strictly_a_command_is_refused_before_a_host_is_asked() 
         r#"{"command":"configure","fast":1}"#,
         r#"{"command":"configure","fast":null}"#,
         r#"{"command":"send","text":"hi","fast":true}"#,
+        // Contributor mode is on or off, only a configure has one, and the older opt-out is a
+        // boolean that can only say off: its false asked for the Muse settings.
+        r#"{"command":"configure","contributor_mode":"ON"}"#,
+        r#"{"command":"configure","contributor_mode":"settings"}"#,
+        r#"{"command":"configure","contributor_mode":true}"#,
+        r#"{"command":"configure","contributor_mode":null}"#,
+        r#"{"command":"send","text":"hi","contributor_mode":"on"}"#,
+        r#"{"command":"switch","provider":"muse","contributor_mode":"on"}"#,
+        r#"{"command":"configure","contributor_opt_out":"off"}"#,
+        r#"{"command":"configure","contributor_opt_out":null}"#,
+        r#"{"command":"configure","contributor_opt_out":false}"#,
+        r#"{"command":"configure","contributor_mode":"off","contributor_opt_out":false}"#,
+        r#"{"command":"configure","contributor_mode":"on","contributor_opt_out":true}"#,
+        r#"{"command":"send","text":"hi","contributor_opt_out":true}"#,
+        r#"{"command":"switch","provider":"muse","contributor_opt_out":true}"#,
         r#"{"command":"approve","request_id":"r","decision":"yes"}"#,
         r#"{"command":"approve","request_id":"r"}"#,
         r#"{"command":"answer","request_id":"r","answers":["a"]}"#,
@@ -810,6 +833,38 @@ fn a_command_that_is_not_strictly_a_command_is_refused_before_a_host_is_asked() 
     // The longest message there is, is fine for the check.
     let longest = format!(r#"{{"command":"send","text":"{}"}}"#, "x".repeat(MAX_TEXT));
     assert!(parse_command(&longest).is_ok());
+    // Contributor mode alone is a change, either way; the older opt-out's true is an off.
+    let contributor = |mode, opt_out| {
+        Ok(ChatCommand::Configure {
+            model: None,
+            effort: None,
+            approval_mode: None,
+            fast: None,
+            contributor_mode: mode,
+            contributor_opt_out: opt_out,
+        })
+    };
+    use crate::chat::model::ContributorMode::{Off, On};
+    for (text, parsed) in [
+        (
+            r#"{"command":"configure","contributor_mode":"on"}"#,
+            contributor(Some(On), None),
+        ),
+        (
+            r#"{"command":"configure","contributor_mode":"off"}"#,
+            contributor(Some(Off), None),
+        ),
+        (
+            r#"{"command":"configure","contributor_opt_out":true}"#,
+            contributor(None, Some(true)),
+        ),
+        (
+            r#"{"command":"configure","contributor_mode":"off","contributor_opt_out":true}"#,
+            contributor(Some(Off), Some(true)),
+        ),
+    ] {
+        assert_eq!(parse_command(text), parsed, "{text}");
+    }
     assert!(!started.get(), "no host was asked for any of them");
     let _ = std::fs::remove_dir_all(home);
 }

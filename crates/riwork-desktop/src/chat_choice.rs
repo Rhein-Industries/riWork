@@ -6,7 +6,7 @@ use crate::{
     behavior_controls as behavior,
     chat::{
         catalog::{self, Catalog as Models},
-        model::{ApprovalMode, ModelOption, NewChat, Provider},
+        model::{ApprovalMode, ContributorMode, ModelOption, NewChat, Provider},
     },
     codex_accounts, controls, form_input,
     text_input::{self, InputEvent, InputState},
@@ -74,9 +74,10 @@ pub struct ChatChoice {
     mode: ApprovalMode,
     effort: Option<String>,
     fast: bool,
-    /// Muse only: start the chat with Muse's contributor mode off. Kept while another
-    /// provider is picked, and sent only with Muse.
-    contributor_opt_out: bool,
+    /// Muse only: start the chat with Muse's contributor mode on; off, as every Muse chat
+    /// starts, unless turned on here. Kept while another provider is picked, and sent only with
+    /// Muse.
+    contributor_on: bool,
     models: [Models; 3],
     loading: bool,
     error: Option<String>,
@@ -224,7 +225,7 @@ impl ChatChoice {
             },
             effort: None,
             fast: false,
-            contributor_opt_out: false,
+            contributor_on: false,
             models: Default::default(),
             loading: true,
             error: None,
@@ -355,7 +356,12 @@ impl ChatChoice {
             model: (!id.is_empty()).then_some(id),
             effort,
             fast,
-            contributor_opt_out: self.provider == Provider::Muse && self.contributor_opt_out,
+            contributor_mode: if self.provider == Provider::Muse && self.contributor_on {
+                ContributorMode::On
+            } else {
+                ContributorMode::Off
+            },
+            contributor_opt_out: false,
             orchestrator: None,
         };
         if let Some(request) = self.confirmation.take(request) {
@@ -468,18 +474,15 @@ impl ChatChoice {
         )
     }
 
-    /// Muse's contributor mode for this chat. Muse says that with it off, content won't be
-    /// used for product improvement; the chat passes `--contributor-mode off` to every
-    /// `muse serve` it starts, which Muse never saves. Left alone, Muse's settings decide.
+    /// Muse's contributor mode for this chat, off unless turned on here. Muse says that with it
+    /// off, content won't be used for product improvement; the chat passes `--contributor-mode`
+    /// with it to every `muse serve` it starts, which Muse never saves, so Muse's settings never
+    /// decide.
     fn contributor_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme::palette(cx);
-        let label = if self.contributor_opt_out {
-            "Contributor mode off"
-        } else {
-            "Contributor mode: Muse settings"
-        };
+        let label = crate::chat_view::contributor_label(self.contributor_on);
         let change = cx.listener(|choice, pressed: &bool, _, cx| {
-            choice.contributor_opt_out = *pressed;
+            choice.contributor_on = *pressed;
             cx.notify();
         });
         div()
@@ -493,9 +496,9 @@ impl ChatChoice {
                         "new-chat-contributor",
                         label,
                         label,
-                        self.contributor_opt_out,
+                        self.contributor_on,
                     ),
-                    self.contributor_opt_out,
+                    self.contributor_on,
                     colors,
                 )
                 .track_focus(&self.controls["contributor"])
@@ -504,10 +507,10 @@ impl ChatChoice {
             .child(
                 div()
                     .text_color(rgb(colors.muted))
-                    .child(if self.contributor_opt_out {
-                        "Muse contributor mode is off for this chat, so your content in it won't be used for product improvement. Your Muse settings are not changed."
+                    .child(if self.contributor_on {
+                        "Muse contributor mode is on for this chat only, until you turn it off. Your Muse settings are not changed."
                     } else {
-                        "Contributor mode follows your Muse settings. Turn it off here for this chat only."
+                        "Muse contributor mode is off, so your content in this chat won't be used for product improvement. Turn it on here for this chat only."
                     }),
             )
             .into_any_element()
@@ -929,14 +932,18 @@ mod tests {
         assert_eq!(requests[0].model.as_deref(), Some("muse-fixture"));
         assert_eq!(requests[0].effort.as_deref(), Some("high"));
         assert!(!requests[0].fast);
-        assert!(!requests[0].contributor_opt_out, "Muse settings decide");
+        assert_eq!(
+            requests[0].contributor_mode,
+            ContributorMode::Off,
+            "off unless turned on"
+        );
         assert_eq!(requests[0].codex_account_id, None);
         assert_eq!(requests[0].worktree_id.as_deref(), Some("fixture-tree"));
         assert_eq!(requests[0].approval_mode, ApprovalMode::Supervised);
     }
 
     #[gpui::test]
-    fn contributor_opt_out_is_offered_for_muse_only_and_rides_only_its_request(
+    fn contributor_mode_is_off_and_only_a_muse_chat_can_be_started_with_it_on(
         cx: &mut TestAppContext,
     ) {
         let confirmed = |cx: &mut TestAppContext, choice: &Entity<ChatChoice>| {
@@ -962,22 +969,30 @@ mod tests {
             assert!(window.try_find("new-chat-contributor").is_none(), "Claude");
             window.click("new-chat-provider-2", app);
         });
+        // Off is what a Muse chat starts with, and the toggle says so.
         test_turn(cx, handle, |window, app| {
-            assert!(!choice.read(app).contributor_opt_out);
+            assert!(!choice.read(app).contributor_on);
+            let toggle = window.find("new-chat-contributor");
+            assert_eq!(toggle.label(), Some("Contributor off".into()));
+            assert_eq!(toggle.checked(), Some(false));
             window.click("new-chat-contributor", app);
         });
         test_turn(cx, handle, |window, app| {
-            assert!(choice.read(app).contributor_opt_out);
+            assert!(choice.read(app).contributor_on);
+            let toggle = window.find("new-chat-contributor");
+            assert_eq!(toggle.label(), Some("Contributor on".into()));
+            assert_eq!(toggle.checked(), Some(true));
             window.click("new-chat-confirm", app);
         });
         {
             let requests = requests.borrow();
             assert_eq!(requests.len(), 1);
             assert_eq!(requests[0].provider, Provider::Muse);
-            assert!(requests[0].contributor_opt_out);
+            assert_eq!(requests[0].contributor_mode, ContributorMode::On);
+            assert!(!requests[0].contributor_opt_out);
         }
 
-        // Turned off for Muse, then another provider chosen: that chat has no such mode.
+        // Turned on for Muse, then another provider chosen: that chat has no such mode.
         let (handle, choice) = fixture(cx);
         let (requests, _subscription) = confirmed(cx, &choice);
         test_turn(cx, handle, |window, app| {
@@ -996,7 +1011,7 @@ mod tests {
         let requests = requests.borrow();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].provider, Provider::Codex);
-        assert!(!requests[0].contributor_opt_out);
+        assert_eq!(requests[0].contributor_mode, ContributorMode::Off);
     }
 
     #[gpui::test]

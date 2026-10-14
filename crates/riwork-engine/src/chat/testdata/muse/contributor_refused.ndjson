@@ -1,0 +1,2 @@
+# A Muse that does not take the contributor mode override: it ends before it answers anything.
+{"type":"exit","code":2,"stderr":"error: unexpected argument '--contributor-mode' found"}

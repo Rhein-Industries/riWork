@@ -440,6 +440,7 @@ fn chat_orchestrators_are_found_from_disk_while_no_host_runs() {
         state: ChatState::Running,
         orchestrator: Some(scope_of(Some(PROJECT))),
         fast: false,
+        contributor_mode: Default::default(),
         contributor_opt_out: false,
         carried_over: None,
     };
@@ -644,6 +645,16 @@ fn fresh_settings_start_a_muse_chat_on_wonder_full() {
     assert_eq!(
         starts(&chat),
         [(Provider::Muse, Some(WONDER_FULL.to_owned()))]
+    );
+    // Under the secure default the Muse orchestrator runs with contributor mode off.
+    let started = fake_for(&chat.cwd).starts.lock().unwrap().clone();
+    assert_eq!(
+        started[0].contributor_mode,
+        crate::chat::model::ContributorMode::Off
+    );
+    assert_eq!(
+        chat.contributor_mode,
+        crate::chat::model::ContributorMode::Off
     );
     let entry = chat_entry(&host.home, &chat);
     assert_eq!(

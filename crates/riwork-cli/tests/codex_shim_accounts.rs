@@ -161,6 +161,19 @@ impl Fixture {
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
     }
 
+    fn install_muse(&self) {
+        let fake = self.root.join("bin/muse");
+        fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+                self.root.join("ran").display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
     fn set_inline(&self, inline: bool) {
         fs::create_dir_all(self.root.join("state")).unwrap();
         fs::write(
@@ -244,4 +257,84 @@ fn interactive_claude_launches_leave_the_alternate_screen_unless_the_setting_is_
     assert_eq!(fixture.launch("claude", &["--version"])[0], "SCREEN=unset");
     fixture.set_inline(false);
     assert_eq!(fixture.launch("claude", &[])[0], "SCREEN=unset");
+}
+
+/// Muse's contributor mode is off in every session RiWork's `muse` starts unless the user says
+/// otherwise, said once where Muse 1.4.7 reads it; what starts no session is left as typed.
+#[test]
+fn muse_launches_start_with_contributor_mode_off_once_unless_the_user_chose() {
+    let fixture = Fixture::new();
+    fixture.install_muse();
+    let modes = |ran: &[String]| {
+        ran.windows(2)
+            .filter(|pair| pair[0] == "--contributor-mode")
+            .map(|pair| pair[1].clone())
+            .collect::<Vec<_>>()
+    };
+    // The interactive screen, with a prompt, and `resume`: after RiWork's Cua options.
+    for arguments in [&[][..], &["fix the bug"], &["--", "a prompt"]] {
+        let ran = fixture.launch("muse", arguments);
+        assert_eq!(modes(&ran), ["off"], "{arguments:?}: {ran:?}");
+        assert!(
+            ran[0] == "-c" && ran[1].starts_with("mcpServers.cua-driver="),
+            "{ran:?}"
+        );
+        assert_eq!(ran[2..4], ["--contributor-mode", "off"], "{ran:?}");
+        assert!(
+            ran.ends_with(
+                &arguments
+                    .iter()
+                    .map(|a| (*a).to_owned())
+                    .collect::<Vec<_>>()
+            )
+        );
+    }
+    let ran = fixture.launch("muse", &["resume", "--last"]);
+    assert_eq!(
+        ran[2..],
+        ["resume", "--contributor-mode", "off", "--last"],
+        "{ran:?}"
+    );
+    // `exec` and `serve` take it right after themselves, and nothing else is added.
+    assert_eq!(
+        fixture.launch("muse", &["exec", "say hi"]),
+        ["exec", "--contributor-mode", "off", "say hi"]
+    );
+    assert_eq!(
+        fixture.launch("muse", &["serve"]),
+        ["serve", "--contributor-mode", "off"]
+    );
+    // The user's own choice is the only one.
+    for arguments in [
+        &["--contributor-mode", "on", "fix it"][..],
+        &["exec", "--contributor-mode=on", "say hi"],
+        &["serve", "--contributor-mode", "off"],
+    ] {
+        let ran = fixture.launch("muse", arguments);
+        assert_eq!(
+            ran.iter()
+                .filter(|a| a.starts_with("--contributor-mode"))
+                .count(),
+            1,
+            "{arguments:?}: {ran:?}"
+        );
+        assert!(
+            ran.ends_with(
+                &arguments
+                    .iter()
+                    .map(|a| (*a).to_owned())
+                    .collect::<Vec<_>>()
+            )
+        );
+    }
+    // Help, the version and what starts no session pass through as typed.
+    for arguments in [
+        &["--help"][..],
+        &["--version"],
+        &["exec", "--help"],
+        &["config", "validate", "policy.json"],
+        &["login"],
+    ] {
+        assert_eq!(fixture.launch("muse", arguments), *arguments);
+    }
 }

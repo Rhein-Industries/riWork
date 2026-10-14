@@ -411,6 +411,7 @@ fn standin_rig(on_send: OnSend, wait: Duration) -> (PathBuf, ScheduleStore, Chat
         state: ChatState::Idle,
         orchestrator: Some(OrchestratorScope::Global),
         fast: false,
+        contributor_mode: Default::default(),
         contributor_opt_out: false,
         carried_over: None,
     };

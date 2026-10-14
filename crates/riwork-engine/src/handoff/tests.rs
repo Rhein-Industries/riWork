@@ -90,6 +90,7 @@ fn request(source: Source, kind: Kind, provider: HarnessKind) -> Request {
         effort: None,
         account: None,
         mode: None,
+        contributor: Default::default(),
         context: Context::Transcript,
         note: None,
     }

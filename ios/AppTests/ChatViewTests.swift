@@ -2966,7 +2966,7 @@ import RiWorkCore
         private var info: ChatInfo
         init(_ info: ChatInfo) { self.info = info }
         func apply(_ command: ChatCommand) -> [ChatEvent] {
-            guard case .configure(let model, let effort, _, let fast) = command else { return [] }
+            guard case .configure(let model, let effort, _, let fast, _) = command else { return [] }
             lock.lock(); defer { lock.unlock() }
             if let model { info.model = model }
             if let effort { info.effort = effort }

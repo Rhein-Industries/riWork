@@ -52,10 +52,25 @@
     },
     {
       "approval_mode": "supervised",
+      "contributor_mode": "on",
       "created_at_unix": 1,
       "cwd": "/c",
       "fast": false,
       "id": "55555555-5555-4555-8555-555555555555",
+      "provider": "muse",
+      "state": {
+        "state": "starting"
+      },
+      "title": "Muse chat",
+      "worktree_id": "44444444-4444-4444-8444-444444444444"
+    },
+    {
+      "approval_mode": "supervised",
+      "contributor_opt_out": true,
+      "created_at_unix": 1,
+      "cwd": "/c",
+      "fast": false,
+      "id": "66666666-6666-4666-8666-666666666666",
       "provider": "muse",
       "state": {
         "state": "starting"
@@ -121,6 +136,14 @@
       "effort": "xhigh",
       "fast": true,
       "model": "gpt-5.5"
+    },
+    {
+      "command": "configure",
+      "contributor_mode": "on"
+    },
+    {
+      "command": "configure",
+      "contributor_mode": "off"
     },
     {
       "command": "compact"
@@ -717,6 +740,16 @@
     }
   ],
   "generated_by": "ios/scripts/gen-chat-fixtures.sh from crates/riwork-engine/src/chat/model.rs; do not edit by hand",
+  "legacy_commands": [
+    {
+      "command": "configure",
+      "contributor_opt_out": true
+    },
+    {
+      "command": "configure",
+      "contributor_opt_out": false
+    }
+  ],
   "model_options": [
     {
       "default_effort": "medium",

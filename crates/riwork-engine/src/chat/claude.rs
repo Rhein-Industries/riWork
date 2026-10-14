@@ -1094,6 +1094,8 @@ impl Core {
                 effort,
                 approval_mode,
                 fast,
+                contributor_mode: _,
+                contributor_opt_out: _,
             } => {
                 self.configure(model, effort, approval_mode, fast, reporter);
                 Ok(())

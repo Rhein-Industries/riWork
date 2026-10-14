@@ -58,17 +58,36 @@ final class ChatRequestsTests: XCTestCase {
         XCTAssertNoThrow(try RequestValidation.validate(method: "chat.create", params: on.params, id: requestID))
         XCTAssertThrowsError(try RequestValidation.validate(method: "chat.create", params: on.params.merging(["fast": .string("yes")]) { $1 }, id: requestID))
     }
-    func testContributorOptOutIsSentOnlyWhenItIsOn() throws {
-        // Like Fast: a desktop that predates it denies the field rather than make a chat without it, so off is not spelled out.
-        XCTAssertNil(try create().params["contributor_opt_out"])
-        let on = try ChatCreateRequest(provider: .muse, target: .project(project), contributorOptOut: true)
-        XCTAssertEqual(on.params, ["provider": .string("muse"), "project_id": .string(project), "contributor_opt_out": .bool(true)])
-        XCTAssertEqual(try ChatCreateRequest(params: on.params), on)
-        XCTAssertFalse(try ChatCreateRequest(params: ["provider": .string("muse"), "project_id": .string(project), "contributor_opt_out": .bool(false)]).contributorOptOut)
-        for bad in [JSONValue.string("off"), .number(0), .null] {
-            XCTAssertThrowsError(try ChatCreateRequest(params: on.params.merging(["contributor_opt_out": bad]) { $1 }), "\(bad)") { XCTAssertEqual($0 as? ChatValidationError, .malformed) }
+    func testAMuseChatIsAskedOffUnlessTurnedOnAndAnOlderOffNeverEnables() throws {
+        let muse = ["provider": JSONValue.string("muse"), "project_id": .string(project)]
+        // Off is said for a Muse chat the way an older desktop reads it too, so that one starts it off as well; another provider says nothing.
+        let off = try create(.muse)
+        XCTAssertEqual(off.contributorMode, .off)
+        XCTAssertEqual(off.params, muse.merging(["contributor_opt_out": .bool(true)]) { $1 })
+        XCTAssertNil(try create().params["contributor_opt_out"]); XCTAssertNil(try create().params["contributor_mode"])
+        // On is said as itself, which a desktop that predates it denies rather than start the chat otherwise.
+        let on = try ChatCreateRequest(provider: .muse, target: .project(project), contributorMode: .on)
+        XCTAssertEqual(on.params, muse.merging(["contributor_mode": .string("on")]) { $1 })
+        for request in [off, on] { XCTAssertEqual(try ChatCreateRequest(params: request.params), request) }
+        // An older phone's opt-out, true or false, and a spelled-out off are the off every chat starts with.
+        for older in [["contributor_opt_out": JSONValue.bool(true)], ["contributor_opt_out": .bool(false)], ["contributor_mode": .string("off")], [:]] {
+            XCTAssertEqual(try ChatCreateRequest(params: muse.merging(older) { $1 }).contributorMode, .off, "\(older)")
         }
-        XCTAssertNoThrow(try RequestValidation.validate(method: "chat.create", params: on.params, id: requestID))
+        for bad: [String: JSONValue] in [
+            ["contributor_opt_out": .string("off")], ["contributor_opt_out": .number(0)], ["contributor_opt_out": .null],
+            ["contributor_mode": .string("ON")], ["contributor_mode": .bool(true)], ["contributor_mode": .null],
+            ["contributor_mode": .string("on"), "contributor_opt_out": .bool(true)],
+        ] {
+            XCTAssertThrowsError(try ChatCreateRequest(params: muse.merging(bad) { $1 }), "\(bad)") { XCTAssertEqual($0 as? ChatValidationError, .malformed) }
+        }
+        // Only Muse has one to turn on.
+        for provider in [ChatProvider.codex, .claude] {
+            XCTAssertThrowsError(try ChatCreateRequest(provider: provider, target: .project(project), contributorMode: .on)) {
+                XCTAssertEqual($0 as? ChatValidationError, .contributorModeIsMuseOnly)
+            }
+        }
+        for request in [off, on] { XCTAssertNoThrow(try RequestValidation.validate(method: "chat.create", params: request.params, id: requestID)) }
+        XCTAssertThrowsError(try RequestValidation.validate(method: "chat.create", params: on.params.merging(["contributor_mode": .string("maybe")]) { $1 }, id: requestID))
     }
     func testTheTargetIsExactlyOneFullLowercaseUUID() throws {
         for bad in ["", "nope", String(project.prefix(8)), letters.uppercased(), project.replacingOccurrences(of: "-", with: ""), project + " "] {
@@ -112,6 +131,14 @@ final class ChatRequestsTests: XCTestCase {
         let inTree = try create(.claude, .worktree(tree))
         XCTAssertNoThrow(try inTree.parse(try value("{\"chat\":\(info(provider: "claude", worktree: tree))}")))
         XCTAssertThrowsError(try inTree.parse(try value("{\"chat\":\(info(provider: "claude", worktree: project))}")))
+        // A Muse chat must say it runs with the contributor mode asked for: one an older desktop made with neither follows the Muse settings.
+        let muse = { (extra: String) in try self.value("{\"chat\":" + self.info(provider: "muse").dropLast() + extra + "}}") }
+        let off = try create(.muse), on = try ChatCreateRequest(provider: .muse, target: .project(project), contributorMode: .on)
+        XCTAssertEqual(try off.parse(try muse(#","contributor_opt_out":true"#)).reportedContributorMode, .off)
+        XCTAssertEqual(try on.parse(try muse(#","contributor_mode":"on""#)).reportedContributorMode, .on)
+        for (request, bad) in [(off, ""), (off, #","contributor_mode":"on""#), (on, ""), (on, #","contributor_opt_out":true"#)] {
+            XCTAssertThrowsError(try request.parse(try muse(bad)), bad) { XCTAssertEqual($0 as? ChatControlError, .unreadableReply) }
+        }
     }
 
     // MARK: chat.events
@@ -182,6 +209,12 @@ final class ChatRequestsTests: XCTestCase {
         XCTAssertEqual(try ChatCommandRequest(chatID: chat, command: .configure(fast: false)).params["command"], try value(#"{"command":"configure","fast":false}"#), "turning it off is a change")
         let all = try ChatCommandRequest(chatID: chat, command: .configure(model: "gpt-5.5", effort: "xhigh", approvalMode: .plan, fast: true))
         XCTAssertEqual(try ChatCommandRequest(params: all.params), all)
+        // A Muse chat's contributor mode, on and off again, is a change on its own.
+        for mode in [ChatContributorMode.on, .off] {
+            let contributor = try ChatCommandRequest(chatID: chat, command: .configure(contributorMode: mode))
+            XCTAssertEqual(contributor.params["command"], try value(#"{"command":"configure","contributor_mode":"\#(mode.rawValue)"}"#))
+            XCTAssertEqual(try ChatCommandRequest(params: contributor.params), contributor)
+        }
         // The desktop refuses a configure with nothing in it, and a blank or overlong model or effort.
         XCTAssertThrowsError(try ChatCommandRequest(chatID: chat, command: .configure())) { XCTAssertEqual($0 as? ChatValidationError, .emptyConfigure) }
         XCTAssertThrowsError(try ChatCommandRequest(chatID: chat, command: .configure(model: "  "))) { XCTAssertEqual($0 as? ChatValidationError, .blankSetting(field: "model")) }

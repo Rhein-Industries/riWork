@@ -65,6 +65,7 @@ pub fn chat_info(model: Option<&str>) -> ChatInfo {
         codex_account_id: None,
         orchestrator: None,
         fast: false,
+        contributor_mode: Default::default(),
         contributor_opt_out: false,
         state: ChatState::Idle,
         carried_over: None,

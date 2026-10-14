@@ -5,7 +5,7 @@
 //! (`muse::cua_servers`), so nothing here reaches Muse's command line.
 
 use super::driver::DriverConfig;
-use super::model::{ChatInfo, OrchestratorScope, Provider};
+use super::model::{ChatInfo, ContributorMode, OrchestratorScope, Provider};
 use crate::sessions::{self, HarnessKind};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -78,22 +78,37 @@ pub fn driver_config(
 pub(super) fn muse_discovery_config(home: &Path) -> Result<DriverConfig, String> {
     let home = home.canonicalize().map_err(|error| error.to_string())?;
     let launch = sessions::chat_launch(HarnessKind::Muse, &home, None)?;
-    Ok(DriverConfig {
+    Ok(discovery_config(
+        home,
+        launch.program,
+        launch.arguments,
+        launch.path,
+    ))
+}
+
+fn discovery_config(
+    home: PathBuf,
+    program: PathBuf,
+    extra_args: Vec<String>,
+    path: OsString,
+) -> DriverConfig {
+    DriverConfig {
         provider: Provider::Muse,
-        program: launch.program,
+        program,
         cwd: home.clone(),
         approval_mode: super::model::ApprovalMode::Supervised,
         model: None,
         effort: None,
         fast: false,
-        contributor_opt_out: false,
+        // No chat chose it: off, as every Muse RiWork starts unless asked on.
+        contributor_mode: ContributorMode::Off,
         resume: None,
         resume_has_history: false,
         reporter: Default::default(),
         outstanding_notices: Default::default(),
-        extra_args: launch.arguments,
+        extra_args,
         env: vec![
-            ("PATH".into(), launch.path),
+            ("PATH".into(), path),
             ("RIWORK_HOME".into(), home.into_os_string()),
             ("MUSE_NO_AUTO_UPDATE".into(), "1".into()),
             ("MUSE_LOGIN".into(), "0".into()),
@@ -109,7 +124,7 @@ pub(super) fn muse_discovery_config(home: &Path) -> Result<DriverConfig, String>
         .map(Into::into)
         .collect(),
         instructions: None,
-    })
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -180,7 +195,7 @@ fn assemble(
         model: info.model.clone(),
         effort: info.effort.clone(),
         fast: info.fast,
-        contributor_opt_out: info.contributor_opt_out,
+        contributor_mode: info.contributor_mode,
         resume,
         resume_has_history: false,
         reporter: Default::default(),
@@ -229,6 +244,7 @@ mod tests {
             model: Some("m".into()),
             effort: Some("high".into()),
             fast: true,
+            contributor_mode: ContributorMode::Off,
             contributor_opt_out: false,
             approval_mode: ApprovalMode::AutoEdit,
             codex_account_id: None,
@@ -343,10 +359,11 @@ mod tests {
     }
 
     #[test]
-    fn a_muse_chat_hands_its_contributor_opt_out_to_every_start() {
-        let configure = |contributor_opt_out: bool, resume: Option<&str>| {
+    fn a_muse_chat_hands_its_contributor_mode_to_every_start_and_an_older_opt_out_is_off() {
+        let configure = |mode: ContributorMode, opt_out: bool, resume: Option<&str>| {
             let mut chat = info(Provider::Muse);
-            chat.contributor_opt_out = contributor_opt_out;
+            chat.contributor_mode = mode;
+            chat.contributor_opt_out = opt_out;
             assemble(
                 &chat,
                 resume.map(Into::into),
@@ -358,12 +375,37 @@ mod tests {
                 false,
             )
         };
-        assert!(configure(true, None).contributor_opt_out);
-        assert!(configure(true, Some("sess")).contributor_opt_out);
-        assert!(!configure(false, None).contributor_opt_out);
-        assert!(!configure(false, Some("sess")).contributor_opt_out);
+        for resume in [None, Some("sess")] {
+            for opt_out in [false, true] {
+                assert_eq!(
+                    configure(ContributorMode::On, opt_out, resume).contributor_mode,
+                    ContributorMode::On
+                );
+                // Whatever an older host wrote beside it, a chat not turned on starts off.
+                assert_eq!(
+                    configure(ContributorMode::Off, opt_out, resume).contributor_mode,
+                    ContributorMode::Off
+                );
+            }
+        }
         // Muse takes it on its own command line, after `serve`; nothing leads it.
-        assert!(configure(true, None).extra_args.is_empty());
+        assert!(
+            configure(ContributorMode::On, false, None)
+                .extra_args
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn model_discovery_starts_muse_with_contributor_mode_off() {
+        let config = discovery_config(
+            "/riwork".into(),
+            "/bin/muse".into(),
+            Vec::new(),
+            "/shims".into(),
+        );
+        assert_eq!(config.contributor_mode, ContributorMode::Off);
+        assert!(config.extra_args.is_empty());
     }
 
     #[test]

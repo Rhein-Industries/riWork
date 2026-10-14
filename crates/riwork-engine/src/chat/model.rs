@@ -31,6 +31,31 @@ pub enum ApprovalMode {
     Plan,
 }
 
+/// Muse's contributor mode, which RiWork passes to every Muse it starts
+/// (`--contributor-mode off|on`, a per-process override Muse never saves). Off unless the user
+/// turns it on for one chat or one launch: RiWork never leaves it to the user's Muse settings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContributorMode {
+    #[default]
+    Off,
+    On,
+}
+
+impl ContributorMode {
+    pub fn is_off(&self) -> bool {
+        *self == Self::Off
+    }
+
+    /// What `--contributor-mode` takes.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+        }
+    }
+}
+
 /// Which orchestrator a chat is. RiWork has one global orchestrator and one for
 /// each project; the host keeps at most one chat per scope, and the CLI, the MCP
 /// tools, the scheduler and the apps find an orchestrator in chat mode by this
@@ -110,10 +135,19 @@ pub struct ChatInfo {
     /// so in a notice.
     #[serde(default)]
     pub fast: bool,
-    /// The user opted this Muse chat out of Muse's contributor mode: every `muse serve` it
-    /// starts, first and on each resume, says `--contributor-mode off`. Off leaves the
-    /// mode to the user's Muse settings. Only a Muse chat is made with it; it stays with a
-    /// chat that switches provider and applies again if the chat goes back to Muse.
+    /// Muse's contributor mode for this chat: every `muse serve` it starts, first, on each
+    /// resume and after a switch back to Muse, says `--contributor-mode` with it. Only the user
+    /// turns it on, for a Muse chat when it is made or later (`ChatCommand::Configure`); it
+    /// stays with a chat that switches provider until it is turned off. Off is left out of the
+    /// JSON, so a chat from before it, whatever its `contributor_opt_out`, is off.
+    #[serde(default, skip_serializing_if = "ContributorMode::is_off")]
+    pub contributor_mode: ContributorMode,
+    /// What hosts before `contributor_mode` read and wrote: true started the chat's Muse with
+    /// contributor mode off, false left it to the user's Muse settings. Read, it never turns
+    /// contributor mode on. The host keeps it true for a Muse chat that is off
+    /// (`ChatInfo::settle_contributor`), so a reader from before sees it off, and a client can
+    /// tell a host from before, which reports a Muse chat with neither field, by what the chat
+    /// says it runs with (`ChatInfo::reported_contributor_mode`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub contributor_opt_out: bool,
     #[serde(default)]
@@ -132,6 +166,38 @@ pub struct ChatInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carried_over: Option<CarriedOver>,
 }
+
+impl ChatInfo {
+    /// Keeps `contributor_opt_out` what a reader from before `contributor_mode` should see:
+    /// true for a Muse chat that is off. The host settles every chat it loads, makes or
+    /// changes.
+    pub fn settle_contributor(&mut self) {
+        self.contributor_opt_out =
+            self.provider == Provider::Muse && self.contributor_mode.is_off();
+    }
+
+    /// The contributor mode the chat's Muse runs with, as the host that reported the chat says.
+    /// None for a Muse chat from a host before `contributor_mode` that leaves it to the user's
+    /// Muse settings: neither on nor `contributor_opt_out`. A client checks a change by this,
+    /// never by `contributor_mode` alone, which such a host leaves off.
+    pub fn reported_contributor_mode(&self) -> Option<ContributorMode> {
+        match self.contributor_mode {
+            ContributorMode::On => Some(ContributorMode::On),
+            ContributorMode::Off if self.contributor_opt_out || self.provider != Provider::Muse => {
+                Some(ContributorMode::Off)
+            }
+            ContributorMode::Off => None,
+        }
+    }
+}
+
+/// Refused: a request that asks for contributor mode both on and off.
+pub const CONTRIBUTOR_CONTRADICTION: &str =
+    "contributor_mode on cannot be combined with contributor_opt_out, which asks for it off.";
+
+/// Refused: the false of `contributor_opt_out`, which asked for the user's Muse settings.
+pub const CONTRIBUTOR_SETTINGS_GONE: &str = "Contributor mode no longer follows your Muse \
+     settings: RiWork keeps it off unless it is turned on for a chat (contributor_mode on).";
 
 /// What a chat that switched provider passes on to its new agent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,8 +240,15 @@ pub struct NewChat {
     /// Start with the provider's fast mode on. A model without one ignores it.
     #[serde(default)]
     pub fast: bool,
-    /// Opt a Muse chat out of Muse's contributor mode (`ChatInfo::contributor_opt_out`).
-    /// A Codex or Claude chat has no contributor mode: it is made without it, and says so.
+    /// Muse's contributor mode for a Muse chat (`ChatInfo::contributor_mode`); off unless asked
+    /// on. A Codex or Claude chat has no contributor mode: asked for one, it is made off, and
+    /// says so.
+    #[serde(default, skip_serializing_if = "ContributorMode::is_off")]
+    pub contributor_mode: ContributorMode,
+    /// The off that callers before `contributor_mode` could ask for, which never turns it on.
+    /// The client sends it beside an off Muse chat (`Client::create`), so a host from
+    /// before `contributor_mode`, which reads only this, starts the chat off too. Together with
+    /// `contributor_mode` on it is refused.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub contributor_opt_out: bool,
 }
@@ -670,6 +743,19 @@ pub enum ChatCommand {
         approval_mode: Option<ApprovalMode>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fast: Option<bool>,
+        /// Muse only (`ChatInfo::contributor_mode`), and on its own. Muse fixes it for a
+        /// process, so the host restarts an idle chat's `muse serve` and resumes its session,
+        /// stores it for a stopped chat's next start, and refuses it while a turn runs, waits or
+        /// the process still starts. A host from before it reads past the field: the client
+        /// checks the chat afterwards (`Client::command`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contributor_mode: Option<ContributorMode>,
+        /// What clients before `contributor_mode` sent: true asks for off, as
+        /// `contributor_mode` off does, and the client sends it beside that, so a host that reads
+        /// only this turns it off too. False asked for the user's Muse settings, which RiWork no
+        /// longer follows, and is refused (`ChatCommand::requested_contributor_mode`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contributor_opt_out: Option<bool>,
     },
     Compact,
     /// Stop the provider process; the chat resumes with the next message.
@@ -687,6 +773,30 @@ pub enum ChatCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fast: Option<bool>,
     },
+}
+
+impl ChatCommand {
+    /// What a Configure asks of contributor mode: `contributor_mode`, or the off an older
+    /// client says with `contributor_opt_out` true. That field never turns it on: its false
+    /// asked for the user's Muse settings, which RiWork no longer follows, and is refused, as
+    /// is on together with an off.
+    pub fn requested_contributor_mode(&self) -> Result<Option<ContributorMode>, String> {
+        let ChatCommand::Configure {
+            contributor_mode,
+            contributor_opt_out,
+            ..
+        } = self
+        else {
+            return Ok(None);
+        };
+        match (contributor_mode, contributor_opt_out) {
+            (_, Some(false)) => Err(CONTRIBUTOR_SETTINGS_GONE.into()),
+            (Some(ContributorMode::On), Some(true)) => Err(CONTRIBUTOR_CONTRADICTION.into()),
+            (Some(mode), _) => Ok(Some(*mode)),
+            (None, Some(true)) => Ok(Some(ContributorMode::Off)),
+            (None, None) => Ok(None),
+        }
+    }
 }
 
 /// A chat's transcript as events build it: what a tab draws, and what the
@@ -1092,6 +1202,8 @@ mod tests {
                 effort: Some("high".into()),
                 approval_mode: None,
                 fast: None,
+                contributor_mode: None,
+                contributor_opt_out: None,
             }
         );
         // Leaving it out stays out of the JSON; turning it off is a change that is sent.
@@ -1105,6 +1217,8 @@ mod tests {
                 effort: None,
                 approval_mode: None,
                 fast: Some(fast),
+                contributor_mode: None,
+                contributor_opt_out: None,
             };
             let line = serde_json::to_string(&command).unwrap();
             assert_eq!(line, format!(r#"{{"command":"configure","fast":{fast}}}"#));
@@ -1118,27 +1232,161 @@ mod tests {
     }
 
     #[test]
-    fn contributor_opt_out_is_off_in_info_and_new_chat_written_before_it_existed() {
-        let info: ChatInfo = serde_json::from_str(
-            r#"{"id":"i","provider":"muse","cwd":"/w","title":"t","created_at_unix":1,"fast":false}"#,
+    fn every_contributor_form_written_before_contributor_mode_reads_as_off_and_on_is_its_own() {
+        use ContributorMode::{Off, On};
+        let base = r#""id":"i","provider":"muse","cwd":"/w","title":"t","created_at_unix":1"#;
+        // A chat a host before `contributor_mode` wrote, opted out or not, is off: an older false
+        // (the user's Muse settings) never turns it on.
+        for (legacy, opted_out) in [("", false), (r#","contributor_opt_out":false"#, false)]
+            .into_iter()
+            .chain([(r#","contributor_opt_out":true"#, true)])
+        {
+            let mut info: ChatInfo = serde_json::from_str(&format!("{{{base}{legacy}}}")).unwrap();
+            assert_eq!(info.contributor_mode, Off, "{legacy}");
+            assert_eq!(info.contributor_opt_out, opted_out, "{legacy}");
+            // As a host before it reports it, only the opted-out one runs off for certain.
+            let reported = if opted_out { Some(Off) } else { None };
+            assert_eq!(info.reported_contributor_mode(), reported, "{legacy}");
+            // Settled by this host, it is off, and says so to a reader from before.
+            info.settle_contributor();
+            assert!(info.contributor_opt_out);
+            assert_eq!(info.reported_contributor_mode(), Some(Off));
+            let line = serde_json::to_string(&info).unwrap();
+            assert!(line.contains(r#""contributor_opt_out":true"#), "{line}");
+            assert!(!line.contains("contributor_mode"), "{line}");
+        }
+        // On is written as itself, distinct from anything an older host wrote, and a reader
+        // from before sees no opt-out, as it would for a chat that follows the Muse settings.
+        let mut info: ChatInfo = serde_json::from_str(&format!("{{{base}}}")).unwrap();
+        info.contributor_mode = On;
+        info.settle_contributor();
+        let line = serde_json::to_string(&info).unwrap();
+        assert!(line.contains(r#""contributor_mode":"on""#), "{line}");
+        assert!(!line.contains("contributor_opt_out"), "{line}");
+        assert_eq!(serde_json::from_str::<ChatInfo>(&line).unwrap(), info);
+        assert_eq!(info.reported_contributor_mode(), Some(On));
+        // Another provider's chat keeps the mode for a switch back, and is never opted out.
+        let mut codex: ChatInfo = serde_json::from_str(
+            r#"{"id":"i","provider":"codex","cwd":"/w","title":"t","created_at_unix":1,"contributor_opt_out":true}"#,
         )
         .unwrap();
-        assert!(!info.contributor_opt_out);
-        let new: NewChat = serde_json::from_str(r#"{"provider":"muse","cwd":"/w"}"#).unwrap();
-        assert!(!new.contributor_opt_out);
-        // Off stays out of the JSON, so chats and logs that never opted out read as before.
-        let line = serde_json::to_string(&info).unwrap();
-        assert!(!line.contains("contributor"), "{line}");
+        codex.settle_contributor();
+        assert!(!codex.contributor_opt_out);
+        assert_eq!(codex.reported_contributor_mode(), Some(Off));
+        assert!(
+            !serde_json::to_string(&codex)
+                .unwrap()
+                .contains("contributor")
+        );
+
+        // A new chat asked before `contributor_mode`, opted out or not, is off.
+        for legacy in [
+            "",
+            r#","contributor_opt_out":false"#,
+            r#","contributor_opt_out":true"#,
+        ] {
+            let new: NewChat =
+                serde_json::from_str(&format!(r#"{{"provider":"muse","cwd":"/w"{legacy}}}"#))
+                    .unwrap();
+            assert_eq!(new.contributor_mode, Off, "{legacy}");
+        }
+        let mut new: NewChat = serde_json::from_str(r#"{"provider":"muse","cwd":"/w"}"#).unwrap();
         assert!(!serde_json::to_string(&new).unwrap().contains("contributor"));
-        let mut info = info;
-        info.contributor_opt_out = true;
-        let line = serde_json::to_string(&info).unwrap();
-        assert!(line.contains(r#""contributor_opt_out":true"#), "{line}");
-        assert_eq!(serde_json::from_str::<ChatInfo>(&line).unwrap(), info);
-        let mut new = new;
-        new.contributor_opt_out = true;
+        new.contributor_mode = On;
         let line = serde_json::to_string(&new).unwrap();
+        assert!(line.contains(r#""contributor_mode":"on""#), "{line}");
         assert_eq!(serde_json::from_str::<NewChat>(&line).unwrap(), new);
+
+        // A Configure from before the fields leaves contributor mode alone, and is written as
+        // before.
+        let old: ChatCommand =
+            serde_json::from_str(r#"{"command":"configure","model":"m","fast":false}"#).unwrap();
+        assert_eq!(
+            old,
+            ChatCommand::Configure {
+                model: Some("m".into()),
+                effort: None,
+                approval_mode: None,
+                fast: Some(false),
+                contributor_mode: None,
+                contributor_opt_out: None,
+            }
+        );
+        assert_eq!(old.requested_contributor_mode(), Ok(None));
+        assert_eq!(
+            serde_json::to_string(&old).unwrap(),
+            r#"{"command":"configure","model":"m","fast":false}"#
+        );
+        // Each state is asked for unambiguously; an older client's true is an off, its false
+        // (the Muse settings) and on beside an off are refused.
+        let configure =
+            |mode: Option<ContributorMode>, opt_out: Option<bool>| ChatCommand::Configure {
+                model: None,
+                effort: None,
+                approval_mode: None,
+                fast: None,
+                contributor_mode: mode,
+                contributor_opt_out: opt_out,
+            };
+        for (mode, opt_out, line, requested) in [
+            (
+                Some(On),
+                None,
+                r#"{"command":"configure","contributor_mode":"on"}"#,
+                Ok(Some(On)),
+            ),
+            (
+                Some(Off),
+                None,
+                r#"{"command":"configure","contributor_mode":"off"}"#,
+                Ok(Some(Off)),
+            ),
+            (
+                Some(Off),
+                Some(true),
+                r#"{"command":"configure","contributor_mode":"off","contributor_opt_out":true}"#,
+                Ok(Some(Off)),
+            ),
+            (
+                None,
+                Some(true),
+                r#"{"command":"configure","contributor_opt_out":true}"#,
+                Ok(Some(Off)),
+            ),
+            (
+                None,
+                Some(false),
+                r#"{"command":"configure","contributor_opt_out":false}"#,
+                Err(CONTRIBUTOR_SETTINGS_GONE.to_owned()),
+            ),
+            (
+                Some(Off),
+                Some(false),
+                r#"{"command":"configure","contributor_mode":"off","contributor_opt_out":false}"#,
+                Err(CONTRIBUTOR_SETTINGS_GONE.to_owned()),
+            ),
+            (
+                Some(On),
+                Some(true),
+                r#"{"command":"configure","contributor_mode":"on","contributor_opt_out":true}"#,
+                Err(CONTRIBUTOR_CONTRADICTION.to_owned()),
+            ),
+        ] {
+            let command = configure(mode, opt_out);
+            assert_eq!(serde_json::to_string(&command).unwrap(), line);
+            assert_eq!(serde_json::from_str::<ChatCommand>(line).unwrap(), command);
+            assert_eq!(command.requested_contributor_mode(), requested, "{line}");
+        }
+        // Nothing but on and off is a contributor mode.
+        for bad in [r#""ON""#, r#""muse""#, "true", "null"] {
+            let line = format!(r#"{{"command":"configure","contributor_mode":{bad}}}"#);
+            let parsed = serde_json::from_str::<ChatCommand>(&line);
+            if bad == "null" {
+                assert_eq!(parsed.unwrap(), configure(None, None));
+            } else {
+                assert!(parsed.is_err(), "{line}");
+            }
+        }
     }
 
     #[test]
@@ -1197,6 +1445,7 @@ mod tests {
             model: None,
             effort: None,
             fast: false,
+            contributor_mode: ContributorMode::Off,
             contributor_opt_out: false,
             approval_mode: ApprovalMode::Supervised,
             codex_account_id: None,
