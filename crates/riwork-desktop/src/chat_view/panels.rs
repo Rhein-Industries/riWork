@@ -390,6 +390,7 @@ impl ChatView {
             .flex()
             .flex_col()
             .child(self.toolbar(look, window, cx))
+            .children(self.worker_section(look, window, cx))
             .child(
                 div()
                     .relative()
@@ -2916,6 +2917,7 @@ impl ChatView {
                 .test_support()
         }))
         .child(content)
+        .child(self.suggestion_anchor())
         // Saved submissions to review, below the box.
         .children((!self.submissions.is_empty()).then(|| {
             div()
@@ -2968,8 +2970,10 @@ impl ChatView {
                 .w_full()
                 .h(px(0.0)),
             )
+            .children(self.memo_preview_card(look, cx))
             .children(self.notice_stack(look, cx))
             .child(card)
+            .children(self.suggestion_popup(look, cx))
             .into_any_element()
     }
 

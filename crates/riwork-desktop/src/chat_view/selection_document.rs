@@ -30,6 +30,21 @@ pub(super) fn leaves(view: &ChatView, look: Look) -> Vec<SourceLeaf> {
             continue;
         };
         let item = &view.model.transcript.items[*at];
+        if let Some(run) = crate::chat::subagents::in_transcript(
+            item,
+            &view.model.transcript.items,
+            view.info().map(|info| info.provider),
+        ) {
+            let text = run.result_text();
+            if view.open.contains(&item.id) && !text.is_empty() {
+                result.push(SourceLeaf {
+                    key: format!("subagent:{}", item.id),
+                    text,
+                    row,
+                });
+            }
+            continue;
+        }
         let expanded = view.open.contains(&item.id)
             && cards::head(item, None).is_some_and(|head| head.expandable);
         let mut entries = Vec::new();

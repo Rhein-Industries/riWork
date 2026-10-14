@@ -20,6 +20,7 @@ use crate::{
     codex_accounts::{self, AccountsSnapshot},
     controls,
     cua::{CuaManager, CuaSkills, CuaStatus, SkillLinkState},
+    delegation_choice::{self, Work},
     orca_import::{ImportManager, ImportPreview, ImportReceipt},
     orchestrator_choice,
     project_sort::ProjectOrder,
@@ -205,6 +206,9 @@ enum Toggle {
     AgentsUnrestricted,
     DictationMic,
     WindowSize,
+    /// Delegation's "Spread work". The policy keeps "not chosen" apart from a choice, so
+    /// it shows and flips what Settings resolve to and saves a choice.
+    SpreadWork,
 }
 
 impl Toggle {
@@ -217,6 +221,7 @@ impl Toggle {
             Self::AgentsUnrestricted => "agent-terminals-unrestricted",
             Self::DictationMic => "dictation-mic",
             Self::WindowSize => "remember-window-size",
+            Self::SpreadWork => "delegation-spread-work",
         }
     }
 
@@ -232,6 +237,10 @@ impl Toggle {
             Self::AgentsUnrestricted => &mut settings.agent_terminals_unrestricted,
             Self::DictationMic => &mut settings.dictation_mic,
             Self::WindowSize => &mut settings.remember_window_size,
+            Self::SpreadWork => {
+                let spread = delegation_choice::settings_policy(settings).spread_work;
+                return settings.delegation_policy.set_spread_work(Some(!spread));
+            }
         };
         *value = !*value;
     }
@@ -247,6 +256,9 @@ impl Toggle {
             Self::AgentsUnrestricted => &mut settings.agent_terminals_unrestricted,
             Self::DictationMic => &mut settings.dictation_mic,
             Self::WindowSize => &mut settings.remember_window_size,
+            Self::SpreadWork => {
+                return settings.delegation_policy.set_spread_work(Some(checked));
+            }
         };
         *value = checked;
     }
@@ -301,6 +313,12 @@ pub struct SettingsPanel {
     orchestrator_model_input: Option<(Entity<InputState>, FocusHandle, Subscription)>,
     /// Why the typed model was not saved.
     orchestrator_model_error: Option<String>,
+    /// The Delegation group: "Spread work", the worker shell stepper (a row that takes
+    /// focus like Text size), and the design and workhorse routes.
+    spread_work_focus: FocusHandle,
+    delegation_parallel_focus: FocusHandle,
+    delegation_design_focus: FocusHandle,
+    delegation_workhorse_focus: FocusHandle,
     size_focus: FocusHandle,
     text_size_focus: FocusHandle,
     orca_preview_focus: FocusHandle,
@@ -902,6 +920,10 @@ impl SettingsPanel {
             orchestrator_model_focus: cx.focus_handle(),
             orchestrator_model_input: None,
             orchestrator_model_error: None,
+            spread_work_focus: cx.focus_handle(),
+            delegation_parallel_focus: cx.focus_handle(),
+            delegation_design_focus: cx.focus_handle(),
+            delegation_workhorse_focus: cx.focus_handle(),
             size_focus: cx.focus_handle(),
             text_size_focus: cx.focus_handle(),
             orca_preview_focus: cx.focus_handle(),
@@ -992,6 +1014,10 @@ impl SettingsPanel {
                     .map(|(_, focus, _)| focus.clone()),
             );
         }
+        handles.push(self.spread_work_focus.clone());
+        handles.push(self.delegation_parallel_focus.clone());
+        handles.push(self.delegation_design_focus.clone());
+        handles.push(self.delegation_workhorse_focus.clone());
         handles.push(self.size_focus.clone());
         handles.push(self.remote_add_focus.clone());
         handles.push(self.remote_pair_focus.clone());
@@ -1354,6 +1380,12 @@ impl SettingsPanel {
                     _ => SizeChange::Reset,
                 };
                 self.change_text_size(change, cx);
+            }
+            "up" | "left" | "down" | "right" | "-" | "=" | "+"
+                if self.delegation_parallel_focus.contains_focused(window, cx) =>
+            {
+                let more = matches!(event.keystroke.key.as_str(), "up" | "right" | "=" | "+");
+                self.step_parallel_shells(more, cx);
             }
             "up" | "left" | "down" | "right" => {
                 let Some(index) = theme_index else {
@@ -2244,6 +2276,7 @@ impl SettingsPanel {
             Toggle::AgentsUnrestricted => &self.unrestricted_focus,
             Toggle::DictationMic => &self.mic_focus,
             Toggle::WindowSize => &self.size_focus,
+            Toggle::SpreadWork => &self.spread_work_focus,
         };
         behavior::switch_content(
             toggle.id(),
@@ -2455,6 +2488,233 @@ impl SettingsPanel {
                     .text_size(ui_text::text(10.0))
                     .text_color(rgb(colors.muted))
                     .child("Applies to orchestrators created from now on, except a project's whose Project Settings choose otherwise. An existing orchestrator keeps its mode, provider and model until it is closed and created again."),
+            )
+            .child(self.delegation_group(settings, cx))
+            .into_any_element()
+    }
+
+    /// Delegation: the policy every orchestrator is told where its project's chooses
+    /// nothing. Each row shows what Settings resolve to and saves a choice; a field never
+    /// chosen is not written, so the built-in policy can improve under it.
+    fn delegation_group(&self, settings: &Settings, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
+        let policy = delegation_choice::settings_policy(settings);
+        let heading = if ui_text::is_native() {
+            div()
+                .text_size(ui_text::text(controls::META_TEXT))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(colors.muted))
+                .child("Delegation")
+        } else {
+            div()
+                .text_size(ui_text::text(11.0))
+                .text_color(rgb(colors.cyan))
+                .child(ui_text::cased("Delegation"))
+        };
+        row_list()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(ui_text::space(4.0))
+                    .mt(ui_text::space(6.0))
+                    .pt(ui_text::space(10.0))
+                    .px(ui_text::space(ROW_PAD_X))
+                    .border_t_1()
+                    .border_color(rgb(colors.divider))
+                    // Native: a group's heading, without the rule.
+                    .map(|head| {
+                        controls::native(head, |head| {
+                            head.mt_0().pt(ui_text::space(4.0)).border_t_0()
+                        })
+                    })
+                    .child(heading)
+                    .child(
+                        div()
+                            .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                            .text_size(ui_text::text(10.0))
+                            .text_color(rgb(colors.muted))
+                            .child("Orchestrators are told this policy when they start or load their skill: how widely to spread independent work over worker shells, and which models to prefer for it. A project can override any of it in Project Settings; running orchestrators keep what they were told."),
+                    ),
+            )
+            .child(self.toggle_row(
+                Toggle::SpreadWork,
+                delegation_choice::SPREAD_TITLE,
+                delegation_choice::SPREAD_DESCRIPTION,
+                policy.spread_work,
+                cx,
+            ))
+            .child(self.parallel_shells_row(policy.parallel_shells, cx))
+            .children(Work::ALL.map(|work| self.route_row(work, policy.route(work), cx)))
+            .children(
+                settings
+                    .delegation_policy
+                    .unreadable_note("settings.json")
+                    .map(|unreadable| note(unreadable, colors.gold).id("delegation-unreadable-note")),
+            )
+            .into_any_element()
+    }
+
+    /// A route of the Delegation group: the offered routes, and the one Settings hold if
+    /// it is another, so it shows as chosen.
+    fn route_row(
+        &self,
+        work: Work,
+        shown: &delegation_choice::Route,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (id, focus) = match work {
+            Work::Design => ("delegation-design", &self.delegation_design_focus),
+            Work::Workhorse => ("delegation-workhorse", &self.delegation_workhorse_focus),
+        };
+        let choices = delegation_choice::route_choices(Some(shown));
+        let selected = choices
+            .iter()
+            .position(|choice| &choice.route == shown)
+            .unwrap_or(0);
+        let rows = choices
+            .iter()
+            .enumerate()
+            .map(|(index, choice)| {
+                (
+                    index,
+                    SharedString::from(choice.label.clone()),
+                    SharedString::from(format!("{id}-{}", choice.id)),
+                )
+            })
+            .collect();
+        let routes = choices
+            .into_iter()
+            .map(|choice| choice.route)
+            .collect::<Vec<_>>();
+        self.choice_row(
+            id,
+            focus,
+            work.label(),
+            delegation_choice::route_description(work),
+            selected,
+            rows,
+            move |settings: &mut Settings, index: usize| {
+                settings
+                    .delegation_policy
+                    .set_route(work, Some(routes[index].clone()))
+            },
+            cx,
+        )
+    }
+
+    /// One worker shell fewer or more than Settings resolve to, saved as Settings' choice.
+    fn step_parallel_shells(&mut self, more: bool, cx: &mut Context<Self>) {
+        self.change(
+            move |settings| {
+                let shown = delegation_choice::settings_policy(settings).parallel_shells;
+                if let Some(next) = delegation_choice::step_shells(shown, more) {
+                    settings.delegation_policy.set_parallel_shells(Some(next));
+                }
+            },
+            cx,
+        );
+    }
+
+    /// Delegation's soft target of worker shells: − / the number / +, each end of
+    /// `PARALLEL_SHELLS` disabling its button. The row takes focus like Text size: arrows
+    /// or − and = step it.
+    fn parallel_shells_row(&self, shown: u8, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
+        let button = |id: &'static str,
+                      name: &'static str,
+                      label: &'static str,
+                      more: bool,
+                      cx: &mut Context<Self>| {
+            let active = delegation_choice::step_shells(shown, more).is_some();
+            let button = behavior::button_content(id, name, label)
+                .disabled(!active)
+                .flex_none()
+                .min_w(ui_text::space(26.0))
+                .px(ui_text::space(6.0))
+                .py(ui_text::space(4.0))
+                .border_1()
+                .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+                .bg(rgb(colors.panel_active))
+                .text_color(rgb(if active { colors.cyan } else { colors.muted }))
+                .text_size(ui_text::text(10.0))
+                .text_center()
+                .hover(move |style| {
+                    controls::hovered(style, button_kind(false, !active).hover(colors), |style| {
+                        style.border_color(rgb(colors.cyan))
+                    })
+                })
+                .map(|button| {
+                    controls::native(button, |button| {
+                        controls::button(button, button_kind(false, !active), colors)
+                            .px(ui_text::space(8.0))
+                    })
+                })
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    cx.stop_propagation();
+                    view.step_parallel_shells(more, cx);
+                }));
+            crate::form_input::control_element(id, button)
+        };
+        div()
+            .id("delegation-parallel-shells")
+            .track_focus(&self.delegation_parallel_focus)
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(ui_text::space(12.0))
+            .px(ui_text::space(ROW_PAD_X))
+            .py(ui_text::space(ROW_PAD_Y))
+            .bg(rgb(colors.panel))
+            .border_1()
+            .border_color(rgb(colors.divider))
+            .focus_visible(|style| style.border_color(rgb(colors.cyan)))
+            .map(|row| controls::native(row, |row| controls::row(row, false, colors)))
+            .child(
+                row_text()
+                    .child(
+                        div()
+                            .text_size(ui_text::text(12.0))
+                            .text_color(rgb(colors.text))
+                            .child(delegation_choice::PARALLEL_TITLE),
+                    )
+                    .child(
+                        div()
+                            .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                            .text_size(ui_text::text(10.0))
+                            .text_color(rgb(colors.muted))
+                            .child(delegation_choice::PARALLEL_DESCRIPTION),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(4.0))
+                    .child(button(
+                        "delegation-parallel-fewer",
+                        "Fewer worker shells",
+                        "−",
+                        false,
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .flex_none()
+                            .min_w(ui_text::space(32.0))
+                            .text_size(ui_text::text(10.0))
+                            .text_center()
+                            .text_color(rgb(colors.cyan))
+                            .child(shown.to_string()),
+                    )
+                    .child(button(
+                        "delegation-parallel-more",
+                        "More worker shells",
+                        "+",
+                        true,
+                        cx,
+                    )),
             )
             .into_any_element()
     }
@@ -3267,7 +3527,7 @@ impl Render for SettingsPanel {
                                     // Columns only differ in the wide layout; otherwise this is one stack of cards.
                                     .child(div().flex().items_start().gap(px(layout.gap())).children(columns))
                                     .children(self.error.as_ref().map(|error| div().text_size(ui_text::text(11.0)).text_color(rgb(colors.gold)).child(error.clone())))
-                                    .child(div().pt(ui_text::space(10.0)).when(!native, |foot| foot.border_t_1().border_color(rgb(colors.divider))).when(native, |foot| foot.pt(ui_text::space(2.0)).px(ui_text::space(controls::PANEL_INSET - controls::LIST_MARGIN)).text_size(ui_text::text(9.0))).text_size(ui_text::text(10.0)).text_color(rgb(colors.muted)).child(if native { "Tab to move · Enter or Space to select · Arrows step the text size" } else { "Saved automatically · Tab to move · Enter or Space to select · Arrows step the text size" })),
+                                    .child(div().pt(ui_text::space(10.0)).when(!native, |foot| foot.border_t_1().border_color(rgb(colors.divider))).when(native, |foot| foot.pt(ui_text::space(2.0)).px(ui_text::space(controls::PANEL_INSET - controls::LIST_MARGIN)).text_size(ui_text::text(9.0))).text_size(ui_text::text(10.0)).text_color(rgb(colors.muted)).child(if native { "Tab to move · Enter or Space to select · Arrows step the text size and worker shells" } else { "Saved automatically · Tab to move · Enter or Space to select · Arrows step the text size and worker shells" })),
                             ),
                     ),
             )
@@ -3736,6 +3996,177 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    /// The Delegation rows show what Settings resolve to, and each saves its own field of
+    /// `delegation_policy` at once, leaving every other key of the file as it was.
+    #[gpui::test]
+    fn the_delegation_rows_save_only_the_delegation_policy_and_show_what_is_saved(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::form_input::test_turn;
+        use gpui_kit::test::TestWindowExt as _;
+        use riwork_engine::anthropic_key::MemoryStore;
+        use serde_json::json;
+        let dir = env::temp_dir().join(format!("riwork-settings-delegation-ui-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        fs::write(
+            &path,
+            r#"{"schema_version":1,"theme":"future_theme","future_setting":{"a":1}}"#,
+        )
+        .unwrap();
+        let document = || -> Value { serde_json::from_slice(&fs::read(&path).unwrap()).unwrap() };
+        let open = |cx: &mut gpui::TestAppContext| {
+            let (handle, panel) =
+                api_key_panel(cx, &dir, std::sync::Arc::new(MemoryStore::default()));
+            // The panel draws Settings as the window holds them, which is what is saved.
+            let saved = SettingsStore::open(&dir).unwrap().load().unwrap();
+            cx.update(|app| app.set_global(saved));
+            // The group sits below the first screen of the test window.
+            test_turn(cx, handle, |window, app| {
+                let scroll = panel.read(app).scroll.clone();
+                let top = window.find("delegation-spread-work").bounds().top();
+                scroll.set_offset(gpui::point(
+                    scroll.offset().x,
+                    scroll.offset().y + scroll.bounds().top() - top + px(40.),
+                ));
+            });
+            (handle, panel)
+        };
+        let checked = |window: &Window, id: &'static str| window.find(id).checked() == Some(true);
+        let disabled = |window: &Window, app: &App, id: &'static str| {
+            crate::form_input::test_ax_node(window, app, id).is_disabled()
+        };
+
+        let (handle, panel) = open(cx);
+        test_turn(cx, handle, |window, app| {
+            for id in [
+                "delegation-spread-work",
+                "delegation-parallel-fewer",
+                "delegation-parallel-more",
+                "delegation-design-claude",
+                "delegation-design-codex",
+                "delegation-design-muse",
+                "delegation-workhorse-claude",
+                "delegation-workhorse-codex",
+                "delegation-workhorse-muse",
+            ] {
+                assert!(window.find(id).visible(), "{id} is drawn in view");
+            }
+            // Nothing chosen: the built-in policy, and no chip for a saved other route.
+            assert!(checked(window, "delegation-spread-work"));
+            assert!(checked(window, "delegation-design-claude"));
+            assert!(checked(window, "delegation-workhorse-codex"));
+            assert!(!checked(window, "delegation-workhorse-claude"));
+            assert!(window.try_find("delegation-design-saved").is_none());
+            assert_eq!(
+                window.find("delegation-design-claude").label(),
+                Some("Claude · opus")
+            );
+            window.click("delegation-spread-work", app);
+        });
+        assert_eq!(
+            document()["delegation_policy"],
+            json!({"spread_work": false})
+        );
+
+        // − and + step the soft target from what is shown, and so do arrows, − and = in
+        // the focused row; each end disables its button and holds.
+        test_turn(cx, handle, |window, app| {
+            assert!(!checked(window, "delegation-spread-work"));
+            window.click("delegation-parallel-more", app);
+        });
+        assert_eq!(document()["delegation_policy"]["parallel_shells"], 5);
+        test_turn(cx, handle, |window, app| {
+            panel.update(app, |panel, cx| {
+                panel.delegation_parallel_focus.focus(window, cx)
+            });
+            window.press("left", app);
+            window.press("-", app);
+        });
+        assert_eq!(document()["delegation_policy"]["parallel_shells"], 3);
+        test_turn(cx, handle, |window, app| {
+            for _ in 0..9 {
+                window.press("=", app);
+            }
+        });
+        assert_eq!(document()["delegation_policy"]["parallel_shells"], 10);
+        test_turn(cx, handle, |window, app| {
+            assert!(disabled(window, app, "delegation-parallel-more"));
+            assert!(!disabled(window, app, "delegation-parallel-fewer"));
+            window.click("delegation-parallel-more", app);
+            window.click("delegation-workhorse-muse", app);
+        });
+        test_turn(cx, handle, |window, app| {
+            window.click("delegation-design-codex", app);
+        });
+        let file = document();
+        assert_eq!(
+            file["delegation_policy"],
+            json!({
+                "spread_work": false,
+                "parallel_shells": 10,
+                "design": {"provider": "codex", "model": "gpt-6.1-sol"},
+                "workhorse": {"provider": "muse", "model": "muse-wonder-full-1.0"}
+            })
+        );
+        // Every other key is as it was: the odd and unknown ones as saved, the rest the
+        // defaults any first save writes, and no other choice-only key is chosen.
+        let defaults = serde_json::to_value(Settings::default()).unwrap();
+        for (key, value) in file.as_object().unwrap() {
+            match key.as_str() {
+                "delegation_policy" | "schema_version" => {}
+                "theme" => assert_eq!(value, "future_theme"),
+                "future_setting" => assert_eq!(value, &json!({"a": 1})),
+                _ => assert_eq!(value, &defaults[key.as_str()], "{key}"),
+            }
+        }
+        for key in [
+            "orchestrator_mode",
+            "orchestrator_chat_provider",
+            "orchestrator_chat_model",
+        ] {
+            assert!(file.get(key).is_none(), "{key}");
+        }
+
+        // Opened afresh from the file, the panel shows what was saved.
+        let (handle, _) = open(cx);
+        test_turn(cx, handle, |window, app| {
+            assert!(!checked(window, "delegation-spread-work"));
+            assert!(disabled(window, app, "delegation-parallel-more"));
+            assert!(checked(window, "delegation-design-codex"));
+            assert!(!checked(window, "delegation-design-claude"));
+            assert!(checked(window, "delegation-workhorse-muse"));
+        });
+
+        // A route the panel does not offer, saved by hand, is shown chosen as it is, and
+        // choosing an offered one replaces it. Native draws the same rows.
+        let mut hand = document();
+        hand["delegation_policy"]["design"] = json!({"provider": "claude", "model": "fable"});
+        hand["theme"] = json!("native");
+        fs::write(&path, serde_json::to_vec(&hand).unwrap()).unwrap();
+        let (handle, _) = open(cx);
+        test_turn(cx, handle, |window, app| {
+            assert!(ui_text::is_native());
+            assert!(window.find("delegation-parallel-fewer").visible());
+            assert!(checked(window, "delegation-design-saved"));
+            assert_eq!(
+                window.find("delegation-design-saved").label(),
+                Some("Claude · fable · saved")
+            );
+            assert!(!checked(window, "delegation-design-claude"));
+            window.click("delegation-design-claude", app);
+        });
+        let file = document();
+        assert_eq!(
+            file["delegation_policy"]["design"],
+            json!({"provider": "claude", "model": "opus"})
+        );
+        assert_eq!(file["theme"], "native");
+        // The interface face follows Settings; leave it as a fresh window has it.
+        cx.update(|app| app.set_global(Settings::default()));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn agent_terminals_unrestricted_defaults_on_and_survives_older_odd_and_unreadable_files() {
         let dir = env::temp_dir().join(format!("riwork-settings-unrestricted-{}", Uuid::new_v4()));
@@ -3977,6 +4408,7 @@ mod tests {
             (Toggle::AgentsUnrestricted, "agent_terminals_unrestricted"),
             (Toggle::DictationMic, "dictation_mic"),
             (Toggle::WindowSize, "remember_window_size"),
+            (Toggle::SpreadWork, "delegation_policy"),
         ] {
             let mut flipped = base.clone();
             toggle.flip(&mut flipped);
@@ -3993,6 +4425,11 @@ mod tests {
                 .collect();
             assert_eq!(changed, [expected]);
             toggle.flip(&mut flipped);
+            if toggle == Toggle::SpreadWork {
+                // Flipped back, the policy holds a choice of what it showed before.
+                assert_eq!(flipped.delegation_policy.spread_work, Some(true));
+                flipped.delegation_policy.set_spread_work(None);
+            }
             assert_eq!(flipped, base);
         }
         let toggles = [
@@ -4003,6 +4440,7 @@ mod tests {
             Toggle::AgentsUnrestricted,
             Toggle::DictationMic,
             Toggle::WindowSize,
+            Toggle::SpreadWork,
         ];
         // Every toggle has an id of its own.
         let ids = toggles

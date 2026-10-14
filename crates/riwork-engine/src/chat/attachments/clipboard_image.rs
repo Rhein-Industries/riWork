@@ -322,7 +322,7 @@ mod tests {
         // the staging limit; verify refusal through the real encoder pipeline.
         let mut noise = image::RgbImage::new(2048, 1024);
         let mut random = 0x12345678u32;
-        for byte in noise.as_mut() {
+        for byte in noise.iter_mut() {
             random ^= random << 13;
             random ^= random >> 17;
             random ^= random << 5;

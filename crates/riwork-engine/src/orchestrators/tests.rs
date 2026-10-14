@@ -125,7 +125,14 @@ fn a_global_chat_orchestrator_works_where_a_terminal_one_does_and_is_told_what_i
     let executable = env::current_exe().unwrap();
     assert_eq!(
         *first,
-        orchestrator_prompt(&skill, &executable, None, None, false)
+        orchestrator_prompt(
+            &skill,
+            &executable,
+            None,
+            None,
+            &Delegation::built_in(),
+            false
+        )
     );
     // The skill is current, and the chat is a chat orchestrator in the host.
     assert!(chat_skill_is_current(&host.home, &chat));
@@ -186,6 +193,7 @@ fn a_project_chat_orchestrator_belongs_to_its_project_and_never_asks() {
             &env::current_exe().unwrap(),
             Some(PROJECT),
             Some(root.as_path()),
+            &Delegation::built_in(),
             false
         )
     );
@@ -859,6 +867,134 @@ fn a_project_choice_applies_to_its_own_orchestrator_only_and_inherit_follows_set
     assert_eq!(planned.notes.len(), 1);
     assert!(planned.notes[0].contains("hologram"), "{:?}", planned.notes);
     assert!(plan(&host.home, Some("missing-project")).is_err());
+}
+
+/// Each scope is told the delegation policy it resolves to when it starts and when it
+/// loads its skill: a project's own choices over Settings' over RiWork's, field by field.
+/// A change reaches no running conversation until LOAD SKILL.
+#[test]
+fn each_scope_is_told_its_resolved_delegation_policy_at_start_and_on_load_skill() {
+    use crate::delegation::{DelegationPolicy, Route, Work};
+    let host = TestHost::new();
+    let (sessions, _server) = sessions(&host);
+    let store = Store::open(&host.home).unwrap();
+    let mine = host.home.join("mine");
+    let theirs = host.home.join("theirs");
+    fs::create_dir_all(&mine).unwrap();
+    fs::create_dir_all(&theirs).unwrap();
+    let mine = store.add_project(&mine, Some("Mine")).unwrap();
+    let theirs = store.add_project(&theirs, Some("Theirs")).unwrap();
+    // Nothing chosen anywhere: RiWork's own policy, today's routing.
+    assert_eq!(delegation(&host.home, None), Delegation::built_in());
+    assert_eq!(
+        delegation(&host.home, Some(&mine.id)),
+        Delegation::built_in()
+    );
+
+    let settings = SettingsStore::open(&host.home).unwrap();
+    settings
+        .update(|settings| {
+            let policy = &mut settings.delegation_policy;
+            policy.set_spread_work(Some(false));
+            policy.set_parallel_shells(Some(6));
+            policy.set_route(Work::Workhorse, Some(Route::recommended(Provider::Muse)));
+        })
+        .unwrap();
+    store
+        .set_project_delegation_policy(&mine.id, |policy| {
+            policy.set_spread_work(Some(true));
+            policy.set_parallel_shells(Some(2));
+            policy.set_route(Work::Design, Some(Route::recommended(Provider::Codex)));
+        })
+        .unwrap();
+    let global_policy = "Delegation policy for this scope (Settings, else RiWork's default, \
+                         as they stood when this message was written): spread work off; \
+                         about 6 parallel worker shells; design work on claude, model opus; \
+                         workhorse work on muse, model muse-wonder-full-1.0.";
+    let mine_policy = "Delegation policy for this scope (this project's override, else Settings, \
+                       else RiWork's default, as they stood when this message was written): \
+                       spread work on; about 2 parallel worker shells; design work on codex, \
+                       model gpt-6.1-sol; workhorse work on muse, model muse-wonder-full-1.0.";
+    let theirs_policy = "Delegation policy for this scope (this project's override, else \
+                         Settings, else RiWork's default, as they stood when this message was \
+                         written): spread work off; about 6 parallel worker shells; design \
+                         work on claude, model opus; workhorse work on muse, model \
+                         muse-wonder-full-1.0.";
+    let (global, _) = chat_of(create_planned(&sessions, &host.home, None).unwrap());
+    let (mine_chat, _) =
+        chat_of(create_planned(&sessions, &host.home, Some((&mine.id, &mine.root))).unwrap());
+    let (theirs_chat, _) =
+        chat_of(create_planned(&sessions, &host.home, Some((&theirs.id, &theirs.root))).unwrap());
+    for (chat, policy) in [
+        (&global, global_policy),
+        (&mine_chat, mine_policy),
+        (&theirs_chat, theirs_policy),
+    ] {
+        let first = &sent_texts(chat)[0];
+        assert!(first.contains(policy), "{first}");
+        assert!(first.contains("Fan out and relay"), "{first}");
+    }
+    // A project the store cannot name adds nothing to Settings.
+    assert_eq!(
+        delegation(&host.home, Some(PROJECT)),
+        delegation(&host.home, None)
+    );
+
+    // Changing the policy tells no running orchestrator anything...
+    settings
+        .update(|settings| settings.delegation_policy = DelegationPolicy::default())
+        .unwrap();
+    store
+        .set_project_delegation_policy(&mine.id, |policy| policy.set_parallel_shells(Some(9)))
+        .unwrap();
+    for chat in [&global, &mine_chat, &theirs_chat] {
+        assert_eq!(
+            sent_texts(chat).len(),
+            1,
+            "a running conversation is not rewritten"
+        );
+    }
+    // ...until LOAD SKILL, which tells each scope what it resolves to now.
+    for (chat, scope, root, policy) in [
+        (
+            &global,
+            None,
+            None,
+            "spread work on; about 4 parallel worker shells; design work on claude, model opus; \
+             workhorse work on codex, model gpt-6.1-sol.",
+        ),
+        (
+            &mine_chat,
+            Some(mine.id.as_str()),
+            Some(mine.root.as_path()),
+            "spread work on; about 9 parallel worker shells; design work on codex, model \
+             gpt-6.1-sol; workhorse work on codex, model gpt-6.1-sol.",
+        ),
+    ] {
+        host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
+        fs::write(
+            skill_mark_path(&host.home, scope),
+            serde_json::to_vec(&SkillMark {
+                chat_id: chat.id.clone(),
+                version: "0000000000000000".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        load_chat_skill(&sessions, &chat_host(&host.home), chat, root).unwrap();
+        let loaded = sent_texts(chat).last().unwrap().clone();
+        assert!(loaded.contains(policy), "{loaded}");
+        assert!(loaded.contains("<riwork-orchestrator-skill>"));
+    }
+
+    // Settings this build cannot read are RiWork's own policy, and never an error.
+    fs::write(host.home.join("settings.json"), "{not json").unwrap();
+    assert_eq!(delegation(&host.home, None), Delegation::built_in());
+    assert_eq!(
+        delegation(&host.home, Some(&mine.id)).parallel_shells,
+        9,
+        "the project's choice still stands"
+    );
 }
 
 #[test]

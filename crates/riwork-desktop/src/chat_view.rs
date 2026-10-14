@@ -11,6 +11,7 @@
 //! - `feed` keeps the subscription and the command queue alive across host restarts, `state`
 //!   folds what it delivers;
 //! - `approval`, `composer` and `toolbar` hold the words and keys of the matching bars;
+//! - `suggest_ui` is the `/` and `@` list over the message box (`chat::suggest` decides it);
 //! - `rows`, `prose`, `panels` and `widgets` draw.
 
 use std::{
@@ -59,6 +60,9 @@ mod image_scope;
 mod links;
 mod markdown;
 mod media;
+mod memo;
+#[cfg(test)]
+mod memo_tests;
 #[cfg(test)]
 mod notice_tests;
 mod notice_ui;
@@ -71,6 +75,13 @@ mod selection_document;
 #[cfg(test)]
 mod selection_tests;
 mod state;
+mod subshells;
+#[cfg(test)]
+mod subshells_tests;
+pub use subshells::ShellAction;
+#[cfg(test)]
+mod suggest_tests;
+mod suggest_ui;
 #[cfg(test)]
 mod testing;
 mod toolbar;
@@ -92,6 +103,10 @@ actions!(riwork_chat, [InterruptChat, ToggleDictation]);
 
 /// What a chat tab tells the window.
 pub enum ChatViewEvent {
+    WorkerShell {
+        shell_id: String,
+        action: ShellAction,
+    },
     /// The title, the agent behind it, or what it is doing changed: the tab and the counts
     /// of agents are drawn again.
     Changed,
@@ -110,6 +125,10 @@ pub enum ChatViewEvent {
     ShowUsage,
     /// A usage-limit notice's **Enter API key** was pressed: Settings, at the key field.
     OpenApiKeySettings,
+    /// `/memo`'s **Edit**: open this project's memo where it is written.
+    EditProjectMemo {
+        project_id: String,
+    },
 }
 
 impl EventEmitter<ChatViewEvent> for ChatView {}
@@ -178,6 +197,7 @@ struct DrawnDiff {
 }
 
 pub struct ChatView {
+    workers: subshells::WorkerUi,
     config: HostConfig,
     window_handle: gpui::AnyWindowHandle,
     /// The host's id for the chat; none while a new chat is being made.
@@ -283,6 +303,12 @@ pub struct ChatView {
     /// A usage limit's **Use API key** waits for the host to say the chat bills its API key,
     /// then sends this again, if anything (`billing::rejected_prompt`).
     limit_switch: Option<LimitSwitch>,
+    /// The `/` and `@` list over the message box.
+    suggestions: suggest_ui::Suggestions,
+    /// Where `/memo` reads the project's memo; set by the window.
+    memo_store: Option<crate::store::Store>,
+    /// `/memo`'s preview above the message box, while it is open (`memo`).
+    memo_preview: Option<memo::Preview>,
 }
 
 /// What a usage limit's **Use API key** still has to do once the switch holds.
@@ -439,6 +465,11 @@ impl ChatView {
         let focus = cx.focus_handle();
         let subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::composer_event),
+            // Its text, caret and focus decide the `/` and `@` list; a caret moved by a click
+            // or an arrow changes no text.
+            cx.observe_in(&composer, window, |view, _, window, cx| {
+                view.sync_suggestions(window, cx)
+            }),
             cx.subscribe_in(&model_input, window, Self::model_event),
             // A key held as focus leaves comes up elsewhere (the new-chat chooser, another
             // tab), never in this view's key-up: forget it, or the next ⏎ here is taken for
@@ -454,6 +485,7 @@ impl ChatView {
             select::TranscriptSelection::new(window.window_handle(), cx.weak_entity(), cx);
         Self {
             config,
+            workers: Default::default(),
             window_handle: window.window_handle(),
             chat_id: None,
             creation: None,
@@ -525,6 +557,9 @@ impl ChatView {
             speech_names: Vec::new(),
             speech_paths: Vec::new(),
             limit_switch: None,
+            suggestions: Default::default(),
+            memo_store: None,
+            memo_preview: None,
         }
     }
 
@@ -761,6 +796,13 @@ impl ChatView {
     /// Tell the list about the rows that came or changed. Rows are measured when they are
     /// drawn, so a row that changed must be measured again.
     fn sync_list(&mut self, applied: &Applied, cx: &mut Context<Self>) {
+        if applied.touched.iter().any(|at| {
+            self.model.transcript.items.get(*at).is_some_and(|item| {
+                crate::chat::subagents::of(item, self.info().map(|info| info.provider)).is_some()
+            })
+        }) {
+            self.list.remeasure();
+        }
         self.transcript_selection.changed();
         // Streaming content cannot leave an old copied projection. Unrelated
         // tail updates preserve selection and participant/editor identities.
@@ -1604,6 +1646,7 @@ impl Render for ChatView {
         self.follow_text_size(cx);
         self.refresh_selection_document(look, cx);
         self.ready_inputs(window, cx);
+        self.sync_suggestions(window, cx);
         if self.focus_composer {
             self.focus_composer = false;
             self.focus(window, cx);
@@ -1646,6 +1689,12 @@ impl Render for ChatView {
                     view.escape_down = false;
                 }
             }))
+            // The `/` and `@` list has its keys before the menus and the message box.
+            .capture_action(cx.listener(Self::suggestion_escape))
+            .capture_action(cx.listener(Self::suggestion_up))
+            .capture_action(cx.listener(Self::suggestion_down))
+            .capture_action(cx.listener(Self::suggestion_enter))
+            .capture_action(cx.listener(Self::suggestion_tab))
             .capture_action(cx.listener(Self::escape_action))
             .capture_action(cx.listener(Self::menu_up))
             .capture_action(cx.listener(Self::menu_down))

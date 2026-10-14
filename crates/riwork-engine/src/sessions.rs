@@ -16,7 +16,7 @@ use std::{
 };
 use uuid::Uuid;
 
-use crate::session_keys::tmux_argument;
+use crate::{delegation::Delegation, session_keys::tmux_argument};
 
 mod sample;
 pub use sample::SessionSample;
@@ -430,6 +430,7 @@ impl SessionManager {
                 &executable,
                 project_id.as_deref(),
                 project_root.as_deref(),
+                &crate::orchestrators::delegation(&self.home, project_id.as_deref()),
                 &id,
                 binding.as_ref().map(|binding| binding.home.as_path()),
                 crate::settings::agent_inline_mode(&self.home),
@@ -604,6 +605,7 @@ impl SessionManager {
                 &executable,
                 session.project_id.as_deref(),
                 session.orchestrator_project_root.as_deref(),
+                &crate::orchestrators::delegation(&self.home, session.project_id.as_deref()),
                 true,
             ),
         )?;
@@ -1137,6 +1139,16 @@ impl SessionManager {
     pub fn capture(&self, id: &str, lines: usize) -> Result<String, String> {
         self.require_live(id)?;
         self.capture_text(id, lines, false)
+    }
+
+    /// Capture a shell from a successful live sample without another liveness query.
+    /// A pane that exits after sampling returns the normal tmux error.
+    pub fn capture_sampled(&self, shell: &ShellSession, lines: usize) -> Result<String, String> {
+        validate_uuid(&shell.id)?;
+        if !shell.alive {
+            return Err("Shell has exited".into());
+        }
+        self.capture_text(&shell.id, lines, false)
     }
 
     /// The scrollback capture of a shell known to be live. `styled` keeps the
@@ -1978,7 +1990,7 @@ impl SessionManager {
 
     /// Called wherever this process changes sessions, so the next `sample` reads
     /// tmux again instead of showing the old state for the rest of its TTL.
-    fn invalidate_sample(&self) {
+    pub fn invalidate_sample(&self) {
         sample::cache_for(&self.socket_name).invalidate();
     }
 
@@ -4135,7 +4147,10 @@ fn without_project_environment(command: &str, shell: &Path) -> String {
 }
 
 /// The message an orchestrator is started with (a terminal's launch command, a
-/// chat's first message) and that LOAD SKILL gives a running one.
+/// chat's first message) and that LOAD SKILL gives a running one. Beside its scope it
+/// carries `delegation`, the policy its scope resolves to now
+/// (`orchestrators::delegation`), in one sentence; a running orchestrator hears of a
+/// later change only through LOAD SKILL or when it is created again.
 ///
 /// `inline_skill` puts the whole skill in the message, which suits a message
 /// pasted into a running pane or sent to a chat. A launch must not: the message
@@ -4146,6 +4161,7 @@ pub(crate) fn orchestrator_prompt(
     executable: &Path,
     project_id: Option<&str>,
     project_root: Option<&Path>,
+    delegation: &Delegation,
     inline_skill: bool,
 ) -> String {
     let scope = match project_id {
@@ -4184,7 +4200,7 @@ pub(crate) fn orchestrator_prompt(
          {load} \
          Its installed source is {}. The installed RiWork CLI is {}: use this executable \
          for `riwork` commands if PATH does not resolve it, and retain RIWORK_HOME. \
-         {} \
+         {} {} \
          This startup message only loads the skill. Do not inspect projects, create tasks, \
          modify repositories, delegate work, submit input to other harnesses, or create schedules. \
          After loading, briefly acknowledge readiness and wait for the user's objective.\n\n\
@@ -4192,7 +4208,28 @@ pub(crate) fn orchestrator_prompt(
         quote_arg(&skill_path.to_string_lossy()),
         quote_arg(&executable.to_string_lossy()),
         scope,
+        delegation_brief(delegation, project_id.is_some()),
         CUA_GUIDANCE
+    )
+}
+
+/// The delegation policy of an orchestrator's scope as its startup message states it:
+/// one sentence of resolved values, which the skill's Fan out and relay section
+/// explains.
+fn delegation_brief(policy: &Delegation, project: bool) -> String {
+    let source = if project {
+        "this project's override, else Settings, else RiWork's default"
+    } else {
+        "Settings, else RiWork's default"
+    };
+    format!(
+        "Delegation policy for this scope ({source}, as they stood when this message was written): \
+         spread work {}; about {} parallel worker shells; design work on {}; workhorse work on {}. \
+         Apply it as the skill's Fan out and relay section says.",
+        if policy.spread_work { "on" } else { "off" },
+        policy.parallel_shells,
+        policy.design.describe(),
+        policy.workhorse.describe(),
     )
 }
 
@@ -4204,6 +4241,7 @@ fn orchestrator_command(
     executable: &Path,
     project_id: Option<&str>,
     project_root: Option<&Path>,
+    delegation: &Delegation,
     shell_id: &str,
     codex_home: Option<&Path>,
     inline: bool,
@@ -4244,6 +4282,7 @@ fn orchestrator_command(
         executable,
         project_id,
         project_root,
+        delegation,
         false,
     ));
     let command = format!(
@@ -8431,6 +8470,7 @@ else:
                 Path::new("/bin/riwork"),
                 None,
                 None,
+                &Delegation::built_in(),
                 "pane",
                 None,
                 false,
@@ -8509,6 +8549,7 @@ else:
             executable,
             None,
             None,
+            &Delegation::built_in(),
             "global-orchestrator-pane",
             None,
             false,
@@ -8535,11 +8576,23 @@ else:
         assert!(prompt.contains(&quote_arg(&executable.to_string_lossy())));
         assert!(prompt.contains("Scope: global."));
         assert!(prompt.contains("You have no project or worktree ownership."));
-        // A pane that is already running receives the skill itself, by paste.
-        let pasted = orchestrator_prompt(&skill, executable, None, None, true);
+        assert!(prompt.contains(
+            "Delegation policy for this scope (Settings, else RiWork's default, as they stood \
+             when this message was written): spread work on; about 4 parallel worker shells; \
+             design work on claude, model opus; workhorse work on codex, model gpt-6.1-sol. \
+             Apply it as the skill's Fan out and relay section says."
+        ));
+        // A pane that is already running receives the skill itself, by paste, with the
+        // policy as it resolves now.
+        let policy = Delegation {
+            parallel_shells: 7,
+            ..Delegation::built_in()
+        };
+        let pasted = orchestrator_prompt(&skill, executable, None, None, &policy, true);
         assert!(pasted.contains(ORCHESTRATOR_SKILL));
         assert!(pasted.contains("<riwork-orchestrator-skill>"));
         assert!(pasted.contains(CUA_GUIDANCE));
+        assert!(pasted.contains("about 7 parallel worker shells"));
     }
 
     /// A terminal orchestrator started with an older skill is offered LOAD SKILL, and what
@@ -8570,6 +8623,7 @@ else:
                 Path::new("/bin/riwork"),
                 scope,
                 scope.map(|_| root),
+                &Delegation::built_in(),
                 true,
             );
             assert!(pasted.contains(ORCHESTRATOR_SKILL));
@@ -8609,6 +8663,40 @@ else:
             "not a licence to implement in it",
             "report the blocker; do not do the implementation yourself",
             "The global orchestrator never edits any project's files",
+        ] {
+            assert!(
+                ORCHESTRATOR_SKILL.contains(needle),
+                "the skill lacks {needle:?}"
+            );
+        }
+    }
+
+    /// Both scopes read, after the mandate, how to spread work by their delegation policy and
+    /// how status travels down and up the chain, through the transports RiWork already has.
+    #[test]
+    fn the_embedded_skill_fans_work_out_and_relays_through_the_chain() {
+        let mandate = ORCHESTRATOR_SKILL
+            .find("## Delegate; do not implement")
+            .unwrap();
+        let fan_out = ORCHESTRATOR_SKILL
+            .find("## Fan out and relay")
+            .expect("the skill lacks Fan out and relay");
+        assert!(mandate < fan_out);
+        assert!(fan_out < ORCHESTRATOR_SKILL.find("## Global coordination").unwrap());
+        for needle in [
+            "Your startup message states your scope's delegation policy",
+            "It is not refreshed while you run; a new orchestrator or LOAD SKILL brings a change.",
+            "Sessions are cheap to create",
+            "needs a stated reason",
+            "with the policy's design and workhorse choices in place of those two rows",
+            "the tasks it depends on or blocks",
+            "Relay down the chain, global orchestrator → project orchestrator → worker shells",
+            "Relay up the chain",
+            "`RiWork check-in`",
+            "Dashboard briefs",
+            "gathers project state through them",
+            "never by steering, sending to, or creating a project's workers",
+            "Either way, delegate as Delegate; do not implement says.",
         ] {
             assert!(
                 ORCHESTRATOR_SKILL.contains(needle),
@@ -8718,6 +8806,11 @@ else:
             Path::new("/Applications/RiWork App/Contents/MacOS/riwork"),
             Some(alpha),
             Some(project_root),
+            &Delegation {
+                spread_work: false,
+                parallel_shells: 2,
+                ..Delegation::built_in()
+            },
             "project-orchestrator-pane",
             None,
             false,
@@ -8751,6 +8844,16 @@ else:
         );
         assert!(prompt.contains(&quote_arg(&skill.to_string_lossy())));
         assert!(!prompt.contains(ORCHESTRATOR_SKILL));
+        // The launch carries the policy the project's scope resolved to.
+        assert!(
+            prompt.contains(
+                "Delegation policy for this scope (this project's override, else Settings, \
+                 else RiWork's default, as they stood when this message was written): \
+                 spread work off; about 2 parallel worker shells; design work on claude, \
+                 model opus; workhorse work on codex, model gpt-6.1-sol."
+            ),
+            "{prompt}"
+        );
         assert_eq!(
             orchestrator_environment(Some(alpha)),
             [

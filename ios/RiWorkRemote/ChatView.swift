@@ -20,6 +20,8 @@ struct ChatScreen: View {
     @State private var focusToken = 0
     /// The model picker is up.
     @State private var showModels = false
+    /// `/memo`'s **Edit** was pressed: the memo editor of this project comes up once the preview has gone.
+    @State private var editMemoAfterPreview: String?
     /// The history of the provider's notices is up.
     @State private var showNotices = false
     /// Counts requests from the tab row's ⋯ menu to show the notices.
@@ -50,6 +52,7 @@ struct ChatScreen: View {
         let barShown = !approvals.isEmpty || !questions.isEmpty || !elidedRequests.isEmpty
         VStack(spacing: 0) {
             ChatToolbar(model: model, chat: info, conversation: conversation, state: state, showModels: $showModels)
+            ChatWorkerShells(model: model, project: info.projectID)
             ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, dismissesKeyboard: !model.keyboard.hardware.isAttached || model.keyboard.software.isShown, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) })
                 .id(chat.id)
                 .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { transcriptTop = $0; transcriptChanged(barShown: barShown) }
@@ -77,12 +80,17 @@ struct ChatScreen: View {
                             ChatNoticeBanners(model: model, chat: info, conversation: conversation, state: state, showHistory: { showNotices = true })
                         }
                         .background(style.background)
+                        if let choice = conversation.contributorState.choice(fallback: info) {
+                            ChatContributorButton(choice: choice, connected: connected, changing: conversation.changingContributor) {
+                                Task { await model.setChatContributor(chat.id, choice.nextMode) }
+                            }
+                        }
                         ChatComposer(conversation: conversation, provider: info.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
-                                     send: { Task { await model.sendChatDraft(chat.id) } }, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } },
+                                     send: send, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } },
                                      attach: { picking = $0 }, pasteFiles: pasteFiles,
                                      attachmentImages: model.chatAttachmentImages, removeAttachment: { model.removeStagedAttachment($0, from: chat.id) },
                                      pending: model.pendingAttachments(for: chat.id), cancelPending: model.cancelUpload,
-                                     barAbove: barShown)
+                                     barAbove: barShown, suggestionCatalog: model.composerCatalog(for: chat.id), wantSuggestions: { model.wantComposerSuggestions(chat.id) })
                     }
                     .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { bottomTop = $0; transcriptChanged(barShown: barShown) }
                 }
@@ -121,6 +129,28 @@ struct ChatScreen: View {
         }
         .sheet(isPresented: $showModels, onDismiss: requestFocus) {
             ChatModelSheet(model: model, chat: info) { showModels = false }.desktopThemed(model.theme.style)
+        }
+        .sheet(item: Binding(get: { model.memoPreview?.chatID == chat.id ? model.memoPreview : nil }, set: { if $0 == nil { model.memoPreview = nil } }),
+               onDismiss: memoPreviewGone) { shown in
+            MemoPreviewSheet(preview: shown.preview, insert: { model.insertMemoPreview() }, edit: {
+                editMemoAfterPreview = shown.preview.projectID
+                model.memoPreview = nil
+            }, close: { model.memoPreview = nil })
+            .desktopThemed(model.theme.style)
+        }
+    }
+
+    /// Return or Send: `/memo` puts the project's memo up instead of sending (`RemoteModel.openMemoPreview`); anything else is sent.
+    private func send() {
+        if model.openMemoPreview(chat: info) { return }
+        Task { await model.sendChatDraft(chat.id) }
+    }
+    private func memoPreviewGone() {
+        if let project = editMemoAfterPreview {
+            editMemoAfterPreview = nil
+            model.openMemoEditor(projectID: project, name: model.projectName(project))
+        } else {
+            requestFocus()
         }
     }
 
@@ -652,7 +682,7 @@ private struct ChatTranscriptList: View {
                 }
                 // The provider's notices are the banner row's (and the history's), not rows of the transcript.
                 ForEach(transcript.items.filter(ChatNotices.isTranscriptRow)) { item in
-                    ChatItemRow(item: item, provider: provider, open: open(for: item), toggle: toggle).equatable()
+                    ChatItemRow(item: item, provider: provider, subagent: ChatSubagent.inTranscript(item, items: transcript.items, provider: provider), open: open(for: item), toggle: toggle).equatable()
                         .id(item.id)
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frame in
                             viewport.frames[item.id] = frame

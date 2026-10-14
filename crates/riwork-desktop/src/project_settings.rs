@@ -13,7 +13,9 @@ use gpui::{Focusable, Subscription};
 use crate::{
     behavior_controls as behavior,
     chat::model::Provider,
+    delegation_choice::{self, DelegationPolicy, Route, RouteChoice, Work},
     icons::{self, ActionGlyph, Icon},
+    memo_editor::{MemoEditor, MemoEditorEvent},
     orchestrator_choice::{self, ModelChoice},
     settings::{CodexAccountsState, OrchestratorRuns, Settings, refresh_codex_accounts},
     store::{Project, ProjectCodexAccount, ProjectFolder, ProjectOrchestrator, State, Store},
@@ -430,6 +432,12 @@ impl SaveStatus {
         }
     }
 
+    fn delegation_saved(&mut self) {
+        if !self.pending {
+            self.notice = Some("Delegation policy saved");
+        }
+    }
+
     fn message(&self) -> &'static str {
         match self.notice {
             Some(notice) if !self.pending => notice,
@@ -452,7 +460,15 @@ enum Field {
     OrchestratorProvider(usize),
     OrchestratorModel(usize),
     OrchestratorModelInput,
+    /// The delegation rows: "Spread work" (`SPREAD_CHOICES`), the worker shell Inherit
+    /// chip and stepper (`PARALLEL_CONTROLS`), and each work's Inherit and route chips
+    /// (`ProjectSettingsPanel::route_choices`).
+    DelegationSpread(usize),
+    DelegationParallel(usize),
+    DelegationRoute(Work, usize),
     Save,
+    /// The project's memo (07 MEMO), last in the keyboard order as it is on screen.
+    Memo,
 }
 
 /// The mode chips of 04 ORCHESTRATOR.
@@ -483,6 +499,43 @@ const ORCHESTRATOR_MODES: [(OrchestratorPick, &str, &str); 4] = [
     (OrchestratorPick::Chat, "Chat", "project-orchestrator-chat"),
 ];
 
+/// The "Spread work" chips of 05 DELEGATION: Inherit, then a choice.
+const SPREAD_CHOICES: [(Option<bool>, &str); 3] = [
+    (None, "project-delegation-spread-inherit"),
+    (Some(true), "project-delegation-spread-on"),
+    (Some(false), "project-delegation-spread-off"),
+];
+
+/// The worker shell controls of 05 DELEGATION: the Inherit chip, then − and +.
+const PARALLEL_CONTROLS: [&str; 3] = [
+    "project-delegation-parallel-inherit",
+    "project-delegation-parallel-fewer",
+    "project-delegation-parallel-more",
+];
+
+/// What the worker shell controls do: follow Settings, or one fewer or more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ParallelPick {
+    Inherit,
+    Step { more: bool },
+}
+
+const PARALLEL_PICKS: [ParallelPick; 3] = [
+    ParallelPick::Inherit,
+    ParallelPick::Step { more: false },
+    ParallelPick::Step { more: true },
+];
+
+/// A route chip's id in 05 DELEGATION: `project-delegation-design-claude`, `…-inherit`.
+fn route_chip_id(work: Work, word: &str) -> String {
+    format!("project-delegation-{}-{word}", work.key())
+}
+
+/// The last word of a route chip's id; `None` is Inherit.
+fn route_word(choice: &Option<RouteChoice>) -> &'static str {
+    choice.as_ref().map_or("inherit", |choice| choice.id)
+}
+
 /// Which mode chip a saved choice shows; none for one this build cannot read.
 fn orchestrator_pick(choice: &ProjectOrchestrator) -> Option<OrchestratorPick> {
     match choice {
@@ -499,6 +552,10 @@ fn orchestrator_pick(choice: &ProjectOrchestrator) -> Option<OrchestratorPick> {
 pub struct ProjectSettingsPanel {
     store: Store,
     project: Project,
+    /// The project's memo, which saves itself (`memo_editor`).
+    memo: Entity<MemoEditor>,
+    /// The panel's scroll, so that the memo, the last section, can be brought into view.
+    scroll: gpui::ScrollHandle,
     name: Input,
     name_state: Entity<InputState>,
     name_touched: bool,
@@ -508,6 +565,8 @@ pub struct ProjectSettingsPanel {
     /// "Other model ID" of a chat orchestrator.
     orchestrator_model_state: Entity<InputState>,
     orchestrator_error: Option<String>,
+    /// Why a delegation choice was not saved.
+    delegation_error: Option<String>,
     folders: Vec<ProjectFolder>,
     folder_paths: BTreeMap<String, String>,
     folder_id: Option<String>,
@@ -538,6 +597,14 @@ impl ProjectSettingsPanel {
         }
         let snapshot = store.snapshot();
         let error = snapshot.as_ref().err().cloned();
+        let memo = snapshot
+            .as_ref()
+            .map(|state| state.project_memo(&project.id))
+            .unwrap_or_default();
+        let memo = {
+            let (store, project_id) = (store.clone(), project.id.clone());
+            cx.new(|cx| MemoEditor::new(store, project_id, memo, window, cx))
+        };
         let (folders, folder_paths) = snapshot
             .map(|state| folder_choices(&state))
             .unwrap_or_default();
@@ -553,7 +620,13 @@ impl ProjectSettingsPanel {
             cx,
         );
         let orchestrator_model_state = text_input::single_line("", "Other model ID", window, cx);
-        let mut subscriptions = Vec::new();
+        let mut subscriptions =
+            vec![
+                cx.subscribe_in(&memo, window, |form, _, MemoEditorEvent::Focused, _, cx| {
+                    form.active = Field::Memo;
+                    cx.notify();
+                }),
+            ];
         for (field, state) in [
             (Field::Name, &name_state),
             (Field::FolderName, &folder_name_state),
@@ -595,10 +668,13 @@ impl ProjectSettingsPanel {
             folder_name_state,
             orchestrator_model_state,
             orchestrator_error: None,
+            delegation_error: None,
             _input_subscriptions: subscriptions,
             name: Input::new(project.name.clone()),
             folder_id: project.folder_id.clone(),
             project,
+            memo,
+            scroll: gpui::ScrollHandle::new(),
             store,
             folders,
             folder_paths,
@@ -653,6 +729,31 @@ impl ProjectSettingsPanel {
                     }),
             );
         }
+        controls.extend(
+            SPREAD_CHOICES
+                .iter()
+                .enumerate()
+                .map(|(index, (_, id))| ((*id).to_owned(), Field::DelegationSpread(index))),
+        );
+        controls.extend(
+            PARALLEL_CONTROLS
+                .iter()
+                .enumerate()
+                .map(|(index, id)| ((*id).to_owned(), Field::DelegationParallel(index))),
+        );
+        for work in Work::ALL {
+            controls.extend(
+                self.route_choices(work)
+                    .iter()
+                    .enumerate()
+                    .map(|(index, choice)| {
+                        (
+                            route_chip_id(work, route_word(choice)),
+                            Field::DelegationRoute(work, index),
+                        )
+                    }),
+            );
+        }
         controls.extend([
             ("project-settings-create-folder".into(), Field::AddFolder),
             ("project-codex-refresh".into(), Field::AccountRefresh),
@@ -688,6 +789,75 @@ impl ProjectSettingsPanel {
             Err(error) => self.orchestrator_error = Some(error),
         }
         cx.notify();
+    }
+
+    /// Saves a change to this project's delegation policy at once, as the orchestrator
+    /// choice is saved. Its orchestrator is told when it is next created or loads its skill.
+    fn change_delegation(
+        &mut self,
+        change: impl FnOnce(&mut DelegationPolicy),
+        cx: &mut Context<Self>,
+    ) {
+        match self
+            .store
+            .set_project_delegation_policy(&self.project.id, change)
+        {
+            Ok(project) => {
+                self.project = project.clone();
+                self.delegation_error = None;
+                self.error = None;
+                self.status.delegation_saved();
+                cx.emit(ProjectSettingsEvent::Saved(project));
+            }
+            Err(error) => self.delegation_error = Some(error),
+        }
+        cx.notify();
+    }
+
+    fn pick_spread(&mut self, spread: Option<bool>, cx: &mut Context<Self>) {
+        self.change_delegation(move |policy| policy.set_spread_work(spread), cx);
+    }
+
+    /// Inherit, or one worker shell fewer or more than the project's soft target or,
+    /// while it inherits, than Settings'.
+    fn pick_parallel(&mut self, pick: ParallelPick, cx: &mut Context<Self>) {
+        let shells = match pick {
+            ParallelPick::Inherit => None,
+            ParallelPick::Step { more } => {
+                let Some(next) = delegation_choice::step_shells(self.parallel_shells(cx), more)
+                else {
+                    return;
+                };
+                Some(next)
+            }
+        };
+        self.change_delegation(move |policy| policy.set_parallel_shells(shells), cx);
+    }
+
+    /// The soft target the stepper shows: the project's own, or Settings' it inherits.
+    fn parallel_shells(&self, cx: &App) -> u8 {
+        self.project
+            .delegation_policy
+            .parallel_shells
+            .unwrap_or_else(|| {
+                delegation_choice::settings_policy(cx.global::<Settings>()).parallel_shells
+            })
+    }
+
+    fn pick_route(&mut self, work: Work, route: Option<Route>, cx: &mut Context<Self>) {
+        self.change_delegation(move |policy| policy.set_route(work, route), cx);
+    }
+
+    /// A work's chips: Inherit (`None`), then the offered routes and the project's saved
+    /// route if it is another.
+    fn route_choices(&self, work: Work) -> Vec<Option<RouteChoice>> {
+        std::iter::once(None)
+            .chain(
+                delegation_choice::route_choices(self.project.delegation_policy.route(work))
+                    .into_iter()
+                    .map(Some),
+            )
+            .collect()
     }
 
     /// A mode chip: a chat chosen now starts as the chat Settings keep for chat mode.
@@ -753,6 +923,7 @@ impl ProjectSettingsPanel {
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         match self.active {
+            Field::Memo => self.memo.update(cx, |memo, cx| memo.focus(window, cx)),
             Field::Name => self.name_state.read(cx).focus_handle(cx).focus(window, cx),
             Field::OrchestratorModelInput => self
                 .orchestrator_model_state
@@ -779,10 +950,21 @@ impl ProjectSettingsPanel {
         }
     }
 
-    /// Refresh choices without replacing the user's partially edited project name.
+    /// The memo in view, with the keys: a chat's `/memo` **Edit**.
+    pub fn reveal_memo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.active = Field::Memo;
+        self.focus(window, cx);
+        self.scroll.scroll_to_bottom();
+        cx.notify();
+    }
+
+    /// Refresh choices without replacing the user's partially edited project name, and the
+    /// memo when it was saved elsewhere and has no unsaved edits here.
     pub fn refresh_folders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.store.snapshot() {
             Ok(state) => {
+                self.memo
+                    .update(cx, |memo, cx| memo.refresh(&state, window, cx));
                 let focused_folder = match self.active {
                     Field::Folder(index) => index
                         .checked_sub(1)
@@ -864,6 +1046,8 @@ impl ProjectSettingsPanel {
 
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.active {
+            // Return in the memo is a new line, never an activation.
+            Field::Memo => {}
             Field::Name | Field::Save => self.save(window, cx),
             Field::FolderName | Field::AddFolder => self.create_folder(window, cx),
             Field::Folder(index) => {
@@ -900,6 +1084,22 @@ impl ProjectSettingsPanel {
                 }
             }
             Field::OrchestratorModelInput => self.use_typed_model(window, cx),
+            Field::DelegationSpread(index) => {
+                if let Some((spread, _)) = SPREAD_CHOICES.get(index) {
+                    self.pick_spread(*spread, cx);
+                }
+            }
+            Field::DelegationParallel(index) => {
+                if let Some(pick) = PARALLEL_PICKS.get(index) {
+                    self.pick_parallel(*pick, cx);
+                }
+            }
+            Field::DelegationRoute(work, index) => {
+                if let Some(choice) = self.route_choices(work).get(index) {
+                    let route = choice.as_ref().map(|choice| choice.route.clone());
+                    self.pick_route(work, route, cx);
+                }
+            }
         }
     }
 
@@ -1024,7 +1224,11 @@ impl ProjectSettingsPanel {
             _ => None,
         };
         if matches!(event.keystroke.key.as_str(), "escape" | "tab")
-            && input.is_some_and(|state| crate::form_input::is_composing(state, window, cx))
+            && (input.is_some_and(|state| crate::form_input::is_composing(state, window, cx))
+                || self.active == Field::Memo
+                    && self
+                        .memo
+                        .update(cx, |memo, cx| memo.is_composing(window, cx)))
         {
             return;
         }
@@ -1071,6 +1275,9 @@ impl ProjectSettingsPanel {
                     Field::Orchestrator(_)
                         | Field::OrchestratorProvider(_)
                         | Field::OrchestratorModel(_)
+                        | Field::DelegationSpread(_)
+                        | Field::DelegationParallel(_)
+                        | Field::DelegationRoute(..)
                 ) =>
             {
                 let back = matches!(event.keystroke.key.as_str(), "left" | "up");
@@ -1098,11 +1305,21 @@ impl ProjectSettingsPanel {
                             .unwrap_or(1);
                         Field::OrchestratorModel(step(index, count))
                     }
+                    Field::DelegationSpread(index) => {
+                        Field::DelegationSpread(step(index, SPREAD_CHOICES.len()))
+                    }
+                    Field::DelegationParallel(index) => {
+                        Field::DelegationParallel(step(index, PARALLEL_CONTROLS.len()))
+                    }
+                    Field::DelegationRoute(work, index) => {
+                        Field::DelegationRoute(work, step(index, self.route_choices(work).len()))
+                    }
                     other => other,
                 };
                 true
             }
             "s" if event.keystroke.modifiers.platform => {
+                self.memo.update(cx, |memo, cx| memo.save_now(cx));
                 self.save(window, cx);
                 true
             }
@@ -1131,7 +1348,15 @@ impl ProjectSettingsPanel {
                     );
                     order.push(Field::OrchestratorModelInput);
                 }
-                order.push(Field::Save);
+                order.extend((0..SPREAD_CHOICES.len()).map(Field::DelegationSpread));
+                order.extend((0..PARALLEL_CONTROLS.len()).map(Field::DelegationParallel));
+                for work in Work::ALL {
+                    order.extend(
+                        (0..self.route_choices(work).len())
+                            .map(|index| Field::DelegationRoute(work, index)),
+                    );
+                }
+                order.extend([Field::Save, Field::Memo]);
                 let index = order
                     .iter()
                     .position(|field| *field == self.active)
@@ -1186,7 +1411,7 @@ fn model_chip_id(choice: &ModelChoice) -> String {
 }
 
 impl ProjectSettingsPanel {
-    /// One chip of 04 ORCHESTRATOR, drawn as the account chips are.
+    /// One chip of 04 ORCHESTRATOR or 05 DELEGATION, drawn as the account chips are.
     #[allow(clippy::too_many_arguments)]
     fn orchestrator_chip(
         &self,
@@ -1359,6 +1584,218 @@ impl ProjectSettingsPanel {
             rows.push(caption(error.clone(), colors.gold).into_any_element());
         }
         rows
+    }
+
+    /// The rows of 05 DELEGATION, each led by an Inherit chip that names Settings' value:
+    /// "Spread work", the worker shell stepper, and the design and workhorse routes; then
+    /// why a saved value is not shown, and why a choice was not saved.
+    fn delegation_section(
+        &self,
+        focused: bool,
+        colors: Palette,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let group = |id: &str, label: &str| {
+            gpui_kit::base::RadioGroup::new(id.to_owned())
+                .axis(gpui::Axis::Horizontal)
+                .aria_label(label.to_owned())
+                .flex()
+                .flex_wrap()
+                .gap(ui_text::space(6.0))
+        };
+        let caption = |text: String, color: u32| {
+            div()
+                .text_size(ui_text::text(10.0))
+                .text_color(rgb(color))
+                .child(text)
+        };
+        // A row: its title, its controls, and one sentence on what it decides.
+        let row = |title: &str, controls: AnyElement, about: &str| {
+            div()
+                .flex()
+                .flex_col()
+                .min_w_0()
+                .gap(ui_text::space(6.0))
+                .child(
+                    div()
+                        .text_size(ui_text::text(11.0))
+                        .text_color(rgb(colors.text))
+                        .child(title.to_owned()),
+                )
+                .child(controls)
+                .child(caption(about.to_owned(), colors.muted))
+                .into_any_element()
+        };
+        let policy = self.project.delegation_policy.clone();
+        let inherited = delegation_choice::settings_policy(cx.global::<Settings>());
+
+        let mut spread = group(
+            "project-delegation-spread-choices",
+            delegation_choice::SPREAD_TITLE,
+        );
+        for (index, (choice, id)) in SPREAD_CHOICES.into_iter().enumerate() {
+            let label = match choice {
+                None => format!(
+                    "Inherit · {}",
+                    delegation_choice::on_off(inherited.spread_work)
+                ),
+                Some(on) => delegation_choice::on_off(on).to_owned(),
+            };
+            spread = spread.child(self.orchestrator_chip(
+                id.to_owned(),
+                label,
+                policy.spread_work == choice,
+                Field::DelegationSpread(index),
+                focused,
+                colors,
+                move |form, cx| form.pick_spread(choice, cx),
+                cx,
+            ));
+        }
+        let mut rows = vec![row(
+            delegation_choice::SPREAD_TITLE,
+            spread.into_any_element(),
+            "Orchestrators fan independent tasks out to several worker shells at once instead of working through them one by one.",
+        )];
+
+        let shells = self.parallel_shells(cx);
+        let parallel = div()
+            .flex()
+            .flex_wrap()
+            .min_w_0()
+            .items_center()
+            .gap(ui_text::space(6.0))
+            .child(
+                group(
+                    "project-delegation-parallel-choices",
+                    delegation_choice::PARALLEL_TITLE,
+                )
+                .child(self.orchestrator_chip(
+                    PARALLEL_CONTROLS[0].to_owned(),
+                    format!("Inherit · {}", inherited.parallel_shells),
+                    policy.parallel_shells.is_none(),
+                    Field::DelegationParallel(0),
+                    focused,
+                    colors,
+                    |form, cx| form.pick_parallel(ParallelPick::Inherit, cx),
+                    cx,
+                )),
+            )
+            .child(self.parallel_step(false, shells, focused, colors, cx))
+            .child(
+                div()
+                    .flex_none()
+                    .min_w(ui_text::space(28.0))
+                    .text_center()
+                    // Settings' value while inheriting, as the Inherit chip says.
+                    .text_color(rgb(if policy.parallel_shells.is_some() {
+                        colors.cyan
+                    } else {
+                        colors.muted
+                    }))
+                    .child(shells.to_string()),
+            )
+            .child(self.parallel_step(true, shells, focused, colors, cx));
+        rows.push(row(
+            delegation_choice::PARALLEL_TITLE,
+            parallel.into_any_element(),
+            "A soft target for how many worker shells this project's orchestrator runs at once; RiWork starts none by itself.",
+        ));
+
+        for work in Work::ALL {
+            let mut routes = group(
+                &format!("project-delegation-{}-choices", work.key()),
+                work.label(),
+            );
+            for (index, choice) in self.route_choices(work).into_iter().enumerate() {
+                let id = route_chip_id(work, route_word(&choice));
+                let label = match &choice {
+                    None => format!("Inherit · {}", inherited.route(work).label()),
+                    Some(choice) => choice.label.clone(),
+                };
+                let route = choice.map(|choice| choice.route);
+                routes = routes.child(self.orchestrator_chip(
+                    id,
+                    label,
+                    policy.route(work) == route.as_ref(),
+                    Field::DelegationRoute(work, index),
+                    focused,
+                    colors,
+                    move |form, cx| form.pick_route(work, route.clone(), cx),
+                    cx,
+                ));
+            }
+            rows.push(row(
+                work.label(),
+                routes.into_any_element(),
+                delegation_choice::route_description(work),
+            ));
+        }
+        if let Some(note) = policy.unreadable_note("This project's") {
+            rows.push(caption(note, colors.gold).into_any_element());
+        }
+        if let Some(error) = &self.delegation_error {
+            rows.push(caption(error.clone(), colors.gold).into_any_element());
+        }
+        rows
+    }
+
+    /// The worker shell stepper's − or +, disabled past either end of `PARALLEL_SHELLS`.
+    fn parallel_step(
+        &self,
+        more: bool,
+        shells: u8,
+        focused: bool,
+        colors: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let index = if more { 2 } else { 1 };
+        let (id, pick) = (PARALLEL_CONTROLS[index], PARALLEL_PICKS[index]);
+        let (name, symbol) = if more {
+            ("More worker shells", "+")
+        } else {
+            ("Fewer worker shells", "−")
+        };
+        let field = Field::DelegationParallel(index);
+        let active = delegation_choice::step_shells(shells, more).is_some();
+        let ring = focused && self.active == field;
+        let button = behavior::button_content(id, name, symbol)
+            .disabled(!active)
+            .track_focus(&self.control_focus[id])
+            .focus_visible(move |style| style.border_color(rgb(colors.focus)))
+            .flex_none()
+            .min_w(ui_text::space(28.0))
+            .px(ui_text::space(8.0))
+            .py(ui_text::space(7.0))
+            .text_center()
+            .border_1()
+            .border_color(rgb(if ring {
+                colors.focus
+            } else if active {
+                colors.cyan
+            } else {
+                colors.divider
+            }))
+            .bg(rgb(colors.bg))
+            .text_color(rgb(if active { colors.cyan } else { colors.muted }))
+            .map(|button| {
+                crate::controls::native(button, |button| {
+                    let kind = if active {
+                        crate::controls::Button::Secondary
+                    } else {
+                        crate::controls::Button::Disabled
+                    };
+                    crate::controls::button(button, kind, colors)
+                        .py(ui_text::space(4.0))
+                        .hover(move |style| style.bg(rgb(kind.hover(colors))))
+                        .when(ring, |button| button.border_color(rgb(colors.focus)))
+                })
+            })
+            .on_click(cx.listener(move |form, _, _window, cx| {
+                form.active = field;
+                form.pick_parallel(pick, cx);
+            }));
+        crate::form_input::control_element(id, button)
     }
 }
 
@@ -1615,6 +2052,18 @@ impl Render for ProjectSettingsPanel {
                 .text_size(ui_text::text(10.0))
                 .child(ui_text::cased(text.to_owned()))
         };
+        let memo = section_box(8.0)
+            .child(section("07  MEMO", colors))
+            .child(
+                div()
+                    .text_color(rgb(colors.muted))
+                    .text_size(ui_text::text(10.0))
+                    .child(
+                        "Your own Markdown notes for this project, saved as you type and shared \
+                         with RiWork on your phone. Type /memo in one of its chats to insert them.",
+                    ),
+            )
+            .child(self.memo.clone());
         let identity = section_box(12.0)
             .child(section("01  IDENTITY", colors))
             .child(label("Project name"))
@@ -1752,6 +2201,16 @@ impl Render for ProjectSettingsPanel {
                     .child("How this project's orchestrator runs when it is next created. Inherit follows Settings > Agent sessions; the others apply to this project only. The orchestrator that runs keeps its mode, provider and model until it is closed. Selection saves immediately."),
             )
             .children(orchestrator);
+        let delegation = self.delegation_section(focused, colors, cx);
+        let delegation = section_box(12.0)
+            .child(section("05  DELEGATION", colors))
+            .child(
+                div()
+                    .text_size(ui_text::text(10.0))
+                    .text_color(rgb(colors.muted))
+                    .child("This project's orchestrator follows Settings' delegation policy except where you choose here. It is told the result when it is next created or loads its skill."),
+            )
+            .children(delegation);
         let save_ring = focused && self.active == Field::Save;
         let save = div()
             .flex()
@@ -1814,7 +2273,7 @@ impl Render for ProjectSettingsPanel {
                 })),
             );
         let locations = section_box(12.0)
-            .child(section("05  LOCATIONS", colors))
+            .child(section("06  LOCATIONS", colors))
             .child(label("Project root"))
             .child(
                 div()
@@ -1872,6 +2331,7 @@ impl Render for ProjectSettingsPanel {
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
                         .px(ui_text::space(crate::controls::LIST_MARGIN))
                         .pb(ui_text::space(crate::controls::PANEL_INSET))
                         .child(
@@ -1886,8 +2346,10 @@ impl Render for ProjectSettingsPanel {
                                 .child(folder)
                                 .child(account)
                                 .child(orchestrator)
+                                .child(delegation)
                                 .child(save)
-                                .child(locations),
+                                .child(locations)
+                                .child(memo),
                         ),
                 )
                 .into_any_element();
@@ -1900,6 +2362,7 @@ impl Render for ProjectSettingsPanel {
             .key_context("ProjectSettings")
             .capture_key_down(cx.listener(Self::key_down))
             .overflow_y_scroll()
+            .track_scroll(&self.scroll)
             .bg(rgb(colors.bg))
             .text_color(rgb(colors.text))
             .font_family(ui_text::ui_family())
@@ -1970,8 +2433,10 @@ impl Render for ProjectSettingsPanel {
                     .child(folder)
                     .child(account)
                     .child(orchestrator)
+                    .child(delegation)
                     .child(save)
-                    .child(locations),
+                    .child(locations)
+                    .child(memo),
             )
             .into_any_element()
     }
@@ -2440,6 +2905,9 @@ mod tests {
         assert_eq!(status.message(), "Codex account saved");
         status.edited();
         assert_eq!(status.message(), SAVE_PROMPT);
+        // Nor does a delegation choice.
+        status.delegation_saved();
+        assert_eq!(status.message(), SAVE_PROMPT);
     }
 
     /// Each orchestrator choice is saved the moment it is picked, and a Project Settings
@@ -2625,6 +3093,278 @@ mod tests {
             );
         });
         assert!(matches!(saved(), ProjectOrchestrator::Unreadable(_)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Each delegation choice is saved for this project the moment it is picked, a
+    /// Project Settings opened afresh shows it chosen, and Inherit clears it again. The
+    /// Inherit chips name Settings' values.
+    #[gpui::test]
+    fn each_delegation_choice_saves_at_once_for_this_project_and_reopens_as_itself(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::form_input::{test_ax_node, test_turn, test_window};
+        use gpui_kit::test::TestWindowExt as _;
+        let dir = std::env::temp_dir().join(format!(
+            "riwork-project-delegation-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let (root, other_root) = (dir.join("demo"), dir.join("other"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&other_root).unwrap();
+        let store = Store::open(dir.join("state")).unwrap();
+        let project = store.add_project(&root, Some("Demo")).unwrap();
+        let other = store.add_project(&other_root, Some("Other")).unwrap();
+        // No account discovery in a test.
+        cx.update(|app| {
+            app.set_global(CodexAccountsState {
+                snapshot: None,
+                pending: true,
+            })
+        });
+        // Settings choose six worker shells and Muse as the workhorse; the rest is built in.
+        let mut settings = Settings::default();
+        settings.delegation_policy.set_parallel_shells(Some(6));
+        settings
+            .delegation_policy
+            .set_route(Work::Workhorse, Some(Route::recommended(Provider::Muse)));
+        let open = |cx: &mut gpui::TestAppContext| {
+            let store = store.clone();
+            let project = store
+                .snapshot()
+                .unwrap()
+                .project(&project.id)
+                .unwrap()
+                .clone();
+            let (handle, panel) = test_window(cx, move |window, cx| {
+                ProjectSettingsPanel::new(store, project, window, cx)
+            });
+            let settings = settings.clone();
+            cx.update(|app| app.set_global(settings));
+            // The section sits below the first screen of the test window.
+            test_turn(cx, handle, |window, app| {
+                window.scroll(
+                    "project-folder-unfiled",
+                    gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-4000.))),
+                    app,
+                );
+            });
+            (handle, panel)
+        };
+        let saved = |id: &str| {
+            store
+                .snapshot()
+                .unwrap()
+                .project(id)
+                .unwrap()
+                .delegation_policy
+                .clone()
+        };
+        let checked = |window: &gpui::Window, app: &App, id: &str| {
+            test_ax_node(window, app, id.to_owned()).toggled()
+                == Some(gpui::accesskit::Toggled::True)
+        };
+        let reopened_shows = |cx: &mut gpui::TestAppContext, ids: &[&str]| {
+            let (handle, _) = open(cx);
+            let ids: Vec<String> = ids.iter().map(|id| (*id).to_owned()).collect();
+            test_turn(cx, handle, move |window, app| {
+                for id in &ids {
+                    assert!(checked(window, app, id), "{id} is shown chosen");
+                }
+            });
+        };
+        let inherit = [
+            "project-delegation-spread-inherit",
+            "project-delegation-parallel-inherit",
+            "project-delegation-design-inherit",
+            "project-delegation-workhorse-inherit",
+        ];
+
+        let (handle, panel) = open(cx);
+        test_turn(cx, handle, |window, app| {
+            // A project that never chose inherits each field, and says what it inherits.
+            for (id, label) in inherit.into_iter().zip([
+                "Inherit · On",
+                "Inherit · 6",
+                "Inherit · Claude · opus",
+                "Inherit · Muse · muse-wonder-full-1.0",
+            ]) {
+                assert!(checked(window, app, id), "{id}");
+                assert_eq!(test_ax_node(window, app, id).label(), Some(label));
+            }
+            for id in [
+                "project-delegation-spread-off",
+                "project-delegation-parallel-more",
+                "project-delegation-design-codex",
+            ] {
+                assert!(window.find(id).visible(), "{id} is drawn in view");
+            }
+            assert!(window.try_find("project-delegation-design-saved").is_none());
+            window.click("project-delegation-spread-off", app);
+        });
+        assert_eq!(saved(&project.id).spread_work, Some(false));
+        test_turn(cx, handle, |_, app| {
+            assert_eq!(panel.read(app).status.message(), "Delegation policy saved");
+        });
+        reopened_shows(cx, &["project-delegation-spread-off"]);
+
+        // The stepper starts from Settings' six while inheriting.
+        test_turn(cx, handle, |window, app| {
+            window.click("project-delegation-parallel-more", app)
+        });
+        assert_eq!(saved(&project.id).parallel_shells, Some(7));
+        test_turn(cx, handle, |window, app| {
+            assert!(!checked(window, app, "project-delegation-parallel-inherit"));
+            window.click("project-delegation-parallel-fewer", app);
+        });
+        test_turn(cx, handle, |window, app| {
+            window.click("project-delegation-parallel-fewer", app)
+        });
+        assert_eq!(saved(&project.id).parallel_shells, Some(5));
+        let (reopened, _) = open(cx);
+        test_turn(cx, reopened, |window, app| {
+            assert!(!checked(window, app, "project-delegation-parallel-inherit"));
+        });
+
+        test_turn(cx, handle, |window, app| {
+            window.click("project-delegation-design-codex", app)
+        });
+        test_turn(cx, handle, |window, app| {
+            window.click("project-delegation-workhorse-claude", app)
+        });
+        let policy = saved(&project.id);
+        assert_eq!(policy.design, Some(Route::recommended(Provider::Codex)));
+        assert_eq!(policy.workhorse, Some(Route::recommended(Provider::Claude)));
+        reopened_shows(
+            cx,
+            &[
+                "project-delegation-spread-off",
+                "project-delegation-design-codex",
+                "project-delegation-workhorse-claude",
+            ],
+        );
+        // For this project only.
+        assert!(saved(&other.id).is_empty());
+
+        // Inherit again clears each field.
+        for id in inherit {
+            test_turn(cx, handle, |window, app| window.click(id, app));
+        }
+        assert!(saved(&project.id).is_empty(), "{:?}", saved(&project.id));
+        reopened_shows(cx, &inherit);
+
+        // A route the chips do not offer is shown chosen as saved, and a value this build
+        // cannot read is named while Inherit stands in for it.
+        store
+            .set_project_delegation_policy(&project.id, |policy| {
+                policy.set_route(
+                    Work::Design,
+                    Some(Route {
+                        provider: Provider::Claude,
+                        model: "fable".into(),
+                    }),
+                );
+                policy
+                    .unreadable
+                    .insert("spread_work".into(), serde_json::json!("often"));
+            })
+            .unwrap();
+        let (handle, panel) = open(cx);
+        test_turn(cx, handle, |window, app| {
+            assert!(checked(window, app, "project-delegation-design-saved"));
+            assert_eq!(
+                test_ax_node(window, app, "project-delegation-design-saved").label(),
+                Some("Claude · fable · saved")
+            );
+            assert!(checked(window, app, "project-delegation-spread-inherit"));
+            let note = panel
+                .read(app)
+                .project
+                .delegation_policy
+                .unreadable_note("This project's")
+                .unwrap();
+            assert!(note.contains(r#"spread_work = "often""#), "{note}");
+            // Choosing replaces what could not be read.
+            window.click("project-delegation-spread-on", app);
+        });
+        let policy = saved(&project.id);
+        assert_eq!(policy.spread_work, Some(true));
+        assert!(policy.unreadable.is_empty());
+
+        // Native draws the same controls, which save the same way.
+        let before = ui_text::set_for_tests(1.0, ui_text::Face::System);
+        let (handle, _) = open(cx);
+        test_turn(cx, handle, |window, app| {
+            assert!(checked(window, app, "project-delegation-spread-on"));
+            assert!(checked(window, app, "project-delegation-design-saved"));
+            assert_eq!(
+                test_ax_node(window, app, "project-delegation-parallel-inherit").label(),
+                Some("Inherit · 6")
+            );
+            assert!(window.find("project-delegation-parallel-more").visible());
+            window.click("project-delegation-workhorse-codex", app);
+        });
+        ui_text::set_for_tests(before.0, before.1);
+        assert_eq!(
+            saved(&project.id).workhorse,
+            Some(Route::recommended(Provider::Codex))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The memo is the last section: a chat's Edit brings it into view with the keys, typed
+    /// text saves by itself for this project only, and a save from the phone shows on the next
+    /// refresh.
+    #[gpui::test]
+    fn the_memo_section_saves_itself_and_follows_the_phone(cx: &mut gpui::TestAppContext) {
+        use crate::form_input::{test_turn, test_window};
+        use gpui_kit::test::TestWindowExt as _;
+        let dir =
+            std::env::temp_dir().join(format!("riwork-project-memo-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("demo")).unwrap();
+        std::fs::create_dir_all(dir.join("other")).unwrap();
+        let store = Store::open(dir.join("state")).unwrap();
+        let project = store.add_project(dir.join("demo"), Some("Demo")).unwrap();
+        let other = store.add_project(dir.join("other"), Some("Other")).unwrap();
+        cx.update(|app| {
+            app.set_global(CodexAccountsState {
+                snapshot: None,
+                pending: true,
+            })
+        });
+        let (handle, panel) = {
+            let (store, project) = (store.clone(), project.clone());
+            test_window(cx, move |window, cx| {
+                ProjectSettingsPanel::new(store, project, window, cx)
+            })
+        };
+        test_turn(cx, handle, |window, app| {
+            assert!(window.try_find("project-memo-editor").is_some());
+            panel.update(app, |panel, cx| panel.reveal_memo(window, cx));
+        });
+        test_turn(cx, handle, |window, app| {
+            assert!(panel.read(app).active == Field::Memo);
+            // Scrolled into view: a click reaches it (one off screen panics).
+            window.click("project-memo-editor", app);
+            window.input("Ship it", app);
+        });
+        cx.executor().advance_clock(crate::memo_editor::SAVE_DELAY);
+        cx.run_until_parked();
+        let state = store.snapshot().unwrap();
+        assert_eq!(state.project_memo(&project.id).text, "Ship it");
+        assert!(state.project_memo(&other.id).is_empty());
+        // Typing in the memo is not an unsaved name or folder edit.
+        assert_eq!(panel.read_with(cx, |panel, _| panel.status.pending), false);
+
+        store
+            .set_project_memo(&project.id, "From the phone")
+            .unwrap();
+        test_turn(cx, handle, |window, app| {
+            panel.update(app, |panel, cx| panel.refresh_folders(window, cx));
+        });
+        panel.read_with(cx, |panel, cx| {
+            assert_eq!(panel.memo.read(cx).text(), "From the phone");
+        });
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -492,6 +492,129 @@ fn an_unreadable_project_orchestrator_choice_is_kept_shown_and_inherits() {
 }
 
 #[test]
+fn a_project_delegation_policy_is_its_own_field_by_field_and_older_projects_choose_nothing() {
+    use crate::delegation::{Delegation, DelegationPolicy, Route, Work, resolve};
+    use crate::provider::Provider;
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let root = fixture.directory("main");
+    let other_root = fixture.directory("other");
+    let id = Uuid::new_v4().to_string();
+    let other = Uuid::new_v4().to_string();
+    // Projects from before the policy, and one whose policy another build wrote.
+    let document = serde_json::json!({
+        "schema_version": 1,
+        "active_project_id": id,
+        "projects": [
+            {"id": id, "name": "Main", "root": root, "created_at": 7},
+            {"id": other, "name": "Other", "root": other_root, "created_at": 8,
+             "delegation_policy": {"spread_work": "maybe", "parallel_shells": 64,
+                                   "future_field": [1, 2]}},
+        ],
+        "worktrees": [],
+        "tasks": [],
+    });
+    let state_path = store.dir.join("state.json");
+    fs::write(&state_path, serde_json::to_vec(&document).unwrap()).unwrap();
+    let saved = || -> Value { serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap() };
+
+    let state = store.snapshot().unwrap();
+    assert!(state.project(&id).unwrap().delegation_policy.is_empty());
+    let odd = &state.project(&other).unwrap().delegation_policy;
+    assert_eq!(odd.spread_work, None);
+    assert_eq!(odd.parallel_shells, None);
+    assert_eq!(odd.unreadable.len(), 3);
+    assert_eq!(
+        resolve(&DelegationPolicy::default(), Some(odd)),
+        Delegation::built_in()
+    );
+
+    // A choice saves, reopens as itself, and touches only its project and field.
+    let changed = store
+        .set_project_delegation_policy("Main", |policy| policy.set_spread_work(Some(false)))
+        .unwrap();
+    assert_eq!(changed.delegation_policy.spread_work, Some(false));
+    store
+        .set_project_delegation_policy(&id, |policy| {
+            policy.set_route(Work::Workhorse, Some(Route::recommended(Provider::Claude)))
+        })
+        .unwrap();
+    let reopened = fixture.store().snapshot().unwrap();
+    let main = &reopened.project(&id).unwrap().delegation_policy;
+    assert_eq!(main.spread_work, Some(false));
+    assert_eq!(main.workhorse, Some(Route::recommended(Provider::Claude)));
+    assert_eq!(main.parallel_shells, None);
+    assert_eq!(
+        saved()["projects"][0]["delegation_policy"],
+        serde_json::json!({"spread_work": false, "workhorse": {"provider": "claude", "model": "opus"}})
+    );
+    // What another build wrote stays as written through another project's change.
+    assert_eq!(
+        saved()["projects"][1]["delegation_policy"],
+        document["projects"][1]["delegation_policy"]
+    );
+    // Over Settings, the project's choices win field by field.
+    let settings = DelegationPolicy {
+        parallel_shells: Some(7),
+        spread_work: Some(true),
+        ..Default::default()
+    };
+    let scoped = resolve(&settings, Some(main));
+    assert!(!scoped.spread_work);
+    assert_eq!(scoped.parallel_shells, 7);
+    assert_eq!(scoped.workhorse, Route::recommended(Provider::Claude));
+    assert_eq!(scoped.design, Work::Design.built_in());
+
+    // An unchanged value writes nothing; other per-project choices are left alone.
+    let unchanged = fs::read(&state_path).unwrap();
+    store
+        .set_project_delegation_policy(&id, |policy| policy.set_spread_work(Some(false)))
+        .unwrap();
+    assert_eq!(fs::read(&state_path).unwrap(), unchanged);
+    store.set_project_orchestrator_wakes(&id, true).unwrap();
+    store.set_project_notifications(&other, true).unwrap();
+    let reopened = fixture.store().snapshot().unwrap();
+    assert_eq!(
+        reopened.project(&id).unwrap().delegation_policy.spread_work,
+        Some(false)
+    );
+    assert_eq!(
+        saved()["projects"][1]["delegation_policy"],
+        document["projects"][1]["delegation_policy"]
+    );
+    assert!(
+        store
+            .set_project_delegation_policy("missing", |policy| policy.set_spread_work(None))
+            .is_err()
+    );
+    // Choosing over an unreadable value replaces just it; following Settings again
+    // leaves an empty policy.
+    let chosen = store
+        .set_project_delegation_policy(&other, |policy| policy.set_parallel_shells(Some(3)))
+        .unwrap();
+    assert_eq!(chosen.delegation_policy.parallel_shells, Some(3));
+    assert_eq!(
+        saved()["projects"][1]["delegation_policy"]["parallel_shells"],
+        3
+    );
+    assert_eq!(
+        saved()["projects"][1]["delegation_policy"]["spread_work"],
+        "maybe"
+    );
+    let inherited = store
+        .set_project_delegation_policy(&id, |policy| {
+            policy.set_spread_work(None);
+            policy.set_route(Work::Workhorse, None);
+        })
+        .unwrap();
+    assert!(inherited.delegation_policy.is_empty());
+    assert_eq!(
+        saved()["projects"][0]["delegation_policy"],
+        serde_json::json!({})
+    );
+}
+
+#[test]
 fn concurrent_notification_and_display_updates_preserve_each_other() {
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -2000,3 +2123,157 @@ fn snapshot_reuses_the_last_parse_until_the_state_file_changes() {
 
 #[path = "store_scan_tests.rs"]
 mod scan_tests;
+
+#[test]
+fn a_project_memo_round_trips_and_stays_with_its_project() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let main = store
+        .add_project(fixture.directory("memo-main"), Some("Main"))
+        .unwrap();
+    let other = store
+        .add_project(fixture.directory("memo-other"), Some("Other"))
+        .unwrap();
+    assert_eq!(
+        store.snapshot().unwrap().project_memo(&main.id),
+        ProjectMemo::default()
+    );
+
+    let before = now();
+    let (id, saved) = store
+        .set_project_memo("Main", "# Plan\r\n- ship it\u{1b}\n")
+        .unwrap();
+    assert_eq!(id, main.id);
+    assert_eq!(saved.text, "# Plan\n- ship it\n");
+    assert!(saved.updated_at >= before);
+    store.set_project_memo(&other.id, "other notes").unwrap();
+
+    let reopened = fixture.store().snapshot().unwrap();
+    assert_eq!(reopened.project_memo(&main.id), saved);
+    assert_eq!(reopened.project_memo(&other.id).text, "other notes");
+    // The memo is not part of the project record that lists and agents are given.
+    let saved_json = read_state_json(&store);
+    assert!(saved_json["projects"][0].get("memo").is_none());
+    assert_eq!(
+        saved_json["project_memos"][&main.id]["text"],
+        "# Plan\n- ship it\n"
+    );
+
+    // Editing one project's memo leaves the other's text and time alone.
+    let other_saved = reopened.project_memo(&other.id);
+    store.set_project_memo(&main.id, "changed").unwrap();
+    assert_eq!(
+        store.snapshot().unwrap().project_memo(&other.id),
+        other_saved
+    );
+
+    // The same text writes nothing and keeps its time.
+    let state_path = store.dir.join("state.json");
+    let unchanged = fs::read(&state_path).unwrap();
+    let (_, same) = store.set_project_memo(&main.id, "changed").unwrap();
+    assert_eq!(fs::read(&state_path).unwrap(), unchanged);
+    assert_eq!(same, store.snapshot().unwrap().project_memo(&main.id));
+    assert!(store.set_project_memo("missing", "x").is_err());
+
+    // Clearing is a save like any other and is not undone by the file's old map.
+    let (_, cleared) = store.set_project_memo(&main.id, "").unwrap();
+    assert!(cleared.is_empty());
+    assert_eq!(
+        read_state_json(&store)["project_memos"][&main.id]["text"],
+        ""
+    );
+    assert!(
+        fixture
+            .store()
+            .snapshot()
+            .unwrap()
+            .project_memo(&main.id)
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_project_memo_over_the_cap_is_refused_and_the_saved_one_kept() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let project = store
+        .add_project(fixture.directory("memo-cap"), Some("Cap"))
+        .unwrap();
+    let full = "x".repeat(project_memo::MAX_BYTES);
+    let (_, saved) = store.set_project_memo(&project.id, &full).unwrap();
+    assert_eq!(saved.text.len(), project_memo::MAX_BYTES);
+
+    let error = store
+        .set_project_memo(&project.id, &format!("{full}y"))
+        .unwrap_err();
+    assert!(error.starts_with("too_large: "), "{error}");
+    // Bytes, not characters: 10,923 three-byte characters are over.
+    let heavy = "\u{65e5}".repeat(project_memo::MAX_BYTES / 3 + 1);
+    assert!(store.set_project_memo(&project.id, &heavy).is_err());
+    // Controls removed by normalization do not count against the cap.
+    let padded = format!("{full}\u{0}\u{1b}");
+    assert!(store.set_project_memo(&project.id, &padded).is_ok());
+    assert_eq!(store.snapshot().unwrap().project_memo(&project.id), saved);
+}
+
+#[test]
+fn a_state_from_before_memos_loads_empty_ones_and_keeps_memos_through_other_writes() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let root = fixture.directory("memo-legacy");
+    write_state_json(
+        &store,
+        &serde_json::json!({
+            "schema_version": 1,
+            "projects": [{"id": "p1", "name": "Legacy", "root": root, "created_at": 1}],
+            "worktrees": [],
+            "tasks": [],
+        }),
+    );
+    let state = store.snapshot().unwrap();
+    assert!(state.project_memos.is_empty());
+    assert!(state.project_memo("p1").is_empty());
+    assert_eq!(state.project_memo("p1").updated_at, 0);
+
+    store.set_project_memo("p1", "kept").unwrap();
+    store.rename_project("p1", "Renamed").unwrap();
+    store.add_task("p1", "A task", "").unwrap();
+    assert_eq!(store.snapshot().unwrap().project_memo("p1").text, "kept");
+
+    // An entry missing its fields (or carrying a newer build's) still reads.
+    let mut saved = read_state_json(&store);
+    saved["project_memos"]["p1"] = serde_json::json!({"future": 1});
+    write_state_json(&store, &saved);
+    assert!(store.snapshot().unwrap().project_memo("p1").is_empty());
+}
+
+#[test]
+fn concurrent_memo_saves_end_with_one_whole_text() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let project = store
+        .add_project(fixture.directory("memo-race"), Some("Race"))
+        .unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let handles: Vec<_> = ["from the desktop", "from the phone"]
+        .into_iter()
+        .map(|text| {
+            let store = fixture.store();
+            let barrier = barrier.clone();
+            let id = project.id.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                store.set_project_memo(&id, text).unwrap();
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    // Last write wins: one of the two, never a mix.
+    let text = store.snapshot().unwrap().project_memo(&project.id).text;
+    assert!(
+        text == "from the desktop" || text == "from the phone",
+        "{text}"
+    );
+}

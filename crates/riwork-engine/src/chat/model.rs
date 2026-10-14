@@ -497,6 +497,9 @@ pub enum MessagePhase {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Presentation {
+    /// Exact provider-reported delegation, additive for older transcript readers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<super::subagents::Subagent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<MessagePhase>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -508,7 +511,10 @@ pub struct Presentation {
 }
 impl Presentation {
     pub fn is_empty(&self) -> bool {
-        self.phase.is_none() && self.images.is_empty() && self.attachments.is_empty()
+        self.subagent.is_none()
+            && self.phase.is_none()
+            && self.images.is_empty()
+            && self.attachments.is_empty()
     }
 }
 

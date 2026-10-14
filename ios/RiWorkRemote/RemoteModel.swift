@@ -43,6 +43,9 @@ enum ConnectionState: Equatable {
     }
 
     var shells: [RemoteSession] = [] { didSet { inventoryStamp &+= 1 } }
+    var workerTasks: [RemoteTask] = []
+    var workerShellsCheckedAt: Date?
+    var workerShellListFailed = false
     var orchestrators: [RemoteSession] = []
     var output = "" { didSet { hasOutput = !output.isEmpty } }
     /// Whether `output` holds anything. Views read this rather than `output`, which is a new string with every live answer and would
@@ -124,6 +127,8 @@ enum ConnectionState: Equatable {
     var projectBlockedID: String?
     /// What has been read of the chats that were opened, by chat id.
     var chatConversations: [String: ChatConversation] = [:]
+    /// The `/` commands and `@` files of the chats whose composer opened a list (RemoteModel+Suggestions.swift).
+    var composerCatalogs = ComposerCatalogCache()
     /// The one-time notes already said for a chat in this run ("chat id|note"), so a note survives its conversation being let go.
     @ObservationIgnored var chatNotesSaid: Set<String> = []
     /// A `chat.create` is on its way: a second one is refused until it answers.
@@ -165,6 +170,15 @@ enum ConnectionState: Equatable {
     @ObservationIgnored let activityRefreshInterval: Duration
     /// When each list was last read, by a refresh of any kind, so a view that appears right after one does not read it again at once.
     @ObservationIgnored var lastListRead: [ActivityScope: ContinuousClock.Instant] = [:]
+    // MARK: Project memos (pipeline in RemoteModel+Memo.swift)
+    /// The memo editor that is up, if any: what it shows and how its saving stands.
+    var memoEditor: ProjectMemoEditor?
+    /// `/memo`'s preview over a chat, while it is up.
+    var memoPreview: MemoPreviewState?
+    /// The wait for typing to pause before a save (never the save itself).
+    @ObservationIgnored var memoDebounce: Task<Void, Never>?
+    /// How long typing in the memo must pause before a save (tests make it short).
+    @ObservationIgnored var memoSaveDelay: Duration = .milliseconds(800)
     // MARK: Creating projects (pipeline in RemoteModel+NewProject.swift)
     /// Whether the desktop understands `project.create`. Learned from the first call, reset by every new connection.
     var projectCreation: ProjectCreationSupport = .unknown
@@ -625,6 +639,7 @@ enum ConnectionState: Equatable {
             guard generation == token else { return }
             state = .connected
             await learnDesktopFeatures(token: token)
+            memoConnected(token: token)
             startThemeSync(token: token)
             try await refresh(token: token)
             guard generation == token else { return }
@@ -676,7 +691,7 @@ enum ConnectionState: Equatable {
     }
     private func clearSnapshot() {
         sharedTabs = nil
-        projects = []; touchedProjects = [:]; worktrees = []; shells = []; orchestrators = []; loadedProjectID = nil; resetOutput(); snapshotStale = true
+        projects = []; touchedProjects = [:]; worktrees = []; shells = []; workerTasks = []; workerShellsCheckedAt = nil; workerShellListFailed = false; orchestrators = []; loadedProjectID = nil; resetOutput(); snapshotStale = true
         chats = []; projectChatID = nil; projectBlockedID = nil; chatConversations = [:]
         // Another desktop: its Global screen is not up (the desktop list is), so the next selection is a project's.
         scope = .project; clearDashboard()
@@ -755,7 +770,7 @@ enum ConnectionState: Equatable {
             }
             resetOutput(); draft = ""; deliveryNotice = nil
             restoreTabPending = true
-            sharedTabs = nil; worktrees = []; shells = []; loadedProjectID = nil; snapshotStale = true
+            sharedTabs = nil; worktrees = []; shells = []; workerTasks = []; workerShellsCheckedAt = nil; workerShellListFailed = false; loadedProjectID = nil; snapshotStale = true
             chats = []; projectChatID = nil; projectBlockedID = nil
             clearOrchestratorNotice()
             if state == .connected {
@@ -786,6 +801,7 @@ enum ConnectionState: Equatable {
         guard generation == token, projectID == id else { return }
         if let tabs = listing.tabs { acceptSharedTabs(tabs) }
         worktrees = listing.worktrees; shells = listing.shells; loadedProjectID = id
+        workerShellsCheckedAt = .now; workerShellListFailed = false
         lastListRead[.sessions] = .now
         if let talks = listing.chats { installChats(talks, project: id) }
         // A shared list that could not be read keeps the restore pending for the next listing that succeeds.

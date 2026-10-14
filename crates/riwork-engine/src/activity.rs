@@ -509,6 +509,26 @@ impl BoundCursor {
 }
 
 impl ActivityTracker {
+    /// Latest model explicitly reported by each exactly bound primary Codex
+    /// rollout. Reuses the incremental read; no scan or process is added.
+    pub fn reported_models(&self) -> BTreeMap<String, String> {
+        self.cursors
+            .iter()
+            .filter_map(|(id, cursor)| {
+                (cursor.rollout.valid_session
+                    && cursor.rollout.caught_up
+                    && !cursor.rollout.malformed)
+                    .then(|| {
+                        cursor
+                            .rollout
+                            .model
+                            .clone()
+                            .map(|model| (id.clone(), model))
+                    })
+                    .flatten()
+            })
+            .collect()
+    }
     pub fn at(home: PathBuf) -> Self {
         Self {
             home,
@@ -893,6 +913,14 @@ struct LogPayload {
     source: Option<LogSource>,
     parent_thread_id: Option<String>,
     agent_role: Option<String>,
+    model: Option<ReportedModel>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ReportedModel {
+    Text(String),
+    Other(IgnoredAny),
 }
 
 #[derive(Deserialize)]
@@ -924,6 +952,7 @@ fn unix_from_rfc3339(text: &str) -> Option<u64> {
 
 #[derive(Clone)]
 struct RolloutCursor {
+    model: Option<String>,
     thread_id: String,
     offset: u64,
     partial: Vec<u8>,
@@ -949,6 +978,7 @@ impl RolloutCursor {
     fn new(thread_id: String) -> Self {
         Self {
             thread_id,
+            model: None,
             offset: 0,
             partial: Vec::new(),
             skipping: false,
@@ -1156,6 +1186,18 @@ impl RolloutCursor {
             self.active_turn = None;
             self.completed_turn = None;
             return Applied::Meta;
+        }
+        if record.kind == "turn_context" && self.valid_session {
+            self.model = record.payload.model.and_then(|value| match value {
+                ReportedModel::Text(model)
+                    if (1..=120).contains(&model.len())
+                        && model.bytes().all(|b| b.is_ascii_graphic()) =>
+                {
+                    Some(model)
+                }
+                _ => None,
+            });
+            return Applied::Other;
         }
         if record.kind == "event_msg" {
             let Some(turn) = record.payload.turn_id.filter(|id| !id.is_empty()) else {
@@ -1960,6 +2002,7 @@ mod tests {
             notify_on_agent_done: false,
             wake_orchestrators_on_agent_done: false,
             orchestrator: Default::default(),
+            delegation_policy: Default::default(),
             codex_account: crate::store::ProjectCodexAccount::default(),
         });
         for (id, project, path) in [
@@ -2461,5 +2504,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(state(&mut tracker, 4_600).activity, AgentActivity::Waiting);
+    }
+    #[test]
+    fn worker_model_is_the_last_explicit_model_of_the_bound_primary_rollout() {
+        let mut cursor = RolloutCursor::new("thread".into());
+        cursor.apply(br#"{"type":"turn_context","payload":{"model":"unbound-model"}}"#);
+        assert_eq!(cursor.model, None);
+        cursor.apply(br#"{"type":"session_meta","payload":{"id":"thread","source":"cli"}}"#);
+        cursor.apply(br#"{"type":"turn_context","payload":{"model":"gpt-first"}}"#);
+        assert_eq!(cursor.model.as_deref(), Some("gpt-first"));
+        cursor.apply(br#"{"type":"turn_context","payload":{"model":"gpt-second"}}"#);
+        assert_eq!(cursor.model.as_deref(), Some("gpt-second"));
+        cursor.apply(br#"{"type":"turn_context","payload":{"model":{"future":"shape"}}}"#);
+        assert_eq!(cursor.model, None);
+        assert!(
+            !cursor.malformed,
+            "an unknown model shape cannot corrupt activity"
+        );
     }
 }

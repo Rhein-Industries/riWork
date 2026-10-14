@@ -413,6 +413,7 @@ public enum ChatItemBody: Sendable, Equatable, Codable {
 
 /// One entry of the transcript (`Item`).
 public struct ChatItem: Codable, Sendable, Equatable, Identifiable {
+    public var subagent: ChatSubagent? = nil
     /// Unique within the chat.
     public var id: String
     public var turnID: String?
@@ -421,12 +422,13 @@ public struct ChatItem: Codable, Sendable, Equatable, Identifiable {
     public init(id: String, turnID: String? = nil, status: ChatItemStatus = .inProgress, body: ChatItemBody) {
         self.id = id; self.turnID = turnID; self.status = status; self.body = body
     }
-    private enum Keys: String, CodingKey { case id, status, body, elided; case turnID = "turn_id" }
+    private enum Keys: String, CodingKey { case id, status, body, elided, presentation; case turnID = "turn_id" }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         id = try c.decode(String.self, forKey: .id)
         turnID = try c.decodeIfPresent(String.self, forKey: .turnID)
         status = c.lenient(ChatItemStatus.self, forKey: .status, default: .completed)
+        subagent = (try? c.decode(JSONValue.self, forKey: .presentation)).flatMap { try? $0["subagent"].decode(ChatSubagent.self) }
         // A snapshot row the relay elided keeps a note as its body, for older phones, and says what it was under `elided`: shown as
         // the compact row, as `item_elided` is.
         if let elided = c.tolerant(ChatElidedEvent.self, forKey: .elided) {
@@ -441,6 +443,7 @@ public struct ChatItem: Codable, Sendable, Equatable, Identifiable {
         try c.encodeIfPresent(turnID, forKey: .turnID)
         try c.encode(status, forKey: .status)
         try c.encode(body, forKey: .body)
+        if let subagent { try c.encode(["subagent": subagent], forKey: .presentation) }
     }
 }
 

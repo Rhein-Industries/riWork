@@ -1930,3 +1930,52 @@ fn live_model_discovery_lists_models_without_creating_a_conversation() {
     assert_eq!(sessions, 0, "no conversation was written");
     eprintln!("discovered {} Muse models without a session", models.len());
 }
+
+#[test]
+fn reported_subagent_items_keep_structured_lifecycle_and_generic_tools_do_not() {
+    let fake = Fake::new(&[]);
+    let config = fake.config(Provider::Muse);
+    let (sender, events) = mpsc::channel();
+    let mut session = Session::new(&config, sender);
+    session.item(&json!({"itemId":"child","kind":"subagent","revision":1,"role":"Reviewer","objective":"Review changes","status":"inProgress"}),false);
+    session.item(&json!({"itemId":"child","kind":"subagent","revision":2,"role":"Reviewer","objective":"Review changes","status":"completed","result":{"summary":"Reviewed"}}),true);
+    session.item(&json!({"itemId":"tool","kind":"toolCall","tool":"Reviewer","args":"{\"objective\":\"Review changes\"}","status":"completed"}),true);
+    let events: Vec<_> = events.try_iter().collect();
+    let items: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => Some(item),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        items[0].presentation.subagent.as_ref().unwrap().status,
+        super::super::subagents::RunStatus::Running
+    );
+    let done = items
+        .iter()
+        .find(|item| item.id == "child" && item.status == ItemStatus::Completed)
+        .unwrap();
+    assert_eq!(
+        done.presentation
+            .subagent
+            .as_ref()
+            .unwrap()
+            .summary
+            .as_deref(),
+        Some("Reviewed")
+    );
+    assert_eq!(
+        done.presentation.subagent.as_ref().unwrap().status,
+        super::super::subagents::RunStatus::Done
+    );
+    assert!(
+        items
+            .iter()
+            .find(|item| item.id == "tool")
+            .unwrap()
+            .presentation
+            .subagent
+            .is_none()
+    );
+}
