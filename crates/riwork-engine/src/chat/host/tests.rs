@@ -321,6 +321,7 @@ fn settings_change_the_chat_even_while_it_is_stopped() {
         effort: Some("low".into()),
         approval_mode: Some(ApprovalMode::Plan),
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     };
     client.command(&chat.id, configure.clone()).unwrap();
@@ -341,6 +342,7 @@ fn settings_change_the_chat_even_while_it_is_stopped() {
         effort: None,
         approval_mode: Some(ApprovalMode::Full),
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     };
     client.command(&chat.id, again).unwrap();
@@ -364,6 +366,7 @@ fn configure_fast(fast: bool) -> ChatCommand {
         effort: None,
         approval_mode: None,
         fast: Some(fast),
+        contributor_mode: None,
         contributor_opt_out: None,
     }
 }
@@ -384,6 +387,7 @@ fn only_a_configure_that_changes_nothing_at_all_is_a_retry_and_fast_alone_is_not
                 effort: None,
                 approval_mode: None,
                 fast: None,
+                contributor_mode: None,
                 contributor_opt_out: None,
             },
         )
@@ -404,6 +408,7 @@ fn a_muse_chat_refuses_fast_and_moving_its_conversation_into_or_out_of_plan() {
         effort: Some("low".into()),
         approval_mode: Some(ApprovalMode::Plan),
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     };
     for (command, refusal) in [
@@ -436,6 +441,7 @@ fn a_muse_chat_refuses_fast_and_moving_its_conversation_into_or_out_of_plan() {
                 effort: None,
                 approval_mode: Some(ApprovalMode::Full),
                 fast: Some(false),
+                contributor_mode: None,
                 contributor_opt_out: None,
             },
         )
@@ -471,31 +477,48 @@ fn a_muse_chat_refuses_fast_and_moving_its_conversation_into_or_out_of_plan() {
     );
 }
 
+/// One request on a connection of its own, as any client of the host's socket writes it.
+fn raw_request(host: &TestHost, request: serde_json::Value) -> Response {
+    let stream = UnixStream::connect(host.socket()).unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut writer = stream;
+    writeln!(writer, "{request}").unwrap();
+    let mut answer = String::new();
+    reader.read_line(&mut answer).unwrap();
+    serde_json::from_str(&answer).unwrap()
+}
+
 #[test]
-fn a_muse_chat_opted_out_of_contributor_mode_starts_so_every_time_and_others_are_made_without_it() {
+fn a_muse_chat_starts_off_unless_turned_on_and_keeps_its_mode_through_resumes_restarts_and_switches()
+ {
+    use ContributorMode::{Off, On};
     let mut host = TestHost::new();
+    // Made on, it starts on: first, resumed by a message after a stop, and after the host itself
+    // restarted.
     let mut new = host.new_chat(Provider::Muse);
-    new.contributor_opt_out = true;
+    new.contributor_mode = On;
     let chat = host.client().create(new).unwrap();
-    assert!(chat.contributor_opt_out);
+    assert_eq!(chat.contributor_mode, On);
+    assert!(!chat.contributor_opt_out);
     host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
-    // Resumed by the next message, and by a message after the host itself restarted.
     let mut client = host.client();
     client.close(&chat.id).unwrap();
     send(&mut client, &chat.id, "after a stop");
     host.wait_for_log(&chat.id, |log| turns_completed(log) == 1);
     host.restart(quick_options());
-    assert!(
-        host.info(&chat.id).contributor_opt_out,
+    assert_eq!(
+        host.info(&chat.id).contributor_mode,
+        On,
         "read back from disk"
     );
+    assert_eq!(saved_info(&host, &chat.id).contributor_mode, On);
     send(&mut host.client(), &chat.id, "after a restart");
     host.wait_for_log(&chat.id, |log| turns_completed(log) == 2);
     let starts = host.fake().starts.lock().unwrap().clone();
     assert_eq!(starts.len(), 3);
     assert_eq!(starts[0].resume, None);
     assert_eq!(starts[2].resume.as_deref(), Some("thread-1"));
-    assert!(starts.iter().all(|config| config.contributor_opt_out));
+    assert!(starts.iter().all(|config| config.contributor_mode == On));
     // It stays with the chat through a switch away, and holds again back on Muse.
     for provider in [Provider::Codex, Provider::Muse] {
         let switch = ChatCommand::Switch {
@@ -505,157 +528,371 @@ fn a_muse_chat_opted_out_of_contributor_mode_starts_so_every_time_and_others_are
             fast: None,
         };
         host.client().command(&chat.id, switch).unwrap();
-        assert!(host.info(&chat.id).contributor_opt_out);
+        let info = host.info(&chat.id);
+        assert_eq!(
+            (info.contributor_mode, info.contributor_opt_out),
+            (On, false)
+        );
     }
     let last = host.fake().starts.lock().unwrap().last().cloned().unwrap();
     assert_eq!(
-        (last.provider, last.resume, last.contributor_opt_out),
-        (Provider::Muse, None, true)
+        (last.provider, last.resume, last.contributor_mode),
+        (Provider::Muse, None, On)
     );
 
-    // A Muse chat that did not opt out leaves it to the user's Muse settings.
-    let plain = host.create_in("plain", Provider::Muse);
-    assert!(!plain.contributor_opt_out);
-    assert!(!fake_for(&plain.cwd).starts.lock().unwrap()[0].contributor_opt_out);
+    // Asked for nothing, or for an off in any way a caller before `contributor_mode` could, a
+    // Muse chat starts off, and says so to a reader from before.
+    for (directory, legacy) in [
+        ("plain", None),
+        (
+            "explicit-off",
+            Some(serde_json::json!({"contributor_mode": "off"})),
+        ),
+        (
+            "legacy-false",
+            Some(serde_json::json!({"contributor_opt_out": false})),
+        ),
+        (
+            "legacy-true",
+            Some(serde_json::json!({"contributor_opt_out": true})),
+        ),
+    ] {
+        let cwd = host.home.join(directory);
+        fs::create_dir_all(&cwd).unwrap();
+        let mut chat = serde_json::json!({"provider": "muse", "cwd": cwd});
+        for (key, value) in legacy.iter().flat_map(|fields| fields.as_object().unwrap()) {
+            chat[key] = value.clone();
+        }
+        let answer = raw_request(
+            &host,
+            serde_json::json!({"op": "create", "id": "c", "chat": chat}),
+        );
+        assert!(answer.ok, "{directory}: {:?}", answer.error);
+        let created: ChatInfo = serde_json::from_value(answer.result.unwrap()).unwrap();
+        assert_eq!(
+            (created.contributor_mode, created.contributor_opt_out),
+            (Off, true),
+            "{directory}"
+        );
+        assert_eq!(created.reported_contributor_mode(), Some(Off));
+        eventually(|| fake_for(&cwd).start_count() == 1);
+        assert_eq!(
+            fake_for(&cwd).starts.lock().unwrap()[0].contributor_mode,
+            Off
+        );
+    }
+    // On beside an older off contradicts itself, and makes no chat.
+    let mut contradiction = host.new_chat(Provider::Muse);
+    contradiction.contributor_mode = On;
+    contradiction.contributor_opt_out = true;
+    let before = host.client().list().unwrap().len();
+    let error = host.client().create(contradiction).unwrap_err();
+    assert!(error.contains("cannot be combined"), "{error}");
+    assert_eq!(host.client().list().unwrap().len(), before);
 
-    // Codex and Claude have no contributor mode: made without it, as Muse is without fast.
+    // Codex and Claude have no contributor mode: asked for one either way, made off, as Muse is
+    // without fast, and they say so; asked for nothing, they say nothing.
     for provider in [Provider::Codex, Provider::Claude] {
-        let mut new = host.new_chat(provider);
-        new.cwd = host.home.join(format!("{provider:?}"));
-        fs::create_dir_all(&new.cwd).unwrap();
-        new.contributor_opt_out = true;
-        let created = host.client().create(new).unwrap();
-        assert!(!created.contributor_opt_out);
-        assert!(!host.info(&created.id).contributor_opt_out);
-        assert!(!fake_for(&created.cwd).starts.lock().unwrap()[0].contributor_opt_out);
-        let said = notices(&host.log(&created.id));
-        assert!(
-            said.iter().any(|notice| notice.contains("Only Muse")),
-            "{said:?}"
+        for (asked, opt_out, said) in [(On, false, true), (Off, true, true), (Off, false, false)] {
+            let mut new = host.new_chat(provider);
+            new.cwd = host.home.join(format!("{provider:?}-{asked:?}-{opt_out}"));
+            fs::create_dir_all(&new.cwd).unwrap();
+            new.contributor_mode = asked;
+            new.contributor_opt_out = opt_out;
+            let created = host.client().create(new).unwrap();
+            assert_eq!(
+                (created.contributor_mode, created.contributor_opt_out),
+                (Off, false)
+            );
+            assert_eq!(
+                fake_for(&created.cwd).starts.lock().unwrap()[0].contributor_mode,
+                Off
+            );
+            let notices = notices(&host.log(&created.id));
+            assert_eq!(
+                notices.iter().any(|notice| notice.contains("Only Muse")),
+                said,
+                "{provider:?} {asked:?} {opt_out}: {notices:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_muse_chat_saved_in_any_form_before_contributor_mode_starts_off_and_an_on_saved_since_stays_on()
+{
+    use ContributorMode::{Off, On};
+    let mut host = TestHost::new();
+    // Chats as this host saves them, then rewritten into what hosts before it wrote.
+    let forms: [(&str, &dyn Fn(&mut serde_json::Value)); 4] = [
+        ("missing", &|info| {
+            info.as_object_mut().unwrap().remove("contributor_opt_out");
+        }),
+        ("opted-in-to-settings", &|info| {
+            info["contributor_opt_out"] = false.into();
+        }),
+        ("opted-out", &|info| {
+            info["contributor_opt_out"] = true.into()
+        }),
+        ("on", &|info| {
+            info.as_object_mut().unwrap().remove("contributor_opt_out");
+            info["contributor_mode"] = "on".into();
+        }),
+    ];
+    let mut chats = Vec::new();
+    for (name, _) in &forms {
+        let chat = host.create_in(name, Provider::Muse);
+        host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+        chats.push(chat);
+    }
+    host.stop();
+    for ((name, rewrite), chat) in forms.iter().zip(&chats) {
+        let dir = host.home.join("chats").join(&chat.id);
+        let rewritten = |info: &mut serde_json::Value| {
+            info.as_object_mut().unwrap().remove("contributor_mode");
+            rewrite(info);
+        };
+        let path = dir.join("info.json");
+        let mut info: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        rewritten(&mut info);
+        fs::write(&path, info.to_string()).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text.contains("contributor_mode"), *name == "on", "{text}");
+        // The log's own copies of the info, as the host that wrote the file wrote them.
+        let log = dir.join("events.jsonl");
+        let lines: Vec<String> = fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let mut envelope: serde_json::Value = serde_json::from_str(line).unwrap();
+                if envelope["event"]["event"] == "info" {
+                    rewritten(&mut envelope["event"]["info"]);
+                }
+                envelope.to_string()
+            })
+            .collect();
+        fs::write(&log, lines.join("\n") + "\n").unwrap();
+    }
+    host.restart(quick_options());
+    for ((name, _), chat) in forms.iter().zip(&chats) {
+        let wanted = if *name == "on" { On } else { Off };
+        let info = host.info(&chat.id);
+        assert_eq!(info.contributor_mode, wanted, "{name}");
+        // Settled: a reader from before sees an off chat opted out, an on one not, and so does a
+        // tab that replays the log.
+        assert_eq!(info.contributor_opt_out, wanted == Off, "{name}");
+        let logged = host
+            .log(&chat.id)
+            .into_iter()
+            .rev()
+            .find_map(|envelope| match envelope.event {
+                ChatEvent::Info { info } => Some(info),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            logged.reported_contributor_mode(),
+            Some(wanted),
+            "{name}: {logged:?}"
+        );
+        send(&mut host.client(), &chat.id, "after the update");
+        host.wait_for_log(&chat.id, |log| turns_completed(log) == 1);
+        let started = fake_for(&chat.cwd).starts.lock().unwrap().clone();
+        assert_eq!(started.len(), 2, "{name}");
+        assert_eq!(
+            (started[1].resume.as_deref(), started[1].contributor_mode),
+            (Some("thread-1"), wanted),
+            "{name}"
         );
     }
 }
 
-fn configure_contributor(opt_out: bool) -> ChatCommand {
+fn configure_contributor(mode: ContributorMode) -> ChatCommand {
     ChatCommand::Configure {
         model: None,
         effort: None,
         approval_mode: None,
         fast: None,
+        contributor_mode: Some(mode),
+        contributor_opt_out: None,
+    }
+}
+
+/// The contributor change a client from before `contributor_mode` sends.
+fn configure_opt_out(opt_out: bool) -> ChatCommand {
+    ChatCommand::Configure {
+        model: None,
+        effort: None,
+        approval_mode: None,
+        fast: None,
+        contributor_mode: None,
         contributor_opt_out: Some(opt_out),
     }
 }
 
 #[test]
-fn a_contributor_change_waits_for_a_quiet_muse_chat_and_a_stopped_one_keeps_it_for_its_next_start()
-{
+fn a_contributor_change_either_way_waits_for_a_quiet_muse_chat_and_a_stopped_one_keeps_it() {
+    use ContributorMode::{Off, On};
+    for (from, to) in [(Off, On), (On, Off)] {
+        let host = TestHost::new();
+        let mut new = host.new_chat(Provider::Muse);
+        new.contributor_mode = from;
+        let chat = host.client().create(new).unwrap();
+        host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+        let mut client = host.client();
+        let refused = |client: &mut Client, command: ChatCommand, reason: &str, keeps| {
+            let error = client.command(&chat.id, command).unwrap_err();
+            assert!(error.contains(reason), "{from:?} to {to:?}: {error}");
+            assert_eq!(host.info(&chat.id).contributor_mode, keeps);
+        };
+        // A change comes alone: the Muse started again for it could refuse the rest. Beside
+        // other settings, the mode the chat has is no change.
+        let with_effort = |mode| ChatCommand::Configure {
+            model: None,
+            effort: Some("low".into()),
+            approval_mode: None,
+            fast: None,
+            contributor_mode: Some(mode),
+            contributor_opt_out: None,
+        };
+        refused(&mut client, with_effort(to), "on its own", from);
+        assert_eq!(host.info(&chat.id).effort, None);
+        client.command(&chat.id, with_effort(from)).unwrap();
+        host.wait_for_info(&chat.id, |info| info.effort.as_deref() == Some("low"));
+        // An older client's false asked for the Muse settings, and on beside an off asks for
+        // both: refused, whatever the chat has.
+        refused(
+            &mut client,
+            configure_opt_out(false),
+            "no longer follows your Muse settings",
+            from,
+        );
+        let both = ChatCommand::Configure {
+            model: None,
+            effort: None,
+            approval_mode: None,
+            fast: None,
+            contributor_mode: Some(On),
+            contributor_opt_out: Some(true),
+        };
+        refused(&mut client, both, "cannot be combined", from);
+        assert_eq!(host.fake().start_count(), 1);
+        // Still starting, a turn running, a request waiting for the user: refused, nothing
+        // changes.
+        host.fake().emit(ChatEvent::State {
+            state: ChatState::Starting,
+        });
+        host.wait_for_state(&chat.id, |s| *s == ChatState::Starting);
+        refused(
+            &mut client,
+            configure_contributor(to),
+            "still starting",
+            from,
+        );
+        host.fake().emit(ChatEvent::State {
+            state: ChatState::Idle,
+        });
+        host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+        send(&mut client, &chat.id, "hang");
+        host.wait_for_log(&chat.id, |log| {
+            log.iter().any(|e| {
+                matches!(
+                    &e.event,
+                    ChatEvent::ItemStarted { item } if matches!(item.body, ItemBody::AgentMessage { .. })
+                )
+            })
+        });
+        refused(
+            &mut client,
+            configure_contributor(to),
+            "Wait for the turn to finish",
+            from,
+        );
+        assert_eq!(host.fake().start_count(), 1);
+        assert_eq!(host.fake().shutdowns.load(Ordering::SeqCst), 0);
+
+        // Stopped, the chat keeps it for its next start and starts nothing; the same again is
+        // no change.
+        client.close(&chat.id).unwrap();
+        for _ in 0..2 {
+            client.command(&chat.id, configure_contributor(to)).unwrap();
+        }
+        assert_eq!(host.info(&chat.id).contributor_mode, to);
+        assert_eq!(saved_info(&host, &chat.id).contributor_mode, to);
+        assert_eq!(host.fake().start_count(), 1, "nothing started");
+        send(&mut client, &chat.id, "next");
+        host.wait_for_log(&chat.id, |log| {
+            turns_completed(log) == 2 && last_state(log) == Some(ChatState::Idle)
+        });
+        let started = host.fake().starts.lock().unwrap()[1].clone();
+        assert_eq!(
+            (started.resume.as_deref(), started.contributor_mode),
+            (Some("thread-1"), to)
+        );
+        host.fake().emit(ChatEvent::ApprovalRequested {
+            approval: Approval {
+                request_id: "r1".into(),
+                item_id: None,
+                kind: ApprovalKind::Tool,
+                title: "Bash".into(),
+                detail: String::new(),
+                choices: vec![Decision::Accept, Decision::Decline],
+            },
+        });
+        host.wait_for_log(&chat.id, |log| {
+            log.iter()
+                .any(|e| matches!(e.event, ChatEvent::ApprovalRequested { .. }))
+        });
+        refused(
+            &mut client,
+            configure_contributor(from),
+            "Wait for the turn to finish",
+            to,
+        );
+        assert_eq!(host.fake().start_count(), 2);
+        assert!(
+            host.fake()
+                .configurations
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(command, _)| matches!(
+                    command,
+                    ChatCommand::Configure {
+                        contributor_mode: None,
+                        contributor_opt_out: None,
+                        ..
+                    }
+                )),
+            "no driver is asked for contributor mode"
+        );
+    }
+
+    // An older client's true is an off: it turns an on chat off, and is no change to an off one.
     let host = TestHost::new();
-    let chat = host.create(Provider::Muse);
+    let mut new = host.new_chat(Provider::Muse);
+    new.contributor_mode = On;
+    let chat = host.client().create(new).unwrap();
     host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
     let mut client = host.client();
-    let refused = |client: &mut Client, opt_out: bool, reason: &str| {
-        let error = client
-            .command(&chat.id, configure_contributor(opt_out))
-            .unwrap_err();
-        assert!(error.contains(reason), "{error}");
-    };
-    // A change comes alone: the Muse started again for it could refuse the rest. Beside other
-    // settings, the value the chat has is no change.
-    let with_effort = |opt_out| ChatCommand::Configure {
-        model: None,
-        effort: Some("low".into()),
-        approval_mode: None,
-        fast: None,
-        contributor_opt_out: Some(opt_out),
-    };
-    let error = client.command(&chat.id, with_effort(true)).unwrap_err();
-    assert!(error.contains("on its own"), "{error}");
-    assert_eq!(host.info(&chat.id).effort, None);
-    client.command(&chat.id, with_effort(false)).unwrap();
-    host.wait_for_info(&chat.id, |info| info.effort.as_deref() == Some("low"));
-    assert_eq!(host.fake().start_count(), 1);
-    // Still starting, a turn running, a request waiting for the user: refused, nothing changes.
-    host.fake().emit(ChatEvent::State {
-        state: ChatState::Starting,
-    });
-    host.wait_for_state(&chat.id, |s| *s == ChatState::Starting);
-    refused(&mut client, true, "still starting");
-    host.fake().emit(ChatEvent::State {
-        state: ChatState::Idle,
-    });
-    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
-    send(&mut client, &chat.id, "hang");
-    host.wait_for_log(&chat.id, |log| {
-        log.iter().any(|e| {
-            matches!(
-                &e.event,
-                ChatEvent::ItemStarted { item } if matches!(item.body, ItemBody::AgentMessage { .. })
-            )
-        })
-    });
-    refused(&mut client, true, "Wait for the turn to finish");
-    assert!(!host.info(&chat.id).contributor_opt_out);
-    assert_eq!(host.fake().start_count(), 1);
-    assert_eq!(host.fake().shutdowns.load(Ordering::SeqCst), 0);
-
-    // Stopped, the chat keeps it for its next start and starts nothing; the same again is no
-    // change.
     client.close(&chat.id).unwrap();
     for _ in 0..2 {
-        client
-            .command(&chat.id, configure_contributor(true))
-            .unwrap();
+        client.command(&chat.id, configure_opt_out(true)).unwrap();
+        let info = host.info(&chat.id);
+        assert_eq!(
+            (info.contributor_mode, info.contributor_opt_out),
+            (Off, true)
+        );
     }
-    assert!(host.info(&chat.id).contributor_opt_out);
     assert_eq!(host.fake().start_count(), 1, "nothing started");
-    send(&mut client, &chat.id, "next");
-    host.wait_for_log(&chat.id, |log| {
-        turns_completed(log) == 2 && last_state(log) == Some(ChatState::Idle)
-    });
-    let started = host.fake().starts.lock().unwrap()[1].clone();
-    assert_eq!(
-        (started.resume.as_deref(), started.contributor_opt_out),
-        (Some("thread-1"), true)
-    );
-    host.fake().emit(ChatEvent::ApprovalRequested {
-        approval: Approval {
-            request_id: "r1".into(),
-            item_id: None,
-            kind: ApprovalKind::Tool,
-            title: "Bash".into(),
-            detail: String::new(),
-            choices: vec![Decision::Accept, Decision::Decline],
-        },
-    });
-    host.wait_for_log(&chat.id, |log| {
-        log.iter()
-            .any(|e| matches!(e.event, ChatEvent::ApprovalRequested { .. }))
-    });
-    refused(&mut client, false, "Wait for the turn to finish");
-    assert!(host.info(&chat.id).contributor_opt_out);
-    assert_eq!(host.fake().start_count(), 2);
-    assert!(
-        host.fake()
-            .configurations
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|(command, _)| matches!(
-                command,
-                ChatCommand::Configure {
-                    contributor_opt_out: None,
-                    ..
-                }
-            )),
-        "no driver is asked for contributor mode"
-    );
 
     // Codex and Claude have no contributor mode, as Muse has no fast one.
     for provider in [Provider::Codex, Provider::Claude] {
         let other = host.create_in(&format!("{provider:?}"), provider);
         host.wait_for_state(&other.id, |s| *s == ChatState::Idle);
         let error = client
-            .command(&other.id, configure_contributor(true))
+            .command(&other.id, configure_contributor(On))
             .unwrap_err();
         assert!(
             error.contains("Only Muse has a contributor mode"),
@@ -663,13 +900,63 @@ fn a_contributor_change_waits_for_a_quiet_muse_chat_and_a_stopped_one_keeps_it_f
         );
         // What it has already is no change, as fast off is none for Muse.
         client
-            .command(&other.id, configure_contributor(false))
+            .command(&other.id, configure_contributor(Off))
             .unwrap();
-        assert!(!host.info(&other.id).contributor_opt_out);
+        client.command(&other.id, configure_opt_out(true)).unwrap();
+        assert_eq!(host.info(&other.id).contributor_mode, Off);
         let fake = fake_for(&other.cwd);
         assert_eq!(fake.start_count(), 1);
         assert!(fake.commands().is_empty(), "{:?}", fake.commands());
     }
+
+    // A Muse chat turned on keeps it through a switch away; there it can be turned off, which
+    // only stores it, but not on again, and back on Muse it starts off.
+    let mut new = host.new_chat(Provider::Muse);
+    new.cwd = host.home.join("switched");
+    fs::create_dir_all(&new.cwd).unwrap();
+    new.contributor_mode = On;
+    let chat = client.create(new).unwrap();
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    let switch = |provider| ChatCommand::Switch {
+        provider,
+        model: None,
+        effort: None,
+        fast: None,
+    };
+    client.command(&chat.id, switch(Provider::Codex)).unwrap();
+    host.wait_for_info(&chat.id, |info| {
+        info.provider == Provider::Codex && info.state == ChatState::Idle
+    });
+    let fake = fake_for(&chat.cwd);
+    let starts = fake.start_count();
+    assert_eq!(host.info(&chat.id).contributor_mode, On);
+    // Beside other settings too: nothing starts again for it.
+    let off_and_effort = ChatCommand::Configure {
+        model: None,
+        effort: Some("low".into()),
+        approval_mode: None,
+        fast: None,
+        contributor_mode: Some(Off),
+        contributor_opt_out: None,
+    };
+    client.command(&chat.id, off_and_effort).unwrap();
+    let info = host.wait_for_info(&chat.id, |info| info.effort.as_deref() == Some("low"));
+    assert_eq!(
+        (info.contributor_mode, info.contributor_opt_out),
+        (Off, false)
+    );
+    assert_eq!(fake.start_count(), starts, "the Codex agent runs on");
+    let error = client
+        .command(&chat.id, configure_contributor(On))
+        .unwrap_err();
+    assert!(error.contains("keeps it off"), "{error}");
+    client.command(&chat.id, switch(Provider::Muse)).unwrap();
+    let back = fake.starts.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(
+        (back.provider, back.contributor_mode),
+        (Provider::Muse, Off)
+    );
+    assert!(host.info(&chat.id).contributor_opt_out);
 }
 
 #[test]
@@ -1020,6 +1307,7 @@ fn a_chat_that_died_in_the_middle_of_a_turn_is_made_tidy_when_the_next_host_load
         state: ChatState::Waiting,
         orchestrator: None,
         fast: false,
+        contributor_mode: Default::default(),
         contributor_opt_out: false,
         carried_over: None,
     };
@@ -1390,6 +1678,7 @@ fn an_idle_host_exits_but_not_while_a_client_is_connected_or_a_chat_is_at_work()
             effort: None,
             orchestrator: None,
             fast: false,
+            contributor_mode: Default::default(),
             contributor_opt_out: false,
         })
         .unwrap();
@@ -2339,8 +2628,11 @@ fn muse_fake_config(
 }
 
 /// A host whose Muse chats run the real driver against `fake`, and one such chat with a
-/// standing model, effort and approval mode.
-fn muse_host_and_chat(fake: &crate::chat::testkit::Fake) -> (TestHost, ChatInfo) {
+/// standing model, effort and approval mode, and `contributor_mode`.
+fn muse_host_and_chat(
+    fake: &crate::chat::testkit::Fake,
+    contributor_mode: ContributorMode,
+) -> (TestHost, ChatInfo) {
     let mut providers = fake_providers();
     providers.muse = super::super::muse::start;
     providers.config = muse_fake_config;
@@ -2350,6 +2642,7 @@ fn muse_host_and_chat(fake: &crate::chat::testkit::Fake) -> (TestHost, ChatInfo)
     new.model = Some("muse-pro".into());
     new.effort = Some("high".into());
     new.approval_mode = ApprovalMode::Full;
+    new.contributor_mode = contributor_mode;
     let chat = host.client().create(new).unwrap();
     (host, chat)
 }
@@ -2362,41 +2655,50 @@ fn serve_argv(fake: &crate::chat::testkit::Fake) -> Vec<Vec<String>> {
         .collect()
 }
 
-const OFF: [&str; 3] = ["serve", "--contributor-mode", "off"];
+/// `muse serve` with a contributor mode, as every start of a Muse chat says it.
+fn serve(mode: ContributorMode) -> Vec<String> {
+    ["serve", "--contributor-mode", mode.as_str()]
+        .map(str::to_owned)
+        .to_vec()
+}
 
 #[test]
-fn turning_contributor_mode_off_and_on_restarts_muse_serve_on_the_same_session_and_settings() {
+fn a_muse_chat_made_on_says_so_to_every_serve_and_turning_it_off_and_on_resumes_the_same_session() {
     use crate::chat::testkit::{Fake, fixture};
+    use ContributorMode::{Off, On};
     let resume = fixture("muse/contributor_resume.ndjson");
     let fake = Fake::new(&[
         &fixture("muse/contributor_start.ndjson"),
         &resume,
         &resume,
         &fixture("muse/contributor_resume_turn.ndjson"),
+        &resume,
+        &fixture("muse/contributor_switch_start.ndjson"),
     ]);
-    let (host, chat) = muse_host_and_chat(&fake);
+    let (mut host, chat) = muse_host_and_chat(&fake, On);
+    assert_eq!(chat.contributor_mode, On);
     let mut client = host.client();
     send(&mut client, &chat.id, "hello");
     host.wait_for_log(&chat.id, |log| {
         turns_completed(log) == 1 && last_state(log) == Some(ChatState::Idle)
     });
-    // Off, then back to the Muse settings: each a `muse serve` of its own on the same session,
-    // which takes the chat's model, approval mode and effort again as any resume does.
-    for (opt_out, starts) in [(true, 2), (false, 3)] {
+    // Off, then on again: each a `muse serve` of its own on the same session, which takes the
+    // chat's model, approval mode and effort again as any resume does.
+    for (mode, starts) in [(Off, 2), (On, 3)] {
         client
-            .command(&chat.id, configure_contributor(opt_out))
+            .command(&chat.id, configure_contributor(mode))
             .unwrap();
         let info = host.wait_for_info(&chat.id, |info| info.state == ChatState::Idle);
         assert_eq!(
             (
-                info.contributor_opt_out,
+                info.contributor_mode,
                 info.provider_thread_id.as_deref(),
                 info.model.as_deref(),
                 info.effort.as_deref(),
                 info.approval_mode,
             ),
             (
-                opt_out,
+                mode,
                 Some("sess-1"),
                 Some("muse-pro"),
                 Some("high"),
@@ -2406,14 +2708,6 @@ fn turning_contributor_mode_off_and_on_restarts_muse_serve_on_the_same_session_a
         // Every frame the resume sends has reached the fake before the next restart.
         eventually(|| fake.received_method("model/list").len() == starts);
     }
-    let resumed = fake.received_method("session/resume");
-    assert_eq!(resumed.len(), 2);
-    assert!(
-        resumed
-            .iter()
-            .all(|frame| frame["params"]["sessionId"] == "sess-1"),
-        "{resumed:#?}"
-    );
     assert_eq!(fake.received_method("session/start").len(), 1);
     assert_eq!(fake.received_method("session/setModel").len(), 2);
     assert_eq!(fake.received_method("session/setApprovalMode").len(), 2);
@@ -2422,90 +2716,152 @@ fn turning_contributor_mode_off_and_on_restarts_muse_serve_on_the_same_session_a
     // Stopped, the chat keeps it and starts nothing; its next message starts Muse with it.
     client.close(&chat.id).unwrap();
     client
-        .command(&chat.id, configure_contributor(true))
+        .command(&chat.id, configure_contributor(Off))
         .unwrap();
     assert_eq!(fake.starts().len(), 3, "a stopped chat starts nothing");
-    assert!(host.info(&chat.id).contributor_opt_out);
+    assert_eq!(host.info(&chat.id).contributor_mode, Off);
     send(&mut client, &chat.id, "again");
     host.wait_for_log(&chat.id, |log| {
         turns_completed(log) == 2 && last_state(log) == Some(ChatState::Idle)
     });
-    assert_eq!(serve_argv(&fake), [&["serve"][..], &OFF, &["serve"], &OFF]);
+
+    // On again while stopped, it holds across a restart of the host itself.
+    client.close(&chat.id).unwrap();
+    client.command(&chat.id, configure_contributor(On)).unwrap();
+    drop(client);
+    host.restart(quick_options());
+    assert_eq!(saved_info(&host, &chat.id).contributor_mode, On);
     assert_eq!(
-        fake.received_method("session/resume")[2]["params"]["sessionId"],
-        "sess-1"
+        host.info(&chat.id).contributor_mode,
+        On,
+        "read back from disk"
+    );
+    let retry = ChatCommand::Configure {
+        model: None,
+        effort: None,
+        approval_mode: None,
+        fast: None,
+        contributor_mode: None,
+        contributor_opt_out: None,
+    };
+    let mut client = host.client();
+    client.command(&chat.id, retry).unwrap();
+    host.wait_for_info(&chat.id, |info| info.state == ChatState::Idle);
+    eventually(|| fake.received_method("model/list").len() == 5);
+    let resumed = fake.received_method("session/resume");
+    assert_eq!(resumed.len(), 4);
+    assert!(
+        resumed
+            .iter()
+            .all(|frame| frame["params"]["sessionId"] == "sess-1"),
+        "{resumed:#?}"
+    );
+
+    // Away to Codex and back: the new Muse session starts with it too.
+    for provider in [Provider::Codex, Provider::Muse] {
+        let switch = ChatCommand::Switch {
+            provider,
+            model: None,
+            effort: None,
+            fast: None,
+        };
+        client.command(&chat.id, switch).unwrap();
+    }
+    let info = host.wait_for_info(&chat.id, |info| {
+        info.provider == Provider::Muse && info.state == ChatState::Idle
+    });
+    assert_eq!(
+        (info.contributor_mode, info.provider_thread_id.as_deref()),
+        (On, Some("sess-2"))
+    );
+    eventually(|| fake.received_method("model/list").len() == 6);
+    assert_eq!(
+        serve_argv(&fake),
+        [
+            serve(On),
+            serve(Off),
+            serve(On),
+            serve(Off),
+            serve(On),
+            serve(On)
+        ]
     );
     drop(host);
     assert!(!fake.saw("mismatch"), "{:#?}", fake.entries());
 }
 
 #[test]
-fn a_contributor_change_waits_for_a_muse_turn_and_one_muse_cannot_start_with_is_rolled_back() {
+fn a_contributor_change_either_way_waits_for_a_muse_turn_and_one_muse_cannot_start_with_is_rolled_back()
+ {
     use crate::chat::testkit::{Fake, fixture};
-    let fake = Fake::new(&[
-        &fixture("muse/contributor_busy.ndjson"),
-        &fixture("muse/contributor_refused.ndjson"),
-        &fixture("muse/contributor_resume_turn.ndjson"),
-    ]);
-    let (host, chat) = muse_host_and_chat(&fake);
-    let mut client = host.client();
-    send(&mut client, &chat.id, "hello");
-    host.wait_for_log(&chat.id, |log| {
-        log.iter().any(|e| {
-            matches!(
-                &e.event,
-                ChatEvent::ItemStarted { item } if matches!(item.body, ItemBody::AgentMessage { .. })
-            )
-        })
-    });
-    let error = client
-        .command(&chat.id, configure_contributor(true))
-        .unwrap_err();
-    assert!(error.contains("Wait for the turn to finish"), "{error}");
-    assert!(!host.info(&chat.id).contributor_opt_out);
-    assert_eq!(fake.starts().len(), 1, "the running turn's Muse goes on");
-    client.command(&chat.id, ChatCommand::Interrupt).unwrap();
-    host.wait_for_log(&chat.id, |log| {
-        turns_completed(log) == 1 && last_state(log) == Some(ChatState::Idle)
-    });
+    use ContributorMode::{Off, On};
+    for (from, to) in [(Off, On), (On, Off)] {
+        let fake = Fake::new(&[
+            &fixture("muse/contributor_busy.ndjson"),
+            &fixture("muse/contributor_refused.ndjson"),
+            &fixture("muse/contributor_resume_turn.ndjson"),
+        ]);
+        let (host, chat) = muse_host_and_chat(&fake, from);
+        let mut client = host.client();
+        send(&mut client, &chat.id, "hello");
+        host.wait_for_log(&chat.id, |log| {
+            log.iter().any(|e| {
+                matches!(
+                    &e.event,
+                    ChatEvent::ItemStarted { item } if matches!(item.body, ItemBody::AgentMessage { .. })
+                )
+            })
+        });
+        let error = client
+            .command(&chat.id, configure_contributor(to))
+            .unwrap_err();
+        assert!(error.contains("Wait for the turn to finish"), "{error}");
+        assert_eq!(host.info(&chat.id).contributor_mode, from);
+        assert_eq!(fake.starts().len(), 1, "the running turn's Muse goes on");
+        client.command(&chat.id, ChatCommand::Interrupt).unwrap();
+        host.wait_for_log(&chat.id, |log| {
+            turns_completed(log) == 1 && last_state(log) == Some(ChatState::Idle)
+        });
 
-    // This Muse does not start with it: the chat fails as any failed start does, keeps the
-    // value its next start runs with, and says so.
-    let error = client
-        .command(&chat.id, configure_contributor(true))
-        .unwrap_err();
-    assert!(
-        error.contains("Contributor mode was not changed")
-            && error.contains("unexpected argument '--contributor-mode'")
-            && error.contains("keeps following your Muse settings"),
-        "{error}"
-    );
-    let info = host.info(&chat.id);
-    assert!(!info.contributor_opt_out);
-    assert!(!saved_info(&host, &chat.id).contributor_opt_out);
-    assert!(
-        matches!(info.state, ChatState::Failed { .. }),
-        "{:?}",
-        info.state
-    );
-    assert!(
-        notices(&host.log(&chat.id))
-            .iter()
-            .any(|notice| notice.contains("Contributor mode was not changed")),
-        "{:?}",
-        notices(&host.log(&chat.id))
-    );
-    send(&mut client, &chat.id, "again");
-    host.wait_for_log(&chat.id, |log| {
-        turns_completed(log) == 2 && last_state(log) == Some(ChatState::Idle)
-    });
-    assert_eq!(serve_argv(&fake), [&["serve"][..], &OFF, &["serve"]]);
-    assert_eq!(
-        fake.received_method("session/resume")[0]["params"]["sessionId"],
-        "sess-1"
-    );
-    drop(host);
-    assert!(!fake.saw("mismatch"), "{:#?}", fake.entries());
+        // This Muse does not start with it: the chat fails as any failed start does, keeps the
+        // mode its next start runs with, and says so.
+        let error = client
+            .command(&chat.id, configure_contributor(to))
+            .unwrap_err();
+        assert!(
+            error.contains("Contributor mode was not changed")
+                && error.contains("unexpected argument '--contributor-mode'")
+                && error.contains(&format!("keeps contributor mode {}", from.as_str())),
+            "{error}"
+        );
+        let info = host.info(&chat.id);
+        assert_eq!(info.contributor_mode, from);
+        assert_eq!(info.contributor_opt_out, from == Off);
+        assert_eq!(saved_info(&host, &chat.id).contributor_mode, from);
+        assert!(
+            matches!(info.state, ChatState::Failed { .. }),
+            "{:?}",
+            info.state
+        );
+        assert!(
+            notices(&host.log(&chat.id))
+                .iter()
+                .any(|notice| notice.contains("Contributor mode was not changed")),
+            "{:?}",
+            notices(&host.log(&chat.id))
+        );
+        send(&mut client, &chat.id, "again");
+        host.wait_for_log(&chat.id, |log| {
+            turns_completed(log) == 2 && last_state(log) == Some(ChatState::Idle)
+        });
+        assert_eq!(serve_argv(&fake), [serve(from), serve(to), serve(from)]);
+        assert_eq!(
+            fake.received_method("session/resume")[0]["params"]["sessionId"],
+            "sess-1"
+        );
+        drop(host);
+        assert!(!fake.saw("mismatch"), "{:#?}", fake.entries());
+    }
 }
 
 #[test]
@@ -2893,6 +3249,7 @@ fn choose(model: Option<&str>, effort: Option<&str>, mode: Option<ApprovalMode>)
         effort: effort.map(str::to_owned),
         approval_mode: mode,
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     }
 }
@@ -3199,6 +3556,7 @@ fn unconfirmed_or_rejected_configuration_does_not_persist_the_requested_values()
                     effort: Some("refused-effort".into()),
                     approval_mode: Some(ApprovalMode::Full),
                     fast: (provider != Provider::Muse).then_some(true),
+                    contributor_mode: None,
                     contributor_opt_out: None,
                 },
             )

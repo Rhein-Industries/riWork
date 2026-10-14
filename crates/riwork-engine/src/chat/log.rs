@@ -855,6 +855,7 @@ mod tests {
             state: ChatState::Starting,
             orchestrator: None,
             fast: false,
+            contributor_mode: Default::default(),
             contributor_opt_out: false,
             carried_over: None,
         }

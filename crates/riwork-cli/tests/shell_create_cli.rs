@@ -413,6 +413,17 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
         ]),
         "riwork: --command needs a value"
     );
+    // Only Muse has a contributor mode to turn on.
+    for harness in [&["--harness", "codex"][..], &["--command", "muse"], &[]] {
+        let mut args = vec!["shell", "create", "--project", &project];
+        args.extend_from_slice(harness);
+        args.extend(["--contributor-on", "--json"]);
+        assert_eq!(
+            stderr(&args),
+            "riwork: --contributor-on requires --harness muse: only Muse has a contributor mode",
+            "{harness:?}"
+        );
+    }
     // None of the failures left a terminal behind or started a window.
     assert!(home.shells().is_empty());
     assert!(!home.runtime().exists(), "a GUI instance was registered");
@@ -505,6 +516,77 @@ fn an_agent_is_restricted_unless_unrestricted_is_asked_for() {
             "{created} not in {listed:?}"
         );
     }
+}
+
+#[test]
+#[ignore = "slow: real tmux shells"]
+fn a_muse_terminal_runs_with_contributor_mode_off_unless_asked_on() {
+    let home = Home::new();
+    let (project, _, _) = home.project("app");
+    // A stand-in Muse and Cua driver, first on PATH, so the real ones are never started.
+    let bin = home.0.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    for (name, body) in [("muse", "exec sleep 300"), ("cua-driver", "exit 0")] {
+        let path = bin.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let agent = |extra: &[&str]| -> Value {
+        let mut argv = vec![
+            "shell",
+            "create",
+            "--project",
+            &project,
+            "--harness",
+            "muse",
+        ];
+        argv.extend_from_slice(extra);
+        argv.push("--json");
+        let mut command = home.command(&argv);
+        command
+            .env("PATH", &path)
+            .env("RIWORK_CUA_DRIVER", bin.join("cua-driver"));
+        let output = finish(command.spawn().unwrap(), &argv);
+        assert!(
+            output.status.success(),
+            "{argv:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let modes = |shell: &Value| {
+        let command = shell["command"].as_str().unwrap();
+        ["off", "on"]
+            .into_iter()
+            .map(|mode| {
+                command
+                    .matches(&format!("--contributor-mode {mode}"))
+                    .count()
+            })
+            .collect::<Vec<_>>()
+    };
+    let plain = agent(&[]);
+    assert_eq!(plain["harness"], "muse");
+    assert_eq!(modes(&plain), [1, 0], "{plain}");
+    let on = agent(&["--contributor-on"]);
+    assert_eq!(modes(&on), [0, 1], "{on}");
+    assert_eq!(on["unrestricted"], false);
+    let unrestricted_on = agent(&["--contributor-on", "--unrestricted"]);
+    assert_eq!(modes(&unrestricted_on), [0, 1], "{unrestricted_on}");
+    assert_eq!(unrestricted_on["unrestricted"], true);
+    assert!(
+        unrestricted_on["command"]
+            .as_str()
+            .unwrap()
+            .contains("--yolo"),
+        "{unrestricted_on}"
+    );
 }
 
 #[test]

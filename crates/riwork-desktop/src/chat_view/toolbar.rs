@@ -200,15 +200,19 @@ pub fn fast_label(on: bool) -> &'static str {
     if on { "Fast on" } else { "Fast off" }
 }
 
-/// What a Muse chat's contributor toggle says, as the new-chat dialog does: off for this chat,
-/// or left to the user's Muse settings (never a forced on).
-pub fn contributor_label(opted_out: bool) -> &'static str {
-    if opted_out {
-        "Contributor mode off"
+/// What a Muse chat's contributor toggle says, as the new-chat dialog does: on or off.
+pub fn contributor_label(on: bool) -> &'static str {
+    if on {
+        "Contributor on"
     } else {
-        "Contributor mode: Muse settings"
+        "Contributor off"
     }
 }
+
+/// What the toggle says of a chat a chat host from before RiWork's off by default reports with
+/// neither (`ChatInfo::reported_contributor_mode`): the user's Muse settings decide there,
+/// until the chat is turned off or that host is replaced.
+pub const CONTRIBUTOR_SETTINGS_LABEL: &str = "Contributor: Muse settings";
 
 /// The model and effort to send when `model` is picked. An effort the new model does not take
 /// moves to the new model's own default (the driver would leave it out otherwise, and the chat

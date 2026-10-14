@@ -18,7 +18,7 @@ use std::{
 use uuid::Uuid;
 
 use crate::{
-    chat::model::{ApprovalMode, ChatInfo, Provider},
+    chat::model::{ApprovalMode, ChatInfo, ContributorMode, Provider},
     codex_accounts::CodexAccountBinding,
     sessions::{HarnessKind, SessionManager, ShellKind, ShellSession},
     store::Store,
@@ -74,6 +74,9 @@ pub struct Request {
     /// A Codex account by label or id.
     pub account: Option<String>,
     pub mode: Option<ApprovalMode>,
+    /// Muse's contributor mode for the new agent, chat or terminal: off unless asked on. Only
+    /// Muse has one.
+    pub contributor: ContributorMode,
     pub context: Context,
     pub note: Option<String>,
 }
@@ -302,6 +305,12 @@ pub fn check(request: &Request) -> Result<(), String> {
     if request.account.is_some() && request.provider != HarnessKind::Codex {
         return Err(format!(
             "{} has no RiWork-managed accounts: it always uses the login of the system. Leave out --account; only Codex accounts can be chosen.",
+            agent_name(request.provider)
+        ));
+    }
+    if request.contributor == ContributorMode::On && request.provider != HarnessKind::Muse {
+        return Err(format!(
+            "{} has no contributor mode; only Muse can be started with it on. Leave out --contributor-on.",
             agent_name(request.provider)
         ));
     }

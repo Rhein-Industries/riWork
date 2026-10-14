@@ -430,6 +430,7 @@ fn chat_orchestrators_are_found_from_disk_while_no_host_runs() {
         state: ChatState::Running,
         orchestrator: Some(scope_of(Some(PROJECT))),
         fast: false,
+        contributor_mode: Default::default(),
         contributor_opt_out: false,
         carried_over: None,
     };

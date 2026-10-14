@@ -364,6 +364,7 @@ mod tests {
             model: None,
             effort: None,
             fast: false,
+            contributor_mode: Default::default(),
             contributor_opt_out: false,
             approval_mode: ApprovalMode::default(),
             codex_account_id: None,

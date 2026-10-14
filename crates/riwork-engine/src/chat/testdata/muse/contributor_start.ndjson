@@ -1,5 +1,5 @@
 # The first start of a Muse chat with a standing model, effort and approval mode, which runs one turn:
-# plain `serve` (contributor mode as the user's Muse settings say).
+# `serve` with the chat's contributor mode, which only the arguments the fake records show.
 {"type":"expect","frame":{"id":"<any>","method":"initialize","params":{"clientInfo":{"name":"riwork"},"capabilities":{"requestedCapabilities":["sessionMcp"]}}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"serverInfo":{"name":"muse","version":"1.4.7"},"grantedCapabilities":["sessionMcp"]}}]}
 {"type":"expect","frame":{"method":"initialized"},"reply":[]}
 {"type":"expect","frame":{"id":"<any>","method":"session/start","params":{"commandId":"<any>","workspaceRoot":"<any>","approvalMode":"allowAll","modelId":"muse-pro"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"session":{"sessionId":"sess-1","activeTurnId":null,"turnCount":0},"viewCursor":""}}]}

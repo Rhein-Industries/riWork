@@ -394,6 +394,8 @@ impl HandoffDialog {
                 None
             },
             mode: None,
+            // Off, as every Muse RiWork starts unless asked on; this dialog does not ask.
+            contributor: Default::default(),
             context: if self.choices.askable {
                 self.choices.context
             } else {
@@ -823,6 +825,7 @@ fn placeholder_source() -> handoff::Source {
         codex_account_id: None,
         orchestrator: None,
         fast: false,
+        contributor_mode: Default::default(),
         contributor_opt_out: false,
         state: Default::default(),
         carried_over: None,

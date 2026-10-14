@@ -51,6 +51,7 @@ fn configure(model: Option<&str>, effort: Option<&str>, mode: Option<ApprovalMod
         effort: effort.map(str::to_owned),
         approval_mode: mode,
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     }
 }
@@ -333,6 +334,11 @@ fn model_discovery_reads_the_provider_without_creating_a_session_or_attaching_cu
     }))]));
     let fake = Fake::new(&[&steps(script)]);
     let models = discover_models(fake.config(Provider::Muse)).unwrap();
+    // No chat chose a contributor mode: off, as every Muse RiWork starts unless asked on.
+    assert_eq!(
+        fake.starts()[0]["argv"],
+        json!(["serve", "--contributor-mode", "off"])
+    );
     assert_eq!(models[0].id, "muse-wonder-1.0");
     assert_eq!(models[0].name, "Wonder");
     assert_eq!(models[0].efforts, ["high", "max"]);

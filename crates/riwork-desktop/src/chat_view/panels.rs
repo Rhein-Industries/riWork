@@ -11,7 +11,9 @@ use gpui::{
 use gpui_kit::base::TestSupportExt as _;
 
 use crate::{
-    chat::model::{ApprovalKind, ApprovalMode, ChatState, Decision, Provider, Question},
+    chat::model::{
+        ApprovalKind, ApprovalMode, ChatState, ContributorMode, Decision, Provider, Question,
+    },
     controls::{self, Button},
     dictation::{self, Phase},
     icons::{self, Icon},
@@ -1859,15 +1861,18 @@ impl ChatView {
                     })
             }))
             .children(
-                (provider == Provider::Muse)
-                    .then(|| self.composer_contributor(look, side, narrow, cx)),
+                // Another provider's chat that kept contributor mode on from Muse, for a switch
+                // back, shows it too, so it can be turned off before.
+                (provider == Provider::Muse
+                    || info.is_some_and(|info| info.contributor_mode == ContributorMode::On))
+                .then(|| self.composer_contributor(look, side, narrow, cx)),
             )
             .into_any_element()
     }
 
     /// A Muse chat's contributor mode, beside where Fast is for the other providers (Muse has
-    /// no fast mode): on (tinted) when the chat opted out, labeled by what holds as the new-chat
-    /// dialog's toggle is.
+    /// no fast mode): on (tinted) when the chat runs with it on, labeled by what holds as the
+    /// new-chat dialog's toggle is. A chat an older host leaves to the Muse settings says so.
     fn composer_contributor(
         &self,
         look: Look,
@@ -1876,20 +1881,28 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = look.colors;
-        let opted_out = self
+        let reported = self
             .model
             .transcript
             .info
             .as_ref()
-            .is_some_and(|info| info.contributor_opt_out);
-        let label = toolbar::contributor_label(opted_out);
-        let short = if opted_out {
-            "Contributor off"
-        } else {
-            "Contributor: Muse"
+            .and_then(|info| info.reported_contributor_mode());
+        let on = reported == Some(ContributorMode::On);
+        let muse = self
+            .model
+            .transcript
+            .info
+            .as_ref()
+            .is_none_or(|info| info.provider == Provider::Muse);
+        let (label, short) = match reported {
+            Some(mode) => {
+                let label = toolbar::contributor_label(mode == ContributorMode::On);
+                (label, label)
+            }
+            None => (toolbar::CONTRIBUTOR_SETTINGS_LABEL, "Contributor: Muse"),
         };
         let toggle = if look.native || look.hermes() {
-            let on = if look.native {
+            let tint = if look.native {
                 colors.working
             } else {
                 colors.cyan
@@ -1899,7 +1912,7 @@ impl ChatView {
                 .items_center()
                 .gap(ui_text::space(4.0))
                 .child(icons::symbol(
-                    if opted_out {
+                    if on {
                         "hand.raised.fill"
                     } else {
                         "hand.raised"
@@ -1910,15 +1923,10 @@ impl ChatView {
                 // A narrow pane keeps the symbol; what holds is in its label and tip.
                 .when(!narrow, |content| content.child(short));
             quiet_control(
-                crate::behavior_controls::toggle_content(
-                    "chat-contributor",
-                    label,
-                    content,
-                    opted_out,
-                ),
+                crate::behavior_controls::toggle_content("chat-contributor", label, content, on),
                 side,
                 false,
-                opted_out.then_some(on),
+                on.then_some(tint),
                 look,
             )
             .when(narrow, |toggle| toggle.px(ui_text::space(6.0)))
@@ -1926,8 +1934,8 @@ impl ChatView {
             widgets::toggle_button(
                 "chat-contributor",
                 short,
-                opted_out.then_some(colors.cyan),
-                opted_out,
+                on.then_some(colors.cyan),
+                on,
                 look,
             )
             .h(side)
@@ -1938,10 +1946,19 @@ impl ChatView {
             .debug_selector(|| "composer-contributor".into())
             .accessibility_label(label)
             .child(tooltip::anchor(
-                if opted_out {
-                    "Muse contributor mode is off for this chat, so your content in it won't be used for product improvement. Turn it back on to follow your Muse settings; Muse restarts on the same conversation."
-                } else {
-                    "Contributor mode follows your Muse settings. Turn it off for this chat only; Muse restarts on the same conversation."
+                match reported {
+                    Some(ContributorMode::On) if !muse => {
+                        "This chat keeps Muse's contributor mode on for a switch back to Muse. Turn it off here."
+                    }
+                    Some(ContributorMode::On) => {
+                        "Muse contributor mode is on for this chat. Turn it off again; Muse restarts on the same conversation."
+                    }
+                    Some(ContributorMode::Off) => {
+                        "Muse contributor mode is off, so your content in this chat won't be used for product improvement. Turn it on for this chat only; Muse restarts on the same conversation."
+                    }
+                    None => {
+                        "The running chat host predates RiWork's contributor mode off by default, so this chat follows your Muse settings. Turn it off; Muse restarts on the same conversation."
+                    }
                 },
                 TipLook::Control,
             ))
@@ -3141,6 +3158,7 @@ mod tests {
                 model: Some("fixture-model".into()),
                 effort: None,
                 fast: false,
+                contributor_mode: Default::default(),
                 contributor_opt_out: false,
                 approval_mode: ApprovalMode::Supervised,
                 codex_account_id: None,
@@ -3233,6 +3251,7 @@ mod tests {
             model: Some("fixture-model".into()),
             effort: None,
             fast,
+            contributor_mode: Default::default(),
             contributor_opt_out: false,
             approval_mode: ApprovalMode::Supervised,
             codex_account_id: None,
@@ -3506,8 +3525,17 @@ mod tests {
         }
     }
 
+    /// The contributor states a Muse chat's info can report: off as this host settles it, on,
+    /// and neither, as a host from before RiWork's off by default reports a chat that follows
+    /// the Muse settings.
+    const CONTRIBUTOR_STATES: [(ContributorMode, bool); 3] = [
+        (ContributorMode::Off, true),
+        (ContributorMode::On, false),
+        (ContributorMode::Off, false),
+    ];
+
     #[gpui::test]
-    fn only_a_muse_chat_has_the_contributor_toggle_and_it_asks_for_the_other_state(
+    fn only_a_muse_chat_has_the_contributor_toggle_off_unless_on_and_it_asks_for_the_other_state(
         cx: &mut gpui::TestAppContext,
     ) {
         use crate::chat::model::ChatCommand;
@@ -3538,22 +3566,57 @@ mod tests {
                 })
                 .unwrap();
             }
-            // Labeled by what holds; a click asks for the other state, and the chat says what
-            // holds once the host has made it so.
-            for opt_out in [false, true] {
+            // A Codex chat that kept on from Muse shows it, to turn it off; never on.
+            update_info(cx, handle, &view, |view| {
+                let info = view.model.transcript.info.as_mut().unwrap();
+                info.provider = Provider::Codex;
+                info.contributor_mode = ContributorMode::On;
+            });
+            cx.update_window(handle.into(), |_, window, cx| {
+                let toggle = window.find("chat-contributor");
+                assert_eq!(toggle.label(), Some("Contributor on".into()), "{design:?}");
+                window.click("chat-contributor", cx);
+            })
+            .unwrap();
+            draw_hermes(cx, handle);
+            assert_eq!(
+                configured(&recording),
+                Some(ChatCommand::Configure {
+                    model: None,
+                    effort: None,
+                    approval_mode: None,
+                    fast: None,
+                    contributor_mode: Some(ContributorMode::Off),
+                    contributor_opt_out: None,
+                }),
+                "{design:?}"
+            );
+            update_info(cx, handle, &view, |view| {
+                view.model.transcript.info.as_mut().unwrap().provider = Provider::Muse;
+            });
+            // Labeled by what holds, never Muse settings for a chat this host reports; a click
+            // asks for the other state (off for a chat an older host leaves to the Muse
+            // settings), and the chat says what holds once the host has made it so.
+            for (mode, opt_out) in CONTRIBUTOR_STATES {
                 update_info(cx, handle, &view, |view| {
-                    view.model
-                        .transcript
-                        .info
-                        .as_mut()
-                        .unwrap()
-                        .contributor_opt_out = opt_out;
+                    let info = view.model.transcript.info.as_mut().unwrap();
+                    info.contributor_mode = mode;
+                    info.contributor_opt_out = opt_out;
                 });
+                let (label, asks) = match (mode, opt_out) {
+                    (ContributorMode::On, _) => ("Contributor on", ContributorMode::Off),
+                    (ContributorMode::Off, true) => ("Contributor off", ContributorMode::On),
+                    (ContributorMode::Off, false) => {
+                        (toolbar::CONTRIBUTOR_SETTINGS_LABEL, ContributorMode::Off)
+                    }
+                };
                 cx.update_window(handle.into(), |_, window, cx| {
+                    let toggle = window.find("chat-contributor");
+                    assert_eq!(toggle.label(), Some(label.into()), "{design:?}");
                     assert_eq!(
-                        window.find("chat-contributor").label(),
-                        Some(toolbar::contributor_label(opt_out)),
-                        "{design:?}"
+                        toggle.checked(),
+                        Some(mode == ContributorMode::On),
+                        "{design:?} {label}"
                     );
                     window.click("chat-contributor", cx);
                 })
@@ -3566,9 +3629,10 @@ mod tests {
                         effort: None,
                         approval_mode: None,
                         fast: None,
-                        contributor_opt_out: Some(!opt_out),
+                        contributor_mode: Some(asks),
+                        contributor_opt_out: None,
                     }),
-                    "{design:?}"
+                    "{design:?} {label}"
                 );
                 assert!(configured(&recording).is_none());
                 assert_eq!(
@@ -3578,9 +3642,9 @@ mod tests {
                             .info
                             .as_ref()
                             .unwrap()
-                            .contributor_opt_out
+                            .contributor_mode
                     }),
-                    opt_out
+                    mode
                 );
             }
             ui_text::set_for_tests(previous.0, previous.1);
@@ -3599,10 +3663,11 @@ mod tests {
             let previous = ui_text::set_for_tests(1.0, face);
             for width in [760.0, 300.0] {
                 let (handle, view, _) = composer_fixture(cx, width, design, ChatState::Idle);
-                for opt_out in [false, true] {
+                for (mode, opt_out) in CONTRIBUTOR_STATES {
                     update_info(cx, handle, &view, |view| {
                         let info = view.model.transcript.info.as_mut().unwrap();
                         info.provider = Provider::Muse;
+                        info.contributor_mode = mode;
                         info.contributor_opt_out = opt_out;
                     });
                     cx.update_window(handle.into(), |_, window, _| {
@@ -3615,7 +3680,7 @@ mod tests {
                         );
                         assert!(
                             toggle.left() >= shell.left() && toggle.right() <= shell.right(),
-                            "{design:?} {width} {opt_out}: {toggle:?} outside {shell:?}"
+                            "{design:?} {width} {mode:?} {opt_out}: {toggle:?} outside {shell:?}"
                         );
                     })
                     .unwrap();
@@ -3698,6 +3763,7 @@ mod tests {
                     effort: Some("high".into()),
                     approval_mode: None,
                     fast: None,
+                    contributor_mode: None,
                     contributor_opt_out: None,
                 })
             );
@@ -3767,6 +3833,7 @@ mod tests {
                     effort: None,
                     approval_mode: None,
                     fast: None,
+                    contributor_mode: None,
                     contributor_opt_out: None,
                 })
             );
@@ -3797,6 +3864,7 @@ mod tests {
                     effort: None,
                     approval_mode: None,
                     fast: None,
+                    contributor_mode: None,
                     contributor_opt_out: None,
                 })
             );
@@ -3936,6 +4004,7 @@ mod tests {
                     effort: Some("high".into()),
                     approval_mode: None,
                     fast: None,
+                    contributor_mode: None,
                     contributor_opt_out: None,
                 }
             ),
@@ -4026,6 +4095,7 @@ mod tests {
                     effort: None,
                     approval_mode: None,
                     fast: None,
+                    contributor_mode: None,
                     contributor_opt_out: None,
                 }
             ),

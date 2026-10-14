@@ -4,7 +4,7 @@
 //! Plain std sockets and threads, no async runtime: a window runs these calls on
 //! its background executor and a subscription on a thread of its own.
 
-use super::model::{ChatCommand, ChatInfo, ChatState, NewChat, Provider};
+use super::model::{ChatCommand, ChatInfo, ChatState, ContributorMode, NewChat, Provider};
 use super::wire::{Envelope, Request, Response};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::Shutdown;
@@ -105,22 +105,29 @@ impl Client {
         }
     }
 
-    pub fn create(&mut self, chat: NewChat) -> Result<ChatInfo, String> {
-        let opted_out = chat.provider == Provider::Muse && chat.contributor_opt_out;
+    pub fn create(&mut self, mut chat: NewChat) -> Result<ChatInfo, String> {
+        let requested = muse_contributor_request(&mut chat);
         let result = self.call(Request::Create {
             id: new_id(),
             chat,
             chat_id: None,
         })?;
         let info: ChatInfo = decode(result)?;
-        // A host from before contributor opt-out reads past it and starts the chat under the
-        // user's Muse settings. Such a chat is not kept, so it never runs as if opted out.
-        if opted_out && !info.contributor_opt_out {
+        // A host from before `contributor_mode` reads past it, and one from before contributor
+        // opt-out past the off too, and starts the chat under the user's Muse settings. The
+        // chat's own word tells, never a default read into it: such a chat is not kept, so it
+        // never runs as if it had the mode it was made with.
+        if let Some(mode) = requested
+            && info.reported_contributor_mode() != Some(mode)
+        {
             let removed = self.delete(&info.id);
             return Err(format!(
-                "The running chat host predates Muse contributor opt-out, so chat {} started \
-                 with your Muse settings{}. Try again once the chat host runs this version of RiWork.",
+                "The running chat host predates RiWork's contributor mode off by default, so \
+                 chat {} started {} instead of contributor mode {}{}. Try again once the chat \
+                 host runs this version of RiWork.",
                 info.id,
+                running_with(&info),
+                mode.as_str(),
                 match removed {
                     Ok(()) => " and was removed".to_owned(),
                     Err(error) => format!("; removing it failed ({error})"),
@@ -130,11 +137,14 @@ impl Client {
         Ok(info)
     }
 
+    /// A Muse chat says its off the older way too (`muse_contributor_request`); the caller
+    /// checks what the chat it gets back runs with (`ChatInfo::reported_contributor_mode`).
     pub fn create_identified(
         &mut self,
         chat_id: &str,
-        chat: NewChat,
+        mut chat: NewChat,
     ) -> Result<ChatInfo, CallError> {
+        muse_contributor_request(&mut chat);
         let result = self.exchange(Request::Create {
             id: new_id(),
             chat,
@@ -190,50 +200,68 @@ impl Client {
         decode(self.call(Request::List { id: new_id() })?)
     }
 
-    pub fn command(&mut self, chat_id: &str, command: ChatCommand) -> Result<(), String> {
-        let contributor = match &command {
-            ChatCommand::Configure {
-                contributor_opt_out,
+    pub fn command(&mut self, chat_id: &str, mut command: ChatCommand) -> Result<(), String> {
+        // What the host refuses as unreadable is not checked: it changed nothing.
+        let contributor = command.requested_contributor_mode().ok().flatten();
+        // Whether the chat runs no process now, for a host that would start it (below), and
+        // whether it is Muse's.
+        let (stopped, muse) =
+            match contributor {
+                Some(_) => self.list()?.iter().find(|info| info.id == chat_id).map_or(
+                    (false, false),
+                    |info| {
+                        (
+                            matches!(info.state, ChatState::Stopped | ChatState::Failed { .. }),
+                            info.provider == Provider::Muse,
+                        )
+                    },
+                ),
+                None => (false, false),
+            };
+        // A Muse chat's off says so the older way too, so a host that reads only that turns it
+        // off as well. Another provider's chat is not sent it: such a host refuses it there.
+        if muse
+            && let ChatCommand::Configure {
+                contributor_mode: Some(ContributorMode::Off),
+                contributor_opt_out: opt_out @ None,
                 ..
-            } => *contributor_opt_out,
-            _ => None,
-        };
-        // Whether the chat runs no process now, for a host that would start it (below).
-        let stopped = match contributor {
-            Some(_) => self.list()?.iter().any(|info| {
-                info.id == chat_id
-                    && matches!(info.state, ChatState::Stopped | ChatState::Failed { .. })
-            }),
-            None => false,
-        };
+            } = &mut command
+        {
+            *opt_out = Some(true);
+        }
         self.call(Request::Command {
             id: new_id(),
             chat_id: chat_id.into(),
             command,
         })?;
         match contributor {
-            Some(opt_out) => self.confirm_contributor(chat_id, opt_out, stopped),
+            Some(mode) => self.confirm_contributor(chat_id, mode, stopped),
             None => Ok(()),
         }
     }
 
-    /// A host from before a chat could change contributor mode reads past the field, takes the
-    /// Configure for a Retry and says yes. The chat's own word tells: a change it does not show
-    /// did not happen, and is not reported as done. A chat that was `stopped` before is stopped
-    /// again, so the Muse that host started for it does not go on running as it was.
+    /// A host from before a chat could have contributor mode on reads past the field, takes the
+    /// Configure for a Retry and says yes; one from before changing it at all does that with an
+    /// off too. The chat's own word tells (`ChatInfo::reported_contributor_mode`), never a
+    /// default read into it: a mode it does not show was not set, and is not reported as set. A
+    /// chat that was `stopped` before is stopped again, so the Muse that host started for it
+    /// does not go on running as it was.
     fn confirm_contributor(
         &mut self,
         chat_id: &str,
-        opt_out: bool,
+        mode: ContributorMode,
         stopped: bool,
     ) -> Result<(), String> {
         let chats = self.list().map_err(|error| {
             format!("The chat host could not be asked whether contributor mode changed: {error}")
         })?;
         match chats.iter().find(|info| info.id == chat_id) {
-            Some(info) if info.contributor_opt_out != opt_out => Err(format!(
-                "The running chat host predates changing Muse contributor mode in a chat, so it \
-                 was not changed{}. Try again once the chat host runs this version of RiWork.",
+            Some(info) if info.reported_contributor_mode() != Some(mode) => Err(format!(
+                "The running chat host predates turning Muse contributor mode {} in a chat, so \
+                 the chat still runs {}{}. Try again once the chat host runs this version of \
+                 RiWork.",
+                mode.as_str(),
+                running_with(info),
                 match stopped.then(|| self.close(chat_id)) {
                     None => String::new(),
                     Some(Ok(())) => "; the chat it started for this is stopped again".to_owned(),
@@ -409,6 +437,30 @@ fn attachment_refusal(message: String, variant: Option<&str>) -> CallError {
     }
 }
 
+/// Sets a Muse chat's off the older way too (`NewChat::contributor_opt_out`), so a host from
+/// before `contributor_mode` that reads only that starts it off as well, and returns the mode
+/// asked for. None for a chat of another provider, which has none, and for a contradiction the
+/// host refuses.
+fn muse_contributor_request(chat: &mut NewChat) -> Option<ContributorMode> {
+    if chat.provider != Provider::Muse
+        || (chat.contributor_mode == ContributorMode::On && chat.contributor_opt_out)
+    {
+        return None;
+    }
+    if chat.contributor_mode == ContributorMode::Off {
+        chat.contributor_opt_out = true;
+    }
+    Some(chat.contributor_mode)
+}
+
+/// What a chat's Muse runs with as its host reported it, for a message.
+fn running_with(info: &ChatInfo) -> String {
+    match info.reported_contributor_mode() {
+        Some(mode) => format!("with contributor mode {}", mode.as_str()),
+        None => "with your Muse settings".to_owned(),
+    }
+}
+
 fn new_id() -> String {
     Uuid::new_v4().to_string()
 }
@@ -465,6 +517,7 @@ mod tests {
             state: ChatState::Idle,
             orchestrator: None,
             fast: false,
+            contributor_mode: Default::default(),
             contributor_opt_out: false,
             carried_over: None,
         };
@@ -514,6 +567,7 @@ mod tests {
                 effort: None,
                 orchestrator: None,
                 fast: false,
+                contributor_mode: ContributorMode::Off,
                 contributor_opt_out: false,
             })
             .unwrap();
@@ -526,76 +580,114 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A host from before contributor opt-out answers `Create` as it always did, without
-    /// the choice. The chat it made is removed rather than handed back.
+    /// The hosts from before `contributor_mode`: one from before contributor opt-out, which
+    /// reads past both fields, and one that reads only `contributor_opt_out`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum OlderHost {
+        BeforeOptOut,
+        OptOutOnly,
+    }
+
+    /// Such a host answers `Create` as it did, with what it read of the request.
     #[test]
-    fn a_muse_chat_a_host_made_without_its_contributor_opt_out_is_not_kept() {
-        let dir = std::env::temp_dir().join(format!("rwchat-{}", &new_id()[..8]));
-        std::fs::create_dir_all(&dir).unwrap();
-        let socket = dir.join("c.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        let cwd = dir.clone();
-        let host = thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut writer = stream;
-            let mut seen = Vec::new();
-            let mut line = String::new();
-            while reader.read_line(&mut line).unwrap() > 0 {
-                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
-                let result = match request["op"].as_str().unwrap() {
-                    "create" => serde_json::json!({
-                        "id": "chat-1", "provider": "muse", "cwd": cwd, "title": "Muse chat",
-                        "created_at_unix": 1, "fast": false, "approval_mode": "supervised",
-                        "state": {"state": "idle"},
-                    }),
-                    _ => serde_json::Value::Null,
-                };
-                let response =
-                    serde_json::json!({"id": request["id"], "ok": true, "result": result});
-                writeln!(writer, "{response}").unwrap();
-                seen.push(request);
-                line.clear();
+    fn a_muse_chat_an_older_host_made_without_its_contributor_mode_is_not_kept() {
+        for older in [OlderHost::BeforeOptOut, OlderHost::OptOutOnly] {
+            for mode in [ContributorMode::Off, ContributorMode::On] {
+                let dir = std::env::temp_dir().join(format!("rwchat-{}", &new_id()[..8]));
+                std::fs::create_dir_all(&dir).unwrap();
+                let socket = dir.join("c.sock");
+                let listener = UnixListener::bind(&socket).unwrap();
+                let cwd = dir.clone();
+                let host = thread::spawn(move || {
+                    let (stream, _) = listener.accept().unwrap();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut writer = stream;
+                    let mut seen = Vec::new();
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).unwrap() > 0 {
+                        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                        let opted_out = older == OlderHost::OptOutOnly
+                            && request["chat"]["contributor_opt_out"] == true;
+                        let result = match request["op"].as_str().unwrap() {
+                            "create" => serde_json::json!({
+                                "id": "chat-1", "provider": "muse", "cwd": cwd,
+                                "title": "Muse chat", "created_at_unix": 1, "fast": false,
+                                "contributor_opt_out": opted_out, "approval_mode": "supervised",
+                                "state": {"state": "idle"},
+                            }),
+                            _ => serde_json::Value::Null,
+                        };
+                        let response =
+                            serde_json::json!({"id": request["id"], "ok": true, "result": result});
+                        writeln!(writer, "{response}").unwrap();
+                        seen.push(request);
+                        line.clear();
+                    }
+                    seen
+                });
+                let mut client = Client::connect(&socket).unwrap();
+                let created = client.create(NewChat {
+                    parent_id: None,
+                    provider: Provider::Muse,
+                    project_id: None,
+                    worktree_id: None,
+                    cwd: dir.clone(),
+                    codex_account_id: None,
+                    title: None,
+                    approval_mode: ApprovalMode::Supervised,
+                    model: None,
+                    effort: None,
+                    orchestrator: None,
+                    fast: false,
+                    contributor_mode: mode,
+                    contributor_opt_out: false,
+                });
+                drop(client);
+                let seen = host.join().unwrap();
+                // An off says so the older way too; on has no older way to say it.
+                let sent = &seen[0]["chat"];
+                match mode {
+                    ContributorMode::Off => {
+                        assert_eq!(sent["contributor_opt_out"], true);
+                        assert!(sent.get("contributor_mode").is_none(), "{sent}");
+                    }
+                    ContributorMode::On => {
+                        assert_eq!(sent["contributor_mode"], "on");
+                        assert!(sent.get("contributor_opt_out").is_none(), "{sent}");
+                    }
+                }
+                // Only a host that started it off as asked keeps it.
+                if (older, mode) == (OlderHost::OptOutOnly, ContributorMode::Off) {
+                    let info = created.unwrap();
+                    assert_eq!(info.reported_contributor_mode(), Some(ContributorMode::Off));
+                    assert_eq!(seen.len(), 1, "{seen:?}");
+                } else {
+                    let error = created.unwrap_err();
+                    assert!(
+                        error.contains("predates RiWork's contributor mode off by default")
+                            && error.contains("with your Muse settings")
+                            && error.contains(&format!(
+                                "instead of contributor mode {}",
+                                mode.as_str()
+                            ))
+                            && error.contains("was removed"),
+                        "{older:?} {mode:?}: {error}"
+                    );
+                    assert_eq!(seen.len(), 2, "{seen:?}");
+                    assert_eq!(
+                        (seen[1]["op"].as_str(), seen[1]["chat_id"].as_str()),
+                        (Some("delete"), Some("chat-1"))
+                    );
+                }
+                let _ = std::fs::remove_dir_all(&dir);
             }
-            seen
-        });
-        let mut client = Client::connect(&socket).unwrap();
-        let error = client
-            .create(NewChat {
-                parent_id: None,
-                provider: Provider::Muse,
-                project_id: None,
-                worktree_id: None,
-                cwd: dir.clone(),
-                codex_account_id: None,
-                title: None,
-                approval_mode: ApprovalMode::Supervised,
-                model: None,
-                effort: None,
-                orchestrator: None,
-                fast: false,
-                contributor_opt_out: true,
-            })
-            .unwrap_err();
-        assert!(
-            error.contains("predates Muse contributor opt-out"),
-            "{error}"
-        );
-        assert!(error.contains("was removed"), "{error}");
-        drop(client);
-        let seen = host.join().unwrap();
-        assert_eq!(seen.len(), 2, "{seen:?}");
-        assert_eq!(seen[0]["chat"]["contributor_opt_out"], true);
-        assert_eq!(
-            (seen[1]["op"].as_str(), seen[1]["chat_id"].as_str()),
-            (Some("delete"), Some("chat-1"))
-        );
-        let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]
-    fn a_contributor_change_a_host_read_past_is_not_reported_as_made() {
-        // The Configure of the host before the field: serde reads past what it does not know.
+    fn a_contributor_mode_an_older_host_read_past_is_not_reported_as_set() {
+        // The Configures of the hosts before `contributor_mode`: serde reads past what it does
+        // not know.
         #[derive(serde::Deserialize)]
         #[serde(tag = "command", rename_all = "snake_case")]
         enum OldCommand {
@@ -604,98 +696,155 @@ mod tests {
                 effort: Option<String>,
                 approval_mode: Option<ApprovalMode>,
                 fast: Option<bool>,
+                contributor_opt_out: Option<bool>,
             },
         }
-        let dir = std::env::temp_dir().join(format!("rwchat-{}", &new_id()[..8]));
-        std::fs::create_dir_all(&dir).unwrap();
-        let socket = dir.join("c.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        let cwd = dir.clone();
-        let host = thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut writer = stream;
-            let mut seen = Vec::new();
-            // A stopped chat, made with the opt-out, which it keeps.
-            let mut state = "stopped";
-            let mut line = String::new();
-            while reader.read_line(&mut line).unwrap() > 0 {
-                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
-                let result = match request["op"].as_str().unwrap() {
-                    "command" => {
-                        let OldCommand::Configure {
-                            model,
-                            effort,
-                            approval_mode,
-                            fast,
-                        } = serde_json::from_value(request["command"].clone()).unwrap();
-                        // What it is left with: a Retry, which starts the chat, or the model.
-                        assert!(effort.is_none() && approval_mode.is_none() && fast.is_none());
-                        if model.is_none() {
-                            state = "idle";
+        for older in [OlderHost::BeforeOptOut, OlderHost::OptOutOnly] {
+            let dir = std::env::temp_dir().join(format!("rwchat-{}", &new_id()[..8]));
+            std::fs::create_dir_all(&dir).unwrap();
+            let socket = dir.join("c.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let cwd = dir.clone();
+            let host = thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut writer = stream;
+                let mut seen = Vec::new();
+                // A stopped chat made before opt-out, which follows the Muse settings.
+                let mut state = "stopped";
+                let mut opted_out = false;
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap() > 0 {
+                    let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    let result = match request["op"].as_str().unwrap() {
+                        "command" => {
+                            let OldCommand::Configure {
+                                model,
+                                effort,
+                                approval_mode,
+                                fast,
+                                contributor_opt_out,
+                            } = serde_json::from_value(request["command"].clone()).unwrap();
+                            assert!(effort.is_none() && approval_mode.is_none() && fast.is_none());
+                            let contributor_opt_out =
+                                contributor_opt_out.filter(|_| older == OlderHost::OptOutOnly);
+                            // What it is left with: a Retry, which starts the chat, the model,
+                            // or (if it reads it) an opt-out, which it keeps.
+                            match contributor_opt_out {
+                                Some(opt_out) => opted_out = opt_out,
+                                None if model.is_none() => state = "idle",
+                                None => {}
+                            }
+                            serde_json::Value::Null
                         }
-                        serde_json::Value::Null
-                    }
-                    "close" => {
-                        state = "stopped";
-                        serde_json::Value::Null
-                    }
-                    "list" => serde_json::json!([{
-                        "id": "chat-1", "provider": "muse", "cwd": cwd, "title": "Muse chat",
-                        "created_at_unix": 1, "fast": false, "contributor_opt_out": true,
-                        "approval_mode": "supervised", "state": {"state": state},
-                    }]),
-                    other => panic!("unexpected {other}"),
-                };
-                let response =
-                    serde_json::json!({"id": request["id"], "ok": true, "result": result});
-                writeln!(writer, "{response}").unwrap();
-                seen.push(request);
-                line.clear();
+                        "close" => {
+                            state = "stopped";
+                            serde_json::Value::Null
+                        }
+                        "list" => serde_json::json!([{
+                            "id": "chat-1", "provider": "muse", "cwd": cwd, "title": "Muse chat",
+                            "created_at_unix": 1, "fast": false, "contributor_opt_out": opted_out,
+                            "approval_mode": "supervised", "state": {"state": state},
+                        }, {
+                            "id": "chat-2", "provider": "codex", "cwd": cwd, "title": "Codex chat",
+                            "created_at_unix": 1, "fast": false, "approval_mode": "supervised",
+                            "state": {"state": "idle"},
+                        }]),
+                        other => panic!("unexpected {other}"),
+                    };
+                    let response =
+                        serde_json::json!({"id": request["id"], "ok": true, "result": result});
+                    writeln!(writer, "{response}").unwrap();
+                    seen.push(request);
+                    line.clear();
+                }
+                seen
+            });
+            let mut client = Client::connect(&socket).unwrap();
+            let configure = |model: Option<&str>, mode| ChatCommand::Configure {
+                model: model.map(Into::into),
+                effort: None,
+                approval_mode: None,
+                fast: None,
+                contributor_mode: mode,
+                contributor_opt_out: None,
+            };
+            // Stopped, on is not set, and the chat it started is stopped again: no host before
+            // `contributor_mode` can turn it on.
+            let error = client
+                .command("chat-1", configure(None, Some(ContributorMode::On)))
+                .unwrap_err();
+            assert!(
+                error.contains("predates turning Muse contributor mode on")
+                    && error.contains("still runs with your Muse settings")
+                    && error.contains("stopped again"),
+                "{older:?}: {error}"
+            );
+            // Off is set by a host that reads the opt-out, and not by one from before it.
+            let off = client.command("chat-1", configure(None, Some(ContributorMode::Off)));
+            match older {
+                OlderHost::OptOutOnly => off.unwrap(),
+                OlderHost::BeforeOptOut => {
+                    let error = off.unwrap_err();
+                    assert!(
+                        error.contains("predates turning Muse contributor mode off")
+                            && error.contains("stopped again"),
+                        "{error}"
+                    );
+                }
             }
-            seen
-        });
-        let mut client = Client::connect(&socket).unwrap();
-        let configure = |model: Option<&str>, contributor_opt_out| ChatCommand::Configure {
-            model: model.map(Into::into),
-            effort: None,
-            approval_mode: None,
-            fast: None,
-            contributor_opt_out,
-        };
-        // Stopped, the chat it started is stopped again.
-        let error = client
-            .command("chat-1", configure(None, Some(false)))
-            .unwrap_err();
-        assert!(
-            error.contains("predates changing Muse contributor mode")
-                && error.contains("stopped again"),
-            "{error}"
-        );
-        // What the chat already has needs no change; a Configure without it is not checked.
-        client
-            .command("chat-1", configure(None, Some(true)))
-            .unwrap();
-        client
-            .command("chat-1", configure(Some("m"), None))
-            .unwrap();
-        // Running, it was not started for this, and runs on.
-        let error = client
-            .command("chat-1", configure(None, Some(false)))
-            .unwrap_err();
-        assert!(!error.contains("stopped again"), "{error}");
-        drop(client);
-        let seen = host.join().unwrap();
-        let ops: Vec<_> = seen.iter().map(|r| r["op"].as_str().unwrap()).collect();
-        assert_eq!(
-            ops,
-            [
-                "list", "command", "list", "close", "list", "command", "list", "command", "list",
-                "command", "list"
-            ]
-        );
-        assert_eq!(seen[1]["command"]["contributor_opt_out"], false);
-        let _ = std::fs::remove_dir_all(&dir);
+            // A Configure without it is not checked; a Retry starts the chat.
+            client
+                .command("chat-1", configure(Some("m"), None))
+                .unwrap();
+            client.command("chat-1", configure(None, None)).unwrap();
+            // Running, it was not started for this, and runs on.
+            let error = client
+                .command("chat-1", configure(None, Some(ContributorMode::On)))
+                .unwrap_err();
+            assert!(!error.contains("stopped again"), "{error}");
+            let still = match older {
+                OlderHost::OptOutOnly => "still runs with contributor mode off",
+                OlderHost::BeforeOptOut => "still runs with your Muse settings",
+            };
+            assert!(error.contains(still), "{error}");
+            // A Codex chat's off goes without the older field, which such a host refuses there,
+            // and is what that chat has.
+            client
+                .command("chat-2", configure(None, Some(ContributorMode::Off)))
+                .unwrap();
+            drop(client);
+            let seen = host.join().unwrap();
+            let ops: Vec<_> = seen.iter().map(|r| r["op"].as_str().unwrap()).collect();
+            let off_ops: &[&str] = match older {
+                OlderHost::OptOutOnly => &["list", "command", "list"],
+                OlderHost::BeforeOptOut => &["list", "command", "list", "close"],
+            };
+            let expected: Vec<&str> = ["list", "command", "list", "close"]
+                .iter()
+                .chain(off_ops)
+                .chain(&["command", "command", "list", "command", "list"])
+                .chain(&["list", "command", "list"])
+                .copied()
+                .collect();
+            assert_eq!(ops, expected, "{older:?}");
+            // On is sent as itself; off the older way too.
+            assert_eq!(
+                seen[1]["command"],
+                serde_json::json!({"command": "configure", "contributor_mode": "on"})
+            );
+            assert_eq!(
+                seen[5]["command"],
+                serde_json::json!({
+                    "command": "configure", "contributor_mode": "off", "contributor_opt_out": true
+                })
+            );
+            assert_eq!(
+                seen[seen.len() - 2]["command"],
+                serde_json::json!({"command": "configure", "contributor_mode": "off"})
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// A host stand-in that answers one `Subscribe` and then writes what the

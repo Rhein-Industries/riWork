@@ -50,9 +50,9 @@ use super::client;
 use super::driver::{Driver, DriverConfig, DriverReport, DriverReporter, StartDriver};
 use super::log::{self, ChatLog};
 use super::model::{
-    CarriedOver, ChatCommand, ChatEvent, ChatInfo, ChatState, Decision, Item, ItemBody, ItemStatus,
-    NewChat, NoticeLevel, ORCHESTRATOR_EXISTS, OrchestratorScope, Provider, Transcript,
-    TurnOutcome, notice_kind,
+    CarriedOver, ChatCommand, ChatEvent, ChatInfo, ChatState, ContributorMode, Decision, Item,
+    ItemBody, ItemStatus, NewChat, NoticeLevel, ORCHESTRATOR_EXISTS, OrchestratorScope, Provider,
+    Transcript, TurnOutcome, notice_kind,
 };
 use super::wire::{Envelope, Request, Response};
 use fs2::FileExt;
@@ -420,6 +420,9 @@ impl Inner {
         last_seq: u64,
         dismissals: Arc<Mutex<super::notice_dismissals::Dismissals>>,
     ) -> Self {
+        // A chat saved before `contributor_mode` is off, and says so to readers from before.
+        let mut info = info;
+        info.settle_contributor();
         Self {
             provider_account_identity: super::account_identity::read(log.dir()),
             info,
@@ -579,6 +582,7 @@ impl Inner {
 
     /// Publishes the info after a change to anything but the state.
     fn publish_info(&mut self) {
+        self.info.settle_contributor();
         self.save_info();
         self.append(ChatEvent::Info {
             info: self.info.clone(),
@@ -1422,10 +1426,17 @@ fn create_identified(
     // never recorded as fast, and says so (`fast_refused` below).
     let fast_refused = new.provider == Provider::Muse && new.fast;
     new.fast &= !fast_refused;
-    // Contributor mode is Muse's alone. A Codex or Claude chat asked to opt out of it is made
-    // the same way: never recorded as opted out, and it says so (`contributor_refused`).
-    let contributor_refused = new.provider != Provider::Muse && new.contributor_opt_out;
-    new.contributor_opt_out &= !contributor_refused;
+    // Contributor mode is off unless asked on; an older caller's opt-out is an off.
+    if new.contributor_mode == ContributorMode::On && new.contributor_opt_out {
+        return Err(super::model::CONTRIBUTOR_CONTRADICTION.into());
+    }
+    // It is Muse's alone. A Codex or Claude chat asked for one is made off, as every chat is
+    // unless asked on, and it says so (`contributor_refused`).
+    let contributor_refused = new.provider != Provider::Muse
+        && (new.contributor_mode == ContributorMode::On || new.contributor_opt_out);
+    if contributor_refused {
+        new.contributor_mode = ContributorMode::Off;
+    }
     new.parent_id = crate::project_tabs::same_project_parent(
         &shared.home,
         new.project_id.as_deref(),
@@ -1471,7 +1482,7 @@ fn create_identified(
         .map(|title| title.trim().to_owned())
         .filter(|title| !title.is_empty())
         .unwrap_or_else(|| default_title(new.provider).to_owned());
-    let info = ChatInfo {
+    let mut info = ChatInfo {
         parent_id: new.parent_id,
         user_title: new
             .title
@@ -1491,13 +1502,15 @@ fn create_identified(
         model: new.model,
         effort: new.effort,
         fast: new.fast,
-        contributor_opt_out: new.contributor_opt_out,
+        contributor_mode: new.contributor_mode,
+        contributor_opt_out: false,
         approval_mode: new.approval_mode,
         codex_account_id: account,
         state: ChatState::Starting,
         orchestrator: new.orchestrator,
         carried_over: None,
     };
+    info.settle_contributor();
     let provider = info.provider;
     let dir = log::chat_dir(&shared.home, &id).ok_or("invalid chat id")?;
     let log = ChatLog::create(&dir, &info)?;
@@ -1530,7 +1543,7 @@ fn create_identified(
                 body: ItemBody::notice(
                     NoticeLevel::Warning,
                     format!(
-                        "Only Muse has a contributor mode to opt out of; this {} chat starts as usual.",
+                        "Only Muse has a contributor mode; this {} chat starts without one.",
                         provider_name(provider)
                     ),
                     Some(notice_kind::SETTING_REFUSED),
@@ -1660,6 +1673,9 @@ fn load_chats(
             info.state,
             ChatState::Starting | ChatState::Running | ChatState::Waiting
         );
+        let mut settled = info.clone();
+        settled.settle_contributor();
+        let unsettled = settled != info;
         let mut inner = Inner::new(info, chat_log, last, dismissals.clone());
         if was_at_work {
             // Only a chat that died mid-turn needs its log read whole.
@@ -1678,6 +1694,11 @@ fn load_chats(
         ) {
             inner.settle(TurnOutcome::Interrupted);
             inner.set_state(ChatState::Stopped);
+        }
+        // A chat saved before `contributor_mode` is off: its log says so too, for a tab that
+        // replays it and a reader from before.
+        if unsettled {
+            inner.publish_info();
         }
         if let Err(error) = refresh_notice_dismissals(home, &name, &mut inner) {
             eprintln!("riwork chat: {error}");
@@ -2151,13 +2172,14 @@ fn configure_command_locked(
     command: ChatCommand,
 ) -> Result<(), String> {
     muse_refusal(&chat.info(), &command)?;
-    contributor_refusal(&chat.info(), &command)?;
+    let contributor = command.requested_contributor_mode()?;
+    contributor_refusal(&chat.info(), &command, contributor)?;
     let ChatCommand::Configure {
         model,
         effort,
         approval_mode,
         fast,
-        contributor_opt_out,
+        ..
     } = &command
     else {
         return Err("expected a Configure command".into());
@@ -2165,7 +2187,7 @@ fn configure_command_locked(
     let settings = model.is_some() || effort.is_some() || approval_mode.is_some() || fast.is_some();
     // A tab's Retry has no settings, and is the only Configure that starts a
     // stopped provider. Choices made before first use remain saved for start.
-    if !settings && contributor_opt_out.is_none() {
+    if !settings && contributor.is_none() {
         ensure_running_locked(shared, chat)?;
     }
     {
@@ -2176,8 +2198,8 @@ fn configure_command_locked(
     }
     // A change comes alone (`contributor_refusal`); beside other settings it is the value the
     // chat has, and only they change.
-    if let Some(opt_out) = *contributor_opt_out {
-        configure_contributor_locked(shared, chat, opt_out)?;
+    if let Some(mode) = contributor {
+        configure_contributor_locked(shared, chat, mode)?;
         if !settings {
             return Ok(());
         }
@@ -2188,6 +2210,7 @@ fn configure_command_locked(
         effort: effort.clone(),
         approval_mode: *approval_mode,
         fast: *fast,
+        contributor_mode: None,
         contributor_opt_out: None,
     };
     let Some((generation, driver)) = live_driver(chat) else {
@@ -2253,25 +2276,37 @@ fn configure_command_locked(
 /// settings, which the Muse started again for the change could still refuse, leaving the change
 /// made and the command failed. Asking for the value the chat already has changes nothing and is
 /// not refused, as asking Muse for no fast mode is not.
-fn contributor_refusal(info: &ChatInfo, command: &ChatCommand) -> Result<(), String> {
-    let ChatCommand::Configure {
-        model,
-        effort,
-        approval_mode,
-        fast,
-        contributor_opt_out: Some(opt_out),
-    } = command
+fn contributor_refusal(
+    info: &ChatInfo,
+    command: &ChatCommand,
+    requested: Option<ContributorMode>,
+) -> Result<(), String> {
+    let (
+        Some(mode),
+        ChatCommand::Configure {
+            model,
+            effort,
+            approval_mode,
+            fast,
+            ..
+        },
+    ) = (requested, command)
     else {
         return Ok(());
     };
-    if *opt_out == info.contributor_opt_out {
+    if mode == info.contributor_mode {
         return Ok(());
     }
+    // A chat that is not Muse's starts no Muse: it keeps the mode it had as Muse's for a switch
+    // back, which it can turn off, but never on.
     if info.provider != Provider::Muse {
-        return Err(format!(
-            "Only Muse has a contributor mode; this {} chat has none to change.",
-            provider_name(info.provider)
-        ));
+        return match mode {
+            ContributorMode::Off => Ok(()),
+            ContributorMode::On => Err(format!(
+                "Only Muse has a contributor mode to turn on; this {} chat keeps it off.",
+                provider_name(info.provider)
+            )),
+        };
     }
     if model.is_some() || effort.is_some() || approval_mode.is_some() || fast.is_some() {
         return Err("Change contributor mode on its own: Muse starts again for it.".into());
@@ -2279,23 +2314,29 @@ fn contributor_refusal(info: &ChatInfo, command: &ChatCommand) -> Result<(), Str
     Ok(())
 }
 
-/// Opts a Muse chat out of contributor mode, or hands the mode back to the user's Muse
-/// settings. Muse fixes the mode when `muse serve` starts and MSP has no field for it, so no
+/// Turns a Muse chat's contributor mode on or off. Muse fixes the mode when `muse serve` starts
+/// and MSP has no field for it, so no
 /// driver can be configured with it. A chat with no process keeps the value for its next
 /// start. An idle one has its process stopped and started again with the value, and the start
 /// resumes the same Muse session with the standing model, effort and approval mode, as any
 /// resume does. While a turn runs or waits for the user, or the process still starts, the
 /// change is refused and the chat keeps its value. A start that fails leaves the chat failed,
 /// as any failed start does, and with the value it had: no process runs with the new one, and
-/// the next start uses the old one again; a notice says so.
+/// the next start uses the old one again; a notice says so. A chat of another provider, which
+/// keeps the mode for a switch back to Muse, only stores it: its own process is not Muse's.
 fn configure_contributor_locked(
     shared: &Shared,
     chat: &Arc<Chat>,
-    opt_out: bool,
+    mode: ContributorMode,
 ) -> Result<(), String> {
     let before = {
         let mut inner = lock(&chat.inner);
-        if inner.info.contributor_opt_out == opt_out {
+        if inner.info.contributor_mode == mode {
+            return Ok(());
+        }
+        if inner.info.provider != Provider::Muse {
+            inner.info.contributor_mode = mode;
+            inner.publish_info();
             return Ok(());
         }
         let at_work = matches!(inner.info.state, ChatState::Running | ChatState::Waiting)
@@ -2312,11 +2353,11 @@ fn configure_contributor_locked(
             return Err("Muse is still starting; change contributor mode once it is ready.".into());
         }
         if !inner.live() {
-            inner.info.contributor_opt_out = opt_out;
+            inner.info.contributor_mode = mode;
             inner.publish_info();
             return Ok(());
         }
-        inner.info.contributor_opt_out
+        inner.info.contributor_mode
     };
     if shared.quit.load(Ordering::SeqCst) {
         return Err("the chat host is shutting down".into());
@@ -2327,23 +2368,19 @@ fn configure_contributor_locked(
         if inner.deleted || inner.broken {
             return Err("this chat cannot be configured".into());
         }
-        inner.info.contributor_opt_out = opt_out;
+        inner.info.contributor_mode = mode;
         inner.publish_info();
     }
     let Err(error) = ensure_running_locked(shared, chat) else {
         return Ok(());
     };
     let mut inner = lock(&chat.inner);
-    inner.info.contributor_opt_out = before;
+    inner.info.contributor_mode = before;
     inner.publish_info();
     let text = format!(
         "Contributor mode was not changed: the restart for it did not complete ({error}). \
-         This chat keeps {}.",
-        if before {
-            "contributor mode off"
-        } else {
-            "following your Muse settings"
-        }
+         This chat keeps contributor mode {}.",
+        before.as_str()
     );
     let id = format!("contributor-refused-{}", inner.next_seq);
     inner.append(ChatEvent::ItemCompleted {
@@ -2431,6 +2468,7 @@ fn switch(
                 effort,
                 approval_mode: None,
                 fast,
+                contributor_mode: None,
                 contributor_opt_out: None,
             },
         );

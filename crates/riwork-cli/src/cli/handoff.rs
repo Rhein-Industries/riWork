@@ -7,16 +7,17 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use super::{
-    effort_setting, ensure_empty, json_text, model_setting, take_verbatim_option, write_stdout,
+    effort_setting, ensure_empty, json_text, model_setting, take_flag, take_verbatim_option,
+    write_stdout,
 };
 use crate::{
-    chat::model::ApprovalMode,
+    chat::model::{ApprovalMode, ContributorMode},
     codex_accounts::CodexAccountBinding,
     handoff::{self, Context, Env, Kind, Request, Started, summary::Timing},
     sessions::HarnessKind,
 };
 
-pub(super) const USAGE: &str = "Usage: riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok|muse [--model NAME] [--effort LEVEL] [--account LABEL_OR_ID] [--mode supervised|auto-edit|full|plan] [--context transcript|summary] [--note TEXT] [--json]";
+pub(super) const USAGE: &str = "Usage: riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok|muse [--model NAME] [--effort LEVEL] [--account LABEL_OR_ID] [--mode supervised|auto-edit|full|plan] [--contributor-on] [--context transcript|summary] [--note TEXT] [--json]";
 
 /// The longest note, in characters.
 const MAX_NOTE_CHARS: usize = 2000;
@@ -31,6 +32,8 @@ pub(super) struct Arguments {
     pub effort: Option<String>,
     pub account: Option<String>,
     pub mode: Option<ApprovalMode>,
+    /// Muse's contributor mode on for the new agent; off without it.
+    pub contributor_on: bool,
     pub context: Context,
     pub note: Option<String>,
 }
@@ -80,7 +83,13 @@ pub(super) fn parse(mut args: Vec<String>) -> Result<Arguments, String> {
         Some("summary") => Context::Summary,
         Some(_) => return Err("--context must be transcript or summary".into()),
     };
+    let contributor_on = take_flag(&mut args, "--contributor-on");
     ensure_empty(&args)?;
+    if contributor_on && provider != HarnessKind::Muse {
+        return Err(
+            "--contributor-on needs --provider muse: only Muse has a contributor mode".into(),
+        );
+    }
     Ok(Arguments {
         from,
         kind,
@@ -89,6 +98,7 @@ pub(super) fn parse(mut args: Vec<String>) -> Result<Arguments, String> {
         effort,
         account,
         mode,
+        contributor_on,
         context,
         note,
     })
@@ -146,6 +156,11 @@ pub(super) fn output(caller: &Caller<'_>, args: Vec<String>, json: bool) -> Resu
         effort: arguments.effort,
         account: arguments.account,
         mode: arguments.mode,
+        contributor: if arguments.contributor_on {
+            ContributorMode::On
+        } else {
+            ContributorMode::Off
+        },
         context: arguments.context,
         note: arguments.note,
     };

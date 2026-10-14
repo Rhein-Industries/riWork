@@ -56,6 +56,13 @@ fn accept_within(listener: &UnixListener) -> UnixStream {
     }
 }
 fn setup(provider: Provider, recurring: bool) -> (TestHost, ScheduleStore, Schedule) {
+    setup_with(provider, recurring, true)
+}
+fn setup_with(
+    provider: Provider,
+    recurring: bool,
+    fast: bool,
+) -> (TestHost, ScheduleStore, Schedule) {
     let mut providers = fake_providers();
     providers.account = crate::chat::launch::account_for;
     let host = TestHost::with_providers(quick_options(), providers);
@@ -69,7 +76,7 @@ fn setup(provider: Provider, recurring: bool) -> (TestHost, ScheduleStore, Sched
         provider,
         Some("fixture-model".into()),
         Some("high".into()),
-        true,
+        fast,
         ApprovalMode::Supervised,
         None,
     )
@@ -137,6 +144,111 @@ fn fresh_chat_once_both_providers_pin_configuration_and_leave_orchestrator_alone
         assert_eq!(sends(&host), 1);
     }
 }
+#[test]
+fn a_scheduled_muse_chat_starts_off_and_one_an_older_host_started_otherwise_is_stopped_unsent() {
+    use crate::chat::{
+        model::{ChatInfo, ChatState, ContributorMode},
+        wire::{Request, Response},
+    };
+    use std::io::{BufRead, BufReader, Write};
+    // This host: off, as every Muse RiWork starts unless asked on, and sent its prompt.
+    let (mut host, store, _) = setup_with(Provider::Muse, false, false);
+    store.tick(100).unwrap();
+    let run = row(&store).last_run.unwrap();
+    assert_eq!(run.outcome, Outcome::Submitted, "{run:?}");
+    let created = host.info(run.created_chat_id.as_ref().unwrap());
+    assert_eq!(
+        (created.contributor_mode, created.contributor_opt_out),
+        (ContributorMode::Off, true)
+    );
+    let work = host.work().canonicalize().unwrap();
+    assert_eq!(
+        fake_for(&work).starts.lock().unwrap()[0].contributor_mode,
+        ContributorMode::Off
+    );
+    assert_eq!(sends(&host), 1);
+
+    // A host from before contributor opt-out reads past the off and makes the chat under the
+    // user's Muse settings: it is stopped, and sent nothing.
+    let (mut older, store, _) = setup_with(Provider::Muse, false, false);
+    host.stop();
+    let home = older.home.clone();
+    older.stop();
+    let socket = socket_path(&home);
+    let _ = std::fs::remove_file(&socket);
+    let listener = UnixListener::bind(&socket).unwrap();
+    let thread = std::thread::spawn(move || {
+        let stream = accept_within(&listener);
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut writer = stream;
+        let mut seen = Vec::new();
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap() == 0 {
+                return seen;
+            }
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let result = match serde_json::from_str::<Request>(&line).unwrap() {
+                Request::Capabilities { .. } => serde_json::json!({"identified_create": true}),
+                Request::Create {
+                    chat: new,
+                    chat_id: Some(chat_id),
+                    ..
+                } => serde_json::to_value(ChatInfo {
+                    parent_id: None,
+                    user_title: None,
+                    first_user_message: None,
+                    provider_title: None,
+                    id: chat_id,
+                    provider: new.provider,
+                    project_id: new.project_id,
+                    worktree_id: None,
+                    cwd: new.cwd,
+                    title: new.title.unwrap(),
+                    created_at_unix: 100,
+                    provider_thread_id: None,
+                    model: new.model,
+                    effort: new.effort,
+                    fast: new.fast,
+                    contributor_mode: ContributorMode::Off,
+                    contributor_opt_out: false,
+                    approval_mode: new.approval_mode,
+                    codex_account_id: new.codex_account_id,
+                    state: ChatState::Idle,
+                    orchestrator: None,
+                    carried_over: None,
+                })
+                .unwrap(),
+                Request::Close { .. } => serde_json::Value::Null,
+                other => panic!("an older host's chat is sent nothing: {other:?}"),
+            };
+            let id = request["id"].as_str().unwrap().to_owned();
+            let response = Response {
+                id,
+                ok: true,
+                result: Some(result),
+                error: None,
+            };
+            writeln!(writer, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+            seen.push(request);
+        }
+    });
+    store.tick(100).unwrap();
+    let seen = thread.join().unwrap();
+    let ops: Vec<_> = seen.iter().map(|r| r["op"].as_str().unwrap()).collect();
+    assert_eq!(ops, ["capabilities", "create", "close"]);
+    // The off is said the older way too, which a host before contributor mode on reads.
+    assert_eq!(seen[1]["chat"]["contributor_opt_out"], true);
+    let run = row(&store).last_run.unwrap();
+    assert_eq!(run.outcome, Outcome::Failed, "{run:?}");
+    let message = format!("{run:?}");
+    assert!(
+        message.contains("predates RiWork's contributor mode off by default")
+            && message.contains("it was stopped"),
+        "{message}"
+    );
+}
+
 #[test]
 fn fresh_chat_racing_ticks_and_host_restart_create_once_per_occurrence() {
     let (mut host, store, _) = setup(Provider::Claude, true);
@@ -366,6 +478,7 @@ fn fresh_chat_failed_or_ambiguous_create_send_never_retries_and_claim_precedes_c
                                 model: new.model,
                                 effort: new.effort,
                                 fast: new.fast,
+                                contributor_mode: Default::default(),
                                 contributor_opt_out: new.contributor_opt_out,
                                 approval_mode: new.approval_mode,
                                 codex_account_id: new.codex_account_id,

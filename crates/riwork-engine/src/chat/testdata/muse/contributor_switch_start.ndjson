@@ -1,0 +1,6 @@
+# A Muse chat back from another provider: a session of its own, started with no model or effort
+# chosen and the chat's approval mode; the carried-over conversation waits for its first turn.
+{"type":"expect","frame":{"id":"<any>","method":"initialize","params":{"clientInfo":{"name":"riwork"},"capabilities":{"requestedCapabilities":["sessionMcp"]}}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"serverInfo":{"name":"muse","version":"1.4.7"},"grantedCapabilities":["sessionMcp"]}}]}
+{"type":"expect","frame":{"method":"initialized"},"reply":[]}
+{"type":"expect","frame":{"id":"<any>","method":"session/start","params":{"commandId":"<any>","workspaceRoot":"<any>","approvalMode":"allowAll"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"session":{"sessionId":"sess-2","activeTurnId":null,"turnCount":0},"viewCursor":""}}]}
+{"type":"expect","frame":{"id":"<any>","method":"model/list","params":{"sessionId":"sess-2"}},"reply":[{"jsonrpc":"2.0","id":"$id","result":{"providerId":"fake","profileId":null,"source":"fakeCatalog","models":[]}}]}
