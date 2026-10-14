@@ -2161,7 +2161,7 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
     }
     driver.command(command.clone())?;
     drop(driver);
-    if let ChatCommand::Send { text } = &command {
+    if let ChatCommand::Send { text } | ChatCommand::SendAttachments { text, .. } = &command {
         let mut inner = lock(&chat.inner);
         if inner
             .run

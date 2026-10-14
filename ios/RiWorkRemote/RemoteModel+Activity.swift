@@ -82,9 +82,9 @@ extension RemoteModel {
         // than the screen, its lists with it; the next refresh brings them. Its tab list is only believed if not older either.
         guard inventoryStamp == stamp else { return }
         if let listedTabs, !acceptSharedTabs(listedTabs) { return }
-        if let listedChats { installChats(listedChats, project: project) }
         if let listedShells, listedShells != shells { shells = listedShells }
         if let listedManagers, listedManagers != orchestrators { orchestrators = listedManagers }
+        if let listedChats { installChats(listedChats, project: project) }
         // The project's first shared list arrives late (its first read failed): the remembered tab comes back now.
         if listedTabs != nil { restorePendingTab(project: project) }
         // An orchestrator that runs as a chat comes and goes with this list, and so does the chat it opened.

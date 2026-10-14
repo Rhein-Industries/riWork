@@ -164,11 +164,16 @@ extension RemoteModel {
     /// The chosen project's strip, whatever the scope: the earlier one, or the desktop's shared list, without the global orchestrator.
     var projectTabs: [ProjectTab] {
         OrchestratorScope.projectTabs(orchestrators: orchestrators, shells: shells, chats: chats, shared: sharedTabs, project: projectID,
-                                      chatsAvailable: chatSupport != .unsupported, missing: missingSessionIDs)
+                                      chatsAvailable: chatSupport != .unsupported, missing: missingSessionIDs,
+                                      knownInfo: { chatConversations[$0]?.transcript.info })
     }
     /// The global orchestrator's tabs (normally one), whatever the scope: what the dashboard and the Global screen show.
     var globalTabs: [ProjectTab] {
         OrchestratorScope.globalTabs(orchestrators: orchestrators, chatsAvailable: chatSupport != .unsupported, missing: missingSessionIDs)
+    }
+    func hasChatMetadata(_ id: String) -> Bool {
+        chats.contains { $0.id == id } || chatConversations[id]?.transcript.info != nil
+            || sessions.contains { $0.chat_id == id && $0.provider != nil }
     }
     /// The chosen project's own chats in tab order: those that are not an orchestrator's.
     var projectChats: [ChatInfo] { projectTabs.compactMap { if case .chat(let info) = $0 { info } else { nil } } }
@@ -294,6 +299,14 @@ extension RemoteModel {
         for id in chatConversations.keys where !known.contains(id) && chatConversations[id]?.following != true && !chatSendsInFlight.contains(id) { chatConversations[id] = nil }
         lastListRead[.sessions] = .now
     }
+    /// Current info from the chat reader also fills in a tab whose separate metadata listing failed.
+    func installChatInfo(_ info: ChatInfo) {
+        if let index = chats.firstIndex(where: { $0.id == info.id }) {
+            if chats[index].provider != info.provider || ChatTabs.title(chats[index]) != ChatTabs.title(info) { chats[index] = info }
+        } else if projectID != nil, sharedTabs?.allEntries.contains(where: { $0.kind == .chat && $0.sessionID == info.id }) == true {
+            chats.append(info)
+        }
+    }
 
     /// The chats of a project, for a project load; nil when the desktop has none to offer or the list could not be read.
     func chatsOfProject(_ id: String) async -> [ChatInfo]? {
@@ -304,10 +317,10 @@ extension RemoteModel {
     /// Reads the project's chats again without the side effects of a full refresh. A failed read is skipped: the next one tries again.
     func refreshChatsQuietly() async {
         guard state == .connected, chatSupport != .unsupported, desktopFeatures.chat, let project = projectID, let request = try? ChatListRequest(projectID: project) else { return }
-        let token = generation
+        let token = generation, stamp = inventoryStamp
         do {
             let listed = try await client.listChats(request)
-            guard generation == token, projectID == project, state == .connected else { return }
+            guard generation == token, projectID == project, state == .connected, inventoryStamp == stamp else { return }
             installChats(listed, project: project)
         } catch ChatControlError.unsupported {
             if generation == token { chatSupport = .unsupported }
@@ -384,7 +397,7 @@ extension RemoteModel {
                     guard !Task.isCancelled, conversation.follower == token, generation == connection else { continue }
                     conversation.install(snapshot)
                     conversation.readError = nil
-                    if let info = conversation.transcript.info { prepareChatCatalogue(info) }
+                    if let info = conversation.transcript.info { installChatInfo(info); prepareChatCatalogue(info) }
                 } catch {
                     guard !Task.isCancelled, conversation.follower == token, generation == connection else { continue }
                     if RemoteError.isUnsupportedMethod(error) {
@@ -449,9 +462,8 @@ extension RemoteModel {
                     conversation.legacyLoading = false
                 }
                 // A chat that went on with the other provider: its tab shows the new one's mark and name at once.
-                if let info = conversation.transcript.info, let at = chats.firstIndex(where: { $0.id == info.id }),
-                   chats[at].provider != info.provider || chats[at].title != info.title { chats[at] = info }
                 if let info = conversation.transcript.info {
+                    installChatInfo(info)
                     prepareChatCatalogue(info)
                 }
                 if chatSupport == .unknown { chatSupport = .supported }

@@ -47,25 +47,51 @@ public enum OrchestratorScope {
     /// A project's strip: the earlier one (every terminal and chat of the project) or, with the desktop's shared list, its visible entries
     /// in its order and with its titles. The global orchestrator is never in it, whatever either list says.
     /// - `missing`: terminals the desktop no longer has.
+    /// - `knownInfo`: what the phone knows of a chat besides `chats` (its live reader's info), for a shared chat tab whose `chats.list`
+    ///   read failed: membership and names come from the shared list, so the chat stays in the strip.
     public static func projectTabs(orchestrators: [RemoteSession], shells: [RemoteSession], chats: [ChatInfo], shared: SharedTabsReply?,
-                                   project: String?, chatsAvailable: Bool, missing: Set<String> = []) -> [ProjectTab] {
+                                   project: String?, chatsAvailable: Bool, missing: Set<String> = [],
+                                   knownInfo: (String) -> ChatInfo? = { _ in nil }) -> [ProjectTab] {
         let entries = projectEntries(orchestrators: orchestrators, shells: shells, project: project)
         let legacy = ProjectTabs.tabs(sessions: entries, chats: projectChats(chats, orchestrators: orchestrators), chatsAvailable: chatsAvailable, missing: missing)
         guard let shared else { return legacy }
         let global = globalIDs(orchestrators)
-        let listed = Dictionary(legacy.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // Chat and shell identities are kept apart (`ProjectTab.key`), even when their ids coincide.
+        var listed = Dictionary(legacy.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        // An older desktop can share an orchestrator's chat tab while refusing chat reads. Keep its update notice in the strip.
+        for case .unavailable(let session, let opening) in legacy {
+            if let id = session.chat_id { listed["chat:\(id)"] = .unavailable(session, opening) }
+        }
         return shared.visible.compactMap { entry in
             guard !global.contains(entry.sessionID) else { return nil }
             if entry.kind == .shell, var session = entries.first(where: { $0.id == entry.sessionID && $0.alive && $0.mode != .chat && !missing.contains($0.id) }) {
                 session.sharedTitle = entry.title; return .terminal(session)
             }
-            guard let tab = listed[entry.sessionID] else { return nil }
-            switch tab {
-            case .chat(var info): info.title = entry.title; return .chat(info)
-            case .terminal(var session): session.sharedTitle = entry.title; return .terminal(session)
-            case .orchestratorChat(var session, var info): session.sharedTitle = entry.title; info.title = entry.title; return .orchestratorChat(session, info)
-            case .unavailable: return tab
+            guard entry.kind != .unknown else { return nil }
+            guard let tab = listed[entry.key] else {
+                // Membership and names come from tabs.list. A separate chats.list failure must not erase its visible chats.
+                guard entry.kind == .chat, chatsAvailable else { return nil }
+                var info = knownInfo(entry.sessionID) ?? ChatInfo(id: entry.sessionID, provider: .codex, projectID: project, state: chatState(entry.status))
+                info.title = entry.title; info.sharedTitle = entry.title
+                return .chat(info)
             }
+            switch tab {
+            case .chat(var info): info.title = entry.title; info.sharedTitle = entry.title; return .chat(info)
+            case .terminal(var session): session.sharedTitle = entry.title; return .terminal(session)
+            case .orchestratorChat(var session, var info):
+                session.sharedTitle = entry.title; info.title = entry.title; info.sharedTitle = entry.title; return .orchestratorChat(session, info)
+            case .unavailable(var session, let opening): session.sharedTitle = entry.title; return .unavailable(session, opening)
+            }
+        }
+    }
+    /// A chat's state from what its shared tab says, for a chat the phone has no metadata for.
+    static func chatState(_ status: SharedTab.Status) -> ChatState {
+        switch status {
+        case .working: .running
+        case .waiting: .waiting
+        case .error: .failed("")
+        case .stopped: .stopped
+        case .done, .idle, .unknown: .idle
         }
     }
 

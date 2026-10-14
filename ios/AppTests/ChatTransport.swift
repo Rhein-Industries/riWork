@@ -94,6 +94,9 @@ actor ChatTransport: RemoteTransport {
     /// The next this many `tabs.list` fail (a transient error).
     var tabsListFailures = 0
     func failTabsList(_ times: Int) { tabsListFailures = times }
+    /// A transient metadata read failure while the shared tab membership is still available.
+    var chatListFailures = 0
+    func failChatList(_ times: Int) { chatListFailures = times }
     /// The next `tabs.update` fails with this (the list is left as it was).
     var tabUpdateError: RemoteError?
     func failNextTabUpdate(_ error: RemoteError?) { tabUpdateError = error }
@@ -243,6 +246,7 @@ actor ChatTransport: RemoteTransport {
             throw RemoteError.rpc(code: "not_found", message: "appearance not published")
         case "chats.list":
             guard chatFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            if chatListFailures > 0 { chatListFailures -= 1; throw RemoteError.rpc(code: "cli_error", message: "chat metadata is temporarily unavailable") }
             // Another project's chats are not this one's (a chat with no project is listed everywhere, as a careless desktop might).
             let asked = params["project_id"]?.string
             let listed = chats.filter { asked == nil || $0.projectID == nil || $0.projectID == asked }

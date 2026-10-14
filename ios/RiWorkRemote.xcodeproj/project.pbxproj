@@ -48,6 +48,7 @@
 		322C1A82C60BD0354B25A9C7 /* TerminalText.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8955D7CEEB5ED7B59073518 /* TerminalText.swift */; };
 		3265F4EE84937F2075BCC13D /* TerminalRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A81A095D55516FEF25B74FE7 /* TerminalRenderer.swift */; };
 		333F56EC293AE5D4EA85E602 /* Hotkey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25D16FF3F367060D97331536 /* Hotkey.swift */; };
+		33C54638D0BBD47924E339E7 /* ChatTitleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F70A470BC38581FDFDBE6E0 /* ChatTitleTests.swift */; };
 		3484AAEA162169159A022549 /* RelayClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B8603308BE4E27381F99D23 /* RelayClientTests.swift */; };
 		3637BC6041533A0E1FF10FFF /* AppearanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6795439BA7EC224280F7A3C /* AppearanceTests.swift */; };
 		36B32F622E0F89F229918BDA /* SessionCrypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBB58DE07D23757B5555005A /* SessionCrypto.swift */; };
@@ -137,6 +138,7 @@
 		9E94D0885FD872B27C783E93 /* ChatStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79A39F6778B08AB31AB8F4EB /* ChatStyle.swift */; };
 		9EDD0FD070217F83926D48BB /* OrchestratorScope.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A3B0DF2B702751CB56446B /* OrchestratorScope.swift */; };
 		9F8B50BB3201DF81046E4F17 /* ChatItemViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9BECAC6FFBDE353AD1FB626 /* ChatItemViews.swift */; };
+		9FA102F70D0AF4EE63109821 /* ChatTabInventoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E9C276E954E66026E077C1 /* ChatTabInventoryTests.swift */; };
 		A0ED87B0B942E67ACD6488E4 /* ChatModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE615D2BBE055F51DA9655AA /* ChatModelsTests.swift */; };
 		A1F6211D8D3A10B3049E18B3 /* QRScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8675234AB403383A87B72D40 /* QRScanner.swift */; };
 		A2BD8CFB63B55398FC500036 /* LinkFrame.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADCCA49C767C5985A947FCD0 /* LinkFrame.swift */; };
@@ -423,6 +425,7 @@
 		8DE8D5806B70B9D5C7A40CA9 /* GlobalDashboardModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalDashboardModelTests.swift; sourceTree = "<group>"; };
 		8ED396AB74466ADF62467AEC /* RemoteModel+NewProject.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteModel+NewProject.swift"; sourceTree = "<group>"; };
 		8F3C6E020BBB749B931110F2 /* ThemeSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeSyncTests.swift; sourceTree = "<group>"; };
+		8F70A470BC38581FDFDBE6E0 /* ChatTitleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTitleTests.swift; sourceTree = "<group>"; };
 		8FA26E35BA4D4F0849B6A96F /* DisplaySettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplaySettings.swift; sourceTree = "<group>"; };
 		90675A8AC9868B616738958F /* ChatTranscript.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTranscript.swift; sourceTree = "<group>"; };
 		9287C04BD3D4534F74519016 /* KeyInputTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyInputTests.swift; sourceTree = "<group>"; };
@@ -471,6 +474,7 @@
 		CF1965947C0074B1A25F613D /* HotkeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyStore.swift; sourceTree = "<group>"; };
 		D168D41A5C988FF42C747552 /* ProjectSortTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSortTests.swift; sourceTree = "<group>"; };
 		D26A762F58B2703531A1E8CB /* SpeechVocabularyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechVocabularyTests.swift; sourceTree = "<group>"; };
+		D3E9C276E954E66026E077C1 /* ChatTabInventoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTabInventoryTests.swift; sourceTree = "<group>"; };
 		D3EBC9F6BDED0CFB669CA8E8 /* HotkeyPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyPalette.swift; sourceTree = "<group>"; };
 		D4D3E28399E15D6D8E7FB045 /* NewProject.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewProject.swift; sourceTree = "<group>"; };
 		D558F7B0FE2D8E3DEF243B29 /* ChatPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPresentation.swift; sourceTree = "<group>"; };
@@ -563,6 +567,7 @@
 				B620C318695DAB885BC0F84C /* AttachmentTests.swift */,
 				401BC9C19A3B7B44A28C2497 /* ChatModelPickerTests.swift */,
 				B9EE1EDDBB54137DBB2A39D0 /* ChatModelTests.swift */,
+				D3E9C276E954E66026E077C1 /* ChatTabInventoryTests.swift */,
 				6E6556C88DC5FB6A8513323C /* ChatTransport.swift */,
 				30ADAF407C78EC481DD8B2FB /* ChatViewTests.swift */,
 				05A8ED89F54DEF74A623371A /* CommandFieldTests.swift */,
@@ -695,6 +700,7 @@
 				38133DE714F1BD5D89FD533F /* ChatPresentationTests.swift */,
 				0203B5F698C476D9D1FE5A69 /* ChatRequestsTests.swift */,
 				07661F0D1A3874613BA4233D /* ChatTests.swift */,
+				8F70A470BC38581FDFDBE6E0 /* ChatTitleTests.swift */,
 				F48930DE2A81AED9431E6F6E /* ChatTranscriptTests.swift */,
 				4E2F7282427AE16B096BE300 /* DesktopThemeTests.swift */,
 				4D187C677F4F2FCCD3803112 /* DictationMachineTests.swift */,
@@ -982,6 +988,7 @@
 				FF3313718A0946B01BC5E9C8 /* AttachmentTests.swift in Sources */,
 				66D7A09F009A6348B4E4D53E /* ChatModelPickerTests.swift in Sources */,
 				1CAB23B10F48DCCA58EA7DA7 /* ChatModelTests.swift in Sources */,
+				9FA102F70D0AF4EE63109821 /* ChatTabInventoryTests.swift in Sources */,
 				0D64FA5ADB2DA9AD49A6F418 /* ChatTransport.swift in Sources */,
 				424E4D09D90C99CDAD0596BF /* ChatViewTests.swift in Sources */,
 				8BF3D90ADC498D4A474AF7FB /* CommandFieldTests.swift in Sources */,
@@ -1095,6 +1102,7 @@
 				DC0D02BDAA0B813A5E81A425 /* ChatPresentationTests.swift in Sources */,
 				9C40AC0E4B71313AEE334FED /* ChatRequestsTests.swift in Sources */,
 				022A9FD7C8E05AC4E37B307E /* ChatTests.swift in Sources */,
+				33C54638D0BBD47924E339E7 /* ChatTitleTests.swift in Sources */,
 				FC4277CB3F19CF32B42B1872 /* ChatTranscriptTests.swift in Sources */,
 				7310044BC34A81ABBC289835 /* DesktopThemeTests.swift in Sources */,
 				394DD7A61D44470452636EAD /* DictationMachineTests.swift in Sources */,
