@@ -304,7 +304,8 @@ struct ProjectTree {
     matched_projects: usize,
 }
 
-/// Recover a deterministic forest even if an older state has missing parents or cycles.
+/// Browsing recovers a deterministic forest even if an older state has missing parents or
+/// cycles. A search ignores the folders: see `project_search`.
 fn project_tree(
     state: &State,
     query: &str,
@@ -312,11 +313,8 @@ fn project_tree(
     project_order: &[usize],
 ) -> ProjectTree {
     let query = query.trim().to_lowercase();
-    let mut project_order = project_order.to_vec();
     if !query.is_empty() {
-        // Name matches lead each folder; keep the chosen sort within both match groups.
-        project_order
-            .sort_by_key(|&index| !state.projects[index].name.to_lowercase().contains(&query));
+        return project_search(state, &query, project_order);
     }
     let folders = &state.project_folders;
     let indices: BTreeMap<_, _> = folders
@@ -396,66 +394,31 @@ fn project_tree(
     }
     let mut projects = vec![Vec::new(); folders.len()];
     let mut unfiled = Vec::new();
-    for &index in &project_order {
+    for &index in project_order {
         let project = &state.projects[index];
         match project.folder_id.as_deref().and_then(|id| indices.get(id)) {
             Some(&folder) => projects[folder].push(index),
             None => unfiled.push(index),
         }
     }
-    let project_matches = |index: usize| {
-        let project = &state.projects[index];
-        query.is_empty()
-            || [
-                project.name.as_str(),
-                project.id.as_str(),
-                project.root.to_string_lossy().as_ref(),
-            ]
-            .iter()
-            .any(|value| value.to_lowercase().contains(&query))
-    };
-    let mut include_subtree = vec![false; folders.len()];
-    let mut visible = vec![false; folders.len()];
-    let mut matching_projects = vec![Vec::new(); folders.len()];
     let mut counts: Vec<_> = projects.iter().map(Vec::len).collect();
-    for &index in &traversal {
-        let folder = &folders[index];
-        include_subtree[index] = query.is_empty()
-            || folder.name.to_lowercase().contains(&query)
-            || folder.id.to_lowercase().contains(&query)
-            || parents[index].is_some_and(|parent| include_subtree[parent]);
-        matching_projects[index] = projects[index]
-            .iter()
-            .copied()
-            .filter(|&project| include_subtree[index] || project_matches(project))
-            .collect();
-        visible[index] = include_subtree[index] || !matching_projects[index].is_empty();
-    }
     for &index in traversal.iter().rev() {
         if let Some(parent) = parents[index] {
             counts[parent] += counts[index];
-            visible[parent] |= visible[index];
         }
     }
-    let matching_unfiled: Vec<_> = unfiled
-        .iter()
-        .copied()
-        .filter(|&index| "unfiled".contains(&query) || project_matches(index))
-        .collect();
-    let matched_projects =
-        matching_unfiled.len() + matching_projects.iter().map(Vec::len).sum::<usize>();
-    let unfiled_collapsed = query.is_empty() && collapsed.contains("unfiled");
+    let unfiled_collapsed = collapsed.contains("unfiled");
     let mut rows = vec![ProjectTreeRow::Unfiled {
         count: unfiled.len(),
         collapsed: unfiled_collapsed,
     }];
     if !unfiled_collapsed {
         rows.extend(
-            matching_unfiled
-                .into_iter()
-                .map(|index| ProjectTreeRow::Project { index, depth: 1 }),
+            unfiled
+                .iter()
+                .map(|&index| ProjectTreeRow::Project { index, depth: 1 }),
         );
-        if unfiled.is_empty() && query.is_empty() {
+        if unfiled.is_empty() {
             rows.push(ProjectTreeRow::Empty { depth: 1 });
         }
     }
@@ -466,10 +429,7 @@ fn project_tree(
             continue;
         }
         hidden_below = None;
-        if !visible[index] {
-            continue;
-        }
-        let is_collapsed = query.is_empty() && collapsed.contains(&folders[index].id);
+        let is_collapsed = collapsed.contains(&folders[index].id);
         rows.push(ProjectTreeRow::Folder {
             index,
             depth,
@@ -480,19 +440,45 @@ fn project_tree(
             hidden_below = Some(depth);
             continue;
         }
-        rows.extend(matching_projects[index].iter().copied().map(|index| {
-            ProjectTreeRow::Project {
-                index,
-                depth: depth + 1,
-            }
-        }));
-        if counts[index] == 0 && children[index].is_empty() && query.is_empty() {
+        rows.extend(
+            projects[index]
+                .iter()
+                .map(|&index| ProjectTreeRow::Project {
+                    index,
+                    depth: depth + 1,
+                }),
+        );
+        if counts[index] == 0 && children[index].is_empty() {
             rows.push(ProjectTreeRow::Empty { depth: depth + 1 });
         }
     }
     ProjectTree {
         rows,
-        matched_projects,
+        matched_projects: project_order.len(),
+    }
+}
+
+/// A search lists projects alone, flat: no folder, Unfiled or empty row, and nothing found
+/// by a folder's name or ID. A project matches by its own name, ID or root; name matches
+/// lead, and each group keeps the chosen project order.
+fn project_search(state: &State, query: &str, project_order: &[usize]) -> ProjectTree {
+    let matches = |value: &str| value.to_lowercase().contains(query);
+    let (mut named, mut other) = (Vec::new(), Vec::new());
+    for &index in project_order {
+        let project = &state.projects[index];
+        if matches(&project.name) {
+            named.push(index);
+        } else if matches(&project.id) || matches(&project.root.to_string_lossy()) {
+            other.push(index);
+        }
+    }
+    named.extend(other);
+    ProjectTree {
+        matched_projects: named.len(),
+        rows: named
+            .into_iter()
+            .map(|index| ProjectTreeRow::Project { index, depth: 0 })
+            .collect(),
     }
 }
 
@@ -3692,90 +3678,343 @@ mod tests {
         );
     }
 
+    /// Nested and empty folders, an empty folder with a child, and an unfiled project.
+    fn browse_state() -> State {
+        State {
+            project_folders: vec![
+                folder("work", "Work", None),
+                folder("tools", "Tools", Some("work")),
+                folder("scripts", "Scripts", Some("tools")),
+                folder("personal", "Personal", None),
+                folder("archive", "Archive", None),
+                folder("old", "Old", Some("archive")),
+            ],
+            projects: vec![
+                project("one", "One", Some("work")),
+                project("needle", "Needle", Some("scripts")),
+                project("outside", "Outside", None),
+            ],
+            ..State::default()
+        }
+    }
+
     #[test]
-    fn project_search_keeps_ancestors_and_opens_collapsed_folders() {
-        let state = nested_state();
-        let tree = project_tree(
-            &state,
-            "Needle",
-            &HashSet::from(["work".into(), "tools".into()]),
-        );
+    fn empty_query_keeps_the_folder_tree_row_for_row() {
+        use ProjectTreeRow::{Empty, Folder, Project, Unfiled};
+        let state = browse_state();
+        let open = vec![
+            Unfiled {
+                count: 1,
+                collapsed: false,
+            },
+            Project { index: 2, depth: 1 },
+            Folder {
+                index: 4,
+                depth: 0,
+                count: 0,
+                collapsed: false,
+            },
+            Folder {
+                index: 5,
+                depth: 1,
+                count: 0,
+                collapsed: false,
+            },
+            Empty { depth: 2 },
+            Folder {
+                index: 3,
+                depth: 0,
+                count: 0,
+                collapsed: false,
+            },
+            Empty { depth: 1 },
+            Folder {
+                index: 0,
+                depth: 0,
+                count: 2,
+                collapsed: false,
+            },
+            Project { index: 0, depth: 1 },
+            Folder {
+                index: 1,
+                depth: 1,
+                count: 1,
+                collapsed: false,
+            },
+            Folder {
+                index: 2,
+                depth: 2,
+                count: 1,
+                collapsed: false,
+            },
+            Project { index: 1, depth: 3 },
+        ];
+        // Whitespace is no query: it browses the tree too.
+        for query in ["", "  ", "\t\n"] {
+            let tree = project_tree(&state, query, &HashSet::new());
+            assert_eq!(tree.rows, open, "{query:?}");
+            assert_eq!(tree.matched_projects, 3);
+        }
+        let collapsed = HashSet::from(["unfiled".into(), "tools".into(), "archive".into()]);
+        let tree = project_tree(&state, "", &collapsed);
         assert_eq!(
-            labels(&state, &tree),
-            ["unfiled", "work", "tools", "scripts", "needle"]
+            tree.rows,
+            [
+                Unfiled {
+                    count: 1,
+                    collapsed: true,
+                },
+                Folder {
+                    index: 4,
+                    depth: 0,
+                    count: 0,
+                    collapsed: true,
+                },
+                Folder {
+                    index: 3,
+                    depth: 0,
+                    count: 0,
+                    collapsed: false,
+                },
+                Empty { depth: 1 },
+                Folder {
+                    index: 0,
+                    depth: 0,
+                    count: 2,
+                    collapsed: false,
+                },
+                Project { index: 0, depth: 1 },
+                Folder {
+                    index: 1,
+                    depth: 1,
+                    count: 1,
+                    collapsed: true,
+                },
+            ]
         );
-        assert_eq!(tree.matched_projects, 1);
-        assert!(!tree.rows.iter().any(|row| matches!(
+        assert_eq!(tree.matched_projects, 3);
+        // With nothing unfiled, its heading still offers a drop target.
+        let mut state = state;
+        state.projects[2].folder_id = Some("personal".into());
+        let tree = project_tree(&state, "", &HashSet::new());
+        assert_eq!(
+            tree.rows[..6],
+            [
+                Unfiled {
+                    count: 0,
+                    collapsed: false,
+                },
+                Empty { depth: 1 },
+                Folder {
+                    index: 4,
+                    depth: 0,
+                    count: 0,
+                    collapsed: false,
+                },
+                Folder {
+                    index: 5,
+                    depth: 1,
+                    count: 0,
+                    collapsed: false,
+                },
+                Empty { depth: 2 },
+                Folder {
+                    index: 3,
+                    depth: 0,
+                    count: 1,
+                    collapsed: false,
+                },
+            ]
+        );
+        assert_eq!(tree.rows[6], Project { index: 2, depth: 1 });
+        assert_eq!(tree.matched_projects, 3);
+    }
+
+    /// Folders whose names and IDs a search could mistake for projects: an ID unlike its
+    /// name, and a project in every kind of place, nested three deep to unfiled.
+    fn search_state() -> State {
+        State {
+            project_folders: vec![
+                folder("work", "Work", None),
+                folder("tools", "Tools", Some("work")),
+                folder("scripts", "Scripts", Some("tools")),
+                folder("personal", "Personal", None),
+                folder("f-7c1", "Clients", None),
+            ],
+            projects: vec![
+                project("deep", "Deep needle", Some("scripts")),
+                project("mid", "Middle", Some("tools")),
+                project("top", "Top needle", Some("work")),
+                project("loose", "Loose needle", None),
+                project("client", "Client portal", Some("f-7c1")),
+                project("invoice", "Invoices", Some("f-7c1")),
+                project("home", "Home", Some("personal")),
+            ],
+            ..State::default()
+        }
+    }
+
+    /// The IDs a search found, once it is shown to have listed projects alone, flat.
+    fn found<'a>(state: &'a State, tree: &ProjectTree) -> Vec<&'a str> {
+        assert_eq!(tree.matched_projects, tree.rows.len());
+        tree.rows
+            .iter()
+            .map(|row| match row {
+                ProjectTreeRow::Project { index, depth: 0 } => state.projects[*index].id.as_str(),
+                row => panic!("a search listed {row:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn project_search_lists_nested_and_unfiled_matches_in_one_flat_list() {
+        let state = search_state();
+        for query in ["needle", "  NEEDLE\t"] {
+            let tree = project_tree(&state, query, &HashSet::new());
+            assert_eq!(found(&state, &tree), ["deep", "loose", "top"], "{query:?}");
+        }
+        assert!(found(&state, &project_tree(&state, "zzz", &HashSet::new())).is_empty());
+    }
+
+    #[test]
+    fn project_search_does_not_match_folder_names_or_ids() {
+        let state = search_state();
+        for query in [
+            "Work", "tools", "SCRIPTS", "personal", "Clients", "f-7c1", "7c1",
+        ] {
+            let tree = project_tree(&state, query, &HashSet::new());
+            assert!(found(&state, &tree).is_empty(), "{query:?}");
+        }
+        // "client" is in the folder's name too, but only the project named for it is found.
+        let tree = project_tree(&state, "client", &HashSet::new());
+        assert_eq!(found(&state, &tree), ["client"]);
+    }
+
+    #[test]
+    fn project_search_for_unfiled_makes_no_heading() {
+        let mut state = search_state();
+        for query in ["unfiled", "Unfiled", " UNFILED "] {
+            let tree = project_tree(&state, query, &HashSet::new());
+            assert!(found(&state, &tree).is_empty(), "{query:?}");
+        }
+        state
+            .projects
+            .push(project("notes", "Unfiled notes", Some("tools")));
+        let tree = project_tree(&state, "unfiled", &HashSet::new());
+        assert_eq!(found(&state, &tree), ["notes"]);
+    }
+
+    #[test]
+    fn project_search_finds_projects_in_collapsed_folders_without_opening_them() {
+        let state = search_state();
+        let mut collapsed: HashSet<String> = state
+            .project_folders
+            .iter()
+            .map(|folder| folder.id.clone())
+            .collect();
+        collapsed.insert("unfiled".into());
+        let before = collapsed.clone();
+        let open = project_tree(&state, "needle", &HashSet::new());
+        let tree = project_tree(&state, "needle", &collapsed);
+        assert_eq!(tree.rows, open.rows);
+        assert_eq!(found(&state, &tree), ["deep", "loose", "top"]);
+        assert_eq!(collapsed, before);
+        // Browsing again still honors every collapsed folder.
+        let tree = project_tree(&state, "", &collapsed);
+        assert!(tree.rows.iter().all(|row| matches!(
             row,
-            ProjectTreeRow::Folder {
+            ProjectTreeRow::Unfiled {
                 collapsed: true,
+                ..
+            } | ProjectTreeRow::Folder {
+                collapsed: true,
+                depth: 0,
                 ..
             }
         )));
     }
 
     #[test]
-    fn project_search_puts_names_before_paths_and_ids_while_preserving_the_selected_sort() {
-        for folder_id in [None, Some("team")] {
-            let mut state = State {
-                project_folders: vec![folder("team", "Team", None)],
-                projects: vec![
-                    project("path", "Aardvark", folder_id),
-                    project("name-a", "APP server", folder_id),
-                    project("name-z", "Zulu app", folder_id),
-                    project("app-id", "Backend", folder_id),
-                    project("other", "Viewer", folder_id),
-                ],
-                ..State::default()
-            };
-            state.projects[0].root = "/work/apps/deploy".into();
-            let edits = BTreeMap::from([
-                ("path".into(), 100),
-                ("name-a".into(), 10),
-                ("name-z".into(), 20),
-                ("app-id".into(), 50),
-            ]);
-            let names = ProjectOrder::for_sort(ProjectSort::Name);
-            let recent = ProjectOrder::for_sort(ProjectSort::LastEdited);
-            for (order, expected) in [
-                (names, ["name-a", "name-z", "path", "app-id"]),
-                (names.toggled(), ["name-z", "name-a", "app-id", "path"]),
-                (recent, ["name-z", "name-a", "path", "app-id"]),
-                (recent.toggled(), ["name-a", "name-z", "app-id", "path"]),
-            ] {
-                let indices = sorted_project_indices(&state, order, &edits, &[]);
+    fn project_search_puts_names_before_paths_and_ids_across_folders_in_every_sort() {
+        let mut state = State {
+            project_folders: search_state().project_folders,
+            projects: vec![
+                project("path", "Aardvark", Some("scripts")),
+                project("name-a", "APP server", None),
+                project("name-z", "Zulu app", Some("work")),
+                project("app-id", "Backend", Some("personal")),
+                project("other", "Viewer", Some("tools")),
+                project("name-m", "Mapper", Some("scripts")),
+            ],
+            ..State::default()
+        };
+        state.projects[0].root = "/work/apps/deploy".into();
+        for (project, created_at) in state.projects.iter_mut().zip([30, 10, 20, 40, 50, 5]) {
+            project.created_at = created_at;
+        }
+        let edits = BTreeMap::from([
+            ("path".into(), 100),
+            ("name-a".into(), 10),
+            ("name-z".into(), 20),
+            ("app-id".into(), 50),
+            ("other".into(), 70),
+        ]);
+        let shells: Vec<ShellSession> = [
+            ("path", 1),
+            ("name-a", 3),
+            ("app-id", 2),
+            ("other", 5),
+            ("name-m", 4),
+        ]
+        .into_iter()
+        .flat_map(|(project, live)| (0..live).map(move |n| (project, n)))
+        .map(|(project, n)| {
+            let mut shell: ShellSession = serde_json::from_value(serde_json::json!({
+                "id": format!("{project}-{n}"), "project_id": project, "kind": "project",
+                "cwd": "/synthetic-only/shell", "created_at_unix": 1,
+            }))
+            .unwrap();
+            shell.alive = true;
+            shell
+        })
+        .collect();
+        let name_matches = ["name-a", "name-z", "name-m"];
+        for (by, expected, reversed) in [
+            (
+                ProjectSort::Name,
+                ["name-a", "name-m", "name-z", "path", "app-id"],
+                ["name-z", "name-m", "name-a", "app-id", "path"],
+            ),
+            (
+                ProjectSort::LastEdited,
+                ["name-z", "name-a", "name-m", "path", "app-id"],
+                ["name-a", "name-z", "name-m", "app-id", "path"],
+            ),
+            (
+                ProjectSort::DateAdded,
+                ["name-z", "name-a", "name-m", "app-id", "path"],
+                ["name-m", "name-a", "name-z", "path", "app-id"],
+            ),
+            (
+                ProjectSort::LiveSessions,
+                ["name-m", "name-a", "name-z", "app-id", "path"],
+                ["name-z", "name-a", "name-m", "path", "app-id"],
+            ),
+        ] {
+            let order = ProjectOrder::for_sort(by);
+            for (order, expected) in [(order, expected), (order.toggled(), reversed)] {
+                let indices = sorted_project_indices(&state, order, &edits, &shells);
                 let tree = super::project_tree(&state, " App ", &HashSet::new(), &indices);
-                let found: Vec<_> = tree
-                    .rows
+                assert_eq!(found(&state, &tree), expected, "{order:?}");
+                // Each match group is the chosen order, filtered, whatever the folders.
+                let (named, other): (Vec<&str>, Vec<&str>) = indices
                     .iter()
-                    .filter_map(|row| match row {
-                        ProjectTreeRow::Project { index, .. } => {
-                            Some(state.projects[*index].id.as_str())
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                assert_eq!(found, expected, "{folder_id:?} {order:?}");
-                assert_eq!(tree.matched_projects, 4);
+                    .map(|&index| state.projects[index].id.as_str())
+                    .filter(|id| expected.contains(id))
+                    .partition(|id| name_matches.contains(id));
+                assert_eq!(found(&state, &tree), [named, other].concat(), "{order:?}");
             }
         }
-    }
-
-    #[test]
-    fn folder_search_includes_descendants_but_excludes_ancestor_projects() {
-        let state = nested_state();
-        let tree = project_tree(&state, "Tools", &HashSet::new());
-        assert_eq!(
-            labels(&state, &tree),
-            ["unfiled", "work", "tools", "scripts", "needle"]
-        );
-        assert_eq!(tree.matched_projects, 1);
-        let tree = project_tree(&state, "Work", &HashSet::new());
-        assert_eq!(
-            labels(&state, &tree),
-            ["unfiled", "work", "one", "tools", "scripts", "needle"]
-        );
-        assert_eq!(tree.matched_projects, 2);
     }
 
     #[test]
@@ -3854,19 +4093,10 @@ mod tests {
             ["unfiled", "u-new", "u-old", "a", "z", "z"]
         );
         assert_eq!(tree.matched_projects, 6);
+        // A search keeps the order but not the folders: the collapsed folder named
+        // "Alpha" neither hides its match nor adds its nested project.
         let tree = super::project_tree(&state, "Alpha", &collapsed, &order);
-        assert_eq!(
-            labels(&state, &tree),
-            ["unfiled", "u-old", "a", "a-old", "a-new", "nested", "n"]
-        );
-        assert_eq!(tree.matched_projects, 4);
-        assert!(!tree.rows.iter().any(|row| matches!(
-            row,
-            ProjectTreeRow::Folder {
-                collapsed: true,
-                ..
-            }
-        )));
+        assert_eq!(found(&state, &tree), ["a-old", "u-old"]);
     }
 
     fn drop_context() -> ProjectDropContext {
@@ -4172,6 +4402,7 @@ mod search_regression_tests {
     // SessionManager, filesystem fixture, terminal or backend is constructed.
     struct Fixture {
         state: State,
+        collapsed: HashSet<String>,
         kind: PanelKind,
         native_chats: Vec<ChatInfo>,
         shells: Vec<ShellSession>,
@@ -4246,7 +4477,7 @@ mod search_regression_tests {
                                         .is_focused(window),
                                     search_input: Some(input),
                                     control_inset: 0.,
-                                    collapsed_folders: &HashSet::new(),
+                                    collapsed_folders: &self.collapsed,
                                     state_home: Path::new("/synthetic-only/no-state"),
                                     project_order: ProjectOrder::default(),
                                     project_last_edits: &BTreeMap::new(),
@@ -4361,6 +4592,7 @@ mod search_regression_tests {
                                     projects,
                                     ..Default::default()
                                 },
+                                collapsed: HashSet::new(),
                                 inputs,
                                 queries: BTreeMap::from([
                                     (101, String::new()),
@@ -4678,5 +4910,70 @@ mod search_regression_tests {
         cx: &mut TestAppContext,
     ) {
         editing_and_binding(cx, true);
+    }
+
+    #[gpui::test]
+    fn projects_search_shows_no_folder_headings(cx: &mut TestAppContext) {
+        let (handle, owner) = mount(cx, true);
+        let headings = [
+            "project-folder-unfiled",
+            "project-folder-work",
+            "project-folder-tools",
+        ];
+        test_turn(cx, handle, |_, app| {
+            owner.update(app, |owner, cx| {
+                owner.width = 240.;
+                owner.state.project_folders = [("work", None), ("tools", Some("work"))]
+                    .into_iter()
+                    .map(|(id, parent)| crate::store::ProjectFolder {
+                        id: id.into(),
+                        name: id.to_uppercase(),
+                        parent_id: parent.map(str::to_owned),
+                        created_at: 0,
+                    })
+                    .collect();
+                owner.state.projects[0].folder_id = Some("tools".into());
+                owner.collapsed = HashSet::from(["work".into()]);
+                cx.notify();
+            })
+        });
+        test_turn(cx, handle, |window, app| {
+            // Browsing: Unfiled holds Beta, and the collapsed Work hides Tools and Alpha.
+            assert!(window.try_find("project-folder-unfiled").is_some());
+            assert!(window.try_find("project-folder-work").is_some());
+            assert!(window.try_find("project-folder-tools").is_none());
+            assert!(window.try_find("project-alpha-id").is_none());
+            assert!(window.try_find("project-beta-id").is_some());
+            window
+                .within(("search-fixture-panel", 101u64))
+                .click("projects-search-icon", app)
+        });
+        test_turn(cx, handle, |window, app| window.input("a", app));
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(owner.read(app).queries[&101], "a");
+            for heading in headings {
+                assert!(window.try_find(heading).is_none(), "{heading}");
+            }
+            // Name order, not the folders' order that put Beta first.
+            let alpha = window.find("project-alpha-id").bounds();
+            let beta = window.find("project-beta-id").bounds();
+            assert!(alpha.origin.y < beta.origin.y);
+            assert_eq!(alpha.origin.x, beta.origin.x);
+            assert_eq!(owner.read(app).collapsed, HashSet::from(["work".into()]));
+        });
+        // A folder's name finds nothing.
+        test_turn(cx, handle, |window, app| window.press("backspace", app));
+        for character in "tools".chars() {
+            let character = character.to_string();
+            test_turn(cx, handle, |window, app| window.input(&character, app));
+        }
+        test_turn(cx, handle, |window, app| {
+            assert_eq!(owner.read(app).queries[&101], "tools");
+            for heading in headings {
+                assert!(window.try_find(heading).is_none(), "{heading}");
+            }
+            assert!(window.try_find("project-alpha-id").is_none());
+            assert!(window.try_find("project-beta-id").is_none());
+        });
     }
 }
