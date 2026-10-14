@@ -202,7 +202,8 @@ final class NewChatChoiceTests: XCTestCase {
         XCTAssertEqual(try request(chat).params, ["provider": .string("codex"), "project_id": .string(project)])
         chat.chooseChatRow(.providerDefault(.muse))
         XCTAssertEqual(chat.chatProvider, .muse)
-        XCTAssertEqual(try request(chat).params, ["provider": .string("muse"), "project_id": .string(project)])
+        // Off, as every Muse chat starts, said the way an older desktop reads it too.
+        XCTAssertEqual(try request(chat).params, ["provider": .string("muse"), "project_id": .string(project), "contributor_opt_out": .bool(true)])
         // A model a provider's list no longer names is chosen still, but no row shows it.
         chat.chatChoices[.claude] = NewChatChoice(model: ChatModelOption(id: "gone", name: "Gone"), usesModel: true)
         chat.selectChatProvider(.claude)

@@ -67,6 +67,12 @@ public enum ChatApprovalMode: String, Codable, Sendable, CaseIterable, Hashable,
     }
 }
 
+/// Muse's contributor mode (`ContributorMode`), which the desktop passes to every Muse it starts. Off unless the person turns it on for a
+/// chat: the desktop never leaves it to the Muse settings.
+public enum ChatContributorMode: String, Codable, Sendable, Hashable {
+    case off, on
+}
+
 /// What a chat is doing as a whole (`ChatState`, tagged `state`).
 public enum ChatState: Sendable, Equatable, Hashable, Codable {
     case starting, idle, running, waiting, stopped
@@ -130,8 +136,11 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
     /// Fast mode was asked for (Codex's fast service tier, Claude's `fastMode`): the person's choice, not what the provider granted. A
     /// desktop that predates it never says, which reads as off.
     public var fast: Bool
-    /// Muse only: the chat was opted out of Muse's contributor mode when it was made, so every start runs with it off. Absent (a chat that
-    /// did not opt out, or a desktop that predates it) reads as false, and the person's Muse settings decide.
+    /// Muse's contributor mode for the chat: every start of its Muse runs with it. Off unless turned on; absent (any chat from a desktop
+    /// that predates it) or a word the phone does not know reads as off.
+    public var contributorMode: ChatContributorMode
+    /// What desktops before `contributorMode` said: true started the chat's Muse with contributor mode off, false left it to the Muse
+    /// settings. It never turns contributor mode on. A newer desktop keeps it true for a Muse chat that is off, for readers from before.
     public var contributorOptOut: Bool
     public var approvalMode: ChatApprovalMode
     public var codexAccountID: String?
@@ -141,12 +150,22 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
 
     public init(id: String, provider: ChatProvider, parentID: String? = nil, projectID: String? = nil, worktreeID: String? = nil, cwd: String = "", title: String = "",
                 createdAtUnix: UInt64 = 0, providerThreadID: String? = nil, model: String? = nil, effort: String? = nil, fast: Bool = false,
-                contributorOptOut: Bool = false, approvalMode: ChatApprovalMode = .supervised, codexAccountID: String? = nil, state: ChatState = .starting,
-                carriedOver: ChatCarriedOver? = nil) {
+                contributorMode: ChatContributorMode = .off, contributorOptOut: Bool = false, approvalMode: ChatApprovalMode = .supervised,
+                codexAccountID: String? = nil, state: ChatState = .starting, carriedOver: ChatCarriedOver? = nil) {
         self.parentID = parentID
         self.id = id; self.provider = provider; self.projectID = projectID; self.worktreeID = worktreeID; self.cwd = cwd; self.title = title
         self.createdAtUnix = createdAtUnix; self.providerThreadID = providerThreadID; self.model = model; self.effort = effort; self.fast = fast
-        self.contributorOptOut = contributorOptOut; self.approvalMode = approvalMode; self.codexAccountID = codexAccountID; self.state = state; self.carriedOver = carriedOver
+        self.contributorMode = contributorMode; self.contributorOptOut = contributorOptOut; self.approvalMode = approvalMode; self.codexAccountID = codexAccountID
+        self.state = state; self.carriedOver = carriedOver
+    }
+
+    /// The contributor mode the chat's Muse runs with, as the desktop that reported the chat says (`reported_contributor_mode`): nil for a
+    /// Muse chat from a desktop before `contributorMode` that leaves it to the Muse settings (neither on nor opted out). Never a default
+    /// read into a chat that says neither.
+    public var reportedContributorMode: ChatContributorMode? {
+        if contributorMode == .on { return .on }
+        if contributorOptOut || provider != .muse { return .off }
+        return nil
     }
 
     private enum Keys: String, CodingKey {
@@ -154,7 +173,7 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
         case parentID = "parent_id"
         case projectID = "project_id", worktreeID = "worktree_id", createdAtUnix = "created_at_unix", providerThreadID = "provider_thread_id"
         case approvalMode = "approval_mode", codexAccountID = "codex_account_id", carriedOver = "carried_over"
-        case contributorOptOut = "contributor_opt_out"
+        case contributorMode = "contributor_mode", contributorOptOut = "contributor_opt_out"
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -170,6 +189,7 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
         model = try c.decodeIfPresent(String.self, forKey: .model)
         effort = try c.decodeIfPresent(String.self, forKey: .effort)
         fast = c.tolerant(Bool.self, forKey: .fast) ?? false
+        contributorMode = c.lenient(ChatContributorMode.self, forKey: .contributorMode, default: .off)
         contributorOptOut = c.tolerant(Bool.self, forKey: .contributorOptOut) ?? false
         approvalMode = c.lenient(ChatApprovalMode.self, forKey: .approvalMode, default: .supervised)
         codexAccountID = try c.decodeIfPresent(String.self, forKey: .codexAccountID)
@@ -190,6 +210,7 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
         try c.encodeIfPresent(model, forKey: .model)
         try c.encodeIfPresent(effort, forKey: .effort)
         try c.encode(fast, forKey: .fast)
+        if contributorMode == .on { try c.encode(contributorMode, forKey: .contributorMode) }
         if contributorOptOut { try c.encode(true, forKey: .contributorOptOut) }
         try c.encode(approvalMode, forKey: .approvalMode)
         try c.encodeIfPresent(codexAccountID, forKey: .codexAccountID)
@@ -782,10 +803,10 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
     case approve(requestID: String, decision: ChatDecision)
     /// One entry per question, in order: the chosen labels, or free text.
     case answer(requestID: String, answers: [[String]])
-    /// Each field is a change; one left out stays as it is. `fast` is `false` to turn it off, `nil` to leave it. `contributorOptOut` is a Muse
-    /// chat's: `true` turns contributor mode off for the chat, `false` hands it back to the Muse settings. The desktop restarts the chat's Muse on
-    /// the same conversation for it, and refuses it while a turn works and for another provider; one that predates it refuses the field.
-    case configure(model: String? = nil, effort: String? = nil, approvalMode: ChatApprovalMode? = nil, fast: Bool? = nil, contributorOptOut: Bool? = nil)
+    /// Each field is a change; one left out stays as it is. `fast` is `false` to turn it off, `nil` to leave it. `contributorMode` is a Muse
+    /// chat's, on or off, and sent on its own. The desktop restarts the chat's Muse on the same conversation for it, and refuses it while a turn
+    /// works or Muse still starts, and for another provider; one that predates it refuses the unknown field.
+    case configure(model: String? = nil, effort: String? = nil, approvalMode: ChatApprovalMode? = nil, fast: Bool? = nil, contributorMode: ChatContributorMode? = nil)
     case compact
     /// Stops the provider process; the chat resumes with the next message.
     case stop
@@ -799,7 +820,8 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
 
     private enum Keys: String, CodingKey {
         case command, text, decision, answers, model, effort, fast, provider
-        case requestID = "request_id", approvalMode = "approval_mode", itemID = "item_id", contributorOptOut = "contributor_opt_out"
+        case requestID = "request_id", approvalMode = "approval_mode", itemID = "item_id"
+        case contributorMode = "contributor_mode", contributorOptOut = "contributor_opt_out"
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -810,9 +832,12 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
         case "approve": self = .approve(requestID: try c.decode(String.self, forKey: .requestID), decision: try c.decode(ChatDecision.self, forKey: .decision))
         case "answer": self = .answer(requestID: try c.decode(String.self, forKey: .requestID), answers: try c.decode([[String]].self, forKey: .answers))
         case "configure":
+            // An older client's `contributor_opt_out` true is an off; its false asked for the Muse settings, which a chat no longer follows (the
+            // desktop refuses it), and is read as no contributor change: it never turns contributor mode on.
+            let optedOut = try c.decodeIfPresent(Bool.self, forKey: .contributorOptOut) == true
             self = .configure(model: try c.decodeIfPresent(String.self, forKey: .model), effort: try c.decodeIfPresent(String.self, forKey: .effort),
                               approvalMode: try c.decodeIfPresent(ChatApprovalMode.self, forKey: .approvalMode), fast: try c.decodeIfPresent(Bool.self, forKey: .fast),
-                              contributorOptOut: try c.decodeIfPresent(Bool.self, forKey: .contributorOptOut))
+                              contributorMode: try c.decodeIfPresent(ChatContributorMode.self, forKey: .contributorMode) ?? (optedOut ? .off : nil))
         case "compact": self = .compact
         case "stop": self = .stop
         case "dismiss_notice": self = .dismissNotice(itemID: try c.decode(String.self, forKey: .itemID))
@@ -829,10 +854,10 @@ public enum ChatCommand: Sendable, Equatable, Hashable, Codable {
         case .interrupt: try c.encode("interrupt", forKey: .command)
         case .approve(let requestID, let decision): try c.encode("approve", forKey: .command); try c.encode(requestID, forKey: .requestID); try c.encode(decision, forKey: .decision)
         case .answer(let requestID, let answers): try c.encode("answer", forKey: .command); try c.encode(requestID, forKey: .requestID); try c.encode(answers, forKey: .answers)
-        case .configure(let model, let effort, let approvalMode, let fast, let contributorOptOut):
+        case .configure(let model, let effort, let approvalMode, let fast, let contributorMode):
             try c.encode("configure", forKey: .command)
             try c.encodeIfPresent(model, forKey: .model); try c.encodeIfPresent(effort, forKey: .effort); try c.encodeIfPresent(approvalMode, forKey: .approvalMode)
-            try c.encodeIfPresent(fast, forKey: .fast); try c.encodeIfPresent(contributorOptOut, forKey: .contributorOptOut)
+            try c.encodeIfPresent(fast, forKey: .fast); try c.encodeIfPresent(contributorMode, forKey: .contributorMode)
         case .compact: try c.encode("compact", forKey: .command)
         case .stop: try c.encode("stop", forKey: .command)
         case .dismissNotice(let itemID): try c.encode("dismiss_notice", forKey: .command); try c.encode(itemID, forKey: .itemID)

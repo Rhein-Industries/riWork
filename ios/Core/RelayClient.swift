@@ -27,7 +27,7 @@ public enum RequestValidation {
         case "project.create": required = ["name"]; optional = ["git"]
         case "orchestrator.create": required = []; optional = ["project_id"]
         case "chats.list": required = []; optional = ["project_id"]
-        case "chat.create": required = ["provider"]; optional = ["project_id", "worktree_id", "approval_mode", "model", "effort", "fast", "contributor_opt_out", "title"]
+        case "chat.create": required = ["provider"]; optional = ["project_id", "worktree_id", "approval_mode", "model", "effort", "fast", "contributor_mode", "contributor_opt_out", "title"]
         case "chat.snapshot": required = ["chat_id"]; optional = ["cursor", "before", "limit", "item_ids", "features"]
         case "chat.events": required = ["chat_id", "since", "wait_ms"]; optional = ["max_events", "complete", "bounded", "features"]
         case "chat.command": required = ["chat_id", "command"]; optional = []

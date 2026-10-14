@@ -52,6 +52,12 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual(try wire(ChatCommand.configure(fast: false)), try value(#"{"command":"configure","fast":false}"#))
         XCTAssertEqual(try wire(ChatCommand.configure(model: "m", effort: "low", approvalMode: .full, fast: true)),
                        try value(#"{"command":"configure","model":"m","effort":"low","approval_mode":"full","fast":true}"#))
+        // Contributor mode: on or off, said as itself.
+        XCTAssertEqual(try wire(ChatCommand.configure(contributorMode: .on)), try value(#"{"command":"configure","contributor_mode":"on"}"#))
+        XCTAssertEqual(try wire(ChatCommand.configure(contributorMode: .off)), try value(#"{"command":"configure","contributor_mode":"off"}"#))
+        // What clients before it sent is read: an off, and the Muse settings (which the desktop refuses) as no contributor change.
+        let legacy = try fixture()["legacy_commands"].array.map { try $0.decode(ChatCommand.self) }
+        XCTAssertEqual(legacy, [.configure(contributorMode: .off), .configure()])
         XCTAssertEqual(try wire(ChatCommand.approve(requestID: "r", decision: .acceptForSession)), try value(#"{"command":"approve","request_id":"r","decision":"accept_for_session"}"#))
         XCTAssertEqual(try wire(ChatCommand.answer(requestID: "q", answers: [["A"], []])), try value(#"{"command":"answer","request_id":"q","answers":[["A"],[]]}"#))
         XCTAssertEqual(try wire(ChatCommand.send(text: "hi")), try value(#"{"command":"send","text":"hi"}"#))
@@ -86,9 +92,12 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual(switched.id, full.id); XCTAssertEqual(switched.provider, .claude); XCTAssertEqual(switched.model, "opus")
         XCTAssertEqual(switched.carriedOver?.from, #"Codex chat "Codex chat" (11111111)"#)
         XCTAssertTrue(switched.carriedOver?.document.hasSuffix("/context.md") == true)
-        let muse = try chats[3].decode(ChatInfo.self)
+        // Muse chats on, and off as the desktop settles it; the others have none.
+        let muse = try chats[3].decode(ChatInfo.self), museOff = try chats[4].decode(ChatInfo.self)
         XCTAssertEqual(muse.provider, .muse); XCTAssertEqual(muse.title, "Muse chat")
-        XCTAssertTrue(muse.contributorOptOut); XCTAssertFalse(full.contributorOptOut); XCTAssertFalse(minimal.contributorOptOut)
+        XCTAssertEqual([muse.contributorMode, museOff.contributorMode, full.contributorMode, minimal.contributorMode], [.on, .off, .off, .off])
+        XCTAssertEqual([muse.contributorOptOut, museOff.contributorOptOut, full.contributorOptOut, minimal.contributorOptOut], [false, true, false, false])
+        XCTAssertEqual([muse.reportedContributorMode, museOff.reportedContributorMode, full.reportedContributorMode], [.on, .off, .off])
     }
     func testTheWordsOfTheEnumsAreTheDesktops() throws {
         let doc = try fixture()
@@ -161,16 +170,25 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual(try wire(full)["fast"], .bool(true))
         XCTAssertEqual(try wire(minimal)["fast"], .bool(false), "serde writes it always")
     }
-    func testContributorOptOutIsReadFromAChatInfoAndWrittenOnlyWhenOn() throws {
-        // Absent in a chat that did not opt out, and from a desktop that predates it.
-        let plain = try decode(ChatInfo.self, #"{"id":"i","provider":"muse","cwd":"/w","title":"t","created_at_unix":1}"#)
-        XCTAssertFalse(plain.contributorOptOut)
-        guard case .object(let fields) = try wire(plain) else { return XCTFail("an object") }
-        XCTAssertNil(fields["contributor_opt_out"], "left out when off, as serde does")
-        let opted = try decode(ChatInfo.self, #"{"id":"i","provider":"muse","cwd":"/w","title":"t","created_at_unix":1,"contributor_opt_out":true}"#)
-        XCTAssertTrue(opted.contributorOptOut)
-        XCTAssertEqual(try wire(opted)["contributor_opt_out"], .bool(true))
+    func testContributorModeIsOffInEveryOlderInfoAndOnlyAnOnIsWritten() throws {
+        let base = #""id":"i","provider":"muse","cwd":"/w","title":"t","created_at_unix":1"#
+        // A chat from a desktop before contributor mode, opted out or not, is off; only an opted-out one says so for certain.
+        let forms: [(String, ChatContributorMode?)] = [("", nil), (#","contributor_opt_out":false"#, nil), (#","contributor_opt_out":true"#, .off)]
+        for (older, reported) in forms {
+            let info = try decode(ChatInfo.self, "{\(base)\(older)}")
+            XCTAssertEqual(info.contributorMode, .off, older)
+            XCTAssertEqual(info.reportedContributorMode, reported, older)
+            guard case .object(let fields) = try wire(info) else { return XCTFail("an object") }
+            XCTAssertNil(fields["contributor_mode"], "left out when off, as serde does")
+        }
+        let on = try decode(ChatInfo.self, #"{"#+base+#","contributor_mode":"on"}"#)
+        XCTAssertEqual(on.contributorMode, .on); XCTAssertEqual(on.reportedContributorMode, .on)
+        XCTAssertEqual(try wire(on)["contributor_mode"], .string("on"))
+        XCTAssertEqual(try JSONDecoder().decode(ChatInfo.self, from: JSONEncoder().encode(on)), on)
+        // Odd values read as off; another provider's chat is off whatever it says.
+        XCTAssertEqual(try decode(ChatInfo.self, #"{"id":"i","provider":"muse","contributor_mode":"auto"}"#).contributorMode, .off)
         XCTAssertFalse(try decode(ChatInfo.self, #"{"id":"i","provider":"muse","contributor_opt_out":"yes"}"#).contributorOptOut, "an odd value reads as off")
+        XCTAssertEqual(try decode(ChatInfo.self, #"{"id":"i","provider":"codex"}"#).reportedContributorMode, .off)
     }
     func testAnInfoOrAModelOptionWrittenBeforeTheNewFieldsExistedStillReads() throws {
         // A desktop that predates Fast and the models: no `fast` in the info, no `models` events.
@@ -185,10 +203,11 @@ final class ChatTests: XCTestCase {
         // A command written before Fast: no `fast`.
         XCTAssertEqual(try decode(ChatCommand.self, #"{"command":"configure","effort":"high"}"#), .configure(effort: "high"))
         XCTAssertEqual(try decode(ChatCommand.self, #"{"command":"configure","fast":false}"#), .configure(fast: false))
-        // And before contributor mode: no `contributor_opt_out`, which is written only when set.
+        // And before contributor mode: no `contributor_mode`, which is written only when set; an older opt-out never turns it on.
         XCTAssertEqual(try wire(ChatCommand.configure(fast: false)), try value(#"{"command":"configure","fast":false}"#))
-        XCTAssertEqual(try decode(ChatCommand.self, #"{"command":"configure","contributor_opt_out":false}"#), .configure(contributorOptOut: false))
-        XCTAssertEqual(try wire(ChatCommand.configure(contributorOptOut: true)), try value(#"{"command":"configure","contributor_opt_out":true}"#))
+        XCTAssertEqual(try decode(ChatCommand.self, #"{"command":"configure","contributor_opt_out":false}"#), .configure())
+        XCTAssertEqual(try decode(ChatCommand.self, #"{"command":"configure","contributor_opt_out":true}"#), .configure(contributorMode: .off))
+        XCTAssertEqual(try decode(ChatCommand.self, #"{"command":"configure","contributor_mode":"on","contributor_opt_out":false}"#), .configure(contributorMode: .on))
     }
     func testAModelOptionIsReadLeniently() throws {
         // No name: the id is shown. A name of blanks too.

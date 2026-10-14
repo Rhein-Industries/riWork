@@ -81,6 +81,32 @@ fn text<'a>(
         Some(_) => Err(invalid(format!("{name} must be a string"))),
     }
 }
+/// Muse's contributor mode a request asks for: `contributor_mode` on or off, or the off a phone
+/// from before it says with `contributor_opt_out` true. That field never asks for on; its false
+/// asked for the Muse settings, which a chat no longer follows: on `chat.create` it is the off
+/// every chat starts with, on `configure` (`settings_gone`) it is refused. On beside an off is
+/// refused.
+fn contributor(
+    object: &Map<String, Value>,
+    settings_gone: bool,
+) -> std::result::Result<Option<&'static str>, Fault> {
+    let mode = match text(object, "contributor_mode")? {
+        None => None,
+        Some("on") => Some("on"),
+        Some("off") => Some("off"),
+        Some(_) => return Err(invalid("contributor_mode must be on or off")),
+    };
+    match (mode, flag(object, "contributor_opt_out")?) {
+        (Some("on"), Some(true)) => Err(invalid(
+            "contributor_mode on cannot be combined with contributor_opt_out, which asks for off",
+        )),
+        (_, Some(false)) if settings_gone => Err(invalid(
+            "contributor_opt_out false asked for the Muse settings, which a chat no longer follows; send contributor_mode on or off",
+        )),
+        (None, Some(true)) => Ok(Some("off")),
+        (mode, _) => Ok(mode),
+    }
+}
 /// A boolean field: absent is `None`; null and every other type are refused.
 fn flag(object: &Map<String, Value>, name: &str) -> std::result::Result<Option<bool>, Fault> {
     match object.get(name) {
@@ -170,7 +196,8 @@ pub(super) struct NewSpec {
     model: Option<String>,
     effort: Option<String>,
     fast: bool,
-    contributor_opt_out: bool,
+    /// Muse's contributor mode on; off, as every chat starts, without it.
+    contributor_on: bool,
     title: Option<String>,
 }
 pub(super) fn new_spec(params: &Value) -> std::result::Result<NewSpec, Fault> {
@@ -184,6 +211,7 @@ pub(super) fn new_spec(params: &Value) -> std::result::Result<NewSpec, Fault> {
             "model",
             "effort",
             "fast",
+            "contributor_mode",
             "contributor_opt_out",
             "title",
         ],
@@ -202,6 +230,12 @@ pub(super) fn new_spec(params: &Value) -> std::result::Result<NewSpec, Fault> {
         (None, Some(worktree)) => CreateTarget::Worktree(worktree),
         _ => return Err(invalid("give exactly one of project_id and worktree_id")),
     };
+    let contributor_on = contributor(object, false)? == Some("on");
+    if contributor_on && provider != "muse" {
+        return Err(invalid(
+            "contributor_mode on is for a Muse chat: only Muse has a contributor mode",
+        ));
+    }
     Ok(NewSpec {
         provider,
         target,
@@ -209,7 +243,7 @@ pub(super) fn new_spec(params: &Value) -> std::result::Result<NewSpec, Fault> {
         model: label("model", text(object, "model")?, MODEL_MAX_CHARS)?,
         effort: label("effort", text(object, "effort")?, EFFORT_MAX_CHARS)?,
         fast: flag(object, "fast")?.unwrap_or(false),
-        contributor_opt_out: flag(object, "contributor_opt_out")?.unwrap_or(false),
+        contributor_on,
         title: label("title", text(object, "title")?, TITLE_MAX_CHARS)?,
     })
 }
@@ -244,8 +278,8 @@ fn new_args(spec: &NewSpec) -> Vec<String> {
     if spec.fast {
         args.push("--fast".into());
     }
-    if spec.contributor_opt_out {
-        args.push("--contributor-opt-out".into());
+    if spec.contributor_on {
+        args.push("--contributor-on".into());
     }
     args
 }
@@ -481,6 +515,7 @@ fn command_json(command: &Value) -> std::result::Result<Value, Fault> {
             "effort",
             "approval_mode",
             "fast",
+            "contributor_mode",
             "contributor_opt_out",
         ],
         "switch" => &["command", "provider", "model", "effort", "fast"],
@@ -532,14 +567,14 @@ fn command_json(command: &Value) -> std::result::Result<Value, Fault> {
             let effort = label("effort", text(object, "effort")?, EFFORT_MAX_CHARS)?;
             let approval_mode = text(object, "approval_mode")?.map(mode).transpose()?;
             let fast = flag(object, "fast")?;
-            let contributor_opt_out = flag(object, "contributor_opt_out")?;
+            let contributor_mode = contributor(object, true)?;
             let mut changes = Map::from_iter([("command".to_owned(), json!("configure"))]);
             for (name, value) in [
                 ("model", model.map(Value::from)),
                 ("effort", effort.map(Value::from)),
                 ("approval_mode", approval_mode.map(Value::from)),
                 ("fast", fast.map(Value::from)),
-                ("contributor_opt_out", contributor_opt_out.map(Value::from)),
+                ("contributor_mode", contributor_mode.map(Value::from)),
             ] {
                 if let Some(value) = value {
                     changes.insert(name.to_owned(), value);
@@ -547,7 +582,7 @@ fn command_json(command: &Value) -> std::result::Result<Value, Fault> {
             }
             if changes.len() == 1 {
                 return Err(invalid(
-                    "configure needs a model, an effort, an approval_mode, fast or contributor_opt_out",
+                    "configure needs a model, an effort, an approval_mode, fast or contributor_mode",
                 ));
             }
             Value::Object(changes)
@@ -721,8 +756,9 @@ fn chat_info(value: &Value) -> bool {
             .is_some_and(|state| state.get("state").is_some_and(|name| name.is_string()))
 }
 /// The `chat.create` result for the chat the CLI printed, or `None` if it is not the chat
-/// that was asked for: the provider, the project or worktree, the mode, and the model,
-/// effort, fast mode and Muse contributor opt-out when they were sent.
+/// that was asked for: the provider, the project or worktree, the mode, the model, effort
+/// and fast mode when they were sent, and a Muse chat's contributor mode, which is off unless
+/// asked on (a Muse chat off says `contributor_opt_out` true).
 fn new_result(spec: &NewSpec, cli: &Value) -> Option<Value> {
     let text = |name: &str| cli.get(name).and_then(Value::as_str);
     let in_target = match &spec.target {
@@ -741,8 +777,13 @@ fn new_result(spec: &NewSpec, cli: &Value) -> Option<Value> {
         && same("model", &spec.model)
         && same("effort", &spec.effort)
         && (!spec.fast || cli.get("fast") == Some(&Value::Bool(true)))
-        && (!spec.contributor_opt_out
-            || cli.get("contributor_opt_out") == Some(&Value::Bool(true))))
+        && (spec.provider != "muse"
+            || if spec.contributor_on {
+                text("contributor_mode") == Some("on")
+            } else {
+                cli.get("contributor_opt_out") == Some(&Value::Bool(true))
+                    && cli.get("contributor_mode").is_none()
+            }))
     .then(|| json!({ "chat": cli }))
 }
 
@@ -1629,28 +1670,59 @@ mod tests {
     }
 
     #[test]
-    fn contributor_opt_out_becomes_the_cli_flag_only_when_on_and_must_come_back() {
-        let spec = |extra: Value| {
-            let mut params = json!({"provider": "muse", "project_id": PROJECT});
+    fn a_muse_chat_is_created_off_unless_asked_on_and_must_come_back_so() {
+        let spec = |provider: &str, extra: Value| {
+            let mut params = json!({"provider": provider, "project_id": PROJECT});
             params
                 .as_object_mut()
                 .unwrap()
                 .extend(extra.as_object().unwrap().clone());
             new_spec(&params)
         };
-        let flag = "--contributor-opt-out".to_owned();
-        assert!(!spec(json!({})).unwrap().contributor_opt_out);
-        assert!(!new_args(&spec(json!({"contributor_opt_out": false})).unwrap()).contains(&flag));
-        let opted_out = spec(json!({"contributor_opt_out": true})).unwrap();
-        assert!(new_args(&opted_out).contains(&flag));
-        for bad in [json!(null), json!(1), json!("off")] {
-            let fault = spec(json!({"contributor_opt_out": bad})).unwrap_err();
+        let on = "--contributor-on".to_owned();
+        // Off, however a phone says it or leaves it out, and an older phone's false is no on.
+        for extra in [
+            json!({}),
+            json!({"contributor_mode": "off"}),
+            json!({"contributor_opt_out": true}),
+            json!({"contributor_opt_out": false}),
+            json!({"contributor_mode": "off", "contributor_opt_out": true}),
+        ] {
+            let off = spec("muse", extra.clone()).unwrap();
+            assert!(!off.contributor_on, "{extra}");
+            let args = new_args(&off);
+            assert!(
+                !args.iter().any(|arg| arg.starts_with("--contributor")),
+                "{extra}: {args:?}"
+            );
+        }
+        let asked_on = spec("muse", json!({"contributor_mode": "on"})).unwrap();
+        assert!(asked_on.contributor_on);
+        assert!(new_args(&asked_on).contains(&on));
+        for bad in [
+            json!({"contributor_mode": "ON"}),
+            json!({"contributor_mode": "settings"}),
+            json!({"contributor_mode": true}),
+            json!({"contributor_mode": null}),
+            json!({"contributor_opt_out": null}),
+            json!({"contributor_opt_out": "off"}),
+            json!({"contributor_mode": "on", "contributor_opt_out": true}),
+        ] {
+            let fault = spec("muse", bad.clone()).unwrap_err();
             assert_eq!(fault.code, "invalid_request", "{bad}");
         }
-        // A chat printed without it (a host that predates it) is not the chat asked for.
-        let printed = |extra: Value| {
+        // Only Muse can be asked on; off is what every other chat has anyway.
+        for provider in ["codex", "claude"] {
+            let fault = spec(provider, json!({"contributor_mode": "on"})).unwrap_err();
+            assert!(fault.message.contains("only Muse"), "{}", fault.message);
+            assert!(spec(provider, json!({"contributor_mode": "off"})).is_ok());
+        }
+        // The chat printed must be the one asked for: off as this host settles a Muse chat, or
+        // on as itself. One printed with neither is from a host before it, which follows the
+        // Muse settings.
+        let printed = |provider: &str, extra: Value| {
             let mut chat = json!({
-                "id": "11111111-2222-4333-8444-666666666666", "provider": "muse",
+                "id": "11111111-2222-4333-8444-666666666666", "provider": provider,
                 "project_id": PROJECT, "approval_mode": "supervised", "title": "Muse chat",
                 "cwd": "/w", "created_at_unix": 1, "state": {"state": "idle"},
             });
@@ -1659,9 +1731,17 @@ mod tests {
                 .extend(extra.as_object().unwrap().clone());
             chat
         };
-        assert!(new_result(&opted_out, &printed(json!({}))).is_none());
-        assert!(new_result(&opted_out, &printed(json!({"contributor_opt_out": true}))).is_some());
-        assert!(new_result(&spec(json!({})).unwrap(), &printed(json!({}))).is_some());
+        let off = spec("muse", json!({})).unwrap();
+        let settled_off = printed("muse", json!({"contributor_opt_out": true}));
+        let printed_on = printed("muse", json!({"contributor_mode": "on"}));
+        assert!(new_result(&off, &settled_off).is_some());
+        assert!(new_result(&off, &printed("muse", json!({}))).is_none());
+        assert!(new_result(&off, &printed_on).is_none());
+        assert!(new_result(&asked_on, &printed_on).is_some());
+        assert!(new_result(&asked_on, &settled_off).is_none());
+        assert!(new_result(&asked_on, &printed("muse", json!({}))).is_none());
+        let codex = spec("codex", json!({})).unwrap();
+        assert!(new_result(&codex, &printed("codex", json!({}))).is_some());
     }
 
     #[test]
@@ -1699,27 +1779,53 @@ mod tests {
     }
 
     #[test]
-    fn configure_takes_a_contributor_opt_out_either_way_and_only_as_a_boolean() {
-        for opt_out in [true, false] {
+    fn configure_takes_contributor_mode_on_or_off_and_an_older_phones_off_but_never_its_false() {
+        for mode in ["on", "off"] {
             assert_eq!(
-                command_json(&json!({"command": "configure", "contributor_opt_out": opt_out}))
-                    .unwrap(),
-                json!({"command": "configure", "contributor_opt_out": opt_out})
+                command_json(&json!({"command": "configure", "contributor_mode": mode})).unwrap(),
+                json!({"command": "configure", "contributor_mode": mode})
             );
         }
-        for bad in [json!(null), json!(1), json!("off")] {
-            assert!(
-                command_json(&json!({"command": "configure", "contributor_opt_out": bad})).is_err(),
-                "{bad}"
+        // An older phone's true is an off, said the new way; the CLI says it the older way too.
+        for command in [
+            json!({"command": "configure", "contributor_opt_out": true}),
+            json!({"command": "configure", "contributor_mode": "off", "contributor_opt_out": true}),
+        ] {
+            assert_eq!(
+                command_json(&command).unwrap(),
+                json!({"command": "configure", "contributor_mode": "off"}),
+                "{command}"
             );
+        }
+        for bad in [
+            json!({"contributor_mode": "ON"}),
+            json!({"contributor_mode": true}),
+            json!({"contributor_mode": null}),
+            json!({"contributor_opt_out": null}),
+            json!({"contributor_opt_out": 1}),
+            json!({"contributor_opt_out": "off"}),
+            // The Muse settings, which a chat no longer follows, and on beside an off.
+            json!({"contributor_opt_out": false}),
+            json!({"contributor_mode": "off", "contributor_opt_out": false}),
+            json!({"contributor_mode": "on", "contributor_opt_out": true}),
+        ] {
+            let mut command = json!({"command": "configure"});
+            command
+                .as_object_mut()
+                .unwrap()
+                .extend(bad.as_object().unwrap().clone());
+            let fault = command_json(&command).unwrap_err();
+            assert_eq!(fault.code, "invalid_request", "{bad}");
         }
         for command in [
+            json!({"command": "send", "text": "hi", "contributor_mode": "on"}),
+            json!({"command": "switch", "provider": "muse", "contributor_mode": "on"}),
             json!({"command": "send", "text": "hi", "contributor_opt_out": true}),
             json!({"command": "switch", "provider": "muse", "contributor_opt_out": true}),
         ] {
             let fault = command_json(&command).unwrap_err();
             assert!(
-                fault.message.contains("unknown field contributor_opt_out"),
+                fault.message.contains("unknown field contributor_"),
                 "{}",
                 fault.message
             );
