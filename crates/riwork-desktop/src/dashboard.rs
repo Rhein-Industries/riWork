@@ -39,7 +39,7 @@ use crate::{
     layouts::PanelKind,
     schedules::Outcome,
     session_catalog,
-    settings::OrchestratorRuns,
+    settings::{self, OrchestratorRuns},
     text_input::InputState,
     theme::{self, Palette},
     tooltip::{self, Look},
@@ -407,7 +407,7 @@ fn activity_word(activity: Option<AgentActivity>) -> &'static str {
 
 /// The Chat controls' words for the global orchestrator as it is. A terminal one is named as
 /// one and opened as it is: nothing converts it into a chat or ends it.
-pub fn chat_copy(global: &GlobalOrchestrator, runs: OrchestratorRuns, starting: bool) -> ChatCopy {
+pub fn chat_copy(global: &GlobalOrchestrator, runs: &OrchestratorRuns, starting: bool) -> ChatCopy {
     let copy = |action: &str, status: String, note: Option<String>, starts: bool| ChatCopy {
         action: action.to_owned(),
         status,
@@ -462,14 +462,36 @@ pub fn chat_copy(global: &GlobalOrchestrator, runs: OrchestratorRuns, starting: 
                 "No global orchestrator yet".to_owned()
             };
             match runs {
-                OrchestratorRuns::Chat(provider) => ChatCopy {
-                    provider: Some(provider),
+                OrchestratorRuns::Automatic => {
+                    let [(first, first_model), (second, second_model)] =
+                        settings::AUTOMATIC_ORCHESTRATORS;
+                    ChatCopy {
+                        provider: Some(first),
+                        ..copy(
+                            "Start global chat",
+                            status,
+                            Some(format!(
+                                "Starts a {} chat on {first_model} that asks before commands and edits, or a {} chat on {second_model} if {} cannot start.",
+                                session_catalog::provider_label(first),
+                                session_catalog::provider_label(second),
+                                session_catalog::provider_label(first),
+                            )),
+                            true,
+                        )
+                    }
+                }
+                OrchestratorRuns::Chat { provider, model } => ChatCopy {
+                    provider: Some(*provider),
                     ..copy(
                         "Start global chat",
                         status,
                         Some(format!(
-                            "Starts a {} chat that asks before commands and edits.",
-                            session_catalog::provider_label(provider)
+                            "Starts a {} chat{} that asks before commands and edits.",
+                            session_catalog::provider_label(*provider),
+                            model
+                                .as_deref()
+                                .map(|model| format!(" on {model}"))
+                                .unwrap_or_default()
                         )),
                         true,
                     )
@@ -1422,7 +1444,7 @@ fn summary_strip<V: 'static>(
             ],
         })
         .into_any_element();
-    let chat = chat_copy(&overview.global, data.runs, data.chat_starting);
+    let chat = chat_copy(&overview.global, &data.runs, data.chat_starting);
     let kind = match (chat.enabled, chat.starts) {
         (false, _) => controls::Button::Disabled,
         (true, true) => controls::Button::Primary,

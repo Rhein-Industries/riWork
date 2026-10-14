@@ -338,6 +338,26 @@ fn fake_account(
     Ok((provider == Provider::Codex).then(|| requested.unwrap_or("account-a").to_owned()))
 }
 
+/// The start of a provider whose program is not there: it fails as
+/// `sessions::chat_launch` does when it cannot find the program, after the start
+/// is recorded like any other.
+pub fn missing_start(
+    config: DriverConfig,
+    _events: Sender<ChatEvent>,
+) -> Result<Box<dyn Driver>, String> {
+    fake_for(&config.cwd)
+        .starts
+        .lock()
+        .unwrap()
+        .push(config.clone());
+    let program = match config.provider {
+        Provider::Codex => "codex",
+        Provider::Claude => "claude",
+        Provider::Muse => "muse",
+    };
+    Err(format!("{program} is not installed or is not on PATH"))
+}
+
 pub fn fake_providers() -> Providers {
     Providers {
         codex: fake_start,

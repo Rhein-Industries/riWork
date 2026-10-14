@@ -413,9 +413,108 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
         ]),
         "riwork: --command needs a value"
     );
+    // A model is for an agent, and is not blank.
+    assert_eq!(
+        stderr(&[
+            "shell",
+            "create",
+            "--project",
+            &project,
+            "--model",
+            "gpt-6.1-sol",
+            "--json"
+        ]),
+        "riwork: --model requires --harness"
+    );
+    assert_eq!(
+        stderr(&[
+            "shell",
+            "create",
+            "--project",
+            &project,
+            "--harness",
+            "codex",
+            "--model",
+            " ",
+            "--json"
+        ]),
+        "riwork: --model must not be blank"
+    );
     // None of the failures left a terminal behind or started a window.
     assert!(home.shells().is_empty());
     assert!(!home.runtime().exists(), "a GUI instance was registered");
+}
+
+#[test]
+#[ignore = "slow: real tmux shells"]
+fn an_agent_asked_for_a_model_starts_on_it_with_the_permissions_it_was_asked_for() {
+    let home = Home::new();
+    let (_, worktree, _) = home.project("app");
+    // Stand-in agent CLIs and Cua driver, first on PATH, as above.
+    let bin = home.0.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    for (name, body) in [
+        ("claude", "exec sleep 300"),
+        ("codex", "exec sleep 300"),
+        ("cua-driver", "exit 0"),
+    ] {
+        let path = bin.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let agent = |args: &[&str]| -> Value {
+        let mut command = home.command(args);
+        command
+            .env("PATH", &path)
+            .env("RIWORK_CUA_DRIVER", bin.join("cua-driver"));
+        let output = finish(command.spawn().unwrap(), args);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let opus = agent(&[
+        "shell",
+        "create",
+        "--worktree",
+        &worktree,
+        "--harness",
+        "claude",
+        "--model",
+        "opus",
+        "--json",
+    ]);
+    let command = opus["command"].as_str().unwrap();
+    assert!(command.contains("--model opus"), "{command}");
+    assert_eq!(opus["unrestricted"], false);
+    assert!(
+        !command.contains("--dangerously-skip-permissions"),
+        "{command}"
+    );
+    let sol = agent(&[
+        "shell",
+        "create",
+        "--worktree",
+        &worktree,
+        "--harness",
+        "codex",
+        "--model",
+        "gpt-6.1-sol",
+        "--unrestricted",
+        "--json",
+    ]);
+    let command = sol["command"].as_str().unwrap();
+    assert!(command.contains("-m gpt-6.1-sol"), "{command}");
+    assert_eq!(sol["unrestricted"], true);
+    assert_eq!(sol["worktree_id"], worktree.as_str());
 }
 
 #[test]

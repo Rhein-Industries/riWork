@@ -11,6 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::settings::OrchestratorRuns;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -33,6 +34,11 @@ pub struct Project {
     pub wake_orchestrators_on_agent_done: bool,
     #[serde(default)]
     pub codex_account: ProjectCodexAccount,
+    /// How this project's orchestrator runs when it is created: as Settings say
+    /// (`Inherit`, the default and what older projects read as), or as the project
+    /// chooses. Only this project's orchestrator follows it.
+    #[serde(default)]
+    pub orchestrator: ProjectOrchestrator,
     pub created_at: u64,
 }
 
@@ -45,6 +51,66 @@ pub enum ProjectCodexAccount {
     Inherit,
     SystemDefault,
     Saved(String),
+}
+
+/// A project's choice of how its orchestrator runs (Project Settings). Saved as
+/// `{"mode":"inherit"}` or in `OrchestratorRuns`' own shape (`{"mode":"automatic"}`,
+/// `{"mode":"terminal"}`, `{"mode":"chat","provider":"muse","model":"…"}`).
+///
+/// Reading never fails: a value this build cannot read (another build's mode, a
+/// provider it lacks, a field it does not know) is kept as it was saved
+/// (`Unreadable`), shown as such, and inherits Settings until another choice
+/// replaces it, so neither the store nor the value is lost.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum ProjectOrchestrator {
+    #[default]
+    Inherit,
+    Choose(OrchestratorRuns),
+    Unreadable(Value),
+}
+
+impl ProjectOrchestrator {
+    /// The project's own choice, if it makes one.
+    pub fn choice(&self) -> Option<&OrchestratorRuns> {
+        match self {
+            Self::Choose(runs) => Some(runs),
+            Self::Inherit | Self::Unreadable(_) => None,
+        }
+    }
+
+    /// What Project Settings and `project show` say about a value this build cannot
+    /// read.
+    pub fn unreadable_note(&self) -> Option<String> {
+        match self {
+            Self::Unreadable(value) => Some(format!(
+                "This project's saved orchestrator choice {value} is not one this RiWork can read. It is kept as saved, and the project follows Settings until you choose here."
+            )),
+            Self::Inherit | Self::Choose(_) => None,
+        }
+    }
+}
+
+impl Serialize for ProjectOrchestrator {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Inherit => serde_json::json!({"mode": "inherit"}).serialize(serializer),
+            Self::Choose(runs) => runs.serialize(serializer),
+            Self::Unreadable(value) => value.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ProjectOrchestrator {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        if value == serde_json::json!({"mode": "inherit"}) {
+            return Ok(Self::Inherit);
+        }
+        Ok(match OrchestratorRuns::deserialize(&value) {
+            Ok(runs) => Self::Choose(runs),
+            Err(_) => Self::Unreadable(value),
+        })
+    }
 }
 
 /// An organizational group in RiWork, independent of directories on disk.
@@ -1057,6 +1123,7 @@ impl Store {
                     folder_id: None,
                     notify_on_agent_done: false,
                     wake_orchestrators_on_agent_done: false,
+                    orchestrator: Default::default(),
                     codex_account: ProjectCodexAccount::default(),
                     created_at: now(),
                 };
@@ -1303,6 +1370,34 @@ impl Store {
                 .expect("resolved project remains in the transaction");
             let changed = project.wake_orchestrators_on_agent_done != enabled;
             project.wake_orchestrators_on_agent_done = enabled;
+            Ok((project.clone(), changed))
+        })
+    }
+
+    /// Change only how this project's orchestrator runs when it is next created,
+    /// as `set_project_orchestrator_wakes` changes only its wakes. The orchestrator
+    /// that exists keeps how it runs.
+    pub fn set_project_orchestrator(
+        &self,
+        selector: &str,
+        choice: ProjectOrchestrator,
+    ) -> Result<Project, String> {
+        if let ProjectOrchestrator::Choose(OrchestratorRuns::Chat {
+            model: Some(model), ..
+        }) = &choice
+            && !crate::settings::valid_model_id(model)
+        {
+            return Err(format!("Invalid model id {model:?}"));
+        }
+        self.transaction_if_changed(|state| {
+            let project_id = state.project(selector)?.id.clone();
+            let project = state
+                .projects
+                .iter_mut()
+                .find(|project| project.id == project_id)
+                .expect("resolved project remains in the transaction");
+            let changed = project.orchestrator != choice;
+            project.orchestrator = choice;
             Ok((project.clone(), changed))
         })
     }

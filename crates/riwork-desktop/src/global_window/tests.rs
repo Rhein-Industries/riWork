@@ -49,6 +49,16 @@ pub(crate) fn open_global(
     home: &Path,
     saved: GlobalWindowState,
 ) -> GlobalFixture {
+    open_global_on(cx, home, saved, offline_host)
+}
+
+/// `open_global` whose explicit Start reaches the chat host `ensure_host` names.
+fn open_global_on(
+    cx: &mut gpui::TestAppContext,
+    home: &Path,
+    saved: GlobalWindowState,
+    ensure_host: EnsureHost,
+) -> GlobalFixture {
     let store = Store::open(home).unwrap();
     let sessions = SessionManager::at(home.to_path_buf()).unwrap();
     let startup = GlobalStartup {
@@ -57,7 +67,7 @@ pub(crate) fn open_global(
         settings_store: SettingsStore::open(home).unwrap(),
         saved: GlobalWindowStore::at(sessions.state_home()),
         host: HostConfig::offline(),
-        ensure_host: offline_host,
+        ensure_host,
         sessions,
     };
     let (handle, global) = crate::form_input::test_window(cx, move |window, cx| {
@@ -192,8 +202,9 @@ fn the_dashboard_opens_in_its_own_window_and_starts_or_selects_nothing(
         // may start one, but showing it started nothing.
         assert_eq!(global.read(cx).view, GlobalView::Chat);
         assert!(!global.read(cx).starting);
+        // Fresh settings run new orchestrators as Automatic chooses: a chat.
         let start = window.find("global-chat-start");
-        assert_eq!(start.label(), Some("Start global orchestrator"));
+        assert_eq!(start.label(), Some("Start global chat"));
         window.click("global-view-dashboard", cx);
     });
     crate::form_input::test_turn(cx, fixture.handle, |_, cx| {
@@ -440,6 +451,91 @@ fn only_an_explicit_start_asks_for_a_new_orchestrator(cx: &mut gpui::TestAppCont
     });
 }
 
+/// The chat host of a `TestHost`, in this process, with fake providers.
+fn in_process_host(home: &Path) -> Result<PathBuf, String> {
+    Ok(crate::chat::client::socket_path(home))
+}
+
+/// Start in the global window makes the orchestrator `orchestrators::plan` names, with its
+/// model, and shows why when Automatic had to fall back.
+#[gpui::test]
+fn start_makes_the_planned_global_orchestrator_with_its_model_and_says_when_it_fell_back(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::chat::host::Providers;
+    use crate::chat::testing::{TestHost, fake_for, fake_providers, missing_start, quick_options};
+    init_app(cx);
+    let start = |cx: &mut gpui::TestAppContext, host: &TestHost| {
+        let fixture = open_global_on(
+            cx,
+            &host.home,
+            GlobalWindowState::default(),
+            in_process_host,
+        );
+        sample(cx, &fixture, Vec::new(), Vec::new());
+        crate::form_input::test_turn(cx, fixture.handle, |window, cx| {
+            window.click("global-view-chat", cx);
+        });
+        crate::form_input::test_turn(cx, fixture.handle, |window, cx| {
+            window.click("global-chat-start", cx);
+        });
+        let chats = host.client().list().unwrap();
+        assert_eq!(chats.len(), 1, "{chats:?}");
+        let chat = chats[0].clone();
+        let started = fake_for(&chat.cwd).starts.lock().unwrap().clone();
+        let notice = fixture
+            .global
+            .read_with(cx, |global, _| global.notice.clone());
+        (chat, started.last().unwrap().model.clone(), notice)
+    };
+
+    // Fresh settings: a Muse chat on Wonder Full, and nothing to explain.
+    let host = TestHost::new();
+    let (chat, model, notice) = start(cx, &host);
+    assert_eq!(chat.provider, Provider::Muse);
+    assert_eq!(chat.model.as_deref(), Some("muse-wonder-full-1.0"));
+    assert_eq!(model.as_deref(), Some("muse-wonder-full-1.0"));
+    assert_eq!(chat.orchestrator, Some(OrchestratorScope::Global));
+    assert_eq!(notice, None);
+
+    // Muse cannot start: Codex on GPT-6.1-Sol, and the window says why.
+    let host = TestHost::with_providers(
+        quick_options(),
+        Providers {
+            muse: missing_start,
+            ..fake_providers()
+        },
+    );
+    let (chat, model, notice) = start(cx, &host);
+    assert_eq!(
+        (chat.provider, model.as_deref()),
+        (Provider::Codex, Some("gpt-6.1-sol"))
+    );
+    let notice = notice.unwrap_or_default();
+    assert!(
+        notice.contains("muse is not installed or is not on PATH"),
+        "{notice}"
+    );
+    assert!(notice.contains("Codex chat on gpt-6.1-sol"), "{notice}");
+
+    // An explicit Settings choice wins over Automatic.
+    let host = TestHost::new();
+    SettingsStore::open(&host.home)
+        .unwrap()
+        .update(|settings| {
+            settings.set_orchestrator_runs(&settings::OrchestratorRuns::Chat {
+                provider: Provider::Claude,
+                model: Some("opus".into()),
+            })
+        })
+        .unwrap();
+    let (chat, model, _) = start(cx, &host);
+    assert_eq!(
+        (chat.provider, model.as_deref()),
+        (Provider::Claude, Some("opus"))
+    );
+}
+
 #[gpui::test]
 fn every_entry_reuses_the_one_global_window_and_a_reload_records_it_as_itself(
     cx: &mut gpui::TestAppContext,
@@ -622,7 +718,15 @@ fn a_read_that_began_before_an_orchestrator_was_made_does_not_take_it_away(
         global.update(cx, |global, cx| {
             // An explicit Start made the chat while a read was on its way...
             global.starting = true;
-            global.orchestrator_ready(Ok((Orchestrator::Chat(chat.clone()), true)), window, cx);
+            global.orchestrator_ready(
+                Ok(orchestrators::Created {
+                    orchestrator: Orchestrator::Chat(chat.clone()),
+                    created: true,
+                    fallback: None,
+                }),
+                window,
+                cx,
+            );
             assert_eq!(shown_chat(global).map(|(id, _)| id), Some(chat.id.clone()));
             // ...which ends with the chats as they were before it: it is let go.
             global.sampled(begun, Ok((Vec::new(), None, Some(Vec::new()))), window, cx);

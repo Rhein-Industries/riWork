@@ -8,7 +8,7 @@ use crate::chat::model::{ChatCommand, ChatEvent, ChatState, Provider};
 use crate::chat::testing::*;
 use crate::orchestrators::ChatHost;
 use crate::settings::{OrchestratorMode, SettingsStore};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 fn ensure_in_process(home: &Path) -> Result<PathBuf, String> {
     Ok(socket_path(home))
@@ -28,9 +28,34 @@ impl Drop for Setup {
 
 impl Setup {
     fn new() -> Self {
-        let host = TestHost::new();
+        Self::on(TestHost::new())
+    }
+
+    fn on(host: TestHost) -> Self {
         let sessions = SessionManager::at(host.home.clone()).unwrap();
         Self { host, sessions }
+    }
+
+    /// Muse is not installed: its chats fail to start as a missing program does.
+    fn without_muse() -> Self {
+        Self::on(TestHost::with_providers(
+            quick_options(),
+            crate::chat::host::Providers {
+                muse: missing_start,
+                ..fake_providers()
+            },
+        ))
+    }
+
+    /// The provider and model each start of this chat's driver was given.
+    fn starts(&self, chat: &crate::chat::model::ChatInfo) -> Vec<(Provider, Option<String>)> {
+        fake_for(&chat.cwd)
+            .starts
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|start| (start.provider, start.model.clone()))
+            .collect()
     }
 
     /// Chat orchestrators from now on, behind `provider`.
@@ -481,4 +506,192 @@ fn explicit_chat_overrides_terminal_setting_without_changing_it() {
             .unwrap_err()
             .contains("--command")
     );
+}
+
+#[test]
+fn fresh_settings_create_a_muse_chat_on_wonder_full_and_say_who_chose() {
+    let setup = Setup::new();
+    let created = setup.json("create");
+    assert_eq!(created["created"], true);
+    assert_eq!(created["mode"], "chat");
+    assert_eq!(created["provider"], "muse");
+    assert_eq!(created["model"], "muse-wonder-full-1.0");
+    assert_eq!(created["source"], "settings");
+    assert!(created.get("fallback").is_none());
+    let chat = setup.only_chat();
+    assert_eq!(
+        setup.starts(&chat),
+        [(Provider::Muse, Some("muse-wonder-full-1.0".to_owned()))]
+    );
+    // Status shows the model it runs on; a second create neither changes nor
+    // re-explains it.
+    assert_eq!(setup.json("status")["model"], "muse-wonder-full-1.0");
+    let again = setup.json("create");
+    assert_eq!(
+        (again["created"].clone(), again["id"].clone()),
+        (json!(false), json!(chat.id))
+    );
+    assert!(again.get("source").is_none());
+}
+
+#[test]
+fn without_muse_create_runs_codex_on_sol_and_notes_why() {
+    let setup = Setup::without_muse();
+    let text = setup.run("create").unwrap();
+    let chat = setup.only_chat();
+    assert_eq!(
+        (chat.provider, chat.model.as_deref()),
+        (Provider::Codex, Some("gpt-6.1-sol"))
+    );
+    assert!(
+        text.starts_with(&format!("{}  Orchestrator  ", chat.id)),
+        "{text}"
+    );
+    let note = text.lines().nth(1).unwrap_or_default();
+    assert!(
+        note.starts_with("Note: Muse chat on muse-wonder-full-1.0 did not start"),
+        "{text}"
+    );
+    assert!(
+        note.contains("muse is not installed or is not on PATH"),
+        "{note}"
+    );
+    assert!(note.contains("Codex chat on gpt-6.1-sol"), "{note}");
+
+    // In JSON, a fallback has its own field.
+    let setup = Setup::without_muse();
+    let created = setup.json("create");
+    assert_eq!(created["provider"], "codex");
+    assert_eq!(created["model"], "gpt-6.1-sol");
+    assert!(
+        created["fallback"]
+            .as_str()
+            .unwrap()
+            .contains("muse is not installed")
+    );
+}
+
+#[test]
+fn a_project_choice_makes_its_own_orchestrator_and_create_flags_win_for_that_creation() {
+    use crate::settings::OrchestratorRuns;
+    use crate::store::ProjectOrchestrator;
+    let setup = Setup::new();
+    let project = setup.project();
+    Store::open(&setup.host.home)
+        .unwrap()
+        .set_project_orchestrator(
+            &project.id,
+            ProjectOrchestrator::Choose(OrchestratorRuns::Chat {
+                provider: Provider::Claude,
+                model: Some("opus".into()),
+            }),
+        )
+        .unwrap();
+    let mine = setup.json("create --project demo");
+    assert_eq!(
+        (
+            mine["provider"].clone(),
+            mine["model"].clone(),
+            mine["source"].clone()
+        ),
+        (json!("claude"), json!("opus"), json!("project"))
+    );
+    assert_eq!(mine["project_id"], project.id.as_str());
+    // The global orchestrator follows Settings.
+    let global = setup.json("create");
+    assert_eq!(
+        (global["provider"].clone(), global["source"].clone()),
+        (json!("muse"), json!("settings"))
+    );
+
+    // Flags choose for one creation and change no setting.
+    setup.run("close").unwrap();
+    let made = setup.json_args(&[
+        "create",
+        "--mode",
+        "chat",
+        "--provider",
+        "codex",
+        "--model",
+        "gpt-6.1-sol",
+    ]);
+    assert_eq!(
+        (
+            made["provider"].clone(),
+            made["model"].clone(),
+            made["source"].clone()
+        ),
+        (json!("codex"), json!("gpt-6.1-sol"), json!("request"))
+    );
+    assert_eq!(
+        crate::settings::orchestrator_runs(&setup.host.home),
+        OrchestratorRuns::Automatic
+    );
+    // Under Automatic, --mode chat is Automatic's chat, and a model needs its provider.
+    setup.run("close").unwrap();
+    let error = setup
+        .text_of(&["create", "--model", "gpt-6-luna"], false)
+        .unwrap_err();
+    assert!(error.contains("--model needs --provider"), "{error}");
+    let made = setup.json("create --mode chat");
+    assert_eq!(
+        (
+            made["provider"].clone(),
+            made["model"].clone(),
+            made["source"].clone()
+        ),
+        (
+            json!("muse"),
+            json!("muse-wonder-full-1.0"),
+            json!("request")
+        )
+    );
+    // When a terminal is chosen, a model alone is a chat of Settings' chat provider.
+    setup.run("close").unwrap();
+    setup.choose_terminal();
+    let made = setup.json_args(&["create", "--model", "gpt-6-luna"]);
+    assert_eq!(
+        (made["provider"].clone(), made["model"].clone()),
+        (json!("codex"), json!("gpt-6-luna"))
+    );
+    // --mode chat alone in the project is the project's chat.
+    setup.run("close --project demo").unwrap();
+    let made = setup.json("create --project demo --mode chat");
+    assert_eq!(
+        (made["provider"].clone(), made["model"].clone()),
+        (json!("claude"), json!("opus"))
+    );
+
+    for (args, error) in [
+        (
+            &["create", "--mode", "terminal", "--model", "x"][..],
+            "--provider and --model are for --mode chat",
+        ),
+        (
+            &["create", "--mode", "automatic", "--provider", "muse"][..],
+            "--provider and --model are for --mode chat",
+        ),
+        (
+            &["create", "--provider", "gemini"][..],
+            "--provider must be codex, claude or muse",
+        ),
+        (
+            &["create", "--mode", "automatic", "--command", "sleep"][..],
+            "--command cannot be used with --mode automatic",
+        ),
+        (&["create", "--model", " "][..], "--model must not be blank"),
+    ] {
+        let found = setup.text_of(args, false).unwrap_err();
+        assert!(found.contains(error), "{args:?}: {found}");
+    }
+}
+
+#[test]
+fn shell_create_model_asks_the_launch_for_that_model_and_keeps_the_permission_choice() {
+    let choices = harness_choices(Some("opus".into()), false);
+    assert_eq!(choices.model.as_deref(), Some("opus"));
+    assert_eq!(choices.mode, None);
+    let choices = harness_choices(Some("gpt-6.1-sol".into()), true);
+    assert_eq!(choices.mode, Some(crate::chat::model::ApprovalMode::Full));
+    assert!(HELP.contains("--harness codex|claude|grok|muse [--model NAME]"));
 }

@@ -85,7 +85,7 @@ riwork version | --version              Print the RiWork version
 riwork remote pair|revoke|devices|start|relay   Encrypted mobile access (standalone binary)
 riwork remote --help                    Pairing, relay and connector command options
 riwork shell create [--project ID | --worktree ID] [--command CMD] [--no-parent]
-riwork shell create [--worktree ID] --harness codex|claude|grok|muse [--unrestricted | --as-settings]
+riwork shell create [--worktree ID] --harness codex|claude|grok|muse [--model NAME] [--unrestricted | --as-settings]
 riwork shell list [--project ID | --all]
 riwork shell output ID [--lines N] [--styled]   Read current shell output by UUID
 riwork shell output ID --json [--lines N] [--styled] [--if-changed HASH [--wait-ms N]]
@@ -115,7 +115,8 @@ riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude
                [--mode supervised|auto-edit|full|plan] [--context transcript|summary] [--note TEXT]
                                         Pass a conversation to a new shell or chat
 riwork orchestrator [--project ID]       Show the selected orchestrator status
-riwork orchestrator create [--project ID | --cwd PATH] [--command CMD] [--mode terminal|chat]
+riwork orchestrator create [--project ID | --cwd PATH] [--command CMD] [--mode automatic|terminal|chat]
+                [--provider codex|claude|muse] [--model NAME]
 riwork orchestrator list [--project ID]   List global and project orchestrators, terminals and chats
 riwork orchestrator status|output|cwd|metrics|attach|close [--project ID]
 riwork orchestrator send [--project ID] TEXT   Send a line (a chat message) to the selected orchestrator
@@ -188,6 +189,8 @@ worktree create --base REF only chooses the start point of a new branch. If
 BRANCH already exists, it is checked out as is and --base is ignored.
 shell create --project ID --worktree SELECTOR looks SELECTOR up in that project
 first, so a branch name shared by several projects is not ambiguous.
+shell create --harness H --model NAME starts the CLI on that model (Codex and Grok -m,
+Claude and Muse --model, as handoff does); without it the CLI's own default runs.
 shell create --json prints the new session as `shell list --json` shows it (id,
 project_id, worktree_id, kind, cwd, harness, alive, ...). A running RiWork
 window adds a tab for it behind the current one without taking focus.
@@ -225,13 +228,22 @@ Orchestrator commands without --project use the global session; list shows all
 scopes. For send, place --project before the text; use send -- TEXT to send a
 global literal line beginning with --project.
 An orchestrator runs in a terminal or as a chat (a Codex, Claude or Muse chat of the chat
-host), as Settings > Agent sessions > Orchestrator runs as said when it was created,
-unless create --mode terminal|chat overrides it for that creation. Chat uses the
-configured chat provider. The override does not change Settings.
-A scope has one orchestrator in either mode: create returns the one that exists,
-and create --json adds \"created\" (false for one that was there). list --json and
+host), as was chosen when it was created: by the project's Project Settings for its
+own orchestrator, else by Settings > Agent sessions > Orchestrator runs as. Automatic,
+the default, starts a Muse chat on muse-wonder-full-1.0, or a Codex chat on gpt-6.1-sol
+when Muse cannot start; an explicit chat that cannot start is an error. create --mode
+automatic|terminal|chat overrides both for that creation, and --provider and --model
+choose the chat. Without --provider, --mode chat is the chat that was chosen (Automatic's
+when that is chosen; --model then needs --provider), or Settings' chat provider and model
+when a terminal was chosen. The override changes no setting.
+A scope has one orchestrator in either mode: create returns the one that exists, as it
+runs, and create --json adds \"created\" (false for one that was there) and, for one
+made now, \"source\" (settings, project or request), \"fallback\" when Automatic ran
+Codex because Muse could not start (also a Note line in plain text), and \"notes\"
+for saved choices that could not be read. list --json and
 status --json give every orchestrator a \"mode\" (\"terminal\" or \"chat\"); a chat
-orchestrator's entry has the usual fields and \"chat_id\", \"provider\" and \"state\"
+orchestrator's entry has the usual fields and \"chat_id\", \"provider\", \"model\" (null:
+the provider's default) and \"state\"
 (starting, idle, running, waiting, stopped or failed), and its \"id\" is its chat's
 id, which riwork chat events and riwork chat command take as well. For a chat,
 send is a chat message (a stopped chat is resumed), output --lines N is the
@@ -1726,6 +1738,16 @@ fn search_command(args: Vec<String>, json: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// What `shell create --harness H --model M` asks of the launch: the model, and the
+/// permission bypass the caller asked for (`Full`), as a handoff asks for them.
+fn harness_choices(model: Option<String>, unrestricted: bool) -> crate::sessions::HarnessChoices {
+    crate::sessions::HarnessChoices {
+        model,
+        mode: unrestricted.then_some(crate::chat::model::ApprovalMode::Full),
+        ..Default::default()
+    }
+}
+
 fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
     let manager = SessionManager::open_default()?;
     let operation = pop_command(&mut args, "list");
@@ -1754,11 +1776,17 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                     _ => Err("--harness must be codex, claude, grok, or muse".to_owned()),
                 })
                 .transpose()?;
+            let model = take_verbatim_option(&mut args, "--model")?
+                .map(|model| model_setting("--model", model))
+                .transpose()?;
             let unrestricted = take_flag(&mut args, "--unrestricted");
             let as_settings = take_flag(&mut args, "--as-settings");
             ensure_empty(&args)?;
             if harness.is_some() && command.is_some() {
                 return Err("Use either --harness or --command".to_owned());
+            }
+            if model.is_some() && harness.is_none() {
+                return Err("--model requires --harness".to_owned());
             }
             if unrestricted && as_settings {
                 return Err("Use either --unrestricted or --as-settings".to_owned());
@@ -1778,7 +1806,17 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             let state = Store::open_default()?.snapshot()?;
             let (project_id, worktree_id, cwd) =
                 launch_scope(&state, project.as_deref(), worktree.as_deref())?;
-            let shell = if let Some(harness) = harness {
+            let shell = if let Some(harness) = harness
+                && model.is_some()
+            {
+                manager.create_harness_with(
+                    project_id,
+                    worktree_id,
+                    cwd,
+                    harness,
+                    harness_choices(model, unrestricted),
+                )?
+            } else if let Some(harness) = harness {
                 manager.create_harness(project_id, worktree_id, cwd, harness, unrestricted)?
             } else {
                 manager.create(project_id, worktree_id, cwd, command)?
@@ -2495,28 +2533,37 @@ fn orchestrator_client_command(
         "create" | "start" => {
             let cwd = take_option(&mut args, "--cwd")?.map(PathBuf::from);
             let command = take_option(&mut args, "--command")?;
+            let model = take_verbatim_option(&mut args, "--model")?
+                .map(|model| model_setting("--model", model))
+                .transpose()?;
             let mode = take_option(&mut args, "--mode")?;
-            let runs = match mode.as_deref() {
-                None => crate::settings::orchestrator_runs(host.home),
-                Some("terminal") => crate::settings::OrchestratorRuns::Terminal,
-                Some("chat") => {
-                    let settings = crate::settings::SettingsStore::open(host.home)
-                        .and_then(|store| store.load())
-                        .unwrap_or_default();
-                    crate::settings::OrchestratorRuns::Chat(settings.orchestrator_chat_provider)
-                }
-                Some(_) => return Err("--mode must be terminal or chat".into()),
-            };
-            if mode.as_deref() == Some("chat") && command.is_some() {
-                return Err("--command cannot be used with --mode chat".into());
-            }
+            let provider = take_option(&mut args, "--provider")?
+                .map(|word| match word.as_str() {
+                    "codex" => Ok(crate::chat::model::Provider::Codex),
+                    "claude" => Ok(crate::chat::model::Provider::Claude),
+                    "muse" => Ok(crate::chat::model::Provider::Muse),
+                    _ => Err("--provider must be codex, claude or muse".to_owned()),
+                })
+                .transpose()?;
             ensure_empty(&args)?;
-            let (orchestrator, created) = if let Some(project) = project {
-                if cwd.is_some() {
-                    return Err(
-                        "Use either --project or --cwd for orchestrator creation".to_owned()
-                    );
-                }
+            if project.is_some() && cwd.is_some() {
+                return Err("Use either --project or --cwd for orchestrator creation".to_owned());
+            }
+            let planned = orchestrators::plan(
+                host.home,
+                project.as_ref().map(|project| project.id.as_str()),
+            )?;
+            let plan = requested_plan(host.home, planned, mode.as_deref(), provider, model)?;
+            if command.is_some()
+                && plan.runs.is_chat()
+                && plan.source == orchestrators::PlanSource::Request
+            {
+                return Err(format!(
+                    "--command cannot be used with --mode {}",
+                    plan.runs.mode().label().to_lowercase()
+                ));
+            }
+            let made = if let Some(project) = project {
                 orchestrators::create(
                     manager,
                     host,
@@ -2524,21 +2571,16 @@ fn orchestrator_client_command(
                     Some(project.root.clone()),
                     project.root,
                     command,
-                    runs,
+                    &plan.runs,
                 )?
             } else {
                 let cwd = match cwd {
                     Some(cwd) => cwd,
                     None => env::current_dir().map_err(|error| error.to_string())?,
                 };
-                orchestrators::create(manager, host, &scope, None, cwd, command, runs)?
+                orchestrators::create(manager, host, &scope, None, cwd, command, &plan.runs)?
             };
-            text(orchestrator_text(
-                host.home,
-                &orchestrator,
-                json,
-                Some(created),
-            )?)
+            text(created_text(host.home, &made, &plan, json)?)
         }
         "list" => {
             ensure_empty(&args)?;
@@ -2627,6 +2669,102 @@ fn orchestrator_client_command(
             "Unknown orchestrator command '{operation}'\n{HELP}"
         )),
     }
+}
+
+/// How `orchestrator create` makes a new orchestrator: as `planned` (Settings and the
+/// project) unless `--mode`, `--provider` or `--model` ask for something else. A
+/// chat asked for without a provider is the planned chat (Automatic when that is
+/// planned), else, when a terminal is planned, the chat Settings keep for chat mode;
+/// a model without a provider is that chat's.
+fn requested_plan(
+    home: &Path,
+    planned: crate::orchestrators::Plan,
+    mode: Option<&str>,
+    provider: Option<crate::chat::model::Provider>,
+    model: Option<String>,
+) -> Result<crate::orchestrators::Plan, String> {
+    use crate::settings::OrchestratorRuns;
+    let chat_detail = provider.is_some() || model.is_some();
+    let runs = match mode {
+        None if !chat_detail => return Ok(planned),
+        Some("automatic") | Some("terminal") if chat_detail => {
+            return Err("--provider and --model are for --mode chat".to_owned());
+        }
+        Some("automatic") => OrchestratorRuns::Automatic,
+        Some("terminal") => OrchestratorRuns::Terminal,
+        None | Some("chat") => match (provider, &planned.runs) {
+            (Some(provider), _) => OrchestratorRuns::Chat { provider, model },
+            (
+                None,
+                OrchestratorRuns::Chat {
+                    provider,
+                    model: planned_model,
+                },
+            ) => OrchestratorRuns::Chat {
+                provider: *provider,
+                model: model.or_else(|| planned_model.clone()),
+            },
+            // Automatic is a chat already, and it chooses the provider.
+            (None, OrchestratorRuns::Automatic) if model.is_some() => {
+                return Err(
+                    "--model needs --provider while new orchestrators are Automatic, which chooses the provider"
+                        .to_owned(),
+                );
+            }
+            (None, OrchestratorRuns::Automatic) => OrchestratorRuns::Automatic,
+            (None, OrchestratorRuns::Terminal) => {
+                let settings = crate::settings::SettingsStore::open(home)
+                    .and_then(|store| store.load())
+                    .unwrap_or_default();
+                OrchestratorRuns::Chat {
+                    provider: settings.orchestrator_chat_provider,
+                    model: model.or(settings.orchestrator_chat_model),
+                }
+            }
+        },
+        Some(_) => return Err("--mode must be automatic, terminal or chat".into()),
+    };
+    Ok(crate::orchestrators::Plan {
+        runs,
+        source: crate::orchestrators::PlanSource::Request,
+        notes: Vec::new(),
+    })
+}
+
+/// What `orchestrator create` prints: the orchestrator as `orchestrator_text` shows
+/// it and, for one made now, how it was chosen (`source`), any fallback from the
+/// preferred chat, and saved choices passed over. In plain text these follow the
+/// line as notes.
+fn created_text(
+    home: &Path,
+    made: &crate::orchestrators::Created,
+    plan: &crate::orchestrators::Plan,
+    json: bool,
+) -> Result<String, String> {
+    let notes: Vec<&String> = if made.created {
+        made.fallback.iter().chain(&plan.notes).collect()
+    } else {
+        Vec::new()
+    };
+    if !json {
+        let mut text = orchestrator_text(home, &made.orchestrator, false, None)?;
+        for note in notes {
+            text.push_str(&format!("Note: {note}\n"));
+        }
+        return Ok(text);
+    }
+    let mut value = crate::orchestrators::entry(home, &made.orchestrator);
+    value["created"] = json!(made.created);
+    if made.created {
+        value["source"] = json!(plan.source.as_str());
+        if let Some(fallback) = &made.fallback {
+            value["fallback"] = json!(fallback);
+        }
+        if !plan.notes.is_empty() {
+            value["notes"] = json!(plan.notes);
+        }
+    }
+    json_text(&value)
 }
 
 /// What a command prints about an orchestrator: a terminal's session as ever

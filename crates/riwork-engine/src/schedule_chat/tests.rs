@@ -68,8 +68,9 @@ impl Rig {
             None,
             host.home.clone(),
             None,
-            OrchestratorRuns::Chat(Provider::Codex),
+            &OrchestratorRuns::chat(Provider::Codex),
         )
+        .map(|made| (made.orchestrator, made.created))
         .unwrap() else {
             panic!("a chat was asked for");
         };
@@ -606,8 +607,9 @@ fn a_target_that_is_not_the_pinned_chat_fails_instead_of_retargeting() {
         None,
         rig.host.home.clone(),
         None,
-        OrchestratorRuns::Chat(Provider::Codex),
+        &OrchestratorRuns::chat(Provider::Codex),
     )
+    .map(|made| (made.orchestrator, made.created))
     .unwrap() else {
         panic!("a new chat");
     };

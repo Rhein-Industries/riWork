@@ -94,6 +94,7 @@ sys.stdout.write((root / (name + '.json')).read_text())
                     folder_id: Some("folder".into()),
                     notify_on_agent_done: false,
                     wake_orchestrators_on_agent_done: false,
+                    orchestrator: Default::default(),
                     codex_account: crate::store::ProjectCodexAccount::default(),
                     created_at: 8,
                 });
@@ -395,6 +396,7 @@ fn explicit_nested_project_root_wins_and_worktree_dedup_is_per_project() {
                 folder_id: None,
                 notify_on_agent_done: false,
                 wake_orchestrators_on_agent_done: false,
+                orchestrator: Default::default(),
                 codex_account: crate::store::ProjectCodexAccount::default(),
                 created_at: 11,
             });

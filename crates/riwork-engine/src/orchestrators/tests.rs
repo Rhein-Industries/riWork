@@ -2,9 +2,11 @@
 //! throwaway `RIWORK_HOME`. A terminal orchestrator here is a `sleep` in a tmux
 //! server of its own, which is killed with the guard.
 use super::*;
+use crate::chat::host::Providers;
 use crate::chat::model::ChatEvent;
 use crate::chat::testing::*;
 use crate::sessions::SessionManager;
+use crate::store::Store;
 
 const PROJECT: &str = "11111111-1111-4111-8111-111111111111";
 
@@ -47,10 +49,10 @@ fn id_of(orchestrator: &Orchestrator) -> &str {
     }
 }
 
-fn chat_of(created: (Orchestrator, bool)) -> (ChatInfo, bool) {
-    match created {
-        (Orchestrator::Chat(chat), created) => (chat, created),
-        (other, _) => panic!("expected a chat orchestrator, got {other:?}"),
+fn chat_of(created: Created) -> (ChatInfo, bool) {
+    match created.orchestrator {
+        Orchestrator::Chat(chat) => (chat, created.created),
+        other => panic!("expected a chat orchestrator, got {other:?}"),
     }
 }
 
@@ -58,7 +60,7 @@ fn global_chat(
     sessions: &SessionManager,
     host: &TestHost,
     runs: OrchestratorRuns,
-) -> Result<(Orchestrator, bool), String> {
+) -> Result<Created, String> {
     create(
         sessions,
         &chat_host(&host.home),
@@ -66,7 +68,7 @@ fn global_chat(
         None,
         host.home.clone(),
         None,
-        runs,
+        &runs,
     )
 }
 
@@ -86,7 +88,7 @@ fn a_global_chat_orchestrator_works_where_a_terminal_one_does_and_is_told_what_i
     let host = TestHost::new();
     let (sessions, _server) = sessions(&host);
     let (chat, created) =
-        chat_of(global_chat(&sessions, &host, OrchestratorRuns::Chat(Provider::Codex)).unwrap());
+        chat_of(global_chat(&sessions, &host, OrchestratorRuns::chat(Provider::Codex)).unwrap());
     assert!(created);
     assert_eq!(chat.orchestrator, Some(OrchestratorScope::Global));
     assert_eq!(chat.provider, Provider::Codex);
@@ -150,7 +152,7 @@ fn a_project_chat_orchestrator_belongs_to_its_project_and_never_asks() {
             Some(root.clone()),
             root.clone(),
             None,
-            OrchestratorRuns::Chat(Provider::Claude),
+            &OrchestratorRuns::chat(Provider::Claude),
         )
         .unwrap(),
     );
@@ -194,12 +196,12 @@ fn a_project_chat_orchestrator_belongs_to_its_project_and_never_asks() {
 fn a_scope_has_one_orchestrator_across_modes_and_scopes_do_not_share() {
     let host = TestHost::new();
     let (sessions, _server) = sessions(&host);
-    let chat_runs = OrchestratorRuns::Chat(Provider::Codex);
-    let (first, created) = chat_of(global_chat(&sessions, &host, chat_runs).unwrap());
+    let chat_runs = OrchestratorRuns::chat(Provider::Codex);
+    let (first, created) = chat_of(global_chat(&sessions, &host, chat_runs.clone()).unwrap());
     assert!(created);
 
     // Creating again, in either mode, returns the chat and sends nothing more.
-    for runs in [chat_runs, OrchestratorRuns::Terminal] {
+    for runs in [chat_runs.clone(), OrchestratorRuns::Terminal] {
         let (again, created) = chat_of(global_chat(&sessions, &host, runs).unwrap());
         assert!(!created);
         assert_eq!(again.id, first.id);
@@ -228,7 +230,7 @@ fn a_scope_has_one_orchestrator_across_modes_and_scopes_do_not_share() {
             Some(root.clone()),
             root,
             None,
-            chat_runs,
+            &chat_runs,
         )
         .unwrap(),
     );
@@ -243,14 +245,18 @@ fn a_scope_has_one_orchestrator_across_modes_and_scopes_do_not_share() {
     let terminal = sessions
         .orchestrator_create_for_project(other.into(), other_root.clone(), Some("sleep 600".into()))
         .unwrap();
-    let (found, created) = create(
+    let Created {
+        orchestrator: found,
+        created,
+        ..
+    } = create(
         &sessions,
         &chat_host(&host.home),
         &scope_of(Some(other)),
         Some(other_root),
         host.home.clone(),
         None,
-        chat_runs,
+        &chat_runs,
     )
     .unwrap();
     assert!(!created);
@@ -278,7 +284,7 @@ fn creators_that_race_make_one_chat_and_one_first_message() {
                         None,
                         home.clone(),
                         None,
-                        OrchestratorRuns::Chat(Provider::Codex),
+                        &OrchestratorRuns::chat(Provider::Codex),
                     )
                     .map(chat_of)
                 })
@@ -314,7 +320,7 @@ fn a_dead_terminal_orchestrator_makes_room_for_a_chat() {
     assert!(!dead.alive);
 
     let (chat, created) =
-        chat_of(global_chat(&sessions, &host, OrchestratorRuns::Chat(Provider::Codex)).unwrap());
+        chat_of(global_chat(&sessions, &host, OrchestratorRuns::chat(Provider::Codex)).unwrap());
     assert!(created);
     assert!(
         sessions.orchestrator_get().unwrap().is_none(),
@@ -336,14 +342,18 @@ fn a_dead_terminal_orchestrator_makes_room_for_a_chat() {
 fn a_custom_command_is_a_terminal_whatever_the_setting_says() {
     let host = TestHost::new();
     let (sessions, _server) = sessions(&host);
-    let (found, created) = create(
+    let Created {
+        orchestrator: found,
+        created,
+        ..
+    } = create(
         &sessions,
         &chat_host(&host.home),
         &OrchestratorScope::Global,
         None,
         host.home.clone(),
         Some("sleep 600".into()),
-        OrchestratorRuns::Chat(Provider::Codex),
+        &OrchestratorRuns::chat(Provider::Codex),
     )
     .unwrap();
     assert!(created);
@@ -358,7 +368,7 @@ fn a_chat_that_cannot_start_is_not_left_behind() {
     let context = orchestrator_context(&host.home, None);
     fs::create_dir_all(&context).unwrap();
     *fake_for(&context).fail_start.lock().unwrap() = Some("codex is not installed".into());
-    let error = global_chat(&sessions, &host, OrchestratorRuns::Chat(Provider::Codex)).unwrap_err();
+    let error = global_chat(&sessions, &host, OrchestratorRuns::chat(Provider::Codex)).unwrap_err();
     assert!(
         error.contains("could not start") && error.contains("codex is not installed"),
         "{error}"
@@ -371,7 +381,7 @@ fn a_chat_that_cannot_start_is_not_left_behind() {
     );
     // The next try starts clean.
     let (chat, created) =
-        chat_of(global_chat(&sessions, &host, OrchestratorRuns::Chat(Provider::Codex)).unwrap());
+        chat_of(global_chat(&sessions, &host, OrchestratorRuns::chat(Provider::Codex)).unwrap());
     assert!(created);
     let settled = host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
     assert_eq!(host.client().list().unwrap(), vec![settled]);
@@ -381,8 +391,8 @@ fn a_chat_that_cannot_start_is_not_left_behind() {
 fn closing_a_chat_orchestrator_deletes_its_chat_and_the_next_one_starts_afresh() {
     let host = TestHost::new();
     let (sessions, _server) = sessions(&host);
-    let runs = OrchestratorRuns::Chat(Provider::Codex);
-    let (first, _) = chat_of(global_chat(&sessions, &host, runs).unwrap());
+    let runs = OrchestratorRuns::chat(Provider::Codex);
+    let (first, _) = chat_of(global_chat(&sessions, &host, runs.clone()).unwrap());
     close(&chat_host(&host.home), &first).unwrap();
     assert!(host.client().list().unwrap().is_empty());
     assert!(!host.home.join("chats").join(&first.id).exists());
@@ -458,7 +468,7 @@ fn the_entry_of_a_chat_orchestrator_has_the_usual_fields_and_the_three_that_name
     let host = TestHost::new();
     let (sessions, _server) = sessions(&host);
     let (chat, _) =
-        chat_of(global_chat(&sessions, &host, OrchestratorRuns::Chat(Provider::Codex)).unwrap());
+        chat_of(global_chat(&sessions, &host, OrchestratorRuns::chat(Provider::Codex)).unwrap());
     let chat = host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
     let entry = chat_entry(&host.home, &chat);
     assert_eq!(entry["id"], chat.id);
@@ -512,7 +522,7 @@ fn load_skill_sends_the_full_skill_once_and_only_to_an_idle_chat() {
     let host = TestHost::new();
     let (sessions, _server) = sessions(&host);
     let (chat, _) =
-        chat_of(global_chat(&sessions, &host, OrchestratorRuns::Chat(Provider::Codex)).unwrap());
+        chat_of(global_chat(&sessions, &host, OrchestratorRuns::chat(Provider::Codex)).unwrap());
     let chat_host = chat_host(&host.home);
     host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
     // The skill it started with is the current one: nothing to load.
@@ -574,4 +584,298 @@ fn the_shared_inventory_keeps_ordinary_and_stopped_chats_while_orchestrators_sta
             .unwrap()
             .is_empty()
     );
+}
+
+fn starts(chat: &ChatInfo) -> Vec<(Provider, Option<String>)> {
+    fake_for(&chat.cwd)
+        .starts
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|start| (start.provider, start.model.clone()))
+        .collect()
+}
+
+fn choose(host: &TestHost, runs: &OrchestratorRuns) {
+    SettingsStore::open(&host.home)
+        .unwrap()
+        .update(|settings| settings.set_orchestrator_runs(runs))
+        .unwrap();
+}
+
+fn create_planned(
+    sessions: &SessionManager,
+    home: &Path,
+    project: Option<(&str, &Path)>,
+) -> Result<Created, String> {
+    let plan = plan(home, project.map(|(id, _)| id))?;
+    let root = project.map(|(_, root)| root.to_path_buf());
+    create(
+        sessions,
+        &chat_host(home),
+        &scope_of(project.map(|(id, _)| id)),
+        root.clone(),
+        root.unwrap_or_else(|| home.to_path_buf()),
+        None,
+        &plan.runs,
+    )
+}
+
+const WONDER_FULL: &str = "muse-wonder-full-1.0";
+const SOL: &str = "gpt-6.1-sol";
+
+#[test]
+fn fresh_settings_start_a_muse_chat_on_wonder_full() {
+    let host = TestHost::new();
+    let (sessions, _server) = sessions(&host);
+    // Nothing saved: Settings say Automatic, and the global scope follows them.
+    let planned = plan(&host.home, None).unwrap();
+    assert_eq!(planned.runs, OrchestratorRuns::Automatic);
+    assert_eq!(planned.source, PlanSource::Settings);
+    assert!(planned.notes.is_empty());
+
+    let made = create_planned(&sessions, &host.home, None).unwrap();
+    assert!(made.created);
+    assert_eq!(made.fallback, None);
+    let (chat, _) = chat_of(made);
+    assert_eq!(chat.provider, Provider::Muse);
+    assert_eq!(chat.model.as_deref(), Some(WONDER_FULL));
+    // The model reached the provider's start, and the entry says it.
+    assert_eq!(
+        starts(&chat),
+        [(Provider::Muse, Some(WONDER_FULL.to_owned()))]
+    );
+    let entry = chat_entry(&host.home, &chat);
+    assert_eq!(
+        (entry["provider"].clone(), entry["model"].clone()),
+        (json!("muse"), json!(WONDER_FULL))
+    );
+    // It was told what it is, with the skill, as any orchestrator is.
+    assert_eq!(sent_texts(&chat).len(), 1);
+    assert!(chat_skill_is_current(&host.home, &chat));
+}
+
+#[test]
+fn when_muse_cannot_start_automatic_runs_codex_on_sol_and_says_why() {
+    let host = TestHost::with_providers(
+        quick_options(),
+        Providers {
+            muse: missing_start,
+            ..fake_providers()
+        },
+    );
+    let (sessions, _server) = sessions(&host);
+    let made = create_planned(&sessions, &host.home, None).unwrap();
+    let fallback = made.fallback.clone().expect("a fallback is disclosed");
+    assert!(
+        fallback.contains("Muse chat on muse-wonder-full-1.0 did not start"),
+        "{fallback}"
+    );
+    assert!(
+        fallback.contains("muse is not installed or is not on PATH"),
+        "{fallback}"
+    );
+    assert!(fallback.contains("Codex chat on gpt-6.1-sol"), "{fallback}");
+    let (chat, created) = chat_of(made);
+    assert!(created);
+    assert_eq!(
+        (chat.provider, chat.model.as_deref()),
+        (Provider::Codex, Some(SOL))
+    );
+    // Muse was tried first, and its chat is not left behind.
+    assert_eq!(
+        starts(&chat),
+        [
+            (Provider::Muse, Some(WONDER_FULL.to_owned())),
+            (Provider::Codex, Some(SOL.to_owned()))
+        ]
+    );
+    let listed = host.client().list().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, chat.id);
+    assert_eq!(sent_texts(&chat).len(), 1, "one startup message, to Codex");
+}
+
+#[test]
+fn when_neither_can_start_the_error_names_both_and_nothing_is_left() {
+    let host = TestHost::with_providers(
+        quick_options(),
+        Providers {
+            muse: missing_start,
+            codex: missing_start,
+            ..fake_providers()
+        },
+    );
+    let (sessions, _server) = sessions(&host);
+    let error = create_planned(&sessions, &host.home, None).unwrap_err();
+    assert!(error.starts_with("No orchestrator could start."), "{error}");
+    assert!(error.contains("muse is not installed"), "{error}");
+    assert!(error.contains("codex is not installed"), "{error}");
+    assert!(
+        error.contains(WONDER_FULL) && error.contains(SOL),
+        "{error}"
+    );
+    assert!(host.client().list().unwrap().is_empty());
+    assert!(!skill_mark_path(&host.home, None).exists());
+}
+
+#[test]
+fn explicit_settings_win_and_an_explicit_chat_that_cannot_start_is_not_replaced() {
+    let host = TestHost::with_providers(
+        quick_options(),
+        Providers {
+            muse: missing_start,
+            ..fake_providers()
+        },
+    );
+    let (sessions, _server) = sessions(&host);
+    // An explicit Muse chat that cannot start is an error, never a Codex chat.
+    choose(
+        &host,
+        &OrchestratorRuns::Chat {
+            provider: Provider::Muse,
+            model: Some(WONDER_FULL.into()),
+        },
+    );
+    let error = create_planned(&sessions, &host.home, None).unwrap_err();
+    assert!(
+        error.contains("could not start") && error.contains("muse"),
+        "{error}"
+    );
+    assert!(host.client().list().unwrap().is_empty());
+
+    // An explicit Claude chat on Opus is what starts, though Automatic would not.
+    let opus = OrchestratorRuns::Chat {
+        provider: Provider::Claude,
+        model: Some("opus".into()),
+    };
+    choose(&host, &opus);
+    let planned = plan(&host.home, None).unwrap();
+    assert_eq!(
+        (planned.runs.clone(), planned.source),
+        (opus, PlanSource::Settings)
+    );
+    let made = create_planned(&sessions, &host.home, None).unwrap();
+    assert_eq!(made.fallback, None);
+    let (chat, _) = chat_of(made);
+    assert_eq!(
+        (chat.provider, chat.model.as_deref()),
+        (Provider::Claude, Some("opus"))
+    );
+    assert_eq!(
+        starts(&chat).last().unwrap(),
+        &(Provider::Claude, Some("opus".to_owned()))
+    );
+    // An explicit chat on the provider's own model sends none.
+    close(&chat_host(&host.home), &chat).unwrap();
+    choose(&host, &OrchestratorRuns::chat(Provider::Codex));
+    let (chat, _) = chat_of(create_planned(&sessions, &host.home, None).unwrap());
+    assert_eq!((chat.provider, chat.model.clone()), (Provider::Codex, None));
+}
+
+#[test]
+fn a_project_choice_applies_to_its_own_orchestrator_only_and_inherit_follows_settings() {
+    let host = TestHost::new();
+    let (sessions, _server) = sessions(&host);
+    let store = Store::open(&host.home).unwrap();
+    let mine = host.home.join("mine");
+    let theirs = host.home.join("theirs");
+    fs::create_dir_all(&mine).unwrap();
+    fs::create_dir_all(&theirs).unwrap();
+    let mine = store.add_project(&mine, Some("Mine")).unwrap();
+    let theirs = store.add_project(&theirs, Some("Theirs")).unwrap();
+    // Inherit is what a project has unless it chooses.
+    assert_eq!(theirs.orchestrator, ProjectOrchestrator::Inherit);
+    let opus = OrchestratorRuns::Chat {
+        provider: Provider::Claude,
+        model: Some("opus".into()),
+    };
+    store
+        .set_project_orchestrator(&mine.id, ProjectOrchestrator::Choose(opus.clone()))
+        .unwrap();
+
+    let planned = plan(&host.home, Some(&mine.id)).unwrap();
+    assert_eq!(
+        (planned.runs.clone(), planned.source),
+        (opus.clone(), PlanSource::Project)
+    );
+    for scope in [Some(theirs.id.as_str()), None] {
+        let planned = plan(&host.home, scope).unwrap();
+        assert_eq!(
+            (planned.runs, planned.source),
+            (OrchestratorRuns::Automatic, PlanSource::Settings)
+        );
+    }
+    // The project's choice wins over explicit Settings too, in its scope only.
+    choose(&host, &OrchestratorRuns::Terminal);
+    assert_eq!(plan(&host.home, Some(&mine.id)).unwrap().runs, opus);
+    assert_eq!(
+        plan(&host.home, Some(&theirs.id)).unwrap().runs,
+        OrchestratorRuns::Terminal
+    );
+    assert_eq!(
+        plan(&host.home, None).unwrap().runs,
+        OrchestratorRuns::Terminal
+    );
+    choose(&host, &OrchestratorRuns::Automatic);
+
+    // Created through the plan, each project gets its own.
+    let made = create_planned(&sessions, &host.home, Some((&mine.id, &mine.root))).unwrap();
+    let (chat, _) = chat_of(made);
+    assert_eq!(
+        (chat.provider, chat.model.as_deref()),
+        (Provider::Claude, Some("opus"))
+    );
+    assert_eq!(chat.project_id.as_deref(), Some(mine.id.as_str()));
+    let (chat, _) =
+        chat_of(create_planned(&sessions, &host.home, Some((&theirs.id, &theirs.root))).unwrap());
+    assert_eq!(
+        (chat.provider, chat.model.as_deref()),
+        (Provider::Muse, Some(WONDER_FULL))
+    );
+
+    // A choice this build cannot read is passed over, and said to be.
+    let unreadable = ProjectOrchestrator::Unreadable(json!({"mode": "hologram"}));
+    store
+        .set_project_orchestrator(&theirs.id, unreadable)
+        .unwrap();
+    let planned = plan(&host.home, Some(&theirs.id)).unwrap();
+    assert_eq!(
+        (planned.runs, planned.source),
+        (OrchestratorRuns::Automatic, PlanSource::Settings)
+    );
+    assert_eq!(planned.notes.len(), 1);
+    assert!(planned.notes[0].contains("hologram"), "{:?}", planned.notes);
+    assert!(plan(&host.home, Some("missing-project")).is_err());
+}
+
+#[test]
+fn an_existing_orchestrator_is_reused_as_it_runs_whatever_the_settings_say_now() {
+    let host = TestHost::new();
+    let (sessions, _server) = sessions(&host);
+    let (first, created) = chat_of(create_planned(&sessions, &host.home, None).unwrap());
+    assert!(created);
+    assert_eq!(first.provider, Provider::Muse);
+    for runs in [
+        OrchestratorRuns::Chat {
+            provider: Provider::Claude,
+            model: Some("opus".into()),
+        },
+        OrchestratorRuns::chat(Provider::Codex),
+        OrchestratorRuns::Automatic,
+    ] {
+        choose(&host, &runs);
+        let made = create_planned(&sessions, &host.home, None).unwrap();
+        assert_eq!(made.fallback, None);
+        let (again, created) = chat_of(made);
+        assert!(!created);
+        assert_eq!(again.id, first.id);
+        assert_eq!(
+            (again.provider, again.model.as_deref()),
+            (Provider::Muse, Some(WONDER_FULL))
+        );
+    }
+    assert_eq!(starts(&first).len(), 1, "never started again");
+    assert_eq!(sent_texts(&first).len(), 1, "never told again");
+    assert_eq!(host.client().list().unwrap().len(), 1);
 }

@@ -126,8 +126,9 @@ impl Fixture {
             root.clone(),
             root.unwrap_or_else(|| self.home().to_path_buf()),
             None,
-            OrchestratorRuns::Chat(Provider::Codex),
+            &OrchestratorRuns::chat(Provider::Codex),
         )
+        .map(|made| (made.orchestrator, made.created))
         .unwrap();
         let (Orchestrator::Chat(chat), true) = created else {
             panic!("expected a new chat orchestrator, got {created:?}");

@@ -1959,6 +1959,7 @@ mod tests {
             created_at: 1,
             notify_on_agent_done: false,
             wake_orchestrators_on_agent_done: false,
+            orchestrator: Default::default(),
             codex_account: crate::store::ProjectCodexAccount::default(),
         });
         for (id, project, path) in [

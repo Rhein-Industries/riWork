@@ -146,14 +146,11 @@ pub(crate) fn with_global_window<R>(
         .map_err(|error| error.to_string())
 }
 
-/// How a new orchestrator would run, as Settings say now.
+/// How a new global orchestrator would run, as Settings say now (the global scope has
+/// no project choice over it). For the words only: creating reads the files again
+/// (`orchestrators::plan`).
 pub(crate) fn orchestrator_runs(settings: &Settings) -> settings::OrchestratorRuns {
-    match settings.orchestrator_mode {
-        settings::OrchestratorMode::Terminal => settings::OrchestratorRuns::Terminal,
-        settings::OrchestratorMode::Chat => {
-            settings::OrchestratorRuns::Chat(settings.orchestrator_chat_provider)
-        }
-    }
+    settings.orchestrator_runs()
 }
 
 // ---- What the dashboard reads beside the sessions, in any window ---------------------------
@@ -1050,7 +1047,7 @@ impl GlobalWindow {
                 home: &home,
                 ensure: &ensure,
             };
-            let runs = settings::orchestrator_runs(&home);
+            let plan = orchestrators::plan(&home, None)?;
             let cwd = sessions::orchestrator_context(&home, None);
             orchestrators::create(
                 &sessions,
@@ -1059,7 +1056,7 @@ impl GlobalWindow {
                 None,
                 cwd,
                 None,
-                runs,
+                &plan.runs,
             )
         });
         cx.spawn_in(window, async move |this, cx| {
@@ -1074,7 +1071,7 @@ impl GlobalWindow {
 
     fn orchestrator_ready(
         &mut self,
-        result: Result<(Orchestrator, bool), String>,
+        result: Result<orchestrators::Created, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1082,9 +1079,17 @@ impl GlobalWindow {
         if result.is_ok() {
             self.sample_generation = self.sample_generation.wrapping_add(1);
         }
-        match result {
+        // Automatic ran its second choice: say what could not start and why.
+        if let Ok(orchestrators::Created {
+            fallback: Some(fallback),
+            ..
+        }) = &result
+        {
+            self.notice = Some(fallback.clone());
+        }
+        match result.map(|made| made.orchestrator) {
             Err(error) => self.notice = Some(error),
-            Ok((Orchestrator::Chat(chat), _)) => {
+            Ok(Orchestrator::Chat(chat)) => {
                 // Known at once, so the next sample does not take it for gone.
                 let chats = self.chats.get_or_insert_with(Vec::new);
                 chats
@@ -1094,7 +1099,7 @@ impl GlobalWindow {
                     self.show_chat(chat.id, window, cx);
                 }
             }
-            Ok((Orchestrator::Terminal(shell), _)) => {
+            Ok(Orchestrator::Terminal(shell)) => {
                 self.shells.retain(|known| known.id != shell.id);
                 self.shells.push(shell.clone());
                 if self.view == GlobalView::Chat {
@@ -1600,7 +1605,7 @@ impl GlobalWindow {
         let colors = theme::palette(cx);
         let copy = dashboard::chat_copy(
             &self.global_orchestrator(),
-            orchestrator_runs(&self.settings),
+            &orchestrator_runs(&self.settings),
             self.starting,
         );
         let kind = match (copy.enabled, copy.starts) {

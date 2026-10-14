@@ -1695,7 +1695,11 @@ runs):
   up as for `shell.create`, so a name or a prefix cannot stand in for it): an unknown one is
   `not_found` "project not found on the desktop" and nothing is made.
 - Optional `mode` is exactly `terminal` or `chat`, passed to the CLI as `--mode`. An absent
-  mode uses the Mac's "Orchestrator runs as" setting. Chat uses the Mac's configured chat provider.
+  mode uses what the Mac would choose: the project's own orchestrator choice (Project Settings),
+  else its "Orchestrator runs as" setting, whose default, Automatic, starts a Muse chat and falls
+  back to a Codex chat when Muse cannot start. Chat uses the chat that would be chosen
+  (Automatic's, when the Mac is on Automatic), else, when a terminal would be chosen, the Mac's
+  chat provider and model.
   This only chooses how a new orchestrator starts; an existing one keeps its mode. No Mac setting
   is changed. Older connectors reject a supplied mode with `invalid_request`; use the Mac setting
   option or update the desktop. The phone opens the returned mode ("Chat orchestrators").
