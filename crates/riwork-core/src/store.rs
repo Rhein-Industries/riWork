@@ -11,6 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::project_memo::{self, ProjectMemo};
 use crate::settings::OrchestratorRuns;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -234,6 +235,11 @@ pub struct State {
     pub tasks: Vec<Task>,
     #[serde(default)]
     pub orca_import: Option<crate::orca_import::ImportReceipt>,
+    /// Each project's memo by project id (`project_memo`); a project without one has an
+    /// empty memo. Always written, even empty: `restore_missing_fields` would otherwise put a
+    /// cleared map back from the file.
+    #[serde(default)]
+    pub project_memos: BTreeMap<String, ProjectMemo>,
 }
 
 impl Default for State {
@@ -246,6 +252,7 @@ impl Default for State {
             worktrees: Vec::new(),
             tasks: Vec::new(),
             orca_import: None,
+            project_memos: BTreeMap::new(),
         }
     }
 }
@@ -323,6 +330,14 @@ impl State {
             "project",
             selector,
         )
+    }
+
+    /// The memo of the project with exactly this id; an empty one when it has none.
+    pub fn project_memo(&self, project_id: &str) -> ProjectMemo {
+        self.project_memos
+            .get(project_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn worktree(&self, selector: &str) -> Result<&Worktree, String> {
@@ -1423,6 +1438,35 @@ impl Store {
             let changed = project.codex_account != choice;
             project.codex_account = choice;
             Ok((project.clone(), changed))
+        })
+    }
+
+    /// Replace this project's memo with `text` (normalized, at most `project_memo::MAX_BYTES`)
+    /// and return the project's id and the memo as saved. The whole text is replaced and the
+    /// last save to reach the store wins: no merge, no check against what the caller saw. Only
+    /// this project's memo is touched; a save of the text already there writes nothing and keeps
+    /// its `updated_at`.
+    pub fn set_project_memo(
+        &self,
+        selector: &str,
+        text: &str,
+    ) -> Result<(String, ProjectMemo), String> {
+        let text = project_memo::normalize(text);
+        if let Some(message) = project_memo::too_large(&text) {
+            return Err(format!("too_large: {message}"));
+        }
+        self.transaction_if_changed(|state| {
+            let project_id = state.project(selector)?.id.clone();
+            let current = state.project_memo(&project_id);
+            if current.text == text {
+                return Ok(((project_id, current), false));
+            }
+            let memo = ProjectMemo {
+                text: text.into_owned(),
+                updated_at: now(),
+            };
+            state.project_memos.insert(project_id.clone(), memo.clone());
+            Ok(((project_id, memo), true))
         })
     }
 

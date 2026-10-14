@@ -2968,6 +2968,7 @@ impl ChatView {
                 .w_full()
                 .h(px(0.0)),
             )
+            .children(self.memo_preview_card(look, cx))
             .children(self.notice_stack(look, cx))
             .child(card)
             .into_any_element()

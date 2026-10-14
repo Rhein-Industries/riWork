@@ -212,6 +212,8 @@ pub(crate) enum Step {
     Panel(PanelKind),
     /// Settings, at the Anthropic API key field.
     ApiKeySettings,
+    /// Project Settings, at the project's memo.
+    ProjectMemo,
 }
 
 pub(crate) fn route(
@@ -288,6 +290,7 @@ impl Workspace {
             }
             Step::Panel(panel) => self.open_panel(panel, self.active_pane, window, cx),
             Step::ApiKeySettings => self.reveal_api_key_settings(window, cx),
+            Step::ProjectMemo => self.reveal_project_memo(window, cx),
         }
         cx.notify();
     }
@@ -1101,9 +1104,11 @@ impl GlobalWindow {
         let config = self.host.clone();
         let view = cx.new(|cx| ChatView::open(id.clone(), config, window, cx));
         let (names, paths) = global_speech_context(&self.state);
+        let store = self.store.clone();
         view.update(cx, |view, _| {
             view.set_speech_context(names, paths);
             view.set_catalog_home(home);
+            view.set_memo_store(store);
         });
         cx.subscribe_in(
             &view,
@@ -1235,6 +1240,15 @@ impl GlobalWindow {
             ChatViewEvent::OpenApiKeySettings => {
                 self.go(Route::AnyProject(Step::ApiKeySettings), cx)
             }
+            // The global chat has no project, so its preview offers no Edit; a project's
+            // chat shown here edits in that project's window.
+            ChatViewEvent::EditProjectMemo { project_id } => self.go(
+                Route::Project {
+                    project_id: project_id.clone(),
+                    step: Step::ProjectMemo,
+                },
+                cx,
+            ),
         }
     }
 

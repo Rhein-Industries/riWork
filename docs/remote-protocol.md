@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-14: "Project memo extension", additive: two new methods, `project.memo.get` (read, shared lane) and `project.memo.set` (ordered lane), and `features.project_memo` on `ready` when the installed CLI says `"project_memo": true`. No new error code. A project's memo is one free-text Markdown string (at most 32768 UTF-8 bytes) the person writes for that project; a save replaces it whole and the last save to reach the desktop wins. The text of a save reaches the CLI on its standard input, never as an argument. It is not part of `projects.list`, `dashboard.get` or any other reply, and the desktop never gives it to an agent. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement; the iOS side implements the same text.
 - 2026-10-14: Additive and read-only, in the same "Chat extension", no new method and no new error code: `ChatInfo` gains `claude_billing` (`"subscription"` or `"api_key"`), who a Claude chat bills from its next start, chosen on the Mac (Settings' default for new chats, and each chat's composer). Absent in a chat from before it, which follows the Mac's Settings default at each start, and in a Codex or Muse chat until it is chosen; it stays with a chat that switches provider. Never a key: the key is kept in the Mac's Keychain only. A phone cannot change it: `chat.create` and the `configure` command keep refusing the field (`invalid_request`). Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-14: Additive, in "Chat orchestrators" and the "Orchestrator creation extension", no new method and no new error code: a chat orchestrator's entry in `orchestrators.list` and `shells.list` (and in `orchestrator.create`'s result) gains an optional `model`, the model the chat runs on as its provider names it (1 to 120 printable ASCII characters, no spaces), passed only for an entry whose `mode` is `chat` and left out when the CLI writes null (the provider's default) or anything else; and `orchestrator.create`'s result gains an optional `fallback`, the desktop's note that Automatic could not start its first choice and started another, passed only when `created` is true, without control characters and cut to 500 Unicode scalars. The desktop's "Orchestrator runs as" setting itself is not on the wire. A connector from before it leaves both out, and an older phone ignores them. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
 - 2026-10-14: Additive dashboard extension: one new read-only method, `dashboard.get` (params exactly `{}`), that answers the desktop's global dashboard in one bounded reply: totals, the global orchestrator, what needs attention, agents working and recently finished, every project's row, tasks in progress and the automations, ordered as the desktop orders them, each list cut to a fixed length with `<list>_total` giving its full length, and a figure that is not known left out rather than written as zero. `features.dashboard` in `ready` says the installed CLI has it (`"dashboard": true` in `riwork capabilities --json`). It reads and starts nothing: no chat host, chat, shell, orchestrator or tmux server. It runs in a shared (read) slot. No new error code. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and so does a newer connector whose `riwork` CLI predates it; a client then falls back to `projects.list` and `orchestrators.list` and says why. No `model` and no project root path are part of it (a client takes a chat orchestrator's `model` from `orchestrators.list`, below). Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged; `ios/Tests/Fixtures/dashboard.json` is a new shared fixture. See "Dashboard extension" below. Needs the iOS worker's agreement.
@@ -194,6 +195,8 @@ unsolicited response except handshake `ready`.
 | `chat.events` | `{"chat_id":"UUID","since":0,"wait_ms":25000}` optionally `"max_events":500` (Chat) | `{"chat_id":"UUID","events":[{"seq":1,"event":ChatEvent}],"next":1,"more":false}` |
 | `chat.command` | `{"chat_id":"UUID","command":ChatCommand}` (Chat) | `{"status":"ok"}` |
 | `chat.stop` | `{"chat_id":"UUID"}` (Chat) | `{"status":"stopped"}` |
+| `project.memo.get` | `{"project_id":"UUID"}` (Project memo, with `features.project_memo`) | `{"project_id":"UUID","text":"# Notes","updated_at":1790000000}` (`updated_at` absent for a memo never saved) |
+| `project.memo.set` | `{"project_id":"UUID","text":"# Notes"}` (Project memo) | the memo as saved, as `project.memo.get` answers it |
 | `dashboard.get` | `{}` (Dashboard, with `features.dashboard`) | `{"v":1,"generated_at":1790000000,"chats_known":true,"totals":{...},"global":{...},"attention":[Attention],"attention_total":0,...,"automations":{...}}` (see Dashboard extension) |
 | `upload.begin` | `{"upload":"UUID","shell_id":"UUID","name":"IMG_0001.jpg","size":123456,"sha256":"HEX"}` or `"chat_id"` instead of `"shell_id"`, optionally `"type":"image/jpeg"` (File upload) | `{"upload":"UUID","status":"partial\|complete","received":0,"chunk_bytes":92160}` plus `"path","name"` when complete |
 | `upload.chunk` | `{"upload":"UUID","offset":0,"data":"BASE64URL"}` (File upload) | `{"upload":"UUID","status":"partial\|complete","received":92160}` |
@@ -217,7 +220,7 @@ versions. Lists expose existing CLI entities; output/input resolve a full shell
 UUID against existing project shells **and** orchestrators that run in a terminal (the id
 of one that runs as a chat is refused, "Chat orchestrators"). Dead/missing sessions
 fail clearly. No project default, tmux attachment or free-form CLI RPC, and no
-creation or close except `shell.create`, `shell.close`, `project.create`, `orchestrator.create`, `chat.create` and `chat.stop`. `shell.input` intentionally
+creation or close except `shell.create`, `shell.close`, `project.create`, `orchestrator.create`, `chat.create` and `chat.stop`, and no change to a project but its memo (`project.memo.set`). `shell.input` intentionally
 submits terminal input followed by Return and can run commands in the selected
 shell (an unrestricted harness, a Vim tab, a plain shell prompt); clients must show
 the selected shell before sending. CR, LF, NUL and other
@@ -2015,6 +2018,75 @@ The shared fixture `ios/Tests/Fixtures/dashboard.json` holds named cases (`busy`
 phone's tests decode; `RIWORK_UPDATE_FIXTURES=1 cargo test -p riwork-engine global_overview`
 rewrites it. The connector's tests are `remote/tests/dashboard.rs`, the CLI's
 `crates/riwork-cli/tests/dashboard_cli.rs`.
+
+### Project memo extension (v1 and v2, 2026-10-14)
+
+Additive and compatible: two new methods and one new `ready` feature. No new error code and no
+change to the handshake, envelopes, fixtures or any existing method; it applies to protocol v1
+and v2 sessions alike. A client that never calls the methods is unaffected.
+
+A project's **memo** is one free-text Markdown string the person writes for that project: their
+own notes, edited in the Mac's Project Settings (section 06 MEMO) and on the phone. It is kept in
+the desktop's store beside the project (`state.json`, `project_memos`, keyed by project id), not in
+the project record, so `projects.list`, `dashboard.get` and the CLI's and MCP's project listings
+never carry it. The desktop never gives it to an agent; it reaches a chat only when the person
+inserts it into a draft with `/memo`.
+
+**Feature detection.** `ready.features.project_memo` is `true` when the installed `riwork` CLI
+reports `"project_memo": true` in `riwork capabilities --json` (the same question as
+`features.chat`). Without it both methods answer `invalid_request` "unsupported RPC method", as a
+connector from before the extension does, and a client offers no memo.
+
+**`project.memo.get`** `{"project_id":"UUID"}`: exactly that key, a canonical UUID; anything else is
+`invalid_request` before any CLI runs. It is `riwork project memo show ID --json` and runs in a
+shared (`Read`) slot. Result:
+
+```json
+{"project_id":"UUID","text":"# Plan\n- ship","updated_at":1790000000}
+{"project_id":"UUID","text":""}
+```
+
+`text` is the memo, empty when there is none; `updated_at` is the Unix seconds of the save that last
+changed it, left out (never `0` or `null`) for a memo never saved.
+
+**`project.memo.set`** `{"project_id":"UUID","text":"..."}`: exactly those two keys; `text` a string of
+at most 32768 UTF-8 bytes (32 KiB, the store's `riwork_core::project_memo::MAX_BYTES`), checked before
+any CLI runs. The desktop stores the text normalized: `\r\n` and a lone `\r` become `\n`, and control
+characters other than tab and newline are removed. A client sends its text normalized the same way,
+so that what it shows is what is kept. The result is the memo as saved, in `project.memo.get`'s shape.
+It is `riwork project memo set ID --json` with the text on the CLI's **standard input** (a process
+list shows arguments to every user of the Mac), in the ordered lane, after the device's
+authorization is checked again; a save of the text already there changes nothing and keeps its
+`updated_at`.
+
+Why 32 KiB: about 5,000 words of notes. A phone sends the whole memo in one request, whose JSON can
+double it (`"`, `\` and, from some encoders, `/` become two bytes; the controls that would become
+six-byte `\u00XX` escapes are removed by normalization), and that still fits one frame's 131072-byte
+plaintext with room for the envelope, without compression (requests are never compressed).
+
+**Conflicts: the last write wins.** A save replaces the whole memo and carries no version; there is
+no merge and no conflict error. The Mac's editor takes a newer memo from the store only while it
+has nothing unsaved, and a phone's editor only after a read while it has nothing unsaved; text
+either side has not saved yet is saved later and wins. A save is idempotent, so a client that lost
+the answer (a timeout, a dropped link) may send the same text again; it keeps the text until a save
+of it is answered. The phone keeps such text with the `updated_at` of the memo it was written over,
+and sends it again only after a `project.memo.get` shows that same `updated_at` (the text already
+there is simply let go); over a memo that changed on the Mac since, it sends nothing by itself and
+asks the person in the editor (keep theirs, which is then saved, or take the Mac's), so an old
+text never silently replaces a newer one.
+
+Errors (`error.code`): `invalid_request` for the validation above (and "unsupported RPC method"
+without the feature); `not_found` for a project the desktop does not have (and "device revoked");
+`cli_error` for anything else, with the CLI's message. The connector checks the CLI's reply: an
+object with `"v":1`, the `project_id` asked about, a `text` within the limit and an `updated_at`
+that, when present, is a positive integer; else `cli_error`. Only `project_id`, `text` and
+`updated_at` are passed on.
+
+The connector's tests are `remote/tests/project_memo.rs` (a stub CLI that records its argv and
+standard input, and, ignored, the real CLI in a throwaway `RIWORK_HOME`); the CLI's are in
+`crates/riwork-cli/src/cli/memo.rs`, the store's in `crates/riwork-core/src/store_tests.rs`, the
+phone's in `ios/Tests/ProjectMemoTests.swift` (the same text vectors as the store's) and
+`ios/AppTests/ProjectMemoModelTests.swift`.
 
 ## Fixtures and change log
 

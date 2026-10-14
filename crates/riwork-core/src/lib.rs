@@ -6,6 +6,7 @@ pub mod global_window;
 pub mod layouts;
 pub mod orca_import;
 pub mod paths;
+pub mod project_memo;
 pub mod project_recency;
 pub mod project_sort;
 pub mod provider;

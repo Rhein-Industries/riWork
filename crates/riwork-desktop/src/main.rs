@@ -30,6 +30,7 @@ mod global_nav;
 mod global_window;
 mod handoff_dialog;
 mod icons;
+mod memo_editor;
 mod metal_layer;
 mod notifications;
 mod orchestrator_choice;
@@ -7946,9 +7947,11 @@ impl Workspace {
         self.next_tab_id += 1;
         let (names, paths) = speech_context(&self.state, &self.project_id);
         let home = self.sessions.state_home().to_path_buf();
+        let store = self.store.clone();
         view.update(cx, |view, _| {
             view.set_speech_context(names, paths);
             view.set_catalog_home(home);
+            view.set_memo_store(store);
         });
         cx.subscribe_in(
             &view,
@@ -8159,6 +8162,13 @@ impl Workspace {
                 self.open_panel(PanelKind::Usage, self.active_pane, window, cx)
             }
             ChatViewEvent::OpenApiKeySettings => self.reveal_api_key_settings(window, cx),
+            ChatViewEvent::EditProjectMemo { project_id } if *project_id == self.project_id => {
+                self.reveal_project_memo(window, cx)
+            }
+            ChatViewEvent::EditProjectMemo { .. } => {
+                self.notice = Some("Open that chat's project to edit its memo.".into());
+                cx.notify();
+            }
         }
     }
 
@@ -8167,6 +8177,14 @@ impl Workspace {
         self.open_panel(PanelKind::Settings, self.active_pane, window, cx);
         self.settings_panel
             .update(cx, |panel, cx| panel.reveal_api_key(window, cx));
+    }
+
+    /// Project Settings, with the keys in the project's memo: `/memo`'s **Edit**.
+    fn reveal_project_memo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_panel(PanelKind::ProjectSettings, self.active_pane, window, cx);
+        if let Some(panel) = &self.project_settings_panel {
+            panel.update(cx, |panel, cx| panel.reveal_memo(window, cx));
+        }
     }
 
     /// What the orchestrator of `scope` is doing, if it runs as a chat: what its tab says

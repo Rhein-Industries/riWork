@@ -171,6 +171,11 @@ and `orchestrators.list` entries, in the same document) is likewise independent 
 version and applies to v2 sessions exactly as to v1. It is read-only, adds no method and
 discloses only the state of agents, and the time of their last output, that the device can
 already see and type into.
+The 2026-10-14 project memo extension (`project.memo.get`, `project.memo.set` and
+`features.project_memo` on `ready`, in the same document) is likewise independent of the crypto
+version and applies to v2 sessions exactly as to v1. It reads and replaces the person's own notes
+for a project, which a paired device could already write into any file of the project from a
+shell; it adds no authority a paired device lacks.
 The 2026-10-04 chat extension (`chats.list`, `chat.create`, `chat.events`, `chat.command` and
 `chat.stop`, and `features.chat` on `ready`, in the same document) is likewise independent of the
 crypto version and applies to v2 sessions exactly as to v1. It carries the desktop's chat JSON

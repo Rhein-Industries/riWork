@@ -14,6 +14,7 @@ use crate::{
     behavior_controls as behavior,
     chat::model::Provider,
     icons::{self, ActionGlyph, Icon},
+    memo_editor::{MemoEditor, MemoEditorEvent},
     orchestrator_choice::{self, ModelChoice},
     settings::{CodexAccountsState, OrchestratorRuns, Settings, refresh_codex_accounts},
     store::{Project, ProjectCodexAccount, ProjectFolder, ProjectOrchestrator, State, Store},
@@ -453,6 +454,8 @@ enum Field {
     OrchestratorModel(usize),
     OrchestratorModelInput,
     Save,
+    /// The project's memo (06 MEMO), last in the keyboard order as it is on screen.
+    Memo,
 }
 
 /// The mode chips of 04 ORCHESTRATOR.
@@ -499,6 +502,10 @@ fn orchestrator_pick(choice: &ProjectOrchestrator) -> Option<OrchestratorPick> {
 pub struct ProjectSettingsPanel {
     store: Store,
     project: Project,
+    /// The project's memo, which saves itself (`memo_editor`).
+    memo: Entity<MemoEditor>,
+    /// The panel's scroll, so that the memo, the last section, can be brought into view.
+    scroll: gpui::ScrollHandle,
     name: Input,
     name_state: Entity<InputState>,
     name_touched: bool,
@@ -538,6 +545,14 @@ impl ProjectSettingsPanel {
         }
         let snapshot = store.snapshot();
         let error = snapshot.as_ref().err().cloned();
+        let memo = snapshot
+            .as_ref()
+            .map(|state| state.project_memo(&project.id))
+            .unwrap_or_default();
+        let memo = {
+            let (store, project_id) = (store.clone(), project.id.clone());
+            cx.new(|cx| MemoEditor::new(store, project_id, memo, window, cx))
+        };
         let (folders, folder_paths) = snapshot
             .map(|state| folder_choices(&state))
             .unwrap_or_default();
@@ -553,7 +568,13 @@ impl ProjectSettingsPanel {
             cx,
         );
         let orchestrator_model_state = text_input::single_line("", "Other model ID", window, cx);
-        let mut subscriptions = Vec::new();
+        let mut subscriptions =
+            vec![
+                cx.subscribe_in(&memo, window, |form, _, MemoEditorEvent::Focused, _, cx| {
+                    form.active = Field::Memo;
+                    cx.notify();
+                }),
+            ];
         for (field, state) in [
             (Field::Name, &name_state),
             (Field::FolderName, &folder_name_state),
@@ -599,6 +620,8 @@ impl ProjectSettingsPanel {
             name: Input::new(project.name.clone()),
             folder_id: project.folder_id.clone(),
             project,
+            memo,
+            scroll: gpui::ScrollHandle::new(),
             store,
             folders,
             folder_paths,
@@ -753,6 +776,7 @@ impl ProjectSettingsPanel {
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         match self.active {
+            Field::Memo => self.memo.update(cx, |memo, cx| memo.focus(window, cx)),
             Field::Name => self.name_state.read(cx).focus_handle(cx).focus(window, cx),
             Field::OrchestratorModelInput => self
                 .orchestrator_model_state
@@ -779,10 +803,21 @@ impl ProjectSettingsPanel {
         }
     }
 
-    /// Refresh choices without replacing the user's partially edited project name.
+    /// The memo in view, with the keys: a chat's `/memo` **Edit**.
+    pub fn reveal_memo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.active = Field::Memo;
+        self.focus(window, cx);
+        self.scroll.scroll_to_bottom();
+        cx.notify();
+    }
+
+    /// Refresh choices without replacing the user's partially edited project name, and the
+    /// memo when it was saved elsewhere and has no unsaved edits here.
     pub fn refresh_folders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.store.snapshot() {
             Ok(state) => {
+                self.memo
+                    .update(cx, |memo, cx| memo.refresh(&state, window, cx));
                 let focused_folder = match self.active {
                     Field::Folder(index) => index
                         .checked_sub(1)
@@ -864,6 +899,8 @@ impl ProjectSettingsPanel {
 
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.active {
+            // Return in the memo is a new line, never an activation.
+            Field::Memo => {}
             Field::Name | Field::Save => self.save(window, cx),
             Field::FolderName | Field::AddFolder => self.create_folder(window, cx),
             Field::Folder(index) => {
@@ -1024,7 +1061,11 @@ impl ProjectSettingsPanel {
             _ => None,
         };
         if matches!(event.keystroke.key.as_str(), "escape" | "tab")
-            && input.is_some_and(|state| crate::form_input::is_composing(state, window, cx))
+            && (input.is_some_and(|state| crate::form_input::is_composing(state, window, cx))
+                || self.active == Field::Memo
+                    && self
+                        .memo
+                        .update(cx, |memo, cx| memo.is_composing(window, cx)))
         {
             return;
         }
@@ -1103,6 +1144,7 @@ impl ProjectSettingsPanel {
                 true
             }
             "s" if event.keystroke.modifiers.platform => {
+                self.memo.update(cx, |memo, cx| memo.save_now(cx));
                 self.save(window, cx);
                 true
             }
@@ -1131,7 +1173,7 @@ impl ProjectSettingsPanel {
                     );
                     order.push(Field::OrchestratorModelInput);
                 }
-                order.push(Field::Save);
+                order.extend([Field::Save, Field::Memo]);
                 let index = order
                     .iter()
                     .position(|field| *field == self.active)
@@ -1615,6 +1657,18 @@ impl Render for ProjectSettingsPanel {
                 .text_size(ui_text::text(10.0))
                 .child(ui_text::cased(text.to_owned()))
         };
+        let memo = section_box(8.0)
+            .child(section("06  MEMO", colors))
+            .child(
+                div()
+                    .text_color(rgb(colors.muted))
+                    .text_size(ui_text::text(10.0))
+                    .child(
+                        "Your own Markdown notes for this project, saved as you type and shared \
+                         with RiWork on your phone. Type /memo in one of its chats to insert them.",
+                    ),
+            )
+            .child(self.memo.clone());
         let identity = section_box(12.0)
             .child(section("01  IDENTITY", colors))
             .child(label("Project name"))
@@ -1872,6 +1926,7 @@ impl Render for ProjectSettingsPanel {
                         .flex_1()
                         .min_h_0()
                         .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
                         .px(ui_text::space(crate::controls::LIST_MARGIN))
                         .pb(ui_text::space(crate::controls::PANEL_INSET))
                         .child(
@@ -1887,7 +1942,8 @@ impl Render for ProjectSettingsPanel {
                                 .child(account)
                                 .child(orchestrator)
                                 .child(save)
-                                .child(locations),
+                                .child(locations)
+                                .child(memo),
                         ),
                 )
                 .into_any_element();
@@ -1900,6 +1956,7 @@ impl Render for ProjectSettingsPanel {
             .key_context("ProjectSettings")
             .capture_key_down(cx.listener(Self::key_down))
             .overflow_y_scroll()
+            .track_scroll(&self.scroll)
             .bg(rgb(colors.bg))
             .text_color(rgb(colors.text))
             .font_family(ui_text::ui_family())
@@ -1971,7 +2028,8 @@ impl Render for ProjectSettingsPanel {
                     .child(account)
                     .child(orchestrator)
                     .child(save)
-                    .child(locations),
+                    .child(locations)
+                    .child(memo),
             )
             .into_any_element()
     }
@@ -2625,6 +2683,62 @@ mod tests {
             );
         });
         assert!(matches!(saved(), ProjectOrchestrator::Unreadable(_)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The memo is the last section: a chat's Edit brings it into view with the keys, typed
+    /// text saves by itself for this project only, and a save from the phone shows on the next
+    /// refresh.
+    #[gpui::test]
+    fn the_memo_section_saves_itself_and_follows_the_phone(cx: &mut gpui::TestAppContext) {
+        use crate::form_input::{test_turn, test_window};
+        use gpui_kit::test::TestWindowExt as _;
+        let dir =
+            std::env::temp_dir().join(format!("riwork-project-memo-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("demo")).unwrap();
+        std::fs::create_dir_all(dir.join("other")).unwrap();
+        let store = Store::open(dir.join("state")).unwrap();
+        let project = store.add_project(dir.join("demo"), Some("Demo")).unwrap();
+        let other = store.add_project(dir.join("other"), Some("Other")).unwrap();
+        cx.update(|app| {
+            app.set_global(CodexAccountsState {
+                snapshot: None,
+                pending: true,
+            })
+        });
+        let (handle, panel) = {
+            let (store, project) = (store.clone(), project.clone());
+            test_window(cx, move |window, cx| {
+                ProjectSettingsPanel::new(store, project, window, cx)
+            })
+        };
+        test_turn(cx, handle, |window, app| {
+            assert!(window.try_find("project-memo-editor").is_some());
+            panel.update(app, |panel, cx| panel.reveal_memo(window, cx));
+        });
+        test_turn(cx, handle, |window, app| {
+            assert!(panel.read(app).active == Field::Memo);
+            // Scrolled into view: a click reaches it (one off screen panics).
+            window.click("project-memo-editor", app);
+            window.input("Ship it", app);
+        });
+        cx.executor().advance_clock(crate::memo_editor::SAVE_DELAY);
+        cx.run_until_parked();
+        let state = store.snapshot().unwrap();
+        assert_eq!(state.project_memo(&project.id).text, "Ship it");
+        assert!(state.project_memo(&other.id).is_empty());
+        // Typing in the memo is not an unsaved name or folder edit.
+        assert_eq!(panel.read_with(cx, |panel, _| panel.status.pending), false);
+
+        store
+            .set_project_memo(&project.id, "From the phone")
+            .unwrap();
+        test_turn(cx, handle, |window, app| {
+            panel.update(app, |panel, cx| panel.refresh_folders(window, cx));
+        });
+        panel.read_with(cx, |panel, cx| {
+            assert_eq!(panel.memo.read(cx).text(), "From the phone");
+        });
         let _ = std::fs::remove_dir_all(dir);
     }
 

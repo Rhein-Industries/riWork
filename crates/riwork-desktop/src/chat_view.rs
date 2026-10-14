@@ -59,6 +59,9 @@ mod image_scope;
 mod links;
 mod markdown;
 mod media;
+mod memo;
+#[cfg(test)]
+mod memo_tests;
 #[cfg(test)]
 mod notice_tests;
 mod notice_ui;
@@ -110,6 +113,10 @@ pub enum ChatViewEvent {
     ShowUsage,
     /// A usage-limit notice's **Enter API key** was pressed: Settings, at the key field.
     OpenApiKeySettings,
+    /// `/memo`'s **Edit**: open this project's memo where it is written.
+    EditProjectMemo {
+        project_id: String,
+    },
 }
 
 impl EventEmitter<ChatViewEvent> for ChatView {}
@@ -283,6 +290,10 @@ pub struct ChatView {
     /// A usage limit's **Use API key** waits for the host to say the chat bills its API key,
     /// then sends this again, if anything (`billing::rejected_prompt`).
     limit_switch: Option<LimitSwitch>,
+    /// Where `/memo` reads the project's memo; set by the window.
+    memo_store: Option<crate::store::Store>,
+    /// `/memo`'s preview above the message box, while it is open (`memo`).
+    memo_preview: Option<memo::Preview>,
 }
 
 /// What a usage limit's **Use API key** still has to do once the switch holds.
@@ -525,6 +536,8 @@ impl ChatView {
             speech_names: Vec::new(),
             speech_paths: Vec::new(),
             limit_switch: None,
+            memo_store: None,
+            memo_preview: None,
         }
     }
 

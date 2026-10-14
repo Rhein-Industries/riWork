@@ -165,6 +165,15 @@ enum ConnectionState: Equatable {
     @ObservationIgnored let activityRefreshInterval: Duration
     /// When each list was last read, by a refresh of any kind, so a view that appears right after one does not read it again at once.
     @ObservationIgnored var lastListRead: [ActivityScope: ContinuousClock.Instant] = [:]
+    // MARK: Project memos (pipeline in RemoteModel+Memo.swift)
+    /// The memo editor that is up, if any: what it shows and how its saving stands.
+    var memoEditor: ProjectMemoEditor?
+    /// `/memo`'s preview over a chat, while it is up.
+    var memoPreview: MemoPreviewState?
+    /// The wait for typing to pause before a save (never the save itself).
+    @ObservationIgnored var memoDebounce: Task<Void, Never>?
+    /// How long typing in the memo must pause before a save (tests make it short).
+    @ObservationIgnored var memoSaveDelay: Duration = .milliseconds(800)
     // MARK: Creating projects (pipeline in RemoteModel+NewProject.swift)
     /// Whether the desktop understands `project.create`. Learned from the first call, reset by every new connection.
     var projectCreation: ProjectCreationSupport = .unknown
@@ -625,6 +634,7 @@ enum ConnectionState: Equatable {
             guard generation == token else { return }
             state = .connected
             await learnDesktopFeatures(token: token)
+            memoConnected(token: token)
             startThemeSync(token: token)
             try await refresh(token: token)
             guard generation == token else { return }

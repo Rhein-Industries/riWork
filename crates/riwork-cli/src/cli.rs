@@ -70,6 +70,7 @@ riwork project folder create NAME [--parent ID]   Create a virtual folder or sub
 riwork project folder move ID (--parent ID | --root)   Move a virtual folder
 riwork project folder list|rename|remove   Manage virtual project folders
 riwork project tasks [ID]              Show tasks for a project
+riwork project memo show|set ID         Print a project's Markdown memo, or replace it from stdin
 riwork worktree create BRANCH [--project ID] [--repo PATH] [--path PATH] [--base REF]   --base only applies to a new branch
 riwork worktree list [--project ID] [--all]
 riwork worktree tasks ID                Show tasks assigned to a worktree
@@ -184,7 +185,12 @@ refuses on; one that kept on from Muse can turn it off before it goes back to Mu
 chat models lists what a chat of that provider can be set to, read from saved chats; a
 project selects the Codex account the list is for.
 capabilities --json has \"chat\": true, \"orchestrator_create\": true,
-\"chat_provider_switch\": true, \"chat_models\": true and \"dashboard\": true.
+\"chat_provider_switch\": true, \"chat_models\": true, \"dashboard\": true and
+\"project_memo\": true.
+project memo is the project's own Markdown notes (at most 32 KB), kept in the store beside
+it and never given to an agent. set reads the whole text from stdin and replaces the memo;
+the last save wins. --json prints {\"v\":1,\"project_id\",\"text\",\"updated_at\"} or
+{\"error\":{\"code\",\"message\"}} (invalid_request, not_found, cli_error).
 dashboard reads what the desktop's global dashboard shows (the store, the shells and
 their agents, the chats of a chat host that runs or else the saved chats, and the
 automations) and starts nothing: no chat host, chat, shell or orchestrator.
@@ -999,6 +1005,10 @@ fn open_command(args: Vec<String>, json: bool, invocation: Invocation) -> Result
 /// `dashboard`: `dashboard --json` prints the global dashboard as the remote connector's
 /// `dashboard.get` passes it on (`global_overview::wire`), reading what the desktop's dashboard
 /// reads and starting nothing. An older CLI has no such command.
+///
+/// `project_memo`: `project memo show|set ID --json` reads and replaces a project's memo as the
+/// remote connector's `project.memo.get` and `project.memo.set` pass it on (`cli/memo.rs`). An
+/// older CLI has no such command.
 fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     ensure_empty(&args)?;
     if json {
@@ -1014,7 +1024,8 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
             "shell_create_as_settings": true,
             "chat_provider_switch": true,
             "chat_models": true,
-            "dashboard": true
+            "dashboard": true,
+            "project_memo": true
         }));
     }
     println!("verifies_shell yes");
@@ -1027,6 +1038,7 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     println!("chat_provider_switch yes");
     println!("chat_models yes");
     println!("dashboard yes");
+    println!("project_memo yes");
     Ok(())
 }
 
@@ -1682,6 +1694,7 @@ fn project_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             }
         }
         "folder" | "folders" => project_folder_command(&store, args, json)?,
+        "memo" => memo::command(&store, args, json, &mut io::stdin().lock())?,
         "tasks" => {
             let state = store.snapshot()?;
             let selector = optional_single(args, "project tasks [ID]")?;
@@ -3852,6 +3865,7 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 
 mod chat_remote;
 mod handoff;
+mod memo;
 use chat_remote::{
     effort_setting, model_setting, parse_events_arguments, take_verbatim_option, title_setting,
 };

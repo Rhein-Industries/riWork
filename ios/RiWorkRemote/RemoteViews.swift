@@ -424,6 +424,9 @@ struct TerminalTabsView: View {
         .sheet(item: $sessionInfo) { SessionInfoSheet(info: $0).desktopThemed(model.theme.style) }
         .sheet(isPresented: $showingDisplay) { DisplaySettingsSheet(model: model).desktopThemed(model.theme.style) }
         .sheet(item: $newTerminal, onDismiss: { chatRefocus += 1 }) { NewTerminalSheet(sheet: $0).desktopThemed(model.theme.style) }
+        .sheet(isPresented: Binding(get: { model.memoEditor != nil }, set: { if !$0 { model.closeMemoEditor() } }), onDismiss: { chatRefocus += 1 }) {
+            ProjectMemoSheet(model: model).desktopThemed(model.theme.style)
+        }
         .alert("Close terminal?", isPresented: Binding(get: { closing != nil }, set: { if !$0 { closing = nil } }), presenting: closing) { session in
             Button("Close terminal", role: .destructive) { close(session) }
             Button("Cancel", role: .cancel) {}
@@ -583,6 +586,8 @@ struct TerminalTabsView: View {
                 }
             }
             Section(project.name) {
+                // The project's own Markdown notes, shared with the Mac (RemoteModel+Memo.swift).
+                Button("Memo…", systemImage: "note.text") { model.openMemoEditor(projectID: project.id, name: project.name) }
                 Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
                 // The project's own orchestrator is a row of the New terminal sheet. The global one belongs to no project: this opens
                 // the dashboard's Global screen (Open, or Start there), leaving this project's tabs as they are.

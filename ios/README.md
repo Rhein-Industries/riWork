@@ -327,6 +327,25 @@ Return into create; while the switch or Create has the ring a small invisible ke
 input, so no software keyboard appears) and also owns space, return and ← →. The ring follows the form (`NewProjectForm`, pure and
 tested), and tapping any control moves it, so touch and keyboard agree.
 
+### Project memo
+
+**Memo…** in a project's ⋯ menu opens that project's memo: one free-text Markdown note per project,
+the same one the Mac shows at the top of Project Settings (`project.memo.get` / `project.memo.set`,
+"Project memo extension" in `docs/remote-protocol.md`). It reads the memo, then saves by itself a
+moment after typing pauses and when **Done** closes it. The line under it never says saved before
+the Mac answered: **Not saved yet** while it waits, **Saving to your Mac…**, and when the Mac is not
+connected or refuses, why, with the text kept on this iPhone (`ProjectMemoDraftStore`, in the app's
+defaults) and saved again when the Mac reconnects or the memo is opened again (**Retry** after a
+refusal). At most 32 KB; the last save wins, from the Mac or the phone. Kept text is sent again only
+over the memo it was written on; if the Mac's memo changed meanwhile, nothing is sent until the
+editor's **Keep mine** or **Use the Mac’s**. A save on its way is never cancelled, also when the sheet
+closes. A Mac without the extension is never asked and the sheet says to update RiWork there.
+
+`/memo` as the last word of a chat's message, then Return or Send, sends nothing: the project's memo
+comes up with **Insert into composer** (it goes after the draft, unsent) and **Edit** (the memo
+sheet). An empty memo offers Edit only; the global orchestrator's chat, which has no project, says
+there is no project memo there.
+
 ### Chats
 
 A desktop that says `ready.features.chat` (the `riwork` CLI reports `"chat": true`) has native chat tabs, one kind for Codex and Claude, which drive the agents through their structured protocols instead of a terminal. The phone shows them in the project's tab strip, next to the shells, and talks to them with five additive RPCs (`chats.list`, `chat.create`, `chat.events`, `chat.command`, `chat.stop`; see the chat extension of `docs/remote-protocol.md`). A desktop without the feature is never asked: there are no chat tabs and the New terminal sheet offers its four kinds as before; one that refuses a chat request ("unsupported RPC method") is treated the same for the rest of the connection, and every new connection reads `features.chat` again.
