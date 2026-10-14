@@ -68,8 +68,9 @@ impl Rig {
             None,
             host.home.clone(),
             None,
-            OrchestratorRuns::Chat(Provider::Codex),
+            &OrchestratorRuns::chat(Provider::Codex),
         )
+        .map(|made| (made.orchestrator, made.created))
         .unwrap() else {
             panic!("a chat was asked for");
         };
@@ -410,6 +411,7 @@ fn standin_rig(on_send: OnSend, wait: Duration) -> (PathBuf, ScheduleStore, Chat
         state: ChatState::Idle,
         orchestrator: Some(OrchestratorScope::Global),
         fast: false,
+        contributor_mode: Default::default(),
         contributor_opt_out: false,
         carried_over: None,
     };
@@ -606,8 +608,9 @@ fn a_target_that_is_not_the_pinned_chat_fails_instead_of_retargeting() {
         None,
         rig.host.home.clone(),
         None,
-        OrchestratorRuns::Chat(Provider::Codex),
+        &OrchestratorRuns::chat(Provider::Codex),
     )
+    .map(|made| (made.orchestrator, made.created))
     .unwrap() else {
         panic!("a new chat");
     };

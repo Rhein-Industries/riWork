@@ -135,6 +135,7 @@ impl Driver for FakeDriver {
                 effort,
                 approval_mode,
                 fast,
+                contributor_mode: _,
                 contributor_opt_out: _,
             } = command
             {
@@ -296,7 +297,8 @@ pub fn placeholder_info(config: &DriverConfig, thread_id: &str) -> ChatInfo {
         model: config.model.clone(),
         effort: config.effort.clone(),
         fast: config.fast,
-        contributor_opt_out: config.contributor_opt_out,
+        contributor_mode: config.contributor_mode,
+        contributor_opt_out: false,
         approval_mode: config.approval_mode,
         codex_account_id: None,
         state: ChatState::Idle,
@@ -318,7 +320,7 @@ fn fake_config(
         model: info.model.clone(),
         effort: info.effort.clone(),
         fast: info.fast,
-        contributor_opt_out: info.contributor_opt_out,
+        contributor_mode: info.contributor_mode,
         resume,
         resume_has_history: false,
         reporter: Default::default(),
@@ -337,6 +339,26 @@ fn fake_account(
     requested: Option<&str>,
 ) -> Result<Option<String>, String> {
     Ok((provider == Provider::Codex).then(|| requested.unwrap_or("account-a").to_owned()))
+}
+
+/// The start of a provider whose program is not there: it fails as
+/// `sessions::chat_launch` does when it cannot find the program, after the start
+/// is recorded like any other.
+pub fn missing_start(
+    config: DriverConfig,
+    _events: Sender<ChatEvent>,
+) -> Result<Box<dyn Driver>, String> {
+    fake_for(&config.cwd)
+        .starts
+        .lock()
+        .unwrap()
+        .push(config.clone());
+    let program = match config.provider {
+        Provider::Codex => "codex",
+        Provider::Claude => "claude",
+        Provider::Muse => "muse",
+    };
+    Err(format!("{program} is not installed or is not on PATH"))
 }
 
 pub fn fake_providers() -> Providers {
@@ -503,6 +525,7 @@ impl TestHost {
             effort: None,
             orchestrator: None,
             fast: false,
+            contributor_mode: Default::default(),
             contributor_opt_out: false,
         }
     }

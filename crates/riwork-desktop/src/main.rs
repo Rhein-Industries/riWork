@@ -31,6 +31,8 @@ mod handoff_dialog;
 mod icons;
 mod metal_layer;
 mod notifications;
+mod orchestrator_choice;
+mod orchestrator_wakes;
 mod orchestrators;
 mod panels;
 mod project_creator;
@@ -3051,6 +3053,36 @@ impl Workspace {
                             notifications::show_enabled(&project, cx);
                         } else if let Err(error) =
                             notifications::cancel_pending(self.sessions.state_home(), &id)
+                        {
+                            self.notice = Some(error);
+                        }
+                        self.refresh_project_metadata(window, cx);
+                        cx.refresh_windows();
+                    }
+                    Err(error) => {
+                        self.notice = Some(error);
+                        cx.notify();
+                    }
+                }
+            }
+            PanelAction::ToggleProjectOrchestratorWakes(id) => {
+                let enabled = match self.store.snapshot().and_then(|state| {
+                    state
+                        .project(&id)
+                        .map(|project| !project.wake_orchestrators_on_agent_done)
+                }) {
+                    Ok(enabled) => enabled,
+                    Err(error) => {
+                        self.notice = Some(error);
+                        cx.notify();
+                        return;
+                    }
+                };
+                match self.store.set_project_orchestrator_wakes(&id, enabled) {
+                    Ok(_) => {
+                        if !enabled
+                            && let Err(error) =
+                                orchestrator_wakes::cancel_pending(self.sessions.state_home(), &id)
                         {
                             self.notice = Some(error);
                         }
@@ -8683,8 +8715,8 @@ impl Workspace {
             return;
         }
         let scope = orchestrators::scope_of(project_id.as_deref());
-        let root = match project_id.as_deref().map(|id| self.state.project(id)) {
-            Some(Ok(project)) => Some(project.root.clone()),
+        let project = match project_id.as_deref().map(|id| self.state.project(id)) {
+            Some(Ok(project)) => Some(project.clone()),
             Some(Err(error)) => {
                 self.notice = Some(error);
                 cx.notify();
@@ -8692,6 +8724,7 @@ impl Workspace {
             }
             None => None,
         };
+        let root = project.as_ref().map(|project| project.root.clone());
         // A scope has one persistent orchestrator, in a terminal or as a chat, as the
         // setting said when it was made. Finding or making it can take a while (a chat
         // host to start, an agent to start), so it happens off the window; a second click
@@ -8699,7 +8732,11 @@ impl Workspace {
         if !self.orchestrators_starting.insert(scope.clone()) {
             return;
         }
-        if self.settings.orchestrator_mode == settings::OrchestratorMode::Chat {
+        // As last read; creating reads Settings and the project again (`plan`).
+        if orchestrators::plan_for(&self.settings, project.as_ref())
+            .runs
+            .is_chat()
+        {
             self.notice = Some(OPENING_ORCHESTRATOR.to_owned());
         }
         let sessions = self.sessions.clone();
@@ -8711,8 +8748,8 @@ impl Workspace {
                 home: &home,
                 ensure: &orchestrators::system_ensure,
             };
-            let runs = settings::orchestrator_runs(&home);
-            orchestrators::create(&sessions, &host, &wanted, root, cwd, None, runs)
+            let plan = orchestrators::plan(&home, wanted.project_id())?;
+            orchestrators::create(&sessions, &host, &wanted, root, cwd, None, &plan.runs)
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = work.await;
@@ -8762,7 +8799,7 @@ impl Workspace {
     fn orchestrator_ready(
         &mut self,
         scope: OrchestratorScope,
-        result: Result<(Orchestrator, bool), String>,
+        result: Result<orchestrators::Created, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -8772,15 +8809,24 @@ impl Workspace {
         }
         match result {
             Err(error) => self.notice = Some(error),
-            Ok((Orchestrator::Terminal(shell), _)) => {
-                self.show_orchestrator_shell(shell, window, cx)
-            }
-            Ok((Orchestrator::Chat(chat), _)) => {
-                let chats = self.chat_orchestrators.get_or_insert_with(Vec::new);
-                chats
-                    .retain(|known| known.id != chat.id && known.orchestrator != chat.orchestrator);
-                chats.push(chat.clone());
-                self.show_orchestrator_chat(chat, window, cx);
+            Ok(made) => {
+                match made.orchestrator {
+                    Orchestrator::Terminal(shell) => {
+                        self.show_orchestrator_shell(shell, window, cx)
+                    }
+                    Orchestrator::Chat(chat) => {
+                        let chats = self.chat_orchestrators.get_or_insert_with(Vec::new);
+                        chats.retain(|known| {
+                            known.id != chat.id && known.orchestrator != chat.orchestrator
+                        });
+                        chats.push(chat.clone());
+                        self.show_orchestrator_chat(chat, window, cx);
+                    }
+                }
+                // Automatic ran its second choice: say what could not start and why.
+                if let Some(fallback) = made.fallback {
+                    self.notice = Some(fallback);
+                }
             }
         }
         cx.notify();
@@ -13225,6 +13271,7 @@ fn main() {
         cx.set_app_identity("dev.riwork.shell", "RiWork");
         schedules::start(state_home.clone(), cx);
         notifications::start(state_home.clone(), cx);
+        orchestrator_wakes::start(state_home.clone(), cx);
         cx.on_system_notification_response(|response, cx| {
             if response.action_id.as_ref().is_some_and(|action| action.as_ref() != "open") { return; }
             if let Some((project_id, shell_id)) = notifications::response_target(&response.tag) {

@@ -5,7 +5,7 @@
 //! into provider requests. It owns the child process and its reader threads; the
 //! chat host owns the driver, stores the events and fans them out.
 
-use super::model::{ApprovalMode, ChatCommand, ChatEvent, Item, Provider};
+use super::model::{ApprovalMode, ChatCommand, ChatEvent, ContributorMode, Item, Provider};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -71,10 +71,10 @@ pub struct DriverConfig {
     pub effort: Option<String>,
     /// The provider's fast mode, when the model has one.
     pub fast: bool,
-    /// Muse: start `muse serve --contributor-mode off`, a per-process override Muse never
-    /// saves (`ChatInfo::contributor_opt_out`). False passes nothing, so the user's Muse
-    /// settings decide. Other providers ignore it.
-    pub contributor_opt_out: bool,
+    /// Muse: start `muse serve --contributor-mode off|on` with it, a per-process override Muse
+    /// never saves (`ChatInfo::contributor_mode`). It is always passed, so the user's Muse
+    /// settings never decide. Other providers ignore it.
+    pub contributor_mode: ContributorMode,
     /// Resume this Codex thread or Claude session instead of starting one.
     pub resume: Option<String>,
     /// The current provider session has history (or its emptiness is unknown).

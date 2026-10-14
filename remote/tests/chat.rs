@@ -2342,11 +2342,23 @@ async fn muse_chats_are_created_listed_switched_to_and_listed_by_models() {
         "capabilities.out",
         &json!({"v":1,"chat":true,"chat_provider_switch":true,"chat_models":true}),
     );
-    // Creation: the CLI is asked for a Muse chat, and the Muse chat it prints is
-    // accepted as the chat asked for.
+    // Creation: the CLI is asked for a Muse chat, and the Muse chat it prints, with
+    // contributor mode off as every Muse chat starts, is accepted as the chat asked for.
     let mut info = f.info(&f.chat);
     info["provider"] = json!("muse");
     info["title"] = json!("Muse chat");
+    let mut legacy = info.clone();
+    info["contributor_opt_out"] = json!(true);
+    // One printed with neither contributor field comes from a chat host that leaves the mode
+    // to the Muse settings: not the chat asked for.
+    f.says("create.json", &legacy);
+    let response = f
+        .call(
+            "chat.create",
+            json!({"provider":"muse","project_id":f.project}),
+        )
+        .await;
+    assert_eq!(code(&response), "cli_error", "{response}");
     f.says("create.json", &info);
     let response = f
         .call(
@@ -2369,6 +2381,50 @@ async fn muse_chats_are_created_listed_switched_to_and_listed_by_models() {
             "--json"
         ])
     );
+    // On is asked for with the CLI's flag, and must come back as itself.
+    legacy["contributor_mode"] = json!("on");
+    f.says("create.json", &legacy);
+    let response = f
+        .call(
+            "chat.create",
+            json!({"provider":"muse","project_id":f.project,"contributor_mode":"on"}),
+        )
+        .await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(response["result"]["chat"]["contributor_mode"], "on");
+    assert_eq!(
+        f.calls_of("chat", "new").pop().unwrap(),
+        words(&[
+            "chat",
+            "new",
+            "--provider",
+            "muse",
+            "--project",
+            &f.project,
+            "--mode",
+            "supervised",
+            "--contributor-on",
+            "--json"
+        ])
+    );
+    // And a configure asks for it the new way, an older phone's off included.
+    for command in [
+        json!({"command":"configure","contributor_mode":"on"}),
+        json!({"command":"configure","contributor_opt_out":true}),
+    ] {
+        let response = f
+            .call("chat.command", json!({"chat_id":f.chat,"command":command}))
+            .await;
+        assert_eq!(response["ok"], true, "{response}");
+        let sent: Value =
+            serde_json::from_str(&f.calls_of("chat", "command").pop().unwrap()[4]).unwrap();
+        let mode = if command.get("contributor_mode").is_some() {
+            "on"
+        } else {
+            "off"
+        };
+        assert_eq!(sent, json!({"command":"configure","contributor_mode":mode}));
+    }
     // The same chat in a list is let through, not dropped as an unknown provider.
     f.says("list.json", &json!([info]));
     let listed = f.call("chats.list", json!({})).await;

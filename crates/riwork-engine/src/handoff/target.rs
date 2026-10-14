@@ -48,6 +48,7 @@ pub fn start_chat(
         effort: request.effort.clone(),
         orchestrator: None,
         fast: false,
+        contributor_mode: request.contributor,
         contributor_opt_out: false,
     })?;
     // A chat host from before the account could be asked for makes the chat under the
@@ -105,6 +106,7 @@ pub fn start_shell(
             mode: request.mode,
             prompt: Some(prompt),
             binding,
+            contributor: request.contributor,
         },
     )
 }

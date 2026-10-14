@@ -1,8 +1,9 @@
 //! What `riwork handoff` chooses for the terminal agent it starts: the model, the effort,
-//! how much it may do without asking, its first message and its Codex account.
+//! how much it may do without asking, its first message, its Codex account and Muse's
+//! contributor mode.
 
 use super::*;
-use crate::chat::model::ApprovalMode;
+use crate::chat::model::{ApprovalMode, ContributorMode};
 
 fn command_line(
     harness: HarnessKind,
@@ -35,6 +36,7 @@ fn chosen(mode: Option<ApprovalMode>) -> HarnessChoices {
         mode,
         prompt: Some("Take over from /home/me/handoffs/x.md.".into()),
         binding: None,
+        contributor: Default::default(),
     }
 }
 
@@ -175,6 +177,47 @@ fn grok_gets_its_flags_and_the_message_last() {
 }
 
 #[test]
+fn muse_gets_its_flags_contributor_mode_once_and_the_message_last() {
+    let contributor = |arguments: &[String]| {
+        arguments
+            .windows(2)
+            .filter(|pair| pair[0] == "--contributor-mode")
+            .map(|pair| pair[1].clone())
+            .collect::<Vec<_>>()
+    };
+    // Plan is Muse's read-only switch, Full its permission bypass; off unless asked on.
+    for (mode, unrestricted, flag) in [
+        (Some(ApprovalMode::Plan), false, "--disable-write"),
+        (Some(ApprovalMode::Full), true, "--yolo"),
+    ] {
+        let arguments = command_line(HarnessKind::Muse, &chosen(mode), unrestricted, false);
+        assert!(contains_sequence(&arguments, &["--model", "the-model"]));
+        assert!(contains_sequence(
+            &arguments,
+            &["--reasoning-effort", "high"]
+        ));
+        assert!(arguments.contains(&flag.to_owned()), "{arguments:?}");
+        assert_eq!(contributor(&arguments), ["off"]);
+        assert!(
+            arguments
+                .last()
+                .unwrap()
+                .starts_with("Take over from /home/me/handoffs/x.md.\n\n")
+        );
+    }
+    let mut on = chosen(None);
+    on.contributor = ContributorMode::On;
+    assert_eq!(
+        contributor(&command_line(HarnessKind::Muse, &on, false, false)),
+        ["on"]
+    );
+    // Only Muse has one to say.
+    for harness in [HarnessKind::Codex, HarnessKind::Claude, HarnessKind::Grok] {
+        assert!(contributor(&command_line(harness, &on, false, false)).is_empty());
+    }
+}
+
+#[test]
 fn a_launch_that_chooses_nothing_is_the_menus_launch() {
     let nothing = HarnessChoices::default();
     let codex = command_line(HarnessKind::Codex, &nothing, false, false);
@@ -194,6 +237,10 @@ fn a_launch_that_chooses_nothing_is_the_menus_launch() {
     );
     let grok = command_line(HarnessKind::Grok, &nothing, false, false);
     assert!(!grok.contains(&"-m".to_owned()));
+    // Muse's contributor mode is never left to the user's Muse settings, even here.
+    let muse = command_line(HarnessKind::Muse, &nothing, false, false);
+    assert!(contains_sequence(&muse, &["--contributor-mode", "off"]));
+    assert!(!muse.contains(&"--model".to_owned()));
 }
 
 #[test]

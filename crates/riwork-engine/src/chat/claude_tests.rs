@@ -601,6 +601,7 @@ fn a_message_sent_while_the_process_restarts_waits_for_the_new_one() {
         effort: Some("low".into()),
         approval_mode: None,
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     });
     // The restart is claimed by now, so this does not go to the old process.
@@ -643,6 +644,7 @@ fn a_setting_goes_to_the_running_process_as_a_control_request() {
         effort: None,
         approval_mode: Some(ApprovalMode::AutoEdit),
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     });
     wait_for("both requests", || rig.fake.received().len() == 3);
@@ -659,6 +661,7 @@ fn a_setting_goes_to_the_running_process_as_a_control_request() {
         effort: None,
         approval_mode: Some(ApprovalMode::AutoEdit),
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     });
     thread::sleep(Duration::from_millis(100));
@@ -673,6 +676,7 @@ fn a_setting_the_cli_cannot_change_restarts_it_with_the_new_flags() {
         effort: None,
         approval_mode: None,
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     });
     rig.until(|event| {
@@ -703,6 +707,7 @@ fn an_effort_change_restarts_the_process_and_a_refused_model_does_not() {
         effort: Some("high".into()),
         approval_mode: None,
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     });
     rig.until(|event| {
@@ -724,6 +729,7 @@ fn an_effort_change_restarts_the_process_and_a_refused_model_does_not() {
         effort: None,
         approval_mode: None,
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     });
     let events = rig.until(|event| {
@@ -747,6 +753,7 @@ fn an_effort_change_restarts_the_process_and_a_refused_model_does_not() {
         effort: None,
         approval_mode: None,
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     });
     wait_for("the second request", || rig.fake.received().len() == 3);
@@ -768,6 +775,7 @@ fn configure_fast(fast: bool) -> ChatCommand {
         effort: None,
         approval_mode: None,
         fast: Some(fast),
+        contributor_mode: None,
         contributor_opt_out: None,
     }
 }
@@ -934,6 +942,7 @@ fn a_model_without_fast_mode_does_not_make_the_chat_complain_about_it() {
         effort: None,
         approval_mode: None,
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     });
     rig.send("go");
@@ -1536,6 +1545,7 @@ fn stopping_during_a_restart_stops_the_process_being_replaced_too() {
         effort: Some("low".into()),
         approval_mode: None,
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     });
     // The restart has begun stopping the old process, which will not leave
@@ -1561,6 +1571,7 @@ fn messages_queued_for_a_restart_that_fails_are_reported_not_lost() {
         effort: Some("low".into()),
         approval_mode: None,
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     });
     rig.send("hello?");
@@ -1843,7 +1854,7 @@ fn bare_config() -> DriverConfig {
         model: None,
         effort: None,
         fast: false,
-        contributor_opt_out: false,
+        contributor_mode: Default::default(),
         resume: None,
         resume_has_history: false,
         reporter: Default::default(),
@@ -1877,7 +1888,7 @@ fn live_claude_answers_a_trivial_prompt() {
         model: None,
         effort: None,
         fast: false,
-        contributor_opt_out: false,
+        contributor_mode: Default::default(),
         resume: None,
         resume_has_history: false,
         reporter: Default::default(),
@@ -2496,6 +2507,7 @@ fn messages_queued_for_a_restart_the_user_stops_keep_their_text() {
         effort: Some("low".into()),
         approval_mode: None,
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     });
     let text = "sent while it restarts ✓";
@@ -2725,6 +2737,7 @@ fn model_change(model: &str) -> ChatCommand {
         effort: None,
         approval_mode: None,
         fast: None,
+        contributor_mode: None,
         contributor_opt_out: None,
     }
 }
@@ -2821,6 +2834,7 @@ fn a_permission_mode_and_fast_mode_claude_takes_are_reported_when_it_answers() {
                 effort: None,
                 approval_mode: Some(ApprovalMode::AutoEdit),
                 fast: Some(true),
+                contributor_mode: None,
                 contributor_opt_out: None,
             },
             reporter,
@@ -2854,6 +2868,7 @@ fn an_effort_is_reported_at_once_and_the_restart_for_it_settles_what_the_old_pro
                 effort: Some("high".into()),
                 approval_mode: None,
                 fast: None,
+                contributor_mode: None,
                 contributor_opt_out: None,
             },
             effort,

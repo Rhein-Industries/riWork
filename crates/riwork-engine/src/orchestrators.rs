@@ -8,6 +8,13 @@
 //! one live orchestrator across both: creating one when the other kind already
 //! exists returns that one.
 //!
+//! **How a new one runs** is `plan`'s answer for its scope: a project's own choice
+//! (Project Settings), else Settings > Agent sessions. The default, `Automatic`,
+//! starts a Muse chat on Wonder Full and, when Muse cannot start, a Codex chat on
+//! GPT-6.1-Sol, and says so (`Created::fallback`); an explicit chat that cannot
+//! start is an error, never replaced by another. The desktop, the CLI (and the
+//! phone through it) and the MCP tools all create through `plan` and `create`.
+//!
 //! **A chat orchestrator** is an ordinary chat that the host knows by its
 //! `orchestrator` scope (`ChatInfo`). Its id is the chat's id, which is also the
 //! `id` of its entry in `riwork orchestrator list --json`, so one UUID names it
@@ -39,7 +46,10 @@ use crate::{
         SessionManager, ShellSession, orchestrator_context, orchestrator_prompt,
         orchestrator_skill_version,
     },
-    settings::OrchestratorRuns,
+    settings::{
+        AUTOMATIC_ORCHESTRATORS, OrchestratorRuns, Settings, SettingsStore, provider_label,
+    },
+    store::{Project, ProjectOrchestrator, Store},
 };
 use serde_json::{Value, json};
 use std::{
@@ -211,11 +221,97 @@ pub fn find(
     })
 }
 
+/// Who decided how a new orchestrator runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanSource {
+    /// Settings > Agent sessions.
+    Settings,
+    /// The project's own choice in Project Settings.
+    Project,
+    /// The command that creates it (`riwork orchestrator create --mode …`).
+    Request,
+}
+
+impl PlanSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Settings => "settings",
+            Self::Project => "project",
+            Self::Request => "request",
+        }
+    }
+}
+
+/// How a new orchestrator of a scope runs, and who said so.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Plan {
+    pub runs: OrchestratorRuns,
+    pub source: PlanSource,
+    /// Saved choices this build could not read and passed over, in words.
+    pub notes: Vec<String>,
+}
+
+/// How a new orchestrator of `project`'s scope (none: the global one) runs: the
+/// project's own choice, if it makes one, else Settings. Only that project's
+/// orchestrator follows its choice; the global one always follows Settings.
+pub fn plan_for(settings: &Settings, project: Option<&Project>) -> Plan {
+    let mut notes = Vec::new();
+    let orchestrator = project.map(|project| &project.orchestrator);
+    if let Some(ProjectOrchestrator::Choose(runs)) = orchestrator {
+        return Plan {
+            runs: runs.clone(),
+            source: PlanSource::Project,
+            notes,
+        };
+    }
+    if let Some(note) = orchestrator.and_then(ProjectOrchestrator::unreadable_note) {
+        notes.push(note);
+    }
+    if let Some(note) = settings.orchestrator_unreadable_note() {
+        notes.push(note);
+    }
+    Plan {
+        runs: settings.orchestrator_runs(),
+        source: PlanSource::Settings,
+        notes,
+    }
+}
+
+/// `plan_for` as the files of `home` say now: Settings and, for a project, the
+/// store. Read each time, as `settings::orchestrator_runs` is, so no window, CLI or
+/// MCP server holds a copy that another could outdate. Unreadable settings read as
+/// their defaults; a project that is not in the store is an error.
+pub fn plan(home: &Path, project_id: Option<&str>) -> Result<Plan, String> {
+    let settings = SettingsStore::open(home)
+        .and_then(|store| store.load())
+        .unwrap_or_default();
+    let project = project_id
+        .map(|id| Store::open(home)?.snapshot()?.project(id).cloned())
+        .transpose()?;
+    Ok(plan_for(&settings, project.as_ref()))
+}
+
+/// What `create` did.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Created {
+    pub orchestrator: Orchestrator,
+    /// Made now, or the one there was.
+    pub created: bool,
+    /// When `Automatic` could not start its first choice: what could not start,
+    /// why, and what runs instead. Shown wherever the orchestrator was asked for.
+    pub fallback: Option<String>,
+}
+
 /// The orchestrator of `scope`, created as `runs` says when there is none, and
 /// whether it was made now. One that exists is returned as it is, whatever it
-/// runs as. A custom `command` is a terminal's whatever the setting says.
+/// runs as: its mode, provider and model change only when it is closed and
+/// created again. A custom `command` is a terminal's whatever the setting says.
 /// `project_root` is the project's root (a project orchestrator needs it); `cwd`
 /// is where a global orchestrator's custom command runs.
+///
+/// `Automatic` starts the first of `AUTOMATIC_ORCHESTRATORS` whose chat starts,
+/// and names the ones that did not in `fallback`; if none starts, the error names
+/// each and why. An explicit chat is that chat or an error.
 pub fn create(
     sessions: &SessionManager,
     host: &ChatHost,
@@ -223,11 +319,16 @@ pub fn create(
     project_root: Option<PathBuf>,
     cwd: PathBuf,
     command: Option<String>,
-    runs: OrchestratorRuns,
-) -> Result<(Orchestrator, bool), String> {
-    let chat_wanted = match runs {
-        OrchestratorRuns::Chat(provider) if command.is_none() => Some(provider),
-        _ => None,
+    runs: &OrchestratorRuns,
+) -> Result<Created, String> {
+    let chats: Vec<(Provider, Option<String>)> = match runs {
+        _ if command.is_some() => Vec::new(),
+        OrchestratorRuns::Automatic => AUTOMATIC_ORCHESTRATORS
+            .iter()
+            .map(|(provider, model)| (*provider, Some((*model).to_owned())))
+            .collect(),
+        OrchestratorRuns::Chat { provider, model } => vec![(*provider, model.clone())],
+        OrchestratorRuns::Terminal => Vec::new(),
     };
     if let Some(existing) = find(sessions, host, scope)?
         && match &existing {
@@ -235,13 +336,48 @@ pub fn create(
             Orchestrator::Chat(_) => true,
         }
     {
-        return Ok((existing, false));
+        return Ok(Created {
+            orchestrator: existing,
+            created: false,
+            fallback: None,
+        });
     }
-    if let Some(provider) = chat_wanted {
+    if !chats.is_empty() {
         // A terminal that is gone makes room for the chat.
         sessions.forget_dead_orchestrator(scope.project_id())?;
-        return create_chat(sessions, host, scope, project_root.as_deref(), provider)
-            .map(|(chat, created)| (Orchestrator::Chat(chat), created));
+        let automatic = matches!(runs, OrchestratorRuns::Automatic);
+        let mut failures = Vec::new();
+        for (provider, model) in chats {
+            let name = chat_name(provider, model.as_deref());
+            match create_chat(
+                sessions,
+                host,
+                scope,
+                project_root.as_deref(),
+                provider,
+                model,
+            ) {
+                Ok((chat, created)) => {
+                    // One another process made meanwhile is not this call's fallback.
+                    let fallback = (created && !failures.is_empty())
+                        .then(|| format!("{}. It runs as a {name} instead.", failures.join(". ")));
+                    return Ok(Created {
+                        orchestrator: Orchestrator::Chat(chat),
+                        created,
+                        fallback,
+                    });
+                }
+                Err(error) if automatic => failures.push(format!(
+                    "{name} did not start: {}",
+                    error.strip_prefix(CHAT_DID_NOT_START).unwrap_or(&error)
+                )),
+                Err(error) => return Err(error),
+            }
+        }
+        return Err(format!(
+            "No orchestrator could start. {}.",
+            failures.join(". ")
+        ));
     }
     match scope {
         OrchestratorScope::Global => sessions.orchestrator_create(cwd, command),
@@ -251,8 +387,23 @@ pub fn create(
             command,
         ),
     }
-    .map(|shell| (Orchestrator::Terminal(shell), true))
+    .map(|shell| Created {
+        orchestrator: Orchestrator::Terminal(shell),
+        created: true,
+        fallback: None,
+    })
 }
+
+/// "Muse chat on muse-wonder-full-1.0", "Codex chat on its default model".
+fn chat_name(provider: Provider, model: Option<&str>) -> String {
+    match model {
+        Some(model) => format!("{} chat on {model}", provider_label(provider)),
+        None => format!("{} chat on its default model", provider_label(provider)),
+    }
+}
+
+/// What an orchestrator chat that could not start says first.
+const CHAT_DID_NOT_START: &str = "The orchestrator chat could not start: ";
 
 /// How much a chat orchestrator may do on its own: a project's never asks, as
 /// its terminal launches with approvals and sandbox off, and the global one asks
@@ -276,6 +427,7 @@ fn create_chat(
     scope: &OrchestratorScope,
     project_root: Option<&Path>,
     provider: Provider,
+    model: Option<String>,
 ) -> Result<(ChatInfo, bool), String> {
     let project_id = scope.project_id();
     let skill = sessions.orchestrator_skill_path_scoped(project_id)?;
@@ -297,11 +449,13 @@ fn create_chat(
         cwd: orchestrator_context(host.home, project_id),
         title: Some(chat_title(scope).to_owned()),
         approval_mode: approval_mode(scope),
-        model: None,
+        model,
         effort: None,
         codex_account_id: None,
         orchestrator: Some(scope.clone()),
         fast: false,
+        // An orchestrator chat starts off, as every Muse RiWork starts unless asked on.
+        contributor_mode: crate::chat::model::ContributorMode::Off,
         contributor_opt_out: false,
     });
     let info = match created {
@@ -325,7 +479,7 @@ fn create_chat(
     };
     if let Err(error) = started {
         let _ = client.delete(&info.id);
-        return Err(format!("The orchestrator chat could not start: {error}"));
+        return Err(format!("{CHAT_DID_NOT_START}{error}"));
     }
     record_chat_skill(host.home, &info)?;
     Ok((info, true))
@@ -493,7 +647,7 @@ pub fn entry(home: &Path, orchestrator: &Orchestrator) -> Value {
 /// A chat orchestrator as `riwork orchestrator list --json` and `status --json`
 /// show it: the fields of a terminal orchestrator that mean something for a
 /// chat, with the three that tell the readers it is one (`mode`, `chat_id`,
-/// `provider`) and its state. `id` is the chat's id. `alive` is true for as long
+/// `provider`), its `model` (null: the provider's default) and its state. `id` is the chat's id. `alive` is true for as long
 /// as the chat exists: a stopped or failed chat resumes with the next message.
 pub fn chat_entry(home: &Path, chat: &ChatInfo) -> Value {
     let provider = provider_word(chat.provider);
@@ -505,6 +659,7 @@ pub fn chat_entry(home: &Path, chat: &ChatInfo) -> Value {
         "cwd": chat.cwd,
         "command": null,
         "harness": provider,
+        "model": chat.model,
         "unrestricted": chat.approval_mode == ApprovalMode::Full,
         "codex_account_id": chat.codex_account_id,
         "orchestrator_skill_loaded": chat_skill_version(home, chat).is_some(),

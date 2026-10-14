@@ -20,6 +20,10 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod skills;
+
+pub use skills::{CuaSkills, SkillCli, SkillLinkState, SkillTarget};
+
 const INSTALLER_URL: &str = "https://cua.ai/driver/install.sh";
 const APP_PATH: &str = "/Applications/CuaDriver.app";
 /// Identity RiWork pins for the managed app: Cua AI, Inc.'s Developer ID.
@@ -31,6 +35,8 @@ const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const VERSION_RETRY_DELAY: Duration = Duration::from_millis(500);
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(60);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
+/// `cua-driver skills install` downloads one small archive from GitHub.
+const SKILL_INSTALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// Long enough for the vendor installer's EXIT/TERM traps to release its lock
 /// and restore a backed-up app.
 const INSTALL_TERMINATE_GRACE: Duration = Duration::from_secs(10);
@@ -55,6 +61,9 @@ pub struct CuaStatus {
     pub running: bool,
     pub ready: bool,
     pub message: String,
+    /// The `cua-driver` skill in each agent CLI. Separate from `ready`: the
+    /// driver can be ready while a CLI has no skill link, and the reverse.
+    pub skills: CuaSkills,
 }
 
 #[derive(Clone, Debug)]
@@ -66,6 +75,7 @@ pub struct CuaManager {
     app_path: PathBuf,
     /// `None` where CuaDriver.app is not used, so nothing is pinned.
     verifier: Option<AppVerifier>,
+    launch_homes: skills::LaunchHomes,
 }
 
 /// An empty `RIWORK_CUA_DRIVER` is unset rather than a path to nothing.
@@ -105,12 +115,14 @@ impl CuaManager {
         Ok(Self {
             home,
             override_driver: driver_override(),
-            user_home: env::var_os("HOME").map(PathBuf::from),
+            // A relative HOME would put user paths under whatever directory RiWork runs in.
+            user_home: non_empty_path(env::var_os("HOME")).filter(|home| home.is_absolute()),
             search_path: env::var_os("PATH")
                 .map(|value| search_directories(&value))
                 .unwrap_or_default(),
             app_path: PathBuf::from(APP_PATH),
             verifier: cfg!(target_os = "macos").then(AppVerifier::system),
+            launch_homes: skills::LaunchHomes::from_environment(),
         })
     }
 
@@ -201,6 +213,12 @@ impl CuaManager {
     }
 
     pub fn status(&self) -> Result<CuaStatus, String> {
+        self.status_with(None)
+    }
+
+    /// `linked` is the skill state setup just produced, reported as it is
+    /// instead of asking the driver again.
+    fn status_with(&self, linked: Option<CuaSkills>) -> Result<CuaStatus, String> {
         let Some(driver) = self.find_driver()? else {
             return Ok(CuaStatus {
                 installed: false,
@@ -213,6 +231,11 @@ impl CuaManager {
                 ready: false,
                 message: "Cua Driver is not installed. Select Set up Cua or run `riwork setup`."
                     .to_owned(),
+                skills: linked.unwrap_or_else(|| {
+                    self.skills_report(&skills::Pack::Unknown(
+                        "Cua Driver is not installed.".to_owned(),
+                    ))
+                }),
             });
         };
         // Never execute a managed driver whose app has not passed the identity check.
@@ -223,12 +246,14 @@ impl CuaManager {
                     driver,
                     true,
                     format!("Cua Driver's signature could not be checked: {error}"),
+                    linked,
                 ));
             }
         };
         if let Some(problem) = app_problem {
             let installed = !matches!(problem, AppProblem::Missing);
-            return Ok(self.blocked_status(driver, installed, problem.describe(&self.app_path)));
+            let message = problem.describe(&self.app_path);
+            return Ok(self.blocked_status(driver, installed, message, linked));
         }
         let version = driver_version(&driver);
         let running = daemon_running(&driver);
@@ -284,7 +309,17 @@ impl CuaManager {
         } else {
             "Cua Driver is ready. RiWork harnesses share its desktop service.".to_owned()
         };
+        let skills = linked.unwrap_or_else(|| {
+            // A driver that cannot report its version is not asked anything else.
+            self.skills_report(&match &version {
+                Ok(_) => self.skill_pack(&driver),
+                Err(_) => {
+                    skills::Pack::Unknown("Cua Driver could not report its version.".to_owned())
+                }
+            })
+        });
         Ok(CuaStatus {
+            skills,
             installed: true,
             driver_path: Some(driver),
             version: version.ok(),
@@ -298,7 +333,13 @@ impl CuaManager {
     }
 
     /// A status for a driver RiWork refuses to run, so nothing probes it.
-    fn blocked_status(&self, driver: PathBuf, installed: bool, message: String) -> CuaStatus {
+    fn blocked_status(
+        &self,
+        driver: PathBuf,
+        installed: bool,
+        message: String,
+        linked: Option<CuaSkills>,
+    ) -> CuaStatus {
         CuaStatus {
             installed,
             driver_path: Some(driver),
@@ -309,7 +350,95 @@ impl CuaManager {
             running: false,
             ready: false,
             message,
+            skills: linked.unwrap_or_else(|| {
+                self.skills_report(&skills::Pack::Unknown(
+                    "RiWork asks Cua Driver where its pack is only after the driver passes RiWork's identity check.".to_owned(),
+                ))
+            }),
         }
+    }
+
+    /// The Codex homes RiWork's launches bind: the system default and each
+    /// saved Orca account. Reading them runs nothing and writes nothing.
+    fn codex_homes(&self) -> Vec<PathBuf> {
+        if let Some(homes) = &self.launch_homes.codex_homes {
+            return homes.clone();
+        }
+        match crate::codex_accounts::cached_accounts(&self.home) {
+            Ok(accounts) => accounts
+                .into_iter()
+                .filter(|account| account.available)
+                .map(|account| account.home)
+                .collect(),
+            Err(_) => crate::codex_accounts::default_codex_home()
+                .ok()
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// Where Cua Driver keeps its skill pack. Only a driver that passed the
+    /// identity check is asked.
+    fn skill_pack(&self, driver: &Path) -> skills::Pack {
+        match run_probe(driver, &["skills", "path"])
+            .and_then(|output| output.require_success("Locate Cua Driver's skill pack"))
+            .and_then(|output| skills::parse_pack_path(&output.stdout))
+        {
+            Ok(path) => skills::Pack::at(path),
+            Err(error) => skills::Pack::Unknown(error),
+        }
+    }
+
+    /// Read-only.
+    fn skills_report(&self, pack: &skills::Pack) -> CuaSkills {
+        skills::report(
+            self.user_home.as_deref(),
+            &self.launch_homes,
+            self.codex_homes(),
+            pack,
+            &self.home.join(skills::MANIFEST),
+        )
+    }
+
+    /// Explicit setup: fetch the pack through Cua Driver when it has none, then
+    /// link it for each CLI. A failure here is reported, not fatal: the driver
+    /// works without its skill.
+    fn link_skills(&self, driver: &Path) -> CuaSkills {
+        let mut pack = self.skill_pack(driver);
+        let mut fetch_error = None;
+        if let skills::Pack::Absent(path) = &pack {
+            // Cua's supported way to get the pack. It also links the agents Cua
+            // Driver itself detects, and never over an existing path. It runs
+            // in the environment `skills path` did, so both name one location.
+            let mut install = Command::new(driver);
+            install.args(["skills", "install"]);
+            let path = path.clone();
+            match run_bounded(&mut install, SKILL_INSTALL_TIMEOUT)
+                .and_then(|output| output.require_success("Install Cua Driver's skill pack"))
+            {
+                Ok(_) => {
+                    pack = self.skill_pack(driver);
+                    if !matches!(pack, skills::Pack::Installed(_)) {
+                        fetch_error = Some(format!(
+                            "`cua-driver skills install` finished, but {} has no SKILL.md that names the cua-driver skill",
+                            path.display()
+                        ));
+                    }
+                }
+                Err(error) => fetch_error = Some(error),
+            }
+        }
+        let mut skills = skills::link(
+            self.user_home.as_deref(),
+            &self.launch_homes,
+            self.codex_homes(),
+            &pack,
+            &self.home.join(skills::MANIFEST),
+        );
+        if let Some(error) = fetch_error {
+            skills.message = format!("{error}. {}", skills.message);
+        }
+        skills
     }
 
     pub fn setup(&self) -> Result<CuaStatus, String> {
@@ -328,12 +457,14 @@ impl CuaManager {
             })?;
         }
         // Whatever the installer left must pass the same check before anything runs it.
-        self.trusted_driver()?;
+        let driver = self.trusted_driver()?;
         let executable = env::current_exe()
             .map_err(|error| format!("Cannot locate the RiWork executable: {error}"))?;
         self.ensure_harness_shims(&executable)?;
+        // Setup is the only step that writes into the CLIs' skill directories.
+        let skills = self.link_skills(&driver);
         self.ensure_started()?;
-        self.status()
+        self.status_with(Some(skills))
     }
 
     fn installed_driver_health(&self) -> Result<DriverHealth, String> {
@@ -2459,6 +2590,10 @@ mod tests {
             user_home: None,
             search_path: vec![],
             verifier: None,
+            launch_homes: skills::LaunchHomes {
+                codex_homes: Some(vec![]),
+                ..Default::default()
+            },
         }
     }
 
@@ -2699,8 +2834,9 @@ mod tests {
             fake_driver(
                 &driver,
                 &format!(
-                    "case \"$1\" in\n --version) echo 'cua-driver {version}';;\n status) touch {}; echo 'Cua Driver daemon is running';;\n *) exit 99;;\nesac",
+                    "case \"$1\" in\n --version) echo 'cua-driver {version}';;\n status) touch {}; echo 'Cua Driver daemon is running';;\n *) touch {}; exit 99;;\nesac",
                     shell_quote(&self.root.join("driver-ran").to_string_lossy()),
+                    shell_quote(&self.root.join("driver-asked").to_string_lossy()),
                 ),
             );
             for relative in [
@@ -2817,6 +2953,14 @@ mod tests {
             status.message
         );
         assert!(!temp.path.join("driver-ran").exists());
+        // Nor is it asked where its skill pack is.
+        assert!(!temp.path.join("driver-asked").exists());
+        assert!(status.skills.pack.is_none());
+        assert!(
+            status.skills.message.contains("identity check"),
+            "{}",
+            status.skills.message
+        );
         assert!(manager.ensure_started().is_err());
         assert!(!temp.path.join("driver-ran").exists());
     }

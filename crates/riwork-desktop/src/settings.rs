@@ -3,8 +3,9 @@
 use std::{cell::Cell, collections::BTreeMap, path::PathBuf, rc::Rc};
 
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, EventEmitter, FocusHandle, FontWeight, Global,
-    IntoElement, KeyDownEvent, Pixels, Render, Window, canvas, div, prelude::*, px, rgb,
+    AnyElement, App, Bounds, Context, Div, Entity, EventEmitter, FocusHandle, FontWeight, Global,
+    IntoElement, KeyDownEvent, Pixels, Render, SharedString, Subscription, Window, canvas, div,
+    prelude::*, px, rgb,
 };
 #[cfg(test)]
 use serde_json::Value;
@@ -18,12 +19,14 @@ use crate::{
     chat::model::Provider,
     codex_accounts::{self, AccountsSnapshot},
     controls,
-    cua::{CuaManager, CuaStatus},
+    cua::{CuaManager, CuaSkills, CuaStatus, SkillLinkState},
     orca_import::{ImportManager, ImportPreview, ImportReceipt},
+    orchestrator_choice,
     project_sort::ProjectOrder,
     remote_service::{self, RemoteState},
     remote_tree::Link,
     status_bar::StatusBarSettings,
+    text_input::{self, EnterBehavior, InputState},
     theme::{Appearance, Palette, ThemeChoice, palette},
     ui_text::{self, InterfaceFont, SizeChange, TextPoints},
 };
@@ -123,8 +126,8 @@ fn run_cua_action(action: CuaAction, cx: &mut App) {
 }
 
 pub use riwork_core::settings::{
-    OrchestratorMode, OrchestratorRuns, TabCloseBehavior, agent_terminals_unrestricted,
-    claude_chat_ignores_api_key, orchestrator_runs,
+    AUTOMATIC_ORCHESTRATORS, OrchestratorMode, OrchestratorRuns, TabCloseBehavior,
+    agent_terminals_unrestricted, claude_chat_ignores_api_key, recommended_model, valid_model_id,
 };
 
 /// The window's settings global. Serialization and persistence stay in core.
@@ -285,6 +288,12 @@ pub struct SettingsPanel {
     api_key_focus: FocusHandle,
     orchestrator_mode_focus: FocusHandle,
     orchestrator_provider_focus: FocusHandle,
+    orchestrator_model_focus: FocusHandle,
+    /// "Other model ID" for a chat orchestrator. Made at the first draw, which has a
+    /// window; its focus handle is kept for `focus_order`.
+    orchestrator_model_input: Option<(Entity<InputState>, FocusHandle, Subscription)>,
+    /// Why the typed model was not saved.
+    orchestrator_model_error: Option<String>,
     size_focus: FocusHandle,
     text_size_focus: FocusHandle,
     orca_preview_focus: FocusHandle,
@@ -510,6 +519,16 @@ fn row_text() -> Div {
         .gap(ui_text::space(4.0))
 }
 
+/// A line of muted or warning text under a row, as wide as a description.
+fn note(text: impl Into<SharedString>, color: u32) -> Div {
+    div()
+        .px(ui_text::space(ROW_PAD_X))
+        .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+        .text_size(ui_text::text(10.0))
+        .text_color(rgb(color))
+        .child(text.into())
+}
+
 fn row_list() -> Div {
     div().flex().flex_col().gap(ui_text::space(ROW_GAP))
 }
@@ -639,7 +658,8 @@ fn button_kind(primary: bool, disabled: bool) -> controls::Button {
     }
 }
 
-fn status_chip(label: &'static str, color: u32, colors: Palette) -> AnyElement {
+fn status_chip(label: impl Into<gpui::SharedString>, color: u32, colors: Palette) -> AnyElement {
+    let label = label.into();
     if ui_text::is_native() {
         return controls::chip(label, color == colors.gold, colors);
     }
@@ -653,6 +673,67 @@ fn status_chip(label: &'static str, color: u32, colors: Palette) -> AnyElement {
         .text_size(ui_text::text(9.0))
         .text_color(rgb(color))
         .child(ui_text::cased(label))
+        .into_any_element()
+}
+
+/// The driver can be ready while a CLI still lacks the skill, which only setup
+/// links; setup is then the next step.
+fn skill_setup_pending(status: Option<&CuaStatus>) -> bool {
+    status.is_some_and(|status| status.ready && status.skills.setup_needed())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SkillTone {
+    Linked,
+    Attention,
+    /// Nothing to do: the CLI has no home here, or links are not made.
+    Idle,
+}
+
+/// One chip per skill location. A link says a session can find the skill when
+/// it starts, not that a running session has it.
+fn skill_chips(skills: &CuaSkills) -> Vec<(String, SkillTone)> {
+    skills
+        .targets
+        .iter()
+        .map(|target| {
+            let tone = match target.state {
+                SkillLinkState::Linked => SkillTone::Linked,
+                SkillLinkState::HomeAbsent | SkillLinkState::Unsupported => SkillTone::Idle,
+                _ => SkillTone::Attention,
+            };
+            (format!("{} {}", target.name, target.state.label()), tone)
+        })
+        .collect()
+}
+
+fn skill_block(skills: &CuaSkills, colors: Palette) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(ui_text::space(6.0))
+        .child(
+            div()
+                .text_size(ui_text::text(12.0))
+                .child("cua-driver skill"),
+        )
+        .child(div().flex().flex_wrap().gap(ui_text::space(6.0)).children(
+            skill_chips(skills).into_iter().map(|(label, tone)| {
+                let color = match tone {
+                    SkillTone::Linked => colors.cyan,
+                    SkillTone::Attention => colors.gold,
+                    SkillTone::Idle => colors.muted,
+                };
+                status_chip(label, color, colors)
+            }),
+        ))
+        .child(
+            div()
+                .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                .text_size(ui_text::text(11.0))
+                .text_color(rgb(colors.muted))
+                .child(skills.message.clone()),
+        )
         .into_any_element()
 }
 
@@ -801,6 +882,9 @@ impl SettingsPanel {
             api_key_focus: cx.focus_handle(),
             orchestrator_mode_focus: cx.focus_handle(),
             orchestrator_provider_focus: cx.focus_handle(),
+            orchestrator_model_focus: cx.focus_handle(),
+            orchestrator_model_input: None,
+            orchestrator_model_error: None,
             size_focus: cx.focus_handle(),
             text_size_focus: cx.focus_handle(),
             orca_preview_focus: cx.focus_handle(),
@@ -875,6 +959,12 @@ impl SettingsPanel {
         handles.push(self.orchestrator_mode_focus.clone());
         if settings.orchestrator_mode == OrchestratorMode::Chat {
             handles.push(self.orchestrator_provider_focus.clone());
+            handles.push(self.orchestrator_model_focus.clone());
+            handles.extend(
+                self.orchestrator_model_input
+                    .as_ref()
+                    .map(|(_, focus, _)| focus.clone()),
+            );
         }
         handles.push(self.size_focus.clone());
         handles.push(self.remote_add_focus.clone());
@@ -898,6 +988,43 @@ impl SettingsPanel {
             Err(error) => self.error = Some(error),
         }
         cx.notify();
+    }
+
+    /// "Other model ID" exists from the first draw on: a text field needs a window.
+    fn ensure_model_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.orchestrator_model_input.is_some() {
+            return;
+        }
+        let state = text_input::single_line("", "Other model ID", window, cx);
+        let focus = gpui::Focusable::focus_handle(state.read(cx), cx);
+        let subscription = cx.subscribe_in(&state, window, |view, _, event, window, cx| {
+            if text_input::is_submit(event, EnterBehavior::Submit) {
+                view.use_typed_model(window, cx);
+            }
+        });
+        self.orchestrator_model_input = Some((state, focus, subscription));
+    }
+
+    /// Return in "Other model ID": the typed id becomes the chat orchestrator's model.
+    fn use_typed_model(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((state, _, _)) = &self.orchestrator_model_input else {
+            return;
+        };
+        let state = state.clone();
+        match orchestrator_choice::typed_model(&state.read(cx).value()) {
+            Ok(model) => {
+                self.orchestrator_model_error = None;
+                self.change(
+                    |settings| orchestrator_choice::choose_model(settings, Some(model)),
+                    cx,
+                );
+                crate::form_input::set_value(&state, String::new(), window, cx);
+            }
+            Err(error) => {
+                self.orchestrator_model_error = Some(error);
+                cx.notify();
+            }
+        }
     }
 
     fn sync_account_focus(&mut self, cx: &mut Context<Self>) {
@@ -1700,6 +1827,7 @@ impl SettingsPanel {
 
     fn primary_cua_action(cx: &App) -> CuaAction {
         match cx.global::<CuaSetupState>().status.as_ref() {
+            status if skill_setup_pending(status) => CuaAction::Install,
             Some(status) if status.ready => CuaAction::Check,
             Some(status) if status.version.is_none() || !status.running => CuaAction::Install,
             Some(status) if status.installed => CuaAction::Permissions,
@@ -1785,6 +1913,7 @@ impl SettingsPanel {
         let status = state.status.as_ref();
         let installed = status.is_some_and(|status| status.installed);
         let ready = status.is_some_and(|status| status.ready);
+        let link_skill = skill_setup_pending(status);
         let repair =
             installed && status.is_some_and(|status| status.version.is_none() || !status.running);
         let verify_capture = status.is_some_and(|status| {
@@ -1853,7 +1982,7 @@ impl SettingsPanel {
                     .gap(ui_text::space(10.0))
                     .child(div().flex_1().text_size(ui_text::text(13.0)).child("Cua.ai"))
                     .child(status_chip(
-                        if state.pending.is_some() { "Working" } else if ready { "Connected" } else { "Setup needed" },
+                        if state.pending.is_some() { "Working" } else if ready { "Driver ready" } else { "Setup needed" },
                         if ready { colors.cyan } else { colors.gold },
                         colors,
                     )),
@@ -1863,8 +1992,9 @@ impl SettingsPanel {
             .children((installed && !ready && !verify_capture).then(|| div().max_w(ui_text::space(DESCRIPTION_MAX_WIDTH)).text_size(ui_text::text(11.0)).text_color(rgb(colors.muted))
                 .child("Enable CuaDriver in macOS Accessibility and Screen Recording to connect all agents.")))
             .child(div().max_w(ui_text::space(DESCRIPTION_MAX_WIDTH)).text_size(ui_text::text(10.0)).text_color(rgb(colors.muted)).child("New agent sessions connect automatically. Restart existing sessions to connect them."))
+            .children(status.map(|status| skill_block(&status.skills, colors)))
             .child(action_bar(layout)
-                .child(self.cua_button(if ready { "Check Cua" } else if repair { "Repair Cua" } else if verify_capture { "Verify screen capture" } else if installed { "Grant macOS access" } else { "Set up Cua" }, true, state.pending.is_some(), cx))
+                .child(self.cua_button(if link_skill { "Link Cua skill" } else if ready { "Check Cua" } else if repair { "Repair Cua" } else if verify_capture { "Verify screen capture" } else if installed { "Grant macOS access" } else { "Set up Cua" }, true, state.pending.is_some(), cx))
                 .child(self.cua_button("Check again", false, state.pending.is_some(), cx)))
             .into_any_element()
     }
@@ -2084,7 +2214,12 @@ impl SettingsPanel {
         .into_any_element()
     }
 
-    fn agents_section(&self, settings: &Settings, cx: &mut Context<Self>) -> AnyElement {
+    fn agents_section(
+        &self,
+        settings: &Settings,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = palette(cx);
         let chat = settings.orchestrator_mode == OrchestratorMode::Chat;
         row_list()
@@ -2120,42 +2255,89 @@ impl SettingsPanel {
                 "orchestrator-mode",
                 &self.orchestrator_mode_focus,
                 "Orchestrator runs as",
-                "Terminal runs the global and project orchestrators as Codex in a terminal tab. Chat runs them as a native chat tab that the iOS app can follow too.",
+                "Automatic lets RiWork choose: a Muse chat on Wonder Full, or a Codex chat on GPT-6.1-Sol when Muse cannot start. Terminal runs the global and project orchestrators as Codex in a terminal tab. Chat runs them as a native chat tab of the provider and model below. The iOS app can follow a chat too.",
                 settings.orchestrator_mode,
-                OrchestratorMode::ALL.map(|mode| {
-                    (
-                        mode,
-                        mode.label(),
-                        match mode {
-                            OrchestratorMode::Terminal => "orchestrator-mode-terminal",
-                            OrchestratorMode::Chat => "orchestrator-mode-chat",
-                        },
-                    )
-                }),
-                |settings, mode| settings.orchestrator_mode = mode,
+                OrchestratorMode::ALL
+                    .map(|mode| {
+                        (
+                            mode,
+                            SharedString::from(mode.label()),
+                            SharedString::from(match mode {
+                                OrchestratorMode::Automatic => "orchestrator-mode-automatic",
+                                OrchestratorMode::Terminal => "orchestrator-mode-terminal",
+                                OrchestratorMode::Chat => "orchestrator-mode-chat",
+                            }),
+                        )
+                    })
+                    .to_vec(),
+                |settings: &mut Settings, mode| settings.choose_orchestrator_mode(mode),
                 cx,
             ))
+            .children((settings.orchestrator_mode == OrchestratorMode::Automatic).then(|| {
+                note(orchestrator_choice::automatic_note(), colors.muted)
+                    .id("orchestrator-automatic-note")
+            }))
             .children(chat.then(|| {
                 self.choice_row(
                     "orchestrator-provider",
                     &self.orchestrator_provider_focus,
                     "Chat provider",
-                    "The agent behind a chat orchestrator. Project orchestrators never ask before they act; the global orchestrator asks before running commands and editing files.",
+                    "The agent behind a chat orchestrator. Project orchestrators never ask before they act; the global orchestrator asks before running commands and editing files. Choosing another provider starts it on that provider's default model.",
                     settings.orchestrator_chat_provider,
-                    [Provider::Codex, Provider::Claude, Provider::Muse].map(|provider| {
-                        (
-                            provider,
-                            provider_label(provider),
-                            match provider {
-                                Provider::Codex => "orchestrator-provider-codex",
-                                Provider::Claude => "orchestrator-provider-claude",
-                                Provider::Muse => "orchestrator-provider-muse",
-                            },
-                        )
-                    }),
-                    |settings, provider| settings.orchestrator_chat_provider = provider,
+                    orchestrator_choice::PROVIDERS
+                        .map(|provider| {
+                            (
+                                provider,
+                                SharedString::from(provider_label(provider)),
+                                SharedString::from(format!(
+                                    "orchestrator-provider-{}",
+                                    orchestrator_choice::provider_word(provider)
+                                )),
+                            )
+                        })
+                        .to_vec(),
+                    |settings: &mut Settings, provider| {
+                        orchestrator_choice::choose_provider(settings, provider)
+                    },
                     cx,
                 )
+            }))
+            .children(chat.then(|| {
+                let models = orchestrator_choice::model_choices(
+                    settings.orchestrator_chat_provider,
+                    settings.orchestrator_chat_model.as_deref(),
+                );
+                let selected = models
+                    .iter()
+                    .position(|choice| choice.model == settings.orchestrator_chat_model)
+                    .unwrap_or(0);
+                let rows = models
+                    .iter()
+                    .enumerate()
+                    .map(|(index, choice)| {
+                        (
+                            index,
+                            SharedString::from(choice.label.clone()),
+                            SharedString::from(format!("orchestrator-model-{}", choice.id)),
+                        )
+                    })
+                    .collect();
+                self.choice_row(
+                    "orchestrator-model",
+                    &self.orchestrator_model_focus,
+                    "Chat model",
+                    "The model a chat orchestrator starts on. The recommended one is what RiWork's routing prefers for this provider: Wonder Full for Muse, Opus 5.5 for Claude, GPT-6.1-Sol for Codex.",
+                    selected,
+                    rows,
+                    move |settings: &mut Settings, index: usize| {
+                        orchestrator_choice::choose_model(settings, models[index].model.clone())
+                    },
+                    cx,
+                )
+            }))
+            .children(chat.then(|| self.model_input_row(window, cx)))
+            .children(settings.orchestrator_unreadable_note().map(|unreadable| {
+                note(unreadable, colors.gold).id("orchestrator-unreadable-note")
             }))
             .child(
                 div()
@@ -2163,31 +2345,86 @@ impl SettingsPanel {
                     .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
                     .text_size(ui_text::text(10.0))
                     .text_color(rgb(colors.muted))
-                    .child("Applies to orchestrators created from now on. An existing orchestrator keeps its mode until it is closed and created again."),
+                    .child("Applies to orchestrators created from now on, except a project's whose Project Settings choose otherwise. An existing orchestrator keeps its mode, provider and model until it is closed and created again."),
             )
+            .into_any_element()
+    }
+
+    /// "Other model ID": a model the chips do not offer, saved with Return.
+    fn model_input_row(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let colors = palette(cx);
+        let input = self
+            .orchestrator_model_input
+            .as_ref()
+            .map(|(state, _, _)| state.clone());
+        div()
+            .id("orchestrator-model-other")
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(ui_text::space(12.0))
+            .px(ui_text::space(ROW_PAD_X))
+            .py(ui_text::space(ROW_PAD_Y))
+            .bg(rgb(colors.panel))
+            .border_1()
+            .border_color(rgb(colors.divider))
+            .map(|row| controls::native(row, |row| controls::row(row, false, colors)))
+            .child(
+                row_text()
+                    .child(
+                        div()
+                            .text_size(ui_text::text(12.0))
+                            .text_color(rgb(colors.text))
+                            .child("Other model"),
+                    )
+                    .child(
+                        div()
+                            .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
+                            .text_size(ui_text::text(10.0))
+                            .text_color(rgb(colors.muted))
+                            .child("Type a model ID the provider knows, such as fable or gpt-6-astra, and press Return. riwork chat models --provider lists what its chats reported."),
+                    )
+                    .children(self.orchestrator_model_error.clone().map(|error| {
+                        div()
+                            .id("orchestrator-model-error")
+                            .text_size(ui_text::text(10.0))
+                            .text_color(rgb(colors.gold))
+                            .child(error)
+                    })),
+            )
+            .children(input.map(|state| {
+                div().w(ui_text::space(220.0)).flex_none().child(crate::form_input::frame(
+                    "orchestrator-model-input",
+                    &state,
+                    false,
+                    window,
+                    cx,
+                ))
+            }))
             .into_any_element()
     }
 
     /// Base radios select a value; the owner keeps the selected tab stop stable.
     /// Arrow navigation changes selection without replacing the focus handle.
     #[allow(clippy::too_many_arguments)]
-    fn choice_row<T: Copy + PartialEq + 'static, const N: usize>(
+    fn choice_row<T: Copy + PartialEq + 'static>(
         &self,
         id: &'static str,
         focus: &FocusHandle,
         title: &'static str,
         description: &'static str,
         selected: T,
-        choices: [(T, &'static str, &'static str); N],
-        apply: fn(&mut Settings, T),
+        choices: Vec<(T, SharedString, SharedString)>,
+        apply: impl Fn(&mut Settings, T) + Clone + 'static,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = palette(cx);
-        let choice = |(value, label, choice_id): (T, &'static str, &'static str),
+        let choice = |(value, label, choice_id): (T, SharedString, SharedString),
                       cx: &mut Context<Self>| {
             let active = value == selected;
             let selected_focus = focus.clone();
-            behavior::radio_content(choice_id, label, label, active)
+            let apply = apply.clone();
+            behavior::radio_content(choice_id, label.clone(), label, active)
                 .tab_stop(active)
                 .when(active, |radio| radio.track_focus(focus))
                 .flex_none()
@@ -2259,7 +2496,13 @@ impl SettingsPanel {
                             .rounded_full()
                             .bg(rgb(colors.panel_active))
                     })
-                    .children(choices.map(|choice_value| choice(choice_value, cx)))
+                    .children(
+                        choices
+                            .clone()
+                            .into_iter()
+                            .map(|choice_value| choice(choice_value, cx))
+                            .collect::<Vec<_>>(),
+                    )
                     .on_key_down(cx.listener(move |view, event: &KeyDownEvent, window, cx| {
                         if matches!(
                             event.keystroke.key.as_str(),
@@ -2270,12 +2513,13 @@ impl SettingsPanel {
                                 .iter()
                                 .position(|(value, _, _)| *value == selected)
                                 .unwrap_or(0);
+                            let count = choices.len();
                             let step = if matches!(event.keystroke.key.as_str(), "left" | "up") {
-                                N - 1
+                                count - 1
                             } else {
                                 1
                             };
-                            let next = choices[(at + step) % N].0;
+                            let next = choices[(at + step) % count].0;
                             view.change(|settings| apply(settings, next), cx);
                             cx.stop_propagation();
                             window.prevent_default();
@@ -2334,8 +2578,10 @@ impl SettingsPanel {
                     (TabCloseBehavior::Ask, "Ask", "tab-close-ask"),
                     (TabCloseBehavior::Detach, "Detach", "tab-close-detach"),
                     (TabCloseBehavior::Exit, "Exit", "tab-close-exit"),
-                ],
-                |settings, choice| settings.tab_close_behavior = choice,
+                ]
+                .map(|(choice, label, id)| (choice, label.into(), id.into()))
+                .to_vec(),
+                |settings: &mut Settings, choice| settings.tab_close_behavior = choice,
                 cx,
             ))
             .child(self.text_size_row(settings, cx))
@@ -2650,6 +2896,7 @@ impl SettingsPanel {
         layout: SettingsLayout,
         theme_columns: usize,
         settings: &Settings,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match section {
@@ -2663,7 +2910,7 @@ impl SettingsPanel {
                 settings.open_preview_on_select,
                 cx,
             ),
-            Section::Agents => self.agents_section(settings, cx),
+            Section::Agents => self.agents_section(settings, window, cx),
             Section::Windows => self.toggle_row(
                 Toggle::WindowSize,
                 "Remember project window size",
@@ -2681,8 +2928,9 @@ impl SettingsPanel {
 }
 
 impl Render for SettingsPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_remote_focus(cx);
+        self.ensure_model_input(window, cx);
         let settings = cx.global::<Settings>().clone();
         let colors = palette(cx);
         let width = self.bounds.get().size.width.as_f32();
@@ -2692,7 +2940,7 @@ impl Render for SettingsPanel {
         for sections in section_columns(layout) {
             let mut cards = Vec::new();
             for section in sections {
-                let body = self.section_body(section, layout, theme_cells, &settings, cx);
+                let body = self.section_body(section, layout, theme_cells, &settings, window, cx);
                 cards.push(section_card(section, layout, colors, body));
             }
             columns.push(
@@ -3160,79 +3408,112 @@ mod tests {
     }
 
     #[test]
-    fn orchestrators_run_in_a_terminal_by_default_and_the_choice_survives_older_odd_and_unreadable_files()
-     {
+    fn the_orchestrator_rows_save_automatic_terminal_and_a_chat_with_its_model() {
+        use crate::orchestrator_choice::{choose_model, choose_provider, model_choices};
+        use riwork_core::settings::orchestrator_runs;
         let dir = env::temp_dir().join(format!("riwork-settings-orchestrator-{}", Uuid::new_v4()));
         let store = SettingsStore::open(&dir).unwrap();
         let document = |dir: &std::path::Path| -> Value {
             serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap()
         };
-        let defaults = Settings::default();
-        assert_eq!(defaults.orchestrator_mode, OrchestratorMode::Terminal);
-        assert_eq!(defaults.orchestrator_chat_provider, Provider::Codex);
-        // No file yet: a terminal, and nothing is written.
-        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Terminal);
+        // Fresh settings: Automatic, and nothing is written until something is chosen.
+        assert_eq!(
+            Settings::default().orchestrator_mode,
+            OrchestratorMode::Automatic
+        );
+        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Automatic);
         assert!(!dir.join("settings.json").exists());
 
-        // A file from a build without the settings reads as the defaults and is
-        // not rewritten.
-        let older = r#"{"schema_version":1,"theme":"tokyo_night","future_setting":{"a":1}}"#;
-        fs::write(dir.join("settings.json"), older).unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded.orchestrator_mode, OrchestratorMode::Terminal);
-        assert_eq!(loaded.orchestrator_chat_provider, Provider::Codex);
-        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Terminal);
-        assert_eq!(
-            fs::read_to_string(dir.join("settings.json")).unwrap(),
-            older
-        );
-
-        // Choosing chat writes only its keys, and creation sees them at once.
+        // Mode row: Chat, then the provider row, then the model row, as the panel applies
+        // them; each is saved at once and creation reads it.
         store
             .update(|settings| settings.orchestrator_mode = OrchestratorMode::Chat)
             .unwrap();
+        store
+            .update(|settings| choose_provider(settings, Provider::Muse))
+            .unwrap();
+        let recommended = model_choices(Provider::Muse, None)[1].model.clone();
+        store
+            .update(|settings| choose_model(settings, recommended.clone()))
+            .unwrap();
+        let wonder = OrchestratorRuns::Chat {
+            provider: Provider::Muse,
+            model: Some("muse-wonder-full-1.0".into()),
+        };
+        assert_eq!(orchestrator_runs(&dir), wonder);
         let file = document(&dir);
         assert_eq!(file["orchestrator_mode"], "chat");
-        assert_eq!(file["orchestrator_chat_provider"], "codex");
-        assert_eq!(file["theme"], "tokyo_night");
-        assert_eq!(file["future_setting"], serde_json::json!({"a": 1}));
+        assert_eq!(file["orchestrator_chat_provider"], "muse");
+        assert_eq!(file["orchestrator_chat_model"], "muse-wonder-full-1.0");
+        // Choosing the same provider keeps the model; another starts on its default.
+        store
+            .update(|settings| choose_provider(settings, Provider::Muse))
+            .unwrap();
+        assert_eq!(orchestrator_runs(&dir), wonder);
+        store
+            .update(|settings| choose_provider(settings, Provider::Claude))
+            .unwrap();
         assert_eq!(
             orchestrator_runs(&dir),
-            OrchestratorRuns::Chat(Provider::Codex)
+            OrchestratorRuns::chat(Provider::Claude)
         );
+        // "Other model": any valid id, which the chips then show as saved.
         store
-            .update(|settings| settings.orchestrator_chat_provider = Provider::Claude)
+            .update(|settings| choose_model(settings, Some("fable".into())))
             .unwrap();
-        assert_eq!(document(&dir)["orchestrator_chat_provider"], "claude");
-        assert_eq!(
-            orchestrator_runs(&dir),
-            OrchestratorRuns::Chat(Provider::Claude)
-        );
-        // The provider only matters for a chat.
-        store
-            .update(|settings| settings.orchestrator_mode = OrchestratorMode::Terminal)
-            .unwrap();
-        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Terminal);
+        let reopened = SettingsStore::open(&dir).unwrap().load().unwrap();
+        assert_eq!(reopened.orchestrator_chat_model.as_deref(), Some("fable"));
+        let chips = model_choices(Provider::Claude, Some("fable"));
+        assert_eq!(chips.last().unwrap().model.as_deref(), Some("fable"));
+        // Terminal and Automatic keep the chat's choice for later.
+        for mode in [OrchestratorMode::Terminal, OrchestratorMode::Automatic] {
+            store
+                .update(|settings| settings.orchestrator_mode = mode)
+                .unwrap();
+            let loaded = SettingsStore::open(&dir).unwrap().load().unwrap();
+            assert_eq!(loaded.orchestrator_mode, mode);
+            assert_eq!(loaded.orchestrator_chat_model.as_deref(), Some("fable"));
+        }
+        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Automatic);
 
-        // Values in a shape this build lacks read as the defaults and stay until
-        // changed.
+        // A saved choice from before Automatic stays a choice.
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"orchestrator_mode":"terminal","orchestrator_chat_provider":"codex"}"#,
+        )
+        .unwrap();
+        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Terminal);
+        // Values this build cannot read are named for the panel and kept until changed.
         fs::write(
             dir.join("settings.json"),
             r#"{"schema_version":1,"orchestrator_mode":"hologram","orchestrator_chat_provider":"gemini"}"#,
         )
         .unwrap();
         let loaded = store.load().unwrap();
-        assert_eq!(loaded.orchestrator_mode, OrchestratorMode::Terminal);
-        assert_eq!(loaded.orchestrator_chat_provider, Provider::Codex);
+        assert_eq!(loaded.orchestrator_mode, OrchestratorMode::Automatic);
+        let note = loaded.orchestrator_unreadable_note().unwrap();
+        assert!(
+            note.contains("hologram") && note.contains("gemini"),
+            "{note}"
+        );
         store
             .update(|settings| settings.use_riwork_colors = true)
             .unwrap();
         assert_eq!(document(&dir)["orchestrator_mode"], "hologram");
         assert_eq!(document(&dir)["orchestrator_chat_provider"], "gemini");
-
+        // Choosing in the rows, even what they show, replaces those values.
+        store
+            .update(|settings| {
+                settings.choose_orchestrator_mode(OrchestratorMode::Automatic);
+                choose_provider(settings, Provider::Codex);
+            })
+            .unwrap();
+        assert_eq!(document(&dir)["orchestrator_mode"], "automatic");
+        assert_eq!(document(&dir)["orchestrator_chat_provider"], "codex");
+        assert_eq!(store.load().unwrap().orchestrator_unreadable_note(), None);
         // A damaged file never decides how an orchestrator runs.
         fs::write(dir.join("settings.json"), "{ not json").unwrap();
-        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Terminal);
+        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Automatic);
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -3560,5 +3841,103 @@ mod tests {
             let flat: Vec<_> = columns.iter().flatten().copied().collect();
             assert_eq!(flat, Section::ALL, "{layout:?}");
         }
+    }
+
+    fn cua_status(ready: bool, pack: Option<bool>, states: &[SkillLinkState]) -> CuaStatus {
+        use crate::cua::{SkillCli, SkillTarget};
+        let clis = [
+            SkillCli::Claude,
+            SkillCli::Codex,
+            SkillCli::Grok,
+            SkillCli::Muse,
+        ];
+        CuaStatus {
+            installed: true,
+            driver_path: Some(PathBuf::from(
+                "/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
+            )),
+            version: Some("cua-driver 0.30.4".into()),
+            accessibility: ready,
+            screen_recording: ready,
+            direct_capture_verified: ready,
+            running: true,
+            ready,
+            message: String::new(),
+            skills: CuaSkills {
+                pack: pack.map(|_| PathBuf::from("/u/.cua-driver/skills/cua-driver")),
+                pack_installed: pack == Some(true),
+                message: String::new(),
+                targets: clis
+                    .into_iter()
+                    .zip(states)
+                    .map(|(cli, state)| SkillTarget {
+                        cli,
+                        name: cli.label().to_owned(),
+                        path: PathBuf::from("/u/skills/cua-driver"),
+                        state: *state,
+                        variable: None,
+                        homes: vec![],
+                        detail: None,
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn computer_use_keeps_driver_readiness_apart_from_the_skill() {
+        use SkillLinkState::*;
+        let linked = cua_status(true, Some(true), &[Linked, Linked, HomeAbsent, Linked]);
+        assert!(!skill_setup_pending(Some(&linked)));
+        assert_eq!(
+            skill_chips(&linked.skills),
+            [
+                ("Claude Code linked".to_owned(), SkillTone::Linked),
+                ("Codex linked".to_owned(), SkillTone::Linked),
+                ("Grok no home".to_owned(), SkillTone::Idle),
+                ("Muse linked".to_owned(), SkillTone::Linked),
+            ]
+        );
+        // A ready driver with a CLI that setup can still link offers setup.
+        for states in [
+            [Missing, Linked, Linked, Linked],
+            [Linked, Stale, Linked, Linked],
+        ] {
+            assert!(skill_setup_pending(Some(&cua_status(
+                true,
+                Some(true),
+                &states
+            ))));
+        }
+        assert!(skill_setup_pending(Some(&cua_status(
+            true,
+            Some(false),
+            &[PackMissing; 4]
+        ))));
+        // What setup cannot change, and a driver that is not ready, do not.
+        let blocked = cua_status(
+            true,
+            Some(true),
+            &[BlockedByForeignPath, Linked, Linked, Linked],
+        );
+        assert!(!skill_setup_pending(Some(&blocked)));
+        assert_eq!(
+            skill_chips(&blocked.skills)[0],
+            (
+                "Claude Code blocked by foreign path".to_owned(),
+                SkillTone::Attention
+            )
+        );
+        assert!(!skill_setup_pending(Some(&cua_status(
+            true,
+            None,
+            &[PackMissing; 4]
+        ))));
+        assert!(!skill_setup_pending(Some(&cua_status(
+            false,
+            Some(true),
+            &[Missing; 4]
+        ))));
+        assert!(!skill_setup_pending(None));
     }
 }

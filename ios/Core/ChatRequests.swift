@@ -13,6 +13,8 @@ public enum ChatValidationError: Error, Equatable, Sendable, LocalizedError {
     case needsOneTarget, invalidID, invalidWait, invalidCount, textTooLong(field: String, limit: Int), blankMessage, messageTooLong, malformed
     /// A `configure` that changes nothing, or sets a model or an effort to nothing: the desktop refuses it, so it is not sent.
     case emptyConfigure, blankSetting(field: String)
+    /// Contributor mode on for a chat that is not Muse's: only Muse has one.
+    case contributorModeIsMuseOnly
     public var errorDescription: String? { message }
     public var message: String {
         switch self {
@@ -26,6 +28,7 @@ public enum ChatValidationError: Error, Equatable, Sendable, LocalizedError {
         case .malformed: "The chat request is malformed."
         case .emptyConfigure: "Choose a model, an effort, a mode or Fast to change."
         case .blankSetting(let field): "The chat \(field) is blank."
+        case .contributorModeIsMuseOnly: "Only a Muse chat has a contributor mode to turn on."
         }
     }
 }
@@ -164,21 +167,23 @@ public struct ChatCreateRequest: Sendable, Equatable {
     public let effort: String?
     /// Start with the provider's fast mode on. Sent only when on: a desktop that predates it denies the unknown field, and off is the default.
     public let fast: Bool
-    /// Muse only: start the chat with Muse's contributor mode off. Sent only when on, like `fast`: a desktop that predates it denies the
-    /// unknown field rather than make a chat without it.
-    public let contributorOptOut: Bool
+    /// Muse only: Muse's contributor mode for the chat, off unless turned on. On is sent as `contributor_mode`; off is sent for a Muse chat
+    /// the way a desktop before `contributor_mode` reads it too (`contributor_opt_out` true), so such a desktop starts it off as well, and
+    /// one from before that denies the unknown field rather than start a Muse chat under the Muse settings. Another provider sends nothing.
+    public let contributorMode: ChatContributorMode
     public let title: String?
 
     public init(provider: ChatProvider, target: Target, approvalMode: ChatApprovalMode? = nil, model: String? = nil, effort: String? = nil, fast: Bool = false,
-                contributorOptOut: Bool = false, title: String? = nil) throws {
+                contributorMode: ChatContributorMode = .off, title: String? = nil) throws {
         switch target {
         case .project(let id), .worktree(let id): guard NewTerminalRequest.isCanonicalUUID(id) else { throw ChatValidationError.invalidID }
         }
+        guard contributorMode == .off || provider == .muse else { throw ChatValidationError.contributorModeIsMuseOnly }
         for (field, value, limit) in [("model", model, ChatLimits.modelBytes), ("effort", effort, ChatLimits.effortBytes), ("title", title, ChatLimits.titleBytes)] {
             if let value, value.utf8.count > limit { throw ChatValidationError.textTooLong(field: field, limit: limit) }
         }
         self.provider = provider; self.target = target; self.approvalMode = approvalMode; self.model = model; self.effort = effort; self.fast = fast
-        self.contributorOptOut = contributorOptOut; self.title = title
+        self.contributorMode = contributorMode; self.title = title
     }
 
     public var params: [String: JSONValue] {
@@ -191,14 +196,19 @@ public struct ChatCreateRequest: Sendable, Equatable {
         if let model { params["model"] = .string(model) }
         if let effort { params["effort"] = .string(effort) }
         if fast { params["fast"] = .bool(true) }
-        if contributorOptOut { params["contributor_opt_out"] = .bool(true) }
+        switch (contributorMode, provider) {
+        case (.on, _): params["contributor_mode"] = .string(ChatContributorMode.on.rawValue)
+        case (.off, .muse): params["contributor_opt_out"] = .bool(true)
+        case (.off, _): break
+        }
         if let title { params["title"] = .string(title) }
         return params
     }
 
     /// Reads wire parameters back through the same rules (the transport checks every request this way).
     public init(params: [String: JSONValue]) throws {
-        guard Set(params.keys).isSubset(of: ["provider", "project_id", "worktree_id", "approval_mode", "model", "effort", "fast", "contributor_opt_out", "title"]) else { throw ChatValidationError.malformed }
+        guard Set(params.keys).isSubset(of: ["provider", "project_id", "worktree_id", "approval_mode", "model", "effort", "fast", "contributor_mode",
+                                             "contributor_opt_out", "title"]) else { throw ChatValidationError.malformed }
         let target: Target
         switch (params["project_id"], params["worktree_id"]) {
         case (.string(let id)?, nil): target = .project(id)
@@ -222,20 +232,26 @@ public struct ChatCreateRequest: Sendable, Equatable {
             guard case .bool(let flag) = value else { throw ChatValidationError.malformed }
             fast = flag
         }
-        var contributorOptOut = false
+        var contributorMode = ChatContributorMode.off
+        if let word = try text("contributor_mode") {
+            guard let known = ChatContributorMode(rawValue: word) else { throw ChatValidationError.malformed }
+            contributorMode = known
+        }
+        // An older phone's opt-out, true or false, is the off every chat starts with: it never turns contributor mode on.
         if let value = params["contributor_opt_out"] {
-            guard case .bool(let flag) = value else { throw ChatValidationError.malformed }
-            contributorOptOut = flag
+            guard case .bool(let optedOut) = value, !(optedOut && contributorMode == .on) else { throw ChatValidationError.malformed }
         }
         try self.init(provider: provider, target: target, approvalMode: mode, model: try text("model"), effort: try text("effort"), fast: fast,
-                      contributorOptOut: contributorOptOut, title: try text("title"))
+                      contributorMode: contributorMode, title: try text("title"))
     }
 
-    /// The new chat of the answer. It must be the kind that was asked for, in the place that was asked for: anything else is treated as
-    /// an answer that cannot be trusted, and the caller reads the tab list again.
+    /// The new chat of the answer. It must be the kind that was asked for, in the place that was asked for, and a Muse chat must say it runs
+    /// with the contributor mode asked for (`reportedContributorMode`), never one a default reads into it: anything else is treated as an
+    /// answer that cannot be trusted, and the caller reads the tab list again.
     public func parse(_ result: JSONValue) throws -> ChatInfo {
         guard case .object = result, case .object = result["chat"], let chat = try? result["chat"].decode(ChatInfo.self),
-              NewTerminalRequest.isCanonicalUUID(chat.id), chat.provider == provider else { throw ChatControlError.unreadableReply }
+              NewTerminalRequest.isCanonicalUUID(chat.id), chat.provider == provider,
+              provider != .muse || chat.reportedContributorMode == contributorMode else { throw ChatControlError.unreadableReply }
         switch target {
         case .project(let id): guard chat.projectID == nil || chat.projectID == id else { throw ChatControlError.unreadableReply }
         case .worktree(let id): guard chat.worktreeID == nil || chat.worktreeID == id else { throw ChatControlError.unreadableReply }
@@ -333,8 +349,8 @@ public struct ChatCommandRequest: Sendable, Equatable {
         if case .dismissNotice(let itemID) = command {
             guard (1...512).contains(itemID.utf8.count), !itemID.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw ChatValidationError.invalidID }
         }
-        if case .configure(let model, let effort, let mode, let fast, let contributorOptOut) = command {
-            guard model != nil || effort != nil || mode != nil || fast != nil || contributorOptOut != nil else { throw ChatValidationError.emptyConfigure }
+        if case .configure(let model, let effort, let mode, let fast, let contributorMode) = command {
+            guard model != nil || effort != nil || mode != nil || fast != nil || contributorMode != nil else { throw ChatValidationError.emptyConfigure }
             try Self.validate(model: model, effort: effort)
         }
         // A switch needs only its provider; a model or an effort it names is one the desktop would take.

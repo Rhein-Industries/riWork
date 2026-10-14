@@ -1736,6 +1736,32 @@ impl SessionManager {
         )
     }
 
+    /// `send_at_empty_prompt` for a caller that decides last: once the screen has shown the
+    /// agent's empty prompt twice, 100 ms apart, as a schedule waits for it, `gate` runs under
+    /// the same input lock, and nothing is typed unless it agrees. Orchestrator wakes claim there.
+    pub(crate) fn send_at_settled_prompt(
+        &self,
+        shell: &ShellSession,
+        text: &str,
+        gate: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        crate::session_input::submit_checked(
+            &self.home,
+            &shell.id,
+            text,
+            &|args| self.tmux_text(args),
+            &|args, input| self.tmux_text_input(args, input),
+            || {
+                let first = self.schedule_prompt_screen(shell)?;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                if first != self.schedule_prompt_screen(shell)? {
+                    return Err("Harness prompt is changing".to_owned());
+                }
+                gate()
+            },
+        )
+    }
+
     /// Send literal text followed by Return to an existing shell.
     pub fn send(&self, id: &str, text: &str) -> Result<(), String> {
         self.require_live(id)?;
@@ -3079,9 +3105,10 @@ struct HarnessOptions<'a> {
 }
 
 /// What a launch chooses besides the agent: its model and reasoning effort, how much
-/// it may do without asking, the message it starts with, and a Codex account picked by
-/// name. A terminal that `riwork handoff` starts uses all of them; the New Tab menu
-/// uses none and gets the CLI's own defaults.
+/// it may do without asking, the message it starts with, a Codex account picked by
+/// name, and Muse's contributor mode. A terminal that `riwork handoff` starts uses all of
+/// them; the New Tab menu uses none and gets the CLI's own defaults, but for contributor
+/// mode, which is off unless asked on.
 #[derive(Clone, Debug, Default)]
 pub struct HarnessChoices {
     pub model: Option<String>,
@@ -3094,10 +3121,14 @@ pub struct HarnessChoices {
     pub prompt: Option<String>,
     /// The Codex account to start under, in place of the project's own.
     pub binding: Option<crate::codex_accounts::CodexAccountBinding>,
+    /// Muse's per-run contributor mode, said to every Muse terminal: off unless asked on, never
+    /// left to the user's Muse settings. Other agents have none.
+    pub contributor: crate::chat::model::ContributorMode,
 }
 
 impl HarnessChoices {
-    /// The command line flags for the model, the effort and the permission mode.
+    /// The command line flags for the model, the effort, Muse's contributor mode and the
+    /// permission mode.
     fn arguments(&self, harness: HarnessKind) -> Vec<String> {
         use crate::chat::model::ApprovalMode;
         let mut arguments = Vec::new();
@@ -3120,6 +3151,12 @@ impl HarnessChoices {
                     vec!["--reasoning-effort".to_owned(), effort.clone()]
                 }
             });
+        }
+        if harness == HarnessKind::Muse {
+            arguments.extend([
+                "--contributor-mode".to_owned(),
+                self.contributor.as_str().to_owned(),
+            ]);
         }
         let mode = |name: &str| ["--permission-mode".to_owned(), name.to_owned()];
         match (harness, self.mode) {
@@ -4700,7 +4737,11 @@ fn cua_proxy_arguments(
     codex_home: Option<&Path>,
 ) -> Vec<String> {
     if harness_utility_invocation(harness, arguments) {
-        return arguments.to_vec();
+        let mut result = arguments.to_vec();
+        if harness == HarnessKind::Muse {
+            with_muse_contributor_default(&mut result, arguments, 0);
+        }
+        return result;
     }
     let mut additions = cua_harness_arguments(harness, executable, home);
     if harness == HarnessKind::Codex {
@@ -4712,6 +4753,8 @@ fn cua_proxy_arguments(
             additions.extend(codex_account_environment_arguments(home));
         }
     }
+    // Muse's: the user's arguments follow the Cua options.
+    let muse_offset = additions.len();
     let mut result = match harness {
         HarnessKind::Codex => {
             // Codex combines global and subcommand config tables by replacing
@@ -4735,7 +4778,51 @@ fn cua_proxy_arguments(
     if arguments.is_empty() && matches!(harness, HarnessKind::Codex | HarnessKind::Muse) {
         result.push(cua_startup_prompt());
     }
+    if harness == HarnessKind::Muse {
+        with_muse_contributor_default(&mut result, arguments, muse_offset);
+    }
     result
+}
+
+/// Says `--contributor-mode off` in a Muse launch through RiWork's `muse` wrapper whose
+/// `arguments` (at `offset` in `result`) start a session without saying a contributor mode,
+/// so it starts off, as every Muse RiWork starts unless asked on. See
+/// `muse_contributor_default`.
+fn with_muse_contributor_default(result: &mut Vec<String>, arguments: &[String], offset: usize) {
+    if let Some(index) = muse_contributor_default(arguments) {
+        let at = offset + index;
+        result.splice(at..at, ["--contributor-mode".to_owned(), "off".to_owned()]);
+    }
+}
+
+/// Where a Muse invocation needs `--contributor-mode off`, as verified against Muse 1.4.7:
+/// right after `exec`, `serve` or `resume`, since Muse takes a subcommand only as the first
+/// argument and options before one for the interactive screen's; at the front of anything else
+/// that starts the interactive screen, a prompt, `--` and a prompt, or `help` (which 1.4.7 has
+/// no subcommand for and takes for a prompt). None when the invocation says a contributor mode
+/// before `--` itself (Muse refuses a second, and the user's own stays the only one), asks for
+/// help or the version, or runs a subcommand that starts no session.
+fn muse_contributor_default(arguments: &[String]) -> Option<usize> {
+    let said = arguments
+        .iter()
+        .take_while(|argument| argument.as_str() != "--")
+        .any(|argument| {
+            argument == "--contributor-mode"
+                || argument.starts_with("--contributor-mode=")
+                || matches!(argument.as_str(), "--help" | "-h" | "--version" | "-V")
+        });
+    if said {
+        return None;
+    }
+    match arguments.first().map(String::as_str) {
+        Some("exec" | "serve" | "resume") => Some(1),
+        Some(
+            "config" | "export" | "trace" | "model-profile" | "skills" | "voice" | "plugins"
+            | "sandbox" | "schema" | "session-message" | "mcp" | "auth" | "login" | "logout"
+            | "init",
+        ) => None,
+        _ => Some(0),
+    }
 }
 
 /// Identify a subcommand without interpreting a prompt or flag value as one.
@@ -7393,6 +7480,120 @@ mod tests {
     }
 
     #[test]
+    fn the_muse_wrapper_says_contributor_mode_off_once_where_muse_reads_it_unless_the_user_did() {
+        let executable = Path::new("/Applications/RiWork's App/riwork");
+        let home = Path::new("/Users/test/RiWork State");
+        let args = |values: &[&str]| values.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>();
+        let cua = cua_harness_arguments(HarnessKind::Muse, executable, home);
+        let off = args(&["--contributor-mode", "off"]);
+        let proxied = |original: &[&str]| {
+            cua_proxy_arguments(
+                HarnessKind::Muse,
+                &args(original),
+                executable,
+                home,
+                None,
+                None,
+            )
+        };
+        // The interactive screen, bare, with a prompt or options, or a prompt after `--`: off in
+        // front of what the user typed, after RiWork's Cua options.
+        for original in [
+            &[][..],
+            &["fix the failing test"],
+            &["--model", "muse-pro", "fix it"],
+            &["-w", "create"],
+            &["--", "--contributor-mode", "on"],
+        ] {
+            let mut expected = cua.clone();
+            expected.extend(off.clone());
+            expected.extend(args(original));
+            if original.is_empty() {
+                expected.push(cua_startup_prompt());
+            }
+            assert_eq!(proxied(original), expected, "{original:?}");
+        }
+        // Muse 1.4.7 has no `help` subcommand: it is a prompt for the interactive screen, which
+        // RiWork leaves without Cua as before.
+        assert_eq!(
+            proxied(&["help"]),
+            args(&["--contributor-mode", "off", "help"])
+        );
+        // A subcommand that starts a session takes it right after itself, since Muse reads
+        // options before one as the interactive screen's: `resume` beside the Cua options, `exec`
+        // and `serve`, which RiWork otherwise leaves as typed, alone.
+        for (original, with_cua) in [
+            (&["resume"][..], true),
+            (&["resume", "--last"], true),
+            (&["resume", "0199-session", "--provider", "echo"], true),
+            (&["exec", "--provider", "echo", "say hi"], false),
+            (&["exec", "--", "--help"], false),
+            (&["exec", "--", "--contributor-mode", "on"], false),
+            (&["serve"], false),
+            (&["serve", "--provider", "echo"], false),
+        ] {
+            let mut expected = if with_cua { cua.clone() } else { Vec::new() };
+            expected.push(original[0].to_owned());
+            expected.extend(off.clone());
+            expected.extend(args(&original[1..]));
+            assert_eq!(proxied(original), expected, "{original:?}");
+        }
+        // The user's own mode, either way and wherever Muse reads it, stays the only one: Muse
+        // refuses a second.
+        for original in [
+            &["--contributor-mode", "on"][..],
+            &["--contributor-mode=on", "fix it"],
+            &["fix it", "--contributor-mode", "off"],
+            &["resume", "--contributor-mode", "on"],
+            &["exec", "--contributor-mode", "on", "say hi"],
+            &["exec", "say hi", "--contributor-mode=off"],
+            &["serve", "--contributor-mode", "on"],
+        ] {
+            let result = proxied(original);
+            assert!(
+                result.ends_with(&args(original)),
+                "{original:?}: {result:?}"
+            );
+            assert_eq!(
+                result
+                    .iter()
+                    .filter(|argument| argument.starts_with("--contributor-mode"))
+                    .count(),
+                1,
+                "{result:?}"
+            );
+        }
+        // Help, the version and the subcommands that start no session are left as typed.
+        for original in [
+            &["--help"][..],
+            &["-h"],
+            &["--version"],
+            &["-V"],
+            &["exec", "--help"],
+            &["serve", "-h"],
+            &["resume", "--help"],
+            &["--contributor-mode", "on", "--version"],
+            &["config", "validate", "policy.json"],
+            &["export", "0199-session"],
+            &["trace", "0199-session"],
+            &["model-profile"],
+            &["skills", "list"],
+            &["voice", "clip.wav"],
+            &["plugins"],
+            &["sandbox"],
+            &["schema"],
+            &["session-message", "list"],
+            &["mcp", "login", "server"],
+            &["auth"],
+            &["login"],
+            &["logout"],
+            &["init"],
+        ] {
+            assert_eq!(proxied(original), args(original), "{original:?}");
+        }
+    }
+
+    #[test]
     fn grok_launch_uses_a_session_scoped_cua_agent() {
         let executable = Path::new("/Applications/RiWork's App/riwork");
         let home = Path::new("/Users/test/RiWork State");
@@ -7446,6 +7647,14 @@ mod tests {
     fn muse_launch_wires_cua_as_a_config_server_and_carries_guidance_in_the_prompt() {
         let executable = Path::new("/Applications/RiWork's App/riwork");
         let home = Path::new("/Users/test/RiWork State");
+        // Every `--contributor-mode` value, in order.
+        let contributor = |arguments: &[String]| {
+            arguments
+                .windows(2)
+                .filter(|pair| pair[0] == "--contributor-mode")
+                .map(|pair| pair[1].clone())
+                .collect::<Vec<_>>()
+        };
         for unrestricted in [false, true] {
             let command = harness_command(
                 HarnessKind::Muse,
@@ -7482,6 +7691,8 @@ mod tests {
                 Some("${RIWORK_HOME}")
             );
             assert_eq!(arguments.contains(&"--yolo".to_owned()), unrestricted);
+            // Off unless asked on, said once, before the prompt.
+            assert_eq!(contributor(&arguments), ["off"]);
             assert!(arguments.last().unwrap().contains(CUA_GUIDANCE));
             assert!(
                 arguments
@@ -7496,6 +7707,7 @@ mod tests {
             model: Some("muse-test".into()),
             effort: Some("low".into()),
             prompt: Some("Fix it".into()),
+            contributor: crate::chat::model::ContributorMode::On,
             ..HarnessChoices::default()
         };
         let arguments = shell_arguments(
@@ -7524,6 +7736,9 @@ mod tests {
                 .windows(2)
                 .any(|pair| pair[0] == "--reasoning-effort" && pair[1] == "low")
         );
+        // Asked on, it says on, once, and the real Muse is started, not RiWork's wrapper.
+        assert_eq!(contributor(&arguments), ["on"]);
+        assert_eq!(arguments[0], "/bin/muse");
         let last = arguments.last().unwrap();
         assert!(last.starts_with("Fix it\n\n") && last.contains(CUA_GUIDANCE));
     }
@@ -8171,6 +8386,48 @@ else:
         assert!(pasted.contains(ORCHESTRATOR_SKILL));
         assert!(pasted.contains("<riwork-orchestrator-skill>"));
         assert!(pasted.contains(CUA_GUIDANCE));
+    }
+
+    /// A terminal orchestrator started with an older skill is offered LOAD SKILL, and what
+    /// LOAD SKILL pastes into either scope is this build's skill with its model routing and
+    /// dashboard briefs.
+    #[test]
+    fn a_terminal_orchestrator_with_an_older_skill_is_offered_this_one_in_either_scope() {
+        let manager = SessionManager::at(
+            std::env::temp_dir().join(format!("riwork-skill-version-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let project = "11111111-1111-4111-8111-111111111111";
+        let older = format!("{:016x}", stable_hash(b"the skill before model routing"));
+        assert_ne!(older, orchestrator_skill_version());
+        for scope in [None, Some(project)] {
+            let mut session = scope_session(ShellKind::Orchestrator, scope);
+            session.orchestrator_skill_loaded = true;
+            session.orchestrator_skill_version = Some(older.clone());
+            assert!(!manager.orchestrator_skill_is_current(&session));
+            session.orchestrator_skill_version = Some(orchestrator_skill_version());
+            assert!(manager.orchestrator_skill_is_current(&session));
+
+            let skill =
+                Path::new("/state/orchestrator/.agents/skills/riwork-orchestrator/SKILL.md");
+            let root = Path::new("/projects/app");
+            let pasted = orchestrator_prompt(
+                skill,
+                Path::new("/bin/riwork"),
+                scope,
+                scope.map(|_| root),
+                true,
+            );
+            assert!(pasted.contains(ORCHESTRATOR_SKILL));
+            for section in [
+                "## Model routing",
+                "## Dashboard briefs",
+                "muse-wonder-full-1.0",
+            ] {
+                assert!(pasted.contains(section), "{section}");
+            }
+        }
+        manager.kill_server();
     }
 
     fn scope_session(kind: ShellKind, project_id: Option<&str>) -> ShellSession {

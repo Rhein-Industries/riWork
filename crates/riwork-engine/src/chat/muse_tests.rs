@@ -1,5 +1,5 @@
 use super::*;
-use crate::chat::model::{Provider, Transcript};
+use crate::chat::model::{ContributorMode, Provider, Transcript};
 use crate::chat::testkit::{Fake, fixture, fold, until};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::io::Cursor;
@@ -513,9 +513,10 @@ fn a_whole_turn_becomes_items_usage_and_states() {
             text: "Hello".to_owned()
         }
     );
-    // `serve` alone: Cua.ai Driver rides the session, not Muse's command line.
+    // `serve` and the contributor mode, off by default: Cua.ai Driver rides the session, not
+    // Muse's command line.
     let argv = run.fake.starts()[0]["argv"].clone();
-    assert_eq!(argv, json!(["serve"]));
+    assert_eq!(argv, json!(["serve", "--contributor-mode", "off"]));
     let start = &run.fake.received_method("session/start")[0]["params"];
     let server = &start["config"]["mcpServers"]["cua-driver"];
     assert_eq!(
@@ -540,33 +541,24 @@ fn a_whole_turn_becomes_items_usage_and_states() {
 }
 
 #[test]
-fn only_a_chat_opted_out_of_contributor_mode_says_so_to_every_serve() {
-    // Not opted out: nothing extra, so the user's Muse settings decide.
-    let mut run = Run::start("turn");
-    run.send("hello");
-    run.finish_turn();
-    assert_eq!(run.fake.starts()[0]["argv"], json!(["serve"]));
-    run.end();
-    // Opted out: Muse's per-process override, after the subcommand, at the first start…
-    let mut run = Run::start_with("turn", |config| config.contributor_opt_out = true);
-    run.send("hello");
-    run.finish_turn();
-    assert_eq!(
-        run.fake.starts()[0]["argv"],
-        json!(["serve", "--contributor-mode", "off"])
-    );
-    run.end();
-    // …and at a resume, since nothing on the wire carries it.
-    let run = Run::start_with("resume_active", |config| {
-        config.resume = Some("sess-old".into());
-        config.contributor_opt_out = true;
-    });
-    assert_eq!(run.fake.received_method("session/resume").len(), 1);
-    assert_eq!(
-        run.fake.starts()[0]["argv"],
-        json!(["serve", "--contributor-mode", "off"])
-    );
-    run.end();
+fn every_serve_says_the_chats_contributor_mode_once_off_unless_turned_on() {
+    for (mode, flag) in [(ContributorMode::Off, "off"), (ContributorMode::On, "on")] {
+        let argv = json!(["serve", "--contributor-mode", flag]);
+        // Muse's per-process override, after the subcommand, at the first start…
+        let mut run = Run::start_with("turn", |config| config.contributor_mode = mode);
+        run.send("hello");
+        run.finish_turn();
+        assert_eq!(run.fake.starts()[0]["argv"], argv);
+        run.end();
+        // …and at a resume, since nothing on the wire carries it.
+        let run = Run::start_with("resume_active", |config| {
+            config.resume = Some("sess-old".into());
+            config.contributor_mode = mode;
+        });
+        assert_eq!(run.fake.received_method("session/resume").len(), 1);
+        assert_eq!(run.fake.starts()[0]["argv"], argv);
+        run.end();
+    }
 }
 
 #[test]
@@ -1343,6 +1335,7 @@ fn plan_starts_read_only_and_cannot_be_left_and_fast_is_refused() {
             effort: Some("low".into()),
             approval_mode: Some(ApprovalMode::Supervised),
             fast: None,
+            contributor_mode: None,
             contributor_opt_out: None,
         },
         ChatCommand::Configure {
@@ -1350,6 +1343,7 @@ fn plan_starts_read_only_and_cannot_be_left_and_fast_is_refused() {
             effort: Some("low".into()),
             approval_mode: None,
             fast: Some(true),
+            contributor_mode: None,
             contributor_opt_out: None,
         },
     ] {
@@ -1372,6 +1366,7 @@ fn plan_starts_read_only_and_cannot_be_left_and_fast_is_refused() {
             effort: Some("high".into()),
             approval_mode: Some(ApprovalMode::Plan),
             fast: Some(false),
+            contributor_mode: None,
             contributor_opt_out: None,
         })
         .unwrap();
@@ -1564,7 +1559,7 @@ impl Live {
             model: None,
             effort: None,
             fast: false,
-            contributor_opt_out: false,
+            contributor_mode: Default::default(),
             resume: None,
             resume_has_history: false,
             reporter: Default::default(),
@@ -1858,6 +1853,7 @@ fn live_plan_chat_runs_under_the_read_only_profile() {
                 effort: None,
                 approval_mode: Some(ApprovalMode::Supervised),
                 fast: None,
+                contributor_mode: None,
                 contributor_opt_out: None,
             })
             .is_err()

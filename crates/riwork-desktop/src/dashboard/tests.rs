@@ -266,7 +266,7 @@ impl Render for Fixture {
                 sampled_at: self.sampled_at,
                 sample_error: self.sample_error.as_deref(),
                 chat_starting: false,
-                runs: OrchestratorRuns::Chat(Provider::Codex),
+                runs: OrchestratorRuns::chat(Provider::Codex),
                 width: window.viewport_size().width,
                 search: Some(&self.search),
                 query: &self.query,
@@ -340,10 +340,11 @@ fn a_terminal_orchestrator_is_offered_as_itself_and_never_as_a_new_chat() {
         activity: Some(AgentActivity::Working),
     };
     for runs in [
-        OrchestratorRuns::Chat(Provider::Claude),
+        OrchestratorRuns::Automatic,
+        OrchestratorRuns::chat(Provider::Claude),
         OrchestratorRuns::Terminal,
     ] {
-        let copy = chat_copy(&terminal, runs, false);
+        let copy = chat_copy(&terminal, &runs, false);
         assert_eq!(copy.action, "Open terminal orchestrator");
         assert!(!copy.starts, "the terminal is opened, not replaced");
         assert!(copy.status.contains("terminal"));
@@ -358,7 +359,7 @@ fn chat_controls_say_whether_a_click_opens_or_starts() {
         provider: Provider::Codex,
         state: ChatState::Idle,
     };
-    let copy = chat_copy(&chat, OrchestratorRuns::Terminal, false);
+    let copy = chat_copy(&chat, &OrchestratorRuns::Terminal, false);
     assert_eq!(
         (copy.action.as_str(), copy.starts, copy.enabled),
         ("Open global chat", false, true)
@@ -369,16 +370,39 @@ fn chat_controls_say_whether_a_click_opens_or_starts() {
     let none = GlobalOrchestrator::None {
         exited_terminal: true,
     };
-    let start = chat_copy(&none, OrchestratorRuns::Chat(Provider::Claude), false);
+    let start = chat_copy(&none, &OrchestratorRuns::chat(Provider::Claude), false);
     assert_eq!(start.action, "Start global chat");
     assert!(start.starts);
     assert!(start.status.contains("terminal has exited"));
     assert!(start.note.unwrap().contains("Claude"));
-    let terminal = chat_copy(&none, OrchestratorRuns::Terminal, false);
+    let opus = OrchestratorRuns::Chat {
+        provider: Provider::Claude,
+        model: Some("opus".into()),
+    };
+    assert!(
+        chat_copy(&none, &opus, false)
+            .note
+            .unwrap()
+            .contains("Claude chat on opus")
+    );
+    // Automatic names what it starts first and what it falls back to.
+    let automatic = chat_copy(&none, &OrchestratorRuns::Automatic, false);
+    assert_eq!(
+        (automatic.action.as_str(), automatic.starts),
+        ("Start global chat", true)
+    );
+    assert_eq!(automatic.provider, Some(Provider::Muse));
+    let note = automatic.note.unwrap();
+    assert!(note.contains("Muse chat on muse-wonder-full-1.0"), "{note}");
+    assert!(
+        note.contains("Codex chat on gpt-6.1-sol if Muse cannot start"),
+        "{note}"
+    );
+    let terminal = chat_copy(&none, &OrchestratorRuns::Terminal, false);
     assert_eq!(terminal.action, "Start global orchestrator");
 
     // While one is being found or started, a second click does nothing.
-    let busy = chat_copy(&none, OrchestratorRuns::Terminal, true);
+    let busy = chat_copy(&none, &OrchestratorRuns::Terminal, true);
     assert!(!busy.enabled && !busy.starts);
 }
 

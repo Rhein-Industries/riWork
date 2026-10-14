@@ -37,39 +37,163 @@ impl DisplayMode {
         }
     }
 }
-/// How an orchestrator created from now on runs: in a terminal tab, as it always
-/// has, or as a chat of the chat host.
+/// How an orchestrator created from now on runs: chosen by RiWork (`Automatic`), in a
+/// terminal tab, as it always has, or as a chat of the chat host.
+///
+/// `Automatic` is the default, so a settings file without the key (a fresh one, or
+/// one from a build before orchestrators had modes) gets it. A saved `terminal` or
+/// `chat` is a choice and stays one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OrchestratorMode {
     #[default]
+    Automatic,
     Terminal,
     Chat,
 }
 
 impl OrchestratorMode {
-    pub const ALL: [Self; 2] = [Self::Terminal, Self::Chat];
+    pub const ALL: [Self; 3] = [Self::Automatic, Self::Terminal, Self::Chat];
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Automatic => "Automatic",
             Self::Terminal => "Terminal",
             Self::Chat => "Chat",
         }
     }
+}
 
-    pub fn other(self) -> Self {
+/// The chats `Automatic` starts an orchestrator as, in order: Muse on Wonder Full,
+/// the best delegator, and Codex on GPT-6.1-Sol, the workhorse, when Muse cannot
+/// start.
+pub const AUTOMATIC_ORCHESTRATORS: [(Provider, &str); 2] = [
+    (Provider::Muse, "muse-wonder-full-1.0"),
+    (Provider::Codex, "gpt-6.1-sol"),
+];
+
+/// The model RiWork's routing prefers for each chat provider: Muse Wonder Full for
+/// orchestration, Claude Opus 5.5 (the CLI's `opus` alias) for the hardest
+/// reasoning and review, Codex GPT-6.1-Sol as the workhorse. Settings offer it
+/// beside the provider's own default.
+pub fn recommended_model(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Muse => "muse-wonder-full-1.0",
+        Provider::Claude => "opus",
+        Provider::Codex => "gpt-6.1-sol",
+    }
+}
+
+/// Whether `model` can be saved as a model id: what a chat accepts (not blank, at
+/// most 100 characters, no control characters).
+pub fn valid_model_id(model: &str) -> bool {
+    !model.trim().is_empty() && model.chars().count() <= 100 && !model.chars().any(char::is_control)
+}
+
+/// What an orchestrator created now is: chosen by RiWork, a terminal, or a chat of
+/// a provider on a model (`None` is the provider's own default). Settings name one
+/// for every orchestrator, and a project's override for its own
+/// (`store::ProjectOrchestrator`), in the same shape.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum OrchestratorRuns {
+    /// A Muse chat on Wonder Full, else a Codex chat on GPT-6.1-Sol
+    /// (`AUTOMATIC_ORCHESTRATORS`), as the first that starts.
+    Automatic,
+    /// A Codex terminal, as orchestrators always ran.
+    Terminal,
+    Chat {
+        provider: Provider,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+    },
+}
+
+impl<'de> Deserialize<'de> for OrchestratorRuns {
+    /// Strict: a field this build does not know, a provider it lacks or a model id a
+    /// chat would refuse makes the whole value unreadable, so a caller keeps it as
+    /// it was saved rather than reading part of it.
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+        enum Shape {
+            Automatic {},
+            Terminal {},
+            Chat {
+                provider: Provider,
+                #[serde(default)]
+                model: Option<String>,
+            },
+        }
+        Ok(match Shape::deserialize(deserializer)? {
+            Shape::Automatic {} => Self::Automatic,
+            Shape::Terminal {} => Self::Terminal,
+            Shape::Chat { provider, model } => {
+                if let Some(model) = &model
+                    && !valid_model_id(model)
+                {
+                    return Err(serde::de::Error::custom(format!(
+                        "invalid model id {model:?}"
+                    )));
+                }
+                Self::Chat { provider, model }
+            }
+        })
+    }
+}
+
+impl OrchestratorRuns {
+    /// A chat on the provider's own default model.
+    pub fn chat(provider: Provider) -> Self {
+        Self::Chat {
+            provider,
+            model: None,
+        }
+    }
+
+    pub fn mode(&self) -> OrchestratorMode {
         match self {
-            Self::Terminal => Self::Chat,
-            Self::Chat => Self::Terminal,
+            Self::Automatic => OrchestratorMode::Automatic,
+            Self::Terminal => OrchestratorMode::Terminal,
+            Self::Chat { .. } => OrchestratorMode::Chat,
+        }
+    }
+
+    /// Whether an orchestrator made this way is a chat.
+    pub fn is_chat(&self) -> bool {
+        !matches!(self, Self::Terminal)
+    }
+
+    /// The choice in words, for Settings, notices and the CLI.
+    pub fn describe(&self) -> String {
+        let [(first, first_model), (second, second_model)] = AUTOMATIC_ORCHESTRATORS;
+        match self {
+            Self::Automatic => format!(
+                "Automatic: a {} chat on {first_model}, or a {} chat on {second_model} when {} cannot start",
+                provider_label(first),
+                provider_label(second),
+                provider_label(first),
+            ),
+            Self::Terminal => "a Codex terminal".to_owned(),
+            Self::Chat {
+                provider,
+                model: Some(model),
+            } => format!("a {} chat on {model}", provider_label(*provider)),
+            Self::Chat {
+                provider,
+                model: None,
+            } => format!("a {} chat on its default model", provider_label(*provider)),
         }
     }
 }
 
-/// What an orchestrator created now is: the mode and, for a chat, its agent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OrchestratorRuns {
-    Terminal,
-    Chat(Provider),
+/// A chat provider as people know it.
+pub fn provider_label(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Codex => "Codex",
+        Provider::Claude => "Claude",
+        Provider::Muse => "Muse",
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +243,14 @@ pub struct Settings {
     pub orchestrator_mode: OrchestratorMode,
     /// The agent behind a chat orchestrator (`orchestrator_mode` is `chat`).
     pub orchestrator_chat_provider: Provider,
+    /// The model of a chat orchestrator (`orchestrator_mode` is `chat`); none is the
+    /// provider's own default.
+    pub orchestrator_chat_model: Option<String>,
+    /// The orchestrator keys whose saved values this build cannot read, with those
+    /// values, so Settings can say why they read as defaults. The file keeps them
+    /// until the setting is changed. Never saved.
+    #[serde(skip)]
+    pub orchestrator_unreadable: Vec<(String, Value)>,
     /// RiWork's own interface text in points of its panel list text, like
     /// Ghostty's `font-size`: 11 is the design size, from `ui_text::MIN_POINTS`
     /// to `MAX_POINTS`. Terminals keep Ghostty's size.
@@ -143,6 +275,69 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// What an orchestrator created now runs as by these settings.
+    pub fn orchestrator_runs(&self) -> OrchestratorRuns {
+        match self.orchestrator_mode {
+            OrchestratorMode::Automatic => OrchestratorRuns::Automatic,
+            OrchestratorMode::Terminal => OrchestratorRuns::Terminal,
+            OrchestratorMode::Chat => OrchestratorRuns::Chat {
+                provider: self.orchestrator_chat_provider,
+                model: self.orchestrator_chat_model.clone(),
+            },
+        }
+    }
+
+    /// Makes `runs` the setting. A choice other than a chat keeps the saved chat
+    /// provider and model, for when chat is chosen again.
+    pub fn set_orchestrator_runs(&mut self, runs: &OrchestratorRuns) {
+        self.choose_orchestrator_mode(runs.mode());
+        if let OrchestratorRuns::Chat { provider, model } = runs {
+            self.choose_orchestrator_provider(*provider);
+            self.choose_orchestrator_model(model.clone());
+        }
+    }
+
+    /// "Orchestrator runs as" chosen. Choosing is what replaces a saved value this build
+    /// could not read, even with the default that stood in for it (`merged_document`).
+    pub fn choose_orchestrator_mode(&mut self, mode: OrchestratorMode) {
+        self.orchestrator_mode = mode;
+        self.forget_unreadable("orchestrator_mode");
+    }
+
+    /// "Chat provider" chosen: another provider, or one chosen over an unreadable value,
+    /// starts on its own default model, as a new chat does when its provider changes.
+    pub fn choose_orchestrator_provider(&mut self, provider: Provider) {
+        let unreadable = self.is_unreadable("orchestrator_chat_provider");
+        if provider != self.orchestrator_chat_provider || unreadable {
+            self.choose_orchestrator_model(None);
+        }
+        self.orchestrator_chat_provider = provider;
+        self.forget_unreadable("orchestrator_chat_provider");
+    }
+
+    /// "Chat model" chosen (`None`: the provider's own default).
+    pub fn choose_orchestrator_model(&mut self, model: Option<String>) {
+        self.orchestrator_chat_model = model;
+        self.forget_unreadable("orchestrator_chat_model");
+    }
+
+    fn is_unreadable(&self, key: &str) -> bool {
+        self.orchestrator_unreadable
+            .iter()
+            .any(|(unreadable, _)| unreadable == key)
+    }
+
+    fn forget_unreadable(&mut self, key: &str) {
+        self.orchestrator_unreadable
+            .retain(|(unreadable, _)| unreadable != key);
+    }
+
+    /// What Settings should say about saved orchestrator values this build cannot
+    /// read, if there are any.
+    pub fn orchestrator_unreadable_note(&self) -> Option<String> {
+        unreadable_note(&self.orchestrator_unreadable)
+    }
+
     pub fn chat_display_for(&self, chat_id: Option<&str>) -> DisplayMode {
         chat_id
             .and_then(|id| self.chat_display_modes.get(id))
@@ -179,6 +374,8 @@ impl Default for Settings {
             agent_terminals_unrestricted: true,
             orchestrator_mode: OrchestratorMode::default(),
             orchestrator_chat_provider: Provider::Codex,
+            orchestrator_chat_model: None,
+            orchestrator_unreadable: Vec::new(),
             ui_text_size: TextPoints::DEFAULT,
             ui_text_matches_terminal: false,
             native_terminal_colors: true,
@@ -264,6 +461,41 @@ impl<'de> Deserialize<'de> for Settings {
                 "orchestrator_chat_provider",
                 defaults.orchestrator_chat_provider,
             ),
+            // A model id means something only with its provider: one saved beside a
+            // provider this build cannot read stands down too (and stays in the file).
+            orchestrator_chat_model: lenient_field::<Option<String>>(
+                &object,
+                "orchestrator_chat_model",
+                None,
+            )
+            .filter(|model| valid_model_id(model))
+            .filter(|_| {
+                object
+                    .get("orchestrator_chat_provider")
+                    .is_none_or(|provider| Provider::deserialize(provider).is_ok())
+            }),
+            orchestrator_unreadable: [
+                "orchestrator_mode",
+                "orchestrator_chat_provider",
+                "orchestrator_chat_model",
+            ]
+            .into_iter()
+            .filter_map(|key| {
+                let value = object.get(key)?;
+                let provider_readable = object
+                    .get("orchestrator_chat_provider")
+                    .is_none_or(|provider| Provider::deserialize(provider).is_ok());
+                let readable = match key {
+                    "orchestrator_mode" => OrchestratorMode::deserialize(value).is_ok(),
+                    "orchestrator_chat_provider" => provider_readable,
+                    // A model is unusable beside a provider that cannot be read.
+                    _ => Option::<String>::deserialize(value).is_ok_and(|model| {
+                        model.is_none_or(|model| valid_model_id(&model) && provider_readable)
+                    }),
+                };
+                (!readable).then(|| (key.to_owned(), value.clone()))
+            })
+            .collect(),
             // A size out of range is pulled into it; anything but a number is the default.
             ui_text_size: lenient_field(&object, "ui_text_size", defaults.ui_text_size),
             ui_text_matches_terminal: lenient_field(
@@ -285,6 +517,21 @@ impl<'de> Deserialize<'de> for Settings {
             ),
         })
     }
+}
+
+/// "settings.json has orchestrator_mode = "hologram", which this RiWork cannot read; …"
+fn unreadable_note(unreadable: &[(String, Value)]) -> Option<String> {
+    if unreadable.is_empty() {
+        return None;
+    }
+    let values = unreadable
+        .iter()
+        .map(|(key, value)| format!("{key} = {value}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "settings.json has {values}, which this RiWork cannot read or use. It is kept as saved, and the default stands in for it until you choose here."
+    ))
 }
 
 fn lenient_field<T: DeserializeOwned>(object: &Map<String, Value>, key: &str, default: T) -> T {
@@ -344,18 +591,16 @@ pub fn claude_chat_ignores_api_key(home: &Path) -> bool {
         )
 }
 
-/// What an orchestrator created now runs as, read from the file of the state
-/// directory `home` each time, like `agent_inline_mode`: the CLI, the MCP tools
-/// and every window create orchestrators, and none of them holds a copy that
-/// another could outdate. A missing or unreadable file means a terminal.
+/// What an orchestrator created now runs as by Settings, read from the file of the
+/// state directory `home` each time, like `agent_inline_mode`: the CLI, the MCP
+/// tools and every window create orchestrators, and none of them holds a copy that
+/// another could outdate. A missing or unreadable file means the default,
+/// `Automatic`. A project's own choice comes on top (`orchestrators::plan`).
 pub fn orchestrator_runs(home: &Path) -> OrchestratorRuns {
-    let settings = SettingsStore::open(home)
+    SettingsStore::open(home)
         .and_then(|store| store.load())
-        .unwrap_or_default();
-    match settings.orchestrator_mode {
-        OrchestratorMode::Terminal => OrchestratorRuns::Terminal,
-        OrchestratorMode::Chat => OrchestratorRuns::Chat(settings.orchestrator_chat_provider),
-    }
+        .unwrap_or_default()
+        .orchestrator_runs()
 }
 
 #[derive(Clone)]
@@ -425,6 +670,10 @@ impl SettingsStore {
         let mut settings = before.clone();
         change(&mut settings);
         let document = merged_document(document, &before, &settings)?;
+        // What the file says now, including what it keeps that this build cannot
+        // read (`orchestrator_unreadable`), is what was saved.
+        let settings = Settings::deserialize(Value::Object(document.clone()))
+            .map_err(|error| format!("Cannot encode settings: {error}"))?;
         let path = self.dir.join("settings.json");
         let temporary = self.dir.join(format!(".settings-{}.tmp", Uuid::new_v4()));
         let result = (|| {
@@ -448,8 +697,8 @@ impl SettingsStore {
             let _ = fs::remove_file(temporary);
         }
         result?;
-        // The document just written parses back to these settings (unknown
-        // keys carried forward are not modeled), so seed the load cache.
+        // The document just written parses to these settings, so seed the load
+        // cache.
         *self
             .load_cache
             .lock()
@@ -500,19 +749,36 @@ impl SettingsStore {
 /// Apply only what `change` altered to the file's own JSON. Unknown keys and
 /// values this build read as defaults (a theme a newer build added) stay as
 /// written until that setting changes to something other than what it read as.
+///
+/// The orchestrator keys (`CHOSEN_ONLY`) are written only when they are chosen: a value
+/// that changed, or one chosen over a saved value this build could not read (it left
+/// `orchestrator_unreadable`). So a file without them keeps meaning "never chosen", and
+/// the default that stands for that can improve in a later build.
 fn merged_document(
     mut document: Map<String, Value>,
     before: &Settings,
     after: &Settings,
 ) -> Result<Map<String, Value>, String> {
+    const CHOSEN_ONLY: [&str; 3] = [
+        "orchestrator_mode",
+        "orchestrator_chat_provider",
+        "orchestrator_chat_model",
+    ];
     let encode = |settings: &Settings| match serde_json::to_value(settings) {
         Ok(Value::Object(fields)) => Ok(fields),
         Ok(_) => Err("Cannot encode settings: not an object".to_owned()),
         Err(error) => Err(format!("Cannot encode settings: {error}")),
     };
-    let before = encode(before)?;
+    let chosen_over_unreadable = |key: &str| before.is_unreadable(key) && !after.is_unreadable(key);
+    let before_fields = encode(before)?;
+    let before = &before_fields;
     for (key, value) in encode(after)? {
-        if document.contains_key(&key) && before.get(&key) == Some(&value) {
+        let unchanged = before.get(&key) == Some(&value);
+        if chosen_over_unreadable(&key) {
+            document.insert(key, value);
+            continue;
+        }
+        if unchanged && (document.contains_key(&key) || CHOSEN_ONLY.contains(&key.as_str())) {
             continue;
         }
         if key == "chat_display_modes"
@@ -952,82 +1218,269 @@ mod tests {
     }
 
     #[test]
-    fn orchestrators_run_in_a_terminal_by_default_and_the_choice_survives_older_odd_and_unreadable_files()
-     {
+    fn orchestrators_are_automatic_by_default_and_saved_choices_and_odd_values_survive() {
         let dir = env::temp_dir().join(format!("riwork-settings-orchestrator-{}", Uuid::new_v4()));
         let store = SettingsStore::open(&dir).unwrap();
         let document = |dir: &std::path::Path| -> Value {
             serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap()
         };
+        let write = |text: &str| fs::write(dir.join("settings.json"), text).unwrap();
         let defaults = Settings::default();
-        assert_eq!(defaults.orchestrator_mode, OrchestratorMode::Terminal);
+        assert_eq!(defaults.orchestrator_mode, OrchestratorMode::Automatic);
         assert_eq!(defaults.orchestrator_chat_provider, Provider::Codex);
-        // No file yet: a terminal, and nothing is written.
-        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Terminal);
+        assert_eq!(defaults.orchestrator_chat_model, None);
+        assert_eq!(defaults.orchestrator_runs(), OrchestratorRuns::Automatic);
+        // No file yet: automatic, and nothing is written.
+        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Automatic);
         assert!(!dir.join("settings.json").exists());
 
-        // A file from a build without the settings reads as the defaults and is
+        // A file from a build without the settings reads as the default and is
         // not rewritten.
         let older = r#"{"schema_version":1,"theme":"tokyo_night","future_setting":{"a":1}}"#;
-        fs::write(dir.join("settings.json"), older).unwrap();
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded.orchestrator_mode, OrchestratorMode::Terminal);
-        assert_eq!(loaded.orchestrator_chat_provider, Provider::Codex);
-        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Terminal);
+        write(older);
+        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Automatic);
+        assert!(store.load().unwrap().orchestrator_unreadable.is_empty());
         assert_eq!(
             fs::read_to_string(dir.join("settings.json")).unwrap(),
             older
         );
-
-        // Choosing chat writes only its keys, and creation sees them at once.
+        // Saving something else writes no orchestrator key: never chosen stays never
+        // chosen, so it follows the default of whichever build reads it.
         store
-            .update(|settings| settings.orchestrator_mode = OrchestratorMode::Chat)
+            .update(|settings| settings.dictation_mic = true)
+            .unwrap();
+        let file = document(&dir);
+        for key in [
+            "orchestrator_mode",
+            "orchestrator_chat_provider",
+            "orchestrator_chat_model",
+        ] {
+            assert!(file.get(key).is_none(), "{key} was written");
+        }
+        assert_eq!(file["dictation_mic"], true);
+
+        // A saved mode is a choice, whatever the default is now: an older
+        // terminal stays a terminal, and an older chat keeps its provider and
+        // the provider's own model.
+        write(
+            r#"{"schema_version":1,"orchestrator_mode":"terminal","orchestrator_chat_provider":"codex"}"#,
+        );
+        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Terminal);
+        write(
+            r#"{"schema_version":1,"orchestrator_mode":"chat","orchestrator_chat_provider":"codex"}"#,
+        );
+        assert_eq!(
+            orchestrator_runs(&dir),
+            OrchestratorRuns::chat(Provider::Codex)
+        );
+        // Changing something else leaves the choice as it was saved.
+        store
+            .update(|settings| settings.dictation_mic = true)
             .unwrap();
         let file = document(&dir);
         assert_eq!(file["orchestrator_mode"], "chat");
         assert_eq!(file["orchestrator_chat_provider"], "codex");
-        assert_eq!(file["theme"], "tokyo_night");
-        assert_eq!(file["future_setting"], serde_json::json!({"a": 1}));
+        assert!(file.get("orchestrator_chat_model").is_none());
         assert_eq!(
             orchestrator_runs(&dir),
-            OrchestratorRuns::Chat(Provider::Codex)
+            OrchestratorRuns::chat(Provider::Codex)
         );
+
+        // A chat with a model, chosen and saved; creation sees it at once.
+        let claude = OrchestratorRuns::Chat {
+            provider: Provider::Claude,
+            model: Some("opus".into()),
+        };
+        store
+            .update(|settings| settings.set_orchestrator_runs(&claude))
+            .unwrap();
+        let file = document(&dir);
+        assert_eq!(file["orchestrator_mode"], "chat");
+        assert_eq!(file["orchestrator_chat_provider"], "claude");
+        assert_eq!(file["orchestrator_chat_model"], "opus");
+        assert_eq!(orchestrator_runs(&dir), claude);
+        // Automatic and terminal keep the chat's provider and model for later.
+        store
+            .update(|settings| settings.set_orchestrator_runs(&OrchestratorRuns::Automatic))
+            .unwrap();
+        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Automatic);
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.orchestrator_chat_provider, Provider::Claude);
+        assert_eq!(loaded.orchestrator_chat_model.as_deref(), Some("opus"));
+        assert_eq!(document(&dir)["orchestrator_mode"], "automatic");
+        // The provider's own model again is saved as none.
         store
             .update(|settings| {
-                settings.orchestrator_chat_provider = Provider::Claude;
+                settings.set_orchestrator_runs(&OrchestratorRuns::chat(Provider::Muse))
             })
             .unwrap();
-        assert_eq!(document(&dir)["orchestrator_chat_provider"], "claude");
+        assert_eq!(document(&dir)["orchestrator_chat_model"], Value::Null);
         assert_eq!(
             orchestrator_runs(&dir),
-            OrchestratorRuns::Chat(Provider::Claude)
+            OrchestratorRuns::chat(Provider::Muse)
         );
-        // The provider only matters for a chat.
-        store
-            .update(|settings| settings.orchestrator_mode = OrchestratorMode::Terminal)
-            .unwrap();
-        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Terminal);
 
-        // Values in a shape this build lacks read as the defaults and stay until
-        // changed.
-        fs::write(
-            dir.join("settings.json"),
-            r#"{"schema_version":1,"orchestrator_mode":"hologram","orchestrator_chat_provider":"gemini"}"#,
-        )
-        .unwrap();
+        // Values this build cannot read stand as defaults, are named, and stay
+        // in the file until the setting is changed.
+        write(
+            r#"{"schema_version":1,"orchestrator_mode":"hologram","orchestrator_chat_provider":"gemini","orchestrator_chat_model":42}"#,
+        );
         let loaded = store.load().unwrap();
-        assert_eq!(loaded.orchestrator_mode, OrchestratorMode::Terminal);
+        assert_eq!(loaded.orchestrator_runs(), OrchestratorRuns::Automatic);
         assert_eq!(loaded.orchestrator_chat_provider, Provider::Codex);
+        assert_eq!(loaded.orchestrator_chat_model, None);
+        assert_eq!(
+            loaded.orchestrator_unreadable,
+            vec![
+                (
+                    "orchestrator_mode".to_owned(),
+                    serde_json::json!("hologram")
+                ),
+                (
+                    "orchestrator_chat_provider".to_owned(),
+                    serde_json::json!("gemini")
+                ),
+                ("orchestrator_chat_model".to_owned(), serde_json::json!(42)),
+            ]
+        );
+        let note = loaded.orchestrator_unreadable_note().unwrap();
+        assert!(note.contains(r#"orchestrator_mode = "hologram""#), "{note}");
+        assert!(note.contains("orchestrator_chat_model = 42"), "{note}");
         store
             .update(|settings| settings.use_riwork_colors = true)
             .unwrap();
-        assert_eq!(document(&dir)["orchestrator_mode"], "hologram");
-        assert_eq!(document(&dir)["orchestrator_chat_provider"], "gemini");
+        let file = document(&dir);
+        assert_eq!(file["orchestrator_mode"], "hologram");
+        assert_eq!(file["orchestrator_chat_provider"], "gemini");
+        assert_eq!(file["orchestrator_chat_model"], 42);
+        // Choosing the mode Settings show (the default standing in) replaces just it.
+        store
+            .update(|settings| settings.choose_orchestrator_mode(OrchestratorMode::Automatic))
+            .unwrap();
+        let file = document(&dir);
+        assert_eq!(file["orchestrator_mode"], "automatic");
+        assert_eq!(file["orchestrator_chat_provider"], "gemini");
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.orchestrator_unreadable.len(), 2);
+        assert!(
+            !loaded
+                .orchestrator_unreadable_note()
+                .unwrap()
+                .contains("hologram")
+        );
+        // A model saved beside a provider this build cannot read is not used with the
+        // default provider, and is kept too.
+        write(
+            r#"{"schema_version":1,"orchestrator_mode":"chat","orchestrator_chat_provider":"gemini","orchestrator_chat_model":"muse-spark-1.3"}"#,
+        );
+        let loaded = store.load().unwrap();
+        assert_eq!(
+            loaded.orchestrator_runs(),
+            OrchestratorRuns::chat(Provider::Codex)
+        );
+        assert_eq!(
+            loaded.orchestrator_unreadable.len(),
+            2,
+            "provider and its model"
+        );
+        store
+            .update(|settings| settings.use_riwork_colors = true)
+            .unwrap();
+        assert_eq!(document(&dir)["orchestrator_chat_model"], "muse-spark-1.3");
+        // Choosing a provider there, even the one shown, replaces both, so the model is
+        // not revived with another provider.
+        store
+            .update(|settings| settings.choose_orchestrator_provider(Provider::Codex))
+            .unwrap();
+        let file = document(&dir);
+        assert_eq!(file["orchestrator_chat_provider"], "codex");
+        assert_eq!(file["orchestrator_chat_model"], Value::Null);
+        let loaded = store.load().unwrap();
+        assert!(loaded.orchestrator_unreadable.is_empty());
+        assert_eq!(
+            loaded.orchestrator_runs(),
+            OrchestratorRuns::chat(Provider::Codex)
+        );
+        // A blank or overlong model is no model, and also kept.
+        write(r#"{"schema_version":1,"orchestrator_mode":"chat","orchestrator_chat_model":"   "}"#);
+        let loaded = store.load().unwrap();
+        assert_eq!(
+            loaded.orchestrator_runs(),
+            OrchestratorRuns::chat(Provider::Codex)
+        );
+        assert_eq!(loaded.orchestrator_unreadable.len(), 1);
+        // Choosing replaces exactly the values chosen.
+        store
+            .update(|settings| {
+                settings.set_orchestrator_runs(&OrchestratorRuns::Chat {
+                    provider: Provider::Muse,
+                    model: Some("muse-wonder-full-1.0".into()),
+                })
+            })
+            .unwrap();
+        let loaded = store.load().unwrap();
+        assert!(loaded.orchestrator_unreadable.is_empty());
+        assert_eq!(
+            document(&dir)["orchestrator_chat_model"],
+            "muse-wonder-full-1.0"
+        );
 
         // A damaged file never decides how an orchestrator runs.
-        fs::write(dir.join("settings.json"), "{ not json").unwrap();
-        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Terminal);
+        write("{ not json");
+        assert_eq!(orchestrator_runs(&dir), OrchestratorRuns::Automatic);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn orchestrator_runs_have_one_shape_on_disk_and_refuse_what_they_do_not_know() {
+        let parse = |text: &str| serde_json::from_str::<OrchestratorRuns>(text);
+        assert_eq!(
+            parse(r#"{"mode":"automatic"}"#).unwrap(),
+            OrchestratorRuns::Automatic
+        );
+        assert_eq!(
+            parse(r#"{"mode":"terminal"}"#).unwrap(),
+            OrchestratorRuns::Terminal
+        );
+        assert_eq!(
+            parse(r#"{"mode":"chat","provider":"muse","model":"muse-wonder-full-1.0"}"#).unwrap(),
+            OrchestratorRuns::Chat {
+                provider: Provider::Muse,
+                model: Some("muse-wonder-full-1.0".into())
+            }
+        );
+        assert_eq!(
+            parse(r#"{"mode":"chat","provider":"codex"}"#).unwrap(),
+            OrchestratorRuns::chat(Provider::Codex)
+        );
+        for odd in [
+            r#"{"mode":"hologram"}"#,
+            r#"{"mode":"chat"}"#,
+            r#"{"mode":"chat","provider":"gemini"}"#,
+            r#"{"mode":"chat","provider":"codex","effort":"high"}"#,
+            r#"{"mode":"terminal","provider":"codex"}"#,
+            r#""automatic""#,
+        ] {
+            assert!(parse(odd).is_err(), "{odd}");
+        }
+        assert_eq!(
+            serde_json::to_value(OrchestratorRuns::chat(Provider::Claude)).unwrap(),
+            serde_json::json!({"mode":"chat","provider":"claude"})
+        );
+        assert!(
+            OrchestratorRuns::Automatic
+                .describe()
+                .contains("muse-wonder-full-1.0")
+        );
+        assert!(
+            OrchestratorRuns::Automatic
+                .describe()
+                .contains("gpt-6.1-sol")
+        );
+        assert!(valid_model_id("gpt-6.1-sol"));
+        assert!(!valid_model_id(" "));
+        assert!(!valid_model_id("a\nb"));
+        assert!(!valid_model_id(&"x".repeat(101)));
     }
 
     #[test]

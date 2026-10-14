@@ -121,7 +121,8 @@ fn new_starts_a_chat_in_the_projects_directory_in_the_chosen_mode() {
 }
 
 #[test]
-fn new_opts_a_muse_chat_out_of_contributor_mode_only_when_asked() {
+fn new_starts_a_muse_chat_with_contributor_mode_off_unless_asked_on() {
+    use crate::chat::model::ContributorMode::{Off, On};
     let host = TestHost::new();
     let project = Store::open(&host.home)
         .unwrap()
@@ -130,16 +131,64 @@ fn new_opts_a_muse_chat_out_of_contributor_mode_only_when_asked() {
     let new = |line: &str| -> ChatInfo {
         serde_json::from_str(&run_json(&host.home, line, true).unwrap()).unwrap()
     };
-    assert!(new("new --provider muse --project demo --contributor-opt-out").contributor_opt_out);
-    assert!(!new("new --provider muse --project demo").contributor_opt_out);
+    // Off by default and with the explicit off that was all there was before; on only when
+    // asked, and said as itself.
+    for (line, mode) in [
+        ("new --provider muse --project demo", Off),
+        (
+            "new --provider muse --project demo --contributor-opt-out",
+            Off,
+        ),
+        ("new --provider muse --project demo --contributor-on", On),
+    ] {
+        let chat = new(line);
+        assert_eq!(
+            (chat.contributor_mode, chat.contributor_opt_out),
+            (mode, mode == Off),
+            "{line}"
+        );
+    }
+    let text = run_json(
+        &host.home,
+        "new --provider muse --project demo --contributor-on",
+        true,
+    )
+    .unwrap();
+    let printed: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(printed["contributor_mode"], "on", "{text}");
+    assert!(printed.get("contributor_opt_out").is_none(), "{text}");
     let starts = fake_for(&project.root).starts.lock().unwrap().clone();
     assert_eq!(
         starts
             .iter()
-            .map(|config| (config.provider, config.contributor_opt_out))
+            .map(|config| (config.provider, config.contributor_mode))
             .collect::<Vec<_>>(),
-        [(Provider::Muse, true), (Provider::Muse, false)]
+        [
+            (Provider::Muse, Off),
+            (Provider::Muse, Off),
+            (Provider::Muse, On),
+            (Provider::Muse, On)
+        ]
     );
+    // One or the other, never both: nothing is made.
+    let error = run(
+        &host,
+        "new --provider muse --project demo --contributor-on --contributor-opt-out",
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("either --contributor-on or --contributor-opt-out"),
+        "{error}"
+    );
+    assert_eq!(listed(&host).len(), 4);
+    // A Codex chat has none to turn on: refused, nothing is made.
+    let error = run(
+        &host,
+        "new --provider codex --project demo --contributor-on",
+    )
+    .unwrap_err();
+    assert!(error.contains("needs --provider muse"), "{error}");
+    assert_eq!(listed(&host).len(), 4);
 }
 
 #[test]

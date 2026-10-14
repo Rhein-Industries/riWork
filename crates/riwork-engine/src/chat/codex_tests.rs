@@ -571,6 +571,7 @@ fn configure_applies_on_the_next_turn_and_plan_mode_is_left_explicitly() {
             effort: Some("high".into()),
             approval_mode: Some(ApprovalMode::Plan),
             fast: None,
+            contributor_mode: None,
             contributor_opt_out: None,
         })
         .unwrap();
@@ -582,6 +583,7 @@ fn configure_applies_on_the_next_turn_and_plan_mode_is_left_explicitly() {
             effort: None,
             approval_mode: Some(ApprovalMode::AutoEdit),
             fast: None,
+            contributor_mode: None,
             contributor_opt_out: None,
         })
         .unwrap();
@@ -1100,6 +1102,7 @@ fn configure(model: Option<&str>, effort: Option<&str>, fast: Option<bool>) -> C
         effort: effort.map(str::to_owned),
         approval_mode: None,
         fast,
+        contributor_mode: None,
         contributor_opt_out: None,
     }
 }
@@ -1329,7 +1332,7 @@ fn live_codex_answers_a_trivial_prompt() {
         model: None,
         effort: None,
         fast: false,
-        contributor_opt_out: false,
+        contributor_mode: Default::default(),
         resume: None,
         resume_has_history: false,
         reporter: Default::default(),
@@ -2391,6 +2394,7 @@ fn a_choice_is_reported_at_once_and_again_when_the_turn_that_carries_it_is_taken
                 effort: Some("high".into()),
                 approval_mode: Some(ApprovalMode::AutoEdit),
                 fast: Some(true),
+                contributor_mode: None,
                 contributor_opt_out: None,
             },
             reporter,

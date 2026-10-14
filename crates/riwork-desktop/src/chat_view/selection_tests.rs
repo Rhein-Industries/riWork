@@ -449,6 +449,7 @@ fn chat_base_menu_choice_has_radio_semantics_and_records_one_configuration(
             effort: None,
             approval_mode: Some(ApprovalMode::Plan),
             fast: None,
+            contributor_mode: None,
             contributor_opt_out: None
         })
     ));

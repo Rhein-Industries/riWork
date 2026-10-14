@@ -115,6 +115,7 @@ fn virtual_folders_extend_schema_one_without_requiring_a_migration() {
     assert!(state.project_folders.is_empty());
     assert_eq!(state.projects[0].folder_id, None);
     assert!(!state.projects[0].notify_on_agent_done);
+    assert!(!state.projects[0].wake_orchestrators_on_agent_done);
     assert_eq!(
         state.projects[0].codex_account,
         ProjectCodexAccount::Inherit
@@ -141,9 +142,14 @@ fn virtual_folders_extend_schema_one_without_requiring_a_migration() {
     );
     assert_eq!(reopened.projects[0].root, root);
     assert!(!reopened.projects[0].notify_on_agent_done);
+    assert!(!reopened.projects[0].wake_orchestrators_on_agent_done);
     assert_eq!(
         reopened.projects[0].codex_account,
         ProjectCodexAccount::Inherit
+    );
+    assert_eq!(
+        reopened.projects[0].orchestrator,
+        ProjectOrchestrator::Inherit
     );
 }
 
@@ -276,6 +282,212 @@ fn completion_notifications_are_project_scoped_and_preserve_workspace_metadata()
             .set_project_notifications(&main.id, false)
             .unwrap()
             .notify_on_agent_done
+    );
+}
+
+#[test]
+fn orchestrator_wakes_are_project_scoped_and_independent_of_alerts() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let main = store
+        .add_project(fixture.directory("main"), Some("Main"))
+        .unwrap();
+    let other = store
+        .add_project(fixture.directory("other"), Some("Other"))
+        .unwrap();
+    assert!(!main.wake_orchestrators_on_agent_done);
+    store.set_project_notifications(&main.id, true).unwrap();
+    let enabled = store.set_project_orchestrator_wakes("Main", true).unwrap();
+    assert!(enabled.wake_orchestrators_on_agent_done && enabled.notify_on_agent_done);
+    let reopened = fixture.store().snapshot().unwrap();
+    assert!(
+        reopened
+            .project(&main.id)
+            .unwrap()
+            .wake_orchestrators_on_agent_done
+    );
+    assert!(
+        !reopened
+            .project(&other.id)
+            .unwrap()
+            .wake_orchestrators_on_agent_done
+    );
+    // Re-registration and renames keep it; an unchanged value writes nothing.
+    assert!(
+        store
+            .add_project(&main.root, None)
+            .unwrap()
+            .wake_orchestrators_on_agent_done
+    );
+    let state_path = store.dir.join("state.json");
+    let unchanged = fs::read(&state_path).unwrap();
+    store
+        .set_project_orchestrator_wakes(&main.id, true)
+        .unwrap();
+    assert_eq!(fs::read(&state_path).unwrap(), unchanged);
+    assert!(
+        store
+            .set_project_orchestrator_wakes("missing", true)
+            .is_err()
+    );
+    // Turning wakes off leaves the bell as it was.
+    let disabled = store
+        .set_project_orchestrator_wakes(&main.id, false)
+        .unwrap();
+    assert!(!disabled.wake_orchestrators_on_agent_done && disabled.notify_on_agent_done);
+}
+
+#[test]
+fn a_project_orchestrator_choice_is_its_own_and_older_projects_inherit() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let main = store
+        .add_project(fixture.directory("main"), Some("Main"))
+        .unwrap();
+    let other = store
+        .add_project(fixture.directory("other"), Some("Other"))
+        .unwrap();
+    assert_eq!(main.orchestrator, ProjectOrchestrator::Inherit);
+    let state_path = store.dir.join("state.json");
+    let saved = || -> Value { serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap() };
+    let saved_choice = |id: &str| -> Value {
+        saved()["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|project| project["id"] == id)
+            .unwrap()["orchestrator"]
+            .clone()
+    };
+    assert_eq!(
+        saved_choice(&main.id),
+        serde_json::json!({"mode": "inherit"})
+    );
+
+    // Every choice saves, reopens as itself, and touches only its project.
+    let muse = ProjectOrchestrator::Choose(OrchestratorRuns::Chat {
+        provider: crate::provider::Provider::Muse,
+        model: Some("muse-wonder-full-1.0".into()),
+    });
+    for choice in [
+        ProjectOrchestrator::Choose(OrchestratorRuns::Automatic),
+        ProjectOrchestrator::Choose(OrchestratorRuns::Terminal),
+        ProjectOrchestrator::Choose(OrchestratorRuns::chat(crate::provider::Provider::Claude)),
+        muse.clone(),
+    ] {
+        let changed = store
+            .set_project_orchestrator("Main", choice.clone())
+            .unwrap();
+        assert_eq!(changed.orchestrator, choice);
+        let reopened = fixture.store().snapshot().unwrap();
+        assert_eq!(reopened.project(&main.id).unwrap().orchestrator, choice);
+        assert_eq!(
+            reopened.project(&other.id).unwrap().orchestrator,
+            ProjectOrchestrator::Inherit
+        );
+    }
+    assert_eq!(
+        saved_choice(&main.id),
+        serde_json::json!({"mode": "chat", "provider": "muse", "model": "muse-wonder-full-1.0"})
+    );
+    // Re-registration keeps it; an unchanged value writes nothing; other
+    // per-project choices are left alone.
+    assert_eq!(
+        store.add_project(&main.root, None).unwrap().orchestrator,
+        muse
+    );
+    let unchanged = fs::read(&state_path).unwrap();
+    store
+        .set_project_orchestrator(&main.id, muse.clone())
+        .unwrap();
+    assert_eq!(fs::read(&state_path).unwrap(), unchanged);
+    store
+        .set_project_orchestrator_wakes(&main.id, true)
+        .unwrap();
+    assert_eq!(
+        fixture
+            .store()
+            .snapshot()
+            .unwrap()
+            .project(&main.id)
+            .unwrap()
+            .orchestrator,
+        muse
+    );
+    assert!(
+        store
+            .set_project_orchestrator("missing", muse.clone())
+            .is_err()
+    );
+    let blank = ProjectOrchestrator::Choose(OrchestratorRuns::Chat {
+        provider: crate::provider::Provider::Codex,
+        model: Some("  ".into()),
+    });
+    assert!(store.set_project_orchestrator(&main.id, blank).is_err());
+    // Inherit again.
+    let inherited = store
+        .set_project_orchestrator(&main.id, ProjectOrchestrator::Inherit)
+        .unwrap();
+    assert_eq!(inherited.orchestrator, ProjectOrchestrator::Inherit);
+    assert_eq!(inherited.orchestrator.choice(), None);
+}
+
+#[test]
+fn an_unreadable_project_orchestrator_choice_is_kept_shown_and_inherits() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let root = fixture.directory("odd");
+    let other_root = fixture.directory("plain");
+    let id = Uuid::new_v4().to_string();
+    let other = Uuid::new_v4().to_string();
+    let odd = serde_json::json!({"mode": "hologram", "provider": "gemini", "depth": 3});
+    let document = serde_json::json!({
+        "schema_version": 1,
+        "active_project_id": id,
+        "projects": [
+            {"id": id, "name": "Odd", "root": root, "created_at": 7, "orchestrator": odd},
+            {"id": other, "name": "Plain", "root": other_root, "created_at": 8,
+             "orchestrator": {"mode": "chat", "provider": "codex", "model": "gpt-6.1-sol", "effort": "max"}},
+        ],
+        "worktrees": [],
+        "tasks": [],
+    });
+    let state_path = store.dir.join("state.json");
+    fs::write(&state_path, serde_json::to_vec(&document).unwrap()).unwrap();
+
+    // The store still reads; the values are kept as they are and inherit.
+    let state = store.snapshot().unwrap();
+    let project = state.project(&id).unwrap();
+    assert_eq!(
+        project.orchestrator,
+        ProjectOrchestrator::Unreadable(odd.clone())
+    );
+    assert_eq!(project.orchestrator.choice(), None);
+    let note = project.orchestrator.unreadable_note().unwrap();
+    assert!(note.contains("hologram"), "{note}");
+    // A field this build does not know makes a known shape unreadable too.
+    assert!(matches!(
+        state.project(&other).unwrap().orchestrator,
+        ProjectOrchestrator::Unreadable(_)
+    ));
+
+    // Saving anything else writes them back unchanged.
+    store.set_project_notifications(&id, true).unwrap();
+    let saved: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert_eq!(saved["projects"][0]["orchestrator"], odd);
+    assert_eq!(
+        saved["projects"][1]["orchestrator"],
+        document["projects"][1]["orchestrator"]
+    );
+    // Choosing replaces it.
+    let chosen = store
+        .set_project_orchestrator(&id, ProjectOrchestrator::Choose(OrchestratorRuns::Terminal))
+        .unwrap();
+    assert_eq!(chosen.orchestrator.unreadable_note(), None);
+    let saved: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert_eq!(
+        saved["projects"][0]["orchestrator"],
+        serde_json::json!({"mode": "terminal"})
     );
 }
 

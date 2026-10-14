@@ -171,23 +171,27 @@ fn a_tab_error_updates_in_place_and_clears_when_the_host_answers(cx: &mut TestAp
 #[gpui::test]
 fn a_refused_contributor_change_says_the_hosts_reason_among_the_settings(cx: &mut TestAppContext) {
     let (_handle, view, _recording) = mount(cx);
-    let contributor = |opt_out| ChatCommand::Configure {
+    let contributor = |mode| ChatCommand::Configure {
         model: None,
         effort: None,
         approval_mode: None,
         fast: None,
-        contributor_opt_out: Some(opt_out),
+        contributor_mode: Some(mode),
+        contributor_opt_out: None,
     };
     let busy = "Wait for the turn to finish, or interrupt it, before changing contributor mode.";
     view.update(cx, |view, _| {
-        view.command_failed(contributor(true), busy.into())
+        view.command_failed(contributor(ContributorMode::On), busy.into())
     });
     view.read_with(cx, |view, _| {
         assert_eq!(view.notices.local(notices::LocalKey::Settings), Some(busy));
         assert_eq!(view.notices.local(notices::LocalKey::Link), None);
     });
     view.update(cx, |view, _| {
-        view.command_failed(contributor(false), "this chat cannot be configured".into())
+        view.command_failed(
+            contributor(ContributorMode::Off),
+            "this chat cannot be configured".into(),
+        )
     });
     view.read_with(cx, |view, _| {
         assert_eq!(

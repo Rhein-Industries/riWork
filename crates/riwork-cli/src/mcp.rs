@@ -639,6 +639,15 @@ fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
             let project_id = orchestrator_project(optional_str(args, "project_id")?)?;
             orchestrator_status(&manager, project_id.as_deref())
         }
+        "riwork_orchestrator_create" => {
+            let manager = SessionManager::open_default()?;
+            let home = manager.state_home().to_path_buf();
+            let host = orchestrators::ChatHost {
+                home: &home,
+                ensure: &orchestrators::system_ensure,
+            };
+            orchestrator_create(&manager, &host, optional_str(args, "project_id")?)
+        }
         "riwork_orchestrator_output" => {
             let manager = SessionManager::open_default()?;
             let project_id = orchestrator_project(optional_str(args, "project_id")?)?;
@@ -686,6 +695,55 @@ fn orchestrator_status(
     let home = manager.state_home();
     let found = selected_orchestrator(manager, home, project_id)?;
     Ok(json!({"session": found.map(|found| orchestrators::entry(home, &found))}))
+}
+
+/// `riwork_orchestrator_create`: the orchestrator of a scope, started as Settings and,
+/// for a project, its own choice say (`orchestrators::plan`, as the CLI and the windows
+/// create them) when the scope has none. One that exists is returned as it runs.
+/// `created`, `source`, `fallback` and `notes` are what `riwork orchestrator create
+/// --json` adds.
+fn orchestrator_create(
+    manager: &SessionManager,
+    host: &orchestrators::ChatHost,
+    selector: Option<&str>,
+) -> Result<Value, String> {
+    let project = selector
+        .map(|selector| {
+            Store::open(host.home)?
+                .snapshot()?
+                .project(selector)
+                .cloned()
+        })
+        .transpose()?;
+    let project_id = project.as_ref().map(|project| project.id.as_str());
+    let plan = orchestrators::plan(host.home, project_id)?;
+    let root = project.as_ref().map(|project| project.root.clone());
+    let cwd = root
+        .clone()
+        .unwrap_or_else(|| crate::sessions::orchestrator_context(host.home, None));
+    let made = orchestrators::create(
+        manager,
+        host,
+        &orchestrators::scope_of(project_id),
+        root,
+        cwd,
+        None,
+        &plan.runs,
+    )?;
+    let mut result = json!({
+        "session": orchestrators::entry(host.home, &made.orchestrator),
+        "created": made.created,
+    });
+    if made.created {
+        result["source"] = json!(plan.source.as_str());
+        if let Some(fallback) = &made.fallback {
+            result["fallback"] = json!(fallback);
+        }
+        if !plan.notes.is_empty() {
+            result["notes"] = json!(plan.notes);
+        }
+    }
+    Ok(result)
 }
 
 /// `riwork_orchestrator_output`: the pane and scrollback of a terminal orchestrator, or the
@@ -778,6 +836,7 @@ fn destructive(name: &str) -> bool {
         name,
         "riwork_shell_create"
             | "riwork_shell_send_line"
+            | "riwork_orchestrator_create"
             | "riwork_schedule_create"
             | "riwork_schedule_update"
             | "riwork_schedule_resume"
@@ -1097,6 +1156,14 @@ fn tools() -> Vec<Value> {
             true,
         ),
         tool(
+            "riwork_orchestrator_create",
+            "Start orchestrator",
+            "Start the orchestrator of a scope if it has none, and return it with created true; an existing one is returned unchanged (created false), whatever it runs as. A new one runs as the project's Project Settings choice for a project orchestrator, else Settings > Agent sessions; Automatic, the default, starts a Muse chat on muse-wonder-full-1.0, or a Codex chat on gpt-6.1-sol when Muse cannot start, and then says why in fallback. source says who chose (settings or project). Omit project_id for the global orchestrator.",
+            json!({"project_id":{"type":"string"}}),
+            &[],
+            false,
+        ),
+        tool(
             "riwork_orchestrator_output",
             "Read orchestrator output",
             "Read the current tmux pane and scrollback of a terminal orchestrator, or the last lines of a chat orchestrator's conversation as plain text. Omit project_id for the global orchestrator; set a project selector for a project's orchestrator.",
@@ -1172,8 +1239,9 @@ mod tests {
             None,
             host.home.clone(),
             None,
-            OrchestratorRuns::Chat(Provider::Codex),
+            &OrchestratorRuns::chat(Provider::Codex),
         )
+        .map(|made| (made.orchestrator, made.created))
         .unwrap();
         assert!(created);
         let Orchestrator::Chat(chat) = made else {
@@ -1319,6 +1387,72 @@ mod tests {
     }
 
     #[test]
+    fn orchestrator_create_starts_what_settings_and_the_project_choose_and_reuses_the_rest() {
+        use crate::chat::client::socket_path;
+        use crate::chat::model::Provider;
+        use crate::chat::testing::{TestHost, fake_for};
+        use crate::settings::OrchestratorRuns;
+        use crate::store::ProjectOrchestrator;
+
+        fn in_process(home: &Path) -> Result<std::path::PathBuf, String> {
+            Ok(socket_path(home))
+        }
+        struct Server(SessionManager);
+        impl Drop for Server {
+            fn drop(&mut self) {
+                self.0.kill_server();
+            }
+        }
+
+        let host = TestHost::new();
+        let manager = SessionManager::at(host.home.clone()).unwrap();
+        let _server = Server(manager.clone());
+        let chat_host = orchestrators::ChatHost {
+            home: &host.home,
+            ensure: &in_process,
+        };
+        // Fresh settings: the global orchestrator is a Muse chat on Wonder Full.
+        let made = orchestrator_create(&manager, &chat_host, None).unwrap();
+        assert_eq!(made["created"], true);
+        assert_eq!(made["source"], "settings");
+        assert!(made.get("fallback").is_none());
+        let session = &made["session"];
+        assert_eq!(session["mode"], "chat");
+        assert_eq!(session["provider"], "muse");
+        assert_eq!(session["model"], "muse-wonder-full-1.0");
+        let cwd = std::path::PathBuf::from(session["cwd"].as_str().unwrap());
+        let started = fake_for(&cwd).starts.lock().unwrap().clone();
+        assert_eq!(started[0].model.as_deref(), Some("muse-wonder-full-1.0"));
+
+        // A project's own choice makes its orchestrator, and only its.
+        let store = Store::open(&host.home).unwrap();
+        let project = store.add_project(host.work(), Some("demo")).unwrap();
+        store
+            .set_project_orchestrator(
+                &project.id,
+                ProjectOrchestrator::Choose(OrchestratorRuns::Chat {
+                    provider: Provider::Claude,
+                    model: Some("opus".into()),
+                }),
+            )
+            .unwrap();
+        let made = orchestrator_create(&manager, &chat_host, Some("demo")).unwrap();
+        assert_eq!(made["created"], true);
+        assert_eq!(made["source"], "project");
+        assert_eq!(made["session"]["provider"], "claude");
+        assert_eq!(made["session"]["model"], "opus");
+        assert_eq!(made["session"]["project_id"], project.id.as_str());
+
+        // Asking again returns each as it runs.
+        let again = orchestrator_create(&manager, &chat_host, None).unwrap();
+        assert_eq!(again["created"], false);
+        assert!(again.get("source").is_none());
+        assert_eq!(again["session"]["id"], session["id"]);
+        assert_eq!(again["session"]["model"], "muse-wonder-full-1.0");
+        assert!(orchestrator_create(&manager, &chat_host, Some("missing")).is_err());
+    }
+
+    #[test]
     fn hints_do_not_understate_what_a_tool_can_do() {
         let read_only = [
             "riwork_project_list",
@@ -1338,6 +1472,7 @@ mod tests {
         let destructive = [
             "riwork_shell_create",
             "riwork_shell_send_line",
+            "riwork_orchestrator_create",
             "riwork_schedule_create",
             "riwork_schedule_update",
             "riwork_schedule_resume",

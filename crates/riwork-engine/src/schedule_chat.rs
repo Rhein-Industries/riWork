@@ -158,7 +158,13 @@ pub fn deliver(
 
 /// Whether the chat's log gets a user message that is `prompt` after `mark`
 /// within the time `proof` allows.
-fn seen_in_log(host: &ChatHost, chat_id: &str, mark: u64, prompt: &str, proof: Proof) -> bool {
+pub(crate) fn seen_in_log(
+    host: &ChatHost,
+    chat_id: &str,
+    mark: u64,
+    prompt: &str,
+    proof: Proof,
+) -> bool {
     let deadline = Instant::now() + proof.wait;
     let mut from = mark;
     loop {
@@ -260,6 +266,8 @@ pub fn deliver_new(
             model: fresh.model.clone(),
             effort: fresh.effort.clone(),
             fast: fresh.fast,
+            // A scheduled chat starts off, as every Muse RiWork starts unless asked on.
+            contributor_mode: chat::model::ContributorMode::Off,
             contributor_opt_out: false,
             orchestrator: None,
         },
@@ -276,6 +284,20 @@ pub fn deliver_new(
             )));
         }
     };
+    // A host from before `contributor_mode` that reads past the off a Muse chat is made with
+    // starts it under the user's Muse settings: stopped again, it is sent nothing.
+    if chat.id == chat_id
+        && chat.provider == chat::model::Provider::Muse
+        && chat.reported_contributor_mode() != Some(chat::model::ContributorMode::Off)
+    {
+        let stopped = match client.close(&chat_id) {
+            Ok(()) => "it was stopped".to_owned(),
+            Err(error) => format!("stopping it failed ({error})"),
+        };
+        return Ok(Delivery::Failed(format!(
+            "The running chat host predates RiWork's contributor mode off by default, so Muse chat {chat_id} started with your Muse settings and {stopped}. No prompt sent; no automatic retry. Try again once the chat host runs this version of RiWork."
+        )));
+    }
     if chat.id != chat_id
         || chat.project_id.as_ref() != Some(project_id)
         || chat.worktree_id.is_some()

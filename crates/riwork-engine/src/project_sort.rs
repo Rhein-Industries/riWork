@@ -134,6 +134,8 @@ mod tests {
             repository_roots: Vec::new(),
             folder_id: None,
             notify_on_agent_done: false,
+            wake_orchestrators_on_agent_done: false,
+            orchestrator: Default::default(),
             codex_account: crate::store::ProjectCodexAccount::default(),
             created_at: added,
         }

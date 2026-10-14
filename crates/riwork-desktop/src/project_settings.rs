@@ -12,9 +12,11 @@ use gpui::{Focusable, Subscription};
 
 use crate::{
     behavior_controls as behavior,
+    chat::model::Provider,
     icons::{self, ActionGlyph, Icon},
-    settings::{CodexAccountsState, Settings, refresh_codex_accounts},
-    store::{Project, ProjectCodexAccount, ProjectFolder, State, Store},
+    orchestrator_choice::{self, ModelChoice},
+    settings::{CodexAccountsState, OrchestratorRuns, Settings, refresh_codex_accounts},
+    store::{Project, ProjectCodexAccount, ProjectFolder, ProjectOrchestrator, State, Store},
     theme::{self, Palette},
     tooltip::{self, Look},
     ui_text, utf16_to_byte,
@@ -422,6 +424,12 @@ impl SaveStatus {
         }
     }
 
+    fn orchestrator_saved(&mut self) {
+        if !self.pending {
+            self.notice = Some("Orchestrator choice saved");
+        }
+    }
+
     fn message(&self) -> &'static str {
         match self.notice {
             Some(notice) if !self.pending => notice,
@@ -438,7 +446,54 @@ enum Field {
     AddFolder,
     Account(usize),
     AccountRefresh,
+    /// The orchestrator's mode chips (`ORCHESTRATOR_MODES`), then for a chat its
+    /// provider and model chips and "Other model ID".
+    Orchestrator(usize),
+    OrchestratorProvider(usize),
+    OrchestratorModel(usize),
+    OrchestratorModelInput,
     Save,
+}
+
+/// The mode chips of 04 ORCHESTRATOR.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OrchestratorPick {
+    Inherit,
+    Automatic,
+    Terminal,
+    Chat,
+}
+
+const ORCHESTRATOR_MODES: [(OrchestratorPick, &str, &str); 4] = [
+    (
+        OrchestratorPick::Inherit,
+        "Inherit app default",
+        "project-orchestrator-inherit",
+    ),
+    (
+        OrchestratorPick::Automatic,
+        "Automatic",
+        "project-orchestrator-automatic",
+    ),
+    (
+        OrchestratorPick::Terminal,
+        "Terminal",
+        "project-orchestrator-terminal",
+    ),
+    (OrchestratorPick::Chat, "Chat", "project-orchestrator-chat"),
+];
+
+/// Which mode chip a saved choice shows; none for one this build cannot read.
+fn orchestrator_pick(choice: &ProjectOrchestrator) -> Option<OrchestratorPick> {
+    match choice {
+        ProjectOrchestrator::Inherit => Some(OrchestratorPick::Inherit),
+        ProjectOrchestrator::Choose(OrchestratorRuns::Automatic) => {
+            Some(OrchestratorPick::Automatic)
+        }
+        ProjectOrchestrator::Choose(OrchestratorRuns::Terminal) => Some(OrchestratorPick::Terminal),
+        ProjectOrchestrator::Choose(OrchestratorRuns::Chat { .. }) => Some(OrchestratorPick::Chat),
+        ProjectOrchestrator::Unreadable(_) => None,
+    }
 }
 
 pub struct ProjectSettingsPanel {
@@ -450,6 +505,9 @@ pub struct ProjectSettingsPanel {
     _input_subscriptions: Vec<Subscription>,
     folder_name: Input,
     folder_name_state: Entity<InputState>,
+    /// "Other model ID" of a chat orchestrator.
+    orchestrator_model_state: Entity<InputState>,
+    orchestrator_error: Option<String>,
     folders: Vec<ProjectFolder>,
     folder_paths: BTreeMap<String, String>,
     folder_id: Option<String>,
@@ -494,15 +552,19 @@ impl ProjectSettingsPanel {
             window,
             cx,
         );
+        let orchestrator_model_state = text_input::single_line("", "Other model ID", window, cx);
         let mut subscriptions = Vec::new();
         for (field, state) in [
             (Field::Name, &name_state),
             (Field::FolderName, &folder_name_state),
+            (Field::OrchestratorModelInput, &orchestrator_model_state),
         ] {
             subscriptions.push(cx.subscribe_in(
                 state,
                 window,
                 move |form, state, event, window, cx| match event {
+                    // Typing a model is not an unsaved project edit: Return saves it.
+                    InputEvent::Change if field == Field::OrchestratorModelInput => {}
                     InputEvent::Change => {
                         let value = state.read(cx).value().to_string();
                         match field {
@@ -520,6 +582,7 @@ impl ProjectSettingsPanel {
                     }
                     _ if text_input::is_submit(event, EnterBehavior::Submit) => match field {
                         Field::Name => form.save(window, cx),
+                        Field::OrchestratorModelInput => form.use_typed_model(window, cx),
                         _ => form.create_folder(window, cx),
                     },
                     _ => {}
@@ -530,6 +593,8 @@ impl ProjectSettingsPanel {
             name_state,
             name_touched: false,
             folder_name_state,
+            orchestrator_model_state,
+            orchestrator_error: None,
             _input_subscriptions: subscriptions,
             name: Input::new(project.name.clone()),
             folder_id: project.folder_id.clone(),
@@ -564,6 +629,30 @@ impl ProjectSettingsPanel {
                 (id, Field::Account(index))
             },
         ));
+        controls.extend(
+            ORCHESTRATOR_MODES
+                .iter()
+                .enumerate()
+                .map(|(index, (_, _, id))| ((*id).to_owned(), Field::Orchestrator(index))),
+        );
+        if let Some((provider, model)) = self.orchestrator_chat() {
+            controls.extend(orchestrator_choice::PROVIDERS.iter().enumerate().map(
+                |(index, provider)| {
+                    (
+                        provider_chip_id(*provider),
+                        Field::OrchestratorProvider(index),
+                    )
+                },
+            ));
+            controls.extend(
+                orchestrator_choice::model_choices(provider, model.as_deref())
+                    .iter()
+                    .enumerate()
+                    .map(|(index, choice)| {
+                        (model_chip_id(choice), Field::OrchestratorModel(index))
+                    }),
+            );
+        }
         controls.extend([
             ("project-settings-create-folder".into(), Field::AddFolder),
             ("project-codex-refresh".into(), Field::AccountRefresh),
@@ -572,9 +661,104 @@ impl ProjectSettingsPanel {
         controls
     }
 
+    /// The project's chat orchestrator choice, if it chose a chat.
+    fn orchestrator_chat(&self) -> Option<(Provider, Option<String>)> {
+        match &self.project.orchestrator {
+            ProjectOrchestrator::Choose(OrchestratorRuns::Chat { provider, model }) => {
+                Some((*provider, model.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Saves how this project's orchestrator runs when it is next created, at once, as
+    /// the Codex account is saved.
+    fn select_orchestrator(&mut self, choice: ProjectOrchestrator, cx: &mut Context<Self>) {
+        match self
+            .store
+            .set_project_orchestrator(&self.project.id, choice)
+        {
+            Ok(project) => {
+                self.project = project.clone();
+                self.orchestrator_error = None;
+                self.error = None;
+                self.status.orchestrator_saved();
+                cx.emit(ProjectSettingsEvent::Saved(project));
+            }
+            Err(error) => self.orchestrator_error = Some(error),
+        }
+        cx.notify();
+    }
+
+    /// A mode chip: a chat chosen now starts as the chat Settings keep for chat mode.
+    fn pick_orchestrator(&mut self, pick: OrchestratorPick, cx: &mut Context<Self>) {
+        let choice = match pick {
+            OrchestratorPick::Inherit => ProjectOrchestrator::Inherit,
+            OrchestratorPick::Automatic => ProjectOrchestrator::Choose(OrchestratorRuns::Automatic),
+            OrchestratorPick::Terminal => ProjectOrchestrator::Choose(OrchestratorRuns::Terminal),
+            OrchestratorPick::Chat if self.orchestrator_chat().is_some() => return,
+            OrchestratorPick::Chat => {
+                let settings = cx.global::<Settings>();
+                ProjectOrchestrator::Choose(OrchestratorRuns::Chat {
+                    provider: settings.orchestrator_chat_provider,
+                    model: settings.orchestrator_chat_model.clone(),
+                })
+            }
+        };
+        self.select_orchestrator(choice, cx);
+    }
+
+    /// A provider chip: another provider starts on its own default model.
+    fn pick_orchestrator_provider(&mut self, provider: Provider, cx: &mut Context<Self>) {
+        let Some((current, model)) = self.orchestrator_chat() else {
+            return;
+        };
+        let model = if current == provider { model } else { None };
+        self.select_orchestrator(
+            ProjectOrchestrator::Choose(OrchestratorRuns::Chat { provider, model }),
+            cx,
+        );
+    }
+
+    fn pick_orchestrator_model(&mut self, model: Option<String>, cx: &mut Context<Self>) {
+        let Some((provider, _)) = self.orchestrator_chat() else {
+            return;
+        };
+        self.select_orchestrator(
+            ProjectOrchestrator::Choose(OrchestratorRuns::Chat { provider, model }),
+            cx,
+        );
+    }
+
+    /// Return in "Other model ID".
+    fn use_typed_model(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match orchestrator_choice::typed_model(&self.orchestrator_model_state.read(cx).value()) {
+            Ok(model) => {
+                self.pick_orchestrator_model(Some(model), cx);
+                if self.orchestrator_error.is_none() {
+                    crate::form_input::set_value(
+                        &self.orchestrator_model_state,
+                        String::new(),
+                        window,
+                        cx,
+                    );
+                }
+            }
+            Err(error) => {
+                self.orchestrator_error = Some(error);
+                cx.notify();
+            }
+        }
+    }
+
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         match self.active {
             Field::Name => self.name_state.read(cx).focus_handle(cx).focus(window, cx),
+            Field::OrchestratorModelInput => self
+                .orchestrator_model_state
+                .read(cx)
+                .focus_handle(cx)
+                .focus(window, cx),
             Field::FolderName => self
                 .folder_name_state
                 .read(cx)
@@ -672,7 +856,10 @@ impl ProjectSettingsPanel {
     }
 
     fn accepts_input(&self) -> bool {
-        matches!(self.active, Field::Name | Field::FolderName)
+        matches!(
+            self.active,
+            Field::Name | Field::FolderName | Field::OrchestratorModelInput
+        )
     }
 
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -694,6 +881,25 @@ impl ProjectSettingsPanel {
                 }
             }
             Field::AccountRefresh => refresh_codex_accounts(cx),
+            Field::Orchestrator(index) => {
+                if let Some((pick, _, _)) = ORCHESTRATOR_MODES.get(index) {
+                    self.pick_orchestrator(*pick, cx);
+                }
+            }
+            Field::OrchestratorProvider(index) => {
+                if let Some(provider) = orchestrator_choice::PROVIDERS.get(index) {
+                    self.pick_orchestrator_provider(*provider, cx);
+                }
+            }
+            Field::OrchestratorModel(index) => {
+                if let Some((provider, model)) = self.orchestrator_chat()
+                    && let Some(choice) =
+                        orchestrator_choice::model_choices(provider, model.as_deref()).get(index)
+                {
+                    self.pick_orchestrator_model(choice.model.clone(), cx);
+                }
+            }
+            Field::OrchestratorModelInput => self.use_typed_model(window, cx),
         }
     }
 
@@ -814,6 +1020,7 @@ impl ProjectSettingsPanel {
         let input = match self.active {
             Field::Name => Some(&self.name_state),
             Field::FolderName => Some(&self.folder_name_state),
+            Field::OrchestratorModelInput => Some(&self.orchestrator_model_state),
             _ => None,
         };
         if matches!(event.keystroke.key.as_str(), "escape" | "tab")
@@ -858,6 +1065,43 @@ impl ProjectSettingsPanel {
                 }
                 true
             }
+            "left" | "up" | "right" | "down"
+                if matches!(
+                    self.active,
+                    Field::Orchestrator(_)
+                        | Field::OrchestratorProvider(_)
+                        | Field::OrchestratorModel(_)
+                ) =>
+            {
+                let back = matches!(event.keystroke.key.as_str(), "left" | "up");
+                let step = |index: usize, count: usize| {
+                    if back {
+                        (index + count - 1) % count
+                    } else {
+                        (index + 1) % count
+                    }
+                };
+                self.active = match self.active {
+                    Field::Orchestrator(index) => {
+                        Field::Orchestrator(step(index, ORCHESTRATOR_MODES.len()))
+                    }
+                    Field::OrchestratorProvider(index) => Field::OrchestratorProvider(step(
+                        index,
+                        orchestrator_choice::PROVIDERS.len(),
+                    )),
+                    Field::OrchestratorModel(index) => {
+                        let count = self
+                            .orchestrator_chat()
+                            .map(|(provider, model)| {
+                                orchestrator_choice::model_choices(provider, model.as_deref()).len()
+                            })
+                            .unwrap_or(1);
+                        Field::OrchestratorModel(step(index, count))
+                    }
+                    other => other,
+                };
+                true
+            }
             "s" if event.keystroke.modifiers.platform => {
                 self.save(window, cx);
                 true
@@ -875,6 +1119,17 @@ impl ProjectSettingsPanel {
                 );
                 if !cx.global::<CodexAccountsState>().pending {
                     order.push(Field::AccountRefresh);
+                }
+                order.extend((0..ORCHESTRATOR_MODES.len()).map(Field::Orchestrator));
+                if let Some((provider, model)) = self.orchestrator_chat() {
+                    order.extend(
+                        (0..orchestrator_choice::PROVIDERS.len()).map(Field::OrchestratorProvider),
+                    );
+                    order.extend(
+                        (0..orchestrator_choice::model_choices(provider, model.as_deref()).len())
+                            .map(Field::OrchestratorModel),
+                    );
+                    order.push(Field::OrchestratorModelInput);
                 }
                 order.push(Field::Save);
                 let index = order
@@ -908,9 +1163,202 @@ impl ProjectSettingsPanel {
         let (state, id) = match field {
             Field::Name => (&self.name_state, "project-settings-name"),
             Field::FolderName => (&self.folder_name_state, "project-settings-new-folder"),
+            Field::OrchestratorModelInput => (
+                &self.orchestrator_model_state,
+                "project-orchestrator-model-input",
+            ),
             _ => unreachable!("Only text fields render an input"),
         };
         crate::form_input::frame(id, state, false, window, cx).into_any_element()
+    }
+}
+
+/// A chip's id in 04 ORCHESTRATOR.
+fn provider_chip_id(provider: Provider) -> String {
+    format!(
+        "project-orchestrator-provider-{}",
+        orchestrator_choice::provider_word(provider)
+    )
+}
+
+fn model_chip_id(choice: &ModelChoice) -> String {
+    format!("project-orchestrator-model-{}", choice.id)
+}
+
+impl ProjectSettingsPanel {
+    /// One chip of 04 ORCHESTRATOR, drawn as the account chips are.
+    #[allow(clippy::too_many_arguments)]
+    fn orchestrator_chip(
+        &self,
+        id: String,
+        label: String,
+        selected: bool,
+        field: Field,
+        focused: bool,
+        colors: Palette,
+        on_pick: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let ring = focused && self.active == field;
+        let chip = behavior::radio_content(
+            id.clone(),
+            label.clone(),
+            div()
+                .when(ui_text::is_native(), |mark| mark.hidden())
+                .child(if selected { "◉" } else { "○" }),
+            selected,
+        )
+        .track_focus(&self.control_focus[&id])
+        .max_w(ui_text::space(300.0))
+        .min_w_0()
+        .px(ui_text::space(10.0))
+        .py(ui_text::space(7.0))
+        .flex()
+        .items_center()
+        .gap(ui_text::space(7.0))
+        .border_1()
+        .border_color(rgb(if ring {
+            colors.focus
+        } else if selected {
+            colors.cyan
+        } else {
+            colors.divider
+        }))
+        .bg(rgb(if selected {
+            colors.panel_active
+        } else {
+            colors.bg
+        }))
+        .text_color(rgb(if selected { colors.cyan } else { colors.text }))
+        .map(|chip| native_choice(chip, selected, ring, colors))
+        .child(
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(label),
+        )
+        .on_change({
+            let listener = cx.listener(move |form, _, _window, cx| {
+                form.active = field;
+                on_pick(form, cx);
+            });
+            move |_, event, window, cx| listener(event, window, cx)
+        });
+        crate::form_input::control_element(id, chip)
+    }
+
+    /// The rows of 04 ORCHESTRATOR: the mode chips and, for a chat, its provider, its
+    /// model and "Other model ID"; then why a saved value is not shown, if one is not.
+    fn orchestrator_section(
+        &self,
+        focused: bool,
+        colors: Palette,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let group = |id: &str, label: &str| {
+            gpui_kit::base::RadioGroup::new(id.to_owned())
+                .axis(gpui::Axis::Horizontal)
+                .aria_label(label.to_owned())
+                .flex()
+                .flex_wrap()
+                .gap(ui_text::space(6.0))
+        };
+        let caption = |text: String, color: u32| {
+            div()
+                .text_size(ui_text::text(10.0))
+                .text_color(rgb(color))
+                .child(text)
+        };
+        let picked = orchestrator_pick(&self.project.orchestrator);
+        let inherited = orchestrator_choice::short(&cx.global::<Settings>().orchestrator_runs());
+        let mut modes = group("project-orchestrator-choices", "Orchestrator");
+        for (index, (pick, label, id)) in ORCHESTRATOR_MODES.into_iter().enumerate() {
+            let label = if pick == OrchestratorPick::Inherit {
+                format!("{label} · {inherited}")
+            } else {
+                label.to_owned()
+            };
+            modes = modes.child(self.orchestrator_chip(
+                id.to_owned(),
+                label,
+                picked == Some(pick),
+                Field::Orchestrator(index),
+                focused,
+                colors,
+                move |form, cx| form.pick_orchestrator(pick, cx),
+                cx,
+            ));
+        }
+        let mut rows = vec![modes.into_any_element()];
+        if picked == Some(OrchestratorPick::Automatic) {
+            rows.push(
+                caption(orchestrator_choice::automatic_note(), colors.muted).into_any_element(),
+            );
+        }
+        if let Some((provider, model)) = self.orchestrator_chat() {
+            let mut providers = group("project-orchestrator-providers", "Chat provider");
+            for (index, choice) in orchestrator_choice::PROVIDERS.into_iter().enumerate() {
+                providers = providers.child(self.orchestrator_chip(
+                    provider_chip_id(choice),
+                    crate::session_catalog::provider_label(choice).to_owned(),
+                    choice == provider,
+                    Field::OrchestratorProvider(index),
+                    focused,
+                    colors,
+                    move |form, cx| form.pick_orchestrator_provider(choice, cx),
+                    cx,
+                ));
+            }
+            let mut models = group("project-orchestrator-models", "Chat model");
+            for (index, choice) in orchestrator_choice::model_choices(provider, model.as_deref())
+                .into_iter()
+                .enumerate()
+            {
+                let selected = choice.model == model;
+                let value = choice.model.clone();
+                models = models.child(self.orchestrator_chip(
+                    model_chip_id(&choice),
+                    choice.label,
+                    selected,
+                    Field::OrchestratorModel(index),
+                    focused,
+                    colors,
+                    move |form, cx| form.pick_orchestrator_model(value.clone(), cx),
+                    cx,
+                ));
+            }
+            rows.push(caption("Chat provider".to_owned(), colors.muted).into_any_element());
+            rows.push(providers.into_any_element());
+            rows.push(caption("Chat model".to_owned(), colors.muted).into_any_element());
+            rows.push(models.into_any_element());
+            rows.push(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .min_w_0()
+                    .items_center()
+                    .gap(ui_text::space(8.0))
+                    .child(div().w(ui_text::space(260.0)).child(self.field(
+                        Field::OrchestratorModelInput,
+                        window,
+                        cx,
+                    )))
+                    .child(caption(
+                        "Another model ID: type it and press Return.".to_owned(),
+                        colors.muted,
+                    ))
+                    .into_any_element(),
+            );
+        }
+        if let Some(note) = self.project.orchestrator.unreadable_note() {
+            rows.push(caption(note, colors.gold).into_any_element());
+        }
+        if let Some(error) = &self.orchestrator_error {
+            rows.push(caption(error.clone(), colors.gold).into_any_element());
+        }
+        rows
     }
 }
 
@@ -1294,6 +1742,16 @@ impl Render for ProjectSettingsPanel {
                 .filter(|choice| self.account_choices(cx).iter().any(|(row, _, available)| row == choice && !available))
                 .map(|_| div().text_size(ui_text::text(10.0)).text_color(rgb(colors.gold))
                     .child("Selected account unavailable. Choose another before starting Codex.")));
+        let orchestrator = self.orchestrator_section(focused, colors, window, cx);
+        let orchestrator = section_box(10.0)
+            .child(section("04  ORCHESTRATOR", colors))
+            .child(
+                div()
+                    .text_size(ui_text::text(10.0))
+                    .text_color(rgb(colors.muted))
+                    .child("How this project's orchestrator runs when it is next created. Inherit follows Settings > Agent sessions; the others apply to this project only. The orchestrator that runs keeps its mode, provider and model until it is closed. Selection saves immediately."),
+            )
+            .children(orchestrator);
         let save_ring = focused && self.active == Field::Save;
         let save = div()
             .flex()
@@ -1356,7 +1814,7 @@ impl Render for ProjectSettingsPanel {
                 })),
             );
         let locations = section_box(12.0)
-            .child(section("04  LOCATIONS", colors))
+            .child(section("05  LOCATIONS", colors))
             .child(label("Project root"))
             .child(
                 div()
@@ -1427,6 +1885,7 @@ impl Render for ProjectSettingsPanel {
                                 .child(identity)
                                 .child(folder)
                                 .child(account)
+                                .child(orchestrator)
                                 .child(save)
                                 .child(locations),
                         ),
@@ -1510,6 +1969,7 @@ impl Render for ProjectSettingsPanel {
                     .child(identity)
                     .child(folder)
                     .child(account)
+                    .child(orchestrator)
                     .child(save)
                     .child(locations),
             )
@@ -1980,6 +2440,192 @@ mod tests {
         assert_eq!(status.message(), "Codex account saved");
         status.edited();
         assert_eq!(status.message(), SAVE_PROMPT);
+    }
+
+    /// Each orchestrator choice is saved the moment it is picked, and a Project Settings
+    /// opened afresh from the store shows it chosen.
+    #[gpui::test]
+    fn each_orchestrator_choice_saves_at_once_and_reopens_as_itself(cx: &mut gpui::TestAppContext) {
+        use crate::form_input::{test_ax_node, test_turn, test_window};
+        use gpui_kit::test::TestWindowExt as _;
+        let dir = std::env::temp_dir().join(format!(
+            "riwork-project-orchestrator-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let root = dir.join("demo");
+        std::fs::create_dir_all(&root).unwrap();
+        let store = Store::open(dir.join("state")).unwrap();
+        let project = store.add_project(&root, Some("Demo")).unwrap();
+        // No account discovery in a test.
+        cx.update(|app| {
+            app.set_global(CodexAccountsState {
+                snapshot: None,
+                pending: true,
+            })
+        });
+        let open = |cx: &mut gpui::TestAppContext| {
+            let store = store.clone();
+            let project = store
+                .snapshot()
+                .unwrap()
+                .project(&project.id)
+                .unwrap()
+                .clone();
+            test_window(cx, move |window, cx| {
+                ProjectSettingsPanel::new(store, project, window, cx)
+            })
+        };
+        let saved = || {
+            store
+                .snapshot()
+                .unwrap()
+                .project(&project.id)
+                .unwrap()
+                .orchestrator
+                .clone()
+        };
+        let checked = |window: &gpui::Window, app: &App, id: &str| {
+            test_ax_node(window, app, id.to_owned()).toggled()
+                == Some(gpui::accesskit::Toggled::True)
+        };
+        let reopened_shows = |cx: &mut gpui::TestAppContext, ids: &[&str]| {
+            let (handle, _) = open(cx);
+            let ids: Vec<String> = ids.iter().map(|id| (*id).to_owned()).collect();
+            test_turn(cx, handle, move |window, app| {
+                for id in &ids {
+                    assert!(checked(window, app, id), "{id} is shown chosen");
+                }
+            });
+        };
+
+        let (handle, panel) = open(cx);
+        test_turn(cx, handle, |window, app| {
+            // A project that never chose inherits, and says what it inherits.
+            assert!(checked(window, app, "project-orchestrator-inherit"));
+            assert_eq!(
+                test_ax_node(window, app, "project-orchestrator-inherit").label(),
+                Some("Inherit app default · Automatic")
+            );
+            assert!(
+                window
+                    .try_find("project-orchestrator-provider-muse")
+                    .is_none()
+            );
+            window.click("project-orchestrator-automatic", app);
+        });
+        assert_eq!(
+            saved(),
+            ProjectOrchestrator::Choose(OrchestratorRuns::Automatic)
+        );
+        reopened_shows(cx, &["project-orchestrator-automatic"]);
+
+        test_turn(cx, handle, |window, app| {
+            window.click("project-orchestrator-terminal", app)
+        });
+        assert_eq!(
+            saved(),
+            ProjectOrchestrator::Choose(OrchestratorRuns::Terminal)
+        );
+        reopened_shows(cx, &["project-orchestrator-terminal"]);
+
+        // Chat starts as Settings' chat (Codex, its default model), then is changed here.
+        test_turn(cx, handle, |window, app| {
+            window.click("project-orchestrator-chat", app)
+        });
+        assert_eq!(
+            saved(),
+            ProjectOrchestrator::Choose(OrchestratorRuns::chat(Provider::Codex))
+        );
+        test_turn(cx, handle, |window, app| {
+            assert!(checked(window, app, "project-orchestrator-model-default"));
+            window.click("project-orchestrator-provider-muse", app)
+        });
+        test_turn(cx, handle, |window, app| {
+            window.click("project-orchestrator-model-recommended", app)
+        });
+        let wonder = ProjectOrchestrator::Choose(OrchestratorRuns::Chat {
+            provider: Provider::Muse,
+            model: Some("muse-wonder-full-1.0".into()),
+        });
+        assert_eq!(saved(), wonder);
+        reopened_shows(
+            cx,
+            &[
+                "project-orchestrator-chat",
+                "project-orchestrator-provider-muse",
+                "project-orchestrator-model-recommended",
+            ],
+        );
+
+        // Another model ID, typed and submitted with Return.
+        test_turn(cx, handle, |window, app| {
+            window.click("project-orchestrator-model-input", app);
+            panel.update(app, |form, cx| {
+                crate::form_input::set_value(
+                    &form.orchestrator_model_state,
+                    "muse-spark-1.3".into(),
+                    window,
+                    cx,
+                );
+            });
+        });
+        test_turn(cx, handle, |window, app| window.press("enter", app));
+        assert_eq!(
+            saved(),
+            ProjectOrchestrator::Choose(OrchestratorRuns::Chat {
+                provider: Provider::Muse,
+                model: Some("muse-spark-1.3".into()),
+            })
+        );
+        reopened_shows(cx, &["project-orchestrator-model-saved"]);
+        // A blank one is refused and changes nothing.
+        test_turn(cx, handle, |window, app| {
+            panel.update(app, |form, cx| form.use_typed_model(window, cx));
+        });
+        test_turn(cx, handle, |_, app| {
+            assert!(panel.read(app).orchestrator_error.is_some());
+        });
+        assert!(matches!(
+            saved(),
+            ProjectOrchestrator::Choose(OrchestratorRuns::Chat { .. })
+        ));
+
+        // Inherit again.
+        test_turn(cx, handle, |window, app| {
+            window.click("project-orchestrator-inherit", app)
+        });
+        assert_eq!(saved(), ProjectOrchestrator::Inherit);
+        reopened_shows(cx, &["project-orchestrator-inherit"]);
+
+        // A value this build cannot read: no mode is shown chosen, the panel says why,
+        // and nothing is rewritten until a choice is made.
+        store
+            .set_project_orchestrator(
+                &project.id,
+                ProjectOrchestrator::Unreadable(serde_json::json!({"mode": "hologram"})),
+            )
+            .unwrap();
+        let (handle, panel) = open(cx);
+        test_turn(cx, handle, |window, app| {
+            for (_, _, id) in ORCHESTRATOR_MODES {
+                assert!(!checked(window, app, id), "{id}");
+            }
+            assert!(
+                panel
+                    .read(app)
+                    .project
+                    .orchestrator
+                    .unreadable_note()
+                    .is_some()
+            );
+            assert!(
+                window
+                    .try_find("project-orchestrator-model-input")
+                    .is_none()
+            );
+        });
+        assert!(matches!(saved(), ProjectOrchestrator::Unreadable(_)));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

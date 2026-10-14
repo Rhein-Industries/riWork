@@ -195,7 +195,7 @@ impl Workspace {
         let overview = self.dashboard_overview();
         let chat = dashboard::chat_copy(
             &overview.global,
-            global_window::orchestrator_runs(&self.settings),
+            &global_window::orchestrator_runs(&self.settings),
             global_window::chat_starting(cx),
         );
         let shown = global_window::shown_view(cx);

@@ -164,6 +164,7 @@ pub(super) fn info(id: &str) -> ChatInfo {
         state: ChatState::Idle,
         orchestrator: None,
         fast: false,
+        contributor_mode: Default::default(),
         contributor_opt_out: false,
         carried_over: None,
     }
