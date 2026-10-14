@@ -157,29 +157,21 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
 extension RemoteModel {
     /// The sheet may offer chats: the desktop said it has them, and has not refused them since.
     var chatsOffered: Bool { chatSupport == .supported }
-    /// The strip: every terminal, every chat and every orchestrator, which runs as one or the other (`ProjectTabs`). A chat is not a
-    /// terminal because it is an orchestrator: `mode` says, and the strip follows it.
-    var tabs: [ProjectTab] {
-        let legacy = ProjectTabs.tabs(sessions: sessions, chats: chats, chatsAvailable: chatSupport != .unsupported, missing: missingSessionIDs)
-        guard let sharedTabs else { return legacy }
-        let listed = Dictionary(legacy.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let shared: [ProjectTab] = sharedTabs.visible.compactMap { entry in
-            if entry.kind == .shell, var session = sessions.first(where: { $0.id == entry.sessionID && $0.alive && $0.mode != .chat && !missingSessionIDs.contains($0.id) }) {
-                session.sharedTitle = entry.title; return .terminal(session)
-            }
-            guard let tab = listed[entry.sessionID] else { return nil }
-            switch tab {
-            case .chat(var info): info.title = entry.title; return .chat(info)
-            case .terminal(var session): session.sharedTitle = entry.title; return .terminal(session)
-            case .orchestratorChat(var session, var info): session.sharedTitle = entry.title; info.title = entry.title; return .orchestratorChat(session, info)
-            case .unavailable: return tab
-            }
-        }
-        // Global orchestrators are device-local views outside project membership.
-        return shared + legacy.filter { $0.session?.kind == "orchestrator" && $0.session?.project_id == nil }
+    /// The strip of the current scope: every terminal, every chat and every orchestrator, which runs as one or the other (`ProjectTabs`).
+    /// A chat is not a terminal because it is an orchestrator: `mode` says, and the strip follows it. A project's strip never has the
+    /// global orchestrator (`OrchestratorScope.projectTabs`); on the Global screen it is all there is (`globalTabs`).
+    var tabs: [ProjectTab] { scope == .global ? globalTabs : projectTabs }
+    /// The chosen project's strip, whatever the scope: the earlier one, or the desktop's shared list, without the global orchestrator.
+    var projectTabs: [ProjectTab] {
+        OrchestratorScope.projectTabs(orchestrators: orchestrators, shells: shells, chats: chats, shared: sharedTabs, project: projectID,
+                                      chatsAvailable: chatSupport != .unsupported, missing: missingSessionIDs)
+    }
+    /// The global orchestrator's tabs (normally one), whatever the scope: what the dashboard and the Global screen show.
+    var globalTabs: [ProjectTab] {
+        OrchestratorScope.globalTabs(orchestrators: orchestrators, chatsAvailable: chatSupport != .unsupported, missing: missingSessionIDs)
     }
     /// The chosen project's own chats in tab order: those that are not an orchestrator's.
-    var projectChats: [ChatInfo] { tabs.compactMap { if case .chat(let info) = $0 { info } else { nil } } }
+    var projectChats: [ChatInfo] { projectTabs.compactMap { if case .chat(let info) = $0 { info } else { nil } } }
     /// The chat on screen, if one is: a listed chat, or the chat (`chat_id`) of an orchestrator that runs as one.
     var selectedChat: ChatInfo? {
         guard let id = selectedChatID else { return nil }
@@ -297,8 +289,8 @@ extension RemoteModel {
         let ordered = listed
         if ordered != chats { chats = ordered }
         reconcileChatSelection()
-        // A chat the desktop no longer has is not held on to (an orchestrator's chat is the orchestrator list's to keep).
-        let known = Set(ordered.map(\.id)).union(tabs.compactMap { $0.chatInfo?.id })
+        // A chat the desktop no longer has is not held on to (an orchestrator's chat is the orchestrator list's to keep, the global one's too).
+        let known = Set(ordered.map(\.id)).union(projectTabs.compactMap { $0.chatInfo?.id }).union(globalTabs.compactMap { $0.chatInfo?.id })
         for id in chatConversations.keys where !known.contains(id) && chatConversations[id]?.following != true && !chatSendsInFlight.contains(id) { chatConversations[id] = nil }
         lastListRead[.sessions] = .now
     }

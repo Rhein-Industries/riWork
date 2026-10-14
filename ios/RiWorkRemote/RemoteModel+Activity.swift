@@ -8,6 +8,10 @@ enum ActivityScope: Hashable, Sendable {
     case projects
     /// The terminal tabs of the chosen project: `activity` per shell and orchestrator.
     case sessions
+    /// The dashboard: `dashboard.get`, with the projects and the orchestrators it opens.
+    case dashboard
+    /// The Global screen: the global orchestrators (`orchestrators.list`).
+    case global
 }
 
 // Agent activity: whether a Claude or a Codex in a terminal is working, waiting for a person or done, with its subagents, and the
@@ -46,11 +50,15 @@ extension RemoteModel {
             var pause = activityRefreshInterval
             if state == .connected, appActive, !loading {
                 let age = lastListRead[scope].map { ContinuousClock.now - $0 }
-                if let age, age < activityRefreshInterval { pause = activityRefreshInterval - age }
+                let interval = scope == .dashboard ? dashboardRefreshInterval : activityRefreshInterval
+                pause = interval
+                if let age, age < interval { pause = interval - age }
                 else {
                     switch scope {
                     case .projects: await refreshProjectsQuietly()
                     case .sessions: await refreshSessionsQuietly()
+                    case .dashboard: await refreshDashboardQuietly()
+                    case .global: await refreshGlobalQuietly()
                     }
                 }
             }

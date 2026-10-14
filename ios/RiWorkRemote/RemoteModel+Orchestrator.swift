@@ -31,13 +31,25 @@ extension RemoteModel {
             let failure = OrchestratorControlError.from(error)
             if generation == token, failure == .unsupported { orchestratorCreateSupport = .unsupported }
             // Something was made, or may have been: the tab list shows it if so.
-            if generation == token, failure == .unreadableReply || failure == .exitedRightAway { await refreshSessionsQuietly() }
+            if generation == token, failure == .unreadableReply || failure == .exitedRightAway { await (request.isGlobal ? refreshGlobalQuietly() : refreshSessionsQuietly()) }
             return failure
         }
         if generation == token { orchestratorCreateSupport = .supported }
         // A reconnect or another desktop in the meantime: the orchestrator exists, but this screen is no longer its.
         guard generation == token, state == .connected else { return nil }
         let entry = reply.session
+        // The global orchestrator belongs to no project: it is remembered as the Global screen's selection and shown there, never made a
+        // tab of the project on screen (no `tabs.open`, no project selection). From a project's sheet, the root view takes the person to
+        // the dashboard's Global screen.
+        if request.isGlobal {
+            if let index = orchestrators.firstIndex(where: { $0.id == entry.id }) { orchestrators[index] = entry } else { orchestrators.append(entry) }
+            onOpened(entry)
+            if let tab = globalTabs.first(where: { $0.session?.id == entry.id }) { await openGlobalTab(tab) }
+            if scope == .global { reconcileGlobalSelection() } else { requestGlobalScreen() }
+            if !reply.created { noteOrchestrator("\(entry.title) is already running.") }
+            await refreshGlobalQuietly()
+            return nil
+        }
         if desktopFeatures.tabs, let project = projectID, entry.project_id == project {
             let key = entry.mode == .chat ? "chat:\(entry.chat_id ?? entry.id)" : "shell:\(entry.id)"
             do { try await unhideTab(key) } catch { return .failed(error.localizedDescription) }
@@ -52,7 +64,8 @@ extension RemoteModel {
     }
 
     /// Puts an orchestrator's tab on screen the way its tab would: a terminal is selected, a chat is opened by its `chat_id`, and one
-    /// the phone cannot open says why. One that is not among this project's tabs (another project's) is left alone.
+    /// the phone cannot open says why. One that is not among the tabs of the scope (another project's, or the global one's while a
+    /// project's tabs are up) is left alone.
     func openOrchestratorTab(_ session: RemoteSession) async {
         guard let tab = tabs.first(where: { $0.session?.id == session.id }) else { return }
         switch tab {

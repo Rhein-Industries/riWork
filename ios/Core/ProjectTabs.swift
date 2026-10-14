@@ -38,6 +38,15 @@ public enum SessionOpening: Sendable, Hashable {
         case .notReady: ("This orchestrator’s chat isn’t ready", "Refresh the tabs in a moment.")
         }
     }
+    /// The same for the global orchestrator, on the dashboard's Global screen: it belongs to no project, so its words name it and say
+    /// nothing of a project or of its tabs.
+    public var globalNotice: (headline: String, detail: String)? {
+        switch self {
+        case .terminal, .chat: nil
+        case .needsUpdate: ("Update the Mac to open the global orchestrator", "It runs as a chat, which the RiWork on your Mac does not offer yet.")
+        case .notReady: ("The global orchestrator’s chat isn’t ready", "Refresh in a moment.")
+        }
+    }
 }
 
 extension RemoteSession {

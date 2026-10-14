@@ -55,6 +55,16 @@ actor ChatTransport: RemoteTransport {
     var appearance: JSONValue?
     /// What `shell.output` gives for the fixture shell.
     var shellOutput = "screen"
+    /// `ready.features.dashboard`, and what `dashboard.get` answers: the reply (as the wire has it), or an error.
+    var dashboardFeature = false
+    var dashboardReply: JSONValue = .object(["v": .number(1)])
+    var dashboardError: RemoteError?
+    func setDashboard(feature: Bool, reply: JSONValue? = nil, error: RemoteError? = nil) {
+        dashboardFeature = feature; if let reply { dashboardReply = reply }; dashboardError = error
+    }
+    /// Projects beyond the fixture one, for tests that move between projects (`projects.list`, with their own `shells.list`).
+    var extraProjects: [String] = []
+    func setExtraProjects(_ ids: [String]) { extraProjects = ids }
     private var created = 0
     /// The desktop's shared tab list (`tabs.*`, docs/shared-tabs.md): offered once a test sets it.
     /// `pinned` is only what an older desktop still sends (as `"pinned": true`); the phone does not read it, and nothing here treats a
@@ -198,6 +208,7 @@ actor ChatTransport: RemoteTransport {
         if switchFeature { features["chat_provider_switch"] = .bool(true) }
         if modelsFeature { features["chat_models"] = .bool(true) }
         if asSettingsFeature { features["shell_create_as_settings"] = .bool(true) }
+        if dashboardFeature { features["dashboard"] = .bool(true) }
         return features.isEmpty ? DesktopFeatures() : DesktopFeatures(ready: .object(["features": .object(features)]))
     }
 
@@ -207,10 +218,17 @@ actor ChatTransport: RemoteTransport {
         if method != "appearance.get" { calls.append(Call(method: method, params: params, at: .now)) }
         switch method {
         case "projects.list":
-            return .object(["projects": try JSONDecoder().decode(JSONValue.self, from: Data("[{\"id\":\"\(Self.project)\",\"name\":\"Fixture\",\"root\":\"/fixture\",\"created_at\":1}]".utf8))])
+            let listed = ([Self.project] + extraProjects).enumerated().map { "{\"id\":\"\($0.element)\",\"name\":\"\($0.offset == 0 ? "Fixture" : "Other \($0.offset)")\",\"root\":\"/fixture\",\"created_at\":1}" }
+            return .object(["projects": try JSONDecoder().decode(JSONValue.self, from: Data("[\(listed.joined(separator: ","))]".utf8))])
+        case "dashboard.get":
+            guard dashboardFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            if let dashboardError { throw dashboardError }
+            return dashboardReply
         case "worktrees.list": return .object(["worktrees": .array([])])
         case "orchestrators.list": return .object(["orchestrators": .array(orchestratorEntries)])
         case "shells.list":
+            // The fixture project has the fixture shell; another project has none.
+            guard params["project_id"]?.string == Self.project else { return try await held(method, .object(["shells": .array([])])) }
             let entry = "[{\"id\":\"\(Self.shell)\",\"project_id\":\"\(Self.project)\",\"kind\":\"project\",\"cwd\":\"/fixture\",\"harness\":null,\"alive\":true,\"created_at_unix\":5}]"
             return try await held(method, .object(["shells": try JSONDecoder().decode(JSONValue.self, from: Data(entry.utf8))]))
         case "shell.output": return .object(["shell_id": params["shell_id"]!, "output": .string(shellOutput)])
@@ -221,7 +239,10 @@ actor ChatTransport: RemoteTransport {
             throw RemoteError.rpc(code: "not_found", message: "appearance not published")
         case "chats.list":
             guard chatFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
-            return try await held(method, .object(["chats": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(chats))]))
+            // Another project's chats are not this one's (a chat with no project is listed everywhere, as a careless desktop might).
+            let asked = params["project_id"]?.string
+            let listed = chats.filter { asked == nil || $0.projectID == nil || $0.projectID == asked }
+            return try await held(method, .object(["chats": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(listed))]))
         case "chat.create":
             while createMode == .gated { try await Task.sleep(for: .milliseconds(3)) }
             switch createMode {

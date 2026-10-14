@@ -1,11 +1,47 @@
 # RiWork for iPhone and iPad
 
-Choose a paired RiWork desktop and project, then switch between tabs for its
+Choose a paired RiWork desktop to see its dashboard (what needs you and what is working across every project, the global orchestrator,
+and every project), then a project, and switch between tabs for its
 open terminals and chats, or open a new shell, agent or chat on the desktop with ＋. One terminal
 fills the screen at a time. The app never splits or replaces a desktop session; it
 creates one only when asked (＋ or ⌘N, then Create), and closes one only after a
 confirmation. It creates a project only when asked too (＋ or ⌘⇧N on the project list, then Create).
-Reconnecting and switching tabs never create or close anything.
+Reconnecting and switching tabs never create or close anything, and neither do looking at the dashboard or reading it again.
+
+## Dashboard and the global orchestrator
+
+Choosing a desktop opens its **Dashboard**, outside every project (`DashboardViews.swift`, `RemoteModel+Dashboard.swift`,
+`Core/GlobalDashboard.swift`, tested). A desktop that says `ready.features.dashboard` answers `dashboard.get {}` with its own global
+dashboard, arranged by the desktop's `global_overview` (docs/remote-protocol.md, "Dashboard extension"); the phone shows it at phone
+scale in the RiWork and Native looks:
+- **How current it is**: Live, "Last read 2m ago" after 30 s, "Showing the read from … · why" when a read failed, or the connection's
+  state with the age of the last read; the last read stays on screen while a new one fails or the link is down.
+- **Global**: the global orchestrator, how it runs (a chat with its provider, or a terminal), its state and activity, with **Open** (the
+  Global screen) or, when the Mac has none, **Start** (an explicit tap; `orchestrator.create {}` with no project). No model is shown: the
+  wire does not carry one.
+- **Overview**: agents working (and their subagents), what needs you, live sessions (terminals only, "chats not read yet", until the Mac
+  has read its chats), active projects and the task totals.
+- **Needs you** (waiting agents first, then failed chats and automations whose last run did not go through, newest first), **Working
+  now** (longest-running first), **Finished in the last hour**, **Tasks in progress**, **Automations** (count, paused, next run; read-only
+  on the phone), each up to 12 rows with "N more on the Mac".
+- **Projects**: every project, busiest first, with its activity, orchestrator, task status and last activity; projects the dashboard did
+  not send follow in the order chosen on the Projects screen. The bar's folder button opens the **Projects** screen (search, sort, ＋).
+A row opens what it names: its project, with its terminal or chat put on screen (a worker the shared list hides is opened as the
+"Open shell/worker…" picker opens it); a row of the global orchestrator opens the Global screen. A figure the Mac did not send, or sent
+in a form the phone cannot read, is shown as unknown ("—"), never as 0; a row the phone cannot read is left out. The dashboard is read
+only while it is on screen, every 10 s, together with `projects.list` and `orchestrators.list`; pull to refresh reads it at once.
+**An older Mac** does not announce the method and is never asked: the dashboard says RiWork on the Mac needs an update for it, and still
+lists and opens every project, with the global orchestrator's row from `orchestrators.list`.
+
+**The global orchestrator belongs to no project.** It is never a tab of a project (the earlier strip or the shared one, even if a
+list names it), never one of a project's open terminals or chats, never in the hidden-tab count, and never a project's selection or
+restore (`Core/OrchestratorScope.swift`, tested). It opens on its own **Global** screen, reached from the dashboard (Back returns there):
+a chat by its `chat_id`, a terminal by its session id through the usual terminal pipeline, and one the phone cannot open says so in
+words that name no project ("Update the Mac to open the global orchestrator", "The global orchestrator's chat isn't ready"). Which one is
+on screen is remembered per desktop apart from every project (`SavedDesktop.globalTabKey`) and put back on relaunch and reconnect.
+Opening, starting or reading it never selects, switches or adopts a project, and leaves each project's selected tab and remembered tab
+as they were. From a project, the ⋯ menu's **Global orchestrator** and the New terminal sheet's **Global orchestrator** row go to the
+Global screen (the sheet starts it first if the Mac has none).
 
 The interface follows RiWork’s compact desktop layout: flat rows and tab strips,
 thin dividers, Menlo terminal text and a small workspace bar. Chats use proportional prose, right-aligned user bubbles, rounded tool/code surfaces and a shared composer, with a centered reading column on iPad. Light appearance uses the
@@ -111,7 +147,7 @@ Every kind of tab has the same one-row header (`TabScreenChrome`): Back, the tab
 44 pt targets, so switching between a terminal and a chat never moves, adds or resizes a bar. The ⋯ menu is the screen's only one,
 in sections: what is on screen (a chat's actions, see Chats; or a terminal's: focus mode, jump to latest, Display, text size, the
 line composer, copy screen, refresh output), the tab (Session info; Close this terminal), and the project (refreshing the tabs, the
-global orchestrator, the connection). **Shared tabs** (a desktop that offers `tabs`, docs/shared-tabs.md; `Core/SharedTabStrip.swift`, tested): the row is the desktop's
+global orchestrator's own screen, the connection). **Shared tabs** (a desktop that offers `tabs`, docs/shared-tabs.md; `Core/SharedTabStrip.swift`, tested): the row is the desktop's
 own list for the project, in its order, with its titles and states, the same as the Mac's strip (there are no pins: a `pinned` field an older desktop still sends is not
 read); workers (sessions another
 session started) are hidden until opened. ＋ holds New terminal…, **Open shell/worker…** (the hidden chats and live shells, workers
@@ -125,7 +161,7 @@ past the last tab, to the end of its group), or in **Edit tabs** with drag handl
 top-level tabs, a parent's opened children stay among themselves, and the desktop's reply is the row. A quick drag still scrolls the row, and the edge swipe still
 goes back. **The last tab** on screen in each project is kept on this iPhone (`SavedDesktop.projectTabKeys`): entering the
 project, relaunching and reconnecting put it back while the shared list still shows it, else the first tab. Changes made on the Mac arrive with the four-second refresh without moving the tab on screen. An older desktop keeps the
-earlier strip (every terminal and chat). A swipe from the left edge goes back to the projects, as Back does, from a terminal and
+earlier strip (every terminal and chat). A swipe from the left edge goes back (to the dashboard, or the Projects screen the project was chosen on), as Back does, from a terminal and
 from a chat alike (the navigation stack's own gesture, turned back on although the screen hides the bar: `edgeSwipeBack()`). A tab's short session ID and worktree
 branch are in its long-press menu and its accessibility label. **Session info** exposes the full UUID,
 kind and working directory. The compact status row keeps snapshot freshness,
@@ -304,9 +340,9 @@ A desktop that says `ready.features.chat` (the `riwork` CLI reports `"chat": tru
 **Opening an orchestrator from the phone.** A desktop that says `ready.features.orchestrator_create` answers `orchestrator.create {project_id?}` (`Core/NewOrchestrator.swift`, pure and tested): an absent `project_id` is the global orchestrator, a present one that project's. The result is `{orchestrator: <orchestrators.list entry, with mode/chat_id/provider>, created: bool}`; when the scope already has one the desktop returns it with `created: false` and nothing new is made. The phone offers it only when the feature is true (read again on every connection; a refusal "unsupported RPC method" withdraws it for the connection):
 - The New terminal sheet gains **Project orchestrator** (the project on screen; its Where row shows the project, with no worktree to choose, and there is no Unrestricted switch) and **Global orchestrator** (Where reads "All projects"). They are rows of the same kind list, so ↑ ↓ reach them, ⇥ skips the Where row they do not have, ↩ opens and ⎋ cancels, as for every kind; the button reads "Open project orchestrator". The project screen's ⋯ menu also has **Global orchestrator**. An orchestrator is not remembered as the sheet's last kind.
 - The orchestrator form offers **Mac setting**, **Chat**, and **Terminal (CLI)**. Explicit modes apply only to a newly created orchestrator; existing ones retain their mode. Chat uses the Mac’s configured provider. Older desktops reject explicit choices; update the desktop or use Mac setting.
-- After the answer the returned orchestrator is opened like its tab would be: a chat when `mode` is chat (by `chat_id`), otherwise a terminal (selected, resized, read). One that was there already (`created: false`) is opened the same, with a short note under the tab strip, "Project orchestrator is already running." (a tap takes it away; it goes by itself after 5 s).
+- After the answer the returned orchestrator is opened like its tab would be: a chat when `mode` is chat (by `chat_id`), otherwise a terminal (selected, resized, read). One that was there already (`created: false`) is opened the same, with a short note under the tab strip, "Project orchestrator is already running." (a tap takes it away; it goes by itself after 5 s). The global one is opened on the Global screen instead, never in the project (no `tabs.open`, no project selection), with its note there.
 - Sent once, never retried: a second tap or a held Return while it is on its way is ignored; a lost answer says the orchestrator "may or may not have started", leaves the sheet open and the button as "Try again", which only a person presses. The reply must be an orchestrator entry of the scope that was asked for (a project's answer to a global request is not opened). Request timeout: 90 s (an agent can take 20 to 30 s to start).
-- The global orchestrator belongs to no project and, as on the desktop, is part of every project: it is in each project's tab strip after the project's own orchestrator.
+- The global orchestrator belongs to no project and is in no project's tab strip: it has the dashboard's Global screen (see Dashboard and the global orchestrator).
 
 **New chat.** The New terminal sheet (＋ or ⌘N) gains one **Chat** row when the desktop has chats. Its **Model** list has both providers, Codex and Claude each under its own heading with its **Default** first, and the row chosen decides the chat's provider (`NewTerminalForm.chatRows`, `Core/NewChatChoice.swift`); the provider of the last chat made is where the next sheet starts (UserDefaults `riwork.newChat.provider`). **Unrestricted** is the chat's Full mode (`approval_mode: "full"`; off every time, as for agents); otherwise no mode is sent and the desktop's default (Supervised) applies. A chat also takes a **Model** choice (below). `chat.create` is sent **once**: a second tap or a held Return while it is on its way is ignored, and a lost answer (timeout, dropped link) is not asked again; the sheet says the chat "may or may not have been created", to check the tab list first, and the button reads "Try again". Request timeout: 90 s.
 

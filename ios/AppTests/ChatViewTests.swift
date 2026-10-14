@@ -716,7 +716,7 @@ import RiWorkCore
             while let current = view { if current === scroll { inStrip = true }; view = current.superview }
             XCTAssertTrue(inStrip, "a tap at x=\(x) on the scrolled strip is the strip's")
         }
-        for (point, label) in [(CGPoint(x: back.maxX - 2, y: back.midY), "Back to projects"), (CGPoint(x: more.minX + 2, y: more.midY), "More options")] {
+        for (point, label) in [(CGPoint(x: back.maxX - 2, y: back.midY), "Back"), (CGPoint(x: more.minX + 2, y: more.midY), "More options")] {
             if let hit = (rig.window.accessibilityHitTest(point, event: nil) as? NSObject)?.accessibilityLabel { XCTAssertEqual(hit, label) }
         }
         scroll.setContentOffset(.zero, animated: false)

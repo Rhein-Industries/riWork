@@ -64,6 +64,9 @@ public struct DesktopFeatures: Sendable, Equatable {
     public var chatProviderSwitch = false
     /// The desktop answers `chat.models` (`features.chat_models`): a provider's models, read from saved chats.
     public var chatModels = false
+    /// The desktop answers `dashboard.get` (`features.dashboard`): its global dashboard in one bounded read. Without it the phone never
+    /// asks, lists and opens the projects as before, and says the dashboard needs a newer RiWork on the Mac.
+    public var dashboard = false
     public init() {}
     public init(ready: JSONValue) {
         let features = ready["features"]
@@ -83,6 +86,7 @@ public struct DesktopFeatures: Sendable, Equatable {
         if case .bool(true) = features["shell_create_as_settings"] { shellCreateAsSettings = true }
         if case .bool(true) = features["chat_provider_switch"] { chatProviderSwitch = true }
         if case .bool(true) = features["chat_models"] { chatModels = true }
+        if case .bool(true) = features["dashboard"] { dashboard = true }
         if let lines = count(features["history_max_lines"]), lines >= 1 {
             historyMaximumLines = max(HistoryLimits.legacyMaximumPageLines, min(HistoryLimits.maximumPageLines, lines))
         }

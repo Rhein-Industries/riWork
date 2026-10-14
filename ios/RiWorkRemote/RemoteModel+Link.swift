@@ -38,6 +38,8 @@ extension RemoteModel {
         desktopFeatures = features
         chatSupport = features.chat ? .supported : .unsupported
         orchestratorCreateSupport = features.orchestratorCreate ? .supported : .unsupported
+        // A desktop that does not announce the dashboard is never asked for it (it would only answer that it does not know the method).
+        dashboardSupport = features.dashboard ? .supported : .unsupported
         historyLineLimit = features.historyMaximumLines
         compressionAgreed = await client.compressionActive()
         // The desktop's answer to the opt-in is on its way (the transport asked as soon as the session began): look again shortly.

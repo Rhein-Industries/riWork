@@ -176,9 +176,11 @@ import RiWorkCore
         XCTAssertEqual(model.orchestratorNotice, "Project orchestrator is already running.")
         await model.disconnect()
     }
-    func testTheGlobalOrchestratorIsRequestedWithNoProjectAndAppearsInTheStrip() async throws {
+    func testTheGlobalOrchestratorIsRequestedWithNoProjectAndOpensOutsideTheProject() async throws {
         let rig = try await connected()
         let model = rig.model
+        let before = try XCTUnwrap(model.desktop)
+        let requests = model.globalScreenRequests
         let first = await model.createOrchestrator(try NewOrchestratorRequest(projectID: nil))
         XCTAssertNil(first)
         let sent = await rig.transport.params(of: "orchestrator.create")
@@ -186,7 +188,20 @@ import RiWorkCore
         let made = try XCTUnwrap(model.orchestrators.first)
         XCTAssertNil(made.project_id)
         XCTAssertEqual(made.title, "Global orchestrator")
-        XCTAssertTrue(model.tabs.contains { $0.session?.id == made.id }, "the global orchestrator is a tab of the project on screen")
+        // Not a tab of the project on screen, not its selection, not its remembered tab: the Global screen is asked for instead.
+        XCTAssertFalse(model.tabs.contains { $0.session?.id == made.id || $0.id == made.chat_id }, "never a tab of the project on screen")
+        XCTAssertNil(model.selectedChatID)
+        XCTAssertEqual(model.sessionID, shell)
+        XCTAssertEqual(model.globalScreenRequests, requests + 1)
+        XCTAssertEqual(model.desktop?.globalTabKey, "chat:\(try XCTUnwrap(made.chat_id))")
+        XCTAssertEqual(model.desktop?.selectedProjectID, before.selectedProjectID)
+        XCTAssertEqual(model.desktop?.selectedSessionID, before.selectedSessionID)
+        XCTAssertEqual(model.desktop?.projectSessionIDs, before.projectSessionIDs)
+        XCTAssertEqual(model.desktop?.projectTabKeys, before.projectTabKeys)
+        let tabChanges = await rig.transport.count("tabs.open") + rig.transport.count("tabs.update")
+        XCTAssertEqual(tabChanges, 0, "no project tab is opened or unhidden for it")
+        // The Global screen opens it, by its chat id.
+        model.enterGlobal()
         XCTAssertEqual(model.selectedChatID, made.chat_id)
         XCTAssertEqual(model.selectedChat?.title, "Global orchestrator")
         XCTAssertNil(model.orchestratorNotice)
@@ -195,24 +210,44 @@ import RiWorkCore
         XCTAssertNil(again)
         XCTAssertEqual(model.orchestratorNotice, "Global orchestrator is already running.")
         XCTAssertEqual(model.orchestrators.count, 1)
+        // Back on the project: its screen as it was, and the global note does not follow.
+        model.leaveGlobal()
+        XCTAssertNil(model.selectedChatID)
+        XCTAssertEqual(model.sessionID, shell)
+        XCTAssertNil(model.orchestratorNotice)
         await model.disconnect()
     }
-    func testTheGlobalOrchestratorFromTheSheetNeedsNoWorktree() async throws {
+    func testTheGlobalOrchestratorFromTheSheetNeedsNoWorktreeAndOpensOnTheGlobalScreen() async throws {
         let rig = try await connected(asChats: false)
         let sheet = try sheet(rig, .globalOrchestrator)
         sheet.create()
         await sheet.pending?.value
         let sent = await rig.transport.params(of: "orchestrator.create")
         XCTAssertEqual(sent, [[:]])
-        XCTAssertEqual(rig.model.sessionID, rig.model.orchestrators.first?.id, "a terminal one is selected")
+        let made = try XCTUnwrap(rig.model.orchestrators.first?.id)
+        XCTAssertEqual(rig.model.sessionID, shell, "the project's terminal stays its selection")
+        XCTAssertEqual(rig.model.desktop?.globalTabKey, "shell:\(made)")
+        XCTAssertEqual(rig.model.globalScreenRequests, 1, "the root view goes to the Global screen")
+        rig.model.enterGlobal()
+        XCTAssertEqual(rig.model.sessionID, made, "a terminal one is the Global screen's terminal")
+        await eventually("its screen is read") { await self.readShells(rig).contains(made) }
+        rig.model.leaveGlobal()
+        XCTAssertEqual(rig.model.sessionID, shell)
         await rig.model.disconnect()
     }
-    func testTheGlobalOrchestratorIsInEveryProjectsStripAfterTheProjectsOwn() async throws {
-        let global = entry(project: nil, chat: false, id: "aaaaaaaa-2222-4222-8222-222222222222")
+    func testTheGlobalOrchestratorIsInNoProjectsStripAndAProjectsOwnOnlyInItsOwn() async throws {
+        let globalID = "aaaaaaaa-2222-4222-8222-222222222222"
+        let global = entry(project: nil, chat: false, id: globalID)
         let mine = entry(project: project, chat: false)
         let other = entry(project: "22222222-2222-4222-8222-222222222222", chat: false, id: "aaaaaaaa-3333-4333-8333-333333333333")
         let rig = try await connected(orchestrators: [global, other, mine])
-        XCTAssertEqual(rig.model.openSessions.map(\.id), [entryID, "aaaaaaaa-2222-4222-8222-222222222222", shell], "another project's orchestrator is not one of these tabs")
+        XCTAssertEqual(rig.model.openSessions.map(\.id), [entryID, shell], "its own orchestrator and its shell: neither the global one nor another project's")
+        XCTAssertEqual(rig.model.tabs.map(\.id), [entryID, shell])
+        rig.model.enterGlobal()
+        XCTAssertEqual(rig.model.openSessions.map(\.id), [globalID], "the Global screen has the global one alone")
+        XCTAssertEqual(rig.model.tabs.map(\.id), [globalID])
+        rig.model.leaveGlobal()
+        XCTAssertEqual(rig.model.openSessions.map(\.id), [entryID, shell])
         await rig.model.disconnect()
     }
 

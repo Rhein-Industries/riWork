@@ -188,6 +188,10 @@ public struct SavedDesktop: Codable, Sendable, Identifiable {
     /// The shared tab (`chat:<id>` or `shell:<id>`) last on screen in each project, by project id: entering the project, relaunching
     /// and reconnecting put it back while the desktop still lists it.
     public var projectTabKeys: [String: String]?
+    /// The global orchestrator last on screen in the dashboard's Global screen (`chat:<chat id>` or `shell:<session id>`). Kept apart from
+    /// every project's selection: opening the global orchestrator never touches `selectedProjectID`, `selectedSessionID`,
+    /// `projectSessionIDs` or `projectTabKeys`, and they never touch this. Absent in a library saved before it existed.
+    public var globalTabKey: String?
     public var pendingInput: PendingInput?
     public init(name: String, pairing: Pairing, allowLocalDevelopment: Bool) {
         self.name = name; self.pairing = pairing; self.allowLocalDevelopment = allowLocalDevelopment

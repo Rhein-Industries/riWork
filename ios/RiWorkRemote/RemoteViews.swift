@@ -3,8 +3,12 @@ import UIKit
 import RiWorkCore
 
 private enum RemoteRoute: Hashable {
+    /// A desktop's dashboard: what choosing a desktop opens, outside every project.
+    case dashboard(String)
     case projects(String)
     case terminals(RemoteProject)
+    /// The global orchestrator's own screen, reached from the dashboard (Back returns there, never into a project).
+    case global(String)
 }
 
 private struct PairingRequest: Identifiable {
@@ -56,7 +60,7 @@ struct RemoteRootView: View {
                             ForEach(model.desktops) { desktop in
                                 HStack(spacing: 0) {
                                     Button {
-                                        path.append(.projects(desktop.id))
+                                        path.append(.dashboard(desktop.id))
                                         Task { await model.activate(desktop.id) }
                                     } label: {
                                         HStack(spacing: 8) {
@@ -68,7 +72,7 @@ struct RemoteRootView: View {
                                             Spacer(minLength: 4)
                                             Image(systemName: "chevron.right").font(style.system(.caption)).foregroundStyle(style.muted)
                                         }.frame(minHeight: style.pt(44)).contentShape(Rectangle())
-                                    }.buttonStyle(.plain).accessibilityHint("Choose a project on this desktop")
+                                    }.buttonStyle(.plain).accessibilityHint("Open this desktop's dashboard and projects")
                                     Menu {
                                         Button("Rename", systemImage: "pencil") { renaming = desktop }
                                         Button("Remove from this device", systemImage: "trash", role: .destructive) { removing = desktop }
@@ -98,6 +102,17 @@ struct RemoteRootView: View {
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: RemoteRoute.self) { route in
                 switch route {
+                case .dashboard(let desktopID):
+                    VStack(spacing: 0) {
+                        WorkspaceBar(title: style.cased("Dashboard"), back: pop) {
+                            Button("Projects", systemImage: "folder") { path.append(.projects(desktopID)) }.labelStyle(.iconOnly)
+                                .accessibilityHint("Find, sort and create projects")
+                        }
+                        DashboardView(model: model, openProject: { path.append(.terminals($0)) }, openGlobal: { path.append(.global(desktopID)) })
+                    }.background(style.background).id(desktopID).toolbar(.hidden, for: .navigationBar).edgeSwipeBack()
+                case .global:
+                    GlobalOrchestratorScreen(model: model, onBack: pop)
+                        .toolbar(.hidden, for: .navigationBar).edgeSwipeBack()
                 case .projects(let desktopID):
                     VStack(spacing: 0) {
                         WorkspaceBar(title: style.cased("Projects"), back: pop) {
@@ -122,7 +137,7 @@ struct RemoteRootView: View {
         .background(style.background.ignoresSafeArea())
         .sheet(item: $pairingRequest) { request in
             PairDesktopSheet(model: model, initialText: request.text, fromLink: request.fromLink, onAdded: { id in
-                path = [.projects(id)]
+                path = [.dashboard(id)]
                 Task { await model.activate(id) }
             }).desktopThemed(model.theme.style)
         }
@@ -138,6 +153,12 @@ struct RemoteRootView: View {
             Button("Cancel", role: .cancel) { removing = nil }
         } message: { desktop in Text("Removes \(desktop.name)’s local pairing keys. Desktop sessions keep running. Revoke this device on the desktop to deny future access.") }
         .onOpenURL { url in pairingRequest = PairingRequest(text: url.absoluteString, fromLink: true) }
+        // The global orchestrator opened or started from a project (its menu, the New terminal sheet): the dashboard's Global screen,
+        // out of the project, so Back leads to the dashboard and never into a project.
+        .onChange(of: model.globalScreenRequests) { _, _ in
+            guard let id = model.selectedDesktopID else { return }
+            path = [.dashboard(id), .global(id)]
+        }
     }
 }
 
@@ -367,7 +388,7 @@ struct TerminalTabsView: View {
     private func dialogs(_ content: some View) -> some View {
         content
         .sheet(isPresented: $showingWorkers) {
-            OpenTabSheet(rows: SharedTabStrip.openable(model.sharedTabs), open: { key in
+            OpenTabSheet(rows: OrchestratorScope.projectOpenable(model.sharedTabs, orchestrators: model.orchestrators), open: { key in
                 showingWorkers = false
                 tabAction { try await model.openTab(key) }
             }, done: { showingWorkers = false }).desktopThemed(model.theme.style)
@@ -433,7 +454,7 @@ struct TerminalTabsView: View {
     private func navigationRow(_ chrome: TabScreenChrome) -> some View {
         HStack(spacing: 0) {
             Button { onBack() } label: { Image(systemName: "chevron.left") }
-                .accessibilityLabel("Back to projects")
+                .accessibilityLabel("Back")
                 .buttonStyle(TargetButtonStyle()).frame(width: style.target)
                 .chatLayoutProbe("back")
             Group {
@@ -539,7 +560,7 @@ struct TerminalTabsView: View {
                 Button("New terminal", systemImage: "plus") { openNewTerminal() }
                     .disabled(model.state != .connected || model.projectID != project.id)
                 if model.desktopFeatures.tabs, model.sharedTabs != nil {
-                    let hidden = SharedTabStrip.openable(model.sharedTabs).count
+                    let hidden = OrchestratorScope.projectOpenable(model.sharedTabs, orchestrators: model.orchestrators).count
                     Button(hidden > 0 ? "Open a worker or shell… (\(hidden))" : "Open a worker or shell…", systemImage: "rectangle.stack.badge.plus") { showingWorkers = true }
                         .disabled(model.state != .connected)
                 }
@@ -552,11 +573,9 @@ struct TerminalTabsView: View {
             }
             Section(project.name) {
                 Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
-                // The project's own orchestrator is a row of the New terminal sheet; the global one is here too, a tap away.
-                if model.orchestratorsOffered {
-                    Button("Global orchestrator", systemImage: "globe") { openGlobalOrchestrator() }
-                        .disabled(model.state != .connected || model.creatingOrchestrator)
-                }
+                // The project's own orchestrator is a row of the New terminal sheet. The global one belongs to no project: this opens
+                // the dashboard's Global screen (Open, or Start there), leaving this project's tabs as they are.
+                Button("Global orchestrator", systemImage: "globe") { model.requestGlobalScreen() }
                 if model.state == .connected { Button("Disconnect", systemImage: "wifi.slash") { Task { await model.disconnect() } } }
                 else { Button("Reconnect", systemImage: "arrow.clockwise") { Task { await model.connect() } } }
             }
@@ -589,11 +608,6 @@ struct TerminalTabsView: View {
         guard model.newTerminalRequestedProject == project.id, model.projectID == project.id, model.state == .connected else { return }
         model.newTerminalRequestedProject = nil
         openNewTerminal()
-    }
-    /// Opens the global orchestrator (starting it if the Mac has none). Sent once; what went wrong is said in the status line.
-    private func openGlobalOrchestrator() {
-        guard let request = try? NewOrchestratorRequest(projectID: nil) else { return }
-        Task { if let failure = await model.createOrchestrator(request) { model.error = failure.message } }
     }
     private func close(_ session: RemoteSession) {
         Task { if let failure = await model.closeTerminal(session) { model.error = failure.message } }
@@ -783,7 +797,7 @@ private extension View {
 }
 
 /// A short note under the tab strip that goes by itself ("Project orchestrator is already running."); a tap takes it away.
-private struct NoteLine: View {
+struct NoteLine: View {
     @Environment(\.desktopStyle) private var style
     let text: String
     let dismiss: () -> Void
@@ -818,12 +832,14 @@ private struct NoteLine: View {
 
 /// In place of an orchestrator that runs as a chat when there is no chat to open: the RiWork on the Mac has none to offer
 /// ("Update the Mac to open this orchestrator"), or the entry did not say which chat it is. The terminal is not tried.
-private struct OrchestratorNotice: View {
+struct OrchestratorNotice: View {
     @Environment(\.desktopStyle) private var style
     let session: RemoteSession
     let opening: SessionOpening
+    /// The global orchestrator's, on the Global screen: its words name it and say nothing of a project or its tabs.
+    var global = false
     var body: some View {
-        let notice = opening.notice
+        let notice = global ? opening.globalNotice : opening.notice
         VStack(alignment: .leading, spacing: 12) {
             Label(style.cased(notice?.headline ?? session.title), systemImage: "arrow.down.app").font(style.face(14, bold: true, relativeTo: .headline))
             Text(notice?.detail ?? "").foregroundStyle(style.muted)
@@ -843,7 +859,7 @@ struct SessionInfo: Identifiable {
     var since: UInt64?
 }
 
-private struct SessionInfoSheet: View {
+struct SessionInfoSheet: View {
     @Environment(\.desktopStyle) private var style
     let info: SessionInfo
     @Environment(\.dismiss) private var dismiss

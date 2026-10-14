@@ -171,6 +171,108 @@ import RiWorkCore
         }
     }
 
+    // MARK: - The dashboard and the Global screen
+
+    /// The dashboard a busy Mac sends: what needs you, what is working and finished, tasks, automations and three projects.
+    private func dashboardReply(projects: [String], globalChat: String) throws -> JSONValue {
+        let now = Int(Date().timeIntervalSince1970)
+        let (fixture, api, docs) = (projects[0], projects[1], projects[2])
+        let shell = ChatTransport.shell
+        func session(_ type: String, _ id: String, _ project: String, _ name: String, agent: String, title: String? = nil, branch: String? = nil) -> String {
+            "{\"target\":{\"type\":\"\(type)\",\"id\":\"\(id)\"\(type == "chat" ? ",\"project_id\":\"\(project)\"" : "")},\"agent\":\"\(agent)\"\(title.map { ",\"title\":\"\($0)\"" } ?? ""),\"project_id\":\"\(project)\",\"project_name\":\"\(name)\"\(branch.map { ",\"branch\":\"\($0)\"" } ?? ""),\"is_chat\":\(type == "chat")}"
+        }
+        let json = """
+        {"v":1,"generated_at":\(now),"chats_known":true,
+         "totals":{"projects":3,"active_projects":2,"live_shells":4,"live_chats":3,"agents":{"working":3,"waiting":1,"done":1,"unknown":0,"exited":0,"subagents":2},"tasks":{"todo":4,"in_progress":2,"done":5},"attention":3},
+         "global":{"kind":"chat","chat_id":"\(globalChat)","provider":"claude","chat_state":"running"},
+         "attention":[
+          {"kind":"waiting","target":{"type":"shell","id":"\(shell)"},"session":\(session("shell", shell, fixture, "Fixture", agent: "Claude", branch: "feat/login")),"project_id":"\(fixture)","project_name":"Fixture","at":\(now - 240)},
+          {"kind":"chat_failed","target":{"type":"chat","id":"cccccccc-7777-4777-8777-777777777777","project_id":"\(api)"},"session":\(session("chat", "cccccccc-7777-4777-8777-777777777777", api, "API", agent: "Codex", title: "Migrate the schema")),"project_id":"\(api)","project_name":"API","at":\(now - 1800),"message":"The provider process exited."},
+          {"kind":"automation","target":{"type":"automations","project_id":"\(docs)"},"project_id":"\(docs)","project_name":"Docs","at":\(now - 7200),"title":"Nightly link check","outcome":"missed","message":"The Mac was asleep."}],
+         "attention_total":3,
+         "working":[
+          {"session":\(session("chat", "cccccccc-8888-4888-8888-888888888888", api, "API", agent: "Claude", title: "Write the rate limiter")),"activity":"working","since_unix":\(now - 1500),"subagents":2},
+          {"session":\(session("shell", "44444444-9999-4999-8999-999999999999", fixture, "Fixture", agent: "Codex")),"activity":"working","since_unix":\(now - 300),"subagents":0}],
+         "working_total":2,
+         "finished":[{"session":\(session("shell", "44444444-aaaa-4aaa-8aaa-aaaaaaaaaaaa", docs, "Docs", agent: "Claude")),"activity":"done","since_unix":\(now - 600),"subagents":0}],
+         "finished_total":1,
+         "projects":[
+          {"id":"\(fixture)","name":"Fixture","folder":"Clients","agents":{"working":1,"waiting":1,"done":0,"unknown":0,"exited":0,"subagents":0},"live_shells":3,"live_chats":0,"tasks":{"todo":2,"in_progress":1,"done":3},"worktrees":2,"attention":1,"orchestrator":{"mode":"terminal","activity":"working"},"last_activity":\(now - 240)},
+          {"id":"\(api)","name":"API","agents":{"working":2,"waiting":0,"done":0,"unknown":0,"exited":0,"subagents":2},"live_shells":1,"live_chats":2,"tasks":{"todo":2,"in_progress":1,"done":2},"worktrees":1,"attention":1,"orchestrator":{"mode":"chat","provider":"codex","chat_state":"idle"},"last_activity":\(now - 1500)},
+          {"id":"\(docs)","name":"Docs","agents":{"working":0,"waiting":0,"done":1,"unknown":0,"exited":0,"subagents":0},"live_shells":0,"live_chats":1,"tasks":{"todo":0,"in_progress":0,"done":0},"worktrees":1,"attention":1}],
+         "projects_total":3,
+         "tasks_in_progress":[
+          {"id":"t1","title":"Ship the login flow","project_id":"\(fixture)","project_name":"Fixture","branch":"feat/login","updated_at":\(now - 3600)},
+          {"id":"t2","title":"Rate-limit the public API","project_id":"\(api)","project_name":"API","updated_at":\(now - 86400)}],
+         "tasks_in_progress_total":2,
+         "automations":{"state":"read","total":3,"paused":1,"next":{"title":"Morning summary","at":\(now + 5400)},
+          "items":[{"id":"a1","title":"Morning summary","paused":false,"next_run":\(now + 5400)},
+                   {"id":"a2","title":"Nightly link check","project_id":"\(docs)","project_name":"Docs","paused":false,"next_run":\(now + 50000),"last_run":{"outcome":"missed","at":\(now - 7200)}},
+                   {"id":"a3","title":"Weekly report","paused":true}],
+          "items_total":3}}
+        """
+        return try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))
+    }
+    private struct DashboardHost: View {
+        let model: RemoteModel
+        var body: some View {
+            VStack(spacing: 0) {
+                WorkspaceBar(title: model.theme.style.cased("Dashboard"), back: {}) { Button("Projects", systemImage: "folder") {}.labelStyle(.iconOnly) }
+                DashboardView(model: model, openProject: { _ in }, openGlobal: {})
+            }
+            .background(model.theme.style.background.ignoresSafeArea())
+            .desktopThemed(model.theme.style)
+        }
+    }
+
+    func testDashboardAndGlobalScreens() async throws {
+        let projects = [project, "22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"]
+        let globalChat = "cccccccc-0002-4000-8000-000000000002"
+        let global = "{\"id\":\"aaaaaaaa-0002-4000-8000-000000000002\",\"project_id\":null,\"worktree_id\":null,\"kind\":\"orchestrator\",\"cwd\":\"/\",\"harness\":\"claude\",\"alive\":true,\"created_at_unix\":3,\"mode\":\"chat\",\"chat_id\":\"\(globalChat)\",\"provider\":\"claude\",\"activity\":\"working\"}"
+        for (look, older) in Look.allCases.map({ ($0, false) }) + [(Look.terminal, true)] {
+            guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene") }
+            let keychain = KeychainStore(service: "com.riwork.tests.\(UUID().uuidString)")
+            let pairing = try Pairing.parse("""
+            {"v":1,"relay_url":"wss://example.com/v1/ws","desktop_id":"11111111-1111-4111-8111-111111111111","device_id":"22222222-2222-4222-8222-222222222222","route_id":"33333333-3333-4333-8333-333333333333","device_name":"Test","pairing_secret":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8","relay_token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}
+            """)
+            var desktop = SavedDesktop(name: "Fixture", pairing: pairing, allowLocalDevelopment: false)
+            desktop.selectedProjectID = project; desktop.selectedSessionID = ChatTransport.shell
+            try keychain.write(Library(desktops: [desktop], selectedDesktopID: desktop.id))
+            let suite = "com.riwork.tests.dashboard.\(UUID().uuidString)"
+            defaultsNames.append(suite)
+            let transport = ChatTransport(chats: [], appearance: appearance(look))
+            await transport.setOrchestratorFeature(true)
+            await transport.setOrchestrators([global])
+            await transport.setExtraProjects(Array(projects.dropFirst()))
+            await transport.setDashboard(feature: !older, reply: try dashboardReply(projects: projects, globalChat: globalChat))
+            await transport.append(globalChat, [.state(.running), .itemCompleted(ChatItem(id: "g1", status: .completed, body: .agentMessage("Three projects are active. API's schema migration failed; Fixture is waiting for an approval.")))])
+            let model = RemoteModel(client: transport, keychain: keychain, defaults: UserDefaults(suiteName: suite)!, chatWaitMilliseconds: 300, chatIdleInterval: .milliseconds(20))
+            await model.connect()
+            if look != .terminal { await eventually("Native look") { model.theme.style.native } }
+            let host = UIHostingController(rootView: AnyView(DashboardHost(model: model)))
+            let window = UIWindow(windowScene: scene)
+            window.frame = scene.coordinateSpace.bounds
+            window.windowLevel = .alert + 1
+            window.rootViewController = host
+            window.overrideUserInterfaceStyle = look == .nativeDark ? .dark : .light
+            window.makeKeyAndVisible()
+            windows.forEach { $0.isHidden = true }
+            windows.append(window)
+            if older { await eventually("unsupported") { model.dashboardSupport == .unsupported } }
+            else { await eventually("dashboard read") { model.dashboard != nil } }
+            try await shot(window, "dashboard-\(look.rawValue)\(older ? "-older-mac" : "")")
+            if !older {
+                host.rootView = AnyView(GlobalOrchestratorScreen(model: model, onBack: {}).desktopThemed(model.theme.style))
+                await eventually("the global chat is up") { model.scope == .global && model.conversation(globalChat).following }
+                window.endEditing(true)
+                try await shot(window, "global-\(look.rawValue)")
+            }
+            await model.disconnect()
+            window.isHidden = true
+            try? keychain.delete()
+        }
+    }
+
     // MARK: - The chat screen's design: composer, header, cards
 
     private final class HeldEngine: SpeechEngine {
