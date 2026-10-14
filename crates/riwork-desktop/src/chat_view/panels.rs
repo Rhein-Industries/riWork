@@ -2916,6 +2916,7 @@ impl ChatView {
                 .test_support()
         }))
         .child(content)
+        .child(self.suggestion_anchor())
         // Saved submissions to review, below the box.
         .children((!self.submissions.is_empty()).then(|| {
             div()
@@ -2970,6 +2971,7 @@ impl ChatView {
             )
             .children(self.notice_stack(look, cx))
             .child(card)
+            .children(self.suggestion_popup(look, cx))
             .into_any_element()
     }
 

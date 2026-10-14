@@ -82,7 +82,7 @@ struct ChatScreen: View {
                                      attach: { picking = $0 }, pasteFiles: pasteFiles,
                                      attachmentImages: model.chatAttachmentImages, removeAttachment: { model.removeStagedAttachment($0, from: chat.id) },
                                      pending: model.pendingAttachments(for: chat.id), cancelPending: model.cancelUpload,
-                                     barAbove: barShown)
+                                     barAbove: barShown, suggestionCatalog: model.composerCatalog(for: chat.id), wantSuggestions: { model.wantComposerSuggestions(chat.id) })
                     }
                     .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { bottomTop = $0; transcriptChanged(barShown: barShown) }
                 }

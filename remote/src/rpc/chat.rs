@@ -1,5 +1,6 @@
 //! Chats on the phone ("Chat extension" in `docs/remote-protocol.md`): `chats.list`,
-//! `chat.create`, `chat.events`, `chat.command`, `chat.stop` and `chat.models`.
+//! `chat.create`, `chat.events`, `chat.command`, `chat.stop`, `chat.models` and
+//! `chat.suggestions`.
 //!
 //! Each is one call of the installed CLI (`riwork chat ...`), which talks to the chat host.
 //! The connector validates the params before any CLI runs, builds the argument vector from
@@ -13,6 +14,8 @@
 //!   its reply fits one encrypted frame, deflated if the session opted in.
 //! - `chat.create` changes what exists, so like `shell.create` it runs in a task that
 //!   outlives the request.
+//! - `chat.suggestions` passes on a listing of the chat's folder, cut until its reply fits one
+//!   encrypted frame, as `chat.events` cuts a page.
 use super::*;
 use crate::{MAX_PLAINTEXT, link};
 use serde_json::Map;
@@ -24,6 +27,8 @@ pub const TEXT_MAX: usize = 64 * 1024;
 pub const MODEL_MAX_CHARS: usize = 100;
 pub const EFFORT_MAX_CHARS: usize = 32;
 pub const TITLE_MAX_CHARS: usize = 200;
+/// The longest slash command name `chat.suggestions` passes on, in bytes (`[a-z0-9-]`).
+const SUGGESTED_COMMAND_MAX: usize = 40;
 /// The longest provider request id an approval or an answer may name.
 const REQUEST_ID_MAX_BYTES: usize = 200;
 /// What an `Answer` may hold: questions, choices per question, bytes of one choice, bytes in all.
@@ -458,6 +463,86 @@ fn models_result(provider: &str, cli: &Value) -> Option<Value> {
         }))
     })
     .flatten()
+}
+
+/// A validated `chat.suggestions`: the chat whose commands and files are wanted.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct SuggestionsSpec {
+    chat: String,
+}
+pub(super) fn suggestions_spec(params: &Value) -> std::result::Result<SuggestionsSpec, Fault> {
+    let object = fields(params, &["chat_id"])?;
+    Ok(SuggestionsSpec {
+        chat: chat_id(object)?,
+    })
+}
+/// The `chat.suggestions` result for what the CLI printed, or `None` if it is not an answer for
+/// `chat`: the chat's id, provider and folder, its commands, the files and folders of its folder
+/// and the bound of a listing, and nothing else. A command or an entry that is malformed is left
+/// out on its own (see `suggested_command`, `suggested_file`).
+fn suggestions_result(chat: &str, cli: &Value) -> Option<Value> {
+    if cli.get("chat_id")?.as_str()? != chat {
+        return None;
+    }
+    let provider = cli
+        .get("provider")?
+        .as_str()
+        .filter(|provider| ["codex", "claude", "muse"].contains(provider))?;
+    let commands = cli.get("commands")?.as_array()?;
+    let files = cli.get("files")?;
+    let entries = files.get("entries")?.as_array()?;
+    Some(json!({
+        "chat_id": chat,
+        "provider": provider,
+        "root": cli.get("root")?.as_str()?,
+        "commands": commands.iter().filter_map(suggested_command).collect::<Vec<_>>(),
+        "files": {
+            "entries": entries.iter().filter_map(suggested_file).collect::<Vec<_>>(),
+            "truncated": files.get("truncated")?.as_bool()?,
+        },
+        "file_bound": cli.get("file_bound")?.as_u64()?,
+    }))
+}
+/// A slash command as the phone may show it: a name of 1 to `SUGGESTED_COMMAND_MAX` of
+/// `[a-z0-9-]`, a summary, an argument or null, what sending it does and who acts on it.
+fn suggested_command(command: &Value) -> Option<Value> {
+    let name = command.get("name")?.as_str().filter(|name| {
+        (1..=SUGGESTED_COMMAND_MAX).contains(&name.len())
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    })?;
+    let argument = match command.get("argument") {
+        None | Some(Value::Null) => Value::Null,
+        Some(Value::String(argument)) => json!(argument),
+        Some(_) => return None,
+    };
+    Some(json!({
+        "name": name,
+        "summary": command.get("summary")?.as_str()?,
+        "argument": argument,
+        "sends": command.get("sends")?.as_str()?,
+        "handler": command
+            .get("handler")?
+            .as_str()
+            .filter(|handler| ["provider", "riwork"].contains(handler))?,
+    }))
+}
+/// A file or folder as the phone may put it in a message: a path relative to the chat's folder
+/// (not empty, no leading `/`, no `..` part, no control character), whether it is a folder,
+/// and a file's size or null.
+fn suggested_file(entry: &Value) -> Option<Value> {
+    let path = entry.get("path")?.as_str().filter(|path| {
+        !path.is_empty()
+            && !path.starts_with('/')
+            && !path.split('/').any(|part| part == "..")
+            && !has_control(path)
+    })?;
+    let bytes = match entry.get("bytes") {
+        None | Some(Value::Null) => Value::Null,
+        Some(bytes) => json!(bytes.as_u64()?),
+    };
+    Some(json!({"path": path, "dir": entry.get("dir")?.as_bool()?, "bytes": bytes}))
 }
 
 /// How long the CLI may take for a `chat.events` that waits up to `wait_ms`: the wait plus
@@ -982,6 +1067,52 @@ fn fit_snapshot(
     })
 }
 
+/// The `chat.suggestions` result for `request`, cut to fit one sealed frame the way the
+/// connection will seal it (`compress`): the most of the first files and folders that fit, and
+/// `truncated` set if any were left out. A reply that does not fit with none is a `cli_error`.
+fn fit_suggestions(
+    request: &str,
+    mut result: Value,
+    compress: bool,
+) -> std::result::Result<Value, Fault> {
+    let fits = |result: &Value| match link::encode_reply(
+        &success(request, result.clone()),
+        std::time::Instant::now(),
+        compress,
+        MAX_PLAINTEXT - FRAME_MARGIN,
+    ) {
+        Ok(_) => Ok(true),
+        Err(link::EncodeError::TooLarge) => Ok(false),
+        Err(link::EncodeError::Other(e)) => Err(cli_fault(e)),
+    };
+    if fits(&result)? {
+        return Ok(result);
+    }
+    let mut entries = match result["files"]["entries"].take() {
+        Value::Array(entries) => entries,
+        _ => Vec::new(),
+    };
+    result["files"]["truncated"] = json!(true);
+    // The most entries known to fit, and the fewest known not to.
+    let (mut fit, mut over) = (0, entries.len());
+    result["files"]["entries"] = json!([]);
+    if !fits(&result)? {
+        return Err(cli_fault("chat suggestions exceed frame limit"));
+    }
+    while over - fit > 1 {
+        let middle = (fit + over) / 2;
+        result["files"]["entries"] = Value::Array(entries[..middle].to_vec());
+        if fits(&result)? {
+            fit = middle;
+        } else {
+            over = middle;
+        }
+    }
+    entries.truncate(fit);
+    result["files"]["entries"] = Value::Array(entries);
+    Ok(result)
+}
+
 // ---- The methods -------------------------------------------------------------------------------
 
 impl Rpc {
@@ -1035,6 +1166,7 @@ impl Rpc {
                         (&self.shell_create_as_settings, "shell_create_as_settings"),
                         (&self.chat_provider_switch, "chat_provider_switch"),
                         (&self.chat_models, "chat_models"),
+                        (&self.chat_suggestions, "chat_suggestions"),
                         (&self.dashboard, "dashboard"),
                     ] {
                         if reply.get(name) == Some(&Value::Bool(true)) {
@@ -1072,6 +1204,13 @@ impl Rpc {
     /// saved models.
     pub async fn chat_models_supported(&self) -> bool {
         self.capability_known(&self.chat_models, Duration::from_secs(3))
+            .await
+            .unwrap_or(false)
+    }
+    /// What `ready` announces as `features.chat_suggestions`: `chat.suggestions` lists a
+    /// chat's commands and files.
+    pub async fn chat_suggestions_supported(&self) -> bool {
+        self.capability_known(&self.chat_suggestions, Duration::from_secs(3))
             .await
             .unwrap_or(false)
     }
@@ -1180,6 +1319,45 @@ impl Rpc {
             .map_err(chat_fault)?;
         models_result(spec.provider, &listed)
             .ok_or_else(|| cli_fault("CLI returned models that do not fit the request"))
+    }
+
+    /// What a chat's message box offers for `/` and `@`, as `riwork chat suggestions` reads it:
+    /// the chat's commands and the files and folders of its folder, from one bounded walk. Starts
+    /// no host and no agent. `request` is the id of the request, for sizing the reply;
+    /// `reply_limit` tells whether the session deflates its replies.
+    pub(super) async fn chat_suggestions(
+        &self,
+        request: &str,
+        spec: SuggestionsSpec,
+        reply_limit: usize,
+    ) -> std::result::Result<Value, Fault> {
+        self.require_chat().await?;
+        if !self
+            .capability_known(&self.chat_suggestions, CLI_TIMEOUT)
+            .await?
+        {
+            return Err(Fault::new(
+                "cli_error",
+                "the installed riwork CLI cannot list chat suggestions; update RiWork",
+            ));
+        }
+        // A big folder's listing is bigger than a frame; `fit_suggestions` cuts what is sent.
+        let listed = self
+            .read_capped(
+                vec!["chat".into(), "suggestions".into(), spec.chat.clone()],
+                CLI_TIMEOUT,
+                CHAT_READ_MAX,
+            )
+            .await
+            .map_err(chat_fault)?;
+        let result = suggestions_result(&spec.chat, &listed)
+            .ok_or_else(|| cli_fault("CLI returned suggestions that do not fit the request"))?;
+        let request = request.to_owned();
+        tokio::task::spawn_blocking(move || {
+            fit_suggestions(&request, result, reply_limit > MAX_PLAINTEXT)
+        })
+        .await
+        .map_err(|e| cli_fault(format!("fitting the suggestions was interrupted: {e}")))?
     }
 
     /// Start a chat in a project or worktree that exists on the desktop, as `riwork chat

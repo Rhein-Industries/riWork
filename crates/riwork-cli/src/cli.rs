@@ -108,6 +108,7 @@ riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--m
                 [--title TEXT]
 riwork chat models --provider codex|claude|muse [--project ID] [--json]
                                         The models chats of that provider reported, read from saved chats
+riwork chat suggestions CHAT_ID [--json]   The / commands and @ files a chat's message box offers
 riwork chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
 riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [--json]
                                         Read a chat's events after N, waiting up to M ms for the first
@@ -183,8 +184,11 @@ other settings, while a turn runs or waits or Muse still starts. A Codex or Clau
 refuses on; one that kept on from Muse can turn it off before it goes back to Muse.
 chat models lists what a chat of that provider can be set to, read from saved chats; a
 project selects the Codex account the list is for.
+chat suggestions lists the slash commands a chat offers and the files and folders of its
+folder (at most 5000, without what .gitignore leaves out), and starts no host or provider.
 capabilities --json has \"chat\": true, \"orchestrator_create\": true,
-\"chat_provider_switch\": true, \"chat_models\": true and \"dashboard\": true.
+\"chat_provider_switch\": true, \"chat_models\": true, \"chat_suggestions\": true and
+\"dashboard\": true.
 dashboard reads what the desktop's global dashboard shows (the store, the shells and
 their agents, the chats of a chat host that runs or else the saved chats, and the
 automations) and starts nothing: no chat host, chat, shell or orchestrator.
@@ -999,6 +1003,11 @@ fn open_command(args: Vec<String>, json: bool, invocation: Invocation) -> Result
 /// `dashboard`: `dashboard --json` prints the global dashboard as the remote connector's
 /// `dashboard.get` passes it on (`global_overview::wire`), reading what the desktop's dashboard
 /// reads and starting nothing. An older CLI has no such command.
+///
+/// `chat_suggestions`: `chat suggestions CHAT_ID --json` prints what the chat's message box
+/// offers for `/` and `@` (`chat::suggest::Reply`), which the remote connector's
+/// `chat.suggestions` passes on. It reads the chat's folder and starts nothing. An older CLI
+/// has no such command.
 fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     ensure_empty(&args)?;
     if json {
@@ -1014,6 +1023,7 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
             "shell_create_as_settings": true,
             "chat_provider_switch": true,
             "chat_models": true,
+            "chat_suggestions": true,
             "dashboard": true
         }));
     }
@@ -1026,6 +1036,7 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     println!("shell_create_as_settings yes");
     println!("chat_provider_switch yes");
     println!("chat_models yes");
+    println!("chat_suggestions yes");
     println!("dashboard yes");
     Ok(())
 }
@@ -2695,8 +2706,38 @@ fn chat_client_command(
                     .collect())
             }
         }
+        "suggestions" => {
+            let id = take_single(args, "chat suggestions CHAT_ID [--json]")?;
+            // A host that runs is asked, else the saved chats are read: no host is started,
+            // no provider asked.
+            let socket = crate::chat::client::socket_path(home);
+            let info = Client::connect(&socket)
+                .and_then(|mut client| client.list())
+                .unwrap_or_else(|_| crate::chat::log::read_infos(home))
+                .into_iter()
+                .find(|chat| chat.id == id)
+                .ok_or_else(|| format!("Unknown chat {id}"))?;
+            let reply = crate::chat::suggest::reply(&info.id, info.provider, &info.cwd);
+            if json {
+                return json_text(&reply);
+            }
+            let mut text: String = reply
+                .commands
+                .iter()
+                .map(|command| format!("/{}\t{}\n", command.name, command.summary))
+                .collect();
+            for entry in &reply.files.entries {
+                // A folder ends in `/`.
+                text.push_str(&terminal_safe(&entry.path));
+                text.push_str(if entry.dir { "/\n" } else { "\n" });
+            }
+            if reply.files.truncated {
+                text.push_str("(The listing stopped at a bound: there are more files than these.)\n");
+            }
+            Ok(text)
+        }
         _ => Err(
-            "Usage: riwork chat serve|ensure|list|new|models|snapshot|events|command|send|stop (riwork help)"
+            "Usage: riwork chat serve|ensure|list|new|models|suggestions|snapshot|events|command|send|stop (riwork help)"
                 .to_owned(),
         ),
     }

@@ -18,6 +18,8 @@
 //!   terminal (`riwork orchestrator output`).
 //! - `catalog` reads the models each provider offers from what chats saved, for
 //!   a chat that is not running that provider yet.
+//! - `suggest` is what a message box offers while a `/` command or an `@` file is
+//!   typed, for the desktop and (through `riwork chat suggestions`) the phone.
 
 // The contract lands before the host and the tabs that use it.
 #![allow(dead_code)]
@@ -42,6 +44,7 @@ pub mod muse;
 mod notice_dismissals;
 mod rate_limits;
 pub mod remote_payload;
+pub mod suggest;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 #[cfg(test)]

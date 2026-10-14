@@ -11,6 +11,7 @@
 //! - `feed` keeps the subscription and the command queue alive across host restarts, `state`
 //!   folds what it delivers;
 //! - `approval`, `composer` and `toolbar` hold the words and keys of the matching bars;
+//! - `suggest_ui` is the `/` and `@` list over the message box (`chat::suggest` decides it);
 //! - `rows`, `prose`, `panels` and `widgets` draw.
 
 use std::{
@@ -71,6 +72,9 @@ mod selection_document;
 #[cfg(test)]
 mod selection_tests;
 mod state;
+#[cfg(test)]
+mod suggest_tests;
+mod suggest_ui;
 #[cfg(test)]
 mod testing;
 mod toolbar;
@@ -283,6 +287,8 @@ pub struct ChatView {
     /// A usage limit's **Use API key** waits for the host to say the chat bills its API key,
     /// then sends this again, if anything (`billing::rejected_prompt`).
     limit_switch: Option<LimitSwitch>,
+    /// The `/` and `@` list over the message box.
+    suggestions: suggest_ui::Suggestions,
 }
 
 /// What a usage limit's **Use API key** still has to do once the switch holds.
@@ -439,6 +445,11 @@ impl ChatView {
         let focus = cx.focus_handle();
         let subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::composer_event),
+            // Its text, caret and focus decide the `/` and `@` list; a caret moved by a click
+            // or an arrow changes no text.
+            cx.observe_in(&composer, window, |view, _, window, cx| {
+                view.sync_suggestions(window, cx)
+            }),
             cx.subscribe_in(&model_input, window, Self::model_event),
             // A key held as focus leaves comes up elsewhere (the new-chat chooser, another
             // tab), never in this view's key-up: forget it, or the next ⏎ here is taken for
@@ -525,6 +536,7 @@ impl ChatView {
             speech_names: Vec::new(),
             speech_paths: Vec::new(),
             limit_switch: None,
+            suggestions: Default::default(),
         }
     }
 
@@ -1604,6 +1616,7 @@ impl Render for ChatView {
         self.follow_text_size(cx);
         self.refresh_selection_document(look, cx);
         self.ready_inputs(window, cx);
+        self.sync_suggestions(window, cx);
         if self.focus_composer {
             self.focus_composer = false;
             self.focus(window, cx);
@@ -1646,6 +1659,12 @@ impl Render for ChatView {
                     view.escape_down = false;
                 }
             }))
+            // The `/` and `@` list has its keys before the menus and the message box.
+            .capture_action(cx.listener(Self::suggestion_escape))
+            .capture_action(cx.listener(Self::suggestion_up))
+            .capture_action(cx.listener(Self::suggestion_down))
+            .capture_action(cx.listener(Self::suggestion_enter))
+            .capture_action(cx.listener(Self::suggestion_tab))
             .capture_action(cx.listener(Self::escape_action))
             .capture_action(cx.listener(Self::menu_up))
             .capture_action(cx.listener(Self::menu_down))

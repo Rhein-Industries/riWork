@@ -1376,3 +1376,71 @@ fn models_lists_what_saved_chats_of_a_provider_reported_without_a_host() {
             .contains("Usage")
     );
 }
+
+#[test]
+fn suggestions_read_a_saved_chats_commands_and_folder_without_a_host() {
+    let home =
+        std::env::temp_dir().join(format!("riwork-cli-suggestions-{}", uuid::Uuid::new_v4()));
+    let folder = home.join("work");
+    std::fs::create_dir_all(folder.join("src")).unwrap();
+    std::fs::write(folder.join("README.md"), "hi").unwrap();
+    std::fs::write(folder.join("src/main.rs"), "fn main() {}\n").unwrap();
+    let run = |words: &[&str], json: bool| {
+        chat_client_command(
+            &home,
+            words.iter().map(|word| (*word).to_owned()).collect(),
+            json,
+            &|_| panic!("suggestions must never start the host"),
+        )
+    };
+    let save = |provider: &str| {
+        let id = uuid::Uuid::new_v4().to_string();
+        let info: ChatInfo = serde_json::from_value(json!({
+            "id": id, "provider": provider, "cwd": folder, "title": "Saved",
+            "created_at_unix": 1, "state": {"state": "stopped"}
+        }))
+        .unwrap();
+        crate::chat::log::ChatLog::create(&crate::chat::log::chat_dir(&home, &id).unwrap(), &info)
+            .unwrap();
+        id
+    };
+
+    let unknown = uuid::Uuid::new_v4().to_string();
+    assert_eq!(
+        run(&["suggestions", &unknown], true).unwrap_err(),
+        format!("Unknown chat {unknown}")
+    );
+    assert!(run(&["suggestions"], true).unwrap_err().contains("Usage"));
+
+    let claude = save("claude");
+    let reply: Value =
+        serde_json::from_str(&run(&["suggestions", &claude], true).unwrap()).unwrap();
+    assert_eq!(
+        reply,
+        json!({
+            "chat_id": claude,
+            "provider": "claude",
+            "root": folder.display().to_string(),
+            "commands": serde_json::to_value(crate::chat::suggest::commands(Provider::Claude)).unwrap(),
+            "files": {"entries": [
+                {"path": "README.md", "dir": false, "bytes": 2},
+                {"path": "src", "dir": true, "bytes": null},
+                {"path": "src/main.rs", "dir": false, "bytes": 13}
+            ], "truncated": false},
+            "file_bound": 5000
+        })
+    );
+    assert_eq!(reply["commands"][0]["name"], "compact");
+    assert_eq!(
+        run(&["suggestions", &claude], false).unwrap(),
+        "/compact\tSummarize the conversation so far to free up context\nREADME.md\nsrc/\nsrc/main.rs\n"
+    );
+    // A Codex chat offers no command, and the same folder.
+    let codex = save("codex");
+    let reply: Value = serde_json::from_str(&run(&["suggestions", &codex], true).unwrap()).unwrap();
+    assert_eq!(reply["provider"], "codex");
+    assert_eq!(reply["commands"], json!([]));
+    assert_eq!(reply["files"]["entries"].as_array().unwrap().len(), 3);
+    assert!(!home.join("run").exists(), "no host was started");
+    std::fs::remove_dir_all(home).unwrap();
+}

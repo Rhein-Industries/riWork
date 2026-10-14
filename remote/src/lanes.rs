@@ -337,6 +337,7 @@ mod tests {
             "appearance.get",
             "chats.list",
             "chat.models",
+            "chat.suggestions",
             "upload.begin",
             "upload.chunk",
             "upload.finish",

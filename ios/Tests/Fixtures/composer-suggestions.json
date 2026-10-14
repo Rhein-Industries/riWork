@@ -1,0 +1,132 @@
+{
+  "about": "The composer's / and @ suggestion rules, checked by the engine (crates/riwork-engine/src/chat/suggest_tests.rs) and by the phone (ios/Tests/ComposerSuggestionsTests.swift). The caret is the character in `caret`; every text holds it once. Hand-written: change it with both sides.",
+  "caret": "‸",
+  "triggers": [
+    { "text": "‸", "expect": null },
+    { "text": "/‸", "expect": { "sigil": "slash", "query": "", "token": "/" } },
+    { "text": "/com‸", "expect": { "sigil": "slash", "query": "com", "token": "/com" } },
+    { "text": "/co‸mpact now", "expect": { "sigil": "slash", "query": "co", "token": "/compact" } },
+    { "text": "  /com‸", "expect": { "sigil": "slash", "query": "com", "token": "/com" } },
+    { "text": "\n/com‸", "expect": { "sigil": "slash", "query": "com", "token": "/com" } },
+    { "text": "/compact‸", "expect": { "sigil": "slash", "query": "compact", "token": "/compact" } },
+    { "text": "/compact ‸", "expect": null },
+    { "text": "please /com‸", "expect": null },
+    { "text": "x /‸", "expect": null },
+    { "text": "a/b‸", "expect": null },
+    { "text": "/usr/bin‸", "expect": null },
+    { "text": "/usr‸/bin", "expect": null },
+    { "text": "‸/compact", "expect": null },
+    { "text": "@‸", "expect": { "sigil": "mention", "query": "", "token": "@" } },
+    { "text": "see @src/ma‸", "expect": { "sigil": "mention", "query": "src/ma", "token": "@src/ma" } },
+    { "text": "see @src/ma‸ please", "expect": { "sigil": "mention", "query": "src/ma", "token": "@src/ma" } },
+    { "text": "line\n@fi‸le rest", "expect": { "sigil": "mention", "query": "fi", "token": "@file" } },
+    { "text": "@one @two‸", "expect": { "sigil": "mention", "query": "two", "token": "@two" } },
+    { "text": "tab\t@x‸", "expect": { "sigil": "mention", "query": "x", "token": "@x" } },
+    { "text": "héé @dö‸", "expect": { "sigil": "mention", "query": "dö", "token": "@dö" } },
+    { "text": "me@host‸", "expect": null },
+    { "text": "mail me@ho‸st", "expect": null },
+    { "text": "‸@src", "expect": null },
+    { "text": "@src ‸", "expect": null },
+    { "text": "/compact @RE‸", "expect": { "sigil": "mention", "query": "RE", "token": "@RE" } }
+  ],
+  "accept": [
+    { "text": "/com‸", "insert": "/compact", "expect": "/compact ‸" },
+    { "text": "/co‸mpact now", "insert": "/compact", "expect": "/compact ‸now" },
+    { "text": "see @src/ma‸ please", "insert": "src/main.rs", "expect": "see src/main.rs ‸please" },
+    { "text": "@fi‸le\nnext", "insert": "file.txt", "expect": "file.txt ‸\nnext" },
+    { "text": "a @b‸", "insert": "`my notes.md`", "expect": "a `my notes.md` ‸" },
+    { "text": "héé @dö‸", "insert": "döc/", "expect": "héé döc/ ‸" }
+  ],
+  "commands": {
+    "claude": [
+      {
+        "name": "compact",
+        "summary": "Summarize the conversation so far to free up context",
+        "argument": null,
+        "sends": "Goes to Claude as typed. Claude compacts the chat's context, as the Compact button does, and the transcript marks where.",
+        "handler": "provider"
+      }
+    ],
+    "codex": [],
+    "muse": []
+  },
+  "command_ranking": {
+    "commands": ["compact", "context", "pact", "Review"],
+    "cases": [
+      { "query": "", "expect": ["compact", "context", "pact", "Review"] },
+      { "query": "co", "expect": ["compact", "context"] },
+      { "query": "pa", "expect": ["pact", "compact"] },
+      { "query": "cpt", "expect": ["compact"] },
+      { "query": "REV", "expect": ["Review"] },
+      { "query": "zz", "expect": [] }
+    ]
+  },
+  "file_ranking": {
+    "entries": [
+      { "path": "README.md", "dir": false, "bytes": 2048 },
+      { "path": "src", "dir": true },
+      { "path": "docs", "dir": true },
+      { "path": "src/main.rs", "dir": false, "bytes": 900 },
+      { "path": "src/chat", "dir": true },
+      { "path": "docs/remote.md", "dir": false, "bytes": 5000 },
+      { "path": "src/chat/suggest.rs", "dir": false, "bytes": 12000 },
+      { "path": "src/chat/main_view.rs", "dir": false, "bytes": 300 },
+      { "path": "Makefile", "dir": false, "bytes": 10 }
+    ],
+    "cases": [
+      { "query": "", "limit": 4, "expect": ["src", "docs", "Makefile", "README.md"] },
+      { "query": "main", "limit": 50, "expect": ["src/main.rs", "src/chat/main_view.rs"] },
+      { "query": "MA", "limit": 50, "expect": ["Makefile", "src/main.rs", "src/chat/main_view.rs"] },
+      { "query": "src/ch", "limit": 50, "expect": ["src/chat", "src/chat/suggest.rs", "src/chat/main_view.rs"] },
+      { "query": "chat", "limit": 50, "expect": ["src/chat", "src/chat/suggest.rs", "src/chat/main_view.rs"] },
+      { "query": "remote", "limit": 50, "expect": ["docs/remote.md"] },
+      { "query": "ote", "limit": 50, "expect": ["docs/remote.md"] },
+      { "query": "sgs", "limit": 50, "expect": ["src/chat/suggest.rs"] },
+      { "query": "rs", "limit": 2, "expect": ["src/main.rs", "src/chat/suggest.rs"] },
+      { "query": "nothing", "limit": 50, "expect": [] }
+    ]
+  },
+  "insertions": [
+    { "entry": { "path": "src/main.rs", "dir": false, "bytes": 900 }, "insert": "src/main.rs" },
+    { "entry": { "path": "src", "dir": true }, "insert": "src/" },
+    { "entry": { "path": "docs/my notes.md", "dir": false, "bytes": 10 }, "insert": "`docs/my notes.md`" }
+  ],
+  "kinds": [
+    { "entry": { "path": "src", "dir": true }, "kind": "Folder" },
+    { "entry": { "path": "a.txt", "dir": false, "bytes": 2048 }, "kind": "File · 2 KB" },
+    { "entry": { "path": "a.txt", "dir": false }, "kind": "File" }
+  ],
+  "sizes": [
+    { "bytes": 0, "label": "0 bytes" },
+    { "bytes": 1, "label": "1 byte" },
+    { "bytes": 1023, "label": "1023 bytes" },
+    { "bytes": 1024, "label": "1 KB" },
+    { "bytes": 1536, "label": "2 KB" },
+    { "bytes": 1048575, "label": "1023 KB" },
+    { "bytes": 1048576, "label": "1.0 MB" },
+    { "bytes": 5347737, "label": "5.1 MB" }
+  ],
+  "reply": {
+    "chat_id": "c4a70000-0000-4000-8000-000000000001",
+    "provider": "claude",
+    "root": "/Users/me/proj",
+    "commands": [
+      {
+        "name": "compact",
+        "summary": "Summarize the conversation so far to free up context",
+        "argument": null,
+        "sends": "Goes to Claude as typed. Claude compacts the chat's context, as the Compact button does, and the transcript marks where.",
+        "handler": "provider"
+      }
+    ],
+    "files": {
+      "entries": [
+        { "path": "README.md", "dir": false, "bytes": 2048 },
+        { "path": "src", "dir": true, "bytes": null },
+        { "path": "src/main.rs", "dir": false, "bytes": 900 }
+      ],
+      "truncated": false
+    },
+    "file_bound": 5000
+  }
+}

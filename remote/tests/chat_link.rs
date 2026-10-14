@@ -57,7 +57,7 @@ echo "$*" >> "$D/calls.log"
 case "$1 $2" in
 'capabilities --json')
   if [ -e "$D/capabilities.unknown" ]; then echo "riwork: Unknown invocation 'capabilities'" >&2; exit 2; fi
-  if [ -e "$D/capabilities.out" ]; then cat "$D/capabilities.out"; else printf '{"v":1,"chat":true,"orchestrator_create":true,"shell_create_as_settings":true,"chat_provider_switch":true,"chat_models":true,"dashboard":true}'; fi;;
+  if [ -e "$D/capabilities.out" ]; then cat "$D/capabilities.out"; else printf '{"v":1,"chat":true,"orchestrator_create":true,"shell_create_as_settings":true,"chat_provider_switch":true,"chat_models":true,"chat_suggestions":true,"dashboard":true}'; fi;;
 'project show') printf '{"id":"%s"}' "$3";;
 'chat list') echo '[]';;
 'chat events')
@@ -295,9 +295,11 @@ async fn ready_announces_chats_when_the_cli_has_them_and_only_then() {
         phone.ready["features"]["upload"],
         riwork_remote::upload::features()
     );
-    // A chat can go on with the other provider, and the phone can ask for its models.
+    // A chat can go on with the other provider, and the phone can ask for its models and for
+    // what its message box offers.
     assert_eq!(phone.ready["features"]["chat_provider_switch"], true);
     assert_eq!(phone.ready["features"]["chat_models"], true);
+    assert_eq!(phone.ready["features"]["chat_suggestions"], true);
     assert_eq!(rig.calls("capabilities", "--json"), 1);
     // Believed once it said yes: a second phone does not ask again.
     drop(phone);
@@ -319,6 +321,7 @@ async fn ready_announces_chats_when_the_cli_has_them_and_only_then() {
         "{features:?}"
     );
     assert!(!features.contains_key("chat_models"), "{features:?}");
+    assert!(!features.contains_key("chat_suggestions"), "{features:?}");
 
     // A CLI that says no, one that does not know the question, and one that answers it
     // oddly: no `chat` in features at all, and the rest as it was.

@@ -1126,6 +1126,8 @@ pub struct Rpc {
     chat_provider_switch: AtomicBool,
     /// Whether the CLI said it has `chat models` (see `chat_models_supported`).
     chat_models: AtomicBool,
+    /// Whether the CLI said it has `chat suggestions` (see `chat_suggestions_supported`).
+    chat_suggestions: AtomicBool,
     /// Whether the CLI said it has `dashboard` (see `dashboard_supported`).
     dashboard: AtomicBool,
     /// Held while the CLI is asked what it can do (`capability_known`), so that two askers at
@@ -1153,6 +1155,7 @@ impl Rpc {
             shell_create_as_settings: AtomicBool::new(false),
             chat_provider_switch: AtomicBool::new(false),
             chat_models: AtomicBool::new(false),
+            chat_suggestions: AtomicBool::new(false),
             dashboard: AtomicBool::new(false),
             asking_chat: tokio::sync::Mutex::new(()),
             capability_answers: AtomicU64::new(0),
@@ -1888,6 +1891,10 @@ impl Rpc {
             "chat.models" => {
                 let spec = chat::models_spec(&r.params)?;
                 self.chat_models(spec, reply_limit).await
+            }
+            "chat.suggestions" => {
+                let spec = chat::suggestions_spec(&r.params)?;
+                self.chat_suggestions(&r.id, spec, reply_limit).await
             }
             // Files from the phone; see `upload`.
             "upload.begin" => {

@@ -124,6 +124,8 @@ enum ConnectionState: Equatable {
     var projectBlockedID: String?
     /// What has been read of the chats that were opened, by chat id.
     var chatConversations: [String: ChatConversation] = [:]
+    /// The `/` commands and `@` files of the chats whose composer opened a list (RemoteModel+Suggestions.swift).
+    var composerCatalogs = ComposerCatalogCache()
     /// The one-time notes already said for a chat in this run ("chat id|note"), so a note survives its conversation being let go.
     @ObservationIgnored var chatNotesSaid: Set<String> = []
     /// A `chat.create` is on its way: a second one is refused until it answers.

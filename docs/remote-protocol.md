@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-14: Additive, in the same "Chat extension": one new read-only method, `chat.suggestions` (`{"chat_id":"…"}`), that answers what a chat's message box offers while a `/` command or an `@` file is typed: the slash commands a chat of its provider takes (`name`, `summary`, `argument`, `sends`, `handler`) and the files and folders of the chat's folder (`root`), each `path` relative to it, with `dir` and a file's `bytes`, from one bounded walk (at most 5000 entries, 50 000 looked at, 2 seconds, 24 levels deep; what `.gitignore` leaves out, `.git` and symbolic links skipped). `files.truncated` says the walk stopped at a bound or the connector left the last entries out to fit one frame; `file_bound` is 5000. Only names and sizes travel: no file is opened, so no preview of a file's contents goes over the wire. It starts nothing: no chat host, agent or provider. It runs in a shared (read) slot. `features.chat_suggestions` in `ready` says the installed CLI has it (`"chat_suggestions": true` in `riwork capabilities --json`). No new error code. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and one whose `riwork` CLI predates it leaves `features.chat_suggestions` out and answers `cli_error`. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged; `ios/Tests/Fixtures/composer-suggestions.json` is a new shared fixture, whose `reply` is a `chat.suggestions` result and whose other cases pin the rules both composers apply to it. See "`chat.suggestions`" under "Chat extension" below. Needs the iOS worker's agreement.
 - 2026-10-14: Additive and read-only, in the same "Chat extension", no new method and no new error code: `ChatInfo` gains `claude_billing` (`"subscription"` or `"api_key"`), who a Claude chat bills from its next start, chosen on the Mac (Settings' default for new chats, and each chat's composer). Absent in a chat from before it, which follows the Mac's Settings default at each start, and in a Codex or Muse chat until it is chosen; it stays with a chat that switches provider. Never a key: the key is kept in the Mac's Keychain only. A phone cannot change it: `chat.create` and the `configure` command keep refusing the field (`invalid_request`). Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-14: Additive, in "Chat orchestrators" and the "Orchestrator creation extension", no new method and no new error code: a chat orchestrator's entry in `orchestrators.list` and `shells.list` (and in `orchestrator.create`'s result) gains an optional `model`, the model the chat runs on as its provider names it (1 to 120 printable ASCII characters, no spaces), passed only for an entry whose `mode` is `chat` and left out when the CLI writes null (the provider's default) or anything else; and `orchestrator.create`'s result gains an optional `fallback`, the desktop's note that Automatic could not start its first choice and started another, passed only when `created` is true, without control characters and cut to 500 Unicode scalars. The desktop's "Orchestrator runs as" setting itself is not on the wire. A connector from before it leaves both out, and an older phone ignores them. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
 - 2026-10-14: Additive dashboard extension: one new read-only method, `dashboard.get` (params exactly `{}`), that answers the desktop's global dashboard in one bounded reply: totals, the global orchestrator, what needs attention, agents working and recently finished, every project's row, tasks in progress and the automations, ordered as the desktop orders them, each list cut to a fixed length with `<list>_total` giving its full length, and a figure that is not known left out rather than written as zero. `features.dashboard` in `ready` says the installed CLI has it (`"dashboard": true` in `riwork capabilities --json`). It reads and starts nothing: no chat host, chat, shell, orchestrator or tmux server. It runs in a shared (read) slot. No new error code. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and so does a newer connector whose `riwork` CLI predates it; a client then falls back to `projects.list` and `orchestrators.list` and says why. No `model` and no project root path are part of it (a client takes a chat orchestrator's `model` from `orchestrators.list`, below). Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged; `ios/Tests/Fixtures/dashboard.json` is a new shared fixture. See "Dashboard extension" below. Needs the iOS worker's agreement.
@@ -194,6 +195,7 @@ unsolicited response except handshake `ready`.
 | `chat.events` | `{"chat_id":"UUID","since":0,"wait_ms":25000}` optionally `"max_events":500` (Chat) | `{"chat_id":"UUID","events":[{"seq":1,"event":ChatEvent}],"next":1,"more":false}` |
 | `chat.command` | `{"chat_id":"UUID","command":ChatCommand}` (Chat) | `{"status":"ok"}` |
 | `chat.stop` | `{"chat_id":"UUID"}` (Chat) | `{"status":"stopped"}` |
+| `chat.suggestions` | `{"chat_id":"UUID"}` (Chat, with `features.chat_suggestions`) | `{"chat_id":"UUID","provider":"claude","root":"/Users/me/proj","commands":[Command],"files":{"entries":[{"path":"src/main.rs","dir":false,"bytes":900}],"truncated":false},"file_bound":5000}` (see `chat.suggestions` under Chat) |
 | `dashboard.get` | `{}` (Dashboard, with `features.dashboard`) | `{"v":1,"generated_at":1790000000,"chats_known":true,"totals":{...},"global":{...},"attention":[Attention],"attention_total":0,...,"automations":{...}}` (see Dashboard extension) |
 | `upload.begin` | `{"upload":"UUID","shell_id":"UUID","name":"IMG_0001.jpg","size":123456,"sha256":"HEX"}` or `"chat_id"` instead of `"shell_id"`, optionally `"type":"image/jpeg"` (File upload) | `{"upload":"UUID","status":"partial\|complete","received":0,"chunk_bytes":92160}` plus `"path","name"` when complete |
 | `upload.chunk` | `{"upload":"UUID","offset":0,"data":"BASE64URL"}` (File upload) | `{"upload":"UUID","status":"partial\|complete","received":92160}` |
@@ -1593,6 +1595,57 @@ and is passed on as the CLI printed it; any other field of the CLI's answer is l
 `invalid_request` for bad params, `not_found` for an unknown project, `cli_error` for a
 CLI without it or an answer for another provider.
 
+**`chat.suggestions`** (since 2026-10-14, `features.chat_suggestions`) answers what a chat's
+message box offers while a `/` command or an `@` file is typed, so that the phone's composer
+lists what the desktop's does. Params exactly `{"chat_id":"UUID"}`. Result:
+
+```json
+{"chat_id":"UUID","provider":"claude","root":"/Users/me/proj",
+ "commands":[{"name":"compact","summary":"Summarize the conversation so far to free up context",
+   "argument":null,"sends":"Goes to Claude as typed. …","handler":"provider"}],
+ "files":{"entries":[{"path":"README.md","dir":false,"bytes":2048},
+   {"path":"src","dir":true,"bytes":null},{"path":"src/main.rs","dir":false,"bytes":900}],
+   "truncated":false},
+ "file_bound":5000}
+```
+
+- `commands` are the slash commands a chat of `provider` offers, in the order a list shows
+  them; a Codex or Muse chat has none today. `name` is without the slash (1 to 40 of `a-z`,
+  `0-9` and `-`), `summary` says what it is in one line, `argument` what may follow the name
+  (null: nothing), `sends` what sending a message that starts with it does, and `handler`
+  who acts on it: `provider` (the text goes to the provider as typed) or `riwork` (the
+  desktop acts on it before the provider sees anything). Accepting one puts `/name` in the
+  draft; it never sends.
+- `files.entries` are the files and folders of the chat's folder, `root`, breadth first and
+  each folder's entries by name: `path` is relative to `root`, with `/` between its parts and
+  no trailing `/` (never empty, absolute or with a `..` part), `dir` says it is a folder, and
+  `bytes` is a file's size (null for a folder). They come from one bounded walk: at most
+  `file_bound` (5000) entries, 50 000 directory entries looked at, 2 seconds, 24 levels deep;
+  what `.gitignore` files (and `.git/info/exclude`) leave out, `.git` itself and symbolic
+  links (which can lead out of the folder) are skipped. `files.truncated` is `true` when the
+  walk stopped at one of those bounds, or when the connector left the last entries out so
+  that the reply fits one frame, by the same rule as `chat.events` (128 KiB of JSON, or up to
+  2 MiB deflated into one frame for a session that opted in to compression). Accepting one
+  puts its path in the draft (a folder's with a trailing `/`, in backticks when it has blank
+  space); nothing is attached or sent.
+- Only names and sizes travel. No file is opened, so no file's contents go over the wire:
+  a preview on the phone has a file's name, kind and size, not the first lines the desktop's
+  own composer shows. A client keeps the answer for a while (the desktop keeps a listing 30
+  seconds) and filters it while the person types; where the list opens, how it is ranked and
+  what accepting puts in are pinned for both composers by
+  `ios/Tests/Fixtures/composer-suggestions.json`, whose `reply` is a result of this method.
+- It starts nothing: a chat host that runs is asked for the chat, else the saved chats are
+  read, and no agent or provider is started or asked. It runs in a shared (read) slot.
+
+The CLI's answer is checked before it reaches the phone and only the fields above are passed
+on: `chat_id` must be the one asked for and `provider` `codex`, `claude` or `muse`, and
+`root`, `commands`, `files.entries`, `files.truncated` and `file_bound` must have their
+types, or the answer is `cli_error`; a command or an entry that is malformed (a name outside
+its alphabet, an argument that is not a string or null, an unknown handler, a path that is
+empty, absolute, has a `..` part or a control character, a size that is not a non-negative
+integer) is left out on its own. `invalid_request` for bad params, `not_found` for an
+unknown chat, `cli_error` for a CLI without it.
+
 **`chat.stop`** stops the chat's agent process and keeps its history. Params
 `{"chat_id":"UUID"}`, result `{"status":"stopped"}`. A chat that is stopped, or a desktop
 with no chat host running (nothing runs), answers `stopped` too; an unknown chat is
@@ -1612,7 +1665,7 @@ the other methods:
   value (`chat new --provider P --project ID --mode M [--model=X] [--effort=X] [--fast]
   [--contributor-on] [--title=X] --json`, `chat events ID --since N --wait-ms N --max N
   --max-bytes N --json`, `chat command ID --command-json JSON --json`, `chat stop ID
-  --json`, `chat list [--project ID] --json`). Nothing is concatenated into a shell string. Free text
+  --json`, `chat list [--project ID] --json`, `chat suggestions ID --json`). Nothing is concatenated into a shell string. Free text
   uses the `--name=VALUE` form so that a value that begins with `-` stays a value, and a
   command is rebuilt from the validated fields as one JSON argument, so nothing the
   connector did not check can travel in it.
@@ -2256,6 +2309,17 @@ ready response. Values are test-only and must never provision production devices
   `--contributor-on` to the CLI for `"on"`. No new method, no new error code. A connector
   from before it refuses `contributor_mode` (`invalid_request`, unknown field). Needs the
   iOS worker's agreement; the iOS side implements the same text.
+- 2026-10-14: additive and backward compatible. `chat.suggestions` in the Chat extension
+  (params exactly `{"chat_id":"UUID"}`, read-only, in a shared slot) answers a chat's slash
+  commands (`name`, `summary`, `argument`, `sends`, `handler`) and its folder's files and
+  folders (`root`; `files.entries` of `path` relative to it, `dir` and `bytes`;
+  `files.truncated`; `file_bound`), from one walk bounded at 5000 entries, 50 000 looked at,
+  2 seconds and 24 levels that honours `.gitignore` and skips `.git` and symbolic links, cut
+  by the connector to fit one frame. No file contents travel. `ready.features.chat_suggestions`
+  when the CLI says `"chat_suggestions": true` in `riwork capabilities --json`. It starts
+  nothing. No new error code. An older desktop answers `invalid_request` "unsupported RPC
+  method". New shared fixture `ios/Tests/Fixtures/composer-suggestions.json`. Needs the iOS
+  worker's agreement; the iOS side implements the same text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),

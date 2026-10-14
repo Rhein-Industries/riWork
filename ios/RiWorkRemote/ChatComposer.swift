@@ -13,7 +13,8 @@ import RiWorkCore
 ///   decided by `ChatKeyRouter` from what is on the screen now; this view reports the key, and puts in the line break when the router
 ///   says it is the text's. The commands are re-read for every key press: Escape and ⌘⌫ belong to the request only while one waits and
 ///   nothing is typed, and every key is the text view's own while a word is being composed (marked text), so a Japanese or Chinese
-///   keyboard still confirms its candidate with Return.
+///   keyboard still confirms its candidate with Return. While the `/` or `@` list is open (`suggesting`), ↑, ↓, Tab, Return and Escape
+///   are the list's (`ComposerSuggestionPanel`): Return puts the highlighted row in and never sends.
 /// - **Software keyboard.** Return makes a new line, as in any chat; the Send button sends.
 /// - **⌘. (interrupt) is not here:** it is a SwiftUI shortcut on the screen, so it works wherever the keyboard is.
 @MainActor final class ChatComposerTextView: UITextView {
@@ -36,6 +37,8 @@ import RiWorkCore
     var onKey: (ChatKey) -> ChatKeyAction = { _ in .none }
     /// A request waits for the keys that answer it (and nothing is typed).
     var answersApproval = false
+    /// The `/` or `@` list is open: the arrows, Tab, Return and Escape are its.
+    var suggesting = false
     /// A paste that finds files or a lone picture sends them to the Mac (`PasteboardAttachments`); true when it took the paste.
     var onPasteFiles: (() -> Bool)?
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
@@ -54,6 +57,12 @@ import RiWorkCore
         Self.command(UIKeyCommand.inputEscape, [], action: #selector(fired(_:))),
         Self.command(UIKeyCommand.inputDelete, .command, action: #selector(fired(_:)))
     ]
+    private lazy var suggestionCommands: [UIKeyCommand] = [
+        Self.command(UIKeyCommand.inputUpArrow, [], action: #selector(fired(_:))),
+        Self.command(UIKeyCommand.inputDownArrow, [], action: #selector(fired(_:))),
+        Self.command("\t", [], action: #selector(fired(_:))),
+        Self.command(UIKeyCommand.inputEscape, [], action: #selector(fired(_:)))
+    ]
     private static func command(_ input: String, _ flags: UIKeyModifierFlags, action: Selector) -> UIKeyCommand {
         let command = UIKeyCommand(input: input, modifierFlags: flags, action: action)
         command.wantsPriorityOverSystemBehavior = true
@@ -62,11 +71,27 @@ import RiWorkCore
     override var keyCommands: [UIKeyCommand]? {
         // A word being composed is the input method's: its Return is not ours.
         guard markedTextRange == nil else { return nil }
+        if suggesting { return typingCommands + suggestionCommands }
         return answersApproval && text.isEmpty ? typingCommands + requestCommands : typingCommands
     }
+    /// A Return that put a suggestion in, while it may still be held: its repeats must not send the draft it completed.
+    private var heldReturn = HeldReturn()
     @objc func fired(_ command: UIKeyCommand) {
         guard let key = Self.key(input: command.input, flags: command.modifierFlags) else { return }
-        if onKey(key) == .insertNewline { insertText("\n") }
+        if key == .return, heldReturn.isRepeat(at: .now) { return }
+        let action = onKey(key)
+        if key == .return, action == .acceptSuggestion { heldReturn.accepted(at: .now) }
+        if action == .insertNewline { insertText("\n") }
+    }
+    /// The Return key came up: the next Return is a press of its own.
+    func returnReleased() { heldReturn.released() }
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presses.contains(where: { $0.key?.keyCode == .keyboardReturnOrEnter }) { returnReleased() }
+        super.pressesEnded(presses, with: event)
+    }
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presses.contains(where: { $0.key?.keyCode == .keyboardReturnOrEnter }) { returnReleased() }
+        super.pressesCancelled(presses, with: event)
     }
     /// The key a command stands for.
     static func key(input: String?, flags: UIKeyModifierFlags) -> ChatKey? {
@@ -75,6 +100,9 @@ import RiWorkCore
         case ("\r", .shift): .shiftReturn
         case (UIKeyCommand.inputEscape, []): .escape
         case (UIKeyCommand.inputDelete, .command): .commandDelete
+        case (UIKeyCommand.inputUpArrow, []): .up
+        case (UIKeyCommand.inputDownArrow, []): .down
+        case ("\t", []): .tab
         default: nil
         }
     }
@@ -94,6 +122,9 @@ struct ChatComposerField: UIViewRepresentable {
     /// Where dictation puts its words: this view, at its caret.
     var insertion: TextInsertion?
     var onPasteFiles: (() -> Bool)?
+    /// The `/` or `@` list is open, and where the caret is with each change to the text or the selection (for the list).
+    var suggesting = false
+    var onSelection: ((String, NSRange) -> Void)?
 
     /// Space above and below the text inside the field.
     static let verticalInset: CGFloat = 12
@@ -147,11 +178,17 @@ struct ChatComposerField: UIViewRepresentable {
             view.tintColor = style.accentUI
             view.keyboardAppearance = style.colorScheme == .dark ? .dark : .default
         }
-        if view.text != text { view.text = text }
+        if view.text != text {
+            // Not reported as the person's own change: the draft was changed from elsewhere (sent, another chat).
+            coordinator.applyingDraft = true
+            view.text = text
+            coordinator.applyingDraft = false
+        }
         view.accessibilityLabel = placeholderLabel
         view.isEditable = isEnabled
         view.onKey = onKey
         view.answersApproval = answersApproval
+        view.suggesting = suggesting
         insertion?.view = view
         view.onPasteFiles = onPasteFiles
         if coordinator.lastFocusToken != focusToken {
@@ -174,8 +211,15 @@ struct ChatComposerField: UIViewRepresentable {
         var appliedStyle: DesktopStyle?
         var appliedTypeSize: DynamicTypeSize?
         var lastFocusToken = 0
+        var applyingDraft = false
         init(_ parent: ChatComposerField) { self.parent = parent }
-        func textViewDidChange(_ textView: UITextView) { parent.text = textView.text }
+        func textViewDidChange(_ textView: UITextView) {
+            parent.text = textView.text
+            parent.onSelection?(textView.text, textView.selectedRange)
+        }
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            if !applyingDraft { parent.onSelection?(textView.text, textView.selectedRange) }
+        }
         func textViewDidBeginEditing(_ textView: UITextView) { parent.onFocusChange(true) }
         func textViewDidEndEditing(_ textView: UITextView) { parent.onFocusChange(false) }
     }
@@ -214,12 +258,19 @@ struct ChatComposer: View {
     /// A request's bar stands right above: it ends on its own padding, and the room goes to the bar, whose answers matter more.
     var barAbove = false
     var dictation = DictationController.shared
+    /// What this chat's `/` and `@` list can offer (`RemoteModel.composerCatalog`), and the call that has it read when a list opens.
+    var suggestionCatalog: ComposerCatalogState = .unsupported
+    var wantSuggestions: (() -> Void)?
     @State private var focused = false
     @State private var insertion = TextInsertion()
+    /// The list and where the caret is (nil while text is selected); see ComposerSuggestionViews.swift.
+    @State var suggestions = ComposerSuggestionList()
+    @State var suggestionCaret: Int?
 
     private var canSend: Bool { connected && !conversation.sending && pending.isEmpty && conversation.hasMessage }
     private var keyContext: ChatKeyContext {
-        ChatKeyContext(composerIsEmpty: conversation.draft.isEmpty && conversation.attachments.isEmpty, approval: approval, busy: state.isBusy, canSend: connected && !conversation.sending && pending.isEmpty)
+        ChatKeyContext(composerIsEmpty: conversation.draft.isEmpty && conversation.attachments.isEmpty, approval: approval, busy: state.isBusy, canSend: connected && !conversation.sending && pending.isEmpty,
+                       suggesting: showsSuggestions)
     }
     private var actions: ComposerActions {
         ComposerActions(typed: conversation.hasMessage, busy: state.isBusy, mic: style.mic,
@@ -237,6 +288,11 @@ struct ChatComposer: View {
                                     cancelPending: { cancelPending?() }, leadingInset: ChatItemRow.horizontalInset)
                     .chatLayoutProbe("attachments")
             }
+            if showsSuggestions {
+                ComposerSuggestionPanel(list: suggestions, tap: { acceptSuggestion(suggestions.tap($0)) }, insert: { acceptSuggestion(suggestions.accepted()) },
+                                        close: { suggestions.dismiss() })
+                    .padding(.horizontal, Self.fieldMargin)
+            }
             HStack(alignment: .composerLine, spacing: 0) {
                 if let attach {
                     // Its target reaches out over the margin to the screen's edge: drawn above the field.
@@ -244,7 +300,7 @@ struct ChatComposer: View {
                 }
                 ChatComposerField(text: Binding(get: { conversation.draft }, set: { conversation.draft = $0 }), placeholderLabel: "Message to \(provider.title)",
                                   isEnabled: true, answersApproval: approval != nil, focusToken: focusToken, maxLines: typeSize.isAccessibilitySize ? 3 : 6, onKey: handle, onFocusChange: { focused = $0 },
-                                  insertion: insertion, onPasteFiles: pasteFiles)
+                                  insertion: insertion, onPasteFiles: pasteFiles, suggesting: showsSuggestions, onSelection: suggestionCaretMoved)
                     .alignmentGuide(.composerLine) { [band = ChatComposerField.lineBand(style, typeSize)] d in d.height - band / 2 }
                     .chatLayoutProbe("composer-field")
                 // The last button's target reaches out over the margin to the screen's edge.
@@ -261,6 +317,7 @@ struct ChatComposer: View {
             .padding(.horizontal, Self.fieldMargin)
         }
         .animation(.easeInOut(duration: 0.15), value: conversation.attachments)
+        .modifier(ComposerSuggestionUpdates(composer: self))
         // The card row spans the horizontal safe-area edges, its first card at the transcript's margin, and the field stands a little
         // above the keyboard (`BottomBarGeometry.composerInsets`). Nothing is drawn behind them: the composer floats over the transcript,
         // which shows through the glass field and around it.
@@ -306,9 +363,19 @@ struct ChatComposer: View {
         case .send: send()
         case .decide(let decision): decide(decision)
         case .interrupt: interrupt()
+        case .acceptSuggestion: acceptSuggestion(suggestions.accepted())
+        case .moveSuggestion(let step): suggestions.move(step)
+        case .closeSuggestions: suggestions.dismiss()
         case .insertNewline, .none: break
         }
         return action
+    }
+    /// Puts an accepted suggestion in the text view as dictation does (`TextInsertion`), so the draft follows. Nothing is sent.
+    private func acceptSuggestion(_ accepted: (text: String, caret: Int)?) {
+        guard let accepted else { return }
+        if let view = insertion.view { view.putDraft(accepted.text, caret: accepted.caret) } else { conversation.draft = accepted.text }
+        suggestionCaret = accepted.caret
+        suggestions.update(text: accepted.text, caret: accepted.caret, catalog: suggestionCatalog)
     }
 }
 

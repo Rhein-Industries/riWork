@@ -638,15 +638,17 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                     features["pty"] = pty::features();
                 }
                 // Chats, a chat going on with the other provider (`switch`), the models of a
-                // provider a chat does not run yet (`chat.models`), creating an orchestrator,
-                // agents that follow the desktop's Settings when `shell.create` leaves
-                // `unrestricted` out, and the global dashboard (`dashboard.get`) exist when the
-                // installed CLI has them; an older phone ignores them all. Asked together, one
-                // question to the CLI answers them all, a no as much as a yes.
+                // provider a chat does not run yet (`chat.models`), what a chat's message box
+                // offers for `/` and `@` (`chat.suggestions`), creating an orchestrator, agents
+                // that follow the desktop's Settings when `shell.create` leaves `unrestricted`
+                // out, and the global dashboard (`dashboard.get`) exist when the installed CLI
+                // has them; an older phone ignores them all. Asked together, one question to the
+                // CLI answers them all, a no as much as a yes.
                 let (
                     chat,
                     provider_switch,
                     chat_models,
+                    chat_suggestions,
                     orchestrator_create,
                     as_settings,
                     dashboard,
@@ -654,6 +656,7 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                     rpc.chat_supported(),
                     rpc.chat_provider_switch_supported(),
                     rpc.chat_models_supported(),
+                    rpc.chat_suggestions_supported(),
                     rpc.orchestrator_create_supported(),
                     rpc.shell_create_as_settings_supported(),
                     rpc.dashboard_supported()
@@ -665,6 +668,9 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                     }
                     if chat_models {
                         features["chat_models"] = json!(true);
+                    }
+                    if chat_suggestions {
+                        features["chat_suggestions"] = json!(true);
                     }
                 }
                 if rpc.tabs_advertised() {
