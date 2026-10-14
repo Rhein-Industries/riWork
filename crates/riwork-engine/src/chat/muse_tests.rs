@@ -541,6 +541,19 @@ fn a_whole_turn_becomes_items_usage_and_states() {
 }
 
 #[test]
+fn a_trusted_chat_folder_is_trusted_by_its_serve_for_that_process_only() {
+    let mut run = Run::start_with("turn", |config| config.trust_workspace = true);
+    run.send("hello");
+    run.finish_turn();
+    // After the subcommand, as Muse 1.4.7 reads it; nothing on the wire carries it.
+    assert_eq!(
+        run.fake.starts()[0]["argv"],
+        json!(["serve", "--contributor-mode", "off", "--trust-workspace"])
+    );
+    run.end();
+}
+
+#[test]
 fn every_serve_says_the_chats_contributor_mode_once_off_unless_turned_on() {
     for (mode, flag) in [(ContributorMode::Off, "off"), (ContributorMode::On, "on")] {
         let argv = json!(["serve", "--contributor-mode", flag]);
@@ -1560,6 +1573,7 @@ impl Live {
             effort: None,
             fast: false,
             contributor_mode: Default::default(),
+            trust_workspace: false,
             resume: None,
             resume_has_history: false,
             reporter: Default::default(),

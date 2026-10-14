@@ -75,6 +75,10 @@ pub struct DriverConfig {
     /// never saves (`ChatInfo::contributor_mode`). It is always passed, so the user's Muse
     /// settings never decide. Other providers ignore it.
     pub contributor_mode: ContributorMode,
+    /// Muse: start `muse serve --trust-workspace`, which trusts the chat's folder
+    /// for this process and saves nothing (`folder_trust::muse_may_trust`). A
+    /// terminal Muse started there is trusted the same way. Other providers ignore it.
+    pub trust_workspace: bool,
     /// Resume this Codex thread or Claude session instead of starting one.
     pub resume: Option<String>,
     /// The current provider session has history (or its emptiness is unknown).

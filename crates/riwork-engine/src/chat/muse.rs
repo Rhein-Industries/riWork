@@ -226,15 +226,19 @@ fn spawn_driver(
     })
 }
 
-/// `muse serve` with Muse's per-process contributor mode override, always exactly once; the
-/// subcommand comes first, its flags after it (Muse 1.4.7 reads options before a subcommand as
-/// the interactive screen's).
-fn serve_args(config: &DriverConfig) -> [&'static str; 3] {
-    [
+/// `muse serve` with Muse's per-process contributor mode override, always exactly once, and
+/// `--trust-workspace` when the chat's folder is to be trusted; the subcommand comes first, its
+/// flags after it (Muse 1.4.7 reads options before a subcommand as the interactive screen's).
+fn serve_args(config: &DriverConfig) -> Vec<&'static str> {
+    let mut arguments = vec![
         "serve",
         "--contributor-mode",
         config.contributor_mode.as_str(),
-    ]
+    ];
+    if config.trust_workspace {
+        arguments.push("--trust-workspace");
+    }
+    arguments
 }
 
 /// Read the provider catalog before any chat exists. MSP model/list needs no

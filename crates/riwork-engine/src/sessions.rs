@@ -415,7 +415,11 @@ impl SessionManager {
             } else {
                 self.orchestrator_skill_path_scoped(project_id.as_deref())?
             };
+            // Canonical, as the folder Codex is told to trust must be.
             let context = orchestrator_context(&self.home, project_id.as_deref());
+            let context = context
+                .canonicalize()
+                .map_err(|error| format!("resolve {}: {error}", context.display()))?;
             let program = find_harness_program(HarnessKind::Codex, &shim_directory)
                 .ok_or("codex is not installed or is not on PATH")?;
             let command = orchestrator_command(
@@ -2174,9 +2178,23 @@ impl SessionManager {
                 } else {
                     cua.driver_path()?;
                 }
+                // Claude and Grok have no per-run switch for one folder: their
+                // saved trust is merged for this one before they start.
+                match harness {
+                    HarnessKind::Claude => crate::folder_trust::trust_for_claude(
+                        &cwd,
+                        env::var_os("CLAUDE_CONFIG_DIR").as_deref(),
+                    ),
+                    HarnessKind::Grok => crate::folder_trust::trust_for_grok(
+                        &cwd,
+                        env::var_os("GROK_HOME").as_deref(),
+                    ),
+                    HarnessKind::Codex | HarnessKind::Muse => {}
+                }
                 Some(harness_command(
                     harness,
                     HarnessOptions {
+                        cwd: &cwd,
                         unrestricted,
                         inline,
                         choices: &choices,
@@ -3097,6 +3115,9 @@ fn respawn_arguments(
 /// What a harness launch asks for beyond the program and the profile.
 #[derive(Clone, Copy)]
 struct HarnessOptions<'a> {
+    /// The canonical folder the agent starts in, which RiWork trusts it in: the
+    /// user chose to run the agent there by creating the session.
+    cwd: &'a Path,
     /// Skip the CLI's permission prompts, as the caller asked.
     unrestricted: bool,
     /// Keep the agent on the main screen (see `inline_arguments`).
@@ -3213,6 +3234,7 @@ fn harness_command(
     codex_home: Option<&Path>,
 ) -> Result<String, String> {
     let HarnessOptions {
+        cwd,
         unrestricted,
         inline,
         choices,
@@ -3236,6 +3258,7 @@ fn harness_command(
             if let Some(home) = codex_home {
                 arguments.extend(codex_account_environment_arguments(home));
             }
+            arguments.extend(crate::folder_trust::codex_arguments(cwd));
             if unrestricted {
                 arguments.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
             }
@@ -3292,8 +3315,11 @@ fn harness_command(
             arguments.extend(choices.prompt.clone());
         }
         HarnessKind::Muse => {
+            // `--yolo` trusts the workspace for the run already.
             if unrestricted {
                 arguments.push("--yolo".to_owned());
+            } else if crate::folder_trust::muse_may_trust(cwd) {
+                arguments.push("--trust-workspace".to_owned());
             }
             // No system-prompt switch is wired for Muse, so guidance rides
             // the first message, as it does for Codex.
@@ -4207,6 +4233,7 @@ fn orchestrator_command(
     if let Some(home) = codex_home {
         arguments.extend(codex_account_environment_arguments(home));
     }
+    arguments.extend(crate::folder_trust::codex_arguments(context));
     if inline {
         arguments.extend(inline_arguments(HarnessKind::Codex));
     }
@@ -6702,6 +6729,7 @@ mod tests {
         let command = harness_command(
             HarnessKind::Codex,
             HarnessOptions {
+                cwd: Path::new("/Users/test/project"),
                 unrestricted: false,
                 inline: false,
                 choices: &HarnessChoices::default(),
@@ -6939,6 +6967,7 @@ mod tests {
             let command = harness_command(
                 HarnessKind::Codex,
                 HarnessOptions {
+                    cwd: Path::new("/Users/test/project"),
                     unrestricted,
                     inline: false,
                     choices: &HarnessChoices::default(),
@@ -6986,6 +7015,7 @@ mod tests {
                     &harness_command(
                         harness,
                         HarnessOptions {
+                            cwd: Path::new("/Users/test/project"),
                             unrestricted: false,
                             inline,
                             choices: &HarnessChoices::default(),
@@ -7191,6 +7221,7 @@ mod tests {
             let command = harness_command(
                 HarnessKind::Claude,
                 HarnessOptions {
+                    cwd: Path::new("/Users/test/project"),
                     unrestricted,
                     inline: false,
                     choices: &HarnessChoices::default(),
@@ -7344,6 +7375,7 @@ mod tests {
             let command = harness_command(
                 harness,
                 HarnessOptions {
+                    cwd: Path::new("/Users/test/project"),
                     unrestricted: false,
                     inline: false,
                     choices: &HarnessChoices::default(),
@@ -7601,6 +7633,7 @@ mod tests {
             let command = harness_command(
                 HarnessKind::Grok,
                 HarnessOptions {
+                    cwd: Path::new("/Users/test/project"),
                     unrestricted,
                     inline: false,
                     choices: &HarnessChoices::default(),
@@ -7659,6 +7692,7 @@ mod tests {
             let command = harness_command(
                 HarnessKind::Muse,
                 HarnessOptions {
+                    cwd: Path::new("/Users/test/project"),
                     unrestricted,
                     inline: false,
                     choices: &HarnessChoices::default(),
@@ -7714,6 +7748,7 @@ mod tests {
             &harness_command(
                 HarnessKind::Muse,
                 HarnessOptions {
+                    cwd: Path::new("/Users/test/project"),
                     unrestricted: false,
                     inline: false,
                     choices: &choices,
@@ -8300,6 +8335,123 @@ else:
             shell_arguments(&unset_in_command(command, &["A", "B"])),
             ["/usr/bin/env", "-u", "A", "-u", "B", "/opt/bin/codex"]
         );
+    }
+
+    /// Each agent is trusted in the folder it starts in, through its own switch,
+    /// and in no other: Codex with one per-run `projects` table, Muse with
+    /// `--trust-workspace` unless `--yolo` already trusts it, Claude and Grok
+    /// with nothing on their command lines (their saved trust is merged instead).
+    #[test]
+    fn every_agent_starts_trusted_in_its_own_folder_and_no_other() {
+        let root = env::temp_dir().join(format!("riwork-launch-trust-{}", Uuid::new_v4()));
+        let repository = root.join("a project's \"repo\"");
+        fs::create_dir_all(repository.join(".git")).unwrap();
+        fs::create_dir_all(repository.join("inner")).unwrap();
+        fs::create_dir_all(root.join("plain")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let repository = repository.canonicalize().unwrap();
+        let launch = |harness, cwd: &Path, unrestricted| {
+            shell_arguments(
+                &harness_command(
+                    harness,
+                    HarnessOptions {
+                        cwd,
+                        unrestricted,
+                        inline: false,
+                        choices: &HarnessChoices::default(),
+                    },
+                    Path::new("/opt/bin/cli"),
+                    Path::new("/fake/riwork"),
+                    Path::new("/Users/test/state"),
+                    "shell-id",
+                    None,
+                )
+                .unwrap(),
+            )
+        };
+        let projects = |arguments: &[String]| {
+            arguments
+                .windows(2)
+                .filter(|pair| pair[0] == "-c" && pair[1].starts_with("projects="))
+                .map(|pair| pair[1].clone())
+                .collect::<Vec<_>>()
+        };
+        for unrestricted in [false, true] {
+            let codex = launch(HarnessKind::Codex, &repository, unrestricted);
+            assert_eq!(
+                projects(&codex),
+                [format!(
+                    "projects={{{}={{trust_level=\"trusted\"}}}}",
+                    toml_string(&repository.to_string_lossy())
+                )]
+            );
+            // The trust table is an option, not part of the startup message.
+            assert!(!codex.last().unwrap().contains("projects="));
+        }
+        // A folder that is no project to Codex keeps Codex's own defaults.
+        assert!(projects(&launch(HarnessKind::Codex, &root.join("plain"), false)).is_empty());
+        let has = |arguments: &[String], flag: &str| arguments.iter().any(|a| a == flag);
+        assert!(has(
+            &launch(HarnessKind::Muse, &repository, false),
+            "--trust-workspace"
+        ));
+        let yolo = launch(HarnessKind::Muse, &repository, true);
+        assert!(has(&yolo, "--yolo") && !has(&yolo, "--trust-workspace"));
+        // Muse would trust the whole repository from a folder inside it.
+        assert!(!has(
+            &launch(HarnessKind::Muse, &repository.join("inner"), false),
+            "--trust-workspace"
+        ));
+        for harness in [HarnessKind::Claude, HarnessKind::Grok] {
+            for unrestricted in [false, true] {
+                let arguments = launch(harness, &repository, unrestricted);
+                assert!(projects(&arguments).is_empty());
+                for flag in ["--trust", "--trust-folder", "--trust-workspace"] {
+                    assert!(!has(&arguments, flag), "{harness:?} {flag}");
+                }
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_orchestrator_is_trusted_in_its_context_only_where_codex_would_ask() {
+        let root = env::temp_dir().join(format!("riwork-orchestrator-trust-{}", Uuid::new_v4()));
+        fs::create_dir_all(root.join("project/.codex")).unwrap();
+        fs::create_dir_all(root.join("plain")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let command = |context: &Path| {
+            shell_arguments(&orchestrator_command(
+                Path::new("/opt/bin/codex"),
+                context,
+                Path::new("/state"),
+                &context.join("SKILL.md"),
+                Path::new("/bin/riwork"),
+                None,
+                None,
+                "pane",
+                None,
+                false,
+            ))
+        };
+        let configured = root.join("project");
+        assert!(contains_sequence(
+            &command(&configured),
+            &crate::folder_trust::codex_arguments(&configured)
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        ));
+        // RiWork's own context folder is no project to Codex: the global
+        // orchestrator keeps the user's approvals exactly.
+        let plain = command(&root.join("plain"));
+        assert!(
+            !plain
+                .iter()
+                .any(|argument| argument.starts_with("projects="))
+        );
+        assert_codex_user_permissions_preserved(&plain);
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn assert_codex_user_permissions_preserved(arguments: &[String]) {

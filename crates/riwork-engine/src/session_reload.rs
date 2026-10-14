@@ -441,7 +441,15 @@ fn finish_reload(request: &ReloadRequest) -> Result<(), String> {
     {
         return Err("A newer Codex turn started; nothing was restarted".to_owned());
     }
-    manager.respawn_command(&request.shell_id, &resume_command(request))?;
+    // The pane restarts where it is, which is where it was started and trusted.
+    let folder = manager
+        .current_directory(&request.shell_id)
+        .and_then(|folder| folder.canonicalize().map_err(|error| error.to_string()))
+        .ok();
+    manager.respawn_command(
+        &request.shell_id,
+        &resume_command(request, folder.as_deref()),
+    )?;
     Ok(())
 }
 
@@ -678,7 +686,9 @@ fn validate_request(path: &Path, request: &ReloadRequest) -> Result<(), String> 
     Ok(())
 }
 
-fn resume_command(request: &ReloadRequest) -> String {
+/// `folder` is the pane's canonical directory, which the resumed Codex trusts
+/// for this run as its first launch did.
+fn resume_command(request: &ReloadRequest, folder: Option<&Path>) -> String {
     let mut args = vec!["/usr/bin/env".to_owned()];
     for (name, value) in [
         ("CODEX_HOME", &request.codex_home),
@@ -715,6 +725,10 @@ fn resume_command(request: &ReloadRequest) -> String {
         args.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
     }
     args.extend(["resume".to_owned(), request.thread_id.clone()]);
+    // After the subcommand, beside the options the `codex` wrapper adds there.
+    if let Some(folder) = folder {
+        args.extend(crate::folder_trust::codex_arguments(folder));
+    }
     format!(
         "exec {}",
         args.iter()
@@ -999,7 +1013,7 @@ mod tests {
             Some("/tmp/account A's home")
         );
         let saved = request(false);
-        let argv = shell_words(&resume_command(&saved)).unwrap();
+        let argv = shell_words(&resume_command(&saved, None)).unwrap();
         assert!(argv.contains(&format!(
             "RIWORK_CODEX_ACCOUNT_HOME={}",
             saved.codex_home.as_ref().unwrap()
@@ -1009,7 +1023,7 @@ mod tests {
     #[test]
     fn resume_argv_preserves_profiles_exact_id_and_existing_permission_mode() {
         let unrestricted = request(true);
-        let argv = shell_words(&resume_command(&unrestricted)).unwrap();
+        let argv = shell_words(&resume_command(&unrestricted, None)).unwrap();
         assert_eq!(argv[0], "exec");
         assert_eq!(
             &argv[1..5],
@@ -1033,7 +1047,7 @@ mod tests {
         );
         let restricted = request(false);
         assert!(
-            !shell_words(&resume_command(&restricted))
+            !shell_words(&resume_command(&restricted, None))
                 .unwrap()
                 .iter()
                 .any(|arg| arg == "--dangerously-bypass-approvals-and-sandbox")
@@ -1042,6 +1056,26 @@ mod tests {
             metadata_profile(Some("exec codex -p 'my profile' 'startup prompt' ")).unwrap(),
             Some("my profile".to_owned())
         );
+    }
+
+    #[test]
+    fn a_reloaded_codex_is_trusted_in_its_pane_folder_after_the_subcommand() {
+        let temporary = Temporary::new();
+        let folder = temporary.0.join("Ri Work's \"project\"");
+        fs::create_dir_all(folder.join(".git")).unwrap();
+        let folder = folder.canonicalize().unwrap();
+        let saved = request(false);
+        let argv = shell_words(&resume_command(&saved, Some(&folder))).unwrap();
+        let trust = crate::folder_trust::codex_arguments(&folder);
+        assert_eq!(trust.len(), 2);
+        assert_eq!(
+            argv[argv.len() - 4..argv.len() - 2],
+            ["resume", &saved.thread_id]
+        );
+        assert_eq!(argv[argv.len() - 2..], trust);
+        // Without a folder the command is what it was.
+        let argv = shell_words(&resume_command(&saved, None)).unwrap();
+        assert_eq!(argv[argv.len() - 2..], ["resume", &saved.thread_id]);
     }
 
     #[test]
@@ -1060,7 +1094,7 @@ mod tests {
         fs::set_permissions(&saved.executable, fs::Permissions::from_mode(0o700)).unwrap();
         let result = Command::new("/bin/sh")
             .arg("-c")
-            .arg(resume_command(&saved))
+            .arg(resume_command(&saved, None))
             .env("CLAUDE_CONFIG_DIR", "stale tmux profile")
             .current_dir(&temporary.0)
             .output()

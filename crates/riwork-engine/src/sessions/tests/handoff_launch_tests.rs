@@ -15,6 +15,7 @@ fn command_line(
         &harness_command(
             harness,
             HarnessOptions {
+                cwd: Path::new("/Users/test/project"),
                 unrestricted,
                 inline,
                 choices,

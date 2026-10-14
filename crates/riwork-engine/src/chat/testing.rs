@@ -321,6 +321,7 @@ fn fake_config(
         effort: info.effort.clone(),
         fast: info.fast,
         contributor_mode: info.contributor_mode,
+        trust_workspace: false,
         resume,
         resume_has_history: false,
         reporter: Default::default(),

@@ -72,6 +72,7 @@ impl Fake {
             effort: None,
             fast: false,
             contributor_mode: Default::default(),
+            trust_workspace: false,
             resume: None,
             resume_has_history: false,
             reporter: Default::default(),

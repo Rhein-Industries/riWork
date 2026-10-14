@@ -61,7 +61,7 @@ pub fn driver_config(
     };
     let launch = sessions::chat_launch(harness, &home, codex_home.as_deref())?;
     let ignore_api_key = crate::settings::claude_chat_ignores_api_key(&home);
-    Ok(assemble(
+    let mut config = assemble(
         info,
         resume,
         launch.program,
@@ -70,7 +70,26 @@ pub fn driver_config(
         &home,
         codex_home,
         ignore_api_key,
-    ))
+    );
+    trust_folder(&mut config);
+    Ok(config)
+}
+
+/// Trust the chat's folder for its provider process, as a terminal's is
+/// (`folder_trust`): Codex with a per-run `-c` among the leading arguments,
+/// Muse with `serve --trust-workspace`. Claude asks nothing without a
+/// terminal, so its configuration is left alone.
+fn trust_folder(config: &mut DriverConfig) {
+    let Ok(folder) = config.cwd.canonicalize() else {
+        return;
+    };
+    match config.provider {
+        Provider::Codex => config
+            .extra_args
+            .extend(crate::folder_trust::codex_arguments(&folder)),
+        Provider::Muse => config.trust_workspace = crate::folder_trust::muse_may_trust(&folder),
+        Provider::Claude => {}
+    }
 }
 
 /// A read-only Muse model query has no chat identity, permissions to select or
@@ -102,6 +121,7 @@ fn discovery_config(
         fast: false,
         // No chat chose it: off, as every Muse RiWork starts unless asked on.
         contributor_mode: ContributorMode::Off,
+        trust_workspace: false,
         resume: None,
         resume_has_history: false,
         reporter: Default::default(),
@@ -196,6 +216,7 @@ fn assemble(
         effort: info.effort.clone(),
         fast: info.fast,
         contributor_mode: info.contributor_mode,
+        trust_workspace: false,
         resume,
         resume_has_history: false,
         reporter: Default::default(),
@@ -356,6 +377,45 @@ mod tests {
             // An ordinary chat is not an orchestrator.
             assert!(value(config, "RIWORK_ORCHESTRATOR_SCOPE").is_none());
         }
+    }
+
+    #[test]
+    fn a_chat_is_trusted_in_its_folder_as_a_terminal_is_and_claude_is_left_alone() {
+        let root = std::env::temp_dir().join(format!("riwork-chat-trust-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("repo/.git")).unwrap();
+        std::fs::create_dir_all(root.join("repo/inner")).unwrap();
+        let repository = root.join("repo").canonicalize().unwrap();
+        let configure = |provider: Provider, cwd: &Path| {
+            let mut chat = info(provider);
+            chat.cwd = cwd.to_path_buf();
+            let mut config = assemble(
+                &chat,
+                None,
+                "/bin/agent".into(),
+                Vec::new(),
+                "/shims".into(),
+                Path::new("/riwork"),
+                None,
+                false,
+            );
+            trust_folder(&mut config);
+            config
+        };
+        let codex = configure(Provider::Codex, &repository);
+        let trust = crate::folder_trust::codex_arguments(&repository);
+        assert_eq!(trust.len(), 2);
+        assert!(codex.extra_args.ends_with(&trust), "{:?}", codex.extra_args);
+        assert!(!codex.trust_workspace);
+        let muse = configure(Provider::Muse, &repository);
+        assert!(muse.trust_workspace && muse.extra_args.is_empty());
+        // Muse would take the whole repository for its workspace there.
+        assert!(!configure(Provider::Muse, &repository.join("inner")).trust_workspace);
+        let claude = configure(Provider::Claude, &repository);
+        assert!(claude.extra_args.is_empty() && !claude.trust_workspace);
+        // A folder that is gone is trusted with nothing; the start reports it.
+        let gone = configure(Provider::Codex, &root.join("gone"));
+        assert_eq!(gone.extra_args.len(), 2, "{:?}", gone.extra_args);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
