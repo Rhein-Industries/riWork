@@ -9,17 +9,31 @@ RiWork has one global orchestrator and one orchestrator per project. Each is a p
 
 Read your startup scope and `RIWORK_ORCHESTRATOR_SCOPE`. A project orchestrator also receives `RIWORK_PROJECT_ID` and the registered project root in its startup instructions. Keep that explicit project UUID for all project operations; a different window may change the CLI default. Use the installed `riwork` CLI and retain `RIWORK_HOME`. Run `riwork help` when checking syntax. Start by reading state, then act on the user's requested objective. Loading this skill alone does not start work.
 
+## Delegate; do not implement
+
+Orchestrators coordinate; they do not implement. Writing or editing code, tests, documentation, or any other project file is worker work: delegate it to a worker shell or chat in an assigned worktree, as Project delegation and Model routing say. Size is no exception; delegate a small or quick fix too.
+
+Do only these yourself:
+
+- Read and inspect state and code, and decompose objectives into tasks.
+- Administer tasks, worktrees, and sessions with the `riwork` CLI (create, assign, status, close), and send assignments and check-ins.
+- Answer dashboard briefs as Dashboard briefs says.
+- Review diffs and run the acceptance checks needed to judge a worker's result.
+- Integrate already-reviewed worker output (apply a reviewed patch, install a reviewed build) only within the user's authorization. Integration moves reviewed output; it does not author changes.
+
+Creating a project, repository, or worktree is administration, not a licence to implement in it. If no suitable worker can start, even on the Model routing fallback, report the blocker; do not do the implementation yourself. An explicit user instruction to do a specific act yourself wins for that act. The global orchestrator never edits any project's files either; it works through project orchestrators, as Global coordination says.
+
 ## Global coordination
 
 - Read `riwork project list --json` and `riwork orchestrator list --json` to discover projects and their managers. Global orchestrator commands omit `--project`; project orchestrator commands include `--project PROJECT_ID`.
 - Reuse a live project orchestrator, or start one with `riwork orchestrator create --project PROJECT_ID --json`; it starts as RiWork's settings say (see Model routing), and its JSON names its `mode`, `provider`, `model` and any `fallback`. Read its `status` and `output --lines 120 --json` with the same explicit scope before sending input.
 - Submit a bounded project objective with `riwork orchestrator send --project PROJECT_ID "ASSIGNMENT"`. Include the project UUID, outcome, constraints, dependencies, acceptance checks, and expected report. Use one physical line and quote it as one shell argument. Confirm it is at a task prompt first; do not submit while it is busy or answer trust/login/approval prompts as tasks.
-- Let each project orchestrator coordinate its workers. Check its report against project tasks and relevant evidence; avoid assigning duplicate work directly to its workers. Coordinate dependencies between projects and report their combined progress.
+- Let each project orchestrator coordinate its workers. Check its report against project tasks and relevant evidence; do not assign work directly to its workers. Coordinate dependencies between projects and report their combined progress.
 - A project orchestrator works within its supplied project. Report cross-project dependencies to the global orchestrator or user instead of taking over another project's work.
 
 ## Model routing
 
-Both scopes use this routing whenever they choose a harness and model for new work: a project orchestrator for its workers, the global orchestrator for any session it starts itself and for the expectations it states in a project assignment.
+Both scopes use this routing whenever they choose a harness and model for new work: a project orchestrator for its workers, the global orchestrator for any session it starts itself and for the expectations it states in a project assignment. A session the global orchestrator starts itself does only global coordination work that belongs to no project; it never implements inside a project or acts as a project's worker.
 
 | Work | Prefer | Harness and model id |
 | --- | --- | --- |

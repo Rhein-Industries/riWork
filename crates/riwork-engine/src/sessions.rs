@@ -8430,6 +8430,54 @@ else:
         manager.kill_server();
     }
 
+    /// Both scopes read the delegation mandate before their own sections: an orchestrator
+    /// delegates implementation, however small, and names what it does itself.
+    #[test]
+    fn the_embedded_skill_states_the_delegation_mandate_before_either_scope_section() {
+        let mandate = ORCHESTRATOR_SKILL
+            .find("## Delegate; do not implement")
+            .expect("the skill lacks the delegation mandate");
+        for section in [
+            "## Global coordination",
+            "## Dashboard briefs",
+            "## Project delegation",
+        ] {
+            assert!(
+                mandate < ORCHESTRATOR_SKILL.find(section).unwrap(),
+                "{section}"
+            );
+        }
+        for needle in [
+            "Orchestrators coordinate; they do not implement.",
+            "Size is no exception",
+            "Do only these yourself:",
+            "Integration moves reviewed output; it does not author changes.",
+            "not a licence to implement in it",
+            "report the blocker; do not do the implementation yourself",
+            "The global orchestrator never edits any project's files",
+        ] {
+            assert!(
+                ORCHESTRATOR_SKILL.contains(needle),
+                "the skill lacks {needle:?}"
+            );
+        }
+    }
+
+    /// The repository's top-level `skills/` copy is what a user-level Codex skill links to; it
+    /// must say exactly what the engine installs for orchestrators.
+    #[test]
+    fn the_repository_skill_copy_matches_the_embedded_skill() {
+        let copy = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../skills/riwork-orchestrator/SKILL.md"
+        );
+        let text = fs::read(copy).unwrap_or_else(|error| panic!("{copy}: {error}"));
+        assert!(
+            text == ORCHESTRATOR_SKILL.as_bytes(),
+            "{copy} differs from crates/riwork-engine/skills/riwork-orchestrator/SKILL.md"
+        );
+    }
+
     fn scope_session(kind: ShellKind, project_id: Option<&str>) -> ShellSession {
         serde_json::from_value(serde_json::json!({
             "id": "00000000-0000-4000-8000-000000000001",
