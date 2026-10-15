@@ -2491,6 +2491,7 @@ async fn chat_suggestions_passes_on_a_chats_commands_files_and_models_and_nothin
     printed["files"]["entries"][0]["mtime"] = json!(7);
     printed["files"]["extra"] = json!(1);
     printed["models"][0]["pricing"] = json!("x");
+    printed["mention_models"][0]["pricing"] = json!("x");
     f.says("suggestions.json", &printed);
     let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
     assert_eq!(response["ok"], true, "{response}");
@@ -2505,10 +2506,29 @@ async fn chat_suggestions_passes_on_a_chats_commands_files_and_models_and_nothin
         !reply["models"].as_array().unwrap().is_empty(),
         "the fixture offers `&` models"
     );
+    assert!(
+        reply["mention_models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|model| model["provider"] != reply["provider"]),
+        "and other providers' to mention"
+    );
+
+    // A CLI from before every provider's mentions prints no `mention_models`: the phone gets
+    // none, and offers its chat's provider's `models`.
+    let mut printed = reply.clone();
+    printed.as_object_mut().unwrap().remove("mention_models");
+    f.says("suggestions.json", &printed);
+    let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(response["result"]["mention_models"], json!([]));
+    assert_eq!(response["result"]["models"], reply["models"]);
 
     // A CLI from before `&` prints no models: the phone gets none, and offers no `&` list.
     let mut printed = reply.clone();
     printed.as_object_mut().unwrap().remove("models");
+    printed.as_object_mut().unwrap().remove("mention_models");
     f.says("suggestions.json", &printed);
     let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
     assert_eq!(response["ok"], true, "{response}");
@@ -2548,12 +2568,40 @@ async fn chat_suggestions_passes_on_a_chats_commands_files_and_models_and_nothin
             {"id":"bare","name":"Bare","description":"","is_default":false,"chats":0},
         ])
     );
-    // Models that are not a list are not an answer.
+    // Every provider's models are checked as the chat's are, and each must name a provider
+    // RiWork knows; one in `models` never names one, as an older phone reads them.
     let mut printed = reply.clone();
-    printed["models"] = json!({"id":"x"});
+    printed["models"] = json!([{"id":"opus","name":"Opus","provider":"claude"}]);
+    printed["mention_models"] = json!([
+        {"id":"opus","name":"Opus","provider":"claude","chats":3},
+        {"id":"gpt-6.1-sol","name":"GPT-6.1-Sol","provider":"codex","is_default":true},
+        {"id":"no-provider","name":"N"},
+        {"id":"other","name":"O","provider":"grok"},
+        {"id":"number","name":"N","provider":7},
+        {"id":"two words","name":"Spaced","provider":"muse"},
+    ]);
     f.says("suggestions.json", &printed);
     let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
-    assert_eq!(code(&response), "cli_error", "{response}");
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(
+        response["result"]["models"],
+        json!([{"id":"opus","name":"Opus","description":"","is_default":false,"chats":0}])
+    );
+    assert_eq!(
+        response["result"]["mention_models"],
+        json!([
+            {"id":"opus","name":"Opus","description":"","is_default":false,"chats":3,"provider":"claude"},
+            {"id":"gpt-6.1-sol","name":"GPT-6.1-Sol","description":"","is_default":true,"chats":0,"provider":"codex"},
+        ])
+    );
+    // Models that are not a list are not an answer.
+    for key in ["models", "mention_models"] {
+        let mut printed = reply.clone();
+        printed[key] = json!({"id":"x"});
+        f.says("suggestions.json", &printed);
+        let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+        assert_eq!(code(&response), "cli_error", "{key}: {response}");
+    }
 
     // A malformed command or entry is left out on its own.
     let command = |name: &str, argument: Value, handler: &str| json!({"name":name,"summary":"s","argument":argument,"sends":"t","handler":handler});
@@ -2694,6 +2742,7 @@ async fn chat_suggestions_cuts_a_big_listing_to_fit_one_frame() {
         plain["result"]["models"], reply["models"],
         "only the listing is cut, never the models"
     );
+    assert_eq!(plain["result"]["mention_models"], reply["mention_models"]);
     link::encode_reply(&plain, std::time::Instant::now(), false, MAX_PLAINTEXT).unwrap();
     // As many as fit: one more would not, with the room the connector keeps for `server_ms`.
     let mut more = plain.clone();
@@ -2730,16 +2779,25 @@ async fn chat_suggestions_cuts_a_big_listing_to_fit_one_frame() {
     assert_eq!(deflated["result"]["files"]["truncated"], true);
     link::encode_reply(&deflated, std::time::Instant::now(), true, MAX_PLAINTEXT).unwrap();
 
-    // A provider's model list too long for a frame on its own: its first models that fit go,
-    // and the commands still reach the phone.
+    // Model lists too long for a frame on their own: the first models of each that fit go, as
+    // many of one as of the other, and the commands still reach the phone.
     let models: Vec<Value> = (0..200)
         .map(|i| {
             json!({"id": format!("m-{i:03}-{}", noise(80, i + 7)), "name": noise(400, i + 1),
             "description": noise(400, i + 900), "is_default": false, "chats": i})
         })
         .collect();
+    let mention_models: Vec<Value> = models
+        .iter()
+        .map(|model| {
+            let mut model = model.clone();
+            model["provider"] = json!("codex");
+            model
+        })
+        .collect();
     reply["files"]["entries"] = json!([]);
     reply["models"] = json!(models);
+    reply["mention_models"] = json!(mention_models);
     f.says("suggestions.json", &reply);
     let plain = f.call("chat.suggestions", json!({"chat_id":chat})).await;
     assert_eq!(plain["ok"], true, "{plain}");
@@ -2750,6 +2808,10 @@ async fn chat_suggestions_cuts_a_big_listing_to_fit_one_frame() {
         kept.len()
     );
     assert_eq!(kept[..], models[..kept.len()]);
+    assert_eq!(
+        plain["result"]["mention_models"].as_array().unwrap()[..],
+        mention_models[..kept.len()]
+    );
     assert_eq!(plain["result"]["commands"], reply["commands"]);
     link::encode_reply(&plain, std::time::Instant::now(), false, MAX_PLAINTEXT).unwrap();
 }

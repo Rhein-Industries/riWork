@@ -515,31 +515,66 @@ fn codex_models() -> Vec<crate::chat::model::ModelOption> {
     .collect()
 }
 
-/// A data folder whose saved chats the person wrote in: `count` Codex chats set to each model
-/// (`None`: to no model, the default), and one worker's chat that is not theirs.
-fn data_folder(uses: &[(Option<&str>, usize)]) -> PathBuf {
+/// Save a chat of `provider` set to `model` in data folder `home`: one the person wrote in, or a
+/// worker's that is not theirs. Its id.
+fn save_chat(
+    home: &std::path::Path,
+    provider: Provider,
+    model: Option<&str>,
+    worker: bool,
+) -> String {
+    let mut info = testing::info(&uuid::Uuid::new_v4().to_string());
+    info.provider = provider;
+    info.model = model.map(str::to_owned);
+    info.first_user_message = Some("hello".into());
+    if worker {
+        info.parent_id = Some("parent".into());
+    }
+    let dir = home.join("chats").join(&info.id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("info.json"), serde_json::to_vec(&info).unwrap()).unwrap();
+    info.id
+}
+
+/// A data folder whose saved chats the person wrote in: `count` chats of each provider set to
+/// each model (`None`: to no model, the default), and Codex workers' chats that are not theirs.
+fn data_folder(uses: &[(Provider, Option<&str>, usize)]) -> PathBuf {
     let home = std::env::temp_dir().join(format!("riwork-suggest-uses-{}", uuid::Uuid::new_v4()));
-    let save = |model: Option<&str>, worker: bool| {
-        let mut info = testing::info(&uuid::Uuid::new_v4().to_string());
-        info.provider = Provider::Codex;
-        info.model = model.map(str::to_owned);
-        info.first_user_message = Some("hello".into());
-        if worker {
-            info.parent_id = Some("parent".into());
-        }
-        let dir = home.join("chats").join(&info.id);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("info.json"), serde_json::to_vec(&info).unwrap()).unwrap();
-    };
-    for (model, count) in uses {
+    for (provider, model, count) in uses {
         for _ in 0..*count {
-            save(*model, false);
+            save_chat(&home, *provider, *model, false);
         }
     }
     for _ in 0..5 {
-        save(Some("gpt-5.1-codex-mini"), true);
+        save_chat(&home, Provider::Codex, Some("gpt-5.1-codex-mini"), true);
     }
     home
+}
+
+/// A worker's chat of `provider` in `home` whose driver listed `models` (id, name, default), as
+/// `riwork chat models` reads a provider's list.
+fn save_list(home: &std::path::Path, provider: Provider, models: &[(&str, &str, bool)]) {
+    let id = save_chat(home, provider, None, true);
+    let models = models
+        .iter()
+        .map(|(id, name, is_default)| {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "name": name, "is_default": is_default
+            }))
+            .unwrap()
+        })
+        .collect();
+    let line = serde_json::to_string(&crate::chat::wire::Envelope {
+        chat_id: id.clone(),
+        seq: 1,
+        event: crate::chat::model::ChatEvent::Models { models },
+    })
+    .unwrap();
+    std::fs::write(
+        home.join("chats").join(&id).join("events.jsonl"),
+        format!("{line}\n"),
+    )
+    .unwrap();
 }
 
 /// A Codex chat whose driver listed `codex_models`, set to `model`, counting use in `home`.
@@ -615,59 +650,78 @@ fn details(cx: &mut TestAppContext, mounted: &Mounted) -> Vec<String> {
 }
 
 #[gpui::test]
-fn ampersand_lists_the_models_most_used_first_and_return_puts_in_a_mention(
+fn ampersand_lists_every_providers_models_most_used_first_and_return_puts_in_a_mention(
     cx: &mut TestAppContext,
 ) {
     let root = folder();
-    // o3 is set on three of the person's chats, the default on two, GPT-5.1 on one; the
-    // worker's chats on the mini are not the person's own.
-    let home = data_folder(&[(Some("o3"), 3), (None, 2), (Some("gpt-5.1"), 1)]);
+    // The person's Codex chats: o3 on three, the default on two, GPT-5.1 on one (the workers'
+    // on the mini are not theirs); their Claude chats: Opus on four, Claude's own choice on two.
+    let home = data_folder(&[
+        (Provider::Codex, Some("o3"), 3),
+        (Provider::Codex, None, 2),
+        (Provider::Codex, Some("gpt-5.1"), 1),
+        (Provider::Claude, Some("opus"), 4),
+        (Provider::Claude, None, 2),
+    ]);
+    // Claude's list, as a Claude chat saved it: its `default` names no model, and its o3 is
+    // the chat's own Codex row already.
+    save_list(
+        &home,
+        Provider::Claude,
+        &[
+            ("default", "Default (recommended)", true),
+            ("opus", "Opus", false),
+            ("o3", "o3", false),
+            ("sonnet", "Sonnet", false),
+        ],
+    );
     let mounted = mount_models(cx, &root, None, Some(&home));
     type_text(cx, &mounted, "fix it with &");
     assert_eq!(
         rows(cx, &mounted),
         Some((
             vec![
+                "&opus".into(),
                 "&o3".into(),
                 "&gpt-5.1-codex".into(),
                 "&gpt-5.1".into(),
-                "&gpt-5.1-codex-mini".into()
+                "&gpt-5.1-codex-mini".into(),
+                "&sonnet".into(),
             ],
             0
-        ))
+        )),
+        "every provider's, the most used first, each id once"
     );
     assert_eq!(
         details(cx, &mounted),
         [
-            "Used in 3 chats",
-            "Current · used in 2 chats",
-            "Used in 1 chat",
-            "Not used yet"
+            "Claude · used in 4 chats",
+            "Codex · used in 3 chats",
+            "Codex · current · used in 2 chats",
+            "Codex · used in 1 chat",
+            "Codex · not used yet",
+            "Claude · not used yet",
         ],
-        "the chat's model is marked, not left out"
+        "each row says its provider; the chat's model is marked, not left out"
     );
     frame(cx, &mounted, |window, _| {
         assert_eq!(
             window.find("composer-suggestion-list").label(),
-            Some("Codex models · most used first")
+            Some("Models · most used first")
         );
         assert_eq!(
             window.find("composer-suggestion-preview").label(),
-            Some("Preview of &o3")
+            Some("Preview of &opus")
         );
     });
     // Typing filters, by id or name, the use still ordering what matches.
-    type_text(cx, &mounted, "gpt");
-    assert_eq!(
-        rows(cx, &mounted).unwrap().0,
-        ["&gpt-5.1-codex", "&gpt-5.1", "&gpt-5.1-codex-mini"]
-    );
-    press(cx, &mounted, "down");
+    type_text(cx, &mounted, "o");
+    assert_eq!(rows(cx, &mounted).unwrap().0[..2], ["&opus", "&o3"]);
     press(cx, &mounted, "enter");
     assert_eq!(
         draft(cx, &mounted),
-        ("fix it with &gpt-5.1 ".into(), 21),
-        "the token is now the model's mention, the caret after it"
+        ("fix it with &opus ".into(), 18),
+        "another provider's model goes in as its mention, the caret after it"
     );
     assert_eq!(rows(cx, &mounted), None);
     assert_eq!(
@@ -681,9 +735,95 @@ fn ampersand_lists_the_models_most_used_first_and_return_puts_in_a_mention(
     assert_eq!(
         sent(&mounted.2),
         [ChatCommand::Send {
-            text: "fix it with &gpt-5.1".into()
+            text: "fix it with &opus".into()
         }]
     );
+    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[gpui::test]
+fn a_chat_whose_driver_listed_nothing_mentions_the_other_providers_saved_models(
+    cx: &mut TestAppContext,
+) {
+    let root = folder();
+    let home = data_folder(&[(Provider::Codex, None, 1)]);
+    save_list(
+        &home,
+        Provider::Codex,
+        &[
+            ("gpt-6.1-sol", "GPT-6.1-Sol", true),
+            ("gpt-6-astra", "GPT-6-Astra", false),
+        ],
+    );
+    save_list(
+        &home,
+        Provider::Claude,
+        &[
+            ("default", "Default (recommended)", true),
+            ("opus", "Opus", false),
+        ],
+    );
+    // A Claude chat on Claude's own choice, whose driver has not listed its models yet.
+    let mounted = mount(cx, Provider::Claude, &root, 700.);
+    mounted
+        .1
+        .update(cx, |view, _| view.set_catalog_home(home.clone()));
+    type_text(cx, &mounted, "&");
+    assert_eq!(
+        rows(cx, &mounted).unwrap().0,
+        ["&gpt-6.1-sol", "&opus", "&gpt-6-astra"]
+    );
+    assert_eq!(
+        details(cx, &mounted),
+        [
+            "Codex · used in 1 chat",
+            "Claude · not used yet",
+            "Codex · not used yet"
+        ],
+        "Codex's default is no Claude chat's model, and Claude's own choice names none: no mark"
+    );
+    type_text(cx, &mounted, "gpt");
+    press(cx, &mounted, "tab");
+    assert_eq!(draft(cx, &mounted), ("&gpt-6.1-sol ".into(), 13));
+    assert_eq!(went_out(&mounted.2), Vec::<String>::new());
+    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[gpui::test]
+fn an_open_list_takes_the_chats_own_models_when_its_driver_lists_them(cx: &mut TestAppContext) {
+    let root = folder();
+    let home = data_folder(&[]);
+    save_list(&home, Provider::Claude, &[("opus", "Opus", false)]);
+    // A Codex chat whose driver has not listed its models yet: Claude's saved ones are offered.
+    let mounted = mount(cx, Provider::Codex, &root, 700.);
+    mounted
+        .1
+        .update(cx, |view, _| view.set_catalog_home(home.clone()));
+    type_text(cx, &mounted, "&");
+    assert_eq!(rows(cx, &mounted), Some((vec!["&opus".into()], 0)));
+    // The driver lists them while the list is open: they join it, the chat's default marked.
+    mounted.1.update(cx, |view, cx| {
+        view.model
+            .transcript
+            .apply(&crate::chat::model::ChatEvent::Models {
+                models: codex_models(),
+            });
+        cx.notify();
+    });
+    frame(cx, &mounted, |_, _| {});
+    assert_eq!(
+        rows(cx, &mounted).unwrap().0,
+        [
+            "&gpt-5.1-codex",
+            "&gpt-5.1",
+            "&o3",
+            "&gpt-5.1-codex-mini",
+            "&opus"
+        ]
+    );
+    assert_eq!(details(cx, &mounted)[0], "Codex · current · not used yet");
     let _ = std::fs::remove_dir_all(root);
     let _ = std::fs::remove_dir_all(home);
 }
@@ -694,7 +834,7 @@ fn the_chats_own_model_is_put_in_as_any_other_is(cx: &mut TestAppContext) {
     let mounted = mount_models(cx, &root, Some("o3"), None);
     type_text(cx, &mounted, "ask &o3");
     assert_eq!(rows(cx, &mounted), Some((vec!["&o3".into()], 0)));
-    assert_eq!(details(cx, &mounted), ["Current · not used yet"]);
+    assert_eq!(details(cx, &mounted), ["Codex · current · not used yet"]);
     press(cx, &mounted, "backspace");
     assert_eq!(rows(cx, &mounted).unwrap().0[0], "&o3");
     press(cx, &mounted, "enter");
@@ -831,7 +971,11 @@ fn the_highlighted_model_stays_as_the_use_arrives_and_the_mark_follows_the_chat(
     cx: &mut TestAppContext,
 ) {
     let root = folder();
-    let home = data_folder(&[(Some("o3"), 3), (None, 2), (Some("gpt-5.1"), 1)]);
+    let home = data_folder(&[
+        (Provider::Codex, Some("o3"), 3),
+        (Provider::Codex, None, 2),
+        (Provider::Codex, Some("gpt-5.1"), 1),
+    ]);
     let mounted = mount_models(cx, &root, None, None);
     type_text(cx, &mounted, "&");
     press(cx, &mounted, "down");
@@ -840,7 +984,7 @@ fn the_highlighted_model_stays_as_the_use_arrives_and_the_mark_follows_the_chat(
     // The use is counted now, and the list orders by it: o3 stays the highlighted row.
     mounted.1.update(cx, |view, cx| {
         view.set_catalog_home(home.clone());
-        view.model_usage_arrived(cx);
+        view.model_sources_arrived(cx);
     });
     cx.run_until_parked();
     let (shown, highlight) = rows(cx, &mounted).unwrap();
@@ -857,8 +1001,11 @@ fn the_highlighted_model_stays_as_the_use_arrives_and_the_mark_follows_the_chat(
         cx.notify();
     });
     frame(cx, &mounted, |_, _| {});
-    assert_eq!(details(cx, &mounted)[0], "Current · used in 3 chats");
-    assert_eq!(details(cx, &mounted)[1], "Used in 2 chats");
+    assert_eq!(
+        details(cx, &mounted)[0],
+        "Codex · current · used in 3 chats"
+    );
+    assert_eq!(details(cx, &mounted)[1], "Codex · used in 2 chats");
     let _ = std::fs::remove_dir_all(root);
     let _ = std::fs::remove_dir_all(home);
 }

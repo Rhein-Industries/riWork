@@ -187,9 +187,10 @@ refuses on; one that kept on from Muse can turn it off before it goes back to Mu
 chat models lists what a chat of that provider can be set to, read from saved chats; a
 project selects the Codex account the list is for.
 chat suggestions lists the slash commands a chat offers, the files and folders of its
-folder (at most 5000, without what .gitignore leaves out) and the models its provider listed
-for it, with how many of your own chats of that provider are set to each now, and starts no
-host or provider.
+folder (at most 5000, without what .gitignore leaves out) and the models & can mention:
+every provider's (the chat's own list first, then what chat models reads for each), with
+how many of your own chats of that provider are set to each now, the most used first. It
+starts no host or provider.
 Its --json is at most 4 MiB: a listing that would print more keeps its first entries and
 says it is truncated.
 capabilities --json has \"chat\": true, \"orchestrator_create\": true,
@@ -1018,7 +1019,8 @@ fn open_command(args: Vec<String>, json: bool, invocation: Invocation) -> Result
 /// `chat_suggestions`: `chat suggestions CHAT_ID --json` prints what the chat's message box
 /// offers for `/`, `@` and `&` (`chat::suggest::Reply`), which the remote connector's
 /// `chat.suggestions` passes on. It reads the chat's folder and the chats' saved metadata and
-/// starts nothing. An older CLI has no such command, and one before `&` prints no `models`.
+/// starts nothing. An older CLI has no such command, one before `&` prints no `models`, and one
+/// before mentions of every provider's models prints no `mention_models`.
 ///
 /// `project_memo`: `project memo show|set ID --json` reads and replaces a project's memo as the
 /// remote connector's `project.memo.get` and `project.memo.set` pass it on (`cli/memo.rs`). An
@@ -2822,13 +2824,29 @@ fn chat_client_command(
                 .and_then(|mut client| client.list())
                 .unwrap_or_else(|_| crate::chat::log::read_infos(home));
             let info = find_chat(&chats, &id)?;
-            // `&`'s models: the chat's own list, with how many of the person's chats use each.
-            let models = crate::chat::suggest::model_entries(
-                &crate::chat::catalog::chat_models(home, info),
+            // `&`'s models, with how many of the person's chats use each: the chat's own
+            // provider's list (`models`, what a phone from before `mention_models` offers), and
+            // every provider's (`mention_models`).
+            let own = crate::chat::catalog::chat_models(home, info);
+            let usage = crate::chat::suggest::ModelUsage::of(&chats);
+            let models = crate::chat::suggest::model_entries(&own, info.provider, &usage);
+            let mention_models = crate::chat::suggest::mention_entries(
                 info.provider,
-                &crate::chat::suggest::ModelUsage::of(&chats),
+                &own,
+                &crate::chat::catalog::mention_lists(
+                    home,
+                    info.project_id.as_deref(),
+                    &crate::chat::log::read_infos(home),
+                ),
+                &usage,
             );
-            let reply = crate::chat::suggest::reply(&info.id, info.provider, &info.cwd, models);
+            let reply = crate::chat::suggest::reply(
+                &info.id,
+                info.provider,
+                &info.cwd,
+                models,
+                mention_models,
+            );
             if json {
                 return json_text(&reply);
             }
@@ -2837,12 +2855,14 @@ fn chat_client_command(
                 .iter()
                 .map(|command| format!("/{}\t{}\n", command.name, command.summary))
                 .collect();
-            for model in crate::chat::suggest::order_models(&reply.models) {
+            for model in crate::chat::suggest::order_models(&reply.mention_models) {
+                let provider = model.provider.unwrap_or(reply.provider);
                 text.push_str(&format!(
-                    "&{}\t{}\t{}\n",
-                    terminal_safe(&model.id),
+                    "{}\t{}\t{}\t{}\n",
+                    terminal_safe(&model.insertion()),
+                    crate::chat::suggest::provider_title(provider),
                     terminal_safe(&model.name),
-                    crate::chat::suggest::usage_label(model.chats, reply.provider)
+                    crate::chat::suggest::usage_label(model.chats, provider)
                 ));
             }
             for entry in &reply.files.entries {

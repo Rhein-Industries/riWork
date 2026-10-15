@@ -685,6 +685,40 @@
         "is_default": false,
         "chats": 0
       }
+    ],
+    "mention_models": [
+      {
+        "id": "opus",
+        "name": "Opus",
+        "description": "For complex tasks",
+        "is_default": false,
+        "chats": 9,
+        "provider": "claude"
+      },
+      {
+        "id": "haiku",
+        "name": "Haiku",
+        "description": "",
+        "is_default": false,
+        "chats": 0,
+        "provider": "claude"
+      },
+      {
+        "id": "gpt-6.1-sol",
+        "name": "GPT-6.1-Sol",
+        "description": "Latest workhorse model",
+        "is_default": true,
+        "chats": 7,
+        "provider": "codex"
+      },
+      {
+        "id": "muse-wonder-full-1.0",
+        "name": "Muse Wonder Full",
+        "description": "",
+        "is_default": true,
+        "chats": 2,
+        "provider": "muse"
+      }
     ]
   },
   "model_insertions": [
@@ -699,6 +733,36 @@
     {
       "id": " opus ",
       "insert": "&opus"
+    }
+  ],
+  "mentionable": [
+    {
+      "id": "opus",
+      "expect": true
+    },
+    {
+      "id": " gpt-6.1-sol ",
+      "expect": true
+    },
+    {
+      "id": "muse-wonder-full-1.0",
+      "expect": true
+    },
+    {
+      "id": "default",
+      "expect": false
+    },
+    {
+      "id": "Default",
+      "expect": false
+    },
+    {
+      "id": "two words",
+      "expect": false
+    },
+    {
+      "id": "   ",
+      "expect": false
     }
   ],
   "model_ranking": {
@@ -804,6 +868,144 @@
       }
     ]
   },
+  "mention_ranking": {
+    "models": [
+      {
+        "id": "muse-wonder-full-1.0",
+        "name": "Muse Wonder Full",
+        "description": "",
+        "is_default": true,
+        "chats": 2,
+        "provider": "muse"
+      },
+      {
+        "id": "muse-wonder-1.0",
+        "name": "Muse Wonder",
+        "description": "",
+        "is_default": false,
+        "chats": 0,
+        "provider": "muse"
+      },
+      {
+        "id": "gpt-6.1-sol",
+        "name": "GPT-6.1-Sol",
+        "description": "Latest workhorse model",
+        "is_default": true,
+        "chats": 7,
+        "provider": "codex"
+      },
+      {
+        "id": "gpt-6-astra",
+        "name": "GPT-6-Astra",
+        "description": "",
+        "is_default": false,
+        "chats": 0,
+        "provider": "codex"
+      },
+      {
+        "id": "opus",
+        "name": "Opus",
+        "description": "For complex tasks",
+        "is_default": false,
+        "chats": 9,
+        "provider": "claude"
+      },
+      {
+        "id": "sonnet",
+        "name": "Sonnet",
+        "description": "",
+        "is_default": false,
+        "chats": 2,
+        "provider": "claude"
+      },
+      {
+        "id": "haiku",
+        "name": "Haiku",
+        "description": "",
+        "is_default": false,
+        "chats": 0,
+        "provider": "claude"
+      }
+    ],
+    "cases": [
+      {
+        "query": "",
+        "expect": [
+          "opus",
+          "gpt-6.1-sol",
+          "muse-wonder-full-1.0",
+          "sonnet",
+          "muse-wonder-1.0",
+          "gpt-6-astra",
+          "haiku"
+        ]
+      },
+      {
+        "query": "o",
+        "expect": [
+          "opus",
+          "gpt-6.1-sol",
+          "muse-wonder-full-1.0",
+          "sonnet",
+          "muse-wonder-1.0"
+        ]
+      },
+      {
+        "query": "gpt",
+        "expect": [
+          "gpt-6.1-sol",
+          "gpt-6-astra"
+        ]
+      },
+      {
+        "query": "wonder",
+        "expect": [
+          "muse-wonder-full-1.0",
+          "muse-wonder-1.0"
+        ]
+      },
+      {
+        "query": "son",
+        "expect": [
+          "sonnet",
+          "muse-wonder-full-1.0",
+          "muse-wonder-1.0"
+        ]
+      }
+    ],
+    "current": [
+      {
+        "provider": "muse",
+        "chosen": null,
+        "expect": "muse-wonder-full-1.0"
+      },
+      {
+        "provider": "codex",
+        "chosen": null,
+        "expect": "gpt-6.1-sol"
+      },
+      {
+        "provider": "claude",
+        "chosen": null,
+        "expect": null
+      },
+      {
+        "provider": "claude",
+        "chosen": "opus",
+        "expect": "opus"
+      },
+      {
+        "provider": "claude",
+        "chosen": "default",
+        "expect": null
+      },
+      {
+        "provider": "muse",
+        "chosen": "opus",
+        "expect": null
+      }
+    ]
+  },
   "model_details": [
     {
       "chats": 0,
@@ -829,6 +1031,24 @@
       "chats": 0,
       "current": true,
       "detail": "Current · not used yet"
+    },
+    {
+      "chats": 3,
+      "current": true,
+      "provider": "codex",
+      "detail": "Codex · current · used in 3 chats"
+    },
+    {
+      "chats": 0,
+      "current": false,
+      "provider": "claude",
+      "detail": "Claude · not used yet"
+    },
+    {
+      "chats": 1,
+      "current": false,
+      "provider": "muse",
+      "detail": "Muse · used in 1 chat"
     }
   ],
   "model_usage_labels": [
@@ -893,6 +1113,55 @@
         ],
         "inserts": "&o3",
         "effect": "Inserts &o3 in the message. It does not switch this chat; the orchestrator still decides."
+      }
+    }
+  ],
+  "mention_previews": [
+    {
+      "model": "opus",
+      "current": false,
+      "chat_provider": "codex",
+      "expect": {
+        "title": "&opus",
+        "kind": "Claude model",
+        "body": [
+          "Opus",
+          "For complex tasks",
+          "9 of your Claude chats use it now"
+        ],
+        "inserts": "&opus",
+        "effect": "Inserts &opus in the message. It does not switch this chat; the orchestrator still decides."
+      }
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "current": true,
+      "chat_provider": "codex",
+      "expect": {
+        "title": "&gpt-6.1-sol",
+        "kind": "Codex model · current",
+        "body": [
+          "GPT-6.1-Sol",
+          "Latest workhorse model",
+          "7 of your Codex chats use it now"
+        ],
+        "inserts": "&gpt-6.1-sol",
+        "effect": "Inserts &gpt-6.1-sol in the message. It does not switch this chat; the orchestrator still decides."
+      }
+    },
+    {
+      "model": "muse-wonder-1.0",
+      "current": false,
+      "chat_provider": "claude",
+      "expect": {
+        "title": "&muse-wonder-1.0",
+        "kind": "Muse model",
+        "body": [
+          "Muse Wonder",
+          "None of your Muse chats use it now"
+        ],
+        "inserts": "&muse-wonder-1.0",
+        "effect": "Inserts &muse-wonder-1.0 in the message. It does not switch this chat; the orchestrator still decides."
       }
     }
   ]

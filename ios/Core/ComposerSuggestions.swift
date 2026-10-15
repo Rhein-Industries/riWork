@@ -10,10 +10,12 @@ import Foundation
 //   from the sigil to the next blank space, the query from after the sigil to the caret. A sigil inside a word (`a/b`, `me@host`, `a&b`, a
 //   URL's `?x=1&y=2`) opens nothing, nor does a token that is not a whole command name (`/usr/bin`). `&` opens as `@` does, wherever the
 //   person writes, so one message can name several models (`&opus design it, then &gpt-6.1-sol build it`).
-// - **`&` models** (`ComposerModelEntry`): the models the chat's provider listed, with how many of the person's own chats use each, the
-//   most used first (`ComposerSuggestions.orderModels`); the chat's own model is marked. Accepting one writes a mention, `&` and the
-//   model's id (`ComposerModelEntry.insertion`): a way to tell an orchestrator which model the person would like for the work the message
-//   hands out. It is only text: it switches nothing, and the orchestrator still decides.
+// - **`&` models** (`ComposerModelEntry`): every provider's models (the reply's `mention_models`, each with its provider; from a desktop
+//   before them, the chat's own provider's `models`), with how many of the person's own chats use each, the most used first
+//   (`ComposerSuggestions.orderModels`); the chat's own model is marked. Only ids that make a mention are offered
+//   (`ComposerSuggestions.mentionable`). Accepting one writes a mention, `&` and the model's id (`ComposerModelEntry.insertion`): a way to
+//   tell an orchestrator which model the person would like for the work the message hands out, whichever provider offers it. It is only
+//   text: it switches nothing, and the orchestrator still decides.
 // - **Accepting** (`ComposerSuggestions.accept`) replaces the token with the entry's text and a space. It never sends: that stays the
 //   person's own ⏎ or Send.
 // - **Offsets** are UTF-16 code units, what `UITextView.selectedRange` counts, where the desktop counts bytes. Every rule works on Unicode
@@ -149,12 +151,22 @@ public enum ComposerSuggestions {
         }
         return ranked.sorted { ($0.tier, $0.offset) < ($1.tier, $1.offset) }.map(\.model)
     }
-    /// The id of the model the chat runs (`current_model`): the one it is set to, else its provider's default. Ids are compared as
-    /// Unicode scalars, as the desktop compares them.
-    public static func currentModel(_ models: [ComposerModelEntry], chosen: String?) -> String? {
+    /// The id of the model a chat of `provider` runs (`current_model`), among its provider's models (one with no provider is the chat's):
+    /// the one it is set to, else its provider's default; nil when that is not listed or names no model (Claude's `default`). Ids are
+    /// compared trimmed, as Unicode scalars, as the desktop compares them.
+    public static func currentModel(_ models: [ComposerModelEntry], provider: ChatProvider, chosen: String?) -> String? {
+        let own = models.filter { $0.provider.map { $0 == provider } ?? true }
         let chosen = chosen?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let chosen, !chosen.isEmpty { return models.first { sameID($0.id, chosen) }?.id }
-        return models.first { $0.isDefault }?.id
+        if let chosen, !chosen.isEmpty { return own.first { sameID($0.id.trimmingCharacters(in: .whitespacesAndNewlines), chosen) }?.id }
+        return own.first { $0.isDefault }?.id
+    }
+    /// Whether a model id makes a mention an orchestrator can act on (`mentionable`): not blank, one word (no blank space inside), and not
+    /// `default`, which names no model (Claude's "Default (recommended)" entry is the CLI's own choice).
+    public static func mentionable(_ id: String) -> Bool {
+        let id = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        // `default` in any ASCII case, as Rust's `eq_ignore_ascii_case` has it (Unicode case folding would match more).
+        let folded = id.unicodeScalars.map { (65...90).contains($0.value) ? $0.value + 32 : $0.value }
+        return !id.isEmpty && !id.unicodeScalars.contains(where: \.properties.isWhitespace) && !folded.elementsEqual("default".unicodeScalars.map(\.value))
     }
     /// Two model ids are the same id: the same Unicode scalars (not merely canonically equal text).
     public static func sameID(_ a: String, _ b: String) -> Bool { a.unicodeScalars.elementsEqual(b.unicodeScalars) }
@@ -302,7 +314,7 @@ public struct ComposerFileListing: Sendable, Equatable, Decodable {
 
 // MARK: - Models
 
-/// A model of the chat's provider as the `&` list shows it, with how much the person uses it (`ModelEntry`).
+/// A model as the `&` list shows it, with how much the person uses it (`ModelEntry`).
 public struct ComposerModelEntry: Sendable, Equatable, Hashable, Decodable {
     /// What the chat is set to: the provider's model id.
     public let id: String
@@ -312,10 +324,16 @@ public struct ComposerModelEntry: Sendable, Equatable, Hashable, Decodable {
     public let isDefault: Bool
     /// How many of the person's own chats of the provider are set to it now.
     public let chats: UInt64
-    public init(id: String, name: String, description: String = "", isDefault: Bool = false, chats: UInt64 = 0) {
-        self.id = id; self.name = name; self.description = description; self.isDefault = isDefault; self.chats = chats
+    /// The provider that offers it (`mention_models`); nil in the provider-scoped `models`, which are the chat's provider's.
+    public let provider: ChatProvider?
+    public init(id: String, name: String, description: String = "", isDefault: Bool = false, chats: UInt64 = 0, provider: ChatProvider? = nil) {
+        self.id = id; self.name = name; self.description = description; self.isDefault = isDefault; self.chats = chats; self.provider = provider
     }
-    private enum CodingKeys: String, CodingKey { case id, name, description, isDefault = "is_default", chats }
+    /// The same model, offered by `provider`.
+    public func offered(by provider: ChatProvider) -> ComposerModelEntry {
+        ComposerModelEntry(id: id, name: name, description: description, isDefault: isDefault, chats: chats, provider: provider)
+    }
+    private enum CodingKeys: String, CodingKey { case id, name, description, isDefault = "is_default", chats, provider }
     /// A model needs an id that is not blank and has no blank space inside (its mention must read as one word, as the desktop's
     /// `model_entries` has it), and a name; one without is left out (`Lenient`), never the reply. The rest default as the desktop's do.
     public init(from decoder: any Decoder) throws {
@@ -326,19 +344,21 @@ public struct ComposerModelEntry: Sendable, Equatable, Hashable, Decodable {
             throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "a blank model id, or one of more than one word")
         }
         self.init(id: id, name: try c.decode(String.self, forKey: .name), description: c.tolerant(String.self, forKey: .description) ?? "",
-                  isDefault: c.tolerant(Bool.self, forKey: .isDefault) ?? false, chats: c.tolerant(UInt64.self, forKey: .chats) ?? 0)
+                  isDefault: c.tolerant(Bool.self, forKey: .isDefault) ?? false, chats: c.tolerant(UInt64.self, forKey: .chats) ?? 0,
+                  provider: c.tolerant(ChatProvider.self, forKey: .provider))
     }
     /// What accepting it puts in the draft (`ModelEntry::insertion`): a mention of it, `&` and its id as the provider takes it
     /// (`&gpt-6.1-sol`), never its display name.
     public var insertion: String { "&" + id.trimmingCharacters(in: .whitespacesAndNewlines) }
-    /// The row's second line (`model_detail`): whether the chat runs it, and how many chats use it.
+    /// The row's second line (`model_detail`): its provider (when it says), whether the chat runs it, and how many chats use it.
     public func detail(current: Bool) -> String {
         let used = switch chats {
         case 0: "not used yet"
         case 1: "used in 1 chat"
         default: "used in \(chats) chats"
         }
-        return current ? "Current · \(used)" : used.prefix(1).uppercased() + used.dropFirst()
+        let line = ([provider?.title, current ? "current" : nil, used] as [String?]).compactMap { $0 }.joined(separator: " · ")
+        return line.prefix(1).uppercased() + line.dropFirst()
     }
 }
 
@@ -371,9 +391,10 @@ public struct ComposerPreview: Sendable, Equatable {
     public init(file: ComposerFileEntry) {
         self.init(title: file.insertion, kind: file.kind, body: [], inserts: file.insertion, effect: Self.fileEffect)
     }
-    /// The preview of a model offered to a chat of `provider`, `current` if the chat runs it (`model_preview`): its mention, its name
-    /// where that is not its id, what it is, and the use the list is sorted by.
-    public init(model: ComposerModelEntry, current: Bool, provider: ChatProvider) {
+    /// The preview of a model offered to a chat of `provider`, `current` if the chat runs it (`model_preview`): its mention, its provider
+    /// (the model's, else the chat's), its name where that is not its id, what it is, and the use the list is sorted by.
+    public init(model: ComposerModelEntry, current: Bool, provider chatProvider: ChatProvider) {
+        let provider = model.provider ?? chatProvider
         var body: [String] = []
         let name = model.name.trimmingCharacters(in: .whitespacesAndNewlines)
         if !name.isEmpty, !ComposerSuggestions.sameID(name, model.id.trimmingCharacters(in: .whitespacesAndNewlines)) { body.append(name) }
@@ -400,19 +421,22 @@ public final class ComposerCatalog: Sendable {
     public let filesTruncated: Bool
     /// The most entries one listing holds (`FILE_BOUND`).
     public let fileBound: Int
-    /// The models the chat's provider listed, in its order, with their use; none from a desktop before `&`.
+    /// What `&` offers: every provider's models, each with its provider and use, in the desktop's order; from a desktop before
+    /// `mention_models`, the chat's provider's `models`; none from one before `&`. Only `mentionable` ids.
     public let models: [ComposerModelEntry]
     private let keys: [FileKey]
 
     public init(chatID: String, provider: ChatProvider, root: String = "", commands: [ComposerCommand], files: [ComposerFileEntry], filesTruncated: Bool = false, fileBound: Int = 5000,
                 models: [ComposerModelEntry] = []) {
         self.chatID = chatID; self.provider = provider; self.root = root; self.commands = commands; self.files = files
-        self.filesTruncated = filesTruncated; self.fileBound = fileBound; self.models = models
+        self.filesTruncated = filesTruncated; self.fileBound = fileBound; self.models = models.filter { ComposerSuggestions.mentionable($0.id) }
         keys = files.map(FileKey.init)
     }
+    /// The catalog of a reply: its `mention_models`, or, from a desktop before them, its provider-scoped `models` as the chat's provider's.
     public convenience init(reply: ChatSuggestionsReply) {
+        let models = reply.mentionModels.isEmpty ? reply.models.map { $0.offered(by: reply.provider) } : reply.mentionModels
         self.init(chatID: reply.chatID, provider: reply.provider, root: reply.root, commands: reply.commands, files: reply.files.entries,
-                  filesTruncated: reply.files.truncated, fileBound: reply.fileBound, models: reply.models)
+                  filesTruncated: reply.files.truncated, fileBound: reply.fileBound, models: models)
     }
 
     public func rankCommands(_ query: String) -> [ComposerCommand] { ComposerSuggestions.rankCommands(query, commands) }
@@ -564,11 +588,11 @@ public struct ComposerCatalogCache: Sendable {
 public enum ComposerSuggestion: Sendable, Equatable, Hashable, Identifiable {
     case command(ComposerCommand)
     case file(ComposerFileEntry)
-    /// A model of the chat's provider, and whether the chat runs it now.
+    /// A model of any provider, and whether the chat runs it now.
     case model(ComposerModelEntry, current: Bool)
-    /// Whether it is the same entry as `other`: a model by its id, whatever its use or mark.
+    /// Whether it is the same entry as `other`: a model by its id and provider, whatever its use or mark.
     public func isSame(as other: ComposerSuggestion) -> Bool {
-        if case .model(let a, _) = self, case .model(let b, _) = other { return ComposerSuggestions.sameID(a.id, b.id) }
+        if case .model(let a, _) = self, case .model(let b, _) = other { return ComposerSuggestions.sameID(a.id, b.id) && a.provider == b.provider }
         return self == other
     }
     public var id: String {
@@ -679,13 +703,15 @@ public struct ComposerSuggestionList: Sendable, Equatable {
         case .ready(let catalog):
             provider = catalog.provider
             filesTruncated = found.sigil == .mention && catalog.filesTruncated
-            let current = ComposerSuggestions.currentModel(catalog.models, chosen: chosenModel)
+            let current = ComposerSuggestions.currentModel(catalog.models, provider: catalog.provider, chosen: chosenModel)
             let key = Ranked(sigil: found.sigil, query: Array(found.query.unicodeScalars), catalog: .ready(catalog), chosenModel: current)
             if ranked != key {
                 items = switch found.sigil {
                 case .slash: catalog.rankCommands(found.query).map { .command($0) }
                 case .mention: catalog.rankFiles(found.query).map { .file($0) }
-                case .model: catalog.rankModels(found.query).map { model in .model(model, current: current.map { ComposerSuggestions.sameID(model.id, $0) } ?? false) }
+                case .model: catalog.rankModels(found.query).map { model in
+                    .model(model, current: current.map { ComposerSuggestions.sameID(model.id, $0) && (model.provider ?? catalog.provider) == catalog.provider } ?? false)
+                }
                 }
                 ranked = key
             }

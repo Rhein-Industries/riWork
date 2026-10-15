@@ -6,11 +6,13 @@
 //! still ⏎ or Send afterwards. The list stands wholly above the card, cut to the room there,
 //! so it never covers Send, Stop or the pickers.
 //!
-//! `&` lists the models the chat's driver listed (the model menu's own list), the most used
-//! first (`suggest::ModelUsage`, from the chats' saved info, read on a background thread and
-//! kept for every tab of that data folder as a listing is), the chat's own model marked.
-//! Accepting one puts in its mention (`&gpt-6.1-sol`), as text for an orchestrator to read: the
-//! chat's model, effort and everything else stay as they are, and nothing is sent.
+//! `&` lists every provider's models (`suggest::mention_entries`): the ones the chat's driver
+//! listed (the model menu's own list), then what each provider offers as its saved chats tell
+//! (`catalog::mention_lists`), each row naming its provider, the most used first
+//! (`suggest::ModelUsage`); both are read from the chats' saved metadata on a background thread
+//! and kept for every tab of that data folder and project as a listing is. The chat's own model
+//! is marked. Accepting one puts in its mention (`&gpt-6.1-sol`), as text for an orchestrator to
+//! read: the chat's model, effort and everything else stay as they are, and nothing is sent.
 //!
 //! `@` lists the chat's folder once (`suggest::list_files`, bounded) on a background thread
 //! and keeps it for every tab of that folder (`Listings`, `suggest::FILE_TTL`); typing only
@@ -36,10 +38,13 @@ use gpui_kit::base::{
     input::{Enter, Escape, IndentInline, MoveDown, MoveUp},
 };
 
-use super::{ChatView, state::provider_name, widgets::Look};
+use super::{ChatView, widgets::Look};
 use crate::{
-    chat::suggest::{
-        self, Command, FileEntry, Listing, ModelEntry, ModelUsage, Peek, Sigil, Trigger,
+    chat::{
+        model::{ModelOption, Provider},
+        suggest::{
+            self, Command, FileEntry, Listing, ModelEntry, ModelUsage, Peek, Sigil, Trigger,
+        },
     },
     ui_text,
 };
@@ -75,10 +80,13 @@ impl Item {
         }
     }
 
-    /// Whether it is the same entry as `other`: a model by its id, whatever its use or mark.
+    /// Whether it is the same entry as `other`: a model by its id and provider, whatever its use
+    /// or mark.
     fn same(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Model { entry: a, .. }, Self::Model { entry: b, .. }) => a.id == b.id,
+            (Self::Model { entry: a, .. }, Self::Model { entry: b, .. }) => {
+                a.id == b.id && a.provider == b.provider
+            }
             _ => self == other,
         }
     }
@@ -99,12 +107,13 @@ pub(super) struct Open {
     pub trigger: Trigger,
     pub items: Vec<Item>,
     pub highlight: usize,
-    /// The chat's folder is still being listed for the first time, or the models' use counted.
+    /// The chat's folder is still being listed for the first time, or the models' lists and use
+    /// read.
     pub loading: bool,
     /// Its listing stopped at `suggest::FILE_BOUND`.
     pub truncated: bool,
-    /// The model the chat ran when a `&` list was ranked: another one marks another row.
-    pub current: Option<String>,
+    /// What a `&` list was ranked from: another one ranks it again.
+    pub basis: Option<ModelBasis>,
     /// The person moved the highlight (keys or pointer): a `&` list ordered again by use keeps
     /// it on their row; one never moved keeps it on the first, the most used.
     pub moved: bool,
@@ -138,16 +147,37 @@ struct Listings {
 
 impl Global for Listings {}
 
-/// How much each model is used, by data folder, shared by every chat tab: counted once from the
-/// chats' saved info, kept `suggest::FILE_TTL`, and counted again only once stale.
-#[derive(Default)]
-struct ModelUses {
-    counted: HashMap<PathBuf, (Instant, Arc<ModelUsage>)>,
-    /// The folders being counted, and the tabs waiting for them.
-    counting: HashMap<PathBuf, Vec<WeakEntity<ChatView>>>,
+/// What a `&` list is ranked from, besides what is read in the background: the chat's provider,
+/// the model it is set to (none: its provider's default; another one marks another row), and the
+/// ids its driver listed (a list that arrives adds rows).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ModelBasis {
+    provider: Provider,
+    chosen: Option<String>,
+    own: Vec<String>,
 }
 
-impl Global for ModelUses {}
+/// What `&` lists beyond the chat's own models: each provider's saved list and how much each
+/// model is used.
+struct ModelSources {
+    lists: Vec<(Provider, Vec<ModelOption>)>,
+    usage: ModelUsage,
+}
+
+/// The data folder and the project (which picks the Codex account a list is for) of a
+/// `ModelSources`.
+type SourcesKey = (PathBuf, Option<String>);
+
+/// `ModelSources` by data folder and project, shared by every chat tab: read once from the
+/// chats' saved metadata, kept `suggest::FILE_TTL`, and read again only once stale.
+#[derive(Default)]
+struct ModelReads {
+    read: HashMap<SourcesKey, (Instant, Arc<ModelSources>)>,
+    /// The ones being read, and the tabs waiting for them.
+    reading: HashMap<SourcesKey, Vec<WeakEntity<ChatView>>>,
+}
+
+impl Global for ModelReads {}
 
 impl ChatView {
     /// The folder the chat works in, which `@` lists.
@@ -201,14 +231,14 @@ impl ChatView {
             self.suggestions.dismissed = None;
         }
         let found = found.filter(|found| self.suggestions.dismissed != Some(found.start));
-        // A `&` list is ranked again when the chat's model changed under it: its mark moves.
-        let current = found
+        // A `&` list is ranked again when the chat's model or its driver's list changed under it.
+        let basis = found
             .as_ref()
             .filter(|found| found.sigil == Sigil::Model)
-            .and_then(|_| self.current_model_id());
+            .and_then(|_| self.model_basis());
         let unchanged = match (&self.suggestions.open, &found) {
             (Some(open), Some(found)) => {
-                open.trigger == *found && (found.sigil != Sigil::Model || open.current == current)
+                open.trigger == *found && (found.sigil != Sigil::Model || open.basis == basis)
             }
             (None, None) => true,
             _ => false,
@@ -246,38 +276,51 @@ impl ChatView {
                     highlight: 0,
                     loading: false,
                     truncated: false,
-                    current: None,
+                    basis: None,
                     moved: false,
                 })
             }
             Sigil::Model => {
                 let provider = self.provider()?;
-                if self.model.transcript.models.is_empty() {
-                    // The driver has not listed its models: none is offered, none made up.
-                    return None;
-                }
-                let usage = self.model_usage(cx);
-                let counting = usage.is_none() && self.catalog_home.is_some();
-                let entries = suggest::model_entries(
-                    &self.model.transcript.models,
+                // Until the saved lists are read, the chat's own list; no model is made up.
+                let sources = self.model_sources(cx);
+                let reading = sources.is_none() && self.catalog_home.is_some();
+                let entries = match &sources {
+                    Some(sources) => suggest::mention_entries(
+                        provider,
+                        &self.model.transcript.models,
+                        &sources.lists,
+                        &sources.usage,
+                    ),
+                    None => suggest::mention_entries(
+                        provider,
+                        &self.model.transcript.models,
+                        &[],
+                        &ModelUsage::default(),
+                    ),
+                };
+                let basis = self.model_basis();
+                let current = suggest::current_model(
+                    &entries,
                     provider,
-                    usage.as_deref().unwrap_or(&ModelUsage::default()),
-                );
-                let current = self.current_model_id();
+                    basis.as_ref().and_then(|basis| basis.chosen.as_deref()),
+                )
+                .map(str::to_owned);
                 let items: Vec<_> = suggest::rank_models(&trigger.query, &entries)
                     .into_iter()
                     .map(|entry| Item::Model {
-                        current: current.as_deref() == Some(entry.id.as_str()),
+                        current: entry.provider == Some(provider)
+                            && current.as_deref() == Some(entry.id.as_str()),
                         entry: entry.clone(),
                     })
                     .collect();
-                (!items.is_empty()).then_some(Open {
+                (reading || !items.is_empty()).then_some(Open {
                     trigger,
                     items,
                     highlight: 0,
-                    loading: counting,
+                    loading: reading,
                     truncated: false,
-                    current,
+                    basis,
                     moved: false,
                 })
             }
@@ -301,7 +344,7 @@ impl ChatView {
                     highlight: 0,
                     loading,
                     truncated: listing.is_some_and(|listing| listing.truncated),
-                    current: None,
+                    basis: None,
                     moved: false,
                 })
             }
@@ -348,67 +391,82 @@ impl ChatView {
         kept
     }
 
-    /// The id of the model the chat runs: the one it is set to, else its driver's default.
-    fn current_model_id(&self) -> Option<String> {
-        let chosen = self
+    /// What a `&` list is ranked from now (see `ModelBasis`).
+    fn model_basis(&self) -> Option<ModelBasis> {
+        let transcript = &self.model.transcript;
+        Some(ModelBasis {
+            provider: self.provider()?,
+            chosen: transcript.info.as_ref().and_then(|info| info.model.clone()),
+            own: transcript
+                .models
+                .iter()
+                .map(|model| model.id.clone())
+                .collect(),
+        })
+    }
+
+    /// The providers' saved lists and the models' use, as read for the chats' data folder and
+    /// the chat's project, reading them again (once, for every tab) when they are stale or
+    /// missing. Never waits: stale ones are used meanwhile, and none while they are read for the
+    /// first time. None without a data folder.
+    fn model_sources(&mut self, cx: &mut Context<Self>) -> Option<Arc<ModelSources>> {
+        let home = self.catalog_home.clone()?;
+        let project = self
             .model
             .transcript
             .info
             .as_ref()
-            .and_then(|info| info.model.as_deref());
-        let entries = suggest::model_entries(
-            &self.model.transcript.models,
-            self.provider()?,
-            &ModelUsage::default(),
-        );
-        suggest::current_model(&entries, chosen).map(str::to_owned)
-    }
-
-    /// How much each model is used, as counted for the chats' data folder, counting it again
-    /// (once, for every tab) when the count is stale or missing. Never waits: a stale count is
-    /// used meanwhile, and none while the folder is counted for the first time. None without a
-    /// data folder.
-    fn model_usage(&mut self, cx: &mut Context<Self>) -> Option<Arc<ModelUsage>> {
-        let home = self.catalog_home.clone()?;
+            .and_then(|info| info.project_id.clone());
+        let key = (home, project);
         let me = cx.weak_entity();
-        let uses = cx.default_global::<ModelUses>();
-        let kept = uses.counted.get(&home).cloned();
-        if let Some((read, usage)) = &kept
+        let reads = cx.default_global::<ModelReads>();
+        let kept = reads.read.get(&key).cloned();
+        if let Some((read, sources)) = &kept
             && read.elapsed() < suggest::FILE_TTL
         {
-            return Some(usage.clone());
+            return Some(sources.clone());
         }
-        let waiting = uses.counting.entry(home.clone()).or_default();
+        let waiting = reads.reading.entry(key.clone()).or_default();
         let start = waiting.is_empty();
         if !waiting.iter().any(|view| view == &me) {
             waiting.push(me);
         }
         if start {
-            let count = {
-                let home = home.clone();
-                cx.background_executor()
-                    .spawn(async move { ModelUsage::of(&crate::chat::log::read_infos(&home)) })
+            let read = {
+                let (home, project) = key.clone();
+                cx.background_executor().spawn(async move {
+                    let infos = crate::chat::log::read_infos(&home);
+                    ModelSources {
+                        lists: crate::chat::catalog::mention_lists(
+                            &home,
+                            project.as_deref(),
+                            &infos,
+                        ),
+                        usage: ModelUsage::of(&infos),
+                    }
+                })
             };
             cx.spawn(async move |_, cx| {
-                let usage = count.await;
+                let sources = read.await;
                 cx.update(|cx| {
-                    let uses = cx.default_global::<ModelUses>();
-                    uses.counted
-                        .insert(home.clone(), (Instant::now(), Arc::new(usage)));
-                    let waiting = uses.counting.remove(&home).unwrap_or_default();
+                    let reads = cx.default_global::<ModelReads>();
+                    reads
+                        .read
+                        .insert(key.clone(), (Instant::now(), Arc::new(sources)));
+                    let waiting = reads.reading.remove(&key).unwrap_or_default();
                     for view in waiting {
-                        let _ = view.update(cx, |view, cx| view.model_usage_arrived(cx));
+                        let _ = view.update(cx, |view, cx| view.model_sources_arrived(cx));
                     }
                 });
             })
             .detach();
         }
-        kept.map(|(_, usage)| usage)
+        kept.map(|(_, sources)| sources)
     }
 
-    /// The models' use was counted: an open `&` list is ordered again by it, the highlighted
-    /// model staying so.
-    pub(super) fn model_usage_arrived(&mut self, cx: &mut Context<Self>) {
+    /// The providers' lists and the models' use were read: an open `&` list is worked out again
+    /// from them, the highlighted model staying so once the person moved to it.
+    pub(super) fn model_sources_arrived(&mut self, cx: &mut Context<Self>) {
         self.reopen_with(Sigil::Model, cx);
     }
 
@@ -783,10 +841,7 @@ impl ChatView {
         let colors = look.colors;
         let title = match open.trigger.sigil {
             Sigil::Slash => "Commands".to_owned(),
-            Sigil::Model => match self.provider() {
-                Some(provider) => format!("{} models · most used first", provider_name(provider)),
-                None => "Models".to_owned(),
-            },
+            Sigil::Model => "Models · most used first".to_owned(),
             Sigil::Mention => match self.suggestion_root() {
                 Some(root) => format!(
                     "Files in {}",
@@ -799,7 +854,7 @@ impl ChatView {
             },
         };
         let note = if open.loading && open.trigger.sigil == Sigil::Model {
-            Some("Counting use…".to_owned())
+            Some("Reading models…".to_owned())
         } else if open.loading {
             Some("Listing files…".to_owned())
         } else if open.truncated {

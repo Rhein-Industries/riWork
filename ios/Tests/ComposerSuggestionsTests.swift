@@ -131,10 +131,14 @@ final class ComposerSuggestionsTests: XCTestCase {
         XCTAssertEqual(reply.models, try fixture["reply"]["models"].decode([ComposerModelEntry].self))
         XCTAssertEqual(reply.models.map(\.id), ["default", "opus", "haiku"], "the provider's order, as the desktop sends it")
         XCTAssertEqual(reply.models.first?.isDefault, true)
+        XCTAssertTrue(reply.models.allSatisfy { $0.provider == nil }, "the provider-scoped list says no provider, as before")
+        XCTAssertEqual(reply.mentionModels, try fixture["reply"]["mention_models"].decode([ComposerModelEntry].self))
+        XCTAssertEqual(reply.mentionModels.map(\.provider), [.claude, .claude, .codex, .muse])
         let catalog = ComposerCatalog(reply: reply)
         XCTAssertEqual(catalog.provider, .claude)
         XCTAssertEqual(catalog.rankFiles("ma").map(\.path), ["src/main.rs"])
-        XCTAssertEqual(catalog.rankModels("").map(\.id), ["opus", "default", "haiku"], "the most used first")
+        XCTAssertEqual(catalog.rankModels("").map(\.id), ["opus", "gpt-6.1-sol", "muse-wonder-full-1.0", "haiku"],
+                       "every provider's models, the most used first")
     }
 
     // MARK: `&` models
@@ -152,6 +156,46 @@ final class ComposerSuggestionsTests: XCTestCase {
             XCTAssertEqual(ComposerSuggestion.model(model, current: false).title, vector["insert"].string, "its row reads as what goes in")
         }
     }
+    func testOnlyIdsThatNameAModelAreOfferedAsTheSharedVectorsSay() throws {
+        let vectors = try fixture()["mentionable"].array
+        XCTAssertFalse(vectors.isEmpty)
+        for vector in vectors {
+            let id = try XCTUnwrap(vector["id"].string)
+            XCTAssertEqual(ComposerSuggestions.mentionable(id), vector["expect"] == .bool(true), id.debugDescription)
+        }
+        XCTAssertTrue(ComposerSuggestions.mentionable("DEFAULTS"), "only `default` itself names no model")
+        // A catalog never offers one that is not.
+        let catalog = ComposerCatalog(chatID: chat, provider: .claude, commands: [], files: [],
+                                      models: [ComposerModelEntry(id: "default", name: "Default (recommended)", isDefault: true, provider: .claude),
+                                               ComposerModelEntry(id: "opus", name: "Opus", provider: .claude)])
+        XCTAssertEqual(catalog.models.map(\.id), ["opus"])
+    }
+    func testEveryProvidersModelsRankAndReadAsTheSharedVectorsSay() throws {
+        let fixture = try fixture()
+        let table = fixture["mention_ranking"], list = try table["models"].decode([ComposerModelEntry].self)
+        XCTAssertEqual(Set(list.compactMap(\.provider)), [.codex, .claude, .muse])
+        XCTAssertFalse(table["cases"].array.isEmpty || table["current"].array.isEmpty || fixture["mention_previews"].array.isEmpty)
+        for vector in table["cases"].array {
+            let query = try XCTUnwrap(vector["query"].string)
+            XCTAssertEqual(ComposerSuggestions.rankModels(query, list).map(\.id), strings(vector["expect"]), "query \(query.debugDescription)")
+        }
+        for vector in table["current"].array {
+            let provider = try XCTUnwrap(vector["provider"].string.flatMap(ChatProvider.init(rawValue:)))
+            XCTAssertEqual(ComposerSuggestions.currentModel(list, provider: provider, chosen: vector["chosen"].string), vector["expect"].string,
+                           "\(provider) chosen \(vector["chosen"])")
+        }
+        for vector in fixture["mention_previews"].array {
+            let model = try XCTUnwrap(list.first { $0.id == vector["model"].string })
+            let provider = try XCTUnwrap(vector["chat_provider"].string.flatMap(ChatProvider.init(rawValue:)))
+            let preview = ComposerPreview(model: model, current: vector["current"] == .bool(true), provider: provider)
+            let expect = vector["expect"]
+            XCTAssertEqual(preview.title, expect["title"].string)
+            XCTAssertEqual(preview.kind, expect["kind"].string)
+            XCTAssertEqual(preview.body, strings(expect["body"]))
+            XCTAssertEqual(preview.inserts, expect["inserts"].string)
+            XCTAssertEqual(preview.effect, expect["effect"].string)
+        }
+    }
     func testModelsRankByUseAsTheSharedVectorsSay() throws {
         let fixture = try fixture()
         let table = fixture["model_ranking"], list = try models(fixture)
@@ -163,7 +207,8 @@ final class ComposerSuggestionsTests: XCTestCase {
         XCTAssertEqual(ComposerSuggestions.orderModels(list).map(\.id), strings(table["cases"].array[0]["expect"]),
                        "before anything is typed: the most used first, ties and unused ones in the provider's order")
         for vector in table["current"].array {
-            XCTAssertEqual(ComposerSuggestions.currentModel(list, chosen: vector["chosen"].string), vector["expect"].string, "chosen \(vector["chosen"])")
+            XCTAssertEqual(ComposerSuggestions.currentModel(list, provider: .codex, chosen: vector["chosen"].string), vector["expect"].string,
+                           "chosen \(vector["chosen"])")
         }
     }
     func testModelRowsAndPreviewsReadAsTheSharedVectorsSay() throws {
@@ -172,7 +217,8 @@ final class ComposerSuggestionsTests: XCTestCase {
         for vector in fixture["model_details"].array {
             let chats = try XCTUnwrap(number(vector["chats"]).map { UInt64($0) })
             let current = vector["current"] == .bool(true)
-            XCTAssertEqual(ComposerModelEntry(id: "m", name: "M", chats: chats).detail(current: current), vector["detail"].string)
+            let provider = vector["provider"].string.flatMap(ChatProvider.init(rawValue:))
+            XCTAssertEqual(ComposerModelEntry(id: "m", name: "M", chats: chats, provider: provider).detail(current: current), vector["detail"].string)
         }
         for vector in fixture["model_usage_labels"].array {
             let chats = try XCTUnwrap(number(vector["chats"]).map { UInt64($0) })
@@ -222,15 +268,56 @@ final class ComposerSuggestionsTests: XCTestCase {
         let decoded = try value(#"[{"id":"a","name":"A"},{"id":"  ","name":"Blank"},{"id":"two words","name":"Spaced"},{"name":"No id"},{"id":"b"},{"id":"c","name":"C","chats":"many","is_default":"yes"}]"#)
             .decode([Lenient<ComposerModelEntry>].self).compactMap(\.value)
         XCTAssertEqual(decoded, [ComposerModelEntry(id: "a", name: "A"), ComposerModelEntry(id: "c", name: "C")])
-        // A desktop from before `&` sends no models: the reply still reads, and offers none.
-        var older = try fixture()["reply"]
-        if case .object(var fields) = older { fields["models"] = nil; older = .object(fields) }
-        let reply = try ChatSuggestionsRequest(chatID: chat).parse(older)
-        XCTAssertTrue(reply.models.isEmpty)
+        // `mention_models` need a provider the phone knows; one without is left out on its own.
+        let mentions = try value(#"[{"id":"a","name":"A","provider":"codex"},{"id":"b","name":"B"},{"id":"c","name":"C","provider":"grok"}]"#)
+        XCTAssertEqual(try ChatSuggestionsRequest(chatID: chat).parse(try withField("mention_models", mentions)).mentionModels,
+                       [ComposerModelEntry(id: "a", name: "A", provider: .codex)])
+        // A desktop from before `mention_models` sends the chat's provider's `models` only: those are offered, as the chat's provider's,
+        // without Claude's `default`, which names no model.
+        let scoped = try ChatSuggestionsRequest(chatID: chat).parse(try withField("mention_models", nil))
+        XCTAssertTrue(scoped.mentionModels.isEmpty)
+        let fallback = ComposerCatalog(reply: scoped)
+        XCTAssertEqual(fallback.models.map(\.id), ["opus", "haiku"])
+        XCTAssertEqual(fallback.models.map(\.provider), [.claude, .claude])
         var list = ComposerSuggestionList()
-        list.update(text: "&", caret: 1, catalog: .ready(ComposerCatalog(reply: reply)))
+        list.update(text: "&", caret: 1, catalog: .ready(fallback), chosenModel: "opus")
+        XCTAssertEqual(list.items.map(\.detail), ["Claude · current · used in 9 chats", "Claude · not used yet"])
+        // A desktop from before `&` sends neither: the reply still reads, and offers none.
+        let older = try ChatSuggestionsRequest(chatID: chat).parse(try withField("models", nil, withField("mention_models", nil)))
+        XCTAssertTrue(older.models.isEmpty && older.mentionModels.isEmpty)
+        list = ComposerSuggestionList()
+        list.update(text: "&", caret: 1, catalog: .ready(ComposerCatalog(reply: older)))
         XCTAssertFalse(list.isShown, "no models, no `&` list")
         XCTAssertNil(list.accepted())
+    }
+    /// The fixture's reply with `field` set to `value`, or left out for nil.
+    private func withField(_ field: String, _ value: JSONValue?, _ base: JSONValue? = nil) throws -> JSONValue {
+        guard case .object(var fields) = try base ?? fixture()["reply"] else { throw XCTSkip("the fixture's reply is not an object") }
+        fields[field] = value
+        return .object(fields)
+    }
+    func testAClaudeChatListsAndMentionsACodexModelAndMarksOnlyItsOwn() throws {
+        let fixture = try fixture()
+        let catalog = ComposerCatalog(chatID: chat, provider: .claude, commands: [], files: [],
+                                      models: try fixture["mention_ranking"]["models"].decode([ComposerModelEntry].self))
+        var list = ComposerSuggestionList()
+        list.update(text: "then &gpt", caret: 9, catalog: .ready(catalog), chosenModel: "opus")
+        XCTAssertEqual(list.items.map(\.title), ["&gpt-6.1-sol", "&gpt-6-astra"])
+        XCTAssertEqual(list.items.map(\.detail), ["Codex · used in 7 chats", "Codex · not used yet"], "a Codex default is not this chat's")
+        XCTAssertEqual(list.preview?.kind, "Codex model")
+        let accepted = try XCTUnwrap(list.accepted())
+        XCTAssertEqual(accepted.text, "then &gpt-6.1-sol ", "a mention of another provider's model is text like any other")
+        // Every provider's models, the most used first; only the chat's own provider's model is marked.
+        list.update(text: "&", caret: 1, catalog: .ready(catalog), chosenModel: "opus")
+        XCTAssertEqual(list.items.map(\.title), ["&opus", "&gpt-6.1-sol", "&muse-wonder-full-1.0", "&sonnet", "&muse-wonder-1.0", "&gpt-6-astra", "&haiku"])
+        XCTAssertEqual(list.items.map(\.detail).filter { $0.contains("current") }, ["Claude · current · used in 9 chats"])
+        // A Claude chat on its CLI's own choice marks none: no row is that model.
+        list.update(text: "&", caret: 1, catalog: .ready(catalog), chosenModel: nil)
+        XCTAssertEqual(list.items.count, 7)
+        XCTAssertFalse(list.items.map(\.detail).contains { $0.contains("current") })
+        // The same id offered by two providers is two rows to the highlight, never one.
+        XCTAssertFalse(ComposerSuggestion.model(ComposerModelEntry(id: "x", name: "X", provider: .codex), current: false)
+            .isSame(as: .model(ComposerModelEntry(id: "x", name: "X", provider: .muse), current: false)))
     }
     func testAcceptingAModelPutsItsMentionInTheDraftAndNothingElse() throws {
         let fixture = try fixture()

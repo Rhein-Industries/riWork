@@ -482,10 +482,12 @@ pub(super) fn suggestions_spec(params: &Value) -> std::result::Result<Suggestion
 }
 /// The `chat.suggestions` result for what the CLI printed, or `None` if it is not an answer for
 /// `chat`: the chat's id, provider and folder, its commands, the files and folders of its folder,
-/// the bound of a listing and its provider's models for `&`, and nothing else. A command, an
-/// entry or a model that is malformed is left out on its own (see `suggested_command`,
-/// `suggested_file`, `suggested_model`). A CLI from before `&` prints no models: the phone gets
-/// none and offers no `&` list.
+/// the bound of a listing, its provider's models (`models`, what a phone from before
+/// `mention_models` offers after `&`) and every provider's (`mention_models`, each naming its
+/// provider), and nothing else. A command, an entry or a model that is malformed is left out on
+/// its own (see `suggested_command`, `suggested_file`, `suggested_model`). A CLI from before `&`
+/// prints no models, and one from before every provider's mentions no `mention_models`: the
+/// phone gets `[]` for what is missing.
 fn suggestions_result(chat: &str, cli: &Value) -> Option<Value> {
     if cli.get("chat_id")?.as_str()? != chat {
         return None;
@@ -497,15 +499,20 @@ fn suggestions_result(chat: &str, cli: &Value) -> Option<Value> {
     let commands = cli.get("commands")?.as_array()?;
     let files = cli.get("files")?;
     let entries = files.get("entries")?.as_array()?;
-    let models: Vec<Value> = match cli.get("models") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(models) => models
-            .as_array()?
-            .iter()
-            .filter_map(suggested_model)
-            .take(SUGGESTED_MODELS_MAX)
-            .collect(),
+    // The chat's own provider's models, as a phone from before `mention_models` offers them,
+    // and every provider's, each naming its provider, for a phone that mentions any.
+    let models = |key: &str, with_provider: bool| -> Option<Vec<Value>> {
+        Some(match cli.get(key) {
+            None | Some(Value::Null) => Vec::new(),
+            Some(models) => models
+                .as_array()?
+                .iter()
+                .filter_map(|model| suggested_model(model, with_provider))
+                .take(SUGGESTED_MODELS_MAX)
+                .collect(),
+        })
     };
+    let (mention_models, models) = (models("mention_models", true)?, models("models", false)?);
     Some(json!({
         "chat_id": chat,
         "provider": provider,
@@ -517,14 +524,17 @@ fn suggestions_result(chat: &str, cli: &Value) -> Option<Value> {
         },
         "file_bound": cli.get("file_bound")?.as_u64()?,
         "models": models,
+        "mention_models": mention_models,
     }))
 }
 /// A model as the phone may offer it for `&`, which writes its id into the draft: an id a chat
 /// may be set to (one line of at most `MODEL_MAX_CHARS`, not blank) and that reads as one word
 /// in a mention (no blank space inside), a one-line name of at most `SUGGESTED_MODEL_TEXT_MAX`
 /// characters, its description when that is such a line too (else `""`, rather than leave the
-/// model out), whether it is the provider's default, and how many chats use it.
-fn suggested_model(model: &Value) -> Option<Value> {
+/// model out), whether it is the provider's default, and how many chats use it. `with_provider`:
+/// one of `mention_models`, which names the provider that offers it (one RiWork knows, or the
+/// model is left out); a `models` entry never carries one, as an older phone reads them.
+fn suggested_model(model: &Value, with_provider: bool) -> Option<Value> {
     let line = |text: &str, max: usize| text.chars().count() <= max && !has_control(text);
     let id = model.get("id")?.as_str().filter(|id| {
         let word = id.trim();
@@ -547,13 +557,22 @@ fn suggested_model(model: &Value) -> Option<Value> {
         None | Some(Value::Null) => 0,
         Some(value) => value.as_u64()?,
     };
-    Some(json!({
+    let mut out = json!({
         "id": id,
         "name": name,
         "description": description,
         "is_default": is_default,
         "chats": chats,
-    }))
+    });
+    if with_provider {
+        out["provider"] = json!(
+            model
+                .get("provider")?
+                .as_str()
+                .filter(|provider| ["codex", "claude", "muse"].contains(provider))?
+        );
+    }
+    Some(out)
 }
 /// A slash command as the phone may show it: a name of 1 to `SUGGESTED_COMMAND_MAX` of
 /// `[a-z0-9-]`, a summary, an argument or null, what sending it does and who acts on it.
@@ -1149,27 +1168,38 @@ fn fit_suggestions(
     let (mut fit, mut over) = (0, entries.len());
     result["files"]["entries"] = json!([]);
     if !fits(&result)? {
-        // Only a provider's very long model list is left: the first models that fit, so that
-        // the commands still reach the phone.
-        let models = match result["models"].take() {
-            Value::Array(models) => models,
-            _ => Vec::new(),
+        // Only very long model lists are left: the first models of each that fit, as many of
+        // one as of the other, so that the commands still reach the phone.
+        let lists = ["models", "mention_models"].map(|key| {
+            let list = match result[key].take() {
+                Value::Array(models) => models,
+                _ => Vec::new(),
+            };
+            (key, list)
+        });
+        let keep = |result: &mut Value, count: usize| {
+            for (key, list) in &lists {
+                result[*key] = Value::Array(list[..count.min(list.len())].to_vec());
+            }
         };
-        let (mut fit, mut over) = (0, models.len());
-        result["models"] = json!([]);
+        keep(&mut result, 0);
         if !fits(&result)? {
             return Err(cli_fault("chat suggestions exceed frame limit"));
         }
+        let (mut fit, mut over) = (
+            0,
+            lists.iter().map(|(_, list)| list.len()).max().unwrap_or(0),
+        );
         while over - fit > 1 {
             let middle = (fit + over) / 2;
-            result["models"] = Value::Array(models[..middle].to_vec());
+            keep(&mut result, middle);
             if fits(&result)? {
                 fit = middle;
             } else {
                 over = middle;
             }
         }
-        result["models"] = Value::Array(models[..fit].to_vec());
+        keep(&mut result, fit);
         return Ok(result);
     }
     while over - fit > 1 {

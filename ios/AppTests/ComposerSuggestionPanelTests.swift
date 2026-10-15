@@ -24,7 +24,8 @@ import RiWorkCore
     private func chat() -> ChatInfo {
         ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Fix the build", createdAtUnix: 10, state: .idle)
     }
-    /// The desktop's answer for the chat: Claude's `/compact`, a small folder and Claude's models (opus the most used).
+    /// The desktop's answer for the chat: Claude's `/compact`, a small folder, Claude's models (opus the most used) and, for `&`, every
+    /// provider's (Codex's GPT-6.1-Sol among them).
     private func reply(provider: String = "claude") throws -> JSONValue {
         try JSONDecoder().decode(JSONValue.self, from: Data("""
         {"chat_id":"\(chatID)","provider":"\(provider)","root":"/fixture",
@@ -35,7 +36,10 @@ import RiWorkCore
          "file_bound":5000,
          "models":[{"id":"default","name":"Default (recommended)","description":"","is_default":true,"chats":2},
                    {"id":"opus","name":"Opus","description":"For complex tasks","is_default":false,"chats":9},
-                   {"id":"haiku","name":"Haiku","description":"","is_default":false,"chats":0}]}
+                   {"id":"haiku","name":"Haiku","description":"","is_default":false,"chats":0}],
+         "mention_models":[{"id":"opus","name":"Opus","description":"For complex tasks","is_default":false,"chats":9,"provider":"claude"},
+                           {"id":"haiku","name":"Haiku","description":"","is_default":false,"chats":0,"provider":"claude"},
+                           {"id":"gpt-6.1-sol","name":"GPT-6.1-Sol","description":"","is_default":true,"chats":4,"provider":"codex"}]}
         """.utf8))
     }
     private func descendants<T: UIView>(_ type: T.Type, in view: UIView) -> [T] {
@@ -206,14 +210,14 @@ import RiWorkCore
         await eventually("the list's keys are claimed") { self.command(view, "\t") != nil }
         press(view, "\r")
         XCTAssertEqual(view.text, "&opus ", "⏎ puts the model's mention in, with a space after it")
-        // A second mention later in the same message.
+        // A second mention later in the same message, of another provider's model: Codex's, in this Claude chat.
         view.returnReleased()
-        view.insertText("designs it, then &ha")
+        view.insertText("designs it, then &gp")
         await eventually("a list again, for the second mention") { self.listShown(rig) && self.command(view, "\t") != nil }
         press(view, "\t")
-        XCTAssertEqual(view.text, "&opus designs it, then &haiku ")
+        XCTAssertEqual(view.text, "&opus designs it, then &gpt-6.1-sol ")
         await eventually("the draft follows and the list goes") {
-            rig.model.conversation(self.chatID).draft == "&opus designs it, then &haiku " && !self.listShown(rig)
+            rig.model.conversation(self.chatID).draft == "&opus designs it, then &gpt-6.1-sol " && !self.listShown(rig)
         }
         try await Task.sleep(for: .milliseconds(150))
         let commands = await rig.transport.count("chat.command")

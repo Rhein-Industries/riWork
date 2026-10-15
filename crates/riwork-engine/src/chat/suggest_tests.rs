@@ -175,7 +175,7 @@ fn the_phone_reply_reads_and_writes_as_the_shared_fixture() {
 fn a_reply_lists_the_chat_folder_and_the_providers_commands() {
     let root = temp();
     write(&root, "a.txt", "hello");
-    let made = reply("chat-1", Provider::Codex, &root, Vec::new());
+    let made = reply("chat-1", Provider::Codex, &root, Vec::new(), Vec::new());
     assert_eq!(made.chat_id, "chat-1");
     assert_eq!(made.root, root.display().to_string());
     assert_eq!(
@@ -214,6 +214,12 @@ fn a_reply_keeps_the_first_entries_that_fit_its_bound() {
             Provider::Codex,
             &ModelUsage::default(),
         ),
+        mention_models: mention_entries(
+            Provider::Codex,
+            &[option("gpt-5.1", true)],
+            &[(Provider::Claude, vec![option("opus", false)])],
+            &ModelUsage::default(),
+        ),
     };
     // As the CLI prints it: pretty, and a newline.
     let printed = |reply: &Reply| serde_json::to_string_pretty(reply).unwrap().len() + 1;
@@ -234,6 +240,7 @@ fn a_reply_keeps_the_first_entries_that_fit_its_bound() {
         none.models, full.models,
         "the models are never cut for the files"
     );
+    assert_eq!(none.mention_models, full.mention_models);
 }
 
 fn models_of(value: &Value) -> Vec<ModelEntry> {
@@ -253,6 +260,7 @@ fn a_model_is_put_in_as_its_mention_as_the_shared_vectors_say() {
             description: String::new(),
             is_default: false,
             chats: 0,
+            provider: Some(Provider::Claude),
         };
         assert_eq!(
             entry.insertion(),
@@ -283,7 +291,7 @@ fn models_rank_by_use_as_the_shared_vectors_say() {
     );
     for case in table["current"].as_array().unwrap() {
         assert_eq!(
-            current_model(&models, case["chosen"].as_str()),
+            current_model(&models, Provider::Codex, case["chosen"].as_str()),
             case["expect"].as_str(),
             "{case}"
         );
@@ -300,6 +308,9 @@ fn model_rows_and_previews_read_as_the_shared_vectors_say() {
             description: String::new(),
             is_default: false,
             chats: case["chats"].as_u64().unwrap(),
+            provider: case
+                .get("provider")
+                .map(|provider| serde_json::from_value(provider.clone()).unwrap()),
         };
         assert_eq!(
             model_detail(&entry, case["current"].as_bool().unwrap()),
@@ -318,6 +329,55 @@ fn model_rows_and_previews_read_as_the_shared_vectors_say() {
     let find = |id: &str| models.iter().find(|entry| entry.id == id).unwrap();
     for case in fixture["model_previews"].as_array().unwrap() {
         let provider: Provider = serde_json::from_value(case["provider"].clone()).unwrap();
+        let preview = model_preview(
+            find(case["model"].as_str().unwrap()),
+            case["current"].as_bool().unwrap(),
+            provider,
+        );
+        let expect = &case["expect"];
+        assert_eq!(preview.title, expect["title"].as_str().unwrap());
+        assert_eq!(preview.kind, expect["kind"].as_str().unwrap());
+        assert_eq!(preview.body, strings(&expect["body"]));
+        assert_eq!(preview.inserts, expect["inserts"].as_str().unwrap());
+        assert_eq!(preview.effect, expect["effect"].as_str().unwrap());
+    }
+}
+
+#[test]
+fn only_ids_that_name_a_model_are_offered_as_the_shared_vectors_say() {
+    for case in fixture()["mentionable"].as_array().unwrap() {
+        assert_eq!(
+            mentionable(case["id"].as_str().unwrap()),
+            case["expect"].as_bool().unwrap(),
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn every_providers_models_rank_and_read_as_the_shared_vectors_say() {
+    let fixture = fixture();
+    let table = &fixture["mention_ranking"];
+    let models = models_of(&table["models"]);
+    for case in table["cases"].as_array().unwrap() {
+        let query = case["query"].as_str().unwrap();
+        assert_eq!(
+            ids(&rank_models(query, &models)),
+            strings(&case["expect"]),
+            "{query:?}"
+        );
+    }
+    for case in table["current"].as_array().unwrap() {
+        let provider: Provider = serde_json::from_value(case["provider"].clone()).unwrap();
+        assert_eq!(
+            current_model(&models, provider, case["chosen"].as_str()),
+            case["expect"].as_str(),
+            "{case}"
+        );
+    }
+    let find = |id: &str| models.iter().find(|entry| entry.id == id).unwrap();
+    for case in fixture["mention_previews"].as_array().unwrap() {
+        let provider: Provider = serde_json::from_value(case["chat_provider"].clone()).unwrap();
         let preview = model_preview(
             find(case["model"].as_str().unwrap()),
             case["current"].as_bool().unwrap(),
@@ -411,6 +471,135 @@ fn use_counts_the_persons_own_chats_by_the_model_each_is_set_to_now() {
     );
     // No list, no `&` models: none is made up.
     assert!(model_entries(&[], Provider::Codex, &usage).is_empty());
+}
+
+#[test]
+fn a_chat_is_offered_every_providers_models_once_each_by_use() {
+    let usage = ModelUsage::of(&[
+        chat("claude", Some("opus"), true),
+        chat("claude", Some("opus"), true),
+        chat("claude", Some("opus"), true),
+        chat("codex", Some("gpt-6.1-sol"), true),
+        chat("codex", Some("gpt-6.1-sol"), true),
+        chat("muse", None, true),
+        // A Claude chat on the CLI's own choice counts for no row: `default` names no model.
+        chat("claude", None, true),
+        chat("claude", Some("default"), true),
+        // The same id under two providers counts for each provider apart.
+        chat("codex", Some("shared"), true),
+    ]);
+    // A Muse chat: its driver's list, then the providers' saved lists.
+    let own = [
+        option("muse-wonder-full-1.0", true),
+        option("muse-wonder-1.0", false),
+    ];
+    let lists = [
+        (
+            Provider::Codex,
+            vec![
+                option("gpt-6.1-sol", false),
+                option("shared", false),
+                option("two words", false),
+            ],
+        ),
+        (
+            Provider::Claude,
+            vec![
+                option("default", true),
+                option("opus", false),
+                option("shared", false),
+                option("haiku", false),
+            ],
+        ),
+        (
+            Provider::Muse,
+            vec![
+                option("muse-wonder-1.0", false),
+                option("muse-wonder-lite-1.0", false),
+            ],
+        ),
+    ];
+    let entries = mention_entries(Provider::Muse, &own, &lists, &usage);
+    let rows = |entries: &[&ModelEntry]| {
+        entries
+            .iter()
+            .map(|entry| (entry.provider.unwrap(), entry.id.clone(), entry.chats))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        rows(&entries.iter().collect::<Vec<_>>()),
+        [
+            // The chat's own list first, its provider's saved list next (each id once), then the
+            // other providers' in `PROVIDERS` order; `default` and an id of two words are left
+            // out, and `shared` is Codex's, the first list that has it.
+            (Provider::Muse, "muse-wonder-full-1.0".into(), 1),
+            (Provider::Muse, "muse-wonder-1.0".into(), 0),
+            (Provider::Muse, "muse-wonder-lite-1.0".into(), 0),
+            (Provider::Codex, "gpt-6.1-sol".into(), 2),
+            (Provider::Codex, "shared".into(), 1),
+            (Provider::Claude, "opus".into(), 3),
+            (Provider::Claude, "haiku".into(), 0),
+        ]
+    );
+    assert_eq!(
+        rows(&order_models(&entries)),
+        [
+            (Provider::Claude, "opus".into(), 3),
+            (Provider::Codex, "gpt-6.1-sol".into(), 2),
+            (Provider::Muse, "muse-wonder-full-1.0".into(), 1),
+            (Provider::Codex, "shared".into(), 1),
+            (Provider::Muse, "muse-wonder-1.0".into(), 0),
+            (Provider::Muse, "muse-wonder-lite-1.0".into(), 0),
+            (Provider::Claude, "haiku".into(), 0),
+        ],
+        "the most used first whatever the provider, ties in the order above"
+    );
+    // The chat's model is marked among its own provider's rows only.
+    assert_eq!(
+        current_model(&entries, Provider::Muse, None),
+        Some("muse-wonder-full-1.0")
+    );
+    assert_eq!(current_model(&entries, Provider::Muse, Some("opus")), None);
+    assert_eq!(
+        current_model(&entries, Provider::Claude, Some("opus")),
+        Some("opus")
+    );
+    // A mention is the id alone, whichever provider offers it.
+    assert_eq!(entries[5].insertion(), "&opus");
+    // Where the chat's own provider lists an id another does too, the chat's row is kept.
+    let entries = mention_entries(Provider::Claude, &[option("shared", false)], &lists, &usage);
+    assert_eq!(entries[0].provider, Some(Provider::Claude));
+    assert_eq!(
+        entries.iter().filter(|entry| entry.id == "shared").count(),
+        1
+    );
+    // Nothing listed anywhere: nothing made up.
+    assert!(mention_entries(Provider::Codex, &[], &[], &usage).is_empty());
+}
+
+#[test]
+fn chats_on_no_model_count_once_whatever_lists_name_a_default() {
+    let usage = ModelUsage::of(&[
+        chat("codex", None, true),
+        chat("codex", None, true),
+        chat("codex", Some("gpt-6.1-sol"), true),
+    ]);
+    // The chat's driver and a Codex chat of another account named different defaults: the
+    // chats set to no model count for the first one only.
+    let own = [option("gpt-6-astra", true)];
+    let lists = [(
+        Provider::Codex,
+        vec![option("gpt-6.1-sol", true), option(&"x".repeat(101), false)],
+    )];
+    let entries = mention_entries(Provider::Codex, &own, &lists, &usage);
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| (entry.id.as_str(), entry.chats))
+            .collect::<Vec<_>>(),
+        // An id no chat can be set to (over 100 characters) is no mention either.
+        [("gpt-6-astra", 2), ("gpt-6.1-sol", 1)]
+    );
 }
 
 #[test]

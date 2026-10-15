@@ -1506,8 +1506,9 @@ fn suggestions_read_a_saved_chats_commands_and_folder_without_a_host() {
                 {"path": "src/main.rs", "dir": false, "bytes": 13}
             ], "truncated": false},
             "file_bound": 5000,
-            // No chat of the provider has listed its models: no `&` model is made up.
-            "models": []
+            // No chat of any provider has listed its models: no `&` model is made up.
+            "models": [],
+            "mention_models": []
         })
     );
     assert_eq!(reply["commands"][0]["name"], "compact");
@@ -1550,29 +1551,44 @@ fn suggestions_offer_the_chats_models_with_how_much_each_is_used() {
             .unwrap();
         id
     };
-    let chat = save("claude", Some("opus"), true, false);
-    // The chat's driver listed its models, in its order.
-    let models: Vec<crate::chat::model::ModelOption> = serde_json::from_value(json!([
-        {"id": "default", "name": "Default", "is_default": true},
-        {"id": "opus", "name": "Opus", "description": "For complex tasks"},
-        {"id": "haiku", "name": "Haiku"}
-    ]))
-    .unwrap();
-    let line = serde_json::to_vec(&Envelope {
-        chat_id: chat.clone(),
-        seq: 2,
-        event: ChatEvent::Models { models },
-    })
-    .unwrap();
-    let mut events = std::fs::OpenOptions::new()
-        .append(true)
-        .open(
-            crate::chat::log::chat_dir(&home, &chat)
-                .unwrap()
-                .join("events.jsonl"),
-        )
+    // A driver listed its models in chat `id`, in its order.
+    let list = |id: &str, models: Value| {
+        let line = serde_json::to_vec(&Envelope {
+            chat_id: id.to_owned(),
+            seq: 2,
+            event: ChatEvent::Models {
+                models: serde_json::from_value(models).unwrap(),
+            },
+        })
         .unwrap();
-    std::io::Write::write_all(&mut events, &[line, b"\n".to_vec()].concat()).unwrap();
+        let mut events = std::fs::OpenOptions::new()
+            .append(true)
+            .open(
+                crate::chat::log::chat_dir(&home, id)
+                    .unwrap()
+                    .join("events.jsonl"),
+            )
+            .unwrap();
+        std::io::Write::write_all(&mut events, &[line, b"\n".to_vec()].concat()).unwrap();
+    };
+    // A Codex chat saved its provider's list: `&` offers it in a Claude chat too.
+    let codex = save("codex", Some("gpt-6.1-sol"), true, false);
+    list(
+        &codex,
+        json!([
+            {"id": "gpt-6.1-sol", "name": "GPT-6.1-Sol", "is_default": true},
+            {"id": "gpt-6-astra", "name": "GPT-6-Astra"}
+        ]),
+    );
+    let chat = save("claude", Some("opus"), true, false);
+    list(
+        &chat,
+        json!([
+            {"id": "default", "name": "Default", "is_default": true},
+            {"id": "opus", "name": "Opus", "description": "For complex tasks"},
+            {"id": "haiku", "name": "Haiku"}
+        ]),
+    );
     for _ in 0..2 {
         save("claude", Some("opus"), true, false);
     }
@@ -1599,11 +1615,25 @@ fn suggestions_offer_the_chats_models_with_how_much_each_is_used() {
             {"id": "opus", "name": "Opus", "description": "For complex tasks", "is_default": false, "chats": 3},
             {"id": "haiku", "name": "Haiku", "description": "", "is_default": false, "chats": 0}
         ]),
-        "the provider's order, with each model's use"
+        "the provider's order, with each model's use, as a phone from before every provider's \
+         mentions offers them"
+    );
+    assert_eq!(
+        reply["mention_models"],
+        json!([
+            {"id": "opus", "name": "Opus", "description": "For complex tasks", "is_default": false, "chats": 3, "provider": "claude"},
+            {"id": "haiku", "name": "Haiku", "description": "", "is_default": false, "chats": 0, "provider": "claude"},
+            {"id": "gpt-6.1-sol", "name": "GPT-6.1-Sol", "description": "", "is_default": true, "chats": 1, "provider": "codex"},
+            {"id": "gpt-6-astra", "name": "GPT-6-Astra", "description": "", "is_default": false, "chats": 0, "provider": "codex"}
+        ]),
+        "the chat's own list, then the other providers' saved ones; `default` names no model"
     );
     assert!(
         run(false).contains(
-            "&opus\tOpus\t3 of your Claude chats use it now\n&default\tDefault\t1 of your Claude chats uses it now\n&haiku\tHaiku\tNone of your Claude chats use it now\n"
+            "&opus\tClaude\tOpus\t3 of your Claude chats use it now\n\
+             &gpt-6.1-sol\tCodex\tGPT-6.1-Sol\t1 of your Codex chats uses it now\n\
+             &haiku\tClaude\tHaiku\tNone of your Claude chats use it now\n\
+             &gpt-6-astra\tCodex\tGPT-6-Astra\tNone of your Codex chats use it now\n"
         ),
         "{}",
         run(false)

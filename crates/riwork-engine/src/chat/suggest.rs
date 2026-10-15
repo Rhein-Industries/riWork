@@ -22,13 +22,16 @@
 //!   Accepting one puts in its path relative to the chat's folder, which every provider's
 //!   agent can open from where it runs; nothing is attached. Chats and shells are not offered:
 //!   no provider and no RiWork pipeline resolves a reference to one from a message's text.
-//! - **`&` models** (`model_entries`): the models the chat's provider listed for it, as the
-//!   model menu has them, ordered by how much the person uses each (`order_models`): how many of
-//!   their own chats of the provider are set to it now, read from the chats' saved
-//!   `info.json` (`model_usage`). Nothing new is recorded for it. Accepting one writes a
-//!   mention, `&` and the model's id (`ModelEntry::insertion`): a way to tell an orchestrator
-//!   which model the person would like for the work the message hands out. It is only text: it
-//!   switches nothing, and the orchestrator still decides; RiWork never reads it back.
+//! - **`&` models** (`mention_entries`): every provider's models, so that a message to an
+//!   orchestrator can name a Claude model in a Codex chat: the chat's own list first, then what
+//!   each provider offers as its saved chats tell (`catalog::mention_lists`, what `riwork chat
+//!   models` reads), one row per id, each with its provider. They are ordered by how much the
+//!   person uses each (`order_models`): how many of their own chats of that provider are set to
+//!   it now, read from the chats' saved `info.json` (`model_usage`). Nothing new is recorded
+//!   for it. Accepting one writes a mention, `&` and the model's id (`ModelEntry::insertion`):
+//!   a way to tell an orchestrator which model the person would like for the work the message
+//!   hands out. It is only text: it switches nothing, and the orchestrator still decides;
+//!   RiWork never reads it back. Only ids that make a mention are offered (`mentionable`).
 //! - **Accepting** (`accept`) replaces the token with the entry's text and a space. It never
 //!   sends: that stays the person's own ⏎ or Send.
 
@@ -288,7 +291,7 @@ fn rank_by_names<'a, T>(
 
 // ---- Models --------------------------------------------------------------------------------
 
-/// A model of the chat's provider as the `&` list shows it, with how much the person uses it.
+/// A model as the `&` list shows it, with how much the person uses it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelEntry {
     /// What the chat is set to: the provider's model id (`ModelOption::id`).
@@ -303,6 +306,10 @@ pub struct ModelEntry {
     /// How many of the person's own chats of the provider are set to it now (`model_usage`).
     #[serde(default)]
     pub chats: u64,
+    /// The provider that offers it: set in `mention_entries`, absent from the chat's own
+    /// provider-scoped list (`model_entries`, the reply's `models`), which is the chat's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<Provider>,
 }
 
 impl ModelEntry {
@@ -325,6 +332,18 @@ pub struct ModelUsage {
 
 /// The key of chats set to no model, which their provider's default runs.
 const DEFAULT_KEY: &str = "";
+
+/// The providers whose models `&` offers, in the order their lists follow the chat's own.
+pub const PROVIDERS: [Provider; 3] = [Provider::Codex, Provider::Claude, Provider::Muse];
+
+/// Whether a model id makes a mention an orchestrator can act on: not blank, one word (no blank
+/// space inside, or `&two words` would read as `&two`), and not `default`, which names no model:
+/// Claude's list has a `default` entry, "Default (recommended)", that is the CLI's own choice of
+/// whichever model the account defaults to.
+pub fn mentionable(id: &str) -> bool {
+    let id = id.trim();
+    !id.is_empty() && !id.contains(char::is_whitespace) && !id.eq_ignore_ascii_case("default")
+}
 
 impl ModelUsage {
     /// Counted from the chats' saved info (`log::read_infos`).
@@ -357,7 +376,8 @@ impl ModelUsage {
 
 /// `models`, as `provider`'s driver listed them for the chat (the model menu's list, never one
 /// made up), with their use: the default model also counts the chats set to no model. An id
-/// with blank space in it is left out: its mention would not read as one word.
+/// with blank space in it is left out: its mention would not read as one word. The reply's
+/// provider-scoped `models`, which a phone from before `mention_models` offers after `&`.
 pub fn model_entries(
     models: &[super::model::ModelOption],
     provider: Provider,
@@ -380,6 +400,7 @@ pub fn model_entries(
                 } else {
                     0
                 },
+            provider: None,
         })
         .collect()
 }
@@ -390,6 +411,55 @@ pub fn order_models(entries: &[ModelEntry]) -> Vec<&ModelEntry> {
     let mut ordered: Vec<_> = entries.iter().collect();
     ordered.sort_by_key(|entry| std::cmp::Reverse(entry.chats));
     ordered
+}
+
+/// The `&` list's models for a chat of `provider`: `own`, the list its driver reported (else
+/// what its provider offers), then each provider's saved list (`lists`), its own provider's
+/// first, then the others in `PROVIDERS` order, each with its provider and use. Only
+/// `mentionable` ids a chat may be set to (`catalog::valid_model`), and each id once: where two
+/// lists have it, the first one's row is kept (so the chat's own provider's, then `PROVIDERS`
+/// order). A provider's first default model also counts its chats set to no model (two lists of
+/// one provider may name different defaults; those chats count once).
+pub fn mention_entries(
+    provider: Provider,
+    own: &[super::model::ModelOption],
+    lists: &[(Provider, Vec<super::model::ModelOption>)],
+    usage: &ModelUsage,
+) -> Vec<ModelEntry> {
+    let others = PROVIDERS.into_iter().filter(|other| *other != provider);
+    let sources = std::iter::once((provider, own)).chain(
+        std::iter::once(provider).chain(others).flat_map(|source| {
+            lists
+                .iter()
+                .filter(move |(listed, _)| *listed == source)
+                .map(|(listed, models)| (*listed, models.as_slice()))
+        }),
+    );
+    let mut entries: Vec<ModelEntry> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut defaulted = std::collections::HashSet::new();
+    for (source, models) in sources {
+        for model in models {
+            let id = model.id.trim();
+            if !mentionable(id) || !super::catalog::valid_model(id) || !seen.insert(id.to_owned()) {
+                continue;
+            }
+            let unset = if model.is_default && defaulted.insert(source) {
+                usage.chats(source, None)
+            } else {
+                0
+            };
+            entries.push(ModelEntry {
+                id: model.id.clone(),
+                name: model.name.clone(),
+                description: model.description.clone(),
+                is_default: model.is_default,
+                chats: usage.chats(source, Some(id)) + unset,
+                provider: Some(source),
+            });
+        }
+    }
+    entries
 }
 
 /// The entries that match `query` by id or name, best first as `rank_commands` ranks, with
@@ -404,11 +474,20 @@ pub fn rank_models<'a>(query: &str, entries: &'a [ModelEntry]) -> Vec<&'a ModelE
     .collect()
 }
 
-/// The id of the model the chat runs: the one it is set to, else its provider's default.
-pub fn current_model<'a>(entries: &'a [ModelEntry], chosen: Option<&str>) -> Option<&'a str> {
+/// The id of the model a chat of `provider` runs, among its provider's entries (an entry with
+/// no provider is the chat's): the one it is set to, else its provider's default. None when
+/// that is not listed, as Claude's `default` is not among `mention_entries`.
+pub fn current_model<'a>(
+    entries: &'a [ModelEntry],
+    provider: Provider,
+    chosen: Option<&str>,
+) -> Option<&'a str> {
+    let mut own = entries
+        .iter()
+        .filter(|entry| entry.provider.is_none_or(|listed| listed == provider));
     match chosen.map(str::trim).filter(|id| !id.is_empty()) {
-        Some(id) => entries.iter().find(|entry| entry.id == id),
-        None => entries.iter().find(|entry| entry.is_default),
+        Some(id) => own.find(|entry| entry.id.trim() == id),
+        None => own.find(|entry| entry.is_default),
     }
     .map(|entry| entry.id.as_str())
 }
@@ -762,22 +841,27 @@ pub fn command_preview(command: &Command, provider: Provider) -> Preview {
     }
 }
 
-/// A model row's second line: whether the chat runs it, and how many chats use it.
+/// A model row's second line: its provider (when it says), whether the chat runs it, and how
+/// many chats use it.
 pub fn model_detail(entry: &ModelEntry, current: bool) -> String {
     let used = match entry.chats {
         0 => "not used yet".to_owned(),
         1 => "used in 1 chat".to_owned(),
         n => format!("used in {n} chats"),
     };
-    if current {
-        format!("Current · {used}")
-    } else {
-        let mut chars = used.chars();
-        chars
-            .next()
-            .map(|first| first.to_uppercase().chain(chars).collect())
-            .unwrap_or_default()
-    }
+    let line = entry
+        .provider
+        .map(provider_title)
+        .into_iter()
+        .chain(current.then_some("current"))
+        .chain(std::iter::once(used.as_str()))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let mut chars = line.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// What a model's use says: how many of the person's `provider` chats are set to it.
@@ -791,8 +875,10 @@ pub fn usage_label(chats: u64, provider: Provider) -> String {
 }
 
 /// The preview of a model offered to a chat of `provider`, `current` if the chat runs it: its
-/// mention, its name where that is not its id, what it is, and the use the list is sorted by.
+/// mention, its provider (the entry's, else the chat's), its name where that is not its id,
+/// what it is, and the use the list is sorted by.
 pub fn model_preview(entry: &ModelEntry, current: bool, provider: Provider) -> Preview {
+    let provider = entry.provider.unwrap_or(provider);
     let mut kind = format!("{} model", provider_title(provider));
     if current {
         kind.push_str(" · current");
@@ -863,7 +949,8 @@ pub fn size_label(bytes: u64) -> String {
     }
 }
 
-fn provider_title(provider: Provider) -> &'static str {
+/// A provider's name as the composer shows it.
+pub fn provider_title(provider: Provider) -> &'static str {
     match provider {
         Provider::Codex => "Codex",
         Provider::Claude => "Claude",
@@ -943,7 +1030,8 @@ impl Peek {
 // ---- The phone's reply ---------------------------------------------------------------------
 
 /// What `riwork chat suggestions CHAT --json` prints, and the connector's `chat.suggestions`
-/// passes to the phone: the chat's commands, its folder's listing and its provider's models.
+/// passes to the phone: the chat's commands, its folder's listing, its provider's models and
+/// every provider's for `&`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reply {
     pub chat_id: String,
@@ -954,11 +1042,16 @@ pub struct Reply {
     pub files: Listing,
     /// The most entries a listing holds (`FILE_BOUND`), so the phone can say so.
     pub file_bound: usize,
-    /// The models the chat's provider listed, in the provider's order, with their use; the
-    /// composer orders them (`order_models`). Absent from an older CLI's reply, which offers no
-    /// `&` list.
+    /// The models the chat's provider listed, in the provider's order, with their use and no
+    /// `provider` (`model_entries`), as a phone from before `mention_models` reads them: it
+    /// offers these, and only these, after `&`. Absent from an older CLI's reply.
     #[serde(default)]
     pub models: Vec<ModelEntry>,
+    /// What `&` offers now: every provider's models, each with its `provider`
+    /// (`mention_entries`); the composer orders them (`order_models`). Absent from an older
+    /// CLI's reply, where a phone falls back to `models`.
+    #[serde(default)]
+    pub mention_models: Vec<ModelEntry>,
 }
 
 /// The most bytes `riwork chat suggestions --json` prints: well within what the connector reads
@@ -966,9 +1059,16 @@ pub struct Reply {
 /// or escaped paths comes near it.
 pub const REPLY_BYTES: usize = 4 * 1024 * 1024;
 
-/// The reply for chat `chat_id` of `provider` working in `root`, offering `models`, within
-/// `REPLY_BYTES`. Walks `root` once.
-pub fn reply(chat_id: &str, provider: Provider, root: &Path, models: Vec<ModelEntry>) -> Reply {
+/// The reply for chat `chat_id` of `provider` working in `root`, offering `models` (its
+/// provider's) and `mention_models` (every provider's), within `REPLY_BYTES`. Walks `root`
+/// once.
+pub fn reply(
+    chat_id: &str,
+    provider: Provider,
+    root: &Path,
+    models: Vec<ModelEntry>,
+    mention_models: Vec<ModelEntry>,
+) -> Reply {
     Reply {
         chat_id: chat_id.to_owned(),
         provider,
@@ -977,6 +1077,7 @@ pub fn reply(chat_id: &str, provider: Provider, root: &Path, models: Vec<ModelEn
         files: list_files(root),
         file_bound: FILE_BOUND,
         models,
+        mention_models,
     }
     .within(REPLY_BYTES)
 }
