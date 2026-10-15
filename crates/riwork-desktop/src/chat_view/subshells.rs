@@ -1,9 +1,18 @@
-//! A bounded worker section inside the chat, independent of transcript virtualization.
-//! Snapshot installs never focus an editor or modify the chat draft.
+//! RiWork's workers in this chat's timeline. The host writes a marker item where a worker
+//! was started or given work (`chat::workers`); this draws it as a card whose live state
+//! (status, elapsed time, the last lines of its terminal) comes from the inventory through
+//! `set_subshells`. A running card keeps one height while its output moves, and its live
+//! tail is plain text, never part of a selection. Installing new live state never focuses
+//! an editor or changes the chat's draft.
 use super::*;
+use crate::chat::model::Item;
+use crate::chat::workers::{self, CardStatus, LiveWorker, WorkerKind, WorkerRef};
 use gpui::{AnyElement, SharedString};
 use gpui_kit::base::TestSupportExt as _;
-use riwork_engine::subshells::ShellCard;
+use std::collections::BTreeMap;
+
+/// The lines of output a running card shows, padded so its height never moves.
+pub(super) const LIVE_LINES: usize = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ShellAction {
@@ -14,43 +23,168 @@ pub enum ShellAction {
 
 #[derive(Default)]
 pub(super) struct WorkerUi {
-    pub cards: Vec<ShellCard>,
-    poll: String,
-    collapsed: HashSet<String>,
+    /// What the inventory says now about this chat's workers, by session id.
+    pub live: BTreeMap<String, LiveWorker>,
+    /// Why that may be old (a failed or paused check), shown on running cards.
+    stale: Option<String>,
+    /// Each session's latest marker by item index: only that card can be live.
+    latest: HashMap<String, usize>,
+    /// Where each running card was last seen against the viewport (above, below), by
+    /// item id: a card waiting to be measured again keeps its last known place.
+    places: std::cell::RefCell<HashMap<String, (bool, bool)>>,
+    /// The worker the bar above the message box writes to, and what it holds.
     pub(super) message: Option<(String, Entity<InputState>, Subscription)>,
     pending: Option<String>,
     error: Option<String>,
 }
 
+fn elapsed(seconds: u64) -> String {
+    format!("{}m {}s", seconds / 60, seconds % 60)
+}
+
 impl ChatView {
-    pub fn set_subshells(&mut self, cards: Vec<ShellCard>, poll: String, cx: &mut Context<Self>) {
-        if self.workers.cards == cards && self.workers.poll == poll {
+    pub fn set_subshells(
+        &mut self,
+        live: BTreeMap<String, LiveWorker>,
+        stale: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.workers.live == live && self.workers.stale == stale {
             return;
         }
-        for card in &cards {
-            if card.finished()
-                && self
-                    .workers
-                    .cards
-                    .iter()
-                    .find(|old| old.id == card.id)
-                    .is_none_or(|old| !old.finished())
-            {
-                self.workers.collapsed.insert(card.id.clone());
-            } else if !card.finished()
-                && self
-                    .workers
-                    .cards
-                    .iter()
-                    .find(|old| old.id == card.id)
-                    .is_some_and(|old| old.finished())
-            {
-                self.workers.collapsed.remove(&card.id);
+        let changed: HashSet<String> = live
+            .iter()
+            .filter(|(id, now)| self.workers.live.get(*id) != Some(*now))
+            .map(|(id, _)| id.clone())
+            .chain(
+                self.workers
+                    .live
+                    .keys()
+                    .filter(|id| !live.contains_key(*id))
+                    .cloned(),
+            )
+            .chain(
+                (self.workers.stale != stale)
+                    .then(|| self.workers.latest.keys().cloned().collect::<Vec<_>>())
+                    .into_iter()
+                    .flatten(),
+            )
+            .collect();
+        self.workers.live = live;
+        self.workers.stale = stale;
+        // Only the cards whose worker changed are measured again: the rest of the
+        // transcript, a selection in it and where the reader is all stay as they were.
+        let rows: Vec<usize> = self
+            .visible
+            .iter()
+            .enumerate()
+            .filter_map(|(row, shown)| match shown {
+                display::Row::Item(at) | display::Row::Details(at) => {
+                    let worker = workers::of(&self.model.transcript.items[*at])?;
+                    changed.contains(&worker.session_id).then_some(row)
+                }
+                _ => None,
+            })
+            .collect();
+        for row in rows {
+            self.list.remeasure_items(row..row + 1);
+        }
+        cx.notify();
+    }
+
+    /// Finds each worker's latest card again after the rows changed; a card that is no
+    /// longer the latest becomes a one-line "continued below", so it is measured again.
+    pub(super) fn reindex_workers(&mut self) {
+        let latest: HashMap<String, usize> = workers::latest(&self.model.transcript.items)
+            .into_iter()
+            .map(|(id, at)| (id.to_owned(), at))
+            .collect();
+        let superseded: Vec<usize> = self
+            .workers
+            .latest
+            .iter()
+            .filter(|(id, at)| latest.get(*id) != Some(*at))
+            .map(|(_, at)| *at)
+            .collect();
+        self.workers.latest = latest;
+        for at in superseded {
+            if let Some(row) = self.visible.iter().position(
+                |row| matches!(row, display::Row::Item(i) | display::Row::Details(i) if *i == at),
+            ) {
+                self.list.remeasure_items(row..row + 1);
             }
         }
-        self.workers.cards = cards;
-        self.workers.poll = poll;
-        cx.notify();
+    }
+
+    pub(super) fn worker_status(&self, at: usize, worker: &WorkerRef) -> CardStatus {
+        CardStatus::of(
+            worker,
+            self.workers
+                .latest
+                .get(&worker.session_id)
+                .is_some_and(|latest| *latest != at),
+            self.workers
+                .live
+                .get(&worker.session_id)
+                .map(|live| live.status),
+            crate::activity::unix_now(),
+        )
+    }
+
+    /// The rows of running cards outside the viewport, first one first, and whether that
+    /// one is above it.
+    pub(super) fn workers_out_of_view(&self) -> (usize, Option<(usize, bool)>) {
+        let mut count = 0;
+        let mut first = None;
+        for (row, shown) in self.visible.iter().enumerate() {
+            let display::Row::Item(at) = shown else {
+                continue;
+            };
+            let Some(worker) = workers::of(&self.model.transcript.items[*at]) else {
+                continue;
+            };
+            if !self.worker_status(*at, worker).running() {
+                continue;
+            }
+            let item = &self.model.transcript.items[*at].id;
+            let mut places = self.workers.places.borrow_mut();
+            let known = places.get(item).copied();
+            let place = match (
+                self.list.item_is_above_viewport(row),
+                self.list.item_is_below_viewport(row),
+            ) {
+                (Some(above), Some(below)) => (above, below),
+                (Some(true), None) => (true, false),
+                _ => known.unwrap_or((false, false)),
+            };
+            places.insert(item.clone(), place);
+            let (above, below) = place;
+            if above || below {
+                count += 1;
+                first.get_or_insert((row, above));
+            }
+        }
+        (count, first)
+    }
+
+    pub(super) fn workers_chip(&self, look: Look, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (count, first) = self.workers_out_of_view();
+        let (row, above) = first?;
+        let label = format!(
+            "{count} worker{} running {}",
+            if count == 1 { "" } else { "s" },
+            if above { "↑" } else { "↓" }
+        );
+        Some(
+            widgets::button("chat-workers-running", label, Some(look.colors.cyan), look)
+                .bg(rgb(look.colors.panel_active))
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.list.pause_following_tail();
+                    view.list.scroll_to_reveal_item(row);
+                    cx.notify();
+                }))
+                .into_any_element(),
+        )
     }
 
     pub fn subshell_action_finished(
@@ -80,23 +214,27 @@ impl ChatView {
         cx.notify();
     }
 
-    fn worker_action(&mut self, shell_id: String, action: ShellAction, cx: &mut Context<Self>) {
-        if !self
+    fn worker_action(&mut self, session_id: String, action: ShellAction, cx: &mut Context<Self>) {
+        let actionable = self
             .workers
-            .cards
-            .iter()
-            .any(|card| card.id == shell_id && card.alive)
-        {
+            .live
+            .get(&session_id)
+            .is_some_and(|live| live.actionable);
+        // A worker chat can only be opened from its card.
+        if !actionable && action != ShellAction::Open {
             return;
         }
         if action != ShellAction::Open {
             if self.workers.pending.is_some() {
                 return;
             }
-            self.workers.pending = Some(shell_id.clone());
+            self.workers.pending = Some(session_id.clone());
         }
         self.workers.error = None;
-        cx.emit(ChatViewEvent::WorkerShell { shell_id, action });
+        cx.emit(ChatViewEvent::WorkerShell {
+            shell_id: session_id,
+            action,
+        });
         cx.notify();
     }
 
@@ -126,125 +264,330 @@ impl ChatView {
         self.worker_action(id.clone(), ShellAction::Send(text), cx);
     }
 
-    pub(super) fn worker_section(
+    fn worker_title(&self, session_id: &str) -> String {
+        self.model
+            .transcript
+            .items
+            .iter()
+            .rev()
+            .filter_map(workers::of)
+            .find(|worker| worker.session_id == session_id)
+            .map_or_else(|| "worker".to_owned(), |worker| worker.title.clone())
+    }
+
+    /// The bar above the message box that writes to one worker, outside the transcript so
+    /// its input stays mounted however far the list scrolls.
+    pub(super) fn worker_bar(
         &self,
         look: Look,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if self.workers.cards.is_empty() {
+        if self.workers.message.is_none() && self.workers.error.is_none() {
             return None;
         }
+        let colors = look.colors;
         Some(
             div()
-                .id("chat-workers")
+                .id("chat-worker-bar")
                 .flex()
                 .flex_col()
-                .max_h(ui_text::space(240.0))
-                .overflow_y_scroll()
+                .gap(ui_text::space(4.0))
                 .px(ui_text::space(20.0))
                 .py(ui_text::space(6.0))
-                .gap(ui_text::space(4.0))
+                .border_t_1()
+                .border_color(rgb(colors.divider))
                 .text_size(ui_text::text(11.0))
-                .child(
-                    div()
-                        .id("chat-workers-poll")
-                        .text_color(rgb(look.colors.muted))
-                        .child(format!("Worker shells · {}", self.workers.poll))
-                        .test_support(),
-                )
                 .children(self.workers.error.as_ref().map(|error| {
                     div()
-                        .id("chat-workers-error")
-                        .text_color(rgb(look.error()))
-                        .child(error.clone())
-                        .test_support()
+                        .flex()
+                        .items_center()
+                        .gap(ui_text::space(6.0))
+                        .child(
+                            div()
+                                .id("chat-workers-error")
+                                .flex_1()
+                                .min_w_0()
+                                .text_color(rgb(look.error()))
+                                .child(error.clone())
+                                .test_support(),
+                        )
+                        .when(self.workers.message.is_none(), |row| {
+                            row.child(
+                                widgets::button("worker-dismiss-error", "Dismiss", None, look)
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        view.workers.error = None;
+                                        cx.notify();
+                                    })),
+                            )
+                        })
                 }))
-                .children(
-                    self.workers
-                        .cards
-                        .iter()
-                        .map(|card| self.worker_card(card, look, window, cx)),
-                )
+                .children(self.workers.message.as_ref().map(|(id, input, _)| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(ui_text::space(6.0))
+                        .child(
+                            div()
+                                .id("chat-worker-bar-label")
+                                .flex_none()
+                                .text_color(rgb(colors.muted))
+                                .child(format!("To worker · {}", self.worker_title(id)))
+                                .test_support(),
+                        )
+                        .child(div().flex_1().min_w_0().child(text_input::input(
+                            "worker-message-input",
+                            input,
+                            window,
+                            cx,
+                        )))
+                        .child(
+                            widgets::button("worker-send", "Send message", Some(colors.cyan), look)
+                                .disabled(self.workers.pending.is_some())
+                                .on_click(
+                                    cx.listener(|view, _, _, cx| view.send_worker_message(cx)),
+                                ),
+                        )
+                        .child(
+                            widgets::button("worker-cancel-message", "Cancel", None, look)
+                                .on_click(cx.listener(|view, _, _, cx| {
+                                    view.workers.message = None;
+                                    view.workers.error = None;
+                                    cx.notify();
+                                })),
+                        )
+                }))
+                .test_support()
                 .into_any_element(),
         )
     }
 
-    fn worker_card(
+    /// The card of a worker marker at item `at`.
+    pub(super) fn worker_card(
         &self,
-        card: &ShellCard,
+        at: usize,
+        item: &Item,
+        worker: &WorkerRef,
         look: Look,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let open = !self.workers.collapsed.contains(&card.id);
-        let toggle = card.id.clone();
-        let focus_id = card.id.clone();
-        let message_id = card.id.clone();
-        let stop_id = card.id.clone();
-        let elapsed = card.elapsed(crate::activity::unix_now());
-        let heading = format!(
-            "{} · {} · {}m {}s",
-            card.title(),
-            card.status(),
-            elapsed / 60,
-            elapsed % 60
-        );
-        let message = self
-            .workers
-            .message
+        let colors = look.colors;
+        let status = self.worker_status(at, worker);
+        let running = status.running();
+        let live = self.workers.live.get(&worker.session_id);
+        let tail = worker
+            .end
             .as_ref()
-            .filter(|(id, _, _)| id == &card.id);
+            .map(|end| end.tail.clone())
+            .filter(|tail| !tail.trim().is_empty());
+        let expandable = tail.is_some() && !running;
+        let open = expandable && self.open.contains(&item.id);
+        let badge = cards::Badge {
+            label: status.label().into(),
+            tone: match status {
+                CardStatus::Live(workers::LiveStatus::Waiting) => cards::Tone::Warning,
+                CardStatus::Live(workers::LiveStatus::Failed)
+                | CardStatus::Finished(workers::WorkerEnd::Failed) => cards::Tone::Error,
+                _ if running => cards::Tone::Accent,
+                _ => cards::Tone::Muted,
+            },
+            live: running,
+        };
+        let kind = if worker.kind == WorkerKind::Chat {
+            "Worker chat"
+        } else {
+            "Worker"
+        };
+        let title = format!(
+            "{}{kind} · {}",
+            if worker.follow_up {
+                "Follow-up · "
+            } else {
+                ""
+            },
+            worker.title
+        );
+        let key = item.id.clone();
+        let header = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(ui_text::space(6.0))
+            .px(ui_text::space(10.0))
+            .py(ui_text::space(6.0))
+            .text_size(ui_text::text(11.0))
+            .child(widgets::chevron(open, expandable, colors.muted))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(rgb(colors.text))
+                    .child(title.clone()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(rgb(colors.muted))
+                    .child(worker.assignment.clone().unwrap_or_default()),
+            )
+            .child(widgets::badge(
+                SharedString::from(format!("badge:{}", item.id)),
+                &badge,
+                look,
+            ));
+        // Read out as what the card says: the worker, then how it is doing.
+        let header = widgets::content_button(
+            SharedString::from(format!("worker-details:{}", item.id)),
+            format!("{title} · {}", status.label()),
+            header,
+            look,
+        )
+        .disabled(!expandable)
+        .aria_expanded(open)
+        .on_click(cx.listener(move |view, _, _, cx| {
+            // As for images: opening a result never pulls the reader to the end.
+            let offset = view.list.logical_scroll_top();
+            view.list.pause_following_tail();
+            view.toggle(&key, Some(at), cx);
+            view.list.scroll_to(offset);
+        }));
+        let now = crate::activity::unix_now();
+        let body = if running {
+            Some(self.live_body(item, worker, live, now, look, cx))
+        } else {
+            open.then(|| {
+                let tail = tail.clone().unwrap_or_default();
+                div()
+                    .id(SharedString::from(format!("worker-result:{}", item.id)))
+                    .px(ui_text::space(10.0))
+                    .py(ui_text::space(6.0))
+                    .flex()
+                    .flex_col()
+                    .gap(ui_text::space(4.0))
+                    .text_size(ui_text::text(11.0))
+                    .children(worker.end.as_ref().map(|end| {
+                        div().text_color(rgb(colors.muted)).child(format!(
+                            "{} after {}",
+                            end.status.label(),
+                            elapsed(end.ended_at.saturating_sub(worker.noted_at))
+                        ))
+                    }))
+                    .child(
+                        div()
+                            .font_family(ui_text::code_family())
+                            .child(self.selectable(
+                                &format!("worker:{}", item.id),
+                                tail,
+                                Vec::new(),
+                                Vec::new(),
+                                look,
+                                cx,
+                            )),
+                    )
+                    .test_support()
+                    .into_any_element()
+            })
+        };
         div()
-            .id(SharedString::from(format!("worker:{}", card.id)))
+            .id(SharedString::from(format!("worker:{}", item.id)))
+            .w_full()
+            .rounded(ui_text::space(4.0))
+            .border_1()
+            .border_color(rgb(colors.divider))
+            .bg(rgb(colors.panel))
+            .overflow_hidden()
+            .child(header)
+            .children(body.map(|body| {
+                div()
+                    .border_t_1()
+                    .border_color(rgb(colors.divider))
+                    .child(body)
+            }))
+            .test_support()
+            .into_any_element()
+    }
+
+    /// A running card's body: one line about the worker, a fixed block of its last lines,
+    /// and its actions. Nothing in it changes height.
+    fn live_body(
+        &self,
+        item: &Item,
+        worker: &WorkerRef,
+        live: Option<&LiveWorker>,
+        now: u64,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = look.colors;
+        let session = worker.session_id.clone();
+        let mut about = vec![
+            worker.harness.clone().unwrap_or_else(|| "Worker".into()),
+            live.and_then(|live| live.model.clone())
+                .or_else(|| worker.model.clone())
+                .unwrap_or_else(|| "Model unavailable".into()),
+            elapsed(now.saturating_sub(worker.noted_at)),
+        ];
+        if worker.late {
+            about.push("Started earlier · first seen here".into());
+        }
+        // The terminal sample's freshness; a worker chat's state comes from its host.
+        if worker.kind == WorkerKind::Shell
+            && let Some(stale) = &self.workers.stale
+        {
+            about.push(stale.clone());
+        }
+        let error = live.and_then(|live| live.output_error.clone());
+        let output = live.map(|live| live.output.as_str()).unwrap_or_default();
+        let mut lines: Vec<String> = output
+            .lines()
+            .rev()
+            .take(LIVE_LINES)
+            .map(str::to_owned)
+            .collect();
+        lines.reverse();
+        lines.resize(LIVE_LINES, String::new());
+        let actionable = live.is_some_and(|live| live.actionable);
+        let chat = worker.kind == WorkerKind::Chat;
+        let (open_id, message_id, stop_id) = (session.clone(), session.clone(), session.clone());
+        div()
+            .px(ui_text::space(10.0))
+            .py(ui_text::space(6.0))
             .flex()
             .flex_col()
             .gap(ui_text::space(4.0))
-            .p(ui_text::space(6.0))
-            .border_1()
-            .border_color(rgb(look.colors.divider))
-            .rounded(ui_text::space(4.0))
+            .text_size(ui_text::text(11.0))
             .child(
-                widgets::button(
-                    SharedString::from(format!("worker-details:{}", card.id)),
-                    heading,
-                    None,
-                    look,
-                )
-                .aria_expanded(open)
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    if !view.workers.collapsed.remove(&toggle) {
-                        view.workers.collapsed.insert(toggle.clone());
-                    }
-                    cx.notify();
-                })),
+                div()
+                    .truncate()
+                    .text_color(rgb(if error.is_some() {
+                        look.error()
+                    } else {
+                        colors.muted
+                    }))
+                    .child(match &error {
+                        Some(error) => format!("Output unavailable · {error}"),
+                        None => about.join(" · "),
+                    }),
             )
-            .when(open, |row| {
-                row.child(div().text_color(rgb(look.colors.muted)).child(format!(
-                    "{} · {}",
-                    card.harness,
-                    card.model.as_deref().unwrap_or("Model unavailable")
-                )))
-                .children(
-                    card.tasks
-                        .iter()
-                        .skip(1)
-                        .map(|task| div().child(task.title.clone())),
-                )
-                .children((!card.output.is_empty()).then(|| {
-                    div()
-                        .id(SharedString::from(format!("worker-output:{}", card.id)))
-                        .font_family(ui_text::code_family())
-                        .whitespace_normal()
-                        .child(card.output.clone())
-                        .test_support()
-                }))
-                .children(card.output_error.as_ref().map(|error| {
-                    div()
-                        .text_color(rgb(look.error()))
-                        .child(format!("Output unavailable · {error}"))
-                }))
-            })
+            .child(
+                div()
+                    .id(SharedString::from(format!("worker-output:{}", item.id)))
+                    .flex()
+                    .flex_col()
+                    .font_family(ui_text::code_family())
+                    .text_color(rgb(colors.text))
+                    .children(lines.into_iter().map(|line| {
+                        // A blank line keeps its height, so the block never moves.
+                        div().truncate().child(if line.is_empty() {
+                            "\u{00a0}".to_owned()
+                        } else {
+                            line
+                        })
+                    }))
+                    .test_support(),
+            )
             .child(
                 div()
                     .flex()
@@ -252,68 +595,47 @@ impl ChatView {
                     .gap(ui_text::space(6.0))
                     .child(
                         widgets::button(
-                            SharedString::from(format!("worker-open:{}", card.id)),
-                            "Open shell",
+                            SharedString::from(format!("worker-open:{session}")),
+                            if chat { "Open chat" } else { "Open shell" },
                             None,
                             look,
                         )
-                        .disabled(!card.alive)
+                        .disabled(!actionable && !chat)
                         .on_click(cx.listener(move |view, _, _, cx| {
-                            view.worker_action(focus_id.clone(), ShellAction::Open, cx)
+                            view.worker_action(open_id.clone(), ShellAction::Open, cx)
                         })),
                     )
-                    .child(
-                        widgets::button(
-                            SharedString::from(format!("worker-message:{}", card.id)),
-                            "Message",
-                            None,
-                            look,
+                    .when(!chat, |row| {
+                        row.child(
+                            widgets::button(
+                                SharedString::from(format!("worker-message:{session}")),
+                                "Message",
+                                None,
+                                look,
+                            )
+                            .disabled(!actionable || self.workers.pending.is_some())
+                            .on_click(cx.listener(
+                                move |view, _, window, cx| {
+                                    view.message_worker(message_id.clone(), window, cx)
+                                },
+                            )),
                         )
-                        .disabled(!card.alive || self.workers.pending.is_some())
-                        .on_click(cx.listener(
-                            move |view, _, window, cx| {
-                                view.message_worker(message_id.clone(), window, cx)
-                            },
-                        )),
-                    )
-                    .child(
-                        widgets::button(
-                            SharedString::from(format!("worker-stop:{}", card.id)),
-                            "Stop",
-                            None,
-                            look,
+                        .child(
+                            widgets::button(
+                                SharedString::from(format!("worker-stop:{session}")),
+                                "Stop",
+                                None,
+                                look,
+                            )
+                            .disabled(!actionable || self.workers.pending.is_some())
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    view.worker_action(stop_id.clone(), ShellAction::Stop, cx)
+                                },
+                            )),
                         )
-                        .disabled(!card.alive || self.workers.pending.is_some())
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.worker_action(stop_id.clone(), ShellAction::Stop, cx)
-                        })),
-                    ),
+                    }),
             )
-            .children(message.map(|(_, input, _)| {
-                div()
-                    .flex()
-                    .gap(ui_text::space(6.0))
-                    .child(text_input::input("worker-message-input", input, window, cx))
-                    .child(
-                        widgets::button(
-                            "worker-send",
-                            "Send message",
-                            Some(look.colors.cyan),
-                            look,
-                        )
-                        .disabled(self.workers.pending.is_some())
-                        .on_click(cx.listener(|view, _, _, cx| view.send_worker_message(cx))),
-                    )
-                    .child(
-                        widgets::button("worker-cancel-message", "Cancel", None, look).on_click(
-                            cx.listener(|view, _, _, cx| {
-                                view.workers.message = None;
-                                cx.notify();
-                            }),
-                        ),
-                    )
-            }))
-            .test_support()
             .into_any_element()
     }
 }

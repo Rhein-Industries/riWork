@@ -385,18 +385,28 @@ impl ChatView {
         let behind = self.items_in_list > 0
             && !self.list.is_following_tail()
             && self.list.is_scrolled_to_end() != Some(true);
+        // Running workers whose cards are out of view, one click from them.
+        let workers_chip = self.workers_chip(look, cx);
         let stack = div()
             .size_full()
             .flex()
             .flex_col()
             .child(self.toolbar(look, window, cx))
-            .children(self.worker_section(look, window, cx))
             .child(
                 div()
                     .relative()
                     .flex_1()
                     .min_h_0()
                     .child(messages)
+                    .children(workers_chip.map(|chip| {
+                        div()
+                            .absolute()
+                            .top(ui_text::space(10.0))
+                            .w_full()
+                            .flex()
+                            .justify_center()
+                            .child(chip)
+                    }))
                     .children(behind.then(|| {
                         div()
                             .absolute()
@@ -430,6 +440,7 @@ impl ChatView {
             .children(self.banner(look, cx))
             .children(self.approval_bar(look, cx))
             .children(self.question_panel(look, window, cx))
+            .children(self.worker_bar(look, window, cx))
             .child(self.composer_box(look, window, cx));
         div()
             .relative()

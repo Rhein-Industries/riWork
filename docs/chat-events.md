@@ -92,3 +92,56 @@ it uses the documented recovery when a single payload exceeds a response limit.
 All three CLI event modes share the same identity-preserving recovery path.
 The obsolete legacy all-string shrink and duplicate collectors were removed.
 The CLI minimum string cut remains 256 bytes; relay recovery uses 128 bytes.
+
+## Worker markers
+
+A terminal (`riwork shell create`, MCP `riwork_shell_create`) or chat (`riwork chat new`)
+that a chat starts is that chat's worker: its `parent_id` is the chat. The chat host, the
+only writer of the parent's log, records the worker in the parent's timeline as one
+ordinary item (`crates/riwork-engine/src/chat/workers.rs`):
+
+```json
+{"event":"item_completed","item":{
+  "id":"worker:<session_id>","turn_id":"turn-3","status":"completed",
+  "body":{"type":"tool_call","server":"riwork","tool":"worker",
+          "input":{"session_id":"<uuid>","title":"Fix polling"},"output":"<final tail>"},
+  "presentation":{"worker":{
+    "session_id":"<uuid>","kind":"shell","title":"Fix polling","harness":"claude",
+    "assignment":"Make the poller back off","noted_at":1760400000,
+    "final":{"status":"done","ended_at":1760400600,"tail":"All tests pass"}}}}}
+```
+
+- **When.** At the start (written while the spawning command still runs, so the item
+  follows it in the turn that started the worker), when the parent sends the worker
+  something (`riwork shell send`, MCP `riwork_shell_send_line`, `riwork chat send`), and
+  when the worker finishes. The first send in the same turn as the start joins its card
+  (a `shell create` and its first `shell send` make one card); any other send is a new
+  card `worker:<session_id>:<n>` with `follow_up: true`. Only a worker's latest card in a
+  chat is live; an earlier one without `final` reads "Continued below".
+- **Final.** The same item id is written again with `final` (`status`
+  `done|exited|failed|stopped`, `ended_at`, and `tail`, the last six lines and at most
+  2 KiB). A finish completes the latest open card it does not predate: a terminal's
+  done at or before a card was written (`done_since <= noted_at`), or a worker chat's
+  turn begun before it (`started_at < noted_at`), belongs to an earlier card. An exit
+  ends the latest card if it is still open. Worker chats are finished by their host when
+  their turn ends, with the bounded last reply as `tail` (`riwork chat send` notes the
+  card before it delivers, so the turn it starts is never older than its card);
+  terminals by the desktop app when its inventory sees them done (after the next sample
+  of their screen) or exited.
+- **Late.** The desktop app notes a live worker older than 30 s once per run with
+  `late: true`; the host writes nothing if the worker already has a card, and otherwise
+  appends one at the end ("Started earlier · first seen here").
+- **Status.** Always `completed`: `turn_completed` closes in-progress items, and a worker
+  outlives the turn that started it. What is live (working, waiting, elapsed time, the
+  terminal's screen) is never logged; clients join `session_id` against `shells.list`
+  and the chat list.
+- **Writers.** Only the host, on a `note_worker` request (`chat::wire::Request::NoteWorker`)
+  that it checks against the inventory: the worker's `parent_id` must be the chat, in the
+  chat's project. A note never starts the parent's provider. A host from before it
+  refuses the request as unreadable, which every caller treats as nothing recorded.
+- **Session history.** A marker is not provider history: it never makes a new provider
+  look resumable (`log::is_session_history`).
+- **Readers from before.** The body is a plain `tool_call`, so an older desktop or phone
+  shows a tool row titled `riwork.worker`. A `presentation.worker` a reader cannot decode
+  is dropped, never the item. The relay never shortens `session_id`; `tail` is shortened
+  like any other presentation string.

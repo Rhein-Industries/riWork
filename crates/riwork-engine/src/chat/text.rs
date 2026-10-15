@@ -16,6 +16,13 @@ const SUMMARY_CHARS: usize = 160;
 pub fn lines(transcript: &Transcript) -> Vec<String> {
     let mut lines = Vec::new();
     for item in &transcript.items {
+        if let Some(worker) = super::workers::of(item) {
+            lines.push(format!(
+                "[worker] {}",
+                summary(&super::workers::summary(worker))
+            ));
+            continue;
+        }
         match &item.body {
             ItemBody::UserMessage { text } => message(&mut lines, "user", text),
             ItemBody::AgentMessage { text } => message(&mut lines, "agent", text),
@@ -277,6 +284,39 @@ mod tests {
                 "agent: Ready.",
                 "  Waiting for an objective.",
             ]
+        );
+    }
+
+    #[test]
+    fn a_worker_card_is_one_line_saying_who_what_and_how_it_ended() {
+        use crate::chat::workers::{WorkerEnd, WorkerFinal, WorkerKind, WorkerRef};
+        let mut transcript = Transcript::default();
+        transcript.apply(&ChatEvent::ItemCompleted {
+            item: crate::chat::workers::item(
+                "worker:s".into(),
+                None,
+                WorkerRef {
+                    session_id: "s".into(),
+                    kind: WorkerKind::Chat,
+                    title: "Review the patch".into(),
+                    harness: Some("claude".into()),
+                    model: None,
+                    worktree_id: None,
+                    assignment: Some("Check the tests".into()),
+                    noted_at: 1,
+                    late: false,
+                    follow_up: false,
+                    end: Some(WorkerFinal {
+                        status: WorkerEnd::Done,
+                        ended_at: 2,
+                        tail: "Looks good".into(),
+                    }),
+                },
+            ),
+        });
+        assert_eq!(
+            lines(&transcript),
+            ["[worker] Started claude chat worker · Review the patch · Check the tests → Done"]
         );
     }
 

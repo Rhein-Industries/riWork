@@ -630,6 +630,62 @@ import RiWorkCore
 
     /// The relay's placeholder for an item too large to send is a compact row that says where it is, and a tap says why; another
     /// elided event is a one-line note. Neither stops the chat.
+    // MARK: Worker cards
+
+    /// A marker as the desktop's chat host writes it for a worker shell this chat started: the fixture shell, which the shell list has.
+    private func workerMarker(notedAt: UInt64, final: ChatWorker.Final? = nil) -> ChatItem {
+        var marker = ChatItem(id: "worker:\(ChatTransport.shell)", status: .completed, body: .toolCall(server: "riwork", tool: "worker",
+            input: .object(["session_id": .string(ChatTransport.shell), "title": .string("Fix polling")]), output: final?.tail))
+        marker.worker = ChatWorker(sessionID: ChatTransport.shell, kind: .shell, title: "Fix polling", harness: "claude", model: "opus",
+                                   assignment: "Make the shell poll adaptive", notedAt: notedAt, final: final)
+        return marker
+    }
+    private func longAnswer(_ count: Int) -> [ChatEvent] {
+        (0..<count).map { .itemCompleted(ChatItem(id: "said-\($0)", status: .completed, body: .agentMessage("Step \($0) of the plan.\n\nIt takes a few lines to say."))) }
+    }
+
+    /// A worker the chat started is a card where the chat started it. Scrolled out of view while it runs, a chip over the transcript says
+    /// so, and a tap on it brings the card back into view (and the chip goes).
+    func testARunningWorkerCardOutOfViewIsCountedByAChipThatScrollsBackToIt() async throws {
+        let rig = try await makeRig()
+        await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "ask", status: .completed, body: .userMessage("Start a worker for the polling"))),
+                                            .itemCompleted(workerMarker(notedAt: UInt64(Date().timeIntervalSince1970)))] + longAnswer(24))
+        _ = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        await eventually("the transcript arrived") { conversation.transcript.item("said-23") != nil }
+        XCTAssertNotNil(conversation.transcript.item("worker:\(ChatTransport.shell)")?.worker, "the marker crossed the wire with its worker")
+        await eventually("the chip counts the worker out of view") { rig.layout.visible["workers-chip"] == true }
+        try snapshot(rig, name: "worker-chip")
+        try XCTUnwrap(rig.layout.actions["workers-chip"])()
+        await eventually("the card is in view and the chip has gone") { rig.layout.frames["workers-chip"] == nil }
+        try snapshot(rig, name: "worker-card-live")
+        await finish(rig)
+    }
+
+    /// A running card in view is not counted, and a finished one never is. The final snapshot replaces the marker in place.
+    func testNoWorkerChipWhileTheCardIsInViewOrOnceItsWorkerFinished() async throws {
+        let rig = try await makeRig()
+        let noted = UInt64(Date().timeIntervalSince1970)
+        await rig.transport.append(chatID, [.info(chat()), .itemCompleted(workerMarker(notedAt: noted))])
+        _ = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        await eventually("the card arrived") { conversation.transcript.item("worker:\(ChatTransport.shell)") != nil }
+        try await Task.sleep(for: .milliseconds(1500))
+        XCTAssertNil(rig.layout.frames["workers-chip"], "the running card is in view")
+        try snapshot(rig, name: "worker-card-in-view")
+        await rig.transport.append(chatID, [.itemCompleted(workerMarker(notedAt: noted, final: .init(status: .done, endedAt: noted + 95, tail: "Compiling\nAll green")))])
+        await eventually("the final snapshot arrived") { conversation.transcript.item("worker:\(ChatTransport.shell)")?.worker?.final != nil }
+        conversation.expanded.insert("worker:\(ChatTransport.shell)")
+        try await Task.sleep(for: .milliseconds(300))
+        try snapshot(rig, name: "worker-card-finished")
+        await rig.transport.append(chatID, longAnswer(24))
+        await eventually("the rest arrived") { conversation.transcript.item("said-23") != nil }
+        XCTAssertEqual(conversation.transcript.items.filter { $0.worker != nil }.map(\.worker?.final?.status), [.done], "one card, updated in place")
+        try await Task.sleep(for: .milliseconds(1500))
+        XCTAssertNil(rig.layout.frames["workers-chip"], "a finished worker is not running")
+        await finish(rig)
+    }
+
     func testElidedItemsAndEventsAreCompactRowsAndTheChatCarriesOn() async throws {
         let rig = try await makeRig()
         await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "ask", status: .completed, body: .userMessage("Show me the build log")))])

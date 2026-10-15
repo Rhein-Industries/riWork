@@ -603,8 +603,9 @@ fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
                     project.root.clone(),
                 )
             };
-            let session =
-                SessionManager::open_default()?.create(project_id, worktree_id, cwd, command)?;
+            let manager = SessionManager::open_default()?;
+            let session = manager.create(project_id, worktree_id, cwd, command)?;
+            crate::chat::workers::note_spawned_shell(manager.state_home(), &session);
             Ok(json!({"session":session}))
         }
         "riwork_shell_output" => {
@@ -631,7 +632,17 @@ fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
         "riwork_shell_send_line" => {
             let id = required_str(args, "shell_id")?;
             let text = required_str(args, "text")?;
-            SessionManager::open_default()?.send(id, text)?;
+            let manager = SessionManager::open_default()?;
+            manager.send(id, text)?;
+            if let Ok(shell) = manager.registered_session(id) {
+                crate::chat::workers::note_sent(
+                    manager.state_home(),
+                    shell.parent_id.as_deref(),
+                    id,
+                    crate::chat::workers::WorkerKind::Shell,
+                    text,
+                );
+            }
             Ok(json!({"shell_id":id,"sent":true}))
         }
         "riwork_orchestrator_status" => {

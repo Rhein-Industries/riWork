@@ -18,6 +18,8 @@
 //!   terminal (`riwork orchestrator output`).
 //! - `catalog` reads the models each provider offers from what chats saved, for
 //!   a chat that is not running that provider yet.
+//! - `workers` puts RiWork's own workers (terminals and chats a chat started) in that
+//!   chat's timeline: a marker item the host writes, overlaid with live inventory state.
 //! - `suggest` is what a message box offers while a `/` command or an `@` file is
 //!   typed, for the desktop and (through `riwork chat suggestions`) the phone.
 
@@ -52,3 +54,4 @@ pub mod testing;
 mod testkit;
 pub mod text;
 pub mod wire;
+pub mod workers;

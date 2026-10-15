@@ -796,12 +796,35 @@ impl ChatView {
     /// Tell the list about the rows that came or changed. Rows are measured when they are
     /// drawn, so a row that changed must be measured again.
     fn sync_list(&mut self, applied: &Applied, cx: &mut Context<Self>) {
-        if applied.touched.iter().any(|at| {
-            self.model.transcript.items.get(*at).is_some_and(|item| {
-                crate::chat::subagents::of(item, self.info().map(|info| info.provider)).is_some()
-            })
-        }) {
-            self.list.remeasure();
+        // A later Codex report can change an earlier subagent card (`in_transcript`): those
+        // cards are measured again, not the whole list.
+        let provider = self.info().map(|info| info.provider);
+        if provider == Some(Provider::Codex)
+            && (applied.appended > 0
+                || applied.touched.iter().any(|at| {
+                    self.model
+                        .transcript
+                        .items
+                        .get(*at)
+                        .is_some_and(|item| crate::chat::subagents::of(item, provider).is_some())
+                }))
+        {
+            let rows: Vec<usize> = self
+                .visible
+                .iter()
+                .enumerate()
+                .filter_map(|(row, shown)| match shown {
+                    display::Row::Item(at) | display::Row::Details(at) => {
+                        crate::chat::subagents::of(&self.model.transcript.items[*at], provider)
+                            .is_some()
+                            .then_some(row)
+                    }
+                    _ => None,
+                })
+                .collect();
+            for row in rows {
+                self.list.remeasure_items(row..row + 1);
+            }
         }
         self.transcript_selection.changed();
         // Streaming content cannot leave an old copied projection. Unrelated
@@ -867,6 +890,7 @@ impl ChatView {
             self.items_in_list = rows.len();
             self.visible = rows;
         }
+        self.reindex_workers();
     }
 
     fn follow_display_setting(&mut self, cx: &mut Context<Self>) {

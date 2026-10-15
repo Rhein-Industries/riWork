@@ -54,6 +54,21 @@ pub fn read_chat(home: &Path, chat_id: &str) -> Result<Read, String> {
     }
     let mut entries = Vec::new();
     for item in &transcript.items {
+        // A worker this chat started: who, what, and its recorded result.
+        if let Some(worker) = crate::chat::workers::of(item) {
+            let mut note = crate::chat::workers::summary(worker);
+            if let Some(tail) = worker
+                .end
+                .as_ref()
+                .map(|end| end.tail.trim())
+                .filter(|t| !t.is_empty())
+            {
+                note.push('\n');
+                note.push_str(tail);
+            }
+            push(&mut entries, Entry::Note(note));
+            continue;
+        }
         if let Some(entry) = chat_entry(&item.body, item.status) {
             push(&mut entries, entry);
         }

@@ -1,10 +1,9 @@
 import Foundation
 
-/// Read-only fields the existing shell list honestly carries. `parent_id` proves
-/// worker ancestry; older unparented shells cannot be classified as workers.
+/// A worker shell as the shell list (`shells.list`) describes it: the status words a live worker card shows for it. The list is joined to
+/// the cards by the session id their marker carries (`WorkerTimeline`), so only this chat's workers ever appear.
 public struct WorkerShellCard: Sendable, Equatable, Identifiable {
     public let session: RemoteSession
-    public let tasks: [RemoteTask]
     public var id: String { session.id }
     public var status: String {
         switch session.shownActivity {
@@ -18,20 +17,11 @@ public struct WorkerShellCard: Sendable, Equatable, Identifiable {
     public var finished: Bool { session.shownActivity == .done || session.shownActivity == .exited }
     public var harness: String { session.harness?.capitalized ?? "Shell" }
     public var model: String? { session.model }
-    public var title: String { tasks.first?.title ?? session.title }
     public func elapsed(now: UInt64) -> UInt64 {
         let end = session.shownActivity == .done ? session.activity_since_unix ?? now : now
         return end >= session.created_at_unix ? end - session.created_at_unix : 0
     }
-    public init(session: RemoteSession, tasks: [RemoteTask] = []) {
-        self.session = session
-        self.tasks = tasks.filter { $0.project_id == session.project_id && session.worktree_id != nil && $0.worktree_id == session.worktree_id }
-    }
-    public static func project(_ project: String?, sessions: [RemoteSession], tasks: [RemoteTask] = []) -> [Self] {
-        guard let project else { return [] }
-        return sessions.filter { $0.project_id == project && $0.kind != "orchestrator" && $0.mode == .terminal && $0.parent_id != nil }
-            .map { Self(session: $0, tasks: tasks) }
-    }
+    public init(session: RemoteSession) { self.session = session }
 }
 
 /// Additive delegation presentation, with exact legacy Claude/Codex tool fallbacks.

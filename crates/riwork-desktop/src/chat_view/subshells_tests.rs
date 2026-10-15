@@ -1,96 +1,233 @@
-//! Real rendered cards with recording events: no shell manager, host or provider.
+//! Real rendered cards with recording events: no shell manager, host or provider. Worker
+//! cards are transcript items the host wrote, with live state installed beside them.
 use super::*;
-use crate::activity::AgentActivity;
 use crate::chat::model::{ChatEvent, Item, ItemStatus, Provider};
-use gpui::{SharedString, TestAppContext};
+use crate::chat::workers::{LiveStatus, LiveWorker, WorkerEnd, WorkerFinal, WorkerKind, WorkerRef};
+use gpui::{ListOffset, SharedString, TestAppContext, WindowHandle, px};
 use gpui_kit::test::TestWindowExt;
-use riwork_engine::subshells::{ShellCard, TaskLink};
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-fn card(activity: AgentActivity) -> ShellCard {
-    ShellCard {
-        id: "worker".into(),
-        harness: "Claude".into(),
+fn worker(session: &str, follow_up: bool, end: Option<WorkerFinal>) -> WorkerRef {
+    WorkerRef {
+        session_id: session.into(),
+        kind: WorkerKind::Shell,
+        title: "Fix polling".into(),
+        harness: Some("claude".into()),
         model: None,
-        tasks: vec![TaskLink {
-            id: "task".into(),
-            title: "Fix polling".into(),
-        }],
-        activity,
-        alive: true,
-        created_at: crate::activity::unix_now().saturating_sub(90),
-        ended_at: None,
-        output: "First line\nLast output".into(),
+        worktree_id: None,
+        assignment: Some("Make the poller back off".into()),
+        noted_at: crate::activity::unix_now().saturating_sub(90),
+        late: false,
+        follow_up,
+        end,
+    }
+}
+
+fn marker(id: &str, session: &str, follow_up: bool, end: Option<WorkerFinal>) -> ChatEvent {
+    ChatEvent::ItemCompleted {
+        item: crate::chat::workers::item(
+            id.into(),
+            Some("turn".into()),
+            worker(session, follow_up, end),
+        ),
+    }
+}
+
+fn done(tail: &str) -> Option<WorkerFinal> {
+    Some(WorkerFinal {
+        status: WorkerEnd::Done,
+        ended_at: crate::activity::unix_now(),
+        tail: tail.into(),
+    })
+}
+
+/// A message from the user: a row in every display mode.
+fn message(id: &str, text: &str) -> ChatEvent {
+    ChatEvent::ItemCompleted {
+        item: Item {
+            presentation: Default::default(),
+            id: id.into(),
+            turn_id: Some("turn".into()),
+            status: ItemStatus::Completed,
+            body: ItemBody::UserMessage { text: text.into() },
+        },
+    }
+}
+
+fn live(status: LiveStatus, output: &str) -> LiveWorker {
+    LiveWorker {
+        status,
+        actionable: true,
+        model: None,
+        output: output.into(),
         output_error: None,
     }
+}
+
+fn only(session: &str, worker: LiveWorker) -> BTreeMap<String, LiveWorker> {
+    BTreeMap::from([(session.to_owned(), worker)])
+}
+
+/// A live chat the view follows, as after its first events.
+fn live_chat(cx: &mut TestAppContext, view: &Entity<ChatView>) {
+    view.update(cx, |view, cx| {
+        let mut info = testing::info("fixture-chat");
+        info.provider = Provider::Claude;
+        view.adopt_info_for_tests(info);
+        view.model.link = Link::Live;
+        cx.notify();
+    });
+}
+
+/// What the host says next, through the feed as it arrives.
+fn arrive(
+    cx: &mut TestAppContext,
+    handle: WindowHandle<gpui_kit::base::Root>,
+    view: &Entity<ChatView>,
+    events: Vec<ChatEvent>,
+) {
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |view, cx| {
+            thread_local!(static SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(1000) });
+            let envelopes = events
+                .into_iter()
+                .map(|event| crate::chat::wire::Envelope {
+                    chat_id: "fixture-chat".into(),
+                    seq: SEQ.with(|seq| {
+                        seq.set(seq.get() + 1);
+                        seq.get()
+                    }),
+                    event,
+                })
+                .collect();
+            view.accept(vec![feed::FeedMsg::Events(envelopes)], window, cx);
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+fn in_transcript(snapshot: &gpui_kit::test::ElementSnapshot) -> bool {
+    snapshot
+        .path()
+        .iter()
+        .any(|id| id.to_string().contains("transcript-row:"))
 }
 
 #[gpui::test]
 fn worker_appears_updates_and_collapses_without_taking_composer_focus(cx: &mut TestAppContext) {
     let (handle, view, _recording) = editor_tests::mount(cx);
+    live_chat(cx, &view);
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("chat-composer", cx);
         window.input("Keep my draft", cx);
+    })
+    .unwrap();
+    arrive(
+        cx,
+        handle,
+        &view,
+        vec![
+            ChatEvent::TurnStarted {
+                turn_id: "turn".into(),
+            },
+            message("before", "Start a worker."),
+            marker("worker:w", "w", false, None),
+        ],
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |view, cx| {
             view.set_subshells(
-                vec![card(AgentActivity::Working)],
-                "Live · last checked 0s ago · next check in 2s".into(),
+                only("w", live(LiveStatus::Working, "First line\nLast output")),
+                None,
                 cx,
             )
         });
         window.render_frame(cx);
-        assert!(window.find("worker:worker").visible());
-        assert_eq!(window.find("worker-details:worker").expanded(), Some(true));
+        let card = window.find("worker:worker:w");
+        assert!(card.visible());
+        assert!(in_transcript(&card), "the card is a row of the transcript");
         assert!(
-            window
-                .find("worker-details:worker")
-                .label()
-                .unwrap()
-                .contains("Fix polling · Working")
+            window.try_find("chat-workers").is_none(),
+            "no pinned section"
         );
-        assert!(window.find("worker-output:worker").visible());
+        let label = window
+            .find("worker-details:worker:w")
+            .label()
+            .unwrap()
+            .to_owned();
+        assert!(label.contains("Worker · Fix polling · Working"), "{label}");
+        assert!(window.find("worker-output:worker:w").visible());
+        let height = card.bounds().size.height;
         view.read_with(cx, |view, cx| {
             assert!(view.composer.read(cx).focus_handle(cx).is_focused(window));
             assert_eq!(view.composer_text(cx), "Keep my draft");
         });
-        let mut next = card(AgentActivity::Waiting);
-        next.output = "New output".into();
+        // New state and more output than fits: same card, same height.
         view.update(cx, |view, cx| {
             view.set_subshells(
-                vec![next],
-                "Backing off · last checked 4s ago · next check in 4s".into(),
+                only(
+                    "w",
+                    live(
+                        LiveStatus::Waiting,
+                        "a\nb\nc\nd\ne\na much longer line ".repeat(30).as_str(),
+                    ),
+                ),
+                None,
                 cx,
             )
         });
         window.render_frame(cx);
         assert!(
             window
-                .find("worker-details:worker")
+                .find("worker-details:worker:w")
                 .label()
                 .unwrap()
                 .contains("Waiting for input")
         );
-        let mut done = card(AgentActivity::Done);
-        done.ended_at = Some(done.created_at + 90);
-        view.update(cx, |view, cx| {
-            view.set_subshells(
-                vec![done],
-                "Live · last checked 0s ago · next check in 2s".into(),
-                cx,
-            )
-        });
-        window.render_frame(cx);
-        assert_eq!(window.find("worker-details:worker").expanded(), Some(false));
-        assert!(window.try_find("worker-output:worker").is_none());
+        assert_eq!(window.find("worker:worker:w").bounds().size.height, height);
+    })
+    .unwrap();
+    // The host records the end: the card collapses to its result in place.
+    arrive(
+        cx,
+        handle,
+        &view,
+        vec![marker("worker:w", "w", false, done("All tests pass"))],
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.find("worker-details:worker:w").expanded(),
+            Some(false)
+        );
+        assert!(window.try_find("worker-output:worker:w").is_none());
+        assert!(
+            window
+                .find("worker-details:worker:w")
+                .label()
+                .unwrap()
+                .ends_with("Done")
+        );
         view.read_with(cx, |view, cx| {
             assert!(view.composer.read(cx).focus_handle(cx).is_focused(window))
         });
-        window.click("worker-details:worker", cx);
+        window.click("worker-details:worker:w", cx);
         window.render_frame(cx);
         assert!(
-            window.find("worker-output:worker").visible(),
+            window.find("worker-result:worker:w").visible(),
             "finished output remains reviewable"
+        );
+        let (from, to) = view
+            .read(cx)
+            .transcript_selection
+            .glyph_span_points("worker:worker:w");
+        window.drag(from, to, cx);
+        window.press("cmd-c", cx);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|c| c.text()),
+            Some("All tests pass".into())
         );
     })
     .unwrap();
@@ -99,6 +236,7 @@ fn worker_appears_updates_and_collapses_without_taking_composer_focus(cx: &mut T
 #[gpui::test]
 fn worker_actions_dispatch_once_and_a_refused_message_keeps_its_text(cx: &mut TestAppContext) {
     let (handle, view, _recording) = editor_tests::mount(cx);
+    live_chat(cx, &view);
     let events = Arc::new(Mutex::new(Vec::new()));
     let received = events.clone();
     let _subscription = view.update(cx, |_, cx| {
@@ -112,21 +250,36 @@ fn worker_actions_dispatch_once_and_a_refused_message_keeps_its_text(cx: &mut Te
             let _ = cx;
         })
     });
+    arrive(
+        cx,
+        handle,
+        &view,
+        vec![marker("worker:w", "w", false, None)],
+    );
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |view, cx| {
-            view.set_subshells(vec![card(AgentActivity::Working)], "Live".into(), cx)
+            view.set_subshells(only("w", live(LiveStatus::Working, "busy")), None, cx)
         });
         window.render_frame(cx);
-        window.click("worker-open:worker", cx);
-        window.click("worker-message:worker", cx);
+        window.click("worker-open:w", cx);
+        window.click("worker-message:w", cx);
         window.render_frame(cx);
+        // The message goes from a bar above the message box, not from inside the list.
+        let bar = window.find("chat-worker-bar");
+        assert!(bar.visible());
+        assert!(!in_transcript(&bar));
+        assert_eq!(
+            window.find("chat-worker-bar-label").label(),
+            None,
+            "a plain label"
+        );
         window.input("Review this 🦀", cx);
         window.click("worker-send", cx);
         window.render_frame(cx);
         window.click("worker-send", cx);
         view.update(cx, |view, cx| {
             view.subshell_action_finished(
-                "worker",
+                "w",
                 Err("Harness is waiting for folder trust; input was not sent".into()),
                 cx,
             )
@@ -148,19 +301,276 @@ fn worker_actions_dispatch_once_and_a_refused_message_keeps_its_text(cx: &mut Te
         });
         window.click("worker-cancel-message", cx);
         window.render_frame(cx);
-        window.click("worker-stop:worker", cx);
+        assert!(window.try_find("chat-worker-bar").is_none());
+        window.click("worker-stop:w", cx);
+        // A refused stop says why until dismissed.
+        view.update(cx, |view, cx| {
+            view.subshell_action_finished("w", Err("tmux is not answering".into()), cx)
+        });
+        window.render_frame(cx);
+        assert!(window.find("chat-workers-error").visible());
+        window.click("worker-dismiss-error", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("chat-worker-bar").is_none());
     })
     .unwrap();
     cx.run_until_parked();
     assert_eq!(
         events.lock().unwrap().as_slice(),
         [
-            ("worker".into(), ShellAction::Open),
-            ("worker".into(), ShellAction::Send("Review this 🦀".into())),
-            ("worker".into(), ShellAction::Stop),
+            ("w".into(), ShellAction::Open),
+            ("w".into(), ShellAction::Send("Review this 🦀".into())),
+            ("w".into(), ShellAction::Stop),
         ],
         "one explicit send, with no retry after refusal"
     );
+}
+
+#[gpui::test]
+fn a_card_arriving_or_updating_keeps_a_selection_elsewhere(cx: &mut TestAppContext) {
+    let (handle, view, _recording) = editor_tests::mount_selection(cx);
+    live_chat(cx, &view);
+    arrive(cx, handle, &view, vec![message("m", "Keep this selected")]);
+    cx.update_window(handle.into(), |_, window, cx| {
+        let (from, to) = view
+            .read(cx)
+            .transcript_selection
+            .glyph_span_points("user:m/0");
+        window.drag(from, to, cx);
+    })
+    .unwrap();
+    arrive(
+        cx,
+        handle,
+        &view,
+        vec![marker("worker:w", "w", false, None)],
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_subshells(only("w", live(LiveStatus::Working, "one")), None, cx)
+        });
+        window.render_frame(cx);
+        view.update(cx, |view, cx| {
+            view.set_subshells(only("w", live(LiveStatus::Working, "one\ntwo")), None, cx)
+        });
+        window.render_frame(cx);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("unchanged".into()));
+        window.press("cmd-c", cx);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|c| c.text()),
+            Some("Keep this selected".into())
+        );
+    })
+    .unwrap();
+}
+
+#[gpui::test]
+fn the_running_indicator_jumps_to_a_card_out_of_view_and_only_the_latest_card_is_live(
+    cx: &mut TestAppContext,
+) {
+    let (handle, view, _recording) = editor_tests::mount(cx);
+    live_chat(cx, &view);
+    let mut events = vec![marker("worker:w", "w", false, None)];
+    events.extend((0..40).map(|n| message(&format!("m{n}"), &format!("Paragraph {n}\n\nmore"))));
+    arrive(cx, handle, &view, events);
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_subshells(only("w", live(LiveStatus::Working, "busy")), None, cx)
+        });
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let chip = window.find("chat-workers-running");
+        assert_eq!(chip.label(), Some("1 worker running ↑"));
+        window.click("chat-workers-running", cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert!(window.find("worker:worker:w").visible());
+        assert!(window.try_find("chat-workers-running").is_none());
+    })
+    .unwrap();
+    // A follow-up below: the first card says so and is no longer live or counted.
+    arrive(
+        cx,
+        handle,
+        &view,
+        (40..80)
+            .map(|n| message(&format!("m{n}"), &format!("Paragraph {n}\n\nmore")))
+            .chain([marker("worker:w:2", "w", true, None)])
+            .collect(),
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.list.set_follow_mode(gpui::FollowMode::Tail)
+        });
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("chat-workers-running").is_none(),
+            "the live card is in view"
+        );
+        let later = window
+            .find("worker-details:worker:w:2")
+            .label()
+            .unwrap()
+            .to_owned();
+        assert!(
+            later.starts_with("Follow-up · Worker · Fix polling"),
+            "{later}"
+        );
+        view.update(cx, |view, cx| {
+            view.list.scroll_to(ListOffset {
+                item_ix: 0,
+                offset_in_item: px(0.),
+            });
+            cx.notify();
+        });
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert!(
+            window
+                .find("worker-details:worker:w")
+                .label()
+                .unwrap()
+                .ends_with("Continued below")
+        );
+        assert!(window.try_find("worker-output:worker:w").is_none());
+        assert_eq!(
+            window.find("chat-workers-running").label(),
+            Some("1 worker running ↓")
+        );
+        // New output marks the card for measuring again; it still counts below.
+        view.update(cx, |view, cx| {
+            view.set_subshells(only("w", live(LiveStatus::Working, "more")), None, cx)
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("chat-workers-running").label(),
+            Some("1 worker running ↓")
+        );
+    })
+    .unwrap();
+}
+
+#[gpui::test]
+fn a_card_that_ends_below_keeps_a_reader_where_they_are(cx: &mut TestAppContext) {
+    let (handle, view, _recording) = editor_tests::mount(cx);
+    live_chat(cx, &view);
+    let mut events: Vec<_> = (0..30)
+        .map(|n| message(&format!("m{n}"), &format!("Paragraph {n}\n\nmore")))
+        .collect();
+    events.push(marker("worker:w", "w", false, None));
+    events.extend((30..40).map(|n| message(&format!("m{n}"), &format!("Paragraph {n}"))));
+    arrive(cx, handle, &view, events);
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_subshells(only("w", live(LiveStatus::Working, "busy")), None, cx);
+            view.list.scroll_to(ListOffset {
+                item_ix: 3,
+                offset_in_item: px(5.),
+            });
+            cx.notify();
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let at = |view: &ChatView| {
+        let top = view.list.logical_scroll_top();
+        (top.item_ix, top.offset_in_item)
+    };
+    let reading = view.read_with(cx, |view, _| at(view));
+    arrive(
+        cx,
+        handle,
+        &view,
+        vec![marker("worker:w", "w", false, done("ok"))],
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |view, cx| view.set_subshells(BTreeMap::new(), None, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    view.read_with(cx, |view, _| {
+        assert_eq!(at(view), reading);
+        assert!(!view.list.is_following_tail());
+    });
+}
+
+#[gpui::test]
+fn a_card_at_the_top_of_the_view_that_ends_keeps_the_view_there(cx: &mut TestAppContext) {
+    let (handle, view, _recording) = editor_tests::mount(cx);
+    live_chat(cx, &view);
+    let mut events: Vec<_> = (0..10)
+        .map(|n| message(&format!("m{n}"), &format!("Paragraph {n}\n\nmore")))
+        .collect();
+    events.push(marker("worker:w", "w", false, None));
+    events.extend((10..40).map(|n| message(&format!("m{n}"), &format!("Paragraph {n}"))));
+    arrive(cx, handle, &view, events);
+    let card_row = view.read_with(cx, |view, _| {
+        view.visible
+            .iter()
+            .position(|row| *row == display::Row::Item(10))
+            .unwrap()
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_subshells(only("w", live(LiveStatus::Working, "busy")), None, cx);
+            view.list.scroll_to(ListOffset {
+                item_ix: card_row,
+                offset_in_item: px(0.),
+            });
+            cx.notify();
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    arrive(
+        cx,
+        handle,
+        &view,
+        vec![marker("worker:w", "w", false, done("ok"))],
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("worker:worker:w").visible());
+    })
+    .unwrap();
+    view.read_with(cx, |view, _| {
+        let top = view.list.logical_scroll_top();
+        assert_eq!((top.item_ix, top.offset_in_item), (card_row, px(0.)));
+    });
+}
+
+#[gpui::test]
+fn markers_are_rows_in_every_display_mode_and_live_state_without_a_card_draws_nothing(
+    cx: &mut TestAppContext,
+) {
+    let (handle, view, _recording) = editor_tests::mount(cx);
+    live_chat(cx, &view);
+    arrive(
+        cx,
+        handle,
+        &view,
+        vec![marker("worker:w", "w", false, done("x"))],
+    );
+    view.read_with(cx, |view, _| {
+        for mode in [DisplayMode::Verbose, DisplayMode::default()] {
+            let rows = display::rows(&view.model.transcript, &view.model.completed, mode);
+            assert!(rows.contains(&display::Row::Item(0)), "{mode:?}");
+        }
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_subshells(
+                only("someone-else", live(LiveStatus::Working, "x")),
+                None,
+                cx,
+            )
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("worker:worker:someone-else").is_none());
+        assert!(window.try_find("worker-output:worker:w").is_none());
+    })
+    .unwrap();
 }
 
 #[gpui::test]

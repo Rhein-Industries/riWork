@@ -444,7 +444,9 @@ struct TerminalTabsView: View {
                 .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
         }
         .task(id: project.id) { await model.chooseProject(project.id) }
-        // Each tab's state changes while the strip is looked at: read the tabs again every few seconds. Focus mode hides the strip.
+        // Each tab's state changes while the strip is looked at: read the tabs again every few seconds. Focus mode hides the strip, and
+        // the reading goes on: it runs for as long as this screen is up, whatever is on it. A chat on it takes its live worker cards'
+        // states from these same lists (`WorkerTimeline`), so they stay fresh while the chat is shown.
         .task(id: project.id) { await model.keepFresh(.sessions) }
         // The terminal is released (its long poll, its pinned size) the moment a chat takes the screen, and picked up again when a terminal tab does.
         .onAppear { onScreen = true; syncTerminalVisible(); openRequestedNewTerminal() }

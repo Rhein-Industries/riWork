@@ -34,12 +34,14 @@ struct ChatItemRow: View, Equatable {
     @Environment(\.desktopStyle) private var style
     let item: ChatItem
     let provider: ChatProvider
+    /// The card of RiWork's own worker this item marks, with where it stands (`WorkerTimeline`): drawn in place of the tool row.
+    var worker: WorkerCard? = nil
     var subagent: ChatSubagent? = nil
     /// The ids of the parts of this item that are open: the item's own id, or "id#path" for a file of an edit.
     let open: Set<String>
     let toggle: @MainActor (String) -> Void
 
-    nonisolated static func == (lhs: ChatItemRow, rhs: ChatItemRow) -> Bool { lhs.item == rhs.item && lhs.provider == rhs.provider && lhs.open == rhs.open && lhs.subagent == rhs.subagent }
+    nonisolated static func == (lhs: ChatItemRow, rhs: ChatItemRow) -> Bool { lhs.item == rhs.item && lhs.provider == rhs.provider && lhs.open == rhs.open && lhs.subagent == rhs.subagent && lhs.worker == rhs.worker }
 
     /// The transcript's text margin: where its messages begin (and the composer's cards).
     static let horizontalInset: CGFloat = 16
@@ -57,7 +59,9 @@ struct ChatItemRow: View, Equatable {
     }
 
     @ViewBuilder private var content: some View {
-        if let run = subagent ?? ChatSubagent.of(item, provider: provider) {
+        if let worker {
+            ChatWorkerCard(card: worker, isOpen: open.contains(item.id), toggle: { toggle(item.id) })
+        } else if let run = subagent ?? ChatSubagent.of(item, provider: provider) {
             ChatSubagentCard(run: run, isOpen: open.contains(item.id), toggle: { toggle(item.id) })
         } else {
         switch item.body {

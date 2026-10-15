@@ -1945,15 +1945,18 @@ fn dismissal_notice(id: &str, kind: &str, reset: Option<u64>) -> Item {
 struct NoticeHost {
     home: PathBuf,
     shared: Shared,
+    /// Worker chats' ended turns, delivered by `deliver_worker_notes` in a real host.
+    worker_notes: Mutex<Receiver<ParentNote>>,
 }
 
 impl NoticeHost {
-    fn shared(home: &Path) -> Shared {
+    fn shared(home: &Path) -> (Shared, Receiver<ParentNote>) {
         let dismissals = Arc::new(Mutex::new(
             super::super::notice_dismissals::Dismissals::open(home).unwrap(),
         ));
-        let chats = load_chats(home, &dismissals, &fake_providers());
-        Shared {
+        let (worker_notes, receiver) = mpsc::channel();
+        let chats = load_chats(home, &dismissals, &fake_providers(), &worker_notes);
+        let shared = Shared {
             home: home.to_owned(),
             dismissals,
             paths: Paths::new(home).unwrap(),
@@ -1964,20 +1967,26 @@ impl NoticeHost {
             connections: AtomicUsize::new(0),
             activity: Mutex::new(Instant::now()),
             quit: AtomicBool::new(false),
-        }
+            worker_notes,
+        };
+        (shared, receiver)
     }
 
     fn new() -> Self {
         let home = short_home();
         fs::create_dir_all(home.join("chats")).unwrap();
+        let (shared, worker_notes) = Self::shared(&home);
         Self {
-            shared: Self::shared(&home),
+            shared,
             home,
+            worker_notes: Mutex::new(worker_notes),
         }
     }
 
     fn restart(&mut self) {
-        self.shared = Self::shared(&self.home);
+        let (shared, worker_notes) = Self::shared(&self.home);
+        self.shared = shared;
+        self.worker_notes = Mutex::new(worker_notes);
     }
 
     fn create(&self, provider: Provider) -> Arc<Chat> {
@@ -4525,4 +4534,347 @@ fn starting_the_host_asks_the_keychain_nothing() {
     });
     let last = host.fake().starts.lock().unwrap().last().cloned().unwrap();
     assert_eq!(api_key_of(&last), HOST_KEY);
+}
+
+// ---- Workers in the parent's timeline --------------------------------------------------------
+
+mod worker_markers {
+    use super::*;
+    use crate::chat::workers::{WorkerEnd, WorkerFinal};
+
+    fn new_in(host: &TestHost, project: &str, cwd: &str, parent: Option<&str>) -> NewChat {
+        let mut new = host.new_chat(Provider::Codex);
+        new.project_id = Some(project.into());
+        new.cwd = host.home.join(cwd);
+        new.parent_id = parent.map(str::to_owned);
+        fs::create_dir_all(&new.cwd).unwrap();
+        new
+    }
+
+    fn register_shell(home: &Path, id: &str, parent: &str, project: &str) {
+        let path = home.join("sessions.json");
+        let mut document: serde_json::Value = fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_else(|| serde_json::json!({"sessions": []}));
+        document["sessions"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "id": id, "parent_id": parent, "project_id": project, "worktree_id": null,
+                "kind": "project", "cwd": home, "command": null, "harness": "claude",
+                "created_at_unix": 1
+            }));
+        fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
+    }
+
+    fn spawn(id: &str) -> WorkerNote {
+        WorkerNote::Spawn {
+            session_id: id.into(),
+            kind: WorkerKind::Shell,
+            late: false,
+        }
+    }
+
+    fn markers(log: &[Envelope]) -> Vec<Item> {
+        let mut transcript = Transcript::default();
+        for envelope in log {
+            transcript.apply(&envelope.event);
+        }
+        transcript
+            .items
+            .into_iter()
+            .filter(|item| item.presentation.worker.is_some())
+            .collect()
+    }
+
+    fn fold(log: &[Envelope]) -> Transcript {
+        let mut transcript = Transcript::default();
+        for envelope in log {
+            transcript.apply(&envelope.event);
+        }
+        transcript
+    }
+
+    #[test]
+    fn a_terminal_worker_gets_one_completed_card_in_its_parents_open_turn() {
+        let host = TestHost::new();
+        let parent = host
+            .client()
+            .create(new_in(&host, "p", "work", None))
+            .unwrap();
+        host.wait_for_state(&parent.id, |s| *s == ChatState::Idle);
+        let fake = host.fake();
+        fake.emit(ChatEvent::TurnStarted {
+            turn_id: "t1".into(),
+        });
+        fake.emit(ChatEvent::ItemStarted {
+            item: Item {
+                presentation: Default::default(),
+                id: "spawn-command".into(),
+                turn_id: Some("t1".into()),
+                status: ItemStatus::InProgress,
+                body: ItemBody::Command {
+                    command: "riwork shell create --worktree w --harness claude --json".into(),
+                    cwd: None,
+                    output: String::new(),
+                    exit_code: None,
+                },
+            },
+        });
+        host.wait_for_log(&parent.id, |log| fold(log).items.len() == 1);
+        let shell = Uuid::new_v4().to_string();
+        register_shell(&host.home, &shell, &parent.id, "p");
+        let mut client = host.client();
+        client.note_worker(&parent.id, spawn(&shell)).unwrap();
+        // The same start again (a retry, or a late sighting) writes nothing.
+        client.note_worker(&parent.id, spawn(&shell)).unwrap();
+        client
+            .note_worker(
+                &parent.id,
+                WorkerNote::Spawn {
+                    session_id: shell.clone(),
+                    kind: WorkerKind::Shell,
+                    late: true,
+                },
+            )
+            .unwrap();
+        // The first assignment of the same turn joins the card.
+        client
+            .note_worker(
+                &parent.id,
+                WorkerNote::Assign {
+                    session_id: shell.clone(),
+                    kind: WorkerKind::Shell,
+                    text: "Fix the poller".into(),
+                },
+            )
+            .unwrap();
+        let log = host.log(&parent.id);
+        let found = markers(&log);
+        assert_eq!(found.len(), 1);
+        let marker = &found[0];
+        assert_eq!(marker.id, format!("worker:{shell}"));
+        assert_eq!(marker.turn_id.as_deref(), Some("t1"));
+        assert_eq!(marker.status, ItemStatus::Completed);
+        let worker = marker.presentation.worker.as_ref().unwrap();
+        assert_eq!(worker.assignment.as_deref(), Some("Fix the poller"));
+        assert_eq!(worker.harness.as_deref(), Some("claude"));
+        assert!(!worker.late);
+        let transcript = fold(&log);
+        assert_eq!(transcript.items[0].id, "spawn-command");
+        assert_eq!(
+            transcript.items[1].id, marker.id,
+            "the card follows its command"
+        );
+
+        // The turn ends; the card stays completed, the command is closed.
+        fake.emit(ChatEvent::TurnCompleted {
+            turn_id: "t1".into(),
+            outcome: TurnOutcome::Interrupted,
+        });
+        host.wait_for_log(&parent.id, |log| turns_completed(log) == 1);
+        let transcript = fold(&host.log(&parent.id));
+        assert_eq!(transcript.items[1].status, ItemStatus::Completed);
+
+        // Finished: the card is replaced in place with its result.
+        client
+            .note_worker(
+                &parent.id,
+                WorkerNote::Finish {
+                    session_id: shell.clone(),
+                    kind: WorkerKind::Shell,
+                    end: WorkerFinal {
+                        status: WorkerEnd::Done,
+                        ended_at: now_unix() + 5,
+                        tail: "All tests pass".into(),
+                    },
+                    done_since: Some(now_unix() + 5),
+                    started_at: None,
+                },
+            )
+            .unwrap();
+        let log = host.log(&parent.id);
+        let transcript = fold(&log);
+        assert_eq!(transcript.items.len(), 2);
+        let done = transcript.items[1].presentation.worker.as_ref().unwrap();
+        assert_eq!(done.end.as_ref().unwrap().status, WorkerEnd::Done);
+        assert_eq!(done.end.as_ref().unwrap().tail, "All tests pass");
+
+        // The phone's snapshot carries it at the place it was first written.
+        let snapshot =
+            log::read_snapshot(&host.home, &parent.id, None, u64::MAX, 100, 1 << 20, &[]).unwrap();
+        let orders: Vec<_> = snapshot
+            .items
+            .iter()
+            .map(|row| (row.item.id.clone(), row.order))
+            .collect();
+        let command = orders
+            .iter()
+            .find(|(id, _)| id == "spawn-command")
+            .unwrap()
+            .1;
+        let card = orders.iter().find(|(id, _)| *id == marker.id).unwrap().1;
+        assert!(command < card);
+        let first_seq = log
+            .iter()
+            .find(|envelope| matches!(&envelope.event, ChatEvent::ItemCompleted { item } if item.id == marker.id))
+            .unwrap()
+            .seq;
+        assert_eq!(card, first_seq, "an upsert keeps the snapshot order");
+        assert!(snapshot.items.iter().any(|row| {
+            row.item
+                .presentation
+                .worker
+                .as_ref()
+                .is_some_and(|w| w.end.is_some())
+        }));
+    }
+
+    #[test]
+    fn a_note_about_someone_elses_worker_is_refused_and_a_stopped_chat_is_not_started() {
+        let host = TestHost::new();
+        let parent = host
+            .client()
+            .create(new_in(&host, "p", "work", None))
+            .unwrap();
+        host.wait_for_state(&parent.id, |s| *s == ChatState::Idle);
+        let other = Uuid::new_v4().to_string();
+        let foreign = Uuid::new_v4().to_string();
+        register_shell(&host.home, &foreign, &other, "p");
+        let elsewhere = Uuid::new_v4().to_string();
+        register_shell(&host.home, &elsewhere, &parent.id, "another-project");
+        let mut client = host.client();
+        for shell in [&foreign, &elsewhere] {
+            assert!(client.note_worker(&parent.id, spawn(shell)).is_err());
+        }
+        assert!(
+            client
+                .note_worker(&parent.id, spawn(&Uuid::new_v4().to_string()))
+                .is_err()
+        );
+        assert!(markers(&host.log(&parent.id)).is_empty());
+
+        client.close(&parent.id).unwrap();
+        host.wait_for_state(&parent.id, |s| *s == ChatState::Stopped);
+        let starts = host.fake().start_count();
+        let ours = Uuid::new_v4().to_string();
+        register_shell(&host.home, &ours, &parent.id, "p");
+        client
+            .note_worker(
+                &parent.id,
+                WorkerNote::Assign {
+                    session_id: ours.clone(),
+                    kind: WorkerKind::Shell,
+                    text: "Carry on".into(),
+                },
+            )
+            .unwrap();
+        let found = markers(&host.log(&parent.id));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].turn_id, None, "no turn is open in a stopped chat");
+        assert_eq!(
+            host.fake().start_count(),
+            starts,
+            "a note never starts a chat"
+        );
+        assert_eq!(host.info(&parent.id).state, ChatState::Stopped);
+        // After a host restart the card is found in the log, not written twice.
+        drop(client);
+        let mut host = host;
+        host.restart(quick_options());
+        host.client().note_worker(&parent.id, spawn(&ours)).unwrap();
+        assert_eq!(markers(&host.log(&parent.id)).len(), 1);
+    }
+
+    #[test]
+    fn a_worker_chat_has_a_card_in_its_parent_that_ends_with_its_reply() {
+        let host = TestHost::new();
+        let parent = host
+            .client()
+            .create(new_in(&host, "p", "work", None))
+            .unwrap();
+        host.wait_for_state(&parent.id, |s| *s == ChatState::Idle);
+        let child = host
+            .client()
+            .create(new_in(&host, "p", "child", Some(&parent.id)))
+            .unwrap();
+        assert_eq!(child.parent_id.as_deref(), Some(parent.id.as_str()));
+        let found = markers(&host.log(&parent.id));
+        assert_eq!(found.len(), 1);
+        let worker = found[0].presentation.worker.as_ref().unwrap();
+        assert_eq!(worker.kind, WorkerKind::Chat);
+        assert_eq!(worker.session_id, child.id);
+        assert_eq!(worker.harness.as_deref(), Some("codex"));
+        host.wait_for_state(&child.id, |s| *s == ChatState::Idle);
+        let fake = fake_for(&host.home.join("child"));
+        fake.emit(ChatEvent::TurnStarted {
+            turn_id: "c1".into(),
+        });
+        fake.emit(ChatEvent::ItemCompleted {
+            item: Item {
+                presentation: Default::default(),
+                id: "reply".into(),
+                turn_id: Some("c1".into()),
+                status: ItemStatus::Completed,
+                body: ItemBody::AgentMessage {
+                    text: "Reviewed.\nAll checks pass.".into(),
+                },
+            },
+        });
+        fake.emit(ChatEvent::TurnCompleted {
+            turn_id: "c1".into(),
+            outcome: TurnOutcome::Completed,
+        });
+        let log = host.wait_for_log(&parent.id, |log| {
+            markers(log)
+                .first()
+                .and_then(|marker| marker.presentation.worker.as_ref()?.end.clone())
+                .is_some()
+        });
+        let end = markers(&log)[0]
+            .presentation
+            .worker
+            .as_ref()
+            .unwrap()
+            .end
+            .clone()
+            .unwrap();
+        assert_eq!(end.status, WorkerEnd::Done);
+        assert_eq!(end.tail, "Reviewed.\nAll checks pass.");
+        assert_eq!(markers(&log).len(), 1);
+    }
+
+    #[test]
+    fn an_older_host_that_cannot_read_a_note_is_nothing_recorded() {
+        let home = short_home();
+        let socket = crate::chat::client::socket_path(&home);
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let old_host = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let id = serde_json::from_str::<serde_json::Value>(&line).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let mut stream = stream;
+            writeln!(
+                stream,
+                "{}",
+                serde_json::json!({"id": id, "ok": false, "error": "unreadable request: unknown variant `note_worker`"})
+            )
+            .unwrap();
+        });
+        let error =
+            crate::chat::workers::send(&home, &Uuid::new_v4().to_string(), spawn("s")).unwrap_err();
+        assert!(error.contains("unreadable request"));
+        old_host.join().unwrap();
+        // With no host at all, a spawner's note is silently nothing.
+        fs::remove_file(&socket).unwrap();
+        assert!(crate::chat::workers::send(&home, "c", spawn("s")).is_err());
+        let _ = fs::remove_dir_all(home);
+    }
 }

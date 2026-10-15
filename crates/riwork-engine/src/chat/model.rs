@@ -500,6 +500,14 @@ pub struct Presentation {
     /// Exact provider-reported delegation, additive for older transcript readers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent: Option<super::subagents::Subagent>,
+    /// One of RiWork's own workers this chat started (`workers`), additive like `subagent`.
+    /// A marker no reader can understand is left out rather than failing the item.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::workers::lenient"
+    )]
+    pub worker: Option<super::workers::WorkerRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<MessagePhase>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -512,6 +520,7 @@ pub struct Presentation {
 impl Presentation {
     pub fn is_empty(&self) -> bool {
         self.subagent.is_none()
+            && self.worker.is_none()
             && self.phase.is_none()
             && self.images.is_empty()
             && self.attachments.is_empty()

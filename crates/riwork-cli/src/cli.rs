@@ -2120,6 +2120,8 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             } else {
                 manager.create(project_id, worktree_id, cwd, command)?
             };
+            // Its card in the chat that started it, if a chat did; never fails the create.
+            crate::chat::workers::note_spawned_shell(manager.state_home(), &shell);
             print_shell_result(&shell, json)?;
         }
         "list" => {
@@ -2246,6 +2248,15 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             let id = args.remove(0);
             let input = args.join(" ");
             manager.send(&id, &input)?;
+            if let Ok(shell) = manager.registered_session(&id) {
+                crate::chat::workers::note_sent(
+                    manager.state_home(),
+                    shell.parent_id.as_deref(),
+                    &id,
+                    crate::chat::workers::WorkerKind::Shell,
+                    &input,
+                );
+            }
             if json {
                 print_json(&json!({ "id": id, "sent": input }))?;
             }
@@ -2651,6 +2662,22 @@ fn chat_client_command(
             let text = args.join(" ");
             let mut client = Client::connect(&ensure(home)?)?;
             let id = resolve_chat(&mut client, &selector)?;
+            // A worker chat's card in the chat that sends this, if that is its parent: noted
+            // first, so the turn this starts is never older than its card.
+            if let Some(parent) = client
+                .list()
+                .ok()
+                .and_then(|chats| chats.into_iter().find(|chat| chat.id == id))
+                .and_then(|chat| chat.parent_id)
+            {
+                crate::chat::workers::note_sent(
+                    home,
+                    Some(&parent),
+                    &id,
+                    crate::chat::workers::WorkerKind::Chat,
+                    &text,
+                );
+            }
             client.command(&id, ChatCommand::Send { text: text.clone() })?;
             if json {
                 json_text(&json!({ "id": id, "sent": text }))

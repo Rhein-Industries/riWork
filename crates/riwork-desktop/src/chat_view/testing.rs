@@ -249,6 +249,7 @@ fn serve(stream: UnixStream, shared: &Shared) {
             }
             Request::StageAttachment { id, .. }
             | Request::Create { id, .. }
+            | Request::NoteWorker { id, .. }
             | Request::Capabilities { id } => reply(&mut writer, refused(id)),
         };
         if !alive {

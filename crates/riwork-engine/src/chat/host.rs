@@ -41,6 +41,12 @@
 //! turn/start. Startup reports are committed only after successful attachment;
 //! historical missing resumes preserve their original identity and transcript.
 //!
+//! **Workers.** A terminal or chat a chat started is that chat's worker. The host is the
+//! only writer of the parent's log, so it writes the worker's marker there (`workers`):
+//! on a `NoteWorker` request from whoever started or messaged the worker, when a worker
+//! chat is created here, and when a worker chat's turn ends. A note never starts the
+//! parent's provider.
+//!
 //! **Lifetime.** `ensure` starts the host detached (own session, output to
 //! `run/chat.log`). The host exits by itself when no client has been connected
 //! and no chat has been starting, running or waiting for `DEFAULT_IDLE`; the
@@ -55,6 +61,7 @@ use super::model::{
     OrchestratorScope, Provider, Transcript, TurnOutcome, notice_kind,
 };
 use super::wire::{Envelope, Request, Response};
+use super::workers::{self, WorkerKind, WorkerNote};
 use fs2::FileExt;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -66,7 +73,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -411,6 +418,21 @@ struct Inner {
     /// The reader thread should stop the chat (the log broke).
     stop_wanted: bool,
     dismissals: Arc<Mutex<super::notice_dismissals::Dismissals>>,
+    /// The worker markers in this chat's log by session, oldest first: read on the first
+    /// note, then kept current by `append`.
+    workers: Option<HashMap<String, Vec<Item>>>,
+    /// Where a worker chat's ended turns go, to be recorded in its parent.
+    worker_notes: Option<mpsc::Sender<ParentNote>>,
+    /// A worker chat's last reply in its current turn, bounded: its card's result.
+    last_reply: Option<String>,
+    /// When a worker chat's current turn began: which of its cards the turn's end is for.
+    turn_started_at: Option<u64>,
+}
+
+/// A worker chat's turn ended; its parent's card says how.
+struct ParentNote {
+    parent: String,
+    note: WorkerNote,
 }
 
 impl Inner {
@@ -436,7 +458,64 @@ impl Inner {
             broken: false,
             stop_wanted: false,
             dismissals,
+            workers: None,
+            worker_notes: None,
+            last_reply: None,
+            turn_started_at: None,
         }
+    }
+
+    fn worker_markers(&mut self) -> Result<&mut HashMap<String, Vec<Item>>, String> {
+        if self.workers.is_none() {
+            let mut index: HashMap<String, Vec<Item>> = HashMap::new();
+            for item in log::read_worker_markers(self.log.dir())? {
+                if let Some(worker) = workers::of(&item) {
+                    index
+                        .entry(worker.session_id.clone())
+                        .or_default()
+                        .push(item);
+                }
+            }
+            self.workers = Some(index);
+        }
+        Ok(self.workers.get_or_insert_default())
+    }
+
+    /// Remembers what a worker chat's card will show, and says when its turn ended.
+    fn follow_worker_turn(&mut self, event: &ChatEvent) -> Option<ParentNote> {
+        let parent = self.info.parent_id.clone()?;
+        match event {
+            ChatEvent::TurnStarted { .. } => {
+                self.last_reply = None;
+                self.turn_started_at = Some(now_unix());
+            }
+            ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => {
+                if let ItemBody::AgentMessage { text } = &item.body
+                    && item.presentation.phase != Some(super::model::MessagePhase::Commentary)
+                    && !text.trim().is_empty()
+                {
+                    self.last_reply = Some(crate::subshells::bounded_output(text));
+                }
+            }
+            ChatEvent::TurnCompleted { outcome, .. } => {
+                return Some(ParentNote {
+                    parent,
+                    note: WorkerNote::Finish {
+                        session_id: self.info.id.clone(),
+                        kind: WorkerKind::Chat,
+                        end: workers::chat_end(
+                            outcome,
+                            self.last_reply.take().as_deref(),
+                            now_unix(),
+                        ),
+                        done_since: None,
+                        started_at: self.turn_started_at.take(),
+                    },
+                });
+            }
+            _ => {}
+        }
+        None
     }
 
     fn account_scope(&self) -> Option<&str> {
@@ -523,6 +602,7 @@ impl Inner {
             );
         }
         self.open.apply(&event);
+        let parent_note = self.follow_worker_turn(&event);
         // Boundaries are worth surviving a power loss; the stream in between is
         // written at once but synced with the next boundary.
         let sync = !matches!(
@@ -554,6 +634,19 @@ impl Inner {
             return;
         }
         self.next_seq += 1;
+        if let ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } = &envelope.event
+            && let Some(worker) = workers::of(item)
+            && let Some(index) = self.workers.as_mut()
+        {
+            let markers = index.entry(worker.session_id.clone()).or_default();
+            match markers.iter_mut().find(|marker| marker.id == item.id) {
+                Some(marker) => *marker = item.clone(),
+                None => markers.push(item.clone()),
+            }
+        }
+        if let (Some(note), Some(notes)) = (parent_note, &self.worker_notes) {
+            let _ = notes.send(note);
+        }
         let line: Arc<str> = Arc::from(line);
         self.subscribers
             .retain(|subscriber| subscriber.offer(&line));
@@ -818,6 +911,8 @@ struct Shared {
     /// the idle timer counts from (a request is over long before it is polled).
     activity: Mutex<Instant>,
     quit: AtomicBool,
+    /// Ended turns of worker chats, recorded in their parents by `deliver_worker_notes`.
+    worker_notes: mpsc::Sender<ParentNote>,
 }
 
 impl Shared {
@@ -947,7 +1042,8 @@ impl Host {
         let dismissals = Arc::new(Mutex::new(super::notice_dismissals::Dismissals::open(
             &home,
         )?));
-        let chats = load_chats(&home, &dismissals, &providers);
+        let (worker_notes, worker_receiver) = mpsc::channel();
+        let chats = load_chats(&home, &dismissals, &providers, &worker_notes);
         let listener = UnixListener::bind(&paths.socket)
             .map_err(|error| format!("Cannot listen on {}: {error}", paths.socket.display()))?;
         fs::set_permissions(&paths.socket, fs::Permissions::from_mode(0o600))
@@ -963,7 +1059,15 @@ impl Host {
             connections: AtomicUsize::new(0),
             activity: Mutex::new(Instant::now()),
             quit: AtomicBool::new(false),
+            worker_notes,
         });
+        {
+            let shared = Arc::downgrade(&shared);
+            thread::Builder::new()
+                .name("chat-workers".into())
+                .spawn(move || deliver_worker_notes(shared, worker_receiver))
+                .map_err(|error| format!("Cannot start the worker thread: {error}"))?;
+        }
         let accept = {
             let shared = shared.clone();
             thread::Builder::new()
@@ -1304,6 +1408,9 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
         ),
         Request::Close { id, chat_id } => answer(id, shared.find(&chat_id).map(|chat| stop(&chat))),
         Request::Delete { id, chat_id } => answer(id, delete(shared, &chat_id)),
+        Request::NoteWorker { id, chat_id, note } => {
+            answer(id, note_worker(shared, &chat_id, note))
+        }
         Request::Subscribe { id, .. } => failure(id, "subscribe takes over a connection".into()),
     }
 }
@@ -1312,6 +1419,76 @@ fn list(shared: &Shared) -> Vec<ChatInfo> {
     let mut infos: Vec<ChatInfo> = shared.all().iter().map(|chat| chat.info()).collect();
     infos.sort_by(|a, b| (a.created_at_unix, &a.id).cmp(&(b.created_at_unix, &b.id)));
     infos
+}
+
+// ---- Workers ------------------------------------------------------------------------------------
+
+/// Records `note` about one of `chat_id`'s workers in its log. The worker must be the
+/// chat's own (its `parent_id`), in the chat's project; the host describes it from the
+/// inventory, not from the note. The chat's provider is never started for it.
+fn note_worker(shared: &Shared, chat_id: &str, note: WorkerNote) -> Result<(), String> {
+    let chat = shared.find(chat_id)?;
+    let info = chat.info();
+    let now = now_unix();
+    let session_id = note.session_id();
+    let fresh = match note.kind() {
+        WorkerKind::Shell => {
+            let shell = crate::sessions::registered_shell(&shared.home, session_id)?;
+            if shell.parent_id.as_deref() != Some(chat_id) || shell.project_id != info.project_id {
+                return Err(format!(
+                    "terminal {session_id} is not a worker of chat {chat_id}"
+                ));
+            }
+            let tasks = crate::store::Store::open(&shared.home)
+                .and_then(|store| store.snapshot())
+                .map(|state| state.tasks)
+                .unwrap_or_default();
+            workers::describe_shell(&shell, &tasks, now)
+        }
+        WorkerKind::Chat => {
+            let child = shared.find(session_id)?.info();
+            if child.parent_id.as_deref() != Some(chat_id) {
+                return Err(format!(
+                    "chat {session_id} is not a worker of chat {chat_id}"
+                ));
+            }
+            workers::describe_chat(&child, now)
+        }
+        WorkerKind::Unknown => return Err("unknown worker kind".into()),
+    };
+    let mut inner = lock(&chat.inner);
+    if inner.deleted || inner.broken {
+        return Err(format!("chat {chat_id} cannot be written"));
+    }
+    let turn = inner.open.turn.clone();
+    let markers = inner
+        .worker_markers()?
+        .get(session_id)
+        .cloned()
+        .unwrap_or_default();
+    match workers::apply(&markers, &note, fresh, turn.as_deref(), now) {
+        workers::Upsert::Append(item) | workers::Upsert::Replace(item) => {
+            inner.append(ChatEvent::ItemCompleted { item })
+        }
+        workers::Upsert::Nothing => {}
+    }
+    Ok(())
+}
+
+/// Records the ended turns of worker chats in their parents, away from the lock of the
+/// worker chat that ended one.
+fn deliver_worker_notes(shared: Weak<Shared>, receiver: Receiver<ParentNote>) {
+    for ParentNote { parent, note } in receiver {
+        let Some(shared) = shared.upgrade() else {
+            return;
+        };
+        // A parent that is a terminal, or gone, has no card to complete.
+        if shared.find(&parent).is_ok()
+            && let Err(error) = note_worker(&shared, &parent, note)
+        {
+            eprintln!("riwork chat: worker card in {parent}: {error}");
+        }
+    }
 }
 
 // ---- Subscriptions ------------------------------------------------------------------------------
@@ -1521,6 +1698,7 @@ fn create_identified(
     let dir = log::chat_dir(&shared.home, &id).ok_or("invalid chat id")?;
     let log = ChatLog::create(&dir, &info)?;
     let mut inner = Inner::new(info.clone(), log, 0, shared.dismissals.clone());
+    inner.worker_notes = Some(shared.worker_notes.clone());
     inner.append(ChatEvent::Info { info });
     if fast_refused {
         let id = format!("fast-refused-{}", inner.next_seq);
@@ -1573,6 +1751,22 @@ fn create_identified(
         }
     }
     drop(creation);
+    // A worker chat's card in the chat that started it, where that chat's turn is now.
+    let info = chat.info();
+    if let Some(parent) = info
+        .parent_id
+        .as_deref()
+        .filter(|id| shared.find(id).is_ok())
+    {
+        let note = WorkerNote::Spawn {
+            session_id: info.id.clone(),
+            kind: WorkerKind::Chat,
+            late: false,
+        };
+        if let Err(error) = note_worker(shared, parent, note) {
+            eprintln!("riwork chat: worker card for {}: {error}", info.id);
+        }
+    }
     // A driver that cannot start leaves the chat failed, not missing: its
     // message is in the chat, and the next message tries again.
     let _ = ensure_running(shared, &chat);
@@ -1620,6 +1814,7 @@ fn load_chats(
     home: &Path,
     dismissals: &Arc<Mutex<super::notice_dismissals::Dismissals>>,
     providers: &Providers,
+    worker_notes: &mpsc::Sender<ParentNote>,
 ) -> HashMap<String, Arc<Chat>> {
     let mut chats = HashMap::new();
     let Ok(entries) = fs::read_dir(log::chats_dir(home)) else {
@@ -1690,6 +1885,7 @@ fn load_chats(
         settled.settle_contributor();
         let unsettled = settled != info;
         let mut inner = Inner::new(info, chat_log, last, dismissals.clone());
+        inner.worker_notes = Some(worker_notes.clone());
         if was_at_work {
             // Only a chat that died mid-turn needs its log read whole.
             match log::read_envelopes(&dir) {

@@ -231,6 +231,9 @@ impl ChatView {
 
     fn item(&self, ix: usize, item: &Item, look: Look, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
+        if let Some(worker) = crate::chat::workers::of(item) {
+            return self.worker_card(ix, item, worker, look, cx);
+        }
         if let Some(run) = crate::chat::subagents::in_transcript(
             item,
             &self.model.transcript.items,

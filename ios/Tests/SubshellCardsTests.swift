@@ -2,14 +2,10 @@ import XCTest
 @testable import RiWorkCore
 
 final class SubshellCardsTests: XCTestCase {
-    private func session(activity: String = "working", alive: Bool = true, parent: String? = "parent", project: String = "p", worktree: String? = "w", kind: String = "project") throws -> RemoteSession {
-        try JSONValue.object(["id":.string("shell"),"project_id":.string(project),"worktree_id":worktree.map(JSONValue.string) ?? .null,
+    private func session(_ id: String = "shell", activity: String = "working", alive: Bool = true, parent: String? = "parent", project: String = "p", worktree: String? = "w", kind: String = "project") throws -> RemoteSession {
+        try JSONValue.object(["id":.string(id),"project_id":.string(project),"worktree_id":worktree.map(JSONValue.string) ?? .null,
             "parent_id":parent.map(JSONValue.string) ?? .null,"kind":.string(kind),"cwd":.string("/fixture"),"harness":.string("claude"),"alive":.bool(alive),
             "created_at_unix":.number(10),"activity_since_unix":.number(20),"activity":.string(activity)]).decode(RemoteSession.self)
-    }
-    private func task(_ id: String, project: String = "p", worktree: String? = "w") throws -> RemoteTask {
-        try JSONValue.object(["id":.string(id),"project_id":.string(project),"title":.string(id),"details":.string(""),"status":.string("in_progress"),
-            "worktree_id":worktree.map(JSONValue.string) ?? .null,"created_at":.number(1),"updated_at":.number(1)]).decode(RemoteTask.self)
     }
     func testRealStatusesUnknownModelAndDoneElapsed() throws {
         for (wire,label,finished) in [("working","Working",false),("waiting","Waiting for input",false),("done","Done",true),("futureState","Unknown",false)] {
@@ -20,13 +16,19 @@ final class SubshellCardsTests: XCTestCase {
         XCTAssertEqual(WorkerShellCard(session: try session(alive:false)).status,"Exited")
         XCTAssertEqual(WorkerShellCard(session: try session()).elapsed(now:0),0)
     }
-    func testAncestryAndProjectScopeAreRequiredAndTaskAmbiguityIsPreserved() throws {
-        let sessions = try [session(),session(parent:nil),session(project:"other"),session(kind:"orchestrator")]
-        let tasks = try [task("a"),task("b"),task("foreign",project:"other"),task("unlinked",worktree:nil)]
-        let cards = WorkerShellCard.project("p",sessions:sessions,tasks:tasks)
-        XCTAssertEqual(cards.count,1); XCTAssertEqual(cards[0].tasks.map(\.id),["a","b"])
-        XCTAssertTrue(WorkerShellCard.project(nil,sessions:sessions).isEmpty)
-        XCTAssertTrue(WorkerShellCard(session:try session(worktree:nil),tasks:tasks).tasks.isEmpty)
+    /// The scope is the chat, not the project: a card exists only for a session a marker of this chat names, joined to the list by that
+    /// session id. A worker of another chat of the project, an unparented shell, an orchestrator and another project's shell never appear.
+    func testChatScopeIsTheMarkersSessionIDsJoinedToTheInventory() throws {
+        let sessions = try [session("mine"), session("sibling", activity:"waiting", parent:"other-chat"), session("loose", parent:nil),
+                            session("boss", kind:"orchestrator"), session("foreign", project:"other")]
+        let inventory = WorkerInventory(shells:sessions, chats:[])
+        let said = ChatItem(id:"said", status:.completed, body:.agentMessage("Started a worker"))
+        let timeline = WorkerTimeline(items:[said, .workerMarker("w", session:"mine")], inventory:inventory)
+        XCTAssertEqual(timeline.cards.map(\.worker.sessionID), ["mine"])
+        XCTAssertEqual(timeline.card(for:"w")?.phase, .listed(status:"Working", activity:.working))
+        XCTAssertNil(timeline.card(for:"said"))
+        // A chat that marked no worker shows none, whatever else the project runs.
+        XCTAssertTrue(WorkerTimeline(items:[said], inventory:inventory).cards.isEmpty)
     }
     func testClaudeBackgroundLaunchIsNotClaimedDoneAndOrdinaryToolsAreNotAgents() {
         var item = ChatItem(id:"a",status:.completed,body:.toolCall(server:nil,tool:"Agent",input:.object(["subagent_type":.string("Explore"),"description":.string("Find handler"),"run_in_background":.bool(true)]),output:"Launched"))

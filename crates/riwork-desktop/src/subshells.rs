@@ -1,13 +1,144 @@
 //! Workspace integration: reuse the inventory sample and the existing shell operations.
+//! Each chat tab gets the live state of its own workers (those whose `parent_id` is that
+//! chat), and the host hears when a worker finished or was found without a card, so the
+//! parent chat's timeline keeps the record (`chat::workers`).
 use crate::{
     Workspace, activity,
+    chat::workers::{self, LiveStatus, LiveWorker, WorkerEnd, WorkerFinal, WorkerKind, WorkerNote},
     chat_view::ShellAction,
     sessions::{SessionManager, ShellSession},
 };
 use gpui::{Context, Window};
 use notify::{RecursiveMode, Watcher};
 use riwork_engine::subshells::{PollState, ShellCard, bounded_output};
-use std::{collections::BTreeMap, path::Path, time::Instant};
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::Path,
+    time::Instant,
+};
+
+/// A live state older than this is labelled on running cards.
+const STALE_AFTER: u64 = 30;
+
+/// One thing a parent chat's host is told about a worker.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Said {
+    /// Its start may have been missed: a late card, unless it has one.
+    Late(String),
+    /// It became done at this time.
+    Done(String, u64),
+    Exited(String),
+}
+
+impl WorkerState {
+    /// The notes for what changed since the last call, each with what it says. `fresh`:
+    /// the terminals were just sampled, so a done can go with its last lines.
+    fn transitions(
+        &mut self,
+        shells: &[ShellSession],
+        activity: &BTreeMap<String, activity::AgentState>,
+        project: &str,
+        now: u64,
+        fresh: bool,
+    ) -> Vec<(String, WorkerNote, Said)> {
+        let mut notes = Vec::new();
+        for shell in shells
+            .iter()
+            .filter(|s| s.is_worker() && s.project_id.as_deref() == Some(project))
+        {
+            let Some(parent) = shell.parent_id.clone() else {
+                continue;
+            };
+            self.seen.insert(shell.id.clone(), parent.clone());
+            // Dead: closed below, even if it ended while no app watched it.
+            if !shell.alive {
+                continue;
+            }
+            if now.saturating_sub(shell.created_at_unix) >= workers::LATE_AFTER
+                && self.said.insert(Said::Late(shell.id.clone()))
+            {
+                notes.push((
+                    parent.clone(),
+                    WorkerNote::Spawn {
+                        session_id: shell.id.clone(),
+                        kind: WorkerKind::Shell,
+                        late: true,
+                    },
+                    Said::Late(shell.id.clone()),
+                ));
+            }
+            if let Some(state) = activity.get(&shell.id)
+                && state.activity == activity::AgentActivity::Done
+                && let Some(since) = state.since_unix
+                && !self.said.contains(&Said::Done(shell.id.clone(), since))
+            {
+                self.awaiting.insert((shell.id.clone(), since), parent);
+            }
+        }
+        if fresh {
+            for ((id, since), parent) in std::mem::take(&mut self.awaiting) {
+                if self.said.insert(Said::Done(id.clone(), since)) {
+                    notes.push((
+                        parent,
+                        WorkerNote::Finish {
+                            session_id: id.clone(),
+                            kind: WorkerKind::Shell,
+                            end: WorkerFinal {
+                                status: WorkerEnd::Done,
+                                ended_at: since,
+                                tail: self.last_output.get(&id).cloned().unwrap_or_default(),
+                            },
+                            done_since: Some(since),
+                            started_at: None,
+                        },
+                        Said::Done(id, since),
+                    ));
+                }
+            }
+        } else if !self.awaiting.is_empty() {
+            // The next check reads their screens.
+            self.poll.request();
+        }
+        let exited: Vec<(String, String)> = self
+            .seen
+            .iter()
+            .filter(|(id, _)| !shells.iter().any(|shell| &shell.id == *id && shell.alive))
+            .map(|(id, parent)| (id.clone(), parent.clone()))
+            .collect();
+        for (id, parent) in exited {
+            if self.said.insert(Said::Exited(id.clone())) {
+                notes.push((
+                    parent,
+                    WorkerNote::Finish {
+                        session_id: id.clone(),
+                        kind: WorkerKind::Shell,
+                        end: WorkerFinal {
+                            status: WorkerEnd::Exited,
+                            ended_at: now,
+                            tail: self.last_output.get(&id).cloned().unwrap_or_default(),
+                        },
+                        done_since: None,
+                        started_at: None,
+                    },
+                    Said::Exited(id),
+                ));
+            }
+        }
+        notes
+    }
+
+    /// After a batch went out: what found no host is said again later; a recorded exit
+    /// needs no more watching.
+    fn settle(&mut self, sent: &[Said], undelivered: &[Said]) {
+        for said in sent {
+            if undelivered.contains(said) {
+                self.said.remove(said);
+            } else if let Said::Exited(id) = said {
+                self.seen.remove(id);
+            }
+        }
+    }
+}
 
 pub(crate) struct WorkerState {
     pub poll: PollState,
@@ -15,8 +146,16 @@ pub(crate) struct WorkerState {
     clock: Instant,
     scope: String,
     outputs: BTreeMap<String, Result<String, String>>,
-    pub cards: Vec<ShellCard>,
-    retired: Vec<ShellCard>,
+    /// Each worker's last lines that could be read, for its card and its recorded end.
+    last_output: BTreeMap<String, String>,
+    /// Workers with a parent seen in this project, by id: their parent chat. One that is
+    /// gone or dead is recorded as exited, with the last lines kept for it until then.
+    seen: BTreeMap<String, String>,
+    /// What the host was told in this run, so each is said once.
+    said: HashSet<Said>,
+    /// Dones waiting for the next sample of their terminal, so their record has its last
+    /// lines: the worker and when it became done, with its parent chat.
+    awaiting: BTreeMap<(String, u64), String>,
     watcher: Option<notify::RecommendedWatcher>,
     watch_error: Option<String>,
     fingerprint: Vec<Option<(std::time::SystemTime, u64)>>,
@@ -31,8 +170,10 @@ impl Default for WorkerState {
             clock: Instant::now(),
             scope: String::new(),
             outputs: BTreeMap::new(),
-            cards: Vec::new(),
-            retired: Vec::new(),
+            last_output: BTreeMap::new(),
+            seen: BTreeMap::new(),
+            said: HashSet::new(),
+            awaiting: BTreeMap::new(),
             watcher: None,
             watch_error: None,
             fingerprint: Vec::new(),
@@ -179,8 +320,9 @@ impl Workspace {
             self.subshells.scope = self.project_id.clone();
             self.subshells.poll = Default::default();
             self.subshells.outputs.clear();
-            self.subshells.cards.clear();
-            self.subshells.retired.clear();
+            self.subshells.last_output.clear();
+            // Another project's workers are not gone because this window looks elsewhere.
+            self.subshells.seen.clear();
         }
         let paused = self.is_remote() || !window.is_visible() || cx.active_window().is_none();
         if self.subshells.paused && !paused
@@ -222,6 +364,11 @@ impl Workspace {
         let output_changed = outputs
             .iter()
             .any(|(id, result)| self.subshells.outputs.get(id) != Some(result));
+        for (id, output) in &outputs {
+            if let Ok(text) = output {
+                self.subshells.last_output.insert(id.clone(), text.clone());
+            }
+        }
         self.subshells.outputs.extend(outputs);
         self.subshells.poll.finish(
             self.subshells.clock.elapsed().as_secs(),
@@ -230,76 +377,143 @@ impl Workspace {
             self.worker_sample_live(),
         );
         self.publish_workers(cx);
+        if succeeded {
+            self.note_worker_transitions(true, cx);
+        }
+    }
+
+    /// The live state of this project's workers, with the chat that started each.
+    fn live_workers(&self) -> Vec<(String, String, LiveWorker)> {
+        let project = Some(self.project_id.as_str());
+        let shells = self
+            .shells
+            .iter()
+            .filter(|s| s.is_worker() && s.project_id.as_deref() == project)
+            .filter_map(|shell| {
+                let parent = shell.parent_id.clone()?;
+                let card =
+                    ShellCard::of(shell, self.agent_activity.get(&shell.id), &self.state.tasks);
+                let output_error = match self.subshells.outputs.get(&shell.id) {
+                    Some(Err(error)) => Some(bounded_output(error)),
+                    _ => None,
+                };
+                Some((
+                    shell.id.clone(),
+                    parent,
+                    LiveWorker {
+                        status: LiveStatus::of_shell(&card),
+                        actionable: shell.alive,
+                        model: self.subshells.models.get(&shell.id).cloned(),
+                        output: self
+                            .subshells
+                            .last_output
+                            .get(&shell.id)
+                            .cloned()
+                            .unwrap_or_default(),
+                        output_error,
+                    },
+                ))
+            });
+        let chats = self
+            .shared_chats
+            .iter()
+            .flatten()
+            .filter(|chat| chat.project_id.as_deref() == project)
+            .filter_map(|chat| {
+                Some((
+                    chat.id.clone(),
+                    chat.parent_id.clone()?,
+                    LiveWorker {
+                        status: LiveStatus::of_chat(&chat.state),
+                        actionable: false,
+                        model: chat.model.clone(),
+                        output: String::new(),
+                        output_error: None,
+                    },
+                ))
+            });
+        shells.chain(chats).collect()
     }
 
     pub(crate) fn publish_workers(&mut self, cx: &mut Context<Self>) {
         self.subshells
             .outputs
             .retain(|id, _| self.shells.iter().any(|shell| &shell.id == id));
-        let mut cards: Vec<_> = self
-            .shells
-            .iter()
-            .filter(|s| s.is_worker() && s.project_id.as_deref() == Some(self.project_id.as_str()))
-            .map(|shell| {
-                let mut card =
-                    ShellCard::of(shell, self.agent_activity.get(&shell.id), &self.state.tasks);
-                card.model = self.subshells.models.get(&shell.id).cloned();
-                if let Some(output) = self.subshells.outputs.get(&shell.id) {
-                    match output {
-                        Ok(text) => card.output = text.clone(),
-                        Err(error) => {
-                            card.output_error = Some(bounded_output(error));
-                            card.output = self
-                                .subshells
-                                .cards
-                                .iter()
-                                .find(|old| old.id == shell.id)
-                                .map(|old| old.output.clone())
-                                .unwrap_or_default();
-                        }
-                    }
-                }
-                card
-            })
-            .collect();
-        cards.extend(
-            self.subshells
-                .retired
-                .iter()
-                .filter(|old| !cards.iter().any(|card| card.id == old.id))
-                .cloned()
-                .collect::<Vec<_>>(),
-        );
-        cards.sort_by_key(|card| (card.finished(), card.created_at));
-        self.subshells.cards = cards.clone();
-        let mut poll = self.subshells.poll.label(
-            self.subshells.clock.elapsed().as_secs(),
-            self.worker_sample_live(),
-            self.subshells.paused,
-            self.sessions_sample_error.as_deref(),
-        );
-        if let Some(error) = &self.subshells.watch_error {
-            poll.push_str(" · ");
-            poll.push_str(error);
-        }
+        // A worker that went keeps its last lines until its exit is recorded.
+        self.subshells.last_output.retain(|id, _| {
+            self.shells.iter().any(|shell| &shell.id == id) || self.subshells.seen.contains_key(id)
+        });
+        let live = self.live_workers();
+        let now = self.subshells.clock.elapsed().as_secs();
+        // Said on running cards only when what they show may be old.
+        let stale = (self.subshells.paused
+            || self.sessions_sample_error.is_some()
+            || self.subshells.watch_error.is_some()
+            || self
+                .subshells
+                .poll
+                .last_checked
+                .is_none_or(|at| now.saturating_sub(at) > STALE_AFTER))
+        .then(|| {
+            let mut label = self.subshells.poll.label(
+                now,
+                self.worker_sample_live(),
+                self.subshells.paused,
+                self.sessions_sample_error.as_deref(),
+            );
+            if let Some(error) = &self.subshells.watch_error {
+                label.push_str(" · ");
+                label.push_str(error);
+            }
+            label
+        });
         let project = self.project_id.clone();
-        for view in self
+        for (chat_id, view) in self
             .panes
             .values()
             .flat_map(|p| p.tabs.iter())
-            .filter_map(|tab| tab.chat())
-            .cloned()
+            .filter_map(|tab| Some((tab.chat_id()?.to_owned(), tab.chat()?.clone())))
             .collect::<Vec<_>>()
         {
             let belongs = view.read(cx).summary().project_id.as_deref() == Some(project.as_str());
-            view.update(cx, |view, cx| {
-                view.set_subshells(
-                    if belongs { cards.clone() } else { Vec::new() },
-                    poll.clone(),
-                    cx,
-                )
-            });
+            let mine = if belongs {
+                workers_of_chat(&live, &chat_id)
+            } else {
+                BTreeMap::new()
+            };
+            view.update(cx, |view, cx| view.set_subshells(mine, stale.clone(), cx));
         }
+    }
+
+    /// Tells the host what changed for the record in a parent chat: a worker that became
+    /// done or exited, and (once, after `workers::LATE_AFTER`) a worker whose start it may
+    /// have missed. `fresh`: the terminals were just sampled.
+    fn note_worker_transitions(&mut self, fresh: bool, cx: &mut Context<Self>) {
+        if self.is_remote() {
+            return;
+        }
+        let notes = self.subshells.transitions(
+            &self.shells,
+            &self.agent_activity,
+            &self.project_id,
+            activity::unix_now(),
+            fresh,
+        );
+        if notes.is_empty() {
+            return;
+        }
+        let sent: Vec<Said> = notes.iter().map(|(_, _, said)| said.clone()).collect();
+        let home = self.sessions.state_home().to_path_buf();
+        let work = cx
+            .background_executor()
+            .spawn(async move { deliver_notes(&home, notes) });
+        cx.spawn(async move |this, cx| {
+            let undelivered = work.await;
+            let _ = this.update(cx, |workspace, _| {
+                workspace.subshells.settle(&sent, &undelivered)
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn worker_activity_changed(&mut self, cx: &mut Context<Self>) {
@@ -308,6 +522,7 @@ impl Workspace {
             self.worker_sample_live(),
         );
         self.publish_workers(cx);
+        self.note_worker_transitions(false, cx);
     }
 
     pub(crate) fn worker_refresh_requested(&self) -> bool {
@@ -322,6 +537,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if action == &ShellAction::Open
+            && !self.is_remote()
+            && let Some(chat) = self
+                .shared_chats
+                .iter()
+                .flatten()
+                .find(|chat| chat.id == id && chat.parent_id.is_some())
+                .cloned()
+        {
+            self.show_chat_with_config(chat, self.chat_config(), None, window, cx);
+            return;
+        }
         if self.is_remote()
             || view.read(cx).summary().project_id.as_deref() != Some(self.project_id.as_str())
             || !self.shells.iter().any(|s| {
@@ -348,7 +575,6 @@ impl Workspace {
         let id = id.to_owned();
         let project = self.project_id.clone();
         let action = action.clone();
-        let stop = matches!(action, ShellAction::Stop);
         let view = view.downgrade();
         let work_id = id.clone();
         let work_project = project.clone();
@@ -358,20 +584,6 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             let result = work.await;
             let _ = this.update_in(cx, |workspace, window, cx| {
-                if result.is_ok() && stop && workspace.project_id == project {
-                    if let Some(mut card) = workspace
-                        .subshells
-                        .cards
-                        .iter()
-                        .find(|card| card.id == id)
-                        .cloned()
-                    {
-                        card.alive = false;
-                        card.activity = activity::AgentActivity::Exited;
-                        card.ended_at = Some(activity::unix_now());
-                        workspace.subshells.retired.push(card);
-                    }
-                }
                 let _ = view.update(cx, |view, cx| {
                     view.subshell_action_finished(&id, result, cx)
                 });
@@ -384,9 +596,210 @@ impl Workspace {
     }
 }
 
+/// The workers a chat started, out of its project's: never another chat's.
+fn workers_of_chat(
+    live: &[(String, String, LiveWorker)],
+    chat_id: &str,
+) -> BTreeMap<String, LiveWorker> {
+    live.iter()
+        .filter(|(_, parent, _)| parent == chat_id)
+        .map(|(id, _, worker)| (id.clone(), worker.clone()))
+        .collect()
+}
+
+/// Sends each note to the host of the parent chat. A parent that is not a chat has no
+/// timeline; a host that refuses a note recorded nothing and is not asked again. Returns
+/// the notes that found no host, to be said again on a later check.
+fn deliver_notes(home: &Path, notes: Vec<(String, WorkerNote, Said)>) -> Vec<Said> {
+    let socket = crate::chat::client::socket_path(home);
+    notes
+        .into_iter()
+        .filter(|(parent, _, _)| workers::parent_is_chat(home, parent))
+        .filter_map(
+            |(parent, note, key)| match crate::chat::client::Client::connect(&socket) {
+                Ok(mut client) => {
+                    let _ = client.note_worker(&parent, note);
+                    None
+                }
+                Err(_) => Some(key),
+            },
+        )
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn worker_shell(id: &str, parent: Option<&str>, alive: bool, created: u64) -> ShellSession {
+        let mut shell: ShellSession = serde_json::from_value(serde_json::json!({
+            "id": id, "parent_id": parent, "project_id": "p", "kind": "project",
+            "cwd": "/fixture", "command": null, "harness": "claude", "created_at_unix": created
+        }))
+        .unwrap();
+        shell.alive = alive;
+        shell
+    }
+
+    fn done_at(since: u64) -> activity::AgentState {
+        activity::AgentState {
+            activity: activity::AgentActivity::Done,
+            since_unix: Some(since),
+            ..Default::default()
+        }
+    }
+
+    fn said(notes: &[(String, WorkerNote, Said)]) -> Vec<Said> {
+        notes.iter().map(|(_, _, said)| said.clone()).collect()
+    }
+
+    #[test]
+    fn a_late_card_is_asked_once_and_only_after_the_spawner_had_its_chance() {
+        let mut state = WorkerState::default();
+        let shells = [
+            worker_shell("w", Some("chat"), true, 100),
+            worker_shell("orphan", None, true, 0),
+        ];
+        let none = BTreeMap::new();
+        assert!(state.transitions(&shells, &none, "p", 120, true).is_empty());
+        let notes = state.transitions(&shells, &none, "p", 130, true);
+        assert_eq!(said(&notes), [Said::Late("w".into())]);
+        assert_eq!(notes[0].0, "chat");
+        assert!(state.transitions(&shells, &none, "p", 500, true).is_empty());
+        assert!(
+            state
+                .transitions(&shells, &none, "other", 500, true)
+                .is_empty(),
+            "another project's workers are not this window's"
+        );
+    }
+
+    #[test]
+    fn a_done_waits_for_its_last_lines_and_is_said_once() {
+        let mut state = WorkerState::default();
+        let shells = [worker_shell("w", Some("chat"), true, 1000)];
+        let activity = BTreeMap::from([("w".to_owned(), done_at(1010))]);
+        assert!(state.poll.begin(0, true, false));
+        state.poll.finish(0, false, true, true);
+        assert!(!state.poll.has_request());
+        assert!(
+            state
+                .transitions(&shells, &activity, "p", 1011, false)
+                .is_empty()
+        );
+        assert!(state.poll.has_request(), "a sample is asked for");
+        state.last_output.insert("w".into(), "Final line".into());
+        let notes = state.transitions(&shells, &activity, "p", 1012, true);
+        assert_eq!(said(&notes), [Said::Done("w".into(), 1010)]);
+        assert!(matches!(
+            &notes[0].1,
+            WorkerNote::Finish { end, done_since: Some(1010), .. } if end.tail == "Final line"
+        ));
+        assert!(
+            state
+                .transitions(&shells, &activity, "p", 1013, true)
+                .is_empty()
+        );
+        // A later done, after more work, is said again.
+        let activity = BTreeMap::from([("w".to_owned(), done_at(1100))]);
+        state.transitions(&shells, &activity, "p", 1101, false);
+        assert_eq!(
+            said(&state.transitions(&shells, &activity, "p", 1102, true)),
+            [Said::Done("w".into(), 1100)]
+        );
+    }
+
+    #[test]
+    fn a_worker_that_goes_is_recorded_exited_with_its_last_lines_and_retried_without_a_host() {
+        let mut state = WorkerState::default();
+        let none = BTreeMap::new();
+        let alive = [worker_shell("w", Some("chat"), true, 1000)];
+        state.transitions(&alive, &none, "p", 1001, true);
+        state.last_output.insert("w".into(), "bye".into());
+        // Stopped: gone from the inventory.
+        let notes = state.transitions(&[], &none, "p", 1002, true);
+        assert_eq!(said(&notes), [Said::Exited("w".into())]);
+        assert!(matches!(
+            &notes[0].1,
+            WorkerNote::Finish { end, .. } if end.status == WorkerEnd::Exited && end.tail == "bye"
+        ));
+        let sent = said(&notes);
+        state.settle(&sent, &sent);
+        assert_eq!(
+            said(&state.transitions(&[], &none, "p", 1003, true)),
+            [Said::Exited("w".into())],
+            "no host: said again"
+        );
+        state.settle(&sent, &[]);
+        assert!(state.transitions(&[], &none, "p", 1004, true).is_empty());
+        assert!(
+            !state.seen.contains_key("w"),
+            "a recorded exit is no longer watched"
+        );
+        // A worker that died while no app ran is closed at first sight.
+        let dead = [worker_shell("d", Some("chat"), false, 10)];
+        assert_eq!(
+            said(&state.transitions(&dead, &none, "p", 2000, true)),
+            [Said::Exited("d".into())]
+        );
+        assert!(state.transitions(&dead, &none, "p", 2001, true).is_empty());
+    }
+
+    #[test]
+    fn a_chat_gets_only_the_workers_it_started() {
+        let worker = |status| LiveWorker {
+            status,
+            actionable: true,
+            model: None,
+            output: String::new(),
+            output_error: None,
+        };
+        let live = vec![
+            (
+                "mine".to_owned(),
+                "chat-a".to_owned(),
+                worker(LiveStatus::Working),
+            ),
+            (
+                "theirs".to_owned(),
+                "chat-b".to_owned(),
+                worker(LiveStatus::Done),
+            ),
+            (
+                "also-mine".to_owned(),
+                "chat-a".to_owned(),
+                worker(LiveStatus::Waiting),
+            ),
+        ];
+        assert_eq!(
+            workers_of_chat(&live, "chat-a").keys().collect::<Vec<_>>(),
+            ["also-mine", "mine"]
+        );
+        assert!(workers_of_chat(&live, "chat-c").is_empty());
+    }
+
+    #[test]
+    fn notes_for_a_parent_that_is_no_chat_are_dropped_and_without_a_host_are_kept() {
+        let home = std::env::temp_dir().join(format!("riwork-notes-{}", uuid::Uuid::new_v4()));
+        let chat = uuid::Uuid::new_v4().to_string();
+        let dir = crate::chat::log::chat_dir(&home, &chat).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("info.json"), "{}").unwrap();
+        let note = |id: &str| WorkerNote::Spawn {
+            session_id: id.into(),
+            kind: WorkerKind::Shell,
+            late: true,
+        };
+        let undelivered = deliver_notes(
+            &home,
+            vec![
+                (chat.clone(), note("a"), Said::Late("a".into())),
+                ("a-terminal".into(), note("b"), Said::Late("b".into())),
+            ],
+        );
+        assert_eq!(undelivered, [Said::Late("a".into())]);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
     #[test]
     fn watcher_only_wakes_for_inventory_activity_or_done_delivery() {
         let home = Path::new("/synthetic/riwork");

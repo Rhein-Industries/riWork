@@ -144,6 +144,8 @@ pub(super) fn rows(
                 {
                     last.insert(turn.as_str(), at);
                 }
+                // A worker card is the host's record, not the agent's work after its answer.
+                _ if crate::chat::workers::is_marker(item) => {}
                 ItemBody::Notice { .. } | ItemBody::UserMessage { .. } => {}
                 _ => {
                     last.remove(turn.as_str());
@@ -181,6 +183,7 @@ pub(super) fn rows(
                 .as_deref()
                 .is_some_and(|turn| done.contains(turn) && final_turns.contains(turn));
         waiting_message == Some(at)
+            || crate::chat::workers::of(item).is_some()
             || crate::chat::subagents::of(item, transcript.info.as_ref().map(|info| info.provider))
                 .is_some()
             || matches!(item.body, ItemBody::UserMessage { .. })

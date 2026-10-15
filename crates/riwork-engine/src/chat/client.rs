@@ -198,6 +198,27 @@ impl Client {
         decode(value).map_err(CallError::Broken)
     }
 
+    /// Records one of `chat_id`'s workers in its timeline. Waits a few seconds at most:
+    /// a note is best effort, and an older host refuses it as unreadable.
+    pub fn note_worker(
+        &mut self,
+        chat_id: &str,
+        note: super::workers::WorkerNote,
+    ) -> Result<(), String> {
+        let wait = Some(Duration::from_secs(5));
+        let stream = self.stream.get_ref();
+        stream
+            .set_read_timeout(wait)
+            .and_then(|_| stream.set_write_timeout(wait))
+            .map_err(|error| error.to_string())?;
+        self.call(Request::NoteWorker {
+            id: new_id(),
+            chat_id: chat_id.into(),
+            note,
+        })
+        .map(|_| ())
+    }
+
     pub fn list(&mut self) -> Result<Vec<ChatInfo>, String> {
         decode(self.call(Request::List { id: new_id() })?)
     }
@@ -509,7 +530,8 @@ fn request_id(request: &Request) -> &str {
         | Request::Command { id, .. }
         | Request::Subscribe { id, .. }
         | Request::Close { id, .. }
-        | Request::Delete { id, .. } => id,
+        | Request::Delete { id, .. }
+        | Request::NoteWorker { id, .. } => id,
     }
 }
 

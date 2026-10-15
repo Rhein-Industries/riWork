@@ -30,6 +30,25 @@ pub(super) fn leaves(view: &ChatView, look: Look) -> Vec<SourceLeaf> {
             continue;
         };
         let item = &view.model.transcript.items[*at];
+        // A worker card's live lines are never selectable; an opened result is.
+        if let Some(worker) = crate::chat::workers::of(item) {
+            let tail = worker
+                .end
+                .as_ref()
+                .map(|end| end.tail.clone())
+                .unwrap_or_default();
+            if view.open.contains(&item.id)
+                && !tail.trim().is_empty()
+                && !view.worker_status(*at, worker).running()
+            {
+                result.push(SourceLeaf {
+                    key: format!("worker:{}", item.id),
+                    text: tail,
+                    row,
+                });
+            }
+            continue;
+        }
         if let Some(run) = crate::chat::subagents::in_transcript(
             item,
             &view.model.transcript.items,

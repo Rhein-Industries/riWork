@@ -119,6 +119,26 @@ impl ShellSession {
     }
 }
 
+/// The saved record of shell `id` under `home`, without asking tmux: what the chat host
+/// checks a worker note against.
+pub fn registered_shell(home: &Path, id: &str) -> Result<ShellSession, String> {
+    validate_uuid(id)?;
+    let path = home.join("sessions.json");
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!("unknown shell {id}"));
+        }
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
+    };
+    parse_registry(&bytes)
+        .map_err(|error| format!("parse {}: {error}", path.display()))?
+        .sessions
+        .into_iter()
+        .find(|session| session.id == id)
+        .ok_or_else(|| format!("unknown shell {id}"))
+}
+
 fn user_shell_caller() -> bool {
     ![
         "RIWORK_CHAT_ID",

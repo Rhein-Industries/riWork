@@ -5697,10 +5697,17 @@ impl Workspace {
         let polled = self.begin_worker_sample(window, cx);
         self.session_refresh_pending = true;
         let previous_shells = self.shells.clone();
+        // A chat shows its workers' last lines, and a worker's recorded end keeps them: read
+        // them while a chat is shown or a chat's worker runs.
         let capture_output = self.panes.values().any(|pane| {
             pane.tabs
                 .get(pane.active)
                 .is_some_and(|tab| tab.chat().is_some())
+        }) || self.shells.iter().any(|shell| {
+            shell.alive
+                && shell.is_worker()
+                && shell.parent_id.is_some()
+                && shell.project_id.as_deref() == Some(self.project_id.as_str())
         });
         let project_id = self.project_id.clone();
         let generation = self.session_refresh_generation;

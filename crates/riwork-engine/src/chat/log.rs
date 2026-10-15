@@ -242,8 +242,11 @@ fn is_session_history(event: &ChatEvent) -> bool {
         | ChatEvent::ItemDelta { .. }
         | ChatEvent::ApprovalRequested { .. }
         | ChatEvent::QuestionRequested { .. } => true,
+        // A worker marker is the host's record of a terminal or chat, never the
+        // provider's own session: it cannot make a new provider look resumable, even in a
+        // shape this build cannot read.
         ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => {
-            !matches!(item.body, ItemBody::Notice { .. })
+            !matches!(item.body, ItemBody::Notice { .. }) && !super::workers::is_marker(item)
         }
         _ => false,
     }
@@ -1345,9 +1348,154 @@ pub(super) fn read_notice_transcript(dir: &Path) -> Result<super::model::Transcr
     Ok(transcript)
 }
 
+/// The worker markers in the log in `dir` (`workers`), in the order they were written; a
+/// later line for the same id is the same marker's newer form. Only marker lines are
+/// parsed; the rest of a long chat is skipped as bytes.
+pub(super) fn read_worker_markers(dir: &Path) -> Result<Vec<super::model::Item>, String> {
+    let file = match File::open(dir.join(EVENTS)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut reader = BufReader::new(file);
+    let mut markers: Vec<super::model::Item> = Vec::new();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader
+            .read_until(b'\n', &mut line)
+            .map_err(|e| e.to_string())?
+            == 0
+        {
+            break;
+        }
+        if line.last() != Some(&b'\n') || !contains(&line, br#""tool":"worker""#) {
+            continue;
+        }
+        let Ok(envelope) = serde_json::from_slice::<Envelope>(&line) else {
+            continue;
+        };
+        if let ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } = envelope.event
+            && item.presentation.worker.is_some()
+        {
+            match markers.iter_mut().find(|marker| marker.id == item.id) {
+                Some(marker) => *marker = item,
+                None => markers.push(item),
+            }
+        }
+    }
+    Ok(markers)
+}
+
 #[cfg(test)]
 mod rate_snapshot_tests {
     use super::*;
+
+    #[test]
+    fn a_worker_marker_is_not_the_provider_sessions_history() {
+        use super::super::model::{ChatEvent, Item, ItemBody, ItemStatus};
+        use super::super::workers::{WorkerKind, WorkerRef};
+        let marker = super::super::workers::item(
+            "worker:s".into(),
+            None,
+            WorkerRef {
+                session_id: "s".into(),
+                kind: WorkerKind::Shell,
+                title: "t".into(),
+                harness: None,
+                model: None,
+                worktree_id: None,
+                assignment: None,
+                noted_at: 1,
+                late: false,
+                follow_up: false,
+                end: None,
+            },
+        );
+        assert!(!is_session_history(&ChatEvent::ItemCompleted {
+            item: marker.clone()
+        }));
+        let mut unreadable = marker.clone();
+        unreadable.presentation = Default::default();
+        assert!(!is_session_history(&ChatEvent::ItemCompleted {
+            item: unreadable
+        }));
+        let mut tool = marker;
+        tool.presentation = Default::default();
+        tool.body = ItemBody::ToolCall {
+            server: Some("riwork".into()),
+            tool: "riwork_shell_list".into(),
+            input: Default::default(),
+            output: None,
+        };
+        assert!(is_session_history(&ChatEvent::ItemCompleted { item: tool }));
+        let message = Item {
+            presentation: Default::default(),
+            id: "m".into(),
+            turn_id: None,
+            status: ItemStatus::Completed,
+            body: ItemBody::AgentMessage { text: "x".into() },
+        };
+        assert!(is_session_history(&ChatEvent::ItemStarted {
+            item: message
+        }));
+    }
+
+    #[test]
+    fn worker_markers_are_read_back_newest_form_first_place() {
+        let dir = std::env::temp_dir().join(format!("riwork-markers-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let worker = |end: bool| super::super::workers::WorkerRef {
+            session_id: "s".into(),
+            kind: super::super::workers::WorkerKind::Shell,
+            title: "t".into(),
+            harness: None,
+            model: None,
+            worktree_id: None,
+            assignment: None,
+            noted_at: 1,
+            late: false,
+            follow_up: false,
+            end: end.then(|| super::super::workers::WorkerFinal {
+                status: super::super::workers::WorkerEnd::Done,
+                ended_at: 2,
+                tail: String::new(),
+            }),
+        };
+        let lines = [
+            super::super::workers::item("worker:s".into(), None, worker(false)),
+            super::super::workers::item("worker:s:2".into(), None, worker(false)),
+            super::super::workers::item("worker:s".into(), None, worker(true)),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(n, item)| {
+            serde_json::to_string(&Envelope {
+                chat_id: "c".into(),
+                seq: n as u64 + 1,
+                event: ChatEvent::ItemCompleted { item },
+            })
+            .unwrap()
+                + "\n"
+        })
+        .collect::<String>();
+        std::fs::write(dir.join(EVENTS), lines).unwrap();
+        let markers = read_worker_markers(&dir).unwrap();
+        assert_eq!(
+            markers.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["worker:s", "worker:s:2"]
+        );
+        assert!(
+            markers[0]
+                .presentation
+                .worker
+                .as_ref()
+                .unwrap()
+                .end
+                .is_some()
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn old_snapshot_without_dismissed_keys_or_rate_limits_still_decodes() {
