@@ -341,6 +341,9 @@ impl ChatView {
         } else if self.menu.is_some() {
             self.close_menu(cx);
             true
+        } else if self.memo_preview.is_some() {
+            self.close_memo_preview(window, cx);
+            true
         } else if self.dictation.phase().is_active() {
             self.cancel_dictation(window, cx);
             true
@@ -375,6 +378,10 @@ impl ChatView {
     }
 
     pub(super) fn send_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // `/memo` previews the project's memo and sends nothing (`memo`).
+        if self.open_memo_preview(window, cx) {
+            return;
+        }
         if !self.accepts_input() || self.pending_submission.is_some() {
             return;
         }

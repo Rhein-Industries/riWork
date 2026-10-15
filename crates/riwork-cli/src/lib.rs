@@ -11,8 +11,8 @@ pub mod update;
 // Preserve the existing module paths while all workspace state and process
 // ownership live in the headless core and engine libraries.
 pub use riwork_core::{
-    appearance_file, codex_accounts, layouts, orca_import, paths, project_recency, provider,
-    recency_file, settings, status_bar, store, theme, ui_text,
+    appearance_file, codex_accounts, layouts, orca_import, paths, project_memo, project_recency,
+    provider, recency_file, settings, status_bar, store, theme, ui_text,
 };
 pub use riwork_engine::{
     activity, agent_hooks, chat, cli_agents, cua, file_preview, global_overview, handoff,

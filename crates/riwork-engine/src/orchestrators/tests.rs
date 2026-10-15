@@ -125,7 +125,14 @@ fn a_global_chat_orchestrator_works_where_a_terminal_one_does_and_is_told_what_i
     let executable = env::current_exe().unwrap();
     assert_eq!(
         *first,
-        orchestrator_prompt(&skill, &executable, None, None, false)
+        orchestrator_prompt(
+            &skill,
+            &executable,
+            None,
+            None,
+            &Delegation::built_in(),
+            false
+        )
     );
     // The skill is current, and the chat is a chat orchestrator in the host.
     assert!(chat_skill_is_current(&host.home, &chat));
@@ -186,6 +193,7 @@ fn a_project_chat_orchestrator_belongs_to_its_project_and_never_asks() {
             &env::current_exe().unwrap(),
             Some(PROJECT),
             Some(root.as_path()),
+            &Delegation::built_in(),
             false
         )
     );
@@ -538,6 +546,7 @@ fn load_skill_sends_the_full_skill_once_and_only_to_an_idle_chat() {
         serde_json::to_vec(&SkillMark {
             chat_id: chat.id.clone(),
             version: "0000000000000000".into(),
+            delegation: None,
         })
         .unwrap(),
     )
@@ -861,6 +870,139 @@ fn a_project_choice_applies_to_its_own_orchestrator_only_and_inherit_follows_set
     assert!(plan(&host.home, Some("missing-project")).is_err());
 }
 
+/// Each scope is told the delegation policy it resolves to when it starts and when it
+/// loads its skill: a project's own choices over Settings' over RiWork's, field by field.
+/// A change reaches no running conversation until LOAD SKILL.
+#[test]
+fn each_scope_is_told_its_resolved_delegation_policy_at_start_and_on_load_skill() {
+    use crate::delegation::{DelegationPolicy, Route, Work};
+    let host = TestHost::new();
+    let (sessions, _server) = sessions(&host);
+    let store = Store::open(&host.home).unwrap();
+    let mine = host.home.join("mine");
+    let theirs = host.home.join("theirs");
+    fs::create_dir_all(&mine).unwrap();
+    fs::create_dir_all(&theirs).unwrap();
+    let mine = store.add_project(&mine, Some("Mine")).unwrap();
+    let theirs = store.add_project(&theirs, Some("Theirs")).unwrap();
+    // Nothing chosen anywhere: RiWork's own policy, today's routing.
+    assert_eq!(delegation(&host.home, None), Delegation::built_in());
+    assert_eq!(
+        delegation(&host.home, Some(&mine.id)),
+        Delegation::built_in()
+    );
+
+    let settings = SettingsStore::open(&host.home).unwrap();
+    settings
+        .update(|settings| {
+            let policy = &mut settings.delegation_policy;
+            policy.set_spread_work(Some(false));
+            policy.set_parallel_shells(Some(6));
+            policy
+                .set_route(Work::Workhorse, Some(Route::recommended(Provider::Muse)))
+                .unwrap();
+        })
+        .unwrap();
+    store
+        .set_project_delegation_policy(&mine.id, |policy| {
+            policy.set_spread_work(Some(true));
+            policy.set_parallel_shells(Some(2));
+            policy
+                .set_route(Work::Design, Some(Route::recommended(Provider::Codex)))
+                .unwrap();
+        })
+        .unwrap();
+    let global_policy = "Delegation policy for this scope (Settings, else RiWork's default, \
+                         as they stood when this message was written): spread work off; \
+                         about 6 parallel worker shells; design work on claude, model opus; \
+                         workhorse work on muse, model muse-wonder-full-1.0.";
+    let mine_policy = "Delegation policy for this scope (this project's override, else Settings, \
+                       else RiWork's default, as they stood when this message was written): \
+                       spread work on; about 2 parallel worker shells; design work on codex, \
+                       model gpt-6.1-sol; workhorse work on muse, model muse-wonder-full-1.0.";
+    let theirs_policy = "Delegation policy for this scope (this project's override, else \
+                         Settings, else RiWork's default, as they stood when this message was \
+                         written): spread work off; about 6 parallel worker shells; design \
+                         work on claude, model opus; workhorse work on muse, model \
+                         muse-wonder-full-1.0.";
+    let (global, _) = chat_of(create_planned(&sessions, &host.home, None).unwrap());
+    let (mine_chat, _) =
+        chat_of(create_planned(&sessions, &host.home, Some((&mine.id, &mine.root))).unwrap());
+    let (theirs_chat, _) =
+        chat_of(create_planned(&sessions, &host.home, Some((&theirs.id, &theirs.root))).unwrap());
+    for (chat, policy) in [
+        (&global, global_policy),
+        (&mine_chat, mine_policy),
+        (&theirs_chat, theirs_policy),
+    ] {
+        let first = &sent_texts(chat)[0];
+        assert!(first.contains(policy), "{first}");
+        assert!(first.contains("Fan out and relay"), "{first}");
+    }
+    // A project the store cannot name adds nothing to Settings.
+    assert_eq!(
+        delegation(&host.home, Some(PROJECT)),
+        delegation(&host.home, None)
+    );
+
+    // Changing the policy tells no running orchestrator anything...
+    settings
+        .update(|settings| settings.delegation_policy = DelegationPolicy::default())
+        .unwrap();
+    store
+        .set_project_delegation_policy(&mine.id, |policy| policy.set_parallel_shells(Some(9)))
+        .unwrap();
+    for chat in [&global, &mine_chat, &theirs_chat] {
+        assert_eq!(
+            sent_texts(chat).len(),
+            1,
+            "a running conversation is not rewritten"
+        );
+    }
+    // ...until LOAD SKILL, which tells each scope what it resolves to now.
+    for (chat, scope, root, policy) in [
+        (
+            &global,
+            None,
+            None,
+            "spread work on; about 4 parallel worker shells; design work on claude, model opus; \
+             workhorse work on codex, model gpt-6.1-sol.",
+        ),
+        (
+            &mine_chat,
+            Some(mine.id.as_str()),
+            Some(mine.root.as_path()),
+            "spread work on; about 9 parallel worker shells; design work on codex, model \
+             gpt-6.1-sol; workhorse work on codex, model gpt-6.1-sol.",
+        ),
+    ] {
+        host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
+        fs::write(
+            skill_mark_path(&host.home, scope),
+            serde_json::to_vec(&SkillMark {
+                chat_id: chat.id.clone(),
+                version: "0000000000000000".into(),
+                delegation: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        load_chat_skill(&sessions, &chat_host(&host.home), chat, root).unwrap();
+        let loaded = sent_texts(chat).last().unwrap().clone();
+        assert!(loaded.contains(policy), "{loaded}");
+        assert!(loaded.contains("<riwork-orchestrator-skill>"));
+    }
+
+    // Settings this build cannot read are RiWork's own policy, and never an error.
+    fs::write(host.home.join("settings.json"), "{not json").unwrap();
+    assert_eq!(delegation(&host.home, None), Delegation::built_in());
+    assert_eq!(
+        delegation(&host.home, Some(&mine.id)).parallel_shells,
+        9,
+        "the project's choice still stands"
+    );
+}
+
 #[test]
 fn an_existing_orchestrator_is_reused_as_it_runs_whatever_the_settings_say_now() {
     let host = TestHost::new();
@@ -942,6 +1084,7 @@ fn both_scopes_are_given_the_skill_with_model_routing_and_dashboard_briefs() {
             serde_json::to_vec(&SkillMark {
                 chat_id: chat.id.clone(),
                 version: "0000000000000000".into(),
+                delegation: None,
             })
             .unwrap(),
         )
@@ -958,4 +1101,221 @@ fn both_scopes_are_given_the_skill_with_model_routing_and_dashboard_briefs() {
         assert!(loaded.contains(skill));
         assert!(chat_skill_is_current(&host.home, chat));
     }
+}
+
+/// A change of the delegation policy alone, with the skill as it was, makes a running
+/// orchestrator out of date, and LOAD SKILL tells it the policy now.
+#[test]
+fn load_skill_brings_a_policy_change_to_a_chat_whose_skill_is_current() {
+    let host = TestHost::new();
+    let (sessions, _server) = sessions(&host);
+    let chat_host = chat_host(&host.home);
+    let (chat, _) =
+        chat_of(global_chat(&sessions, &host, OrchestratorRuns::chat(Provider::Codex)).unwrap());
+    host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
+    assert!(chat_skill_is_current(&host.home, &chat));
+    assert_eq!(
+        chat_skill_version(&host.home, &chat),
+        Some(orchestrator_skill_version())
+    );
+
+    SettingsStore::open(&host.home)
+        .unwrap()
+        .update(|settings| settings.delegation_policy.set_parallel_shells(Some(7)))
+        .unwrap();
+    assert!(
+        !chat_skill_is_current(&host.home, &chat),
+        "told 4 worker shells, Settings say 7"
+    );
+    load_chat_skill(&sessions, &chat_host, &chat, None).unwrap();
+    let sent = sent_texts(&chat);
+    assert_eq!(sent.len(), 2);
+    assert!(
+        sent[1].contains("about 7 parallel worker shells"),
+        "{}",
+        sent[1]
+    );
+    assert!(sent[1].contains("<riwork-orchestrator-skill>"));
+    assert!(chat_skill_is_current(&host.home, &chat));
+    host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
+    load_chat_skill(&sessions, &chat_host, &chat, None).unwrap();
+    assert_eq!(sent_texts(&chat).len(), 2, "told once");
+
+    // A mark from a build that did not record the policy cannot say what it was told.
+    fs::write(
+        skill_mark_path(&host.home, None),
+        serde_json::to_vec(&json!({
+            "chat_id": chat.id,
+            "version": orchestrator_skill_version(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(!chat_skill_is_current(&host.home, &chat));
+    assert_eq!(
+        chat_skill_version(&host.home, &chat),
+        Some(orchestrator_skill_version())
+    );
+}
+
+/// A start that holds until `HOLD` in the chat's folder is gone, then starts the fake.
+fn held_start(
+    config: crate::chat::driver::DriverConfig,
+    events: std::sync::mpsc::Sender<ChatEvent>,
+) -> Result<Box<dyn crate::chat::driver::Driver>, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while config.cwd.join(HOLD).exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    (fake_providers().codex)(config, events)
+}
+
+const HOLD: &str = "hold-start";
+
+/// The host lists a new orchestrator chat before its agent has started, and so before
+/// it has its startup message. Another creator waits for that, and gets the chat only
+/// once it has been told what it is.
+#[test]
+fn a_second_creator_gets_a_chat_only_after_its_startup_message() {
+    let host = TestHost::with_providers(
+        quick_options(),
+        Providers {
+            codex: held_start,
+            ..fake_providers()
+        },
+    );
+    let (sessions, _server) = sessions(&host);
+    let context = orchestrator_context(&host.home, None);
+    fs::create_dir_all(&context).unwrap();
+    fs::write(context.join(HOLD), "").unwrap();
+    let runs = OrchestratorRuns::chat(Provider::Codex);
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| chat_of(global_chat(&sessions, &host, runs.clone()).unwrap()));
+        // The first creator's chat is listed, its agent held in its start.
+        eventually(|| host.client().list().unwrap().len() == 1);
+        let second = scope.spawn(|| {
+            let (chat, created) = chat_of(global_chat(&sessions, &host, runs.clone()).unwrap());
+            (chat.clone(), created, sent_texts(&chat).len())
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        fs::remove_file(context.join(HOLD)).unwrap();
+        let (first, created) = first.join().unwrap();
+        assert!(created);
+        let (second, created, told) = second.join().unwrap();
+        assert!(!created);
+        assert_eq!(second.id, first.id);
+        assert_eq!(
+            told, 1,
+            "the second creator got the chat before it was told"
+        );
+    });
+    assert_eq!(host.client().list().unwrap().len(), 1);
+}
+
+/// A chat whose skill cannot be recorded is not kept: creation fails and leaves nothing
+/// that a later creation would take up as it is.
+#[test]
+fn a_chat_whose_skill_cannot_be_recorded_is_not_left_behind() {
+    let host = TestHost::new();
+    let (sessions, _server) = sessions(&host);
+    // A folder where the mark goes cannot be replaced by the mark.
+    let mark = skill_mark_path(&host.home, None);
+    fs::create_dir_all(&mark).unwrap();
+    for runs in [
+        OrchestratorRuns::chat(Provider::Codex),
+        OrchestratorRuns::Automatic,
+    ] {
+        let error = global_chat(&sessions, &host, runs).unwrap_err();
+        assert!(error.contains("Cannot record"), "{error}");
+        assert!(host.client().list().unwrap().is_empty(), "{error}");
+    }
+    fs::remove_dir(&mark).unwrap();
+    let (chat, created) =
+        chat_of(global_chat(&sessions, &host, OrchestratorRuns::chat(Provider::Codex)).unwrap());
+    assert!(created);
+    assert!(chat_skill_is_current(&host.home, &chat));
+}
+
+/// A terminal and a chat creator of one scope that race make one orchestrator: the
+/// first to look holds the scope until its orchestrator runs. `ensure`, on the chat
+/// creator's way from looking to creating, lets the terminal creator try meanwhile.
+#[test]
+#[ignore = "slow: starts a real tmux server for a terminal orchestrator"]
+fn a_terminal_and_a_chat_creator_that_race_make_one_orchestrator() {
+    use std::sync::mpsc;
+    let host = TestHost::new();
+    let (sessions, _server) = sessions(&host);
+    let home = host.home.clone();
+    let (started, wait_started) = mpsc::channel::<()>();
+    let (finished, wait_finished) = mpsc::channel::<Result<Created, String>>();
+    let waited = std::sync::Mutex::new(None);
+    std::thread::scope(|scope| {
+        let terminal = {
+            let sessions = sessions.clone();
+            let home = home.clone();
+            scope.spawn(move || {
+                if wait_started
+                    .recv_timeout(std::time::Duration::from_secs(20))
+                    .is_err()
+                {
+                    return;
+                }
+                let made = create(
+                    &sessions,
+                    &chat_host(&home),
+                    &OrchestratorScope::Global,
+                    None,
+                    home.clone(),
+                    Some("sleep 600".into()),
+                    &OrchestratorRuns::Terminal,
+                );
+                finished.send(made).unwrap();
+            })
+        };
+        let ensure = |home: &Path| -> Result<PathBuf, String> {
+            let mut waited = waited.lock().unwrap();
+            if waited.is_none() {
+                started.send(()).unwrap();
+                *waited = Some(
+                    wait_finished
+                        .recv_timeout(std::time::Duration::from_secs(2))
+                        .ok(),
+                );
+            }
+            Ok(socket_path(home))
+        };
+        let chat = create(
+            &sessions,
+            &ChatHost {
+                home: &home,
+                ensure: &ensure,
+            },
+            &OrchestratorScope::Global,
+            None,
+            home.clone(),
+            None,
+            &OrchestratorRuns::chat(Provider::Codex),
+        )
+        .unwrap();
+        terminal.join().unwrap();
+        let terminal = match waited.lock().unwrap().take().flatten() {
+            Some(made) => made,
+            None => wait_finished.recv().unwrap(),
+        }
+        .unwrap();
+        let live_terminals = sessions
+            .orchestrator_get()
+            .unwrap()
+            .filter(|shell| shell.alive)
+            .into_iter()
+            .count();
+        let chats = host.client().list().unwrap().len();
+        assert_eq!(
+            live_terminals + chats,
+            1,
+            "chat {chat:?}, terminal {terminal:?}"
+        );
+        assert_eq!(id_of(&chat.orchestrator), id_of(&terminal.orchestrator));
+        assert!(chat.created != terminal.created);
+    });
 }

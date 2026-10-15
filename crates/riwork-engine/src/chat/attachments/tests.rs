@@ -340,3 +340,66 @@ fn attachment_encoded_bounds_and_preview_storage_bytes_are_counted_before_start(
     assert_eq!(host.fake().start_count(), starts);
     assert!(host.fake().commands().is_empty());
 }
+
+#[test]
+fn what_the_user_typed_comes_back_from_its_summary_and_nothing_else_does() {
+    let attachment = |name: &str, bytes: u64| Attachment {
+        id: Uuid::new_v4().to_string(),
+        name: name.into(),
+        path: PathBuf::from("/chats/c/attachments/a/content"),
+        kind: AttachmentKind::Image {
+            mime: "image/png".into(),
+        },
+        bytes,
+        fingerprint: "0".into(),
+        preview: Preview::Image {
+            path: PathBuf::from("/chats/c/attachments/a/preview.png"),
+        },
+    };
+    let one = [attachment("Clipboard image 1.png", 1_293_097)];
+    let three = [
+        attachment("shot.png", 10),
+        attachment("notes (draft).txt", 2),
+        attachment("[Attached: x (1 bytes)]", 1),
+    ];
+    for set in [&one[..], &three[..], &[]] {
+        for text in [
+            "",
+            "look",
+            "two\nlines",
+            "ends in a newline\n",
+            "\n",
+            " ",
+            "[Attached: shot.png (10 bytes)]",
+        ] {
+            let shown = summary(text, set);
+            assert_eq!(typed(&shown, set), Some(text), "{shown:?}");
+        }
+    }
+    // Text that is not the summary of these attachments is not cut.
+    for (shown, set) in [
+        ("look", &one[..]),
+        (
+            "look\n[Attached: Clipboard image 1.png (1293096 bytes)]",
+            &one[..],
+        ),
+        (
+            "look [Attached: Clipboard image 1.png (1293097 bytes)]",
+            &one[..],
+        ),
+        (
+            "\n[Attached: Clipboard image 1.png (1293097 bytes)]",
+            &one[..],
+        ),
+        (
+            "[Attached: shot.png (10 bytes)]\n[Attached: notes (draft).txt (2 bytes)]",
+            &three[..],
+        ),
+        (
+            "[Attached: notes (draft).txt (2 bytes)]\n[Attached: shot.png (10 bytes)]\n[Attached: [Attached: x (1 bytes)] (1 bytes)]",
+            &three[..],
+        ),
+    ] {
+        assert_eq!(typed(shown, set), None, "{shown:?}");
+    }
+}
