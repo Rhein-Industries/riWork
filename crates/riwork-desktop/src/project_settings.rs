@@ -1109,6 +1109,12 @@ impl ProjectSettingsPanel {
         }
     }
 
+    /// The project's Codex account as this panel shows it.
+    #[cfg(test)]
+    pub fn codex_account_for_tests(&self) -> &ProjectCodexAccount {
+        &self.project.codex_account
+    }
+
     fn account_choices(&self, cx: &App) -> Vec<(ProjectCodexAccount, String, bool)> {
         let mut choices = vec![
             (

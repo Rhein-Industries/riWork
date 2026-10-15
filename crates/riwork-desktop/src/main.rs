@@ -12,6 +12,7 @@ pub use riwork_engine::{
 };
 mod chat;
 
+mod account_status;
 mod api_key;
 mod appearance_sync;
 mod behavior_controls;
@@ -1458,6 +1459,11 @@ struct Workspace {
     global_menu_open: bool,
     /// Where the global item was last drawn, for the menu's place and its own toggle.
     global_item_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// The Codex account menu of the status bar is open: the project's account for new Codex
+    /// sessions, hung from the Codex account item and freezing the terminals as the others do.
+    account_menu_open: bool,
+    /// Where the Codex account item was last drawn, for the menu's place and its own toggle.
+    account_item_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// What the dashboard reads beside the sessions, while it is on screen.
     dashboard: DashboardReads,
     /// When the sessions were last read (Unix seconds), and why the last read failed if it
@@ -1781,22 +1787,14 @@ fn verified_shell_email(
     })
 }
 
-fn codex_session_status_label(
-    shell: &ShellSession,
-    numbers: &BTreeMap<String, usize>,
-    snapshot: Option<&codex_accounts::AccountsSnapshot>,
-) -> String {
-    let email = verified_shell_email(shell, snapshot).unwrap_or_else(|| "Email unknown".to_owned());
-    match numbers.get(&shell.id) {
-        Some(number) => format!("CODEX A{number} · {email}"),
-        None => format!("CODEX · {email}"),
-    }
-}
-
+/// What the Codex account item says: the account new Codex sessions of the project get, and
+/// whether the project, the app or the system default decides it. `system_label` is what Codex
+/// last reported for the system default's home, the only name it has.
 fn project_default_account_label(
     project: Option<&Project>,
     app_selected: Option<&str>,
     snapshot: Option<&codex_accounts::AccountsSnapshot>,
+    system_label: Option<&str>,
 ) -> String {
     let choice = project.map(|project| &project.codex_account);
     let (source, selected) = match choice {
@@ -1810,7 +1808,10 @@ fn project_default_account_label(
     let account =
         selected.and_then(|id| snapshot?.accounts.iter().find(|account| account.id == id));
     let detail = match (selected, account) {
-        (None, _) => "System default · email unknown".to_owned(),
+        (None, _) => format!(
+            "System default · {}",
+            system_label.unwrap_or("email unknown")
+        ),
         (Some(_), Some(account)) if account.available => account
             .email
             .clone()
@@ -2138,6 +2139,8 @@ impl Workspace {
             layout_item_bounds: Rc::new(Cell::new(Bounds::default())),
             global_menu_open: false,
             global_item_bounds: Rc::new(Cell::new(Bounds::default())),
+            account_menu_open: false,
+            account_item_bounds: Rc::new(Cell::new(Bounds::default())),
             dashboard: DashboardReads::default(),
             sessions_sampled_at: None,
             sessions_sample_error: None,
@@ -4007,6 +4010,7 @@ impl Workspace {
         self.tab_dragging = false;
         self.layout_menu_open = false;
         self.global_menu_open = false;
+        self.account_menu_open = false;
         self.release_snapshots(cx);
         self.drop_target = None;
         self.resizing = None;
@@ -6439,11 +6443,13 @@ impl Workspace {
 
     /// Grok tabs whose session usage this window shows: every live one of the
     /// project while the Usage panel is on screen, and the focused one while the
-    /// bottom bar's usage item is. Anything else is not worth a `grok usage`.
+    /// bottom bar's usage item reads out the current chat. Anything else is not worth a
+    /// `grok usage`.
     fn grok_usage_targets(&self) -> Vec<String> {
         let panel = self.usage_panel_visible();
-        let focused = self
-            .usage_chip_visible()
+        // All accounts reads out no session, so it asks for none.
+        let focused = (self.usage_chip_visible()
+            && self.settings.status_bar.usage_mode == status_bar::UsageMode::CurrentChat)
             .then(|| self.active_shell())
             .flatten()
             .map(|shell| shell.id.as_str());
@@ -7175,6 +7181,7 @@ impl Workspace {
         self.panel_menu = None;
         self.layout_menu_open = false;
         self.global_menu_open = false;
+        self.account_menu_open = false;
         self.finish_tab_drag(cx);
         // Focus mode shows one pane, where the new arrangement could not be seen.
         if self.focus_mode {
@@ -7272,6 +7279,7 @@ impl Workspace {
         }
         self.panel_menu = None;
         self.global_menu_open = false;
+        self.account_menu_open = false;
         self.layout_menu_open = true;
         // Terminals are native views drawn above everything of ours; the menu is drawn over
         // their snapshots instead, as a pane's menu is.
@@ -8295,11 +8303,16 @@ impl Workspace {
 
     fn toggle_panel_menu(&mut self, pane_id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
         self.dismiss_project_sort_menus(window, cx);
-        if self.panel_menu.is_none() && !self.layout_menu_open && !self.global_menu_open {
+        if self.panel_menu.is_none()
+            && !self.layout_menu_open
+            && !self.global_menu_open
+            && !self.account_menu_open
+        {
             self.menu_return.capture(window, cx);
         }
         self.layout_menu_open = false;
         self.global_menu_open = false;
+        self.account_menu_open = false;
         self.active_pane = pane_id;
         self.panel_menu = if self.panel_menu == Some(pane_id) {
             None
@@ -9081,6 +9094,7 @@ impl Workspace {
         self.panel_menu = None;
         self.layout_menu_open = false;
         self.global_menu_open = false;
+        self.account_menu_open = false;
         self.resizing = None;
         self.drop_target = None;
         self.finish_tab_drag(cx);
@@ -9394,6 +9408,11 @@ impl Workspace {
         }
         if event.keystroke.key == "escape" && self.global_menu_open {
             self.close_global_menu(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if event.keystroke.key == "escape" && self.account_menu_open {
+            self.close_account_menu(window, cx);
             cx.stop_propagation();
             return;
         }
@@ -11010,7 +11029,7 @@ impl Workspace {
                     .into_any_element()
             }
             StatusItemKind::Usage => self.render_usage_chip(cx),
-            StatusItemKind::CodexAccount => self.render_codex_account_status(cx),
+            StatusItemKind::CodexAccount => self.render_default_account_status(cx),
             StatusItemKind::SessionId => {
                 let id = self
                     .panes
@@ -11250,105 +11269,6 @@ impl Workspace {
                     }
                 }))
             })
-            .into_any_element()
-    }
-
-    fn render_codex_account_status(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme::palette(cx);
-        let snapshot = cx
-            .global::<settings::CodexAccountsState>()
-            .snapshot
-            .as_ref();
-        let active = self
-            .panes
-            .get(&self.active_pane)
-            .and_then(|pane| pane.tabs.get(pane.active))
-            .and_then(Tab::shell_id)
-            .and_then(|id| self.shells.iter().find(|shell| shell.id == id))
-            .filter(|shell| shell.harness == Some(HarnessKind::Codex));
-        let label = if let Some(shell) = active {
-            codex_session_status_label(shell, &codex_account_numbers(&self.shells), snapshot)
-        } else {
-            project_default_account_label(
-                self.state
-                    .projects
-                    .iter()
-                    .find(|project| project.id == self.project_id),
-                self.settings.selected_codex_account.as_deref(),
-                snapshot,
-            )
-        };
-        behavior_controls::action("status-codex-account", format!("Account {label}"), colors)
-            .max_w(ui_text::space(300.0))
-            .min_w_0()
-            .overflow_hidden()
-            .text_ellipsis()
-            .text_color(rgb(status_accent(colors.cyan, colors)))
-            .child(ui_text::quiet(label))
-            .on_click(cx.listener(|workspace, _, window, cx| {
-                workspace.open_panel(
-                    PanelKind::ProjectSettings,
-                    workspace.active_pane,
-                    window,
-                    cx,
-                );
-            }))
-            .into_any_element()
-    }
-
-    fn render_usage_chip(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme::palette(cx);
-        let active_shell = self.active_shell();
-        let cache = cx.global::<AccountUsage>();
-        let label = if let Some(shell) =
-            active_shell.filter(|shell| shell.harness == Some(HarnessKind::Claude))
-        {
-            self.claude_usage
-                .get(&shell.id)
-                .map(|snapshot| usage_summary("CLAUDE", snapshot))
-                .unwrap_or_else(|| "CLAUDE · WAITING".to_owned())
-        } else if let Some(shell) =
-            active_shell.filter(|shell| shell.harness == Some(HarnessKind::Grok))
-        {
-            // Grok's allowance is not readable, so the chip shows this session.
-            if shell.alive {
-                usage::grok_chip_label(self.grok_usage.get(&shell.id))
-            } else {
-                "GROK · EXITED".to_owned()
-            }
-        } else {
-            let profile = if let Some(shell) =
-                active_shell.filter(|shell| shell.harness == Some(HarnessKind::Codex))
-            {
-                shell.codex_home.clone()
-            } else {
-                project_selected_codex_home(self, cx)
-            };
-            let entry = profile.as_ref().and_then(|home| cache.codex.get(home));
-            entry
-                .and_then(|entry| entry.codex.as_ref())
-                .map(|snapshot| usage_summary("CODEX", snapshot))
-                .unwrap_or_else(|| {
-                    if profile.is_none() {
-                        "CODEX · ACCOUNT UNKNOWN"
-                    } else if entry.is_some_and(|entry| entry.pending) {
-                        "USAGE · LOADING"
-                    } else {
-                        "USAGE · —"
-                    }
-                    .to_owned()
-                })
-        };
-        behavior_controls::action("usage-chip", format!("Usage {label}"), colors)
-            .max_w(ui_text::space(220.0))
-            .overflow_hidden()
-            .text_ellipsis()
-            .text_color(rgb(status_accent(colors.cyan, colors)))
-            .hover(|style| style.text_color(rgb(colors.magenta)))
-            .child(ui_text::quiet(label))
-            .on_click(cx.listener(|workspace, _, window, cx| {
-                workspace.open_panel(PanelKind::Usage, workspace.active_pane, window, cx);
-            }))
             .into_any_element()
     }
 
@@ -12037,6 +11957,9 @@ impl Render for Workspace {
         if self.global_menu_open && (!self.global_item_shown() || !self.tab_dragging) {
             self.global_menu_open = false;
         }
+        if self.account_menu_open && (!self.account_item_shown() || !self.tab_dragging) {
+            self.account_menu_open = false;
+        }
         self.settle_terminal_drop(cx);
         if !cx.has_active_drag() {
             self.drop_target = None;
@@ -12050,6 +11973,7 @@ impl Render for Workspace {
                 && self.strip_menu.is_none()
                 && !self.layout_menu_open
                 && !self.global_menu_open
+                && !self.account_menu_open
                 && !self.modal_open()
             {
                 self.finish_tab_drag(cx);
@@ -12222,6 +12146,10 @@ impl Render for Workspace {
             .children(
                 self.global_menu_open
                     .then(|| self.render_global_menu(window.viewport_size().width.as_f32(), cx)),
+            )
+            .children(
+                self.account_menu_open
+                    .then(|| self.render_account_menu(window.viewport_size().width.as_f32(), cx)),
             )
             .children(show_window_controls.then(|| window_controls_island(cx)))
             .children(self.project_creator.as_ref().map(|creator| {
@@ -12839,62 +12767,16 @@ fn request_codex_usage(force: bool, cx: &mut App) {
     }
 }
 
-fn selected_codex_home(cx: &App) -> Option<PathBuf> {
-    let selected = cx.global::<Settings>().selected_codex_account.as_deref();
-    if let Some(snapshot) = &cx.global::<settings::CodexAccountsState>().snapshot {
-        snapshot
-            .accounts
-            .iter()
-            .find(|account| {
-                account.available
-                    && match selected {
-                        Some(id) => account.id == id,
-                        None => account.is_system_default,
-                    }
-            })
-            .map(|account| account.home.clone())
-    } else if selected.is_none() {
-        codex_accounts::default_codex_home().ok()
-    } else {
-        None
-    }
-}
-
-fn project_selected_codex_home(workspace: &Workspace, cx: &App) -> Option<PathBuf> {
-    match workspace
-        .state
-        .projects
-        .iter()
-        .find(|project| project.id == workspace.project_id)
-        .map(|project| &project.codex_account)
-    {
-        Some(ProjectCodexAccount::SystemDefault) => codex_accounts::default_codex_home().ok(),
-        Some(ProjectCodexAccount::Saved(id)) => cx
-            .global::<settings::CodexAccountsState>()
-            .snapshot
-            .as_ref()?
-            .accounts
-            .iter()
-            .find(|account| account.available && account.id == *id)
-            .map(|account| account.home.clone()),
-        _ => selected_codex_home(cx),
-    }
-}
-
+/// The accounts whose usage is read: what the usage item's All accounts reads out.
 fn codex_usage_profiles(cx: &App) -> BTreeMap<PathBuf, String> {
-    if let Some(snapshot) = &cx.global::<settings::CodexAccountsState>().snapshot {
-        snapshot
-            .accounts
-            .iter()
-            .filter(|account| account.available)
-            .map(|account| (account.home.clone(), account.label.clone()))
-            .collect()
-    } else {
-        codex_accounts::default_codex_home()
-            .ok()
-            .map(|home| BTreeMap::from([(home, "System default".to_owned())]))
-            .unwrap_or_default()
-    }
+    account_status::known_codex_profiles(
+        cx.global::<settings::CodexAccountsState>()
+            .snapshot
+            .as_ref(),
+    )
+    .into_iter()
+    .map(|profile| (profile.home, profile.label))
+    .collect()
 }
 
 fn request_codex_usage_at(home: PathBuf, force: bool, cx: &mut App) {
@@ -12944,28 +12826,6 @@ fn request_codex_usage_at(home: PathBuf, force: bool, cx: &mut App) {
         });
     })
     .detach();
-}
-
-fn usage_summary(provider: &str, snapshot: &ProviderUsage) -> String {
-    let stale = unix_time().saturating_sub(snapshot.updated_at_unix) > 15 * 60;
-    let limits = snapshot
-        .windows
-        .iter()
-        .take(2)
-        .map(|window| {
-            format!(
-                "{} {:.0}% left",
-                window.label,
-                (100.0 - window.used_percent).clamp(0.0, 100.0)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" / ");
-    format!(
-        "{provider}{} · {}",
-        if stale { "*" } else { "" },
-        if limits.is_empty() { "—" } else { &limits }
-    )
 }
 
 fn reset_summary(resets_at: Option<u64>) -> String {
@@ -14666,22 +14526,22 @@ mod workspace_tab_tests {
         }))
         .unwrap();
         assert_eq!(
-            project_default_account_label(Some(&project), Some("a"), Some(&snapshot)),
+            project_default_account_label(Some(&project), Some("a"), Some(&snapshot), None),
             "DEFAULT (APP) · a@example.test"
         );
         project.codex_account = ProjectCodexAccount::Saved("a".into());
         assert_eq!(
-            project_default_account_label(Some(&project), Some("missing"), Some(&snapshot)),
+            project_default_account_label(Some(&project), Some("missing"), Some(&snapshot), None),
             "DEFAULT (PROJECT) · a@example.test"
         );
         project.codex_account = ProjectCodexAccount::SystemDefault;
         assert_eq!(
-            project_default_account_label(Some(&project), Some("a"), Some(&snapshot)),
+            project_default_account_label(Some(&project), Some("a"), Some(&snapshot), None),
             "DEFAULT (SYSTEM) · System default · email unknown"
         );
         project.codex_account = ProjectCodexAccount::Saved("missing".into());
         assert_eq!(
-            project_default_account_label(Some(&project), None, Some(&snapshot)),
+            project_default_account_label(Some(&project), None, Some(&snapshot), None),
             "DEFAULT (PROJECT) · Account unavailable"
         );
     }

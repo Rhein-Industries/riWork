@@ -1890,6 +1890,54 @@ mod tests {
     }
 
     #[test]
+    fn a_usage_mode_this_build_cannot_read_reads_as_the_current_chat_and_keeps_the_bar() {
+        use crate::status_bar::{StatusItemKind, StatusSide, UsageMode};
+        let dir = env::temp_dir().join(format!("riwork-settings-usage-mode-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        // A newer build's mode, beside a bar routed its own way.
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"status_bar":{"enabled":true,"usage_mode":"per_provider","items":[
+                {"kind":"usage","enabled":true,"side":"left"},
+                {"kind":"codex_account","enabled":false,"side":"right"}]}}"#,
+        )
+        .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.status_bar.usage_mode, UsageMode::CurrentChat);
+        assert_eq!(
+            loaded.status_bar.visible_items(StatusSide::Left)[0],
+            StatusItemKind::Usage
+        );
+        assert!(
+            !loaded
+                .status_bar
+                .visible_items(StatusSide::Right)
+                .contains(&StatusItemKind::CodexAccount)
+        );
+
+        // An unrelated change leaves the newer build's mode in the file.
+        store
+            .update(|settings| settings.remember_window_size = false)
+            .unwrap();
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(file["status_bar"]["usage_mode"], "per_provider");
+
+        // Choosing All accounts saves it, and the routing chosen before stays.
+        store
+            .update(|settings| settings.status_bar.usage_mode = UsageMode::AllAccounts)
+            .unwrap();
+        let reloaded = SettingsStore::open(&dir).unwrap().load().unwrap();
+        assert_eq!(reloaded.status_bar.usage_mode, UsageMode::AllAccounts);
+        assert_eq!(
+            reloaded.status_bar.visible_items(StatusSide::Left)[0],
+            StatusItemKind::Usage
+        );
+        assert!(!reloaded.remember_window_size);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn settings_saved_before_the_layout_menu_show_it_and_keep_a_later_choice_to_hide_it() {
         use crate::status_bar::{StatusItemKind, StatusSide};
         let dir = env::temp_dir().join(format!("riwork-settings-layout-bar-{}", Uuid::new_v4()));
