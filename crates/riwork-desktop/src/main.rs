@@ -5776,14 +5776,7 @@ impl Workspace {
                 let authoritative = live.is_some();
                 live.or_else(|| chat::log::read_infos_checked(home).ok())
                     .map(|chats| {
-                        let stale = chats
-                            .iter()
-                            .filter(|chat| {
-                                chat.orchestrator.is_some()
-                                    && !orchestrators::chat_skill_is_current(home, chat)
-                            })
-                            .map(|chat| chat.id.clone())
-                            .collect::<HashSet<_>>();
+                        let stale = orchestrators::stale_chat_skills(home, &chats);
                         (chats, stale, authoritative)
                     })
             };
@@ -10196,8 +10189,16 @@ impl Workspace {
             .and_then(Tab::shell_id)
             .and_then(|id| self.shells.iter().find(|shell| shell.id == id))
             .filter(|shell| {
+                // Settings and the store as this window holds them: nothing is read to draw.
+                let project = shell
+                    .project_id
+                    .as_deref()
+                    .and_then(|id| self.state.project(id).ok());
                 shell.kind == ShellKind::Orchestrator
-                    && !self.sessions.orchestrator_skill_is_current(shell)
+                    && !sessions::orchestrator_skill_is_current_with(
+                        shell,
+                        &orchestrators::delegation_for(&self.settings, project),
+                    )
             })
             .map(|shell| SkillUpgrade::Terminal(shell.id.clone()))
             .or_else(|| {
@@ -14066,6 +14067,7 @@ mod workspace_tab_tests {
             unrestricted: false,
             orchestrator_skill_loaded: false,
             orchestrator_skill_version: None,
+            orchestrator_delegation_version: None,
             orchestrator_project_root: None,
             created_at_unix: 0,
             alive: true,
@@ -14475,6 +14477,7 @@ mod workspace_tab_tests {
             unrestricted: false,
             orchestrator_skill_loaded: false,
             orchestrator_skill_version: None,
+            orchestrator_delegation_version: None,
             orchestrator_project_root: None,
             created_at_unix: 0,
             alive: true,

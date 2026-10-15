@@ -33,13 +33,14 @@ extension RemoteModel {
                 conversation.contributorState.observe(info, through: snapshot.next)
             } catch where RemoteError.isUnsupportedMethod(error) {
                 // Hosts before snapshots still list ChatInfo. Do not overwrite an event
-                // received while this unversioned list read was on its way.
+                // received while this unversioned list read was on its way, nor let a page
+                // asked for before it undo it (`ChatContributorState.observeListed`).
                 let since = conversation.feed.next
                 let listed = try await client.listChats(ChatListRequest())
                 guard generation == connection, chatConversations[id] === conversation,
                       conversation.feed.next == since else { return }
                 guard let info = listed.first(where: { $0.id == id }) else { throw ChatControlError.notFound(.events) }
-                conversation.contributorState.observe(info, through: since)
+                conversation.contributorState.observeListed(info)
             }
         } catch {
             guard generation == connection, chatConversations[id] === conversation else { return }

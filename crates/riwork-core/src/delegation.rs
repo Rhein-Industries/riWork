@@ -94,6 +94,15 @@ impl Route {
     pub fn label(&self) -> String {
         format!("{} · {}", provider_label(self.provider), self.model)
     }
+
+    /// Whether a session would take its model id, as reading a saved route requires.
+    pub fn check(&self) -> Result<(), String> {
+        if valid_model_id(&self.model) {
+            Ok(())
+        } else {
+            Err(format!("invalid model id {:?}", self.model))
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for Route {
@@ -107,12 +116,9 @@ impl<'de> Deserialize<'de> for Route {
             model: String,
         }
         let Shape { provider, model } = Shape::deserialize(deserializer)?;
-        if !valid_model_id(&model) {
-            return Err(serde::de::Error::custom(format!(
-                "invalid model id {model:?}"
-            )));
-        }
-        Ok(Self { provider, model })
+        let route = Self { provider, model };
+        route.check().map_err(serde::de::Error::custom)?;
+        Ok(route)
     }
 }
 
@@ -130,7 +136,8 @@ fn harness_word(provider: Provider) -> &'static str {
 /// Reading never fails: a value this build cannot read (a soft target out of
 /// `PARALLEL_SHELLS`, a provider it lacks, another build's key) reads as not chosen and
 /// is kept as saved in `unreadable` until that field is chosen here. A saved policy that
-/// is not an object at all reads as nothing chosen.
+/// is not an object at all reads as nothing chosen and is kept as saved in
+/// `unreadable_whole` until any field is chosen here.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DelegationPolicy {
     /// Fan independent work out across worker shells at once.
@@ -141,6 +148,8 @@ pub struct DelegationPolicy {
     pub workhorse: Option<Route>,
     /// Saved keys this build cannot read, with their values.
     pub unreadable: Map<String, Value>,
+    /// A saved policy that is not an object, kept as saved until a field is chosen here.
+    pub unreadable_whole: Option<Value>,
 }
 
 const SPREAD_WORK: &str = "spread_work";
@@ -164,6 +173,7 @@ impl DelegationPolicy {
     pub fn set_spread_work(&mut self, spread: Option<bool>) {
         self.spread_work = spread;
         self.unreadable.remove(SPREAD_WORK);
+        self.unreadable_whole = None;
     }
 
     /// Choose the soft target, pulled into `PARALLEL_SHELLS`.
@@ -171,14 +181,40 @@ impl DelegationPolicy {
         self.parallel_shells =
             shells.map(|shells| shells.clamp(*PARALLEL_SHELLS.start(), *PARALLEL_SHELLS.end()));
         self.unreadable.remove(PARALLEL);
+        self.unreadable_whole = None;
     }
 
-    pub fn set_route(&mut self, work: Work, route: Option<Route>) {
+    /// Choose a route, which must read back as saved (`Route::check`); one that would not
+    /// is refused and changes nothing.
+    pub fn set_route(&mut self, work: Work, route: Option<Route>) -> Result<(), String> {
+        if let Some(route) = &route {
+            route.check()?;
+        }
         match work {
             Work::Design => self.design = route,
             Work::Workhorse => self.workhorse = route,
         }
         self.unreadable.remove(work.key());
+        self.unreadable_whole = None;
+        Ok(())
+    }
+
+    /// Whether what it chooses reads back as itself once saved: its routes pass
+    /// `Route::check`. The setters keep to that; a field set directly may not.
+    pub fn check(&self) -> Result<(), String> {
+        Work::ALL.into_iter().try_for_each(|work| {
+            self.route(work)
+                .map_or(Ok(()), Route::check)
+                .map_err(|error| format!("{}: {error}", work.label()))
+        })
+    }
+
+    fn chooses_nothing(&self) -> bool {
+        self.spread_work.is_none()
+            && self.parallel_shells.is_none()
+            && self.design.is_none()
+            && self.workhorse.is_none()
+            && self.unreadable.is_empty()
     }
 
     /// This policy over `beneath`: each field it chooses wins, the rest are `beneath`'s.
@@ -200,25 +236,34 @@ impl DelegationPolicy {
     /// What Settings or Project Settings say about saved values this build cannot read.
     /// `whose` names the file: "settings.json", "This project's".
     pub fn unreadable_note(&self, whose: &str) -> Option<String> {
-        if self.unreadable.is_empty() {
-            return None;
-        }
-        let values = self
-            .unreadable
-            .iter()
-            .map(|(key, value)| format!("{key} = {value}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let what = match &self.unreadable_whole {
+            Some(whole) if self.chooses_nothing() => format!("is {whole}"),
+            _ if self.unreadable.is_empty() => return None,
+            _ => {
+                let values = self
+                    .unreadable
+                    .iter()
+                    .map(|(key, value)| format!("{key} = {value}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("has {values}")
+            }
+        };
         Some(format!(
-            "{whose} delegation policy has {values}, which this RiWork cannot read. It is kept as saved, and what is beneath stands in for it until you choose here."
+            "{whose} delegation policy {what}, which this RiWork cannot read. It is kept as saved, and what is beneath stands in for it until you choose here."
         ))
     }
 }
 
 impl Serialize for DelegationPolicy {
     /// What was kept unreadable, with what is chosen on top; a field not chosen is left
-    /// out.
+    /// out. A policy that was not an object is written as it was while nothing is chosen.
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if let Some(whole) = &self.unreadable_whole
+            && self.chooses_nothing()
+        {
+            return whole.serialize(serializer);
+        }
         let mut object = self.unreadable.clone();
         let mut chosen = |key: &str, value: Option<Value>| {
             if let Some(value) = value {
@@ -239,8 +284,14 @@ impl Serialize for DelegationPolicy {
 
 impl<'de> Deserialize<'de> for DelegationPolicy {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let Value::Object(object) = Value::deserialize(deserializer)? else {
-            return Ok(Self::default());
+        let object = match Value::deserialize(deserializer)? {
+            Value::Object(object) => object,
+            whole => {
+                return Ok(Self {
+                    unreadable_whole: Some(whole),
+                    ..Self::default()
+                });
+            }
         };
         let mut policy = Self::default();
         for (key, value) in object {
@@ -407,7 +458,7 @@ mod tests {
 
         // Choosing a field, even "not chosen", replaces just its unreadable value.
         policy.set_spread_work(Some(true));
-        policy.set_route(Work::Design, None);
+        policy.set_route(Work::Design, None).unwrap();
         let written = serde_json::to_value(&policy).unwrap();
         assert_eq!(written["spread_work"], true);
         assert!(written.get("design").is_none());
@@ -415,10 +466,48 @@ mod tests {
         assert_eq!(written["future_field"], json!({"a": 1}));
         assert_eq!(written["workhorse"], saved["workhorse"]);
 
-        // A policy that is not an object reads as nothing chosen.
+        // A policy that is not an object reads as nothing chosen, is written back as it
+        // was, and gives way to the first field chosen.
         for odd in [json!("on"), json!(4), json!(null), json!([true])] {
-            assert!(read(odd).is_empty());
+            let mut policy = read(odd.clone());
+            assert_eq!(resolve(&policy, None), Delegation::built_in());
+            assert_eq!(policy.unreadable_whole, Some(odd.clone()));
+            assert_eq!(serde_json::to_value(&policy).unwrap(), odd);
+            let note = policy.unreadable_note("settings.json").unwrap();
+            assert!(note.contains(&format!("policy is {odd},")), "{note}");
+            policy.set_parallel_shells(None);
+            assert!(policy.is_empty());
+            assert_eq!(serde_json::to_value(&policy).unwrap(), json!({}));
         }
+    }
+
+    #[test]
+    fn a_route_that_would_not_read_back_is_never_chosen() {
+        let mut policy = DelegationPolicy::default();
+        policy
+            .set_route(Work::Design, Some(Route::recommended(Provider::Claude)))
+            .unwrap();
+        for model in ["", "   ", "a\nb"] {
+            let refused = Route {
+                provider: Provider::Codex,
+                model: model.into(),
+            };
+            assert!(serde_json::from_value::<Route>(json!(refused)).is_err());
+            let error = policy.set_route(Work::Design, Some(refused)).unwrap_err();
+            assert!(error.contains("invalid model id"), "{error}");
+            assert_eq!(policy.design, Some(Route::recommended(Provider::Claude)));
+        }
+        assert_eq!(policy.check(), Ok(()));
+        // One set around the setter is found before it is saved.
+        policy.workhorse = Some(Route {
+            provider: Provider::Codex,
+            model: String::new(),
+        });
+        let error = policy.check().unwrap_err();
+        assert!(
+            error.starts_with("Workhorse work: invalid model id"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -426,7 +515,9 @@ mod tests {
         let mut policy = DelegationPolicy::default();
         policy.set_spread_work(Some(false));
         policy.set_parallel_shells(Some(99));
-        policy.set_route(Work::Workhorse, Some(Route::recommended(Provider::Claude)));
+        policy
+            .set_route(Work::Workhorse, Some(Route::recommended(Provider::Claude)))
+            .unwrap();
         assert_eq!(policy.parallel_shells, Some(*PARALLEL_SHELLS.end()));
         let written = serde_json::to_value(&policy).unwrap();
         assert_eq!(

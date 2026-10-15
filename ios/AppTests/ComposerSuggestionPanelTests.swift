@@ -25,9 +25,9 @@ import RiWorkCore
         ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Fix the build", createdAtUnix: 10, state: .idle)
     }
     /// The desktop's answer for the chat: Claude's `/compact` and a small folder.
-    private func reply() throws -> JSONValue {
+    private func reply(provider: String = "claude") throws -> JSONValue {
         try JSONDecoder().decode(JSONValue.self, from: Data("""
-        {"chat_id":"\(chatID)","provider":"claude","root":"/fixture",
+        {"chat_id":"\(chatID)","provider":"\(provider)","root":"/fixture",
          "commands":[{"name":"compact","summary":"Summarize the conversation so far to free up context","argument":null,
                       "sends":"Goes to Claude as typed. Claude compacts the chat's context.","handler":"provider"}],
          "files":{"entries":[{"path":"README.md","dir":false,"bytes":2048},{"path":"src","dir":true,"bytes":null},
@@ -199,6 +199,24 @@ import RiWorkCore
         guard case .ready(let catalog) = rig.model.composerCatalog(for: chatID) else { return XCTFail("no catalog") }
         XCTAssertEqual(catalog.commands.map(\.name), ["compact"])
         XCTAssertEqual(catalog.rankFiles("main").map(\.path), ["src/main.rs"])
+        await finish(rig)
+    }
+    func testACatalogOfTheProviderTheChatLeftIsNotOfferedAndIsReadAgain() async throws {
+        let rig = try await makeRig()
+        rig.model.wantComposerSuggestions(chatID)
+        await eventually("read") { if case .ready = rig.model.composerCatalog(for: self.chatID) { true } else { false } }
+        // The chat goes on with Codex: Claude's /compact would reach Codex as words.
+        var codex = chat()
+        codex.provider = .codex
+        rig.model.chats = [codex]
+        XCTAssertEqual(rig.model.composerCatalog(for: chatID), .loading, "Claude's commands are not offered")
+        await rig.transport.setSuggestions(feature: true, replies: [chatID: try reply(provider: "codex")])
+        rig.model.wantComposerSuggestions(chatID)
+        await eventually("read again at once") {
+            if case .ready(let catalog) = rig.model.composerCatalog(for: self.chatID) { catalog.provider == .codex } else { false }
+        }
+        let reads = await rig.transport.count("chat.suggestions")
+        XCTAssertEqual(reads, 2)
         await finish(rig)
     }
     func testWithoutTheFeatureNothingIsAskedAndNoListOpens() async throws {

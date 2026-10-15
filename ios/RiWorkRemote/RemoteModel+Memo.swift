@@ -113,10 +113,17 @@ struct MemoPreviewState: Identifiable, Equatable {
     }
 
     /// A save that answered after its editor went. Kept text it covers goes; newer kept text now builds on this save and is
-    /// saved too.
+    /// saved too, in the project's editor when it is up again.
     private func savedAfterClose(_ memo: ProjectMemo) {
-        guard let desktop, memoEditor?.projectID != memo.projectID,
-              let kept = memoDrafts.entry(desktop: desktop.id, project: memo.projectID) else { return }
+        guard let desktop else { return }
+        if memoEditor?.projectID == memo.projectID {
+            memoEditor?.earlierSaveLanded(memo)
+            guard let editor = memoEditor else { return }
+            keepMemoText(editor)
+            if editor.pendingSave != nil { saveMemoSoon(after: .zero) }
+            return
+        }
+        guard let kept = memoDrafts.entry(desktop: desktop.id, project: memo.projectID) else { return }
         if ProjectMemoText.normalize(kept.text) == memo.text {
             memoDrafts.keep(nil, desktop: desktop.id, project: memo.projectID)
         } else {

@@ -11,7 +11,10 @@
 //! `presentation.worker`, so a reader from before draws a plain tool row. Its status is
 //! always `completed`: `TurnCompleted` closes what is in progress, and a worker outlives
 //! the turn that started it.
-use super::model::{ChatInfo, ChatState, Item, ItemBody, ItemStatus, Presentation, TurnOutcome};
+use super::model::{
+    ChatEvent, ChatInfo, ChatState, Delta, Item, ItemBody, ItemStatus, MessagePhase, Presentation,
+    TurnOutcome,
+};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::path::Path;
 
@@ -63,6 +66,15 @@ pub struct WorkerFinal {
     /// The last lines the worker showed, bounded by `subshells::bounded_output`.
     #[serde(default)]
     pub tail: String,
+    /// What ended it, so that the same end is recorded once: a worker chat's turn, and
+    /// where that turn's end is in the worker's log (a provider may use a turn id again)...
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_end: Option<u64>,
+    /// ...or when a terminal's agent became done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_since: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +93,10 @@ pub struct WorkerRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignment: Option<String>,
     pub noted_at: u64,
+    /// A worker chat's next log position when the card was written: the card's message
+    /// is at or after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<u64>,
     /// Written by reconciliation, after the start was missed: placed where it was seen.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub late: bool,
@@ -118,8 +134,9 @@ pub enum WorkerNote {
         text: String,
     },
     /// The worker finished an assignment. `done_since` is when a terminal's activity says
-    /// it became done, and `started_at` when a worker chat's ended turn began: either says
-    /// which card the end belongs to, the latest open one it does not predate.
+    /// it became done; a worker chat's end names its `turn`, where that turn ended in its
+    /// log (`turn_end`), and the messages it `took`. Either says which cards the end is for
+    /// (`apply`).
     Finish {
         session_id: String,
         kind: WorkerKind,
@@ -127,8 +144,20 @@ pub enum WorkerNote {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         done_since: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        started_at: Option<u64>,
+        turn: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_end: Option<u64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        took: Vec<Took>,
     },
+}
+
+/// A message a worker chat's turn took: its place in that chat's log and its first line.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Took {
+    pub seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
 }
 impl WorkerNote {
     pub fn session_id(&self) -> &str {
@@ -187,6 +216,7 @@ pub fn describe_shell(
         worktree_id: shell.worktree_id.clone(),
         assignment: None,
         noted_at: now,
+        after: None,
         late: false,
         follow_up: false,
         end: None,
@@ -203,6 +233,7 @@ pub fn describe_chat(chat: &ChatInfo, now: u64) -> WorkerRef {
         worktree_id: chat.worktree_id.clone(),
         assignment: None,
         noted_at: now,
+        after: None,
         late: false,
         follow_up: false,
         end: None,
@@ -258,7 +289,8 @@ fn next_id(session_id: &str, markers: &[Item]) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Upsert {
     Append(Item),
-    Replace(Item),
+    /// Cards rewritten in place, oldest first.
+    Replace(Vec<Item>),
     Nothing,
 }
 
@@ -269,9 +301,12 @@ pub enum Upsert {
 /// - The first assignment joins the start's card when it comes in the same turn, so a
 ///   `shell create` and its first `shell send` make one card; any other assignment is a
 ///   new card below.
-/// - A finish completes the latest open card it does not predate: a done at or before a
-///   card was written, or a chat turn begun before it, is an earlier card's. An exit ends
-///   the latest card, if it is still open.
+/// - An end is recorded once: one said again (a restart, another window) is nothing.
+/// - A worker chat's turn ends the cards of the messages it took (`took_by`), all of them
+///   when messages were steered into one turn; a turn that took none of its cards' messages
+///   ends nothing.
+/// - A terminal's done ends the latest open card it follows (`done_by`).
+/// - An exit ends the latest card, if it is still open.
 pub fn apply(
     markers: &[Item],
     note: &WorkerNote,
@@ -314,7 +349,7 @@ pub fn apply(
                 return if &marker == open {
                     Upsert::Nothing
                 } else {
-                    Upsert::Replace(marker)
+                    Upsert::Replace(vec![marker])
                 };
             }
             Upsert::Append(item(
@@ -331,32 +366,116 @@ pub fn apply(
         WorkerNote::Finish {
             end,
             done_since,
-            started_at,
+            turn,
+            turn_end,
+            took,
             ..
         } => {
-            let open = |marker: &&Item| of(marker).is_some_and(|worker| worker.end.is_none());
-            let target = if end.status == WorkerEnd::Exited {
-                last.filter(open)
+            let targets: Vec<&Item> = if end.status == WorkerEnd::Exited {
+                last.filter(|marker| is_open(marker)).into_iter().collect()
+            } else if turn.is_some() {
+                took_by(markers, took, *turn_end)
             } else {
-                markers.iter().rev().filter(open).find(|marker| {
-                    of(marker).is_some_and(|worker| {
-                        done_since.is_none_or(|since| since > worker.noted_at)
-                            && started_at.is_none_or(|start| start >= worker.noted_at)
-                    })
-                })
+                done_by(markers, *done_since).into_iter().collect()
             };
-            let Some(open) = target else {
+            if targets.is_empty() {
                 return Upsert::Nothing;
-            };
-            let mut worker = of(open).cloned().expect("an open marker");
-            worker.end = Some(WorkerFinal {
-                status: end.status,
-                ended_at: end.ended_at,
-                tail: crate::subshells::bounded_output(&end.tail),
-            });
-            Upsert::Replace(item(open.id.clone(), open.turn_id.clone(), worker))
+            }
+            Upsert::Replace(
+                targets
+                    .into_iter()
+                    .map(|open| {
+                        let mut worker = of(open).cloned().expect("an open marker");
+                        worker.end = Some(WorkerFinal {
+                            status: end.status,
+                            ended_at: end.ended_at,
+                            tail: crate::subshells::bounded_output(&end.tail),
+                            turn: turn.clone(),
+                            turn_end: *turn_end,
+                            done_since: *done_since,
+                        });
+                        item(open.id.clone(), open.turn_id.clone(), worker)
+                    })
+                    .collect(),
+            )
         }
     }
+}
+
+fn is_open(marker: &Item) -> bool {
+    of(marker).is_some_and(|worker| worker.end.is_none())
+}
+
+/// The open cards a worker chat's turn ended. Each message it took is the message of the
+/// latest card written before it with the same first line that is open or already has this
+/// end (`ended`, the end's place in the worker's log): said again, after a restart or a
+/// crash between two cards, an end finds the cards it ended and writes only those still
+/// open. A card that was given nothing takes the first message no card claims, while it is
+/// the worker's latest card.
+fn took_by<'a>(markers: &'a [Item], took: &[Took], ended: Option<u64>) -> Vec<&'a Item> {
+    let ours = |worker: &WorkerRef| {
+        worker
+            .end
+            .as_ref()
+            .is_none_or(|end| ended.is_some() && end.turn_end == ended)
+    };
+    let mut claimed: Vec<usize> = Vec::new();
+    let mut unclaimed = Vec::new();
+    for message in took {
+        let card = (0..markers.len()).rev().find(|at| {
+            !claimed.contains(at)
+                && of(&markers[*at]).is_some_and(|worker| {
+                    ours(worker)
+                        && worker.assignment.is_some()
+                        && worker.assignment == message.line
+                        && worker.after.unwrap_or(0) <= message.seq
+                })
+        });
+        match card {
+            Some(at) => claimed.push(at),
+            None => unclaimed.push(message),
+        }
+    }
+    if let (Some(message), Some(at)) = (unclaimed.first(), markers.len().checked_sub(1))
+        && !claimed.contains(&at)
+        && of(&markers[at]).is_some_and(|worker| {
+            ours(worker) && worker.assignment.is_none() && worker.after.unwrap_or(0) <= message.seq
+        })
+    {
+        claimed.push(at);
+    }
+    claimed.sort_unstable();
+    claimed
+        .into_iter()
+        .map(|at| &markers[at])
+        .filter(|card| is_open(card))
+        .collect()
+}
+
+/// The open card a terminal's done ends, unless a card has this done already: the latest
+/// it surely follows, else one written in its second, since both times are whole seconds.
+/// A late card was written after its worker started, so it follows any done; a done with
+/// no time ends the latest open card.
+fn done_by(markers: &[Item], since: Option<u64>) -> Option<&Item> {
+    let open = || markers.iter().rev().filter(|marker| is_open(marker));
+    let Some(since) = since else {
+        return open().next();
+    };
+    if markers
+        .iter()
+        .filter_map(|marker| of(marker)?.end.as_ref())
+        .any(|end| end.done_since == Some(since))
+    {
+        return None;
+    }
+    let follows = |marker: &&Item, same: bool| {
+        of(marker).is_some_and(|worker| {
+            worker.late || since > worker.noted_at || same && since == worker.noted_at
+        })
+    };
+    open()
+        .find(|marker| follows(marker, false))
+        .or_else(|| open().find(|marker| follows(marker, true)))
 }
 
 /// A worker chat's turn ended: how its card reads.
@@ -371,7 +490,125 @@ pub fn chat_end(outcome: &TurnOutcome, reply: Option<&str>, now: u64) -> WorkerF
         tail: reply
             .map(crate::subshells::bounded_output)
             .unwrap_or_default(),
+        turn: None,
+        turn_end: None,
+        done_since: None,
     }
+}
+
+/// The most a worker chat's turn keeps of its messages and of its reply while it runs.
+const TOOK_KEPT: usize = 64;
+const REPLY_KEPT: usize = 64 * 1024;
+
+/// What a worker chat's open turns took and said, followed through its events, for the
+/// end its parent records. The host follows a running chat's events, and a stopped
+/// chat's log after a restart.
+#[derive(Debug, Default)]
+pub struct TurnRecord {
+    /// Messages of turns not over yet: the turn, the item, and the message.
+    took: Vec<(String, String, Took)>,
+    /// The turn's reply so far: the item and its text.
+    reply: Option<(String, String)>,
+    /// A reply item begun empty, whose text comes in deltas.
+    streaming: Option<String>,
+}
+
+impl TurnRecord {
+    /// Follows the worker chat's event at `seq`; at the end of a turn, its end.
+    pub fn follow(
+        &mut self,
+        session_id: &str,
+        seq: u64,
+        event: &ChatEvent,
+        now: u64,
+    ) -> Option<WorkerNote> {
+        match event {
+            ChatEvent::TurnStarted { .. } => {
+                self.reply = None;
+                self.streaming = None;
+            }
+            ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => {
+                match &item.body {
+                    ItemBody::UserMessage { text } => {
+                        if let Some(turn) = &item.turn_id
+                            && !self.took.iter().any(|(_, id, _)| id == &item.id)
+                        {
+                            if self.took.len() == TOOK_KEPT {
+                                self.took.remove(0);
+                            }
+                            self.took.push((
+                                turn.clone(),
+                                item.id.clone(),
+                                Took {
+                                    seq,
+                                    line: assignment_line(text),
+                                },
+                            ));
+                        }
+                    }
+                    ItemBody::AgentMessage { text }
+                        if item.presentation.phase != Some(MessagePhase::Commentary) =>
+                    {
+                        if !text.trim().is_empty() {
+                            self.reply = Some((item.id.clone(), kept(text.clone())));
+                            self.streaming = None;
+                        } else if matches!(event, ChatEvent::ItemStarted { .. }) {
+                            self.streaming = Some(item.id.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            ChatEvent::ItemDelta {
+                item_id,
+                delta: Delta::Text(more),
+            } => match &mut self.reply {
+                Some((id, text)) if id == item_id => {
+                    text.push_str(more);
+                    *text = kept(std::mem::take(text));
+                }
+                _ if self.streaming.as_ref() == Some(item_id) => {
+                    self.reply = Some((item_id.clone(), kept(more.clone())));
+                    self.streaming = None;
+                }
+                _ => {}
+            },
+            ChatEvent::TurnCompleted { turn_id, outcome } => {
+                let took = self
+                    .took
+                    .iter()
+                    .filter(|(turn, ..)| turn == turn_id)
+                    .map(|(.., took)| took.clone())
+                    .collect();
+                self.took.retain(|(turn, ..)| turn != turn_id);
+                self.streaming = None;
+                let reply = self.reply.take().map(|(_, text)| text);
+                return Some(WorkerNote::Finish {
+                    session_id: session_id.to_owned(),
+                    kind: WorkerKind::Chat,
+                    end: chat_end(outcome, reply.as_deref(), now),
+                    done_since: None,
+                    turn: Some(turn_id.clone()),
+                    turn_end: Some(seq),
+                    took,
+                });
+            }
+            _ => {}
+        }
+        None
+    }
+}
+
+/// The end of `text`, at most `REPLY_KEPT` bytes: a card shows the last lines.
+fn kept(mut text: String) -> String {
+    if text.len() > REPLY_KEPT {
+        let mut from = text.len() - REPLY_KEPT;
+        while !text.is_char_boundary(from) {
+            from += 1;
+        }
+        text.drain(..from);
+    }
+    text
 }
 
 /// The worker's state as the inventory reports it now.
@@ -525,7 +762,9 @@ fn is_chat(home: &Path, id: &str) -> bool {
 /// the caller did. Never starts a host.
 pub fn send(home: &Path, chat_id: &str, note: WorkerNote) -> Result<(), String> {
     let mut client = super::client::Client::connect(&super::client::socket_path(home))?;
-    client.note_worker(chat_id, note)
+    client
+        .note_worker(chat_id, note)
+        .map_err(|error| error.to_string())
 }
 
 /// After `riwork shell create` (CLI or MCP): the new shell's card in its parent chat.
@@ -592,6 +831,7 @@ mod tests {
             worktree_id: Some("w".into()),
             assignment: None,
             noted_at: 0,
+            after: None,
             late: false,
             follow_up: false,
             end: None,
@@ -619,9 +859,14 @@ mod tests {
                 status,
                 ended_at: 500,
                 tail: "line\n".repeat(20) + "last",
+                turn: None,
+                turn_end: None,
+                done_since: None,
             },
             done_since,
-            started_at: None,
+            turn: None,
+            turn_end: None,
+            took: Vec::new(),
         }
     }
     fn appended(upsert: Upsert) -> Item {
@@ -632,8 +877,8 @@ mod tests {
     }
     fn replaced(upsert: Upsert) -> Item {
         match upsert {
-            Upsert::Replace(item) => item,
-            other => panic!("expected a replacement, got {other:?}"),
+            Upsert::Replace(items) if items.len() == 1 => items.into_iter().next().unwrap(),
+            other => panic!("expected one replacement, got {other:?}"),
         }
     }
 
@@ -695,7 +940,7 @@ mod tests {
         assert_eq!(
             apply(
                 &markers,
-                &finish(WorkerEnd::Done, Some(100)),
+                &finish(WorkerEnd::Done, Some(99)),
                 fresh("s"),
                 None,
                 500
@@ -836,33 +1081,372 @@ mod tests {
     }
 
     #[test]
-    fn a_chat_turn_that_began_before_a_card_ends_the_card_before_it() {
-        let chat_finish = |started_at| WorkerNote::Finish {
-            session_id: "s".into(),
-            kind: WorkerKind::Chat,
-            end: WorkerFinal {
-                status: WorkerEnd::Done,
-                ended_at: 500,
-                tail: "reply".into(),
-            },
-            done_since: None,
-            started_at: Some(started_at),
-        };
+    fn a_done_in_the_second_its_card_was_written_is_that_cards_when_nothing_older_is_open() {
+        let start = appended(apply(&[], &spawn(false), fresh("s"), Some("t1"), 100));
+        let first = replaced(apply(
+            &[start],
+            &finish(WorkerEnd::Done, Some(150)),
+            fresh("s"),
+            None,
+            160,
+        ));
+        let second = appended(apply(
+            std::slice::from_ref(&first),
+            &assign("Next"),
+            fresh("s"),
+            Some("t2"),
+            300,
+        ));
+        let ended = replaced(apply(
+            &[first, second],
+            &finish(WorkerEnd::Done, Some(300)),
+            fresh("s"),
+            None,
+            301,
+        ));
+        assert_eq!(ended.id, "worker:s:2");
+    }
+
+    #[test]
+    fn a_done_in_the_second_of_a_newer_card_goes_to_an_open_card_it_surely_follows() {
         let first = appended(apply(&[], &spawn(false), fresh("s"), Some("t1"), 100));
         let second = appended(apply(
             std::slice::from_ref(&first),
-            &assign("Follow-up"),
+            &assign("Next"),
+            fresh("s"),
+            Some("t2"),
+            300,
+        ));
+        // The first assignment ended in the second the next was sent: the first card's.
+        let ended = replaced(apply(
+            &[first, second],
+            &finish(WorkerEnd::Done, Some(300)),
+            fresh("s"),
+            None,
+            301,
+        ));
+        assert_eq!(ended.id, "worker:s");
+    }
+
+    #[test]
+    fn a_late_card_takes_a_done_from_before_it_was_written() {
+        let late = appended(apply(&[], &spawn(true), fresh("s"), None, 200));
+        let ended = replaced(apply(
+            &[late],
+            &finish(WorkerEnd::Done, Some(150)),
+            fresh("s"),
+            None,
+            201,
+        ));
+        assert_eq!(
+            of(&ended).unwrap().end.as_ref().unwrap().status,
+            WorkerEnd::Done
+        );
+    }
+
+    #[test]
+    fn the_same_done_said_again_completes_nothing_more() {
+        let first = appended(apply(&[], &spawn(false), fresh("s"), Some("t1"), 100));
+        let second = appended(apply(
+            std::slice::from_ref(&first),
+            &assign("Next"),
             fresh("s"),
             Some("t2"),
             200,
         ));
-        let markers = [first, second];
-        // The turn that was running when the follow-up came ends the first card.
-        let ended = replaced(apply(&markers, &chat_finish(150), fresh("s"), None, 500));
-        assert_eq!(ended.id, "worker:s");
-        // One that began in the second the card was written is that card's.
-        let ended = replaced(apply(&markers, &chat_finish(200), fresh("s"), None, 500));
-        assert_eq!(ended.id, "worker:s:2");
+        let done = replaced(apply(
+            &[first.clone(), second],
+            &finish(WorkerEnd::Done, Some(250)),
+            fresh("s"),
+            None,
+            260,
+        ));
+        assert_eq!(done.id, "worker:s:2");
+        // A desktop restart, or a second window, says it again.
+        assert_eq!(
+            apply(
+                &[first, done],
+                &finish(WorkerEnd::Done, Some(250)),
+                fresh("s"),
+                None,
+                270,
+            ),
+            Upsert::Nothing
+        );
+    }
+
+    #[test]
+    fn a_chat_turn_ends_the_cards_of_the_messages_it_took() {
+        let chat = |text: Option<&str>, after: u64| WorkerRef {
+            kind: WorkerKind::Chat,
+            assignment: text.map(str::to_owned),
+            after: Some(after),
+            ..fresh("s")
+        };
+        let ended = |turn: &str, took: &[(u64, &str)]| WorkerNote::Finish {
+            session_id: "s".into(),
+            kind: WorkerKind::Chat,
+            end: chat_end(&TurnOutcome::Completed, Some(turn), 500),
+            done_since: None,
+            turn: Some(turn.into()),
+            // The turn ends right after its last message.
+            turn_end: took.last().map(|(seq, _)| seq + 1),
+            took: took
+                .iter()
+                .map(|(seq, line)| Took {
+                    seq: *seq,
+                    line: Some((*line).into()),
+                })
+                .collect(),
+        };
+        let ids = |upsert: Upsert| match upsert {
+            Upsert::Replace(items) => items.into_iter().map(|item| item.id).collect(),
+            Upsert::Nothing => Vec::new(),
+            other => panic!("unexpected {other:?}"),
+        };
+        let spawned = item("worker:s".into(), None, chat(None, 3));
+        let again = item("worker:s:2".into(), None, chat(Some("continue"), 10));
+        let more = item("worker:s:3".into(), None, chat(Some("continue"), 30));
+        let markers = [spawned.clone(), again.clone(), more.clone()];
+        // The same words twice: each message is the latest card's written before it.
+        assert_eq!(
+            ids(apply(
+                &markers,
+                &ended("c2", &[(35, "continue")]),
+                fresh("s"),
+                None,
+                1
+            )),
+            ["worker:s:3"]
+        );
+        assert_eq!(
+            ids(apply(
+                &markers,
+                &ended("c1", &[(12, "continue")]),
+                fresh("s"),
+                None,
+                1
+            )),
+            ["worker:s:2"]
+        );
+        // A turn the user started in the worker, with words no card has, ends nothing; a
+        // card that was given nothing is past, since cards follow it.
+        assert!(
+            ids(apply(
+                &markers,
+                &ended("u", &[(40, "hello")]),
+                fresh("s"),
+                None,
+                1
+            ))
+            .is_empty()
+        );
+        // While it is the latest card, the worker's first turn is its.
+        assert_eq!(
+            ids(apply(
+                &[spawned],
+                &ended("c0", &[(5, "Go")]),
+                fresh("s"),
+                None,
+                1
+            )),
+            ["worker:s"]
+        );
+        // An end already recorded is nothing, said again.
+        let done = replaced(apply(
+            &markers,
+            &ended("c2", &[(35, "continue")]),
+            fresh("s"),
+            None,
+            1,
+        ));
+        assert_eq!(
+            of(&done).unwrap().end.as_ref().unwrap().turn.as_deref(),
+            Some("c2")
+        );
+        let markers = [markers[0].clone(), markers[1].clone(), done];
+        assert_eq!(
+            apply(
+                &markers,
+                &ended("c2", &[(35, "continue")]),
+                fresh("s"),
+                None,
+                2
+            ),
+            Upsert::Nothing
+        );
+        // A provider that started over may name a later turn as it named that one: the
+        // end's place in the log tells them apart.
+        let later = item("worker:s:4".into(), None, chat(Some("continue"), 50));
+        let markers = [
+            markers[0].clone(),
+            markers[1].clone(),
+            markers[2].clone(),
+            later,
+        ];
+        assert_eq!(
+            ids(apply(
+                &markers,
+                &ended("c2", &[(55, "continue")]),
+                fresh("s"),
+                None,
+                3
+            )),
+            ["worker:s:4"]
+        );
+    }
+
+    #[test]
+    fn an_end_said_again_writes_only_the_cards_it_has_not_ended_yet() {
+        let card = |id: &str, text: &str, after: u64| {
+            item(
+                id.into(),
+                None,
+                WorkerRef {
+                    kind: WorkerKind::Chat,
+                    assignment: Some(text.into()),
+                    after: Some(after),
+                    ..fresh("s")
+                },
+            )
+        };
+        let end = WorkerNote::Finish {
+            session_id: "s".into(),
+            kind: WorkerKind::Chat,
+            end: chat_end(&TurnOutcome::Completed, Some("Both done"), 500),
+            done_since: None,
+            turn: Some("c1".into()),
+            turn_end: Some(30),
+            took: vec![
+                Took {
+                    seq: 12,
+                    line: Some("Task one".into()),
+                },
+                Took {
+                    seq: 25,
+                    line: Some("Also this".into()),
+                },
+            ],
+        };
+        let markers = [
+            card("worker:s", "Task one", 10),
+            card("worker:s:2", "Also this", 20),
+        ];
+        let Upsert::Replace(both) = apply(&markers, &end, fresh("s"), None, 1) else {
+            panic!("both cards end");
+        };
+        assert_eq!(both.len(), 2);
+        // The host stopped after writing the first: said again, only the second is written.
+        let markers = [both[0].clone(), markers[1].clone()];
+        assert_eq!(
+            replaced(apply(&markers, &end, fresh("s"), None, 2)).id,
+            "worker:s:2"
+        );
+        assert_eq!(
+            apply(&both, &end, fresh("s"), None, 3),
+            Upsert::Nothing,
+            "and once both have it, nothing"
+        );
+    }
+
+    #[test]
+    fn a_worker_chats_turn_record_names_its_turn_its_messages_and_its_last_reply() {
+        let mut record = TurnRecord::default();
+        let event = |item: Item, started: bool| {
+            if started {
+                ChatEvent::ItemStarted { item }
+            } else {
+                ChatEvent::ItemCompleted { item }
+            }
+        };
+        let body = |id: &str, body: ItemBody| Item {
+            presentation: Default::default(),
+            id: id.into(),
+            turn_id: Some("c1".into()),
+            status: ItemStatus::Completed,
+            body,
+        };
+        let mut seq = 0;
+        let mut follow = |record: &mut TurnRecord, event: ChatEvent| {
+            seq += 1;
+            record.follow("s", seq, &event, 9)
+        };
+        follow(
+            &mut record,
+            ChatEvent::TurnStarted {
+                turn_id: "c1".into(),
+            },
+        );
+        let user = body(
+            "u1",
+            ItemBody::UserMessage {
+                text: "\n Fix it\nnow".into(),
+            },
+        );
+        follow(&mut record, event(user.clone(), true));
+        follow(&mut record, event(user, false));
+        follow(
+            &mut record,
+            event(
+                body(
+                    "r1",
+                    ItemBody::AgentMessage {
+                        text: "Looking".into(),
+                    },
+                ),
+                false,
+            ),
+        );
+        follow(
+            &mut record,
+            event(
+                body(
+                    "r2",
+                    ItemBody::AgentMessage {
+                        text: String::new(),
+                    },
+                ),
+                true,
+            ),
+        );
+        follow(
+            &mut record,
+            ChatEvent::ItemDelta {
+                item_id: "r2".into(),
+                delta: Delta::Text("Fixed, ".into()),
+            },
+        );
+        follow(
+            &mut record,
+            ChatEvent::ItemDelta {
+                item_id: "r2".into(),
+                delta: Delta::Text("tests pass".into()),
+            },
+        );
+        let Some(WorkerNote::Finish {
+            end, turn, took, ..
+        }) = follow(
+            &mut record,
+            ChatEvent::TurnCompleted {
+                turn_id: "c1".into(),
+                outcome: TurnOutcome::Interrupted,
+            },
+        )
+        else {
+            panic!("a turn's end is a finish");
+        };
+        assert_eq!(turn.as_deref(), Some("c1"));
+        assert_eq!(
+            took,
+            [Took {
+                seq: 2,
+                line: Some("Fix it".into())
+            }]
+        );
+        assert_eq!(
+            (end.status, end.tail.as_str()),
+            (WorkerEnd::Stopped, "Fixed, tests pass")
+        );
     }
 
     #[test]
@@ -910,6 +1494,9 @@ mod tests {
             status: WorkerEnd::Failed,
             ended_at: 200,
             tail: String::new(),
+            turn: None,
+            turn_end: None,
+            done_since: None,
         });
         assert_eq!(
             CardStatus::of(&worker, true, Some(LiveStatus::Working), 999),
@@ -984,6 +1571,9 @@ mod tests {
             status: WorkerEnd::Done,
             ended_at: 1,
             tail: String::new(),
+            turn: None,
+            turn_end: None,
+            done_since: None,
         });
         assert_eq!(
             summary(&worker),

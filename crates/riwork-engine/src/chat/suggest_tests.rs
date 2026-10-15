@@ -191,6 +191,42 @@ fn a_reply_lists_the_chat_folder_and_the_providers_commands() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[test]
+fn a_reply_keeps_the_first_entries_that_fit_its_bound() {
+    let full = Reply {
+        chat_id: "chat-1".into(),
+        provider: Provider::Claude,
+        root: "/work".into(),
+        commands: commands(Provider::Claude),
+        files: Listing {
+            entries: (0..100)
+                .map(|n| FileEntry {
+                    path: format!("src/file-{n:03}.rs"),
+                    dir: false,
+                    bytes: Some(n),
+                })
+                .collect(),
+            truncated: false,
+        },
+        file_bound: FILE_BOUND,
+    };
+    // As the CLI prints it: pretty, and a newline.
+    let printed = |reply: &Reply| serde_json::to_string_pretty(reply).unwrap().len() + 1;
+    let whole = printed(&full);
+    assert_eq!(
+        full.clone().within(whole),
+        full,
+        "a reply that fits is kept whole"
+    );
+    let cut = full.clone().within(whole - 1);
+    assert!(cut.files.truncated);
+    assert_eq!(cut.files.entries[..], full.files.entries[..99]);
+    assert!(printed(&cut) <= whole - 1);
+    let none = full.clone().within(0);
+    assert!(none.files.entries.is_empty() && none.files.truncated);
+    assert_eq!(none.commands, full.commands);
+}
+
 // ---- Rules that are not in the fixture -----------------------------------------------------
 
 #[test]
@@ -474,6 +510,202 @@ fn binary_files_and_paths_outside_the_folder_are_not_shown() {
     fs::create_dir_all(root.join("dir")).unwrap();
     assert_eq!(peek(&root, "dir"), Peek::Unreadable);
     assert_eq!(peek(&root, "missing"), Peek::Unreadable);
+    let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(outside);
+}
+
+#[test]
+fn a_gitignore_outranks_the_repositorys_info_exclude() {
+    // Git: a folder's `.gitignore` decides over `$GIT_DIR/info/exclude`.
+    let root = temp();
+    write(&root, ".git/info/exclude", "*.log\n");
+    write(&root, ".gitignore", "!keep.log\n");
+    write(&root, "build.log", "");
+    write(&root, "keep.log", "");
+    assert_eq!(paths(&list_files(&root)), [".gitignore", "keep.log"]);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_folder_inside_a_repository_keeps_the_rules_from_above_it() {
+    let repo = temp();
+    write(&repo, ".git/info/exclude", "*.secret\n");
+    write(&repo, ".gitignore", "*.tmp\n/top-only\n");
+    write(&repo, "app/.gitignore", "dist/\n!keep.tmp\n");
+    write(&repo, "app/web/main.rs", "");
+    write(&repo, "app/web/scratch.tmp", "");
+    write(&repo, "app/web/keep.tmp", "");
+    write(&repo, "app/web/key.secret", "");
+    write(&repo, "app/web/dist/bundle.js", "");
+    write(&repo, "app/web/top-only", "");
+    let listing = list_files(&repo.join("app/web"));
+    assert_eq!(
+        paths(&listing),
+        ["keep.tmp", "main.rs", "top-only"],
+        "the repository's exclude and every .gitignore from its top down apply"
+    );
+    let _ = fs::remove_dir_all(repo);
+}
+
+#[test]
+fn a_linked_worktree_keeps_the_excludes_it_shares_with_its_repository() {
+    let main = temp();
+    write(&main, ".git/info/exclude", "*.secret\n");
+    write(&main, ".git/worktrees/feature/commondir", "../..\n");
+    let worktree = temp();
+    write(
+        &worktree,
+        ".git",
+        &format!(
+            "gitdir: {}\n",
+            main.join(".git/worktrees/feature").display()
+        ),
+    );
+    write(&worktree, ".gitignore", "*.tmp\n");
+    write(&worktree, "main.rs", "");
+    write(&worktree, "key.secret", "");
+    write(&worktree, "scratch.tmp", "");
+    write(&worktree, "sub/inner.secret", "");
+    let listing = list_files(&worktree);
+    assert_eq!(paths(&listing), [".gitignore", "main.rs", "sub"]);
+    // In a folder of the worktree, from above it.
+    assert!(paths(&list_files(&worktree.join("sub"))).is_empty());
+    let _ = fs::remove_dir_all(main);
+    let _ = fs::remove_dir_all(worktree);
+}
+
+#[test]
+fn a_huge_ignore_file_is_read_only_up_to_its_bound() {
+    let root = temp();
+    // Far more rules than any real .gitignore: only its start counts, and the walk is quick.
+    let mut huge = String::from("*.log\n");
+    let mut n = 0;
+    while huge.len() < 32 * 1024 * 1024 {
+        huge.push_str(&format!("generated/deep/path/file_{n:08}.rs\n"));
+        n += 1;
+    }
+    huge.push_str("*.txt\n");
+    write(&root, ".gitignore", &huge);
+    write(&root, "a.log", "");
+    write(&root, "a.txt", "");
+    write(&root, "a.rs", "");
+    let began = Instant::now();
+    let listing = list_files(&root);
+    let took = began.elapsed();
+    assert_eq!(paths(&listing), [".gitignore", "a.rs", "a.txt"]);
+    assert!(took < Duration::from_secs(1), "took {took:?}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn an_ignore_file_that_is_a_link_or_a_fifo_is_not_read() {
+    let root = temp();
+    let outside = temp();
+    write(&outside, "rules", "*.rs\n");
+    std::os::unix::fs::symlink(outside.join("rules"), root.join(".gitignore")).unwrap();
+    write(&root, "a.rs", "");
+    let fifo =
+        std::ffi::CString::new(root.join("sub/.gitignore").as_os_str().as_encoded_bytes()).unwrap();
+    fs::create_dir_all(root.join("sub")).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    write(&root, "sub/b.rs", "");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let walked = root.clone();
+    std::thread::spawn(move || sender.send(list_files(&walked)).unwrap());
+    let listing = receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("a FIFO for an ignore file is not waited on");
+    // Git reads no `.gitignore` through a link (2.32 on).
+    assert_eq!(paths(&listing), ["a.rs", "sub", "sub/b.rs"]);
+    let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(outside);
+}
+
+#[test]
+fn a_file_swapped_while_it_is_peeked_is_never_read_out_of_the_folder_nor_waited_on() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    let root = temp();
+    let outside = temp();
+    write(&outside, "secret.txt", "secret");
+    write(&outside, "plain.txt", "plain");
+    let fifo = outside.join("fifo");
+    let name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    // `f` is swapped, each time at once (a rename over it), for a plain file, a link out of the
+    // folder and a FIFO, while peeks run.
+    let stop = Arc::new(AtomicBool::new(false));
+    let swapper = {
+        let (root, outside, fifo, stop) =
+            (root.clone(), outside.clone(), fifo.clone(), stop.clone());
+        std::thread::spawn(move || {
+            let mut n = 0u64;
+            while !stop.load(Ordering::Relaxed) {
+                let next = root.join(format!(".next-{n}"));
+                let made = match n % 3 {
+                    0 => fs::hard_link(outside.join("plain.txt"), &next),
+                    1 => std::os::unix::fs::symlink(outside.join("secret.txt"), &next),
+                    _ => fs::hard_link(&fifo, &next),
+                };
+                made.unwrap();
+                fs::rename(&next, root.join("f")).unwrap();
+                n += 1;
+            }
+        })
+    };
+    let (sender, receiver) = mpsc::channel();
+    {
+        let root = root.clone();
+        std::thread::spawn(move || {
+            let leaked = (0..5_000)
+                .map(|_| peek(&root, "f"))
+                .find(|seen| *seen == Peek::Text(vec!["secret".into()]));
+            sender.send(leaked).unwrap();
+        });
+    }
+    let done = receiver.recv_timeout(Duration::from_secs(20));
+    stop.store(true, Ordering::Relaxed);
+    swapper.join().unwrap();
+    if done.is_err() {
+        // Free a peek that waits on the FIFO, so the test ends.
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo);
+    }
+    let leaked = done.expect("no peek waits on a FIFO");
+    assert_eq!(
+        leaked, None,
+        "no peek reads through a link out of the folder"
+    );
+    // A FIFO in place is refused at once, too.
+    assert_eq!(
+        unsafe { libc::mkfifo(name.as_ptr(), 0o600) },
+        -1,
+        "the FIFO is there"
+    );
+    fs::hard_link(&fifo, root.join("pipe")).unwrap();
+    assert_eq!(peek(&root, "pipe"), Peek::Unreadable);
+    let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(outside);
+}
+
+#[test]
+fn a_peek_goes_through_no_link_to_a_folder() {
+    let root = temp();
+    let outside = temp();
+    write(&outside, "secret.txt", "secret");
+    std::os::unix::fs::symlink(&outside, root.join("sub")).unwrap();
+    assert_eq!(peek(&root, "sub/secret.txt"), Peek::Unreadable);
+    // A chat folder reached through a link is still read.
+    write(&outside, "own.txt", "own");
+    assert_eq!(
+        peek(&root.join("sub"), "own.txt"),
+        Peek::Text(vec!["own".into()])
+    );
     let _ = fs::remove_dir_all(root);
     let _ = fs::remove_dir_all(outside);
 }

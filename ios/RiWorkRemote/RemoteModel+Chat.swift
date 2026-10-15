@@ -299,11 +299,20 @@ extension RemoteModel {
         guard projectID == project else { return }
         let ordered = listed
         if ordered != chats { chats = ordered }
+        if !chatsListed { chatsListed = true }
         reconcileChatSelection()
         // A chat the desktop no longer has is not held on to (an orchestrator's chat is the orchestrator list's to keep, the global one's too).
         let known = Set(ordered.map(\.id)).union(projectTabs.compactMap { $0.chatInfo?.id }).union(globalTabs.compactMap { $0.chatInfo?.id })
         for id in chatConversations.keys where !known.contains(id) && chatConversations[id]?.following != true && !chatSendsInFlight.contains(id) { chatConversations[id] = nil }
         lastListRead[.sessions] = .now
+    }
+
+    /// What can say how the workers `chat` started are doing: the lists of the project on screen, and only for a chat of that project. A
+    /// chat of no project (the global orchestrator's) has none, and its live worker cards say so rather than that their worker ended. A
+    /// chat list not read yet (or that could not be) is none either: its worker chats are not taken to have ended.
+    func workerInventory(of chat: ChatInfo) -> WorkerInventory {
+        guard let project = chat.projectID, loadedProjectID == project else { return .unavailable }
+        return WorkerInventory(shells: shells, chats: chatsListed && chatSupport != .unsupported && desktopFeatures.chat ? chats : nil)
     }
 
     /// The chats of a project, for a project load; nil when the desktop has none to offer or the list could not be read.
@@ -423,6 +432,8 @@ extension RemoteModel {
             let connection = generation
             let canWait = waitSlots.canWait(at: ProcessInfo.processInfo.systemUptime)
             let since = conversation.feed.next, pin = conversation.feed.historyCursor
+            // A contributor mode an older host listed before this read is asked for stays shown until a read like it reaches the end.
+            let listing = conversation.contributorState.listing
             let request: ChatEventsRequest
             do { request = try ChatEventsRequest(chatID: id, since: since, waitMilliseconds: canWait ? chatWaitMilliseconds : 0, maxEvents: conversation.oversizeCap ?? (conversation.feed.historyCursor == nil && !conversation.feed.degradedReplay ? nil : ChatConversation.boundedPage), complete: conversation.feed.historyCursor != nil, bounded: conversation.feed.degradedReplay) } catch { return }
             do {
@@ -455,6 +466,7 @@ extension RemoteModel {
                 if !reply.events.isEmpty { conversation.oversizeCap = nil }
                 conversation.accept(reply, since: since)
                 if !reply.more {
+                    if listing != nil { conversation.contributorState.caughtUp(after: listing) }
                     // The older desktop's history is in: the note about loading it has done its work.
                     if conversation.legacyLoading, conversation.alerts.text(.desktop)?.hasPrefix("Update RiWork") == true { conversation.alerts.clear(.desktop) }
                     conversation.legacyLoading = false

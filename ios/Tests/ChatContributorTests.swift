@@ -60,6 +60,36 @@ final class ChatContributorTests: XCTestCase {
         XCTAssertEqual(state.choice(fallback: off)?.mode, .on)
     }
 
+    func testAListedReportIsNotUndoneByAnOlderPageThatWasOnItsWay() {
+        let off = info(), on = info(.on)
+        var state = ChatContributorState()
+        state.observe(off, through: 10)
+        // A page is asked for at 10; an older host then lists the restarted chat, and the page arrives with the old mode.
+        let inFlight = state.listing
+        XCTAssertNil(inFlight)
+        state.observeListed(on)
+        state.observe(off, through: 11)
+        state.caughtUp(after: inFlight)
+        XCTAssertEqual(state.choice(fallback: off)?.mode, .on, "a page asked for before the list does not undo it")
+        // A read asked for after the list but cut short has not seen everything the list had yet.
+        let next = state.listing
+        state.observe(off, through: 12)
+        XCTAssertEqual(state.choice(fallback: off)?.mode, .on)
+        // Once it reaches the end of the log, the events are what is shown again, and they move on as before.
+        state.observe(on, through: 13)
+        state.caughtUp(after: next)
+        XCTAssertNil(state.listed)
+        XCTAssertEqual(state.choice(fallback: off)?.mode, .on)
+        state.observe(off, through: 14)
+        XCTAssertEqual(state.choice(fallback: on)?.mode, .off)
+        // A second listing while a read asked for after the first is out: that read does not end the second.
+        state.observeListed(off)
+        let first = state.listing
+        state.observeListed(on)
+        state.caughtUp(after: first)
+        XCTAssertEqual(state.choice(fallback: off)?.mode, .on)
+    }
+
     func testRelaunchAndHostRestartUseFreshInfoAndAProviderSwitchHidesTheControl() {
         for mode in [ChatContributorMode.off, .on] {
             let reported = info(mode)

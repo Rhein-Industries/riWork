@@ -236,7 +236,7 @@ impl ChatView {
         }
         if let Some(run) = crate::chat::subagents::in_transcript(
             item,
-            &self.model.transcript.items,
+            &self.model.transcript,
             self.info().map(|info| info.provider),
         ) {
             use crate::chat::subagents::RunStatus;

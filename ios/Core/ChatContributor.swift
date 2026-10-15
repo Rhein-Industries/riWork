@@ -34,13 +34,26 @@ public struct ChatContributorChoice: Sendable, Equatable {
 public struct ChatContributorState: Sendable, Equatable {
     public private(set) var info: ChatInfo?
     public private(set) var through: UInt64 = 0
+    /// What an older host's chat list said. A list has no place in the event log: it is newer than every page asked for before it
+    /// arrived, whatever their sequences, so it is shown until a read asked for after it reaches the end of the log.
+    public private(set) var listed: ChatInfo?
+    private var listings: UInt64 = 0
 
     public init() {}
     public mutating func observe(_ info: ChatInfo, through sequence: UInt64) {
         guard sequence >= through else { return }
         self.info = info; through = sequence
     }
+    public mutating func observeListed(_ info: ChatInfo) {
+        listed = info; listings &+= 1
+    }
+    /// The listed report a read asked for now comes after; nil when none is shown.
+    public var listing: UInt64? { listed == nil ? nil : listings }
+    /// A read asked for after `listing` reached the end of the log: the events it read say all the list said, and anything since.
+    public mutating func caughtUp(after listing: UInt64?) {
+        if let listing, listing == listings { listed = nil }
+    }
     public func choice(fallback: ChatInfo) -> ChatContributorChoice? {
-        ChatContributorChoice(info: info ?? fallback)
+        ChatContributorChoice(info: listed ?? info ?? fallback)
     }
 }

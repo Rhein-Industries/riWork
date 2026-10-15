@@ -43,10 +43,15 @@ impl PollState {
     pub fn has_request(&self) -> bool {
         self.requested
     }
+    /// A change brings the next check forward; it never puts off one that is due sooner.
     pub fn note_change(&mut self, now: u64, live: bool) {
         self.unchanged = 0;
-        self.next_check =
+        let soon =
             poll_interval(0, live, false).map(|interval| now.saturating_add(interval.as_secs()));
+        self.next_check = match (self.next_check, soon) {
+            (Some(due), Some(soon)) => Some(due.min(soon)),
+            (_, soon) => soon,
+        };
     }
     /// Events arriving during a read remain pending after that read finishes.
     pub fn request(&mut self) {
@@ -399,5 +404,21 @@ mod tests {
         assert!(!state.begin(32, true, true));
         state.request();
         assert!(state.begin(33, true, false));
+    }
+    #[test]
+    fn steady_changes_never_postpone_a_check_that_is_due() {
+        let mut state = PollState::default();
+        assert!(state.begin(0, true, false));
+        state.finish(0, false, true, true);
+        assert_eq!(state.next_check, Some(4));
+        let mut checks = Vec::new();
+        for now in 1..=10 {
+            state.note_change(now, true);
+            if state.begin(now, true, false) {
+                checks.push(now);
+                state.finish(now, true, true, true);
+            }
+        }
+        assert_eq!(checks, [3, 5, 7, 9]);
     }
 }

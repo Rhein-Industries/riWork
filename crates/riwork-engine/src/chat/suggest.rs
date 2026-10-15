@@ -15,8 +15,9 @@
 //!   to the provider as written, so the provider entries are the commands that verifiably work
 //!   through RiWork's drivers.
 //! - **`@` files** (`list_files`): the chat folder's files and folders, from one bounded walk
-//!   that honours `.gitignore` (`FILE_BOUND` entries, `SCAN_BOUND` directory entries looked at,
-//!   `WALK_BUDGET`), which a composer caches (`FileCache`) and only filters while typing.
+//!   that honours `.gitignore` as Git does, rules from above the folder in its repository
+//!   included (`FILE_BOUND` entries, `SCAN_BOUND` directory entries looked at, `WALK_BUDGET`),
+//!   which a composer caches (`FileCache`) and only filters while typing.
 //!   Accepting one puts in its path relative to the chat's folder, which every provider's
 //!   agent can open from where it runs; nothing is attached. Chats and shells are not offered:
 //!   no provider and no RiWork pipeline resolves a reference to one from a message's text.
@@ -31,6 +32,8 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use super::model::Provider;
 
@@ -51,6 +54,9 @@ pub const PEEK_BYTES: usize = 4 * 1024;
 pub const PEEK_LINES: usize = 6;
 /// A previewed line longer than this is cut.
 const PEEK_LINE_CHARS: usize = 160;
+/// What a listing reads of one ignore file at most: real ones are a few KB, and a huge one must
+/// not spend the walk's time and memory before the walk starts.
+const IGNORE_BYTES: u64 = 256 * 1024;
 
 // ---- When the list opens -------------------------------------------------------------------
 
@@ -322,38 +328,42 @@ pub fn list_files(root: &Path) -> Listing {
 }
 
 /// The files and folders under `root`, breadth first so the folder's own files come before
-/// deep ones, without what `.gitignore` files (and `.git/info/exclude`) leave out, `.git`
-/// itself, or symbolic links (a link can lead out of the folder). A folder that cannot be
-/// read is skipped.
+/// deep ones, without what Git ignores, `.git` itself, or symbolic links (a link can lead out
+/// of the folder). The ignore rules are Git's, highest first: a folder's `.gitignore`, its
+/// parents' up to the repository's top (above `root` too), then the repository's
+/// `info/exclude`. A folder that cannot be read is skipped.
 pub fn list_files_within(root: &Path, bounds: Bounds) -> Listing {
-    use ignore::gitignore::{Gitignore, GitignoreBuilder};
     let began = Instant::now();
     let mut listing = Listing::default();
     let mut scanned = 0usize;
+    // Rules from above are matched against the folder's real path, as Git sees it.
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     // Each folder still to read, its path relative to the root, and the ignore rules of it and
     // its parents, the nearest last.
-    let mut queue = std::collections::VecDeque::from([(
-        root.to_path_buf(),
-        String::new(),
-        Vec::<Arc<Gitignore>>::new(),
-    )]);
+    let mut queue =
+        std::collections::VecDeque::from([(root.clone(), String::new(), inherited_rules(&root))]);
     while let Some((dir, relative, mut rules)) = queue.pop_front() {
-        let mut builder = GitignoreBuilder::new(&dir);
-        let mut has_rules = false;
-        for file in [dir.join(".gitignore"), dir.join(".git/info/exclude")] {
-            if file.is_file() {
-                // A line that is not a pattern is skipped; the others still count.
-                let _ = builder.add(&file);
-                has_rules = true;
-            }
+        if began.elapsed() > bounds.budget {
+            listing.truncated = true;
+            return listing;
         }
-        if has_rules && let Ok(matcher) = builder.build() {
-            rules.push(Arc::new(matcher));
+        if dir.join(".git").symlink_metadata().is_ok() {
+            rules.extend(exclude_rules(&dir));
         }
+        rules.extend(ignore_rules(&dir, &dir.join(".gitignore"), false));
         let Ok(read) = std::fs::read_dir(&dir) else {
             continue;
         };
-        let mut children: Vec<_> = read.filter_map(Result::ok).collect();
+        // One entry past what may still be looked at shows the walk stops here: a huge folder
+        // is not read whole (nor sorted) before the bounds apply.
+        let room = bounds.scanned.saturating_sub(scanned);
+        let mut children = Vec::new();
+        for child in read.filter_map(Result::ok) {
+            children.push(child);
+            if children.len() > room || began.elapsed() > bounds.budget {
+                break;
+            }
+        }
         children.sort_by_key(|entry| entry.file_name());
         for child in children {
             scanned += 1;
@@ -411,6 +421,89 @@ pub fn list_files_within(root: &Path, bounds: Bounds) -> Listing {
         }
     }
     listing
+}
+
+/// The rules that reach `root` from a repository whose top is above it, lowest first: the
+/// repository's `info/exclude`, then the `.gitignore` of each folder from the top down to
+/// `root`'s parent. None when `root` is a repository's top itself (the walk reads that) or is
+/// in no repository.
+fn inherited_rules(root: &Path) -> Vec<Arc<Gitignore>> {
+    if root.join(".git").symlink_metadata().is_ok() {
+        return Vec::new();
+    }
+    let above: Vec<&Path> = root.ancestors().skip(1).collect();
+    let Some(top) = above
+        .iter()
+        .position(|dir| dir.join(".git").symlink_metadata().is_ok())
+    else {
+        return Vec::new();
+    };
+    let mut rules: Vec<_> = exclude_rules(above[top]).into_iter().collect();
+    for dir in above[..=top].iter().rev() {
+        rules.extend(ignore_rules(dir, &dir.join(".gitignore"), false));
+    }
+    rules
+}
+
+/// The `info/exclude` rules of the repository whose working tree starts at `top`. Its `.git` is
+/// the repository's folder or, in a linked worktree or a submodule, a file that names it
+/// (`gitdir: …`); a linked worktree's own folder names, in `commondir`, the one it shares
+/// `info/exclude` with.
+fn exclude_rules(top: &Path) -> Option<Arc<Gitignore>> {
+    const NAME_BYTES: u64 = 4096;
+    let dot_git = top.join(".git");
+    let git_dir = if dot_git.is_dir() {
+        dot_git
+    } else {
+        let text = String::from_utf8(read_bounded(&dot_git, NAME_BYTES, false)?).ok()?;
+        top.join(text.lines().next()?.strip_prefix("gitdir:")?.trim())
+    };
+    let common = match read_bounded(&git_dir.join("commondir"), NAME_BYTES, true) {
+        Some(text) => git_dir.join(String::from_utf8(text).ok()?.trim_end()),
+        None => git_dir,
+    };
+    ignore_rules(top, &common.join("info/exclude"), true)
+}
+
+/// The rules of the ignore file `file`, whose patterns are relative to the folder `base`; none
+/// if it has none or is not a regular file. Only its first `IGNORE_BYTES` count, to the last
+/// whole line in them. Git reads no `.gitignore` through a symbolic link, so only an
+/// `info/exclude` is `follow`ed.
+fn ignore_rules(base: &Path, file: &Path, follow: bool) -> Option<Arc<Gitignore>> {
+    let mut bytes = read_bounded(file, IGNORE_BYTES + 1, follow)?;
+    if bytes.len() as u64 > IGNORE_BYTES {
+        let whole = bytes.iter().rposition(|byte| *byte == b'\n').unwrap_or(0);
+        bytes.truncate(whole);
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let mut builder = GitignoreBuilder::new(base);
+    for line in text.trim_start_matches('\u{feff}').lines() {
+        // A line that is not a pattern is skipped; the others still count.
+        let _ = builder.add_line(Some(file.to_path_buf()), line);
+    }
+    builder
+        .build()
+        .ok()
+        .filter(|rules| !rules.is_empty())
+        .map(Arc::new)
+}
+
+/// The first `limit` bytes of the regular file at `path`; none for anything else, a FIFO
+/// included, which is opened without waiting for a writer and never read.
+fn read_bounded(path: &Path, limit: u64, follow: bool) -> Option<Vec<u8>> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let flags = libc::O_NONBLOCK | if follow { 0 } else { libc::O_NOFOLLOW };
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(flags)
+        .open(path)
+        .ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(limit).read_to_end(&mut bytes).ok()?;
+    Some(bytes)
 }
 
 /// The entries that match `query`, best first and at most `limit`: a name that starts with
@@ -576,7 +669,9 @@ pub enum Peek {
 }
 
 /// The start of the file at `path` under `root`. Reads `PEEK_BYTES` at most, and nothing
-/// outside `root` or through a symbolic link.
+/// outside `root`, through a symbolic link or that is not a regular file: the file is opened
+/// part by part without following a link or waiting on a FIFO, and checked as opened, so a
+/// part swapped meanwhile is refused rather than read.
 pub fn peek(root: &Path, path: &str) -> Peek {
     let relative = Path::new(path);
     if relative
@@ -585,19 +680,18 @@ pub fn peek(root: &Path, path: &str) -> Peek {
     {
         return Peek::Unreadable;
     }
-    let full = root.join(relative);
-    let inside = match (full.canonicalize(), root.canonicalize()) {
-        (Ok(full), Ok(root)) => full.starts_with(root),
-        _ => false,
-    };
-    let regular = std::fs::symlink_metadata(&full).is_ok_and(|meta| meta.file_type().is_file());
-    if !inside || !regular {
+    let Ok(root) = root.canonicalize() else {
         return Peek::Unreadable;
-    }
+    };
+    let Ok((file, _)) = crate::file_preview::open_regular_in(&root, &root.join(relative)) else {
+        return Peek::Unreadable;
+    };
     let mut bytes = Vec::with_capacity(PEEK_BYTES);
-    let read = std::fs::File::open(&full)
-        .and_then(|file| file.take(PEEK_BYTES as u64).read_to_end(&mut bytes));
-    if read.is_err() {
+    if file
+        .take(PEEK_BYTES as u64)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
         return Peek::Unreadable;
     }
     Peek::from_bytes(&bytes)
@@ -650,7 +744,13 @@ pub struct Reply {
     pub file_bound: usize,
 }
 
-/// The reply for chat `chat_id` of `provider` working in `root`. Walks `root` once.
+/// The most bytes `riwork chat suggestions --json` prints: well within what the connector reads
+/// of it (8 MiB), which cuts the reply further to fit one frame. Only a listing of very long
+/// or escaped paths comes near it.
+pub const REPLY_BYTES: usize = 4 * 1024 * 1024;
+
+/// The reply for chat `chat_id` of `provider` working in `root`, within `REPLY_BYTES`. Walks
+/// `root` once.
 pub fn reply(chat_id: &str, provider: Provider, root: &Path) -> Reply {
     Reply {
         chat_id: chat_id.to_owned(),
@@ -659,6 +759,36 @@ pub fn reply(chat_id: &str, provider: Provider, root: &Path) -> Reply {
         commands: commands(provider),
         files: list_files(root),
         file_bound: FILE_BOUND,
+    }
+    .within(REPLY_BYTES)
+}
+
+impl Reply {
+    /// The reply with as many of its listing's first entries as keep it within `bytes` as the
+    /// CLI prints it (pretty JSON and a newline), `truncated` if any are left out.
+    pub fn within(mut self, bytes: usize) -> Self {
+        let fits = |reply: &Self| {
+            serde_json::to_vec_pretty(reply).is_ok_and(|printed| printed.len() < bytes)
+        };
+        if fits(&self) {
+            return self;
+        }
+        let entries = std::mem::take(&mut self.files.entries);
+        self.files.truncated = true;
+        // The most entries known to fit, and the fewest known not to.
+        let (mut fit, mut over) = (0, entries.len());
+        while over - fit > 1 {
+            let middle = (fit + over) / 2;
+            self.files.entries = entries[..middle].to_vec();
+            if fits(&self) {
+                fit = middle;
+            } else {
+                over = middle;
+            }
+        }
+        self.files.entries = entries;
+        self.files.entries.truncate(fit);
+        self
     }
 }
 

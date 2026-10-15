@@ -325,10 +325,11 @@ impl Render for MemoEditor {
 impl Drop for MemoEditor {
     /// Closing Project Settings or switching the window's project must not lose what was typed
     /// in the last moment: it is saved here, at once, unless it is too long to be saved.
-    /// A save still with the store is waited for, and this one, newer, is written after it.
+    /// A save still with the store is waited for, and this one, newer, is written after it,
+    /// even of the text `synced` has: that save may have written other text over it.
     fn drop(&mut self) {
         let text = project_memo::normalize(&self.latest);
-        if text != self.synced.text
+        if (text != self.synced.text || self.in_flight.is_some())
             && project_memo::too_large(&text).is_none()
             && let Err(error) = write(
                 &self.store,
@@ -542,6 +543,47 @@ mod tests {
         editor.read_with(cx, |editor, _| {
             assert_eq!(editor.status(), &MemoStatus::Saved)
         });
+    }
+
+    /// Going back to the store's text while a save is with it, then closing before that save
+    /// answers, leaves the text the editor ended with, not the save's.
+    #[gpui::test]
+    fn closing_during_a_save_after_going_back_keeps_the_last_text(cx: &mut TestAppContext) {
+        let f = Fixture::new();
+        f.store.set_project_memo(&f.project, "A").unwrap();
+        let (handle, editor) = f.open(cx);
+        let set = |editor: &Entity<MemoEditor>,
+                   text: &'static str,
+                   window: &mut Window,
+                   app: &mut gpui::App| {
+            editor.update(app, |editor, cx| {
+                editor
+                    .state
+                    .update(cx, |state, cx| state.replace_all(text, window, cx))
+            });
+        };
+        test_turn(cx, handle, |window, app| set(&editor, "B", window, app));
+        cx.update_window(handle, |_, window, app| {
+            editor.update(app, |editor, cx| editor.save_now(cx));
+            set(&editor, "A", window, app);
+        })
+        .unwrap();
+        // The save of B reaches the store; its answer has not reached the editor.
+        while cx.dispatcher.tick(true) {}
+        assert_eq!(f.saved(&f.project).text, "B");
+        editor.read_with(cx, |editor, _| {
+            assert!(editor.in_flight.is_some());
+            assert_eq!(editor.text(), "A");
+        });
+
+        let weak = editor.downgrade();
+        drop(editor);
+        cx.update_window(handle, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|_| {});
+        assert!(weak.upgrade().is_none(), "the editor went with its window");
+        assert_eq!(f.saved(&f.project).text, "A");
     }
 
     /// A save older than one already written is skipped: the last text is the last written.

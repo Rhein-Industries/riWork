@@ -105,6 +105,10 @@ pub struct ShellSession {
     pub orchestrator_skill_loaded: bool,
     #[serde(default)]
     pub orchestrator_skill_version: Option<String>,
+    /// `orchestrator_delegation_version` of the policy it was told with the skill; none
+    /// from a build before it was recorded.
+    #[serde(default)]
+    pub orchestrator_delegation_version: Option<String>,
     #[serde(default)]
     pub orchestrator_project_root: Option<PathBuf>,
     pub created_at_unix: u64,
@@ -418,6 +422,7 @@ impl SessionManager {
             .transpose()?;
         let id = Uuid::new_v4().to_string();
         let default_codex = command.is_none();
+        let delegation = crate::orchestrators::delegation(&self.home, project_id.as_deref());
         let unrestricted = default_codex && project_id.is_some();
         let binding = if default_codex {
             Some(selected_codex_binding(&self.home, project_id.as_deref())?)
@@ -450,7 +455,7 @@ impl SessionManager {
                 &executable,
                 project_id.as_deref(),
                 project_root.as_deref(),
-                &crate::orchestrators::delegation(&self.home, project_id.as_deref()),
+                &delegation,
                 &id,
                 binding.as_ref().map(|binding| binding.home.as_path()),
                 crate::settings::agent_inline_mode(&self.home),
@@ -476,6 +481,8 @@ impl SessionManager {
             session.harness = Some(HarnessKind::Codex);
             session.orchestrator_skill_loaded = true;
             session.orchestrator_skill_version = Some(orchestrator_skill_version());
+            session.orchestrator_delegation_version =
+                Some(orchestrator_delegation_version(&delegation));
         }
         registry.sessions.push(session.clone());
         if let Err(error) = self.write_registry(&registry) {
@@ -571,10 +578,13 @@ impl SessionManager {
         result.map(|()| path)
     }
 
+    /// Whether the orchestrator has the skill this build ships and the delegation policy
+    /// its scope resolves to now (`orchestrators::delegation`): what LOAD SKILL brings.
     pub fn orchestrator_skill_is_current(&self, session: &ShellSession) -> bool {
-        session.orchestrator_skill_loaded
-            && session.orchestrator_skill_version.as_deref()
-                == Some(orchestrator_skill_version().as_str())
+        orchestrator_skill_is_current_with(
+            session,
+            &crate::orchestrators::delegation(&self.home, session.project_id.as_deref()),
+        )
     }
 
     /// Explicitly load the skill into an existing Codex singleton. This is
@@ -595,7 +605,9 @@ impl SessionManager {
             return Err(format!("shell {id} has exited"));
         }
         session.alive = true;
-        if self.orchestrator_skill_is_current(session) {
+        let delegation =
+            crate::orchestrators::delegation(&self.home, session.project_id.as_deref());
+        if orchestrator_skill_is_current_with(session, &delegation) {
             return Ok(session.clone());
         }
         let output = self.tmux_checked(&[
@@ -625,12 +637,14 @@ impl SessionManager {
                 &executable,
                 session.project_id.as_deref(),
                 session.orchestrator_project_root.as_deref(),
-                &crate::orchestrators::delegation(&self.home, session.project_id.as_deref()),
+                &delegation,
                 true,
             ),
         )?;
         session.orchestrator_skill_loaded = true;
         session.orchestrator_skill_version = Some(orchestrator_skill_version());
+        session.orchestrator_delegation_version =
+            Some(orchestrator_delegation_version(&delegation));
         session.harness = Some(HarnessKind::Codex);
         let session = session.clone();
         self.write_registry(&registry)?;
@@ -2422,6 +2436,7 @@ impl SessionManager {
             codex_home: binding.map(|binding| binding.home),
             orchestrator_skill_loaded: false,
             orchestrator_skill_version: None,
+            orchestrator_delegation_version: None,
             orchestrator_project_root: None,
             created_at_unix,
             alive: true,
@@ -4128,6 +4143,41 @@ fn panes_at_shell_prompt(
 
 pub fn orchestrator_skill_version() -> String {
     format!("{:016x}", stable_hash(ORCHESTRATOR_SKILL.as_bytes()))
+}
+
+/// The delegation policy an orchestrator was told, as recorded beside its skill version:
+/// it changes with any resolved value.
+pub fn orchestrator_delegation_version(delegation: &Delegation) -> String {
+    let resolved = serde_json::json!([
+        delegation.spread_work,
+        delegation.parallel_shells,
+        delegation.design,
+        delegation.workhorse,
+    ]);
+    format!("{:016x}", stable_hash(resolved.to_string().as_bytes()))
+}
+
+/// Whether an orchestrator recorded as told `skill` and `delegation` (their versions) has
+/// this build's skill and `policy`, its scope's now. One recorded without the policy, by
+/// an older build, is not: what it was told cannot be known, and LOAD SKILL tells it again.
+pub(crate) fn orchestrator_told(
+    skill: Option<&str>,
+    delegation: Option<&str>,
+    policy: &Delegation,
+) -> bool {
+    skill == Some(orchestrator_skill_version().as_str())
+        && delegation == Some(orchestrator_delegation_version(policy).as_str())
+}
+
+/// `SessionManager::orchestrator_skill_is_current` with its scope's policy given, for a
+/// caller that holds Settings and the store already (a window, as it draws).
+pub fn orchestrator_skill_is_current_with(session: &ShellSession, policy: &Delegation) -> bool {
+    session.orchestrator_skill_loaded
+        && orchestrator_told(
+            session.orchestrator_skill_version.as_deref(),
+            session.orchestrator_delegation_version.as_deref(),
+            policy,
+        )
 }
 
 fn matches_orchestrator_scope(session: &ShellSession, project_id: Option<&str>) -> bool {
@@ -8631,6 +8681,8 @@ else:
             let mut session = scope_session(ShellKind::Orchestrator, scope);
             session.orchestrator_skill_loaded = true;
             session.orchestrator_skill_version = Some(older.clone());
+            session.orchestrator_delegation_version =
+                Some(orchestrator_delegation_version(&Delegation::built_in()));
             assert!(!manager.orchestrator_skill_is_current(&session));
             session.orchestrator_skill_version = Some(orchestrator_skill_version());
             assert!(manager.orchestrator_skill_is_current(&session));
@@ -8656,6 +8708,67 @@ else:
             }
         }
         manager.kill_server();
+    }
+
+    /// A terminal orchestrator told the skill this build ships is out of date when its
+    /// scope's delegation policy changes, or when an older build recorded no policy, so
+    /// LOAD SKILL (which returns early only for a current one) tells it the policy now.
+    #[test]
+    fn a_terminal_orchestrator_is_out_of_date_when_its_policy_changes() {
+        let home = std::env::temp_dir().join(format!("riwork-skill-policy-{}", Uuid::new_v4()));
+        let manager = SessionManager::at(home.clone()).unwrap();
+        let store = crate::store::Store::open(&home).unwrap();
+        let root = home.join("project");
+        fs::create_dir_all(&root).unwrap();
+        let project = store.add_project(&root, Some("Project")).unwrap();
+        let settings = crate::settings::SettingsStore::open(&home).unwrap();
+        for scope in [None, Some(project.id.as_str())] {
+            let mut session = scope_session(ShellKind::Orchestrator, scope);
+            session.orchestrator_skill_loaded = true;
+            session.orchestrator_skill_version = Some(orchestrator_skill_version());
+            session.orchestrator_delegation_version = Some(orchestrator_delegation_version(
+                &crate::orchestrators::delegation(&home, scope),
+            ));
+            assert!(manager.orchestrator_skill_is_current(&session));
+            // An older build's record says nothing of the policy.
+            let older = ShellSession {
+                orchestrator_delegation_version: None,
+                ..session.clone()
+            };
+            assert!(!manager.orchestrator_skill_is_current(&older));
+            // Settings change for every scope; a project's own choice for its own.
+            settings
+                .update(|settings| {
+                    let shells = settings.delegation_policy.parallel_shells.unwrap_or(4);
+                    settings
+                        .delegation_policy
+                        .set_parallel_shells(Some(shells + 1));
+                })
+                .unwrap();
+            assert!(!manager.orchestrator_skill_is_current(&session));
+            let now = crate::orchestrators::delegation(&home, scope);
+            assert!(orchestrator_skill_is_current_with(
+                &ShellSession {
+                    orchestrator_delegation_version: Some(orchestrator_delegation_version(&now)),
+                    ..session.clone()
+                },
+                &now
+            ));
+        }
+        let mut session = scope_session(ShellKind::Orchestrator, Some(&project.id));
+        session.orchestrator_skill_loaded = true;
+        session.orchestrator_skill_version = Some(orchestrator_skill_version());
+        session.orchestrator_delegation_version = Some(orchestrator_delegation_version(
+            &crate::orchestrators::delegation(&home, Some(&project.id)),
+        ));
+        store
+            .set_project_delegation_policy(&project.id, |policy| {
+                policy.set_spread_work(Some(false))
+            })
+            .unwrap();
+        assert!(!manager.orchestrator_skill_is_current(&session));
+        manager.kill_server();
+        let _ = fs::remove_dir_all(home);
     }
 
     /// Both scopes read the delegation mandate before their own sections: an orchestrator

@@ -199,19 +199,20 @@ impl Client {
     }
 
     /// Records one of `chat_id`'s workers in its timeline. Waits a few seconds at most:
-    /// a note is best effort, and an older host refuses it as unreadable.
+    /// a note is best effort, and an older host refuses it as unreadable. A broken
+    /// exchange may be tried again; the host records each end once.
     pub fn note_worker(
         &mut self,
         chat_id: &str,
         note: super::workers::WorkerNote,
-    ) -> Result<(), String> {
+    ) -> Result<(), CallError> {
         let wait = Some(Duration::from_secs(5));
         let stream = self.stream.get_ref();
         stream
             .set_read_timeout(wait)
             .and_then(|_| stream.set_write_timeout(wait))
-            .map_err(|error| error.to_string())?;
-        self.call(Request::NoteWorker {
+            .map_err(|error| CallError::Broken(error.to_string()))?;
+        self.exchange(Request::NoteWorker {
             id: new_id(),
             chat_id: chat_id.into(),
             note,

@@ -575,6 +575,11 @@ impl ActivityTracker {
                 continue;
             }
             let binding = self.binding_of(shell);
+            if binding.is_none() {
+                // A fresh launch in this shell dropped the binding: what was read for the old
+                // thread (its model too) is not this shell's any more.
+                self.cursors.remove(&shell.id);
+            }
             if binding.is_none() && shell.harness != Some(HarnessKind::Codex) {
                 continue;
             }
@@ -1510,6 +1515,7 @@ mod tests {
             codex_home: None,
             orchestrator_skill_loaded: false,
             orchestrator_skill_version: None,
+            orchestrator_delegation_version: None,
             orchestrator_project_root: None,
             created_at_unix: 1,
             alive: true,
@@ -2521,5 +2527,44 @@ mod tests {
             !cursor.malformed,
             "an unknown model shape cannot corrupt activity"
         );
+    }
+    #[test]
+    fn a_shell_that_lost_its_binding_reports_no_model_of_the_old_thread() {
+        let fixture = Fixture::new();
+        let thread = Uuid::new_v4().to_string();
+        fixture.log(
+            &thread,
+            &(meta(&thread)
+                + "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-old\"}}\n"
+                + &event("task_started", "turn")),
+        );
+        let session = shell(Some(HarnessKind::Codex));
+        fixture.bind(&session, &thread);
+        let mut tracker = fixture.tracker();
+        let sessions = [session.clone()];
+        assert_eq!(
+            tracker.sample(&sessions)[&session.id],
+            AgentActivity::Working
+        );
+        assert_eq!(
+            tracker
+                .reported_models()
+                .get(&session.id)
+                .map(String::as_str),
+            Some("gpt-old")
+        );
+        // A fresh Codex launch in the same shell drops the binding until its own arrives.
+        fs::remove_file(
+            fixture
+                .home
+                .join("agent-activity")
+                .join(format!("{}.json", session.id)),
+        )
+        .unwrap();
+        assert_eq!(
+            tracker.sample(&sessions)[&session.id],
+            AgentActivity::Unknown
+        );
+        assert!(tracker.reported_models().is_empty());
     }
 }

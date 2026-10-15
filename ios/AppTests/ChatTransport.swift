@@ -101,6 +101,9 @@ actor ChatTransport: RemoteTransport {
         while !heldReleased { try await Task.sleep(for: .milliseconds(3)) }
         return reply
     }
+    /// The next this many `chats.list` fail (a transient error).
+    var chatsListFailures = 0
+    func failChatsList(_ times: Int) { chatsListFailures = times }
     /// The next this many `tabs.list` fail (a transient error).
     var tabsListFailures = 0
     func failTabsList(_ times: Int) { tabsListFailures = times }
@@ -254,6 +257,7 @@ actor ChatTransport: RemoteTransport {
             throw RemoteError.rpc(code: "not_found", message: "appearance not published")
         case "chats.list":
             guard chatFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            if chatsListFailures > 0 { chatsListFailures -= 1; throw RemoteError.rpc(code: "cli_error", message: "the chat list is busy") }
             // Another project's chats are not this one's (a chat with no project is listed everywhere, as a careless desktop might).
             let asked = params["project_id"]?.string
             let listed = chats.filter { asked == nil || $0.projectID == nil || $0.projectID == asked }

@@ -2670,3 +2670,45 @@ async fn chat_suggestions_cuts_a_big_listing_to_fit_one_frame() {
     assert_eq!(deflated["result"]["files"]["truncated"], true);
     link::encode_reply(&deflated, std::time::Instant::now(), true, MAX_PLAINTEXT).unwrap();
 }
+
+/// The biggest listing a CLI prints (`REPLY_BYTES`, cut by the CLI itself) is read whole and
+/// cut to one frame, plain or deflated: never refused as too large.
+#[tokio::test]
+async fn chat_suggestions_takes_the_biggest_listing_a_cli_prints() {
+    use riwork_engine::chat::suggest::{REPLY_BYTES, Reply};
+    let f = Fixture::new();
+    f.says(
+        "capabilities.out",
+        &json!({"v":1,"chat":true,"chat_suggestions":true}),
+    );
+    let mut reply = shared_suggestions();
+    let chat = reply["chat_id"].as_str().unwrap().to_owned();
+    reply["files"]["entries"] = (0..5000)
+        .map(|i| json!({"path":format!("{}{i:05}.rs", "deep/".repeat(150)),"dir":false,"bytes":i}))
+        .collect();
+    // As the CLI prints it: pretty, within its bound.
+    let printed = serde_json::from_value::<Reply>(reply)
+        .unwrap()
+        .within(REPLY_BYTES);
+    assert!(printed.files.truncated);
+    let text = serde_json::to_string_pretty(&printed).unwrap() + "\n";
+    assert!(text.len() > REPLY_BYTES - 4096 && text.len() <= REPLY_BYTES);
+    f.set("suggestions.json", &text);
+    let printed = serde_json::to_value(&printed).unwrap();
+    for deflate in [false, true] {
+        let response = if deflate {
+            f.call_deflating("chat.suggestions", json!({"chat_id":chat}))
+                .await
+        } else {
+            f.call("chat.suggestions", json!({"chat_id":chat})).await
+        };
+        assert_eq!(response["ok"], true, "{response}");
+        let kept = response["result"]["files"]["entries"].as_array().unwrap();
+        assert!(!kept.is_empty(), "deflate {deflate}");
+        assert_eq!(
+            kept[..],
+            printed["files"]["entries"].as_array().unwrap()[..kept.len()]
+        );
+        assert_eq!(response["result"]["files"]["truncated"], true);
+    }
+}

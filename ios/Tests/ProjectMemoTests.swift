@@ -266,6 +266,88 @@ final class ProjectMemoTests: XCTestCase {
         XCTAssertNotEqual(mine.session, theirs.session)
     }
 
+    func testAnUnresolvedConflictKeepsTheBaseItsTextWasWrittenOver() {
+        var editor = ProjectMemoEditor(projectID: project, projectName: "Demo", restoredText: "old phone text", restoredBase: 1)
+        editor.loaded(memo("newer Mac text", at: 5))
+        XCTAssertEqual(editor.phase, .conflict)
+        XCTAssertEqual(editor.base, 1, "kept with the memo it was written over, not the Mac's newer one")
+        // Closed without a choice and opened again: it still asks, and sends nothing by itself.
+        var reopened = ProjectMemoEditor(projectID: project, projectName: "Demo", restoredText: editor.textToKeep, restoredBase: editor.base)
+        reopened.loaded(memo("newer Mac text", at: 5))
+        XCTAssertEqual(reopened.phase, .conflict)
+        XCTAssertNil(reopened.pendingSave)
+        // Keeping it is writing it over the Mac's memo.
+        reopened.keepMine()
+        XCTAssertEqual(reopened.base, 5)
+        XCTAssertEqual(reopened.pendingSave, "old phone text")
+    }
+
+    func testGoingBackDuringASaveKeepsTheTextUntilTheMacHasIt() {
+        var editor = ProjectMemoEditor(projectID: project, projectName: "Demo")
+        editor.loaded(memo("A", at: 1))
+        editor.edit("B")
+        editor.beginSave()
+        editor.edit("A")
+        // The Mac may be about to hold B: A is the text to keep until the Mac has it again.
+        XCTAssertEqual(editor.textToKeep, "A")
+        XCTAssertEqual(editor.base, 1)
+        editor.saveSucceeded(memo("B", at: 2))
+        XCTAssertEqual(editor.phase, .unsaved)
+        XCTAssertEqual(editor.pendingSave, "A")
+        editor.beginSave()
+        editor.saveSucceeded(memo("A", at: 3))
+        XCTAssertEqual(editor.phase, .saved)
+        XCTAssertNil(editor.textToKeep)
+
+        // A save that may or may not have arrived: A is saved again once it can be.
+        var lost = ProjectMemoEditor(projectID: project, projectName: "Demo")
+        lost.loaded(memo("A", at: 1))
+        lost.edit("B")
+        lost.beginSave()
+        lost.edit("A")
+        lost.saveFailed(.connection)
+        XCTAssertEqual(lost.phase, .queued)
+        XCTAssertEqual(lost.textToKeep, "A")
+        XCTAssertEqual(lost.pendingSave, "A")
+        lost.loaded(memo("B", at: 2))
+        XCTAssertEqual(lost.text, "A", "the Mac's B is not taken over the text typed after it")
+        XCTAssertEqual(lost.pendingSave, "A")
+    }
+
+    func testAnEarlierEditorsSaveThatLandsLaterIsBuiltOnNotAConflict() {
+        // Reopened with text kept over the memo of 1 while the earlier editor's save was on its way.
+        var waiting = ProjectMemoEditor(projectID: project, projectName: "Demo", restoredText: "typed during it", restoredBase: 1)
+        waiting.earlierSaveLanded(memo("the earlier save", at: 2))
+        XCTAssertEqual(waiting.base, 2)
+        waiting.loaded(memo("the earlier save", at: 2))
+        XCTAssertEqual(waiting.phase, .unsaved)
+        XCTAssertEqual(waiting.pendingSave, "typed during it")
+
+        // Read after it landed, before its answer came: not a conflict once it does.
+        var read = ProjectMemoEditor(projectID: project, projectName: "Demo", restoredText: "typed during it", restoredBase: 1)
+        read.loaded(memo("the earlier save", at: 2))
+        XCTAssertEqual(read.phase, .conflict)
+        read.earlierSaveLanded(memo("the earlier save", at: 2))
+        XCTAssertEqual(read.phase, .unsaved)
+        XCTAssertEqual(read.pendingSave, "typed during it")
+        // A Mac edit after it still asks.
+        var later = ProjectMemoEditor(projectID: project, projectName: "Demo", restoredText: "typed during it", restoredBase: 1)
+        later.loaded(memo("a Mac edit after it", at: 3))
+        later.earlierSaveLanded(memo("the earlier save", at: 2))
+        XCTAssertEqual(later.phase, .conflict)
+        XCTAssertNil(later.pendingSave)
+
+        // Read before it landed, showing the memo it replaced: the text on screen is saved over it.
+        var before = ProjectMemoEditor(projectID: project, projectName: "Demo", restoredText: "A", restoredBase: 1)
+        before.loaded(memo("A", at: 1))
+        XCTAssertEqual(before.phase, .saved)
+        before.earlierSaveLanded(memo("B", at: 2))
+        XCTAssertEqual(before.text, "A")
+        XCTAssertEqual(before.pendingSave, "A")
+        before.earlierSaveLanded(memo("older", at: 1))
+        XCTAssertEqual(before.saved?.updatedAt, 2, "an older answer changes nothing")
+    }
+
     func testANewerMemoReplacesOnlyAnEditorWithNothingUnsaved() {
         var editor = ProjectMemoEditor(projectID: project, projectName: "Demo")
         editor.loaded(memo("v1"))

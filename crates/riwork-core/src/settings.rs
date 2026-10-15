@@ -1339,7 +1339,8 @@ mod tests {
                 settings.delegation_policy.set_parallel_shells(Some(6));
                 settings
                     .delegation_policy
-                    .set_route(Work::Design, Some(Route::recommended(Provider::Muse)));
+                    .set_route(Work::Design, Some(Route::recommended(Provider::Muse)))
+                    .unwrap();
             })
             .unwrap();
         let file = document();
@@ -1393,7 +1394,10 @@ mod tests {
         // A policy that is not an object reads as nothing chosen and stays as saved
         // until the policy is changed.
         write(r#"{"schema_version":1,"delegation_policy":"spread"}"#);
-        assert!(store.load().unwrap().delegation_policy.is_empty());
+        assert_eq!(
+            resolve(&store.load().unwrap().delegation_policy, None),
+            Delegation::built_in()
+        );
         store
             .update(|settings| settings.dictation_mic = true)
             .unwrap();

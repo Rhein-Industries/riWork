@@ -401,6 +401,16 @@ final class ComposerSuggestionsTests: XCTestCase {
         }
         XCTAssertNotNil(list("@s", .unsupported).trigger, "the token is still known, so the composer can ask for the catalog")
     }
+    func testAQueryOfOtherScalarsIsRankedAgainThoughItLooksTheSame() {
+        // "été.txt" with é as one scalar, "école.txt" with e and a combining acute: the matching compares scalars.
+        let catalog = catalog(files: [ComposerFileEntry(path: "\u{e9}t\u{e9}.txt"), ComposerFileEntry(path: "e\u{301}cole.txt")])
+        var list = ComposerSuggestionList()
+        list.update(text: "@\u{e9}", caret: 2, catalog: .ready(catalog))
+        XCTAssertEqual(list.items.map(\.title), ["\u{e9}t\u{e9}.txt"])
+        list.update(text: "@e\u{301}", caret: 3, catalog: .ready(catalog))
+        XCTAssertEqual(list.items.map(\.title), ["e\u{301}cole.txt"], "canonically equal to the query before, but other scalars")
+        XCTAssertEqual(list.items.map(\.title), ComposerSuggestions.rankFiles("e\u{301}", catalog.files, limit: 50).map(\.shownPath))
+    }
     func testAnEmptyDraftAfterSendingClosesTheList() {
         var list = list("/co", .ready(catalog()))
         list.update(text: "", caret: nil, catalog: .ready(catalog()))
@@ -443,6 +453,27 @@ final class ComposerSuggestionsTests: XCTestCase {
         XCTAssertEqual(cache.state(for: chat, connected: true), .loading)
         cache.abandon(chat)
         XCTAssertTrue(cache.beginFetch(chat, now: start + .seconds(10)), "an answer from a connection that is gone counts for nothing")
+    }
+    func testACatalogOfTheProviderTheChatLeftIsNotOfferedAndIsReadAgainAtOnce() {
+        var cache = ComposerCatalogCache()
+        let start = ContinuousClock.now
+        XCTAssertTrue(cache.beginFetch(chat, provider: .claude, now: start))
+        let claude = catalog()
+        cache.store(claude, for: chat, now: start)
+        XCTAssertEqual(cache.state(for: chat, provider: .claude, connected: true), .ready(claude))
+        XCTAssertFalse(cache.wantsFetch(chat, provider: .claude, now: start + .seconds(1)))
+        // The chat went on with Codex (`switch`): Claude's /compact would be sent to Codex as words.
+        XCTAssertEqual(cache.state(for: chat, provider: .codex, connected: true), .loading, "Claude's commands are not offered")
+        XCTAssertEqual(cache.state(for: chat, provider: .codex, connected: false), .unavailable)
+        XCTAssertTrue(cache.wantsFetch(chat, provider: .codex, now: start + .seconds(1)), "read again, though not 30 s old")
+        XCTAssertTrue(cache.beginFetch(chat, provider: .codex, now: start + .seconds(1)))
+        XCTAssertFalse(cache.beginFetch(chat, provider: .codex, now: start + .seconds(1)), "one read on the wire at a time")
+        XCTAssertEqual(cache.state(for: chat, provider: .codex, connected: true), .loading)
+        let codex = ComposerCatalog(chatID: chat, provider: .codex, commands: [ComposerCommand(name: "memo", summary: "s", sends: "x", handler: .riwork)], files: [])
+        cache.store(codex, for: chat, now: start + .seconds(2))
+        XCTAssertEqual(cache.state(for: chat, provider: .codex, connected: true), .ready(codex))
+        XCTAssertFalse(cache.wantsFetch(chat, provider: .codex, now: start + .seconds(3)))
+        XCTAssertEqual(cache.state(for: chat, connected: true), .ready(codex), "a caller that does not know the provider gets what was read")
     }
     func testOnlyTheMostRecentlyUsedChatsAreKept() {
         var cache = ComposerCatalogCache()

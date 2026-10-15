@@ -1483,6 +1483,16 @@ fn suggestions_read_a_saved_chats_commands_and_folder_without_a_host() {
     let claude = save("claude");
     let reply: Value =
         serde_json::from_str(&run(&["suggestions", &claude], true).unwrap()).unwrap();
+    // A unique prefix of eight characters or more names the chat, as for every chat command.
+    assert_eq!(
+        serde_json::from_str::<Value>(&run(&["suggestions", &claude[..8]], true).unwrap()).unwrap(),
+        reply
+    );
+    assert!(
+        run(&["suggestions", &claude[..7]], true)
+            .unwrap_err()
+            .contains("at least eight characters")
+    );
     assert_eq!(
         reply,
         json!({
@@ -1514,5 +1524,42 @@ fn suggestions_read_a_saved_chats_commands_and_folder_without_a_host() {
     assert_eq!(reply["commands"][0]["name"], "memo");
     assert_eq!(reply["files"]["entries"].as_array().unwrap().len(), 3);
     assert!(!home.join("run").exists(), "no host was started");
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn suggestions_cut_a_listing_too_big_for_the_connector_to_read() {
+    let home =
+        std::env::temp_dir().join(format!("riwork-cli-suggestions-{}", uuid::Uuid::new_v4()));
+    // 5000 entries that print as far more than the connector reads of the reply (8 MiB):
+    // every control character of a name is six bytes of JSON.
+    let folder = home.join("work");
+    let long = "\u{1}".repeat(200);
+    std::fs::create_dir_all(folder.join(&long)).unwrap();
+    for n in 0..crate::chat::suggest::FILE_BOUND {
+        std::fs::write(folder.join(&long).join(format!("{long}{n}")), "").unwrap();
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let info: ChatInfo = serde_json::from_value(json!({
+        "id": id, "provider": "claude", "cwd": folder, "title": "Saved",
+        "created_at_unix": 1, "state": {"state": "stopped"}
+    }))
+    .unwrap();
+    crate::chat::log::ChatLog::create(&crate::chat::log::chat_dir(&home, &id).unwrap(), &info)
+        .unwrap();
+    let printed = chat_client_command(&home, vec!["suggestions".into(), id.clone()], true, &|_| {
+        panic!("suggestions must never start the host")
+    })
+    .unwrap();
+    assert!(printed.len() <= 8 << 20, "{} bytes", printed.len());
+    let reply: Value = serde_json::from_str(&printed).unwrap();
+    assert_eq!(reply["files"]["truncated"], true);
+    let entries = reply["files"]["entries"].as_array().unwrap();
+    assert!(entries.len() > 1000 && entries.len() < crate::chat::suggest::FILE_BOUND);
+    assert_eq!(
+        entries[0]["path"], long,
+        "the walk's first entries are kept"
+    );
+    assert_eq!(reply["commands"][0]["name"], "compact");
     std::fs::remove_dir_all(home).unwrap();
 }

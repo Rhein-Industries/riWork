@@ -233,6 +233,8 @@ public struct ProjectMemoEditor: Sendable, Equatable {
     public private(set) var restored: Bool
     /// The `updated_at` of the Mac's memo the kept text was written over (nil: a memo never saved).
     private var restoredBase: UInt64?
+    /// A save went out that the Mac has not confirmed: it may hold that text now, whatever `saved` says.
+    private var saveUnconfirmed = false
 
     public init(projectID: String, projectName: String, restoredText: String? = nil, restoredBase: UInt64? = nil) {
         self.projectID = projectID; self.projectName = projectName
@@ -240,13 +242,15 @@ public struct ProjectMemoEditor: Sendable, Equatable {
         phase = .loading
     }
 
-    /// What the text on screen was written over: the Mac's memo as last read, or, before a read, the kept text's.
-    public var base: UInt64? { saved.map(\.updatedAt) ?? restoredBase }
+    /// What the text on screen was written over: the Mac's memo as last read, or, before a read and while a conflict waits for
+    /// the person, the kept text's.
+    public var base: UInt64? { phase == .conflict ? restoredBase : saved.map(\.updatedAt) ?? restoredBase }
 
-    /// Whether the text differs from the Mac's (or, before a read, whether there is kept text at all).
+    /// Whether the text differs from the Mac's, or a save the Mac has not confirmed may have changed the Mac's (or, before a
+    /// read, whether there is kept text at all).
     public var hasUnsavedText: Bool {
         guard let saved else { return restored }
-        return ProjectMemoText.normalize(text) != saved.text
+        return saveUnconfirmed || ProjectMemoText.normalize(text) != saved.text
     }
     /// The editor takes typing once the memo was read, or when it holds kept text.
     public var isEditable: Bool { phase != .unsupported && (saved != nil || restored) }
@@ -315,15 +319,35 @@ public struct ProjectMemoEditor: Sendable, Equatable {
         return ProjectMemoText.tooLargeMessage(text) == nil ? text : nil
     }
 
-    public mutating func beginSave() { phase = .saving }
+    public mutating func beginSave() { phase = .saving; saveUnconfirmed = true }
 
     public mutating func saveSucceeded(_ memo: ProjectMemo) {
-        saved = memo; restored = false
+        saved = memo; restored = false; saveUnconfirmed = false
         if let message = ProjectMemoText.tooLargeMessage(ProjectMemoText.normalize(text)) {
             phase = .tooLarge(message)
         } else {
             phase = hasUnsavedText ? .unsaved : .saved
         }
+    }
+
+    /// A save of this project from an earlier editor, sent before this one opened, was answered: the Mac holds `memo`. The text
+    /// here was written after that save was sent, so it builds on it, as the earlier editor's kept text does: kept text is not in
+    /// conflict with it, and text shown before it landed is saved over it (the last save wins).
+    public mutating func earlierSaveLanded(_ memo: ProjectMemo) {
+        let landed = memo.updatedAt ?? 0
+        if restored, landed > restoredBase ?? 0 {
+            restoredBase = memo.updatedAt
+            if phase == .conflict, saved?.updatedAt == memo.updatedAt { phase = settledPhase }
+        }
+        guard let saved, landed > saved.updatedAt ?? 0 else { return }
+        self.saved = memo
+        if phase == .saved || phase == .unsaved { phase = settledPhase }
+    }
+
+    /// The phase of the text on screen against the Mac's memo, with no save on its way.
+    private var settledPhase: Phase {
+        if let message = ProjectMemoText.tooLargeMessage(ProjectMemoText.normalize(text)) { return .tooLarge(message) }
+        return hasUnsavedText ? .unsaved : .saved
     }
 
     public mutating func saveFailed(_ error: ProjectMemoError) {

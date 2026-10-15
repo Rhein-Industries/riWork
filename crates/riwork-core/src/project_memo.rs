@@ -27,7 +27,10 @@ pub struct ProjectMemo {
     /// Markdown, as the person wrote it (after `normalize`). Empty is the same as no memo.
     #[serde(default)]
     pub text: String,
-    /// Unix seconds of the save that last changed the text; 0 when it never was.
+    /// Unix seconds of the save that last changed the text; 0 when it never was. Each such save
+    /// moves it at least one past the one before, even within one second or with the clock set
+    /// back, so equal times mean the same revision of the memo (a phone saves its kept text only
+    /// over the revision it was written on).
     #[serde(default)]
     pub updated_at: u64,
 }

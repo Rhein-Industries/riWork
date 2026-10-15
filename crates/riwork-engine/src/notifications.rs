@@ -464,6 +464,7 @@ mod tests {
                 codex_home: None,
                 orchestrator_skill_loaded: false,
                 orchestrator_skill_version: None,
+                orchestrator_delegation_version: None,
                 orchestrator_project_root: None,
                 created_at_unix: 1,
                 alive: true,

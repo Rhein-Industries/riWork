@@ -845,7 +845,13 @@ impl ProjectSettingsPanel {
     }
 
     fn pick_route(&mut self, work: Work, route: Option<Route>, cx: &mut Context<Self>) {
-        self.change_delegation(move |policy| policy.set_route(work, route), cx);
+        // Offered and saved routes read back as themselves, so none is refused.
+        self.change_delegation(
+            move |policy| {
+                let _ = policy.set_route(work, route);
+            },
+            cx,
+        );
     }
 
     /// A work's chips: Inherit (`None`), then the offered routes and the project's saved
@@ -3127,7 +3133,8 @@ mod tests {
         settings.delegation_policy.set_parallel_shells(Some(6));
         settings
             .delegation_policy
-            .set_route(Work::Workhorse, Some(Route::recommended(Provider::Muse)));
+            .set_route(Work::Workhorse, Some(Route::recommended(Provider::Muse)))
+            .unwrap();
         let open = |cx: &mut gpui::TestAppContext| {
             let store = store.clone();
             let project = store
@@ -3257,13 +3264,15 @@ mod tests {
         // cannot read is named while Inherit stands in for it.
         store
             .set_project_delegation_policy(&project.id, |policy| {
-                policy.set_route(
-                    Work::Design,
-                    Some(Route {
-                        provider: Provider::Claude,
-                        model: "fable".into(),
-                    }),
-                );
+                policy
+                    .set_route(
+                        Work::Design,
+                        Some(Route {
+                            provider: Provider::Claude,
+                            model: "fable".into(),
+                        }),
+                    )
+                    .unwrap();
                 policy
                     .unreadable
                     .insert("spread_work".into(), serde_json::json!("often"));

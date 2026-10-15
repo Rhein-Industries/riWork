@@ -311,7 +311,8 @@ the person's own Markdown notes for it (the contract is in
 [remote-protocol.md](../docs/remote-protocol.md), "Project memo extension"). Params are checked
 before any CLI runs (a canonical project UUID; text of at most `MEMO_MAX_BYTES`, 32 KiB). They are
 `riwork project memo show|set ID --json`; a save's text reaches the CLI on its standard input
-(`Rpc::raw_fed`), never as an argument, in the ordered lane. The last save wins. `"project_memo":
+(`Rpc::raw_fed`), never as an argument, in the ordered lane, and only once `riwork project show ID
+--json` found the project under exactly that id. The last save wins. `"project_memo":
 true` in `riwork capabilities --json` decides `features.project_memo` in `ready`. The tests are
 `tests/project_memo.rs`.
 

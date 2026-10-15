@@ -7,7 +7,7 @@
 //! left out for a memo never saved), or, when refused, `{"error":{"code","message"}}` with the
 //! code `invalid_request`, `not_found` or `cli_error`.
 
-use std::io::Read;
+use std::io::{self, IsTerminal, Read};
 
 use serde_json::{Value, json};
 
@@ -41,8 +41,10 @@ pub(super) fn command(
                 );
                 Ok(())
             } else {
+                // Exactly the memo, so `show > file` and `set < file` round-trip it; only a
+                // terminal gets a line break after one that lacks it, for the prompt.
                 print!("{text}");
-                if !text.is_empty() && !text.ends_with('\n') {
+                if !text.is_empty() && !text.ends_with('\n') && io::stdout().is_terminal() {
                     println!();
                 }
                 Ok(())

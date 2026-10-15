@@ -686,6 +686,32 @@ import RiWorkCore
         await finish(rig)
     }
 
+    /// A chat list that could not be read says nothing about the worker chats it would have listed: their cards say their status is
+    /// unavailable, not that they ended, until a list is read.
+    func testAWorkerChatIsNotEndedByAChatListThatCouldNotBeRead() async throws {
+        let rig = try await makeRig(chats: sharedChats())
+        let other = "66666666-6666-4666-8666-666666666666"
+        await rig.model.chooseProject(other)
+        await eventually("in the other project") { rig.model.loadedProjectID == other }
+        await rig.transport.failChatsList(1)
+        await rig.model.chooseProject(project)
+        await eventually("back, without its chats") { rig.model.loadedProjectID == self.project }
+        var marker = ChatItem(id: "worker:\(workerChatID)", status: .completed, body: .toolCall(server: "riwork", tool: "worker", input: .object([:]), output: nil))
+        marker.worker = ChatWorker(sessionID: workerChatID, kind: .chat, title: "Review", notedAt: 1_000)
+        func card() -> WorkerCard { WorkerTimeline(items: [marker], inventory: rig.model.workerInventory(of: chat())).cards[0] }
+        XCTAssertEqual(card().phase, .unavailable)
+        XCTAssertEqual(card().status(now: 2_000), "Status unavailable")
+        await rig.model.refreshSessionsQuietly()
+        XCTAssertEqual(card().phase, .listed(status: "Done", activity: .done), "the next list that is read says")
+        // A new connection whose list cannot be read does not go by the last connection's.
+        await rig.model.disconnect()
+        await rig.transport.failChatsList(1)
+        await rig.model.connect()
+        await eventually("reconnected without its chats") { rig.model.state == .connected && rig.model.loadedProjectID == self.project }
+        XCTAssertEqual(card().phase, .unavailable)
+        await finish(rig)
+    }
+
     func testElidedItemsAndEventsAreCompactRowsAndTheChatCarriesOn() async throws {
         let rig = try await makeRig()
         await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "ask", status: .completed, body: .userMessage("Show me the build log")))])

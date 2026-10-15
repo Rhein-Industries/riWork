@@ -44,8 +44,8 @@ use crate::{
     },
     delegation::{self, Delegation},
     sessions::{
-        SessionManager, ShellSession, orchestrator_context, orchestrator_prompt,
-        orchestrator_skill_version,
+        SessionManager, ShellSession, orchestrator_context, orchestrator_delegation_version,
+        orchestrator_prompt, orchestrator_skill_version, orchestrator_told,
     },
     settings::{
         AUTOMATIC_ORCHESTRATORS, OrchestratorRuns, Settings, SettingsStore, provider_label,
@@ -54,8 +54,9 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{
+    collections::HashSet,
     env, fs,
-    os::unix::net::UnixStream,
+    os::unix::{fs::OpenOptionsExt, net::UnixStream},
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
@@ -341,6 +342,10 @@ pub struct Created {
 /// `Automatic` starts the first of `AUTOMATIC_ORCHESTRATORS` whose chat starts,
 /// and names the ones that did not in `fallback`; if none starts, the error names
 /// each and why. An explicit chat is that chat or an error.
+///
+/// Creators of a scope take turns, in every process and whichever mode they ask for
+/// (`lock_scope`): each looks and, finding none, makes and starts its orchestrator
+/// before the next one looks.
 pub fn create(
     sessions: &SessionManager,
     host: &ChatHost,
@@ -359,6 +364,7 @@ pub fn create(
         OrchestratorRuns::Chat { provider, model } => vec![(*provider, model.clone())],
         OrchestratorRuns::Terminal => Vec::new(),
     };
+    let _turn = lock_scope(host.home, scope)?;
     if let Some(existing) = find(sessions, host, scope)?
         && match &existing {
             Orchestrator::Terminal(shell) => shell.alive,
@@ -446,10 +452,10 @@ pub fn approval_mode(scope: &OrchestratorScope) -> ApprovalMode {
 
 /// Starts the scope's orchestrator as a chat and gives it its first message,
 /// the one a terminal orchestrator is started with. If the scope turns out to
-/// have a chat already (another process was quicker), that one is returned, not
-/// created, and nothing is sent. A chat that cannot be started or told its first
-/// message is deleted again, so an orchestrator that exists is one that was
-/// started.
+/// have a chat already (made by a build that does not take turns), that one is
+/// returned, not created, and nothing is sent. A chat that cannot be started, told
+/// its first message or have that recorded is deleted again, so an orchestrator
+/// that exists is one that was started.
 fn create_chat(
     sessions: &SessionManager,
     host: &ChatHost,
@@ -468,12 +474,13 @@ fn create_chat(
                 .map_err(|error| format!("resolve {}: {error}", root.display()))
         })
         .transpose()?;
+    let policy = delegation(host.home, project_id);
     let first = orchestrator_prompt(
         &skill,
         &executable,
         project_id,
         root.as_deref(),
-        &delegation(host.home, project_id),
+        &policy,
         false,
     );
     let mut client = host.connect()?;
@@ -513,12 +520,12 @@ fn create_chat(
     let started = match &info.state {
         ChatState::Failed { message } => Err(message.clone()),
         _ => client.command(&info.id, ChatCommand::Send { text: first }),
-    };
+    }
+    .and_then(|()| record_chat_skill(host.home, &info, &policy));
     if let Err(error) = started {
         let _ = client.delete(&info.id);
         return Err(format!("{CHAT_DID_NOT_START}{error}"));
     }
-    record_chat_skill(host.home, &info)?;
     Ok((info, true))
 }
 
@@ -546,15 +553,17 @@ pub fn close(host: &ChatHost, chat: &ChatInfo) -> Result<(), String> {
 }
 
 /// LOAD SKILL for a chat orchestrator: the installed skill is refreshed and its
-/// full text goes to the chat as a message. Nothing happens when the chat has
-/// the current skill already. The chat must be ready for a message.
+/// full text goes to the chat as a message, with its scope's delegation policy now.
+/// Nothing happens when the chat has the current skill and policy already. The chat
+/// must be ready for a message.
 pub fn load_chat_skill(
     sessions: &SessionManager,
     host: &ChatHost,
     chat: &ChatInfo,
     project_root: Option<&Path>,
 ) -> Result<ChatInfo, String> {
-    if chat_skill_is_current(host.home, chat) {
+    let policy = delegation(host.home, chat.project_id.as_deref());
+    if chat_skill_is_current_with(host.home, chat, &policy) {
         return Ok(chat.clone());
     }
     // The state the caller holds may be old: ask the host.
@@ -571,27 +580,23 @@ pub fn load_chat_skill(
     let skill = sessions.orchestrator_skill_path_scoped(project_id)?;
     let executable =
         env::current_exe().map_err(|error| format!("resolve RiWork executable: {error}"))?;
-    let message = orchestrator_prompt(
-        &skill,
-        &executable,
-        project_id,
-        project_root,
-        &delegation(host.home, project_id),
-        true,
-    );
+    let message = orchestrator_prompt(&skill, &executable, project_id, project_root, &policy, true);
     client.command(&chat.id, ChatCommand::Send { text: message })?;
-    record_chat_skill(host.home, &chat)?;
+    record_chat_skill(host.home, &chat, &policy)?;
     Ok(chat)
 }
 
 // ---- The skill a chat has been given ---------------------------------------------------
 
 /// What `chat-skill.json` in the orchestrator's folder says: the skill version
-/// the chat was last given. A terminal orchestrator keeps this in its session.
+/// the chat was last given, and the delegation policy with it (none from a build before
+/// that was recorded). A terminal orchestrator keeps this in its session.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SkillMark {
     chat_id: String,
     version: String,
+    #[serde(default)]
+    delegation: Option<String>,
 }
 
 fn skill_mark_path(home: &Path, project_id: Option<&str>) -> PathBuf {
@@ -610,17 +615,51 @@ pub fn chat_skill_version(home: &Path, chat: &ChatInfo) -> Option<String> {
     read_skill_mark(home, chat).map(|mark| mark.version)
 }
 
-/// Whether the chat has the skill this build ships: what a terminal
-/// orchestrator's LOAD SKILL bar checks.
+/// Whether the chat has the skill this build ships and the delegation policy its scope
+/// resolves to now: what a terminal orchestrator's LOAD SKILL bar checks.
 pub fn chat_skill_is_current(home: &Path, chat: &ChatInfo) -> bool {
-    chat_skill_version(home, chat).as_deref() == Some(orchestrator_skill_version().as_str())
+    chat_skill_is_current_with(home, chat, &delegation(home, chat.project_id.as_deref()))
 }
 
-fn record_chat_skill(home: &Path, chat: &ChatInfo) -> Result<(), String> {
+/// The orchestrator chats among `chats` that are not current (`chat_skill_is_current`),
+/// with Settings and the store read once for all of them: what a window polls.
+pub fn stale_chat_skills(home: &Path, chats: &[ChatInfo]) -> HashSet<String> {
+    let orchestrators = chats
+        .iter()
+        .filter(|chat| chat.orchestrator.is_some())
+        .collect::<Vec<_>>();
+    if orchestrators.is_empty() {
+        return HashSet::new();
+    }
+    let settings = SettingsStore::open(home)
+        .and_then(|store| store.load())
+        .unwrap_or_default();
+    let state = Store::open(home).and_then(|store| store.snapshot()).ok();
+    orchestrators
+        .into_iter()
+        .filter(|chat| {
+            let project = chat
+                .project_id
+                .as_deref()
+                .and_then(|id| state.as_ref()?.project(id).ok());
+            !chat_skill_is_current_with(home, chat, &delegation_for(&settings, project))
+        })
+        .map(|chat| chat.id.clone())
+        .collect()
+}
+
+fn chat_skill_is_current_with(home: &Path, chat: &ChatInfo, policy: &Delegation) -> bool {
+    read_skill_mark(home, chat).is_some_and(|mark| {
+        orchestrator_told(Some(&mark.version), mark.delegation.as_deref(), policy)
+    })
+}
+
+fn record_chat_skill(home: &Path, chat: &ChatInfo, policy: &Delegation) -> Result<(), String> {
     let path = skill_mark_path(home, chat.project_id.as_deref());
     let mark = SkillMark {
         chat_id: chat.id.clone(),
         version: orchestrator_skill_version(),
+        delegation: Some(orchestrator_delegation_version(policy)),
     };
     let temporary = path.with_file_name(format!(".chat-skill-{}.tmp", Uuid::new_v4()));
     let result = serde_json::to_vec(&mark)
@@ -637,6 +676,37 @@ fn forget_chat_skill(home: &Path, chat: &ChatInfo) {
     if read_skill_mark(home, chat).is_some() {
         let _ = fs::remove_file(skill_mark_path(home, chat.project_id.as_deref()));
     }
+}
+
+/// The turn of one creator of `scope`'s orchestrator (`create`), held until the file it
+/// returns is dropped: a lock file under `RIWORK_HOME/orchestrators`, so creators in
+/// other processes (the desktop, the CLI, the MCP server) wait too.
+fn lock_scope(home: &Path, scope: &OrchestratorScope) -> Result<fs::File, String> {
+    let name = match scope {
+        OrchestratorScope::Global => "global",
+        OrchestratorScope::Project { project_id } => {
+            if !Uuid::parse_str(project_id).is_ok_and(|id| id.to_string() == *project_id) {
+                return Err(format!("invalid UUID: {project_id}"));
+            }
+            project_id.as_str()
+        }
+    };
+    let directory = home.join("orchestrators");
+    crate::paths::create_private_dir(&directory)
+        .map_err(|error| format!("create {}: {error}", directory.display()))?;
+    let path = directory.join(format!("{name}.lock"));
+    // A pure lock file: never truncate it, and keep other users from opening it.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|error| format!("open {}: {error}", path.display()))?;
+    file.lock()
+        .map_err(|error| format!("lock {}: {error}", path.display()))?;
+    Ok(file)
 }
 
 // ---- How they are shown -------------------------------------------------------------------

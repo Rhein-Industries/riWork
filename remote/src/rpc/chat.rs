@@ -1343,6 +1343,8 @@ impl Rpc {
             ));
         }
         // A big folder's listing is bigger than a frame; `fit_suggestions` cuts what is sent.
+        // The CLI prints at most 4 MiB (`riwork_engine::chat::suggest::REPLY_BYTES`), cut by
+        // itself, so the read allowance is never what refuses a listing.
         let listed = self
             .read_capped(
                 vec!["chat".into(), "suggestions".into(), spec.chat.clone()],

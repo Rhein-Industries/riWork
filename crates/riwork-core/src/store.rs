@@ -560,8 +560,8 @@ pub fn restore_missing_fields(original: &Map<String, Value>, current: &mut Map<S
     }
 }
 
-/// Carry unknown fields on the state, its records, and the import receipt
-/// through a rewrite. Records match by ID; nested tagged values are left alone.
+/// Carry unknown fields on the state, its records, its memos, and the import
+/// receipt through a rewrite. Records match by ID; nested tagged values are left alone.
 fn restore_unknown_state_fields(original: &Value, current: &mut Value) {
     let (Some(original), Some(current)) = (original.as_object(), current.as_object_mut()) else {
         return;
@@ -598,6 +598,17 @@ fn restore_unknown_state_fields(original: &Value, current: &mut Value) {
         (original.get("orca_import"), current.get_mut("orca_import"))
     {
         restore_missing_fields(original, current);
+    }
+    // Memos are keyed by project id rather than listed.
+    if let (Some(Value::Object(original)), Some(Value::Object(current))) = (
+        original.get("project_memos"),
+        current.get_mut("project_memos"),
+    ) {
+        for (id, memo) in current {
+            if let (Some(Value::Object(original)), Value::Object(memo)) = (original.get(id), memo) {
+                restore_missing_fields(original, memo);
+            }
+        }
     }
 }
 
@@ -1426,7 +1437,8 @@ impl Store {
 
     /// Change only this project's delegation policy, by `change` applied to the policy
     /// as the store holds it now, so another window's change to another field stands.
-    /// Its orchestrator hears of it when it is next created or loads its skill.
+    /// Its orchestrator hears of it when it is next created or loads its skill. A policy
+    /// that would not read back as itself (`DelegationPolicy::check`) is refused.
     pub fn set_project_delegation_policy(
         &self,
         selector: &str,
@@ -1441,6 +1453,7 @@ impl Store {
                 .expect("resolved project remains in the transaction");
             let before = project.delegation_policy.clone();
             change(&mut project.delegation_policy);
+            project.delegation_policy.check()?;
             let changed = project.delegation_policy != before;
             Ok((project.clone(), changed))
         })
@@ -1474,7 +1487,7 @@ impl Store {
     /// and return the project's id and the memo as saved. The whole text is replaced and the
     /// last save to reach the store wins: no merge, no check against what the caller saw. Only
     /// this project's memo is touched; a save of the text already there writes nothing and keeps
-    /// its `updated_at`.
+    /// its `updated_at`, and any other save moves it past the one before (`ProjectMemo`).
     pub fn set_project_memo(
         &self,
         selector: &str,
@@ -1492,7 +1505,7 @@ impl Store {
             }
             let memo = ProjectMemo {
                 text: text.into_owned(),
-                updated_at: now(),
+                updated_at: now().max(current.updated_at.saturating_add(1)),
             };
             state.project_memos.insert(project_id.clone(), memo.clone());
             Ok(((project_id, memo), true))

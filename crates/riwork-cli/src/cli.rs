@@ -187,6 +187,8 @@ chat models lists what a chat of that provider can be set to, read from saved ch
 project selects the Codex account the list is for.
 chat suggestions lists the slash commands a chat offers and the files and folders of its
 folder (at most 5000, without what .gitignore leaves out), and starts no host or provider.
+Its --json is at most 4 MiB: a listing that would print more keeps its first entries and
+says it is truncated.
 capabilities --json has \"chat\": true, \"orchestrator_create\": true,
 \"chat_provider_switch\": true, \"chat_models\": true, \"chat_suggestions\": true,
 \"dashboard\": true and \"project_memo\": true.
@@ -2750,12 +2752,10 @@ fn chat_client_command(
             // A host that runs is asked, else the saved chats are read: no host is started,
             // no provider asked.
             let socket = crate::chat::client::socket_path(home);
-            let info = Client::connect(&socket)
+            let chats = Client::connect(&socket)
                 .and_then(|mut client| client.list())
-                .unwrap_or_else(|_| crate::chat::log::read_infos(home))
-                .into_iter()
-                .find(|chat| chat.id == id)
-                .ok_or_else(|| format!("Unknown chat {id}"))?;
+                .unwrap_or_else(|_| crate::chat::log::read_infos(home));
+            let info = find_chat(&chats, &id)?;
             let reply = crate::chat::suggest::reply(&info.id, info.provider, &info.cwd);
             if json {
                 return json_text(&reply);
@@ -2792,9 +2792,17 @@ fn resolve_chat(
     client: &mut crate::chat::client::Client,
     selector: &str,
 ) -> Result<String, String> {
-    let chats = client.list()?;
+    find_chat(&client.list()?, selector).map(|chat| chat.id.clone())
+}
+
+/// The chat of `chats` that `selector` names: by its whole ID, or a unique prefix of at least
+/// eight characters.
+fn find_chat<'a>(
+    chats: &'a [crate::chat::model::ChatInfo],
+    selector: &str,
+) -> Result<&'a crate::chat::model::ChatInfo, String> {
     if let Some(chat) = chats.iter().find(|chat| chat.id == selector) {
-        return Ok(chat.id.clone());
+        return Ok(chat);
     }
     if selector.len() < 8 {
         return Err(format!(
@@ -2803,7 +2811,7 @@ fn resolve_chat(
     }
     let mut matching = chats.iter().filter(|chat| chat.id.starts_with(selector));
     match (matching.next(), matching.next()) {
-        (Some(chat), None) => Ok(chat.id.clone()),
+        (Some(chat), None) => Ok(chat),
         (None, _) => Err(format!("Unknown chat {selector}")),
         _ => Err(format!("Chat ID prefix {selector} is ambiguous")),
     }

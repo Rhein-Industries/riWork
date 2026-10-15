@@ -43,14 +43,12 @@ struct ChatScreen: View {
     private var state: ChatState { model.chatState(chat) }
     private var info: ChatInfo { conversation.transcript.info ?? chat }
     private var connected: Bool { model.state == .connected }
-    /// What can say how this chat's workers are doing: the lists of the project on screen, and only for a chat of that project. A chat of
-    /// no project (the global orchestrator's) has none, and its live worker cards say so rather than that their worker ended. The lists
-    /// are read again every few seconds while the project's screen is up (`keepFresh(.sessions)`, which this chat is part of). A chat
-    /// with no worker card does not read them, so a change to them does not redraw it.
+    /// What can say how this chat's workers are doing (`RemoteModel.workerInventory`). The lists are read again every few seconds while
+    /// the project's screen is up (`keepFresh(.sessions)`, which this chat is part of). A chat with no worker card does not read them,
+    /// so a change to them does not redraw it.
     private var workerInventory: WorkerInventory {
         guard conversation.transcript.items.contains(where: { $0.worker != nil }) else { return .unavailable }
-        guard let project = info.projectID, model.loadedProjectID == project else { return .unavailable }
-        return WorkerInventory(shells: model.shells, chats: model.chatSupport != .unsupported && model.desktopFeatures.chat ? model.chats : nil)
+        return model.workerInventory(of: info)
     }
 
     var body: some View {

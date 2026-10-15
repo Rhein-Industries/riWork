@@ -4688,9 +4688,14 @@ mod worker_markers {
                         status: WorkerEnd::Done,
                         ended_at: now_unix() + 5,
                         tail: "All tests pass".into(),
+                        turn: None,
+                        turn_end: None,
+                        done_since: None,
                     },
                     done_since: Some(now_unix() + 5),
-                    started_at: None,
+                    turn: None,
+                    turn_end: None,
+                    took: Vec::new(),
                 },
             )
             .unwrap();
@@ -4811,6 +4816,18 @@ mod worker_markers {
         fake.emit(ChatEvent::TurnStarted {
             turn_id: "c1".into(),
         });
+        // The card was given nothing, and is the latest: the first message is its.
+        fake.emit(ChatEvent::ItemCompleted {
+            item: Item {
+                presentation: Default::default(),
+                id: "task".into(),
+                turn_id: Some("c1".into()),
+                status: ItemStatus::Completed,
+                body: ItemBody::UserMessage {
+                    text: "Review the patch".into(),
+                },
+            },
+        });
         fake.emit(ChatEvent::ItemCompleted {
             item: Item {
                 presentation: Default::default(),
@@ -4876,5 +4893,388 @@ mod worker_markers {
         fs::remove_file(&socket).unwrap();
         assert!(crate::chat::workers::send(&home, "c", spawn("s")).is_err());
         let _ = fs::remove_dir_all(home);
+    }
+}
+
+/// How a worker's end finds its card: by the worker chat's own turn, through a restart,
+/// for a closed terminal or a deleted chat, and never quietly unwritten.
+mod worker_ends {
+    use super::*;
+    use crate::chat::model::Delta;
+    use crate::chat::workers::{WorkerEnd, WorkerFinal, WorkerRef};
+
+    /// A chat of project `p`, started by `parent` when there is one.
+    fn chat(host: &NoticeHost, parent: Option<&str>) -> Arc<Chat> {
+        let info: ChatInfo = serde_json::from_value(serde_json::json!({
+            "id": Uuid::new_v4().to_string(), "provider": Provider::Codex, "cwd": host.home,
+            "title": "test", "created_at_unix": 0, "state": {"state":"idle"},
+            "project_id": "p", "parent_id": parent
+        }))
+        .unwrap();
+        let dir = log::chat_dir(&host.home, &info.id).unwrap();
+        let chat_log = ChatLog::create(&dir, &info).unwrap();
+        let mut inner = Inner::new(info.clone(), chat_log, 0, host.shared.dismissals.clone());
+        inner.worker_notes = Some(host.shared.worker_notes.clone());
+        inner.append(ChatEvent::Info { info: info.clone() });
+        let chat = Arc::new(Chat {
+            dir,
+            lifecycle: Mutex::new(()),
+            inner: Mutex::new(inner),
+        });
+        lock(&host.shared.chats).insert(info.id, chat.clone());
+        chat
+    }
+
+    fn emit(chat: &Chat, event: ChatEvent) {
+        lock(&chat.inner).take_driver_event(event);
+    }
+
+    fn turn(chat: &Chat, id: &str) {
+        emit(chat, ChatEvent::TurnStarted { turn_id: id.into() });
+    }
+
+    fn end(chat: &Chat, id: &str, outcome: TurnOutcome) {
+        emit(
+            chat,
+            ChatEvent::TurnCompleted {
+                turn_id: id.into(),
+                outcome,
+            },
+        );
+    }
+
+    fn said(chat: &Chat, id: &str, turn: &str, body: ItemBody) {
+        emit(
+            chat,
+            ChatEvent::ItemCompleted {
+                item: Item {
+                    presentation: Default::default(),
+                    id: id.into(),
+                    turn_id: Some(turn.into()),
+                    status: ItemStatus::Completed,
+                    body,
+                },
+            },
+        );
+    }
+
+    fn user(text: &str) -> ItemBody {
+        ItemBody::UserMessage { text: text.into() }
+    }
+
+    fn reply(text: &str) -> ItemBody {
+        ItemBody::AgentMessage { text: text.into() }
+    }
+
+    /// The parent's chat-worker card for `child`, made in the parent's turn `p1` and given
+    /// its first assignment there, as `riwork chat new` and `chat send` make it.
+    fn started(host: &NoticeHost, parent: &Chat, child: &Chat, text: &str) {
+        turn(parent, "p1");
+        note_worker(
+            &host.shared,
+            &parent.info().id,
+            WorkerNote::Spawn {
+                session_id: child.info().id,
+                kind: WorkerKind::Chat,
+                late: false,
+            },
+        )
+        .unwrap();
+        assign(host, parent, child, text);
+    }
+
+    fn assign(host: &NoticeHost, parent: &Chat, child: &Chat, text: &str) {
+        note_worker(
+            &host.shared,
+            &parent.info().id,
+            WorkerNote::Assign {
+                session_id: child.info().id,
+                kind: WorkerKind::Chat,
+                text: text.into(),
+            },
+        )
+        .unwrap();
+    }
+
+    /// What a real host's worker thread does with what is queued.
+    fn deliver(host: &NoticeHost) {
+        let receiver = lock(&host.worker_notes);
+        while let Ok(note) = receiver.try_recv() {
+            deliver_worker_note(&host.shared, note);
+        }
+    }
+
+    fn cards(home: &Path, chat_id: &str) -> Vec<WorkerRef> {
+        let mut transcript = Transcript::default();
+        for envelope in log::read_envelopes(&log::chat_dir(home, chat_id).unwrap()).unwrap() {
+            transcript.apply(&envelope.event);
+        }
+        transcript
+            .items
+            .iter()
+            .filter_map(|item| item.presentation.worker.clone())
+            .collect()
+    }
+
+    fn ended(card: &WorkerRef) -> Option<(WorkerEnd, &str)> {
+        card.end.as_ref().map(|end| (end.status, end.tail.as_str()))
+    }
+
+    #[test]
+    fn a_follow_up_sent_while_the_last_turn_runs_is_not_ended_by_that_turn() {
+        let host = NoticeHost::new();
+        let parent = chat(&host, None);
+        let child = chat(&host, Some(&parent.info().id));
+        started(&host, &parent, &child, "Task one");
+        turn(&child, "c1");
+        said(&child, "u1", "c1", user("Task one"));
+        end(&parent, "p1", TurnOutcome::Completed);
+        turn(&parent, "p2");
+        assign(&host, &parent, &child, "Task two");
+        said(&child, "r1", "c1", reply("One done"));
+        end(&child, "c1", TurnOutcome::Completed);
+        deliver(&host);
+        let found = cards(&host.home, &parent.info().id);
+        assert_eq!(found.len(), 2);
+        assert_eq!(ended(&found[0]), Some((WorkerEnd::Done, "One done")));
+        assert_eq!(ended(&found[1]), None, "the follow-up waits for its turn");
+
+        turn(&child, "c2");
+        said(&child, "u2", "c2", user("Task two"));
+        said(&child, "r2", "c2", reply("Two done"));
+        end(&child, "c2", TurnOutcome::Completed);
+        deliver(&host);
+        let found = cards(&host.home, &parent.info().id);
+        assert_eq!(ended(&found[0]), Some((WorkerEnd::Done, "One done")));
+        assert_eq!(ended(&found[1]), Some((WorkerEnd::Done, "Two done")));
+    }
+
+    #[test]
+    fn messages_steered_into_one_turn_all_end_with_it() {
+        let host = NoticeHost::new();
+        let parent = chat(&host, None);
+        let child = chat(&host, Some(&parent.info().id));
+        started(&host, &parent, &child, "Task one");
+        turn(&child, "c1");
+        said(&child, "u1", "c1", user("Task one"));
+        end(&parent, "p1", TurnOutcome::Completed);
+        turn(&parent, "p2");
+        assign(&host, &parent, &child, "Also check the docs");
+        // Codex steers it into the running turn; Claude takes it behind the first.
+        said(&child, "u2", "c1", user("Also check the docs"));
+        said(&child, "r1", "c1", reply("Both done"));
+        end(&child, "c1", TurnOutcome::Completed);
+        deliver(&host);
+        let found = cards(&host.home, &parent.info().id);
+        assert_eq!(found.len(), 2);
+        assert_eq!(ended(&found[0]), Some((WorkerEnd::Done, "Both done")));
+        assert_eq!(ended(&found[1]), Some((WorkerEnd::Done, "Both done")));
+    }
+
+    #[test]
+    fn a_reply_cut_off_mid_stream_is_the_cards_result() {
+        let host = NoticeHost::new();
+        let parent = chat(&host, None);
+        let child = chat(&host, Some(&parent.info().id));
+        started(&host, &parent, &child, "Task one");
+        turn(&child, "c1");
+        said(&child, "u1", "c1", user("Task one"));
+        emit(
+            &child,
+            ChatEvent::ItemStarted {
+                item: Item {
+                    presentation: Default::default(),
+                    id: "r1".into(),
+                    turn_id: Some("c1".into()),
+                    status: ItemStatus::InProgress,
+                    body: reply(""),
+                },
+            },
+        );
+        emit(
+            &child,
+            ChatEvent::ItemDelta {
+                item_id: "r1".into(),
+                delta: Delta::Text("Partial answer".into()),
+            },
+        );
+        end(&child, "c1", TurnOutcome::Interrupted);
+        deliver(&host);
+        let found = cards(&host.home, &parent.info().id);
+        assert_eq!(
+            ended(&found[0]),
+            Some((WorkerEnd::Stopped, "Partial answer"))
+        );
+    }
+
+    #[test]
+    fn a_restart_ends_the_interrupted_turns_card_with_what_it_had_said() {
+        let mut host = NoticeHost::new();
+        let parent = chat(&host, None);
+        let child = chat(&host, Some(&parent.info().id));
+        let (parent_id, child_id) = (parent.info().id, child.info().id);
+        started(&host, &parent, &child, "Task one");
+        lock(&child.inner).set_state(ChatState::Running);
+        turn(&child, "c1");
+        said(&child, "u1", "c1", user("Task one"));
+        emit(
+            &child,
+            ChatEvent::ItemStarted {
+                item: Item {
+                    presentation: Default::default(),
+                    id: "r1".into(),
+                    turn_id: Some("c1".into()),
+                    status: ItemStatus::InProgress,
+                    body: reply("Halfway"),
+                },
+            },
+        );
+        end(&parent, "p1", TurnOutcome::Completed);
+        turn(&parent, "p2");
+        // Written before its message went: the host ends before the message arrives.
+        assign(&host, &parent, &child, "Task two");
+        drop((parent, child));
+        host.restart();
+        deliver(&host);
+        let found = cards(&host.home, &parent_id);
+        assert_eq!(found.len(), 2);
+        assert_eq!(ended(&found[0]), Some((WorkerEnd::Stopped, "Halfway")));
+        assert_eq!(ended(&found[1]), None, "the queued follow-up is still open");
+        assert!(cards(&host.home, &child_id).is_empty());
+    }
+
+    #[test]
+    fn an_end_the_host_could_not_deliver_before_it_ended_is_recorded_at_the_next_start() {
+        let mut host = NoticeHost::new();
+        let parent = chat(&host, None);
+        let child = chat(&host, Some(&parent.info().id));
+        let parent_id = parent.info().id;
+        started(&host, &parent, &child, "Task one");
+        turn(&child, "c1");
+        said(&child, "u1", "c1", user("Task one"));
+        said(&child, "r1", "c1", reply("Finished"));
+        end(&child, "c1", TurnOutcome::Completed);
+        // The host ends with the parent's note still queued.
+        drop((parent, child));
+        host.restart();
+        deliver(&host);
+        let found = cards(&host.home, &parent_id);
+        assert_eq!(ended(&found[0]), Some((WorkerEnd::Done, "Finished")));
+        let lines = host_log_len(&host.home, &parent_id);
+        // Started again, nothing is recorded twice.
+        host.restart();
+        deliver(&host);
+        assert_eq!(host_log_len(&host.home, &parent_id), lines);
+    }
+
+    fn host_log_len(home: &Path, chat_id: &str) -> usize {
+        log::read_envelopes(&log::chat_dir(home, chat_id).unwrap())
+            .unwrap()
+            .len()
+    }
+
+    #[test]
+    fn a_worker_chat_deleted_before_its_end_was_delivered_still_ends_its_card() {
+        let host = NoticeHost::new();
+        let parent = chat(&host, None);
+        let child = chat(&host, Some(&parent.info().id));
+        let (parent_id, child_id) = (parent.info().id, child.info().id);
+        started(&host, &parent, &child, "Task one");
+        turn(&child, "c1");
+        said(&child, "u1", "c1", user("Task one"));
+        said(&child, "r1", "c1", reply("Done before deletion"));
+        end(&child, "c1", TurnOutcome::Completed);
+        drop(child);
+        delete(&host.shared, &child_id).unwrap();
+        deliver(&host);
+        let found = cards(&host.home, &parent_id);
+        assert_eq!(
+            ended(&found[0]),
+            Some((WorkerEnd::Done, "Done before deletion"))
+        );
+    }
+
+    fn register_shell(home: &Path, id: &str, parent: &str) {
+        fs::write(
+            home.join("sessions.json"),
+            serde_json::to_vec(&serde_json::json!({"sessions": [{
+                "id": id, "parent_id": parent, "project_id": "p", "worktree_id": null,
+                "kind": "project", "cwd": home, "command": null, "harness": "claude",
+                "created_at_unix": 1
+            }]}))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_closed_terminals_exit_is_recorded_on_its_card() {
+        let host = NoticeHost::new();
+        let parent = chat(&host, None);
+        let parent_id = parent.info().id;
+        let shell = Uuid::new_v4().to_string();
+        register_shell(&host.home, &shell, &parent_id);
+        let shell_note = |end: Option<WorkerEnd>| match end {
+            None => WorkerNote::Spawn {
+                session_id: shell.clone(),
+                kind: WorkerKind::Shell,
+                late: false,
+            },
+            Some(status) => WorkerNote::Finish {
+                session_id: shell.clone(),
+                kind: WorkerKind::Shell,
+                end: WorkerFinal {
+                    status,
+                    ended_at: now_unix(),
+                    tail: "Last lines".into(),
+                    turn: None,
+                    turn_end: None,
+                    done_since: None,
+                },
+                done_since: None,
+                turn: None,
+                turn_end: None,
+                took: Vec::new(),
+            },
+        };
+        note_worker(&host.shared, &parent_id, shell_note(None)).unwrap();
+        // `shell close` takes it out of the registry before anyone notes its exit.
+        fs::write(host.home.join("sessions.json"), r#"{"sessions": []}"#).unwrap();
+        note_worker(
+            &host.shared,
+            &parent_id,
+            shell_note(Some(WorkerEnd::Exited)),
+        )
+        .unwrap();
+        let found = cards(&host.home, &parent_id);
+        assert_eq!(ended(&found[0]), Some((WorkerEnd::Exited, "Last lines")));
+        // A terminal that never had a card here is still nobody's to record.
+        let stranger = Uuid::new_v4().to_string();
+        let note = WorkerNote::Spawn {
+            session_id: stranger,
+            kind: WorkerKind::Shell,
+            late: false,
+        };
+        assert!(note_worker(&host.shared, &parent_id, note).is_err());
+    }
+
+    #[test]
+    fn a_note_the_log_cannot_take_is_an_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let host = NoticeHost::new();
+        let parent = chat(&host, None);
+        let parent_id = parent.info().id;
+        let shell = Uuid::new_v4().to_string();
+        register_shell(&host.home, &shell, &parent_id);
+        let events = parent.dir.join("events.jsonl");
+        fs::set_permissions(&events, fs::Permissions::from_mode(0o444)).unwrap();
+        let note = WorkerNote::Spawn {
+            session_id: shell,
+            kind: WorkerKind::Shell,
+            late: false,
+        };
+        let result = note_worker(&host.shared, &parent_id, note);
+        fs::set_permissions(&events, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(result.is_err(), "nothing was recorded: {result:?}");
     }
 }

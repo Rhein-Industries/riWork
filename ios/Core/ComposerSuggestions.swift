@@ -379,7 +379,8 @@ public enum ComposerCatalogState: Sendable, Equatable {
 /// The catalogs of the chats a composer opened a list in, by chat id. A catalog is read once when a list first opens in a chat, is fresh
 /// for `timeToLive`, and is read again on the next list after that while the old one is still shown; one read per chat is on the wire at
 /// a time. A read that failed is not tried again for `retryDelay`. The `keptChats` chats read most recently are kept (a listing can be
-/// 5000 entries).
+/// 5000 entries). A chat that went on with another provider (`switch`) has the catalog of the one it left: given the chat's provider, that
+/// catalog is not offered (its commands are the other provider's) and is read again at once.
 public struct ComposerCatalogCache: Sendable {
     public static let timeToLive: Duration = .seconds(30)
     public static let retryDelay: Duration = .seconds(10)
@@ -399,29 +400,29 @@ public struct ComposerCatalogCache: Sendable {
 
     public init() {}
 
-    /// What a composer of `chatID` shows from.
-    public func state(for chatID: String, connected: Bool) -> ComposerCatalogState {
+    /// What a composer of `chatID`, a chat of `provider` now (nil: not known), shows from.
+    public func state(for chatID: String, provider: ChatProvider? = nil, connected: Bool) -> ComposerCatalogState {
         guard let entry = entries[chatID] else { return connected ? .loading : .unavailable }
-        if let catalog = entry.catalog { return .ready(catalog) }
+        if let catalog = entry.catalog, Self.serves(catalog, provider) { return .ready(catalog) }
         if entry.fetching { return .loading }
         return entry.failedAt == nil && connected ? .loading : .unavailable
     }
-    /// The chat's catalog was read less than `timeToLive` before `now`.
-    public func isFresh(_ chatID: String, now: ContinuousClock.Instant) -> Bool {
-        guard let readAt = entries[chatID]?.readAt else { return false }
+    /// The chat's catalog was read less than `timeToLive` before `now`, for the chat's provider (`provider`; nil: not known).
+    public func isFresh(_ chatID: String, provider: ChatProvider? = nil, now: ContinuousClock.Instant) -> Bool {
+        guard let entry = entries[chatID], let readAt = entry.readAt, let catalog = entry.catalog, Self.serves(catalog, provider) else { return false }
         return now - readAt < Self.timeToLive
     }
-    /// Whether a list open in `chatID` at `now` should have the catalog read: not while a read is on its way, while the catalog is
-    /// fresh, or for `retryDelay` after a read failed. Changes nothing, so asking on every key costs nothing.
-    public func wantsFetch(_ chatID: String, now: ContinuousClock.Instant) -> Bool {
+    /// Whether a list open in `chatID`, a chat of `provider` now, at `now` should have the catalog read: not while a read is on its way,
+    /// while the catalog is fresh, or for `retryDelay` after a read failed. Changes nothing, so asking on every key costs nothing.
+    public func wantsFetch(_ chatID: String, provider: ChatProvider? = nil, now: ContinuousClock.Instant) -> Bool {
         guard let entry = entries[chatID] else { return true }
-        if entry.fetching || isFresh(chatID, now: now) { return false }
+        if entry.fetching || isFresh(chatID, provider: provider, now: now) { return false }
         if let failedAt = entry.failedAt, now - failedAt < Self.retryDelay { return false }
         return true
     }
     /// A list opened in `chatID` at `now`: true when a read should start (`wantsFetch`), which is then counted as on its way.
-    public mutating func beginFetch(_ chatID: String, now: ContinuousClock.Instant) -> Bool {
-        guard wantsFetch(chatID, now: now) else { return false }
+    public mutating func beginFetch(_ chatID: String, provider: ChatProvider? = nil, now: ContinuousClock.Instant) -> Bool {
+        guard wantsFetch(chatID, provider: provider, now: now) else { return false }
         var entry = entries[chatID] ?? Entry(usedAt: now)
         entry.usedAt = now; entry.fetching = true
         entries[chatID] = entry
@@ -446,6 +447,8 @@ public struct ComposerCatalogCache: Sendable {
     }
     /// How many chats have an entry.
     public var count: Int { entries.count }
+    /// Whether `catalog` is for a chat of `provider`: its commands are that provider's.
+    private static func serves(_ catalog: ComposerCatalog, _ provider: ChatProvider?) -> Bool { provider.map { $0 == catalog.provider } ?? true }
 }
 
 // MARK: - The list
@@ -514,7 +517,9 @@ public struct ComposerSuggestionList: Sendable, Equatable {
     private var ranked: Ranked?
 
     private struct Mark: Sendable, Equatable { let sigil: ComposerSigil; let start: Int }
-    private struct Ranked: Sendable, Equatable { let sigil: ComposerSigil; let query: String; let catalog: ComposerCatalogState }
+    /// The query as the scalars the matching compares, not as a `String`: canonically equal text (`é` and `e` with a combining acute) is
+    /// another query.
+    private struct Ranked: Sendable, Equatable { let sigil: ComposerSigil; let query: [Unicode.Scalar]; let catalog: ComposerCatalogState }
 
     public init() {}
 
@@ -551,13 +556,15 @@ public struct ComposerSuggestionList: Sendable, Equatable {
         case .ready(let catalog):
             provider = catalog.provider
             filesTruncated = found.sigil == .mention && catalog.filesTruncated
-            let key = Ranked(sigil: found.sigil, query: found.query, catalog: .ready(catalog))
+            let key = Ranked(sigil: found.sigil, query: Array(found.query.unicodeScalars), catalog: .ready(catalog))
             if ranked != key {
                 items = found.sigil == .slash ? catalog.rankCommands(found.query).map { .command($0) } : catalog.rankFiles(found.query).map { .file($0) }
                 ranked = key
             }
         }
-        let sameQuery = previous.map { $0.sigil == found.sigil && $0.start == found.start && $0.query == found.query } ?? false
+        let sameQuery = previous.map {
+            $0.sigil == found.sigil && $0.start == found.start && $0.query.unicodeScalars.elementsEqual(found.query.unicodeScalars)
+        } ?? false
         highlighted = sameQuery ? kept.flatMap { items.firstIndex(of: $0) } ?? 0 : 0
     }
 

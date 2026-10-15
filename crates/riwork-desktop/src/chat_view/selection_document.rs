@@ -51,7 +51,7 @@ pub(super) fn leaves(view: &ChatView, look: Look) -> Vec<SourceLeaf> {
         }
         if let Some(run) = crate::chat::subagents::in_transcript(
             item,
-            &view.model.transcript.items,
+            &view.model.transcript,
             view.info().map(|info| info.provider),
         ) {
             let text = run.result_text();

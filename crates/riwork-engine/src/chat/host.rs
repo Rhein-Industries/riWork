@@ -423,16 +423,16 @@ struct Inner {
     workers: Option<HashMap<String, Vec<Item>>>,
     /// Where a worker chat's ended turns go, to be recorded in its parent.
     worker_notes: Option<mpsc::Sender<ParentNote>>,
-    /// A worker chat's last reply in its current turn, bounded: its card's result.
-    last_reply: Option<String>,
-    /// When a worker chat's current turn began: which of its cards the turn's end is for.
-    turn_started_at: Option<u64>,
+    /// A worker chat's open turns: the messages they took and what they said.
+    worker_turn: workers::TurnRecord,
 }
 
-/// A worker chat's turn ended; its parent's card says how.
-struct ParentNote {
-    parent: String,
-    note: WorkerNote,
+/// Work for the thread that records worker chats' ends in their parents.
+enum ParentNote {
+    /// A worker chat's turn ended; its parent's cards say how.
+    Ended { parent: String, note: WorkerNote },
+    /// At start: ends the last host may have ended before it recorded them.
+    Recover,
 }
 
 impl Inner {
@@ -460,8 +460,7 @@ impl Inner {
             dismissals,
             workers: None,
             worker_notes: None,
-            last_reply: None,
-            turn_started_at: None,
+            worker_turn: Default::default(),
         }
     }
 
@@ -479,43 +478,6 @@ impl Inner {
             self.workers = Some(index);
         }
         Ok(self.workers.get_or_insert_default())
-    }
-
-    /// Remembers what a worker chat's card will show, and says when its turn ended.
-    fn follow_worker_turn(&mut self, event: &ChatEvent) -> Option<ParentNote> {
-        let parent = self.info.parent_id.clone()?;
-        match event {
-            ChatEvent::TurnStarted { .. } => {
-                self.last_reply = None;
-                self.turn_started_at = Some(now_unix());
-            }
-            ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => {
-                if let ItemBody::AgentMessage { text } = &item.body
-                    && item.presentation.phase != Some(super::model::MessagePhase::Commentary)
-                    && !text.trim().is_empty()
-                {
-                    self.last_reply = Some(crate::subshells::bounded_output(text));
-                }
-            }
-            ChatEvent::TurnCompleted { outcome, .. } => {
-                return Some(ParentNote {
-                    parent,
-                    note: WorkerNote::Finish {
-                        session_id: self.info.id.clone(),
-                        kind: WorkerKind::Chat,
-                        end: workers::chat_end(
-                            outcome,
-                            self.last_reply.take().as_deref(),
-                            now_unix(),
-                        ),
-                        done_since: None,
-                        started_at: self.turn_started_at.take(),
-                    },
-                });
-            }
-            _ => {}
-        }
-        None
     }
 
     fn account_scope(&self) -> Option<&str> {
@@ -602,7 +564,6 @@ impl Inner {
             );
         }
         self.open.apply(&event);
-        let parent_note = self.follow_worker_turn(&event);
         // Boundaries are worth surviving a power loss; the stream in between is
         // written at once but synced with the next boundary.
         let sync = !matches!(
@@ -644,8 +605,15 @@ impl Inner {
                 None => markers.push(item.clone()),
             }
         }
-        if let (Some(note), Some(notes)) = (parent_note, &self.worker_notes) {
-            let _ = notes.send(note);
+        if let (Some(parent), Some(notes)) = (&self.info.parent_id, &self.worker_notes)
+            && let Some(note) =
+                self.worker_turn
+                    .follow(&self.info.id, envelope.seq, &envelope.event, now_unix())
+        {
+            let _ = notes.send(ParentNote::Ended {
+                parent: parent.clone(),
+                note,
+            });
         }
         let line: Arc<str> = Arc::from(line);
         self.subscribers
@@ -1425,37 +1393,67 @@ fn list(shared: &Shared) -> Vec<ChatInfo> {
 
 /// Records `note` about one of `chat_id`'s workers in its log. The worker must be the
 /// chat's own (its `parent_id`), in the chat's project; the host describes it from the
-/// inventory, not from the note. The chat's provider is never started for it.
+/// inventory, not from the note. A worker that is gone (a closed terminal, a deleted chat)
+/// can still end: its card here says whose it was. The chat's provider is never started.
 fn note_worker(shared: &Shared, chat_id: &str, note: WorkerNote) -> Result<(), String> {
     let chat = shared.find(chat_id)?;
     let info = chat.info();
     let now = now_unix();
     let session_id = note.session_id();
+    let ending = matches!(note, WorkerNote::Finish { .. });
     let fresh = match note.kind() {
-        WorkerKind::Shell => {
-            let shell = crate::sessions::registered_shell(&shared.home, session_id)?;
-            if shell.parent_id.as_deref() != Some(chat_id) || shell.project_id != info.project_id {
-                return Err(format!(
-                    "terminal {session_id} is not a worker of chat {chat_id}"
-                ));
+        WorkerKind::Shell => match crate::sessions::registered_shell(&shared.home, session_id) {
+            Ok(shell) => {
+                if shell.parent_id.as_deref() != Some(chat_id)
+                    || shell.project_id != info.project_id
+                {
+                    return Err(format!(
+                        "terminal {session_id} is not a worker of chat {chat_id}"
+                    ));
+                }
+                let tasks = crate::store::Store::open(&shared.home)
+                    .and_then(|store| store.snapshot())
+                    .map(|state| state.tasks)
+                    .unwrap_or_default();
+                Some(workers::describe_shell(&shell, &tasks, now))
             }
-            let tasks = crate::store::Store::open(&shared.home)
-                .and_then(|store| store.snapshot())
-                .map(|state| state.tasks)
-                .unwrap_or_default();
-            workers::describe_shell(&shell, &tasks, now)
-        }
-        WorkerKind::Chat => {
-            let child = shared.find(session_id)?.info();
-            if child.parent_id.as_deref() != Some(chat_id) {
-                return Err(format!(
-                    "chat {session_id} is not a worker of chat {chat_id}"
-                ));
+            Err(_) if ending => None,
+            Err(error) => return Err(error),
+        },
+        WorkerKind::Chat => match shared.find(session_id) {
+            Ok(child) => {
+                let (child, next) = {
+                    let inner = lock(&child.inner);
+                    (inner.info.clone(), inner.next_seq)
+                };
+                if child.parent_id.as_deref() != Some(chat_id) {
+                    return Err(format!(
+                        "chat {session_id} is not a worker of chat {chat_id}"
+                    ));
+                }
+                Some(workers::WorkerRef {
+                    after: Some(next),
+                    ..workers::describe_chat(&child, now)
+                })
             }
-            workers::describe_chat(&child, now)
-        }
+            Err(_) if ending => None,
+            Err(error) => return Err(error),
+        },
         WorkerKind::Unknown => return Err("unknown worker kind".into()),
     };
+    record_worker(&chat, chat_id, &note, fresh, now)
+}
+
+/// Writes what `note` changes on the cards of one of `chat_id`'s workers. With no fresh
+/// description (the worker is gone), only a worker with a card here has anything to end.
+/// An error says nothing was recorded that should have been.
+fn record_worker(
+    chat: &Chat,
+    chat_id: &str,
+    note: &WorkerNote,
+    fresh: Option<workers::WorkerRef>,
+    now: u64,
+) -> Result<(), String> {
     let mut inner = lock(&chat.inner);
     if inner.deleted || inner.broken {
         return Err(format!("chat {chat_id} cannot be written"));
@@ -1463,14 +1461,24 @@ fn note_worker(shared: &Shared, chat_id: &str, note: WorkerNote) -> Result<(), S
     let turn = inner.open.turn.clone();
     let markers = inner
         .worker_markers()?
-        .get(session_id)
+        .get(note.session_id())
         .cloned()
         .unwrap_or_default();
-    match workers::apply(&markers, &note, fresh, turn.as_deref(), now) {
-        workers::Upsert::Append(item) | workers::Upsert::Replace(item) => {
-            inner.append(ChatEvent::ItemCompleted { item })
+    let Some(fresh) = fresh.or_else(|| markers.last().and_then(workers::of).cloned()) else {
+        return Ok(());
+    };
+    let items = match workers::apply(&markers, note, fresh, turn.as_deref(), now) {
+        workers::Upsert::Append(item) => vec![item],
+        workers::Upsert::Replace(items) => items,
+        workers::Upsert::Nothing => Vec::new(),
+    };
+    for item in items {
+        inner.append(ChatEvent::ItemCompleted { item });
+        if inner.broken {
+            return Err(format!(
+                "chat {chat_id}: the worker's card could not be written"
+            ));
         }
-        workers::Upsert::Nothing => {}
     }
     Ok(())
 }
@@ -1478,15 +1486,99 @@ fn note_worker(shared: &Shared, chat_id: &str, note: WorkerNote) -> Result<(), S
 /// Records the ended turns of worker chats in their parents, away from the lock of the
 /// worker chat that ended one.
 fn deliver_worker_notes(shared: Weak<Shared>, receiver: Receiver<ParentNote>) {
-    for ParentNote { parent, note } in receiver {
+    for note in receiver {
         let Some(shared) = shared.upgrade() else {
             return;
         };
-        // A parent that is a terminal, or gone, has no card to complete.
-        if shared.find(&parent).is_ok()
-            && let Err(error) = note_worker(&shared, &parent, note)
-        {
-            eprintln!("riwork chat: worker card in {parent}: {error}");
+        deliver_worker_note(&shared, note);
+    }
+}
+
+fn deliver_worker_note(shared: &Shared, note: ParentNote) {
+    match note {
+        ParentNote::Recover => recover_worker_ends(shared),
+        ParentNote::Ended { parent, note } => {
+            // A parent that is a terminal, or gone, has no card to complete. The worker
+            // chat may be gone by now: its card says it was the parent's.
+            if let Ok(chat) = shared.find(&parent)
+                && let Err(error) = record_worker(&chat, &parent, &note, None, now_unix())
+            {
+                eprintln!("riwork chat: worker card in {parent}: {error}");
+            }
+        }
+    }
+}
+
+/// The ends of worker chats' turns are queued in memory, so a host that ended could leave
+/// one unrecorded. Each worker chat whose latest card is still open has its log's turn
+/// ends recorded again; what its cards already have is nothing (`workers::apply`).
+fn recover_worker_ends(shared: &Shared) {
+    for child in shared.all() {
+        let info = child.info();
+        let Some(parent_id) = info.parent_id.as_deref() else {
+            continue;
+        };
+        let Ok(parent) = shared.find(parent_id) else {
+            continue;
+        };
+        // Only a worker whose latest card is open can be missing an end, and only in what
+        // its log took since its oldest open card was written (a card from before `after`
+        // was recorded reads from the start).
+        let from = {
+            let mut inner = lock(&parent.inner);
+            let Some(cards) = inner
+                .worker_markers()
+                .ok()
+                .and_then(|index| index.get(&info.id).cloned())
+            else {
+                continue;
+            };
+            if !cards
+                .last()
+                .is_some_and(|card| workers::of(card).is_some_and(|worker| worker.end.is_none()))
+            {
+                continue;
+            }
+            cards
+                .iter()
+                .filter_map(workers::of)
+                .filter(|worker| worker.end.is_none())
+                .map(|worker| worker.after.unwrap_or(1))
+                .min()
+                .unwrap_or(1)
+                .max(1)
+        };
+        let last = lock(&child.inner).next_seq.saturating_sub(1);
+        if from > last {
+            continue;
+        }
+        let mut lines = Vec::new();
+        let envelopes = log::replay(&child.dir, from - 1, last, &mut lines)
+            .map_err(|error| error.to_string())
+            .and_then(|()| {
+                lines
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                    .map(|line| {
+                        serde_json::from_slice::<Envelope>(line).map_err(|error| error.to_string())
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            });
+        let envelopes = match envelopes {
+            Ok(envelopes) => envelopes,
+            Err(error) => {
+                eprintln!("riwork chat: cannot read the log of {}: {error}", info.id);
+                continue;
+            }
+        };
+        let mut record = workers::TurnRecord::default();
+        let now = now_unix();
+        for envelope in &envelopes {
+            if let Some(note) = record.follow(&info.id, envelope.seq, &envelope.event, now)
+                && let Err(error) = record_worker(&parent, parent_id, &note, None, now)
+            {
+                eprintln!("riwork chat: worker card in {parent_id}: {error}");
+            }
         }
     }
 }
@@ -1892,6 +1984,12 @@ fn load_chats(
                 Ok(envelopes) => {
                     for envelope in &envelopes {
                         inner.open.apply(&envelope.event);
+                        // What the open turn took and said, for its card in the parent.
+                        if inner.info.parent_id.is_some() {
+                            inner
+                                .worker_turn
+                                .follow(&name, envelope.seq, &envelope.event, 0);
+                        }
                     }
                 }
                 Err(error) => eprintln!("riwork chat: cannot read the log of {name}: {error}"),
@@ -1921,6 +2019,8 @@ fn load_chats(
             }),
         );
     }
+    // Before anything new: what the last host may not have recorded in parents.
+    let _ = worker_notes.send(ParentNote::Recover);
     chats
 }
 

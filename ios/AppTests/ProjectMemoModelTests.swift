@@ -10,6 +10,8 @@ actor MemoTransport: RemoteTransport {
     var saveMode = SaveMode.ok
     /// Saves wait while this is on, as a slow link holds them.
     var gated = false
+    /// Reads wait while this is on.
+    var readsGated = false
     var memos: [String: (text: String, at: UInt64)] = [:]
     var methods: [String] = []
     var saved: [String] = []
@@ -19,6 +21,7 @@ actor MemoTransport: RemoteTransport {
     func setAnnounces(_ on: Bool) { announces = on }
     func setSaveMode(_ mode: SaveMode) { saveMode = mode }
     func setGated(_ on: Bool) { gated = on }
+    func setReadsGated(_ on: Bool) { readsGated = on }
     func setMemo(_ project: String, _ text: String) { clock += 1; memos[project] = (text, clock) }
     func memo(_ project: String) -> String? { memos[project]?.text }
     func count(_ method: String) -> Int { methods.filter { $0 == method }.count }
@@ -44,6 +47,7 @@ actor MemoTransport: RemoteTransport {
         case "appearance.get": throw RemoteError.rpc(code: "not_found", message: "appearance not published")
         case "project.memo.get":
             guard announces else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            while readsGated { try await Task.sleep(for: .milliseconds(3)) }
             return reply(params["project_id"]?.string ?? "")
         case "project.memo.set":
             while gated { try await Task.sleep(for: .milliseconds(3)) }
@@ -272,6 +276,77 @@ actor MemoTransport: RemoteTransport {
         await settle { model.memoEditor?.phase == .saved }
         let mine = await rig.transport.memo(project)
         XCTAssertEqual(mine, "phone edit")
+        XCTAssertNil(kept(model))
+        await model.disconnect()
+    }
+
+    func testGoingBackDuringASaveAndClosingLeavesTheTextGoneBackTo() async throws {
+        let rig = try await connected { await $0.setMemo("11111111-1111-4111-8111-111111111111", "A") }
+        let model = rig.model
+        model.openMemoEditor(projectID: project, name: "Fixture")
+        await settle { model.memoEditor?.phase == .saved }
+        await rig.transport.setGated(true)
+        model.editMemo("B")
+        await settle { model.memoEditor?.phase == .saving }
+        model.editMemo("A")
+        model.closeMemoEditor()
+        XCTAssertEqual(kept(model), "A", "kept until the Mac has it again")
+        await rig.transport.setGated(false)
+        while await rig.transport.saved.isEmpty { try await Task.sleep(for: .milliseconds(3)) }
+        await settle { kept(model) == nil }
+        let onMac = await rig.transport.memo(project)
+        XCTAssertEqual(onMac, "A")
+        let saves = await rig.transport.saved
+        XCTAssertEqual(saves, ["B", "A"])
+        await model.disconnect()
+    }
+
+    func testAConflictLeftOpenIsNotSavedByClosingOrReconnecting() async throws {
+        let rig = try await connected { await $0.setMemo("11111111-1111-4111-8111-111111111111", "v1") }
+        let model = rig.model
+        model.openMemoEditor(projectID: project, name: "Fixture")
+        await settle { model.memoEditor?.phase == .saved }
+        await model.disconnect()
+        model.editMemo("phone edit")
+        await settle { model.memoEditor?.phase == .queued }
+        model.closeMemoEditor()
+        await rig.transport.setMemo(project, "Mac edit")
+        await model.connect()
+        model.openMemoEditor(projectID: project, name: "Fixture")
+        await settle { model.memoEditor?.phase == .conflict }
+        // Closed without a choice, then a reconnect: still nothing sent over the Mac's memo.
+        model.closeMemoEditor()
+        await model.disconnect()
+        await model.connect()
+        try? await Task.sleep(for: .milliseconds(100))
+        let untouched = await rig.transport.memo(project)
+        XCTAssertEqual(untouched, "Mac edit")
+        XCTAssertEqual(kept(model), "phone edit")
+        model.openMemoEditor(projectID: project, name: "Fixture")
+        await settle { model.memoEditor?.phase == .conflict }
+        await model.disconnect()
+    }
+
+    func testASaveAnsweredAfterItsEditorReopenedIsNoConflict() async throws {
+        let rig = try await connected { await $0.setMemo("11111111-1111-4111-8111-111111111111", "v1") }
+        let model = rig.model
+        model.openMemoEditor(projectID: project, name: "Fixture")
+        await settle { model.memoEditor?.phase == .saved }
+        await rig.transport.setGated(true)
+        model.editMemo("T1")
+        await settle { model.memoEditor?.phase == .saving }
+        model.editMemo("T1 and more")
+        model.closeMemoEditor()
+        // Opened again; its read is slow, and the earlier save lands and answers first.
+        await rig.transport.setReadsGated(true)
+        model.openMemoEditor(projectID: project, name: "Fixture")
+        await rig.transport.setGated(false)
+        while await rig.transport.memo(project) != "T1" { try await Task.sleep(for: .milliseconds(3)) }
+        try await Task.sleep(for: .milliseconds(50))
+        await rig.transport.setReadsGated(false)
+        await settle { model.memoEditor?.phase == .saved }
+        let onMac = await rig.transport.memo(project)
+        XCTAssertEqual(onMac, "T1 and more", "the text typed after it is saved over it")
         XCTAssertNil(kept(model))
         await model.disconnect()
     }

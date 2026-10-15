@@ -57,6 +57,9 @@ impl WorkerState {
             if now.saturating_sub(shell.created_at_unix) >= workers::LATE_AFTER
                 && self.said.insert(Said::Late(shell.id.clone()))
             {
+                // A done said before there was a card ended nothing: said again for this one.
+                self.said
+                    .retain(|said| !matches!(said, Said::Done(id, _) if id == &shell.id));
                 notes.push((
                     parent.clone(),
                     WorkerNote::Spawn {
@@ -76,7 +79,20 @@ impl WorkerState {
             }
         }
         if fresh {
-            for ((id, since), parent) in std::mem::take(&mut self.awaiting) {
+            // Only a terminal this sample read has its last lines from after it was done;
+            // one that could not be read waits for a later check. One that is gone is
+            // recorded as exited, below, with the last lines that could be read.
+            self.awaiting.retain(|(id, _), _| {
+                shells
+                    .iter()
+                    .any(|shell| &shell.id == id && shell.alive && shell.is_worker())
+            });
+            let (read, unread): (BTreeMap<_, _>, BTreeMap<_, _>) =
+                std::mem::take(&mut self.awaiting)
+                    .into_iter()
+                    .partition(|((id, _), _)| matches!(self.outputs.get(id), Some(Ok(_))));
+            self.awaiting = unread;
+            for ((id, since), parent) in read {
                 if self.said.insert(Said::Done(id.clone(), since)) {
                     notes.push((
                         parent,
@@ -87,9 +103,14 @@ impl WorkerState {
                                 status: WorkerEnd::Done,
                                 ended_at: since,
                                 tail: self.last_output.get(&id).cloned().unwrap_or_default(),
+                                turn: None,
+                                turn_end: None,
+                                done_since: None,
                             },
                             done_since: Some(since),
-                            started_at: None,
+                            turn: None,
+                            turn_end: None,
+                            took: Vec::new(),
                         },
                         Said::Done(id, since),
                     ));
@@ -116,9 +137,14 @@ impl WorkerState {
                             status: WorkerEnd::Exited,
                             ended_at: now,
                             tail: self.last_output.get(&id).cloned().unwrap_or_default(),
+                            turn: None,
+                            turn_end: None,
+                            done_since: None,
                         },
                         done_since: None,
-                        started_at: None,
+                        turn: None,
+                        turn_end: None,
+                        took: Vec::new(),
                     },
                     Said::Exited(id),
                 ));
@@ -127,16 +153,25 @@ impl WorkerState {
         notes
     }
 
-    /// After a batch went out: what found no host is said again later; a recorded exit
-    /// needs no more watching.
+    /// After a batch went out: what did not reach a host is said again at a later check,
+    /// which goes on while there is any; a recorded exit needs no more watching.
     fn settle(&mut self, sent: &[Said], undelivered: &[Said]) {
         for said in sent {
             if undelivered.contains(said) {
                 self.said.remove(said);
-            } else if let Said::Exited(id) = said {
-                self.seen.remove(id);
+                self.undelivered.insert(said.clone());
+            } else {
+                self.undelivered.remove(said);
+                if let Said::Exited(id) = said {
+                    self.seen.remove(id);
+                }
             }
         }
+    }
+
+    /// Whether a note is still to be said again: checks go on for it.
+    fn retrying(&self) -> bool {
+        !self.undelivered.is_empty()
     }
 }
 
@@ -156,6 +191,8 @@ pub(crate) struct WorkerState {
     /// Dones waiting for the next sample of their terminal, so their record has its last
     /// lines: the worker and when it became done, with its parent chat.
     awaiting: BTreeMap<(String, u64), String>,
+    /// Notes that did not reach a host, until one says them: checks go on meanwhile.
+    undelivered: HashSet<Said>,
     watcher: Option<notify::RecommendedWatcher>,
     watch_error: Option<String>,
     fingerprint: Vec<Option<(std::time::SystemTime, u64)>>,
@@ -174,6 +211,7 @@ impl Default for WorkerState {
             seen: BTreeMap::new(),
             said: HashSet::new(),
             awaiting: BTreeMap::new(),
+            undelivered: HashSet::new(),
             watcher: None,
             watch_error: None,
             fingerprint: Vec::new(),
@@ -321,8 +359,10 @@ impl Workspace {
             self.subshells.poll = Default::default();
             self.subshells.outputs.clear();
             self.subshells.last_output.clear();
-            // Another project's workers are not gone because this window looks elsewhere.
+            // Another project's workers are not gone because this window looks elsewhere,
+            // and its dones wait until it is looked at again.
             self.subshells.seen.clear();
+            self.subshells.awaiting.clear();
         }
         let paused = self.is_remote() || !window.is_visible() || cx.active_window().is_none();
         if self.subshells.paused && !paused
@@ -333,13 +373,18 @@ impl Workspace {
         }
         self.subshells.paused = paused;
         self.subshells.generation = self.session_refresh_generation;
-        let live = self.worker_sample_live();
+        let live = self.worker_checks_wanted();
         let sample =
             self.subshells
                 .poll
                 .begin(self.subshells.clock.elapsed().as_secs(), live, paused);
         self.publish_workers(cx);
         sample
+    }
+
+    /// Live shells to watch, or notes to say again.
+    fn worker_checks_wanted(&self) -> bool {
+        self.worker_sample_live() || self.subshells.retrying()
     }
 
     fn worker_sample_live(&self) -> bool {
@@ -374,7 +419,7 @@ impl Workspace {
             self.subshells.clock.elapsed().as_secs(),
             changed || output_changed,
             succeeded,
-            self.worker_sample_live(),
+            self.worker_checks_wanted(),
         );
         self.publish_workers(cx);
         if succeeded {
@@ -609,21 +654,20 @@ fn workers_of_chat(
 
 /// Sends each note to the host of the parent chat. A parent that is not a chat has no
 /// timeline; a host that refuses a note recorded nothing and is not asked again. Returns
-/// the notes that found no host, to be said again on a later check.
+/// the notes that found no host or whose exchange broke, to be said again on a later
+/// check: the host records each end once.
 fn deliver_notes(home: &Path, notes: Vec<(String, WorkerNote, Said)>) -> Vec<Said> {
+    use crate::chat::client::{CallError, Client};
     let socket = crate::chat::client::socket_path(home);
     notes
         .into_iter()
         .filter(|(parent, _, _)| workers::parent_is_chat(home, parent))
-        .filter_map(
-            |(parent, note, key)| match crate::chat::client::Client::connect(&socket) {
-                Ok(mut client) => {
-                    let _ = client.note_worker(&parent, note);
-                    None
-                }
-                Err(_) => Some(key),
-            },
-        )
+        .filter_map(|(parent, note, key)| {
+            match Client::connect(&socket).map(|mut client| client.note_worker(&parent, note)) {
+                Ok(Ok(()) | Err(CallError::Refused(_))) => None,
+                Ok(Err(CallError::Broken(_))) | Err(_) => Some(key),
+            }
+        })
         .collect()
 }
 
@@ -687,6 +731,7 @@ mod tests {
                 .is_empty()
         );
         assert!(state.poll.has_request(), "a sample is asked for");
+        state.outputs.insert("w".into(), Ok("Final line".into()));
         state.last_output.insert("w".into(), "Final line".into());
         let notes = state.transitions(&shells, &activity, "p", 1012, true);
         assert_eq!(said(&notes), [Said::Done("w".into(), 1010)]);
@@ -798,6 +843,181 @@ mod tests {
         );
         assert_eq!(undelivered, [Said::Late("a".into())]);
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_done_whose_terminal_could_not_be_read_waits_for_its_last_lines() {
+        let mut state = WorkerState::default();
+        let shells = [worker_shell("w", Some("chat"), true, 1000)];
+        let activity = BTreeMap::from([("w".to_owned(), done_at(1010))]);
+        state.last_output.insert("w".into(), "Still working".into());
+        assert!(
+            state
+                .transitions(&shells, &activity, "p", 1011, false)
+                .is_empty()
+        );
+        // The sample went through, but this terminal could not be read.
+        state
+            .outputs
+            .insert("w".into(), Err("capture failed".into()));
+        assert!(
+            state
+                .transitions(&shells, &activity, "p", 1012, true)
+                .is_empty(),
+            "not recorded with lines from before it was done"
+        );
+        state.outputs.insert("w".into(), Ok("Final line".into()));
+        state.last_output.insert("w".into(), "Final line".into());
+        let notes = state.transitions(&shells, &activity, "p", 1013, true);
+        assert!(matches!(
+            &notes[..],
+            [(_, WorkerNote::Finish { end, .. }, _)] if end.tail == "Final line"
+        ));
+    }
+
+    #[test]
+    fn another_projects_sample_says_nothing_about_this_ones_dones() {
+        let mut state = WorkerState::default();
+        let shells = [worker_shell("w", Some("chat"), true, 1000)];
+        let activity = BTreeMap::from([("w".to_owned(), done_at(1010))]);
+        assert!(
+            state
+                .transitions(&shells, &activity, "p", 1011, false)
+                .is_empty()
+        );
+        // The window turns to another project before this one's terminals are read.
+        state.last_output.clear();
+        state.outputs.clear();
+        state.seen.clear();
+        assert!(
+            state
+                .transitions(&[], &activity, "q", 1012, true)
+                .is_empty(),
+            "nothing is recorded without its last lines"
+        );
+    }
+
+    #[test]
+    fn a_done_said_before_its_late_card_is_said_again_after_it() {
+        let mut state = WorkerState::default();
+        let shells = [worker_shell("w", Some("chat"), true, 1000)];
+        let activity = BTreeMap::from([("w".to_owned(), done_at(1005))]);
+        state.last_output.insert("w".into(), "Done early".into());
+        state.outputs.insert("w".into(), Ok("Done early".into()));
+        // Done before anyone wrote its card: the host had no card to end.
+        let notes = state.transitions(&shells, &activity, "p", 1006, true);
+        assert_eq!(said(&notes), [Said::Done("w".into(), 1005)]);
+        let notes = state.transitions(&shells, &activity, "p", 1031, true);
+        assert_eq!(
+            said(&notes),
+            [Said::Late("w".into()), Said::Done("w".into(), 1005)],
+            "the late card, then the done for it"
+        );
+    }
+
+    /// A host that takes one request and answers it as `answer` says (nothing: it hangs up).
+    fn host_answering(home: &Path, answer: Option<&'static str>) -> std::thread::JoinHandle<()> {
+        use std::io::{BufRead, Write};
+        let socket = crate::chat::client::socket_path(home);
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if let Some(error) = answer {
+                let id = serde_json::from_str::<serde_json::Value>(&line).unwrap()["id"].clone();
+                let mut stream = stream;
+                writeln!(
+                    stream,
+                    "{}",
+                    serde_json::json!({"id": id, "ok": false, "error": error})
+                )
+                .unwrap();
+            }
+        })
+    }
+
+    #[test]
+    fn a_note_whose_exchange_broke_is_said_again_and_a_refused_one_is_not() {
+        let home =
+            std::env::temp_dir().join(format!("rw-{}", &uuid::Uuid::new_v4().to_string()[..8]));
+        let chat = uuid::Uuid::new_v4().to_string();
+        let dir = crate::chat::log::chat_dir(&home, &chat).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("info.json"), "{}").unwrap();
+        let note = || {
+            vec![(
+                chat.clone(),
+                WorkerNote::Spawn {
+                    session_id: "w".into(),
+                    kind: WorkerKind::Shell,
+                    late: true,
+                },
+                Said::Late("w".into()),
+            )]
+        };
+        let host = host_answering(&home, None);
+        assert_eq!(deliver_notes(&home, note()), [Said::Late("w".into())]);
+        host.join().unwrap();
+        std::fs::remove_file(crate::chat::client::socket_path(&home)).unwrap();
+        let host = host_answering(&home, Some("worker w has no card in chat"));
+        assert!(
+            deliver_notes(&home, note()).is_empty(),
+            "a refusal is final"
+        );
+        host.join().unwrap();
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_note_that_found_no_host_keeps_checks_going_with_no_live_terminal() {
+        let mut state = WorkerState::default();
+        assert!(state.poll.begin(0, false, false));
+        state.poll.finish(0, false, true, false);
+        let sent = [Said::Exited("w".into())];
+        state.settle(&sent, &sent);
+        assert!(
+            state.poll.begin(60, state.retrying(), false),
+            "a later check says it again"
+        );
+    }
+
+    #[test]
+    fn a_done_whose_terminal_went_before_it_was_read_is_its_exit_and_asks_for_nothing_more() {
+        let mut state = WorkerState::default();
+        let shells = [worker_shell("w", Some("chat"), true, 1000)];
+        let activity = BTreeMap::from([("w".to_owned(), done_at(1010))]);
+        state.transitions(&shells, &activity, "p", 1001, true);
+        state.last_output.insert("w".into(), "Last lines".into());
+        assert!(
+            state
+                .transitions(&shells, &activity, "p", 1011, false)
+                .is_empty()
+        );
+        assert!(state.poll.begin(0, true, false));
+        state.poll.finish(0, false, true, true);
+        // `riwork shell close` before its terminal was read again.
+        let notes = state.transitions(&[], &activity, "p", 1012, true);
+        assert_eq!(said(&notes), [Said::Exited("w".into())]);
+        assert!(state.awaiting.is_empty());
+        assert!(
+            !state.poll.has_request(),
+            "no check is asked for at once, again and again"
+        );
+    }
+
+    #[test]
+    fn a_note_that_found_no_host_is_retried_whatever_a_later_batch_did() {
+        let mut state = WorkerState::default();
+        let exited = [Said::Exited("w".into())];
+        let late = [Said::Late("v".into())];
+        state.settle(&exited, &exited);
+        state.settle(&late, &[]);
+        assert!(state.retrying(), "the exit is still to be said");
+        state.settle(&exited, &[]);
+        assert!(!state.retrying());
     }
 
     #[test]

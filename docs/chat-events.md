@@ -120,14 +120,34 @@ ordinary item (`crates/riwork-engine/src/chat/workers.rs`):
   chat is live; an earlier one without `final` reads "Continued below".
 - **Final.** The same item id is written again with `final` (`status`
   `done|exited|failed|stopped`, `ended_at`, and `tail`, the last six lines and at most
-  2 KiB). A finish completes the latest open card it does not predate: a terminal's
-  done at or before a card was written (`done_since <= noted_at`), or a worker chat's
-  turn begun before it (`started_at < noted_at`), belongs to an earlier card. An exit
-  ends the latest card if it is still open. Worker chats are finished by their host when
-  their turn ends, with the bounded last reply as `tail` (`riwork chat send` notes the
-  card before it delivers, so the turn it starts is never older than its card);
-  terminals by the desktop app when its inventory sees them done (after the next sample
-  of their screen) or exited.
+  2 KiB), plus what ended it: a worker chat's `turn` and `turn_end` (the `seq` of that
+  turn's end in the worker's log, since a provider may use a turn id again), or a
+  terminal's `done_since`. An end is recorded once: said again (a restart, a second
+  window, a retry after a broken exchange) it changes only the cards it has not ended
+  yet.
+  - *Worker chats* are bound to their own turns, not to times. A chat card records
+    `after`, the worker chat's next log `seq` when the card was written (`riwork chat
+    send` notes the card before it delivers). When one of the worker's turns ends, its
+    host records it with the messages the turn took (their `seq` and first line): each
+    message ends the latest open card written before it with the same `assignment`, so
+    messages steered into one running turn all end with it, and a follow-up sent while
+    an earlier turn runs waits for its own. A card that was given nothing takes the
+    first message no card claims while it is the worker's latest card. A turn that took
+    none of its cards' messages (the person typed into the worker) ends nothing. The
+    tail is the turn's last reply, streamed text included.
+  - *Terminals* are finished by the desktop app when its inventory sees them done (after
+    a sample that read that terminal's screen) or exited. A done ends the latest open
+    card it follows: written before the done second (`noted_at < done_since`), or else
+    in that same second; a `late` card follows any done. An exit ends the latest card
+    if it is still open, also after `riwork shell close` took the terminal out of the
+    registry: the card is what says whose it was.
+  - Worker chats' ends are queued in memory on the way to the parent. At each start the
+    host records again the ended turns of every worker chat whose latest card is still
+    open, from that chat's log, so an end the last host did not deliver is not lost;
+    one already recorded is nothing. Only what the worker's log took since its oldest open
+    card is read. Such an end carries the time it was recorded, not the time the turn
+    ended (events carry no time). A worker chat deleted before its end was delivered still
+    ends its card.
 - **Late.** The desktop app notes a live worker older than 30 s once per run with
   `late: true`; the host writes nothing if the worker already has a card, and otherwise
   appends one at the end ("Started earlier · first seen here").
@@ -138,7 +158,9 @@ ordinary item (`crates/riwork-engine/src/chat/workers.rs`):
 - **Writers.** Only the host, on a `note_worker` request (`chat::wire::Request::NoteWorker`)
   that it checks against the inventory: the worker's `parent_id` must be the chat, in the
   chat's project. A note never starts the parent's provider. A host from before it
-  refuses the request as unreadable, which every caller treats as nothing recorded.
+  refuses the request as unreadable, which every caller treats as nothing recorded; a
+  note the log could not take is an error too. The desktop says a note again only when
+  the exchange broke or found no host, never after a refusal.
 - **Session history.** A marker is not provider history: it never makes a new provider
   look resumable (`log::is_session_history`).
 - **Readers from before.** The body is a plain `tool_call`, so an older desktop or phone

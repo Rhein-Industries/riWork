@@ -1407,6 +1407,7 @@ mod rate_snapshot_tests {
                 worktree_id: None,
                 assignment: None,
                 noted_at: 1,
+                after: None,
                 late: false,
                 follow_up: false,
                 end: None,
@@ -1454,12 +1455,16 @@ mod rate_snapshot_tests {
             worktree_id: None,
             assignment: None,
             noted_at: 1,
+            after: None,
             late: false,
             follow_up: false,
             end: end.then(|| super::super::workers::WorkerFinal {
                 status: super::super::workers::WorkerEnd::Done,
                 ended_at: 2,
                 tail: String::new(),
+                turn: None,
+                turn_end: None,
+                done_since: None,
             }),
         };
         let lines = [

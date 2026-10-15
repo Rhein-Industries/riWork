@@ -96,6 +96,8 @@ fn stub_cli(dir: &Path) -> PathBuf {
              case \"$1 $2 $3\" in\n\
              'capabilities --json ')\n\
                if [ -e \"$d/capabilities.out\" ]; then cat \"$d/capabilities.out\"; else printf '{{\"v\":1,\"project_memo\":true}}'; fi;;\n\
+             'project show '*)\n\
+               if [ -e \"$d/project.json\" ]; then cat \"$d/project.json\"; else printf '{{\"id\":\"%s\"}}' \"$3\"; fi;;\n\
              'project memo show') cat \"$d/show.json\";;\n\
              'project memo set') cat > \"$d/stdin.log\"; cat \"$d/set.json\";;\n\
              esac\n",
@@ -304,6 +306,62 @@ async fn set_sends_the_text_on_stdin_and_never_in_argv() {
 }
 
 #[tokio::test]
+async fn a_save_writes_only_a_project_with_exactly_that_id() {
+    let f = Fixture::new();
+    let project = new_uuid();
+    // The CLI also matches names: an id the desktop does not have, which another project is
+    // named, resolves to that other project.
+    let other = new_uuid();
+    f.set(
+        "project.json",
+        &json!({"id": other, "name": project}).to_string(),
+    );
+    f.set(
+        "set.json",
+        &json!({"v":1,"project_id":other,"text":"x","updated_at":7}).to_string(),
+    );
+    let response = f
+        .call(
+            "project.memo.set",
+            json!({"project_id": project, "text": "x"}),
+        )
+        .await;
+    let saves = |f: &Fixture| {
+        f.calls()
+            .iter()
+            .filter(|argv| argv.starts_with(&["project".into(), "memo".into(), "set".into()]))
+            .count()
+    };
+    assert_eq!(saves(&f), 0, "{:?}", f.calls());
+    assert_eq!(code(&response), "not_found", "{response}");
+    assert!(
+        f.calls().contains(&vec![
+            "project".into(),
+            "show".into(),
+            project.clone(),
+            "--json".into()
+        ]),
+        "{:?}",
+        f.calls()
+    );
+
+    // The project the phone named is the one saved.
+    f.set("project.json", &json!({"id": project}).to_string());
+    f.set(
+        "set.json",
+        &json!({"v":1,"project_id":project,"text":"x","updated_at":7}).to_string(),
+    );
+    let response = f
+        .call(
+            "project.memo.set",
+            json!({"project_id": project, "text": "x"}),
+        )
+        .await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(saves(&f), 1);
+}
+
+#[tokio::test]
 async fn a_revoked_device_saves_nothing() {
     let f = Fixture::new();
     let project = new_uuid();
@@ -421,4 +479,25 @@ async fn the_real_cli_round_trips_a_memo_through_the_rpc() {
 
     let missing = call("project.memo.get", json!({"project_id": new_uuid()})).await;
     assert_eq!(code(&missing), "not_found", "{missing}");
+    let missing = call(
+        "project.memo.set",
+        json!({"project_id": new_uuid(), "text": "x"}),
+    )
+    .await;
+    assert_eq!(code(&missing), "not_found", "{missing}");
+
+    // An id the desktop does not have, which another project is named: that project's memo is
+    // left alone.
+    let absent = new_uuid();
+    store.rename_project(&other.id, &absent).unwrap();
+    let refused = call(
+        "project.memo.set",
+        json!({"project_id": absent, "text": "not for Other"}),
+    )
+    .await;
+    assert_eq!(
+        store.snapshot().unwrap().project_memo(&other.id).text,
+        "other"
+    );
+    assert_eq!(code(&refused), "not_found", "{refused}");
 }

@@ -536,7 +536,9 @@ fn a_project_delegation_policy_is_its_own_field_by_field_and_older_projects_choo
     assert_eq!(changed.delegation_policy.spread_work, Some(false));
     store
         .set_project_delegation_policy(&id, |policy| {
-            policy.set_route(Work::Workhorse, Some(Route::recommended(Provider::Claude)))
+            policy
+                .set_route(Work::Workhorse, Some(Route::recommended(Provider::Claude)))
+                .unwrap()
         })
         .unwrap();
     let reopened = fixture.store().snapshot().unwrap();
@@ -604,13 +606,99 @@ fn a_project_delegation_policy_is_its_own_field_by_field_and_older_projects_choo
     let inherited = store
         .set_project_delegation_policy(&id, |policy| {
             policy.set_spread_work(None);
-            policy.set_route(Work::Workhorse, None);
+            policy.set_route(Work::Workhorse, None).unwrap();
         })
         .unwrap();
     assert!(inherited.delegation_policy.is_empty());
     assert_eq!(
         saved()["projects"][0]["delegation_policy"],
         serde_json::json!({})
+    );
+}
+
+/// A project policy that is not an object is kept through every other write, as Settings
+/// keep theirs, until a field of it is chosen; and a route the store could not read back is
+/// never saved, so what a setter returns is what reopening finds.
+#[test]
+fn a_project_delegation_policy_is_saved_only_as_it_reads_back() {
+    use crate::delegation::{Route, Work};
+    use crate::provider::Provider;
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let root = fixture.directory("main");
+    let other_root = fixture.directory("other");
+    let id = Uuid::new_v4().to_string();
+    let other = Uuid::new_v4().to_string();
+    let document = serde_json::json!({
+        "schema_version": 1,
+        "active_project_id": id,
+        "projects": [
+            {"id": id, "name": "Main", "root": root, "created_at": 7},
+            {"id": other, "name": "Other", "root": other_root, "created_at": 8,
+             "delegation_policy": "spread"},
+        ],
+        "worktrees": [],
+        "tasks": [],
+    });
+    let state_path = store.dir.join("state.json");
+    fs::write(&state_path, serde_json::to_vec(&document).unwrap()).unwrap();
+    let saved = || -> Value { serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap() };
+
+    // Unrelated writes, to it and to another project, keep it as saved.
+    store.set_project_notifications(&other, true).unwrap();
+    store
+        .set_project_delegation_policy(&id, |policy| policy.set_spread_work(Some(false)))
+        .unwrap();
+    assert_eq!(saved()["projects"][1]["delegation_policy"], "spread");
+    // It chooses nothing, and Project Settings say it is kept.
+    let odd = store.snapshot().unwrap().project(&other).unwrap().clone();
+    assert_eq!(odd.delegation_policy.spread_work, None);
+    let note = odd
+        .delegation_policy
+        .unreadable_note("This project's")
+        .unwrap();
+    assert!(note.contains(r#""spread""#), "{note}");
+    // Choosing a field of it replaces it.
+    store
+        .set_project_delegation_policy(&other, |policy| policy.set_parallel_shells(Some(3)))
+        .unwrap();
+    assert_eq!(
+        saved()["projects"][1]["delegation_policy"],
+        serde_json::json!({"parallel_shells": 3})
+    );
+
+    // A model id a session would refuse is not saved, by the setter or around it.
+    let refused = Route {
+        provider: Provider::Claude,
+        model: String::new(),
+    };
+    let before = fs::read(&state_path).unwrap();
+    let route = refused.clone();
+    let returned = store
+        .set_project_delegation_policy(&id, |policy| {
+            let _ = policy.set_route(Work::Design, Some(route));
+        })
+        .unwrap();
+    assert_eq!(returned.delegation_policy.design, None);
+    let error = store
+        .set_project_delegation_policy(&id, |policy| policy.design = Some(refused))
+        .unwrap_err();
+    assert!(error.contains("invalid model id"), "{error}");
+    assert_eq!(fs::read(&state_path).unwrap(), before);
+    assert_eq!(
+        store
+            .snapshot()
+            .unwrap()
+            .project(&id)
+            .unwrap()
+            .delegation_policy,
+        fixture
+            .store()
+            .snapshot()
+            .unwrap()
+            .project(&id)
+            .unwrap()
+            .delegation_policy
     );
 }
 
@@ -2276,4 +2364,73 @@ fn concurrent_memo_saves_end_with_one_whole_text() {
         text == "from the desktop" || text == "from the phone",
         "{text}"
     );
+}
+
+#[test]
+fn each_memo_save_that_changes_the_text_is_a_later_revision() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let project = store
+        .add_project(fixture.directory("memo-revision"), Some("Revision"))
+        .unwrap();
+    // Saves within one second, and one back to an earlier text, are each a revision of their
+    // own: a phone takes an equal `updated_at` to mean the memo it wrote over.
+    let (_, a) = store.set_project_memo(&project.id, "A").unwrap();
+    let (_, b) = store.set_project_memo(&project.id, "B").unwrap();
+    let (_, back) = store.set_project_memo(&project.id, "A").unwrap();
+    assert!(
+        a.updated_at < b.updated_at && b.updated_at < back.updated_at,
+        "{a:?} {b:?} {back:?}"
+    );
+    // The same text is the same revision.
+    let (_, same) = store.set_project_memo(&project.id, "A").unwrap();
+    assert_eq!(same, back);
+
+    // A time ahead of this clock (one set back since) is still passed, by one second.
+    let ahead = now() + 1000;
+    let mut saved = read_state_json(&store);
+    saved["project_memos"][&project.id]["updated_at"] = serde_json::json!(ahead);
+    write_state_json(&store, &saved);
+    let (_, later) = store.set_project_memo(&project.id, "C").unwrap();
+    assert_eq!(later.updated_at, ahead + 1);
+    // Another project's memo starts from the clock.
+    let other = store
+        .add_project(fixture.directory("memo-revision-other"), Some("Other"))
+        .unwrap();
+    let (_, first) = store.set_project_memo(&other.id, "C").unwrap();
+    assert!(first.updated_at <= now(), "{first:?}");
+}
+
+#[test]
+fn a_newer_builds_memo_fields_survive_unrelated_writes() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let root = fixture.directory("memo-compat");
+    write_state_json(
+        &store,
+        &serde_json::json!({
+            "schema_version": 1,
+            "projects": [{"id": "p1", "name": "Compat", "root": root, "created_at": 1}],
+            "worktrees": [],
+            "tasks": [],
+            "project_memos": {
+                "p1": {"text": "kept", "updated_at": 5, "future_memo": {"pinned": true}},
+                "gone": {"text": "", "future_memo": 1},
+            },
+        }),
+    );
+
+    store.rename_project("p1", "Renamed").unwrap();
+    store.add_task("p1", "A task", "").unwrap();
+    let saved = read_state_json(&store);
+    assert_eq!(saved["projects"][0]["name"], "Renamed");
+    assert_eq!(saved["project_memos"]["p1"]["text"], "kept");
+    assert_eq!(
+        saved["project_memos"]["p1"]["future_memo"],
+        serde_json::json!({"pinned": true})
+    );
+    assert_eq!(saved["project_memos"]["gone"]["future_memo"], 1);
+    // The typed view never surfaces or depends on them.
+    let memo = store.snapshot().unwrap().project_memo("p1");
+    assert_eq!((memo.text.as_str(), memo.updated_at), ("kept", 5));
 }

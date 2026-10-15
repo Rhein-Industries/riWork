@@ -2534,7 +2534,7 @@ impl SettingsPanel {
                             .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
                             .text_size(ui_text::text(10.0))
                             .text_color(rgb(colors.muted))
-                            .child("Orchestrators are told this policy when they start or load their skill: how widely to spread independent work over worker shells, and which models to prefer for it. A project can override any of it in Project Settings; running orchestrators keep what they were told."),
+                            .child("Orchestrators are told this policy when they start or load their skill: how widely to spread independent work over worker shells, and which models to prefer for it. A project can override any of it in Project Settings; running orchestrators keep what they were told until they load their skill, which they offer once a change applies to them."),
                     ),
             )
             .child(self.toggle_row(
@@ -2595,9 +2595,10 @@ impl SettingsPanel {
             selected,
             rows,
             move |settings: &mut Settings, index: usize| {
-                settings
+                // Offered and saved routes read back as themselves, so none is refused.
+                let _ = settings
                     .delegation_policy
-                    .set_route(work, Some(routes[index].clone()))
+                    .set_route(work, Some(routes[index].clone()));
             },
             cx,
         )

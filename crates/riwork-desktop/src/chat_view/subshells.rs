@@ -34,7 +34,8 @@ pub(super) struct WorkerUi {
     places: std::cell::RefCell<HashMap<String, (bool, bool)>>,
     /// The worker the bar above the message box writes to, and what it holds.
     pub(super) message: Option<(String, Entity<InputState>, Subscription)>,
-    pending: Option<String>,
+    /// The send or stop on its way, and to which worker.
+    pending: Option<(String, ShellAction)>,
     error: Option<String>,
 }
 
@@ -50,6 +51,30 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) {
         if self.workers.live == live && self.workers.stale == stale {
+            // Nothing new, but time goes on: running cards count their time, and a card the
+            // inventory has not seen may have ended its grace since it was last drawn.
+            let now = crate::activity::unix_now();
+            let mut running = false;
+            let mut starting = HashSet::new();
+            for (session, at) in &self.workers.latest {
+                let Some(worker) = self.model.transcript.items.get(*at).and_then(workers::of)
+                else {
+                    continue;
+                };
+                running |= self.worker_status(*at, worker).running();
+                if worker.end.is_none()
+                    && !self.workers.live.contains_key(session)
+                    && now.saturating_sub(worker.noted_at)
+                        <= workers::STARTING_GRACE
+                            + riwork_engine::subshells::MAX_INTERVAL.as_secs()
+                {
+                    starting.insert(session.clone());
+                }
+            }
+            self.remeasure_workers(&starting);
+            if running || !starting.is_empty() {
+                cx.notify();
+            }
             return;
         }
         let changed: HashSet<String> = live
@@ -72,8 +97,16 @@ impl ChatView {
             .collect();
         self.workers.live = live;
         self.workers.stale = stale;
-        // Only the cards whose worker changed are measured again: the rest of the
-        // transcript, a selection in it and where the reader is all stay as they were.
+        self.remeasure_workers(&changed);
+        cx.notify();
+    }
+
+    /// Only the cards of these workers are measured again: the rest of the transcript, a
+    /// selection in it and where the reader is all stay as they were.
+    fn remeasure_workers(&self, sessions: &HashSet<String>) {
+        if sessions.is_empty() {
+            return;
+        }
         let rows: Vec<usize> = self
             .visible
             .iter()
@@ -81,7 +114,7 @@ impl ChatView {
             .filter_map(|(row, shown)| match shown {
                 display::Row::Item(at) | display::Row::Details(at) => {
                     let worker = workers::of(&self.model.transcript.items[*at])?;
-                    changed.contains(&worker.session_id).then_some(row)
+                    sessions.contains(&worker.session_id).then_some(row)
                 }
                 _ => None,
             })
@@ -89,7 +122,6 @@ impl ChatView {
         for row in rows {
             self.list.remeasure_items(row..row + 1);
         }
-        cx.notify();
     }
 
     /// Finds each worker's latest card again after the rows changed; a card that is no
@@ -155,7 +187,12 @@ impl ChatView {
             ) {
                 (Some(above), Some(below)) => (above, below),
                 (Some(true), None) => (true, false),
-                _ => known.unwrap_or((false, false)),
+                // Never drawn: after the top row it is below, unless the list follows
+                // its end and draws it next.
+                _ => known.unwrap_or_else(|| {
+                    let top = self.list.logical_scroll_top().item_ix;
+                    (row < top, row > top && !self.list.is_following_tail())
+                }),
             };
             places.insert(item.clone(), place);
             let (above, below) = place;
@@ -193,23 +230,31 @@ impl ChatView {
         result: Result<(), String>,
         cx: &mut Context<Self>,
     ) {
-        if self.workers.pending.as_deref() != Some(id) {
-            return;
-        }
-        self.workers.pending = None;
+        // An open has nothing pending, and only says something when it failed.
+        let pending = self
+            .workers
+            .pending
+            .take_if(|(worker, _)| worker == id)
+            .map(|(_, action)| action);
         match result {
+            Err(error) => self.workers.error = Some(error),
+            Ok(()) if pending.is_none() => return,
             Ok(()) => {
-                if self
-                    .workers
-                    .message
-                    .as_ref()
-                    .is_some_and(|(shell, _, _)| shell == id)
+                // A message that went as it reads is done with; one edited while it went,
+                // or left unsent by a stop, stays.
+                if let Some(ShellAction::Send(sent)) = &pending
+                    && self
+                        .workers
+                        .message
+                        .as_ref()
+                        .is_some_and(|(shell, input, _)| {
+                            shell == id && input.read(cx).value().as_ref() == sent.as_str()
+                        })
                 {
                     self.workers.message = None;
                 }
                 self.workers.error = None;
             }
-            Err(error) => self.workers.error = Some(error),
         }
         cx.notify();
     }
@@ -228,7 +273,7 @@ impl ChatView {
             if self.workers.pending.is_some() {
                 return;
             }
-            self.workers.pending = Some(session_id.clone());
+            self.workers.pending = Some((session_id.clone(), action.clone()));
         }
         self.workers.error = None;
         cx.emit(ChatViewEvent::WorkerShell {
@@ -454,10 +499,16 @@ impl ChatView {
             view.list.scroll_to(offset);
         }));
         let now = crate::activity::unix_now();
+        // A worker that is still there keeps its actions on its latest card when that
+        // card is no longer running: an idle terminal can be given more, a chat opened.
+        let actions = !running
+            && self.workers.latest.get(&worker.session_id) == Some(&at)
+            && (worker.kind == WorkerKind::Chat || live.is_some_and(|live| live.actionable))
+            && live.is_some();
         let body = if running {
             Some(self.live_body(item, worker, live, now, look, cx))
         } else {
-            open.then(|| {
+            let result = open.then(|| {
                 let tail = tail.clone().unwrap_or_default();
                 div()
                     .id(SharedString::from(format!("worker-result:{}", item.id)))
@@ -487,6 +538,19 @@ impl ChatView {
                             )),
                     )
                     .test_support()
+                    .into_any_element()
+            });
+            (open || actions).then(|| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .children(result)
+                    .children(actions.then(|| {
+                        div()
+                            .px(ui_text::space(10.0))
+                            .py(ui_text::space(6.0))
+                            .child(self.worker_actions(worker, live, look, cx))
+                    }))
                     .into_any_element()
             })
         };
@@ -548,9 +612,6 @@ impl ChatView {
             .collect();
         lines.reverse();
         lines.resize(LIVE_LINES, String::new());
-        let actionable = live.is_some_and(|live| live.actionable);
-        let chat = worker.kind == WorkerKind::Chat;
-        let (open_id, message_id, stop_id) = (session.clone(), session.clone(), session.clone());
         div()
             .px(ui_text::space(10.0))
             .py(ui_text::space(6.0))
@@ -588,54 +649,64 @@ impl ChatView {
                     }))
                     .test_support(),
             )
+            .child(self.worker_actions(worker, live, look, cx))
+            .into_any_element()
+    }
+
+    /// A worker's actions: open it, and for a terminal message or stop it.
+    fn worker_actions(
+        &self,
+        worker: &WorkerRef,
+        live: Option<&LiveWorker>,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let session = worker.session_id.clone();
+        let actionable = live.is_some_and(|live| live.actionable);
+        let chat = worker.kind == WorkerKind::Chat;
+        let (open_id, message_id, stop_id) = (session.clone(), session.clone(), session.clone());
+        div()
+            .flex()
+            .items_center()
+            .gap(ui_text::space(6.0))
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(ui_text::space(6.0))
-                    .child(
-                        widgets::button(
-                            SharedString::from(format!("worker-open:{session}")),
-                            if chat { "Open chat" } else { "Open shell" },
-                            None,
-                            look,
-                        )
-                        .disabled(!actionable && !chat)
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.worker_action(open_id.clone(), ShellAction::Open, cx)
-                        })),
-                    )
-                    .when(!chat, |row| {
-                        row.child(
-                            widgets::button(
-                                SharedString::from(format!("worker-message:{session}")),
-                                "Message",
-                                None,
-                                look,
-                            )
-                            .disabled(!actionable || self.workers.pending.is_some())
-                            .on_click(cx.listener(
-                                move |view, _, window, cx| {
-                                    view.message_worker(message_id.clone(), window, cx)
-                                },
-                            )),
-                        )
-                        .child(
-                            widgets::button(
-                                SharedString::from(format!("worker-stop:{session}")),
-                                "Stop",
-                                None,
-                                look,
-                            )
-                            .disabled(!actionable || self.workers.pending.is_some())
-                            .on_click(cx.listener(
-                                move |view, _, _, cx| {
-                                    view.worker_action(stop_id.clone(), ShellAction::Stop, cx)
-                                },
-                            )),
-                        )
-                    }),
+                widgets::button(
+                    SharedString::from(format!("worker-open:{session}")),
+                    if chat { "Open chat" } else { "Open shell" },
+                    None,
+                    look,
+                )
+                .disabled(!actionable && !chat)
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.worker_action(open_id.clone(), ShellAction::Open, cx)
+                })),
             )
+            .when(!chat, |row| {
+                row.child(
+                    widgets::button(
+                        SharedString::from(format!("worker-message:{session}")),
+                        "Message",
+                        None,
+                        look,
+                    )
+                    .disabled(!actionable || self.workers.pending.is_some())
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.message_worker(message_id.clone(), window, cx)
+                    })),
+                )
+                .child(
+                    widgets::button(
+                        SharedString::from(format!("worker-stop:{session}")),
+                        "Stop",
+                        None,
+                        look,
+                    )
+                    .disabled(!actionable || self.workers.pending.is_some())
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.worker_action(stop_id.clone(), ShellAction::Stop, cx)
+                    })),
+                )
+            })
             .into_any_element()
     }
 }

@@ -5,7 +5,8 @@ use super::editor_tests::mount_sized;
 use super::suggest_ui::Item;
 use super::*;
 use crate::chat::model::ChatCommand;
-use gpui::{AnyWindowHandle, ElementId, TestAppContext, WindowHandle};
+use crate::chat::suggest::Peek;
+use gpui::{AnyWindowHandle, ElementId, TestAppContext, WindowHandle, size};
 use gpui_kit::test::TestWindowExt;
 use std::{path::PathBuf, sync::mpsc::Receiver};
 
@@ -87,6 +88,14 @@ fn rows(cx: &mut TestAppContext, mounted: &Mounted) -> Option<(Vec<String>, usiz
                 open.highlight,
             )
         })
+    })
+}
+
+/// The kept first lines of `path` in the chat's folder.
+fn peeked(cx: &mut TestAppContext, mounted: &Mounted, path: &str) -> Option<Peek> {
+    mounted.1.read_with(cx, |view, _| {
+        let root = view.suggestion_root_for_tests().unwrap();
+        view.suggestion_peek_for_tests(&root, path)
     })
 }
 
@@ -367,5 +376,119 @@ fn the_list_stands_clear_of_the_controls_in_wide_and_narrow_panes(cx: &mut TestA
             }
         });
     }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A list with no room above the card is not shown, and has no keys: ⏎ is the box's own.
+#[gpui::test]
+fn a_list_without_room_to_show_takes_no_keys(cx: &mut TestAppContext) {
+    let root = folder();
+    // Large text in a short window: the card stands too near the top for the list.
+    let before = crate::ui_text::set_for_tests(2.0, crate::ui_text::face());
+    let mounted = mount(cx, Provider::Claude, &root, 700.);
+    type_text(cx, &mounted, "/");
+    let open = rows(cx, &mounted).is_some();
+    cx.simulate_window_resize(handle(&mounted), size(px(700.), px(150.)));
+    cx.run_until_parked();
+    let shown = frame(cx, &mounted, |window, _| {
+        window.try_find("composer-suggestions").is_some()
+    });
+    press(cx, &mounted, "down");
+    press(cx, &mounted, "enter");
+    crate::ui_text::set_for_tests(before.0, before.1);
+    assert!(open && !shown, "the list is open but not shown");
+    assert_eq!(
+        sent(&mounted.2),
+        [ChatCommand::Send { text: "/".into() }],
+        "⏎ sends the draft as it is seen, never an unseen row"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A file's first lines are read again when the list opens again: a file changed meanwhile is
+/// shown as it is now.
+#[gpui::test]
+fn a_reopened_list_reads_a_changed_file_again(cx: &mut TestAppContext) {
+    let root = folder();
+    let mounted = mount(cx, Provider::Claude, &root, 700.);
+    type_text(cx, &mounted, "@READ");
+    assert_eq!(
+        peeked(cx, &mounted, "README.md"),
+        Some(Peek::Text(vec![
+            "# Project".into(),
+            "".into(),
+            "Read me first.".into()
+        ]))
+    );
+    for _ in 0..5 {
+        press(cx, &mounted, "backspace");
+    }
+    assert_eq!(rows(cx, &mounted), None);
+    std::fs::write(root.join("README.md"), "# Changed\n").unwrap();
+    type_text(cx, &mounted, "@READ");
+    assert_eq!(
+        peeked(cx, &mounted, "README.md"),
+        Some(Peek::Text(vec!["# Changed".into()]))
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// The kept previews are dropped once they are many, but never the highlighted file's for
+/// good: its card never stays at "Reading…".
+#[gpui::test]
+fn the_highlighted_preview_survives_dropping_the_kept_ones(cx: &mut TestAppContext) {
+    let root = folder();
+    let mounted = mount(cx, Provider::Claude, &root, 700.);
+    type_text(cx, &mounted, "@");
+    press(cx, &mounted, "down");
+    assert_eq!(rows(cx, &mounted).unwrap().1, 1, "README.md");
+    assert!(peeked(cx, &mounted, "README.md").is_some());
+    mounted
+        .1
+        .update(cx, |view, _| view.fill_suggestion_peeks_for_tests());
+    // Down to a file not read yet and back up before its read is done: that read finds the
+    // previews at their bound.
+    cx.update_window(handle(&mounted), |_, window, cx| {
+        window.press("down", cx);
+        window.press("up", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(rows(cx, &mounted).unwrap().1, 1);
+    assert!(
+        peeked(cx, &mounted, "README.md").is_some(),
+        "the highlighted file's preview is there"
+    );
+    frame(cx, &mounted, |window, _| {
+        assert_eq!(
+            window.find("composer-suggestion-preview").label(),
+            Some("Preview of README.md")
+        );
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// The list stands on the card as it is drawn now, also when the card moved since the frame
+/// before (the window was made shorter while the list is open).
+#[gpui::test]
+fn the_list_follows_the_card_when_the_window_changes(cx: &mut TestAppContext) {
+    let root = folder();
+    let mounted = mount(cx, Provider::Claude, &root, 700.);
+    type_text(cx, &mounted, "@");
+    frame(cx, &mounted, |window, _| {
+        assert!(window.find("composer-suggestions").visible());
+    });
+    cx.simulate_window_resize(handle(&mounted), size(px(700.), px(560.)));
+    cx.run_until_parked();
+    // The last frame drawn, as it is: not drawn again here.
+    cx.update_window(handle(&mounted), |_, window, _| {
+        let popup = window.find("composer-suggestions").bounds();
+        let send = window.find("chat-send").bounds();
+        assert!(
+            popup.bottom() <= send.top(),
+            "{popup:?} stands clear of Send at {send:?}"
+        );
+    })
+    .unwrap();
     let _ = std::fs::remove_dir_all(root);
 }

@@ -865,6 +865,8 @@ pub struct Transcript {
     /// Bumped by every event applied, so what is derived from the transcript can be kept
     /// until it changes. Not part of what the transcript says.
     revision: u64,
+    /// The revision at which each item was last replaced. Not part of what the transcript says.
+    replaced: HashMap<String, u64>,
 }
 
 /// Two transcripts are equal when they say the same, however many events built them.
@@ -887,6 +889,13 @@ impl Transcript {
     /// Changes whenever an event is applied.
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// When item `id` was last replaced: of two items, the one replaced later says what is
+    /// newer, wherever the two sit (an item keeps the place it first had). Zero for an item
+    /// that no event put there.
+    pub fn replaced_at(&self, id: &str) -> u64 {
+        self.replaced.get(id).copied().unwrap_or(0)
     }
 
     /// The item with `id`, found through the index.
@@ -955,6 +964,7 @@ impl Transcript {
                         self.items.push(item.clone());
                     }
                 }
+                self.replaced.insert(item.id.clone(), self.revision);
             }
             ChatEvent::ItemDelta { item_id, delta } => {
                 let Some(&at) = self.index.get(item_id) else {

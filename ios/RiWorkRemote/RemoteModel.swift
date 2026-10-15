@@ -92,6 +92,8 @@ enum ConnectionState: Equatable {
     var chatSupport: ChatSupport = .unknown
     /// The chosen project's chats, from `chats.list`: tabs in the strip beside the terminals.
     var chats: [ChatInfo] = [] { didSet { inventoryStamp &+= 1 } }
+    /// `chats` is what `chats.list` said for the chosen project on this connection, not a list still empty because none was read.
+    var chatsListed = false
     /// Whose tabs the selection below belongs to: a project's (the terminal screen), or the global orchestrator's (the dashboard's Global
     /// screen, outside every project). The Global screen sets it while it is up (`enterGlobal` / `leaveGlobal`, RemoteModel+Global.swift);
     /// the project's selection is left exactly as it was meanwhile.
@@ -596,7 +598,7 @@ enum ConnectionState: Equatable {
         generation = UUID(); let token = generation
         capabilitiesKnown = false; connectionEpoch &+= 1
         viewportSessionID = nil; appliedViewport = nil; failedViewport = nil; viewportError = nil
-        missingSessionIDs = []; loadedProjectID = nil; outputLines = [:]
+        missingSessionIDs = []; loadedProjectID = nil; chatsListed = false; outputLines = [:]
         // A fresh connection may reach an upgraded desktop: detect direct typing again. Buffers survive.
         keysSupport = .unknown
         // And for opening terminals.
@@ -689,7 +691,7 @@ enum ConnectionState: Equatable {
     private func clearSnapshot() {
         sharedTabs = nil
         projects = []; touchedProjects = [:]; worktrees = []; shells = []; orchestrators = []; loadedProjectID = nil; resetOutput(); snapshotStale = true
-        chats = []; projectChatID = nil; projectBlockedID = nil; chatConversations = [:]
+        chats = []; chatsListed = false; projectChatID = nil; projectBlockedID = nil; chatConversations = [:]
         // Another desktop: its Global screen is not up (the desktop list is), so the next selection is a project's.
         scope = .project; clearDashboard()
         clearOrchestratorNotice()
@@ -768,7 +770,7 @@ enum ConnectionState: Equatable {
             resetOutput(); draft = ""; deliveryNotice = nil
             restoreTabPending = true
             sharedTabs = nil; worktrees = []; shells = []; loadedProjectID = nil; snapshotStale = true
-            chats = []; projectChatID = nil; projectBlockedID = nil
+            chats = []; chatsListed = false; projectChatID = nil; projectBlockedID = nil
             clearOrchestratorNotice()
             if state == .connected {
                 try await loadProject(id, token: generation)

@@ -6,10 +6,11 @@ import RiWorkCore
 // composer's own, over what is here (`ComposerSuggestionList`), so typing never waits for the Mac.
 
 extension RemoteModel {
-    /// What the composer of `chatID` can suggest now. Nothing on a desktop that does not answer `chat.suggestions`.
+    /// What the composer of `chatID` can suggest now. Nothing on a desktop that does not answer `chat.suggestions`, and not the commands
+    /// of a provider the chat has left.
     func composerCatalog(for chatID: String) -> ComposerCatalogState {
         guard desktopFeatures.chatSuggestions, composerCatalogs.refusedConnection != generation else { return .unsupported }
-        return composerCatalogs.state(for: chatID, connected: state == .connected)
+        return composerCatalogs.state(for: chatID, provider: suggestionProvider(chatID), connected: state == .connected)
     }
 
     /// A list opened (or is still open) in the composer of `chatID`: the catalog is read unless a fresh one is here or one is on its way.
@@ -17,9 +18,10 @@ extension RemoteModel {
     /// the feature and still does not know the method gets no further request on this connection. Called on every key while a list is
     /// open: `composerCatalogs` (which the chat screen observes) is written only when a read starts.
     func wantComposerSuggestions(_ chatID: String) {
-        let now = ContinuousClock.now
+        let now = ContinuousClock.now, provider = suggestionProvider(chatID)
         guard desktopFeatures.chatSuggestions, composerCatalogs.refusedConnection != generation, state == .connected,
-              composerCatalogs.wantsFetch(chatID, now: now), composerCatalogs.beginFetch(chatID, now: now) else { return }
+              composerCatalogs.wantsFetch(chatID, provider: provider, now: now), composerCatalogs.beginFetch(chatID, provider: provider, now: now)
+        else { return }
         let token = generation, client = client
         Task { [weak self] in
             do {
@@ -37,5 +39,10 @@ extension RemoteModel {
                 self?.composerCatalogs.fail(chatID, now: .now)
             }
         }
+    }
+
+    /// The provider the chat works with now, as its screen has it (a `switch` changes it): a catalog of another one is read again.
+    private func suggestionProvider(_ chatID: String) -> ChatProvider? {
+        (chatConversations[chatID]?.transcript.info ?? chats.first { $0.id == chatID })?.provider
     }
 }

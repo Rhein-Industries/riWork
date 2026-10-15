@@ -6,7 +6,8 @@
 //! standard input, never as an argument (a process list shows arguments to every user of the
 //! Mac). A save replaces the whole memo and the last one to reach the desktop's store wins:
 //! there is no merge and no check against what the phone last saw. The connector checks the
-//! parameters before any CLI runs and the CLI's reply before the phone sees it.
+//! parameters before any CLI runs, that the project exists under exactly the id given before a
+//! save, and the CLI's reply before the phone sees it.
 use super::*;
 
 /// The most a memo may hold, in UTF-8 bytes: `riwork_core::project_memo::MAX_BYTES` (the
@@ -86,6 +87,22 @@ fn reply(cli: Value, project_id: &str) -> std::result::Result<Value, Fault> {
     Ok(out)
 }
 
+/// `project show`'s refusal of an id: no project, or more than one, has it.
+fn target_fault(fault: Fault) -> Fault {
+    let line = fault
+        .message
+        .strip_prefix("RiWork CLI failed: riwork: ")
+        .unwrap_or_default();
+    if fault.code == "cli_error"
+        && (line.starts_with("No project matches '")
+            || line.starts_with("More than one project matches '"))
+    {
+        Fault::new("not_found", "project not found on the desktop")
+    } else {
+        fault
+    }
+}
+
 impl Rpc {
     /// What `ready` announces as `features.project_memo`: the installed CLI said `"project_memo":
     /// true` in `riwork capabilities --json`. Short, like `chat_supported`, whose question it
@@ -125,7 +142,9 @@ impl Rpc {
     }
 
     /// Replace the memo of the project with `p.text`, through `riwork project memo set ID
-    /// --json` with the text on its standard input, and answer the memo as saved.
+    /// --json` with the text on its standard input, and answer the memo as saved. The project
+    /// must exist under exactly this id: the CLI also matches names and paths, so an id that is
+    /// nobody's could otherwise save over another project's memo.
     pub(super) async fn project_memo_set(
         &self,
         device: &str,
@@ -134,6 +153,8 @@ impl Rpc {
         self.require_project_memo().await?;
         // It may have waited in the ordered lane: a device revoked meanwhile saves nothing.
         self.still_authorized(device)?;
+        self.target_exists(&CreateTarget::Project(p.project_id.clone()), target_fault)
+            .await?;
         let args = vec![
             "project".into(),
             "memo".into(),
@@ -209,6 +230,19 @@ mod tests {
                 .unwrap_or_else(|| panic!("{params}"));
             assert_eq!(fault.code, "invalid_request", "{params}");
         }
+    }
+
+    #[test]
+    fn a_project_the_cli_does_not_find_by_its_id_is_not_found() {
+        for line in [
+            "No project matches 'x'",
+            "More than one project matches 'x'; use its UUID",
+        ] {
+            let fault = target_fault(cli_fault(format!("RiWork CLI failed: riwork: {line}")));
+            assert_eq!(fault.code, "not_found", "{line}");
+        }
+        let other = target_fault(cli_fault("RiWork CLI failed: riwork: Cannot lock store"));
+        assert_eq!(other.code, "cli_error");
     }
 
     #[test]

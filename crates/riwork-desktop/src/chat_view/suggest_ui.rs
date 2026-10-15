@@ -9,7 +9,7 @@
 //! `@` lists the chat's folder once (`suggest::list_files`, bounded) on a background thread
 //! and keeps it for every tab of that folder (`Listings`, `suggest::FILE_TTL`); typing only
 //! filters what is kept. A file's first lines are read when it is highlighted, a few KB at
-//! most, also off the main thread.
+//! most, also off the main thread, and kept while the list stays open.
 
 use std::{
     cell::Cell,
@@ -87,9 +87,12 @@ pub(super) struct Suggestions {
     /// The sigil (its byte offset in the draft) whose list ⎋ closed: it stays closed while
     /// that token is typed, and opens again once it is gone.
     dismissed: Option<usize>,
-    /// The first lines of files, by folder and path, and the one being read.
+    /// The first lines of files, by folder and path, and the one being read. Dropped when the
+    /// list opens again, so a file that changed meanwhile is read again.
     peeks: HashMap<(PathBuf, String), Peek>,
     peeking: Option<(PathBuf, String)>,
+    /// How many times `peeks` was dropped: a read started before the last time is not kept.
+    peeks_dropped: u64,
     /// The message box card as last drawn, in window coordinates: the list stands on it.
     pub card: Rc<Cell<Bounds<Pixels>>>,
     scroll: ScrollHandle,
@@ -165,7 +168,14 @@ impl ChatView {
         if unchanged {
             return;
         }
+        let reopened = self.suggestions.open.is_none();
         self.suggestions.open = found.and_then(|found| self.rank_suggestions(found, cx));
+        if reopened && self.suggestions.open.is_some() {
+            let suggestions = &mut self.suggestions;
+            suggestions.peeks.clear();
+            suggestions.peeking = None;
+            suggestions.peeks_dropped += 1;
+        }
         self.suggestions.scroll.scroll_to_item(0);
         self.peek_highlighted(cx);
         cx.notify();
@@ -301,6 +311,7 @@ impl ChatView {
             return;
         }
         self.suggestions.peeking = Some(key.clone());
+        let dropped = self.suggestions.peeks_dropped;
         let read = {
             let (root, path) = key.clone();
             cx.background_executor()
@@ -310,6 +321,9 @@ impl ChatView {
             let peek = read.await;
             let _ = view.update(cx, |view, cx| {
                 let suggestions = &mut view.suggestions;
+                if suggestions.peeks_dropped != dropped {
+                    return;
+                }
                 if suggestions.peeks.len() >= PEEKS {
                     suggestions.peeks.clear();
                 }
@@ -317,16 +331,20 @@ impl ChatView {
                     suggestions.peeking = None;
                 }
                 suggestions.peeks.insert(key, peek);
+                // The highlighted file's own preview may have just been dropped: read again.
+                view.peek_highlighted(cx);
                 cx.notify();
             });
         })
         .detach();
     }
 
-    /// Whether the list has the keys now: it is shown, and the message box has the focus
-    /// with no text being composed (an input method's keys are its own).
+    /// Whether the list has the keys now: it is shown (open, with room for it), and the
+    /// message box has the focus with no text being composed (an input method's keys are its
+    /// own).
     fn suggestion_keys(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         self.suggestions.open.is_some()
+            && self.suggestion_room().is_some()
             && self.composer.read(cx).focus_handle(cx).is_focused(window)
             && !self.composer.update(cx, |state, cx| {
                 state.marked_text_range(window, cx).is_some()
@@ -484,15 +502,25 @@ impl ChatView {
         cx.notify();
     }
 
-    /// Something that records the card's bounds as it is drawn, for the list to stand on.
+    /// Something that records the card's bounds as it is drawn, for the list to stand on. The
+    /// list is placed before the card is laid out, from the frame before: when the card moved
+    /// or changed size under an open list, the window is drawn again.
     pub(super) fn suggestion_anchor(&self) -> AnyElement {
         let card = self.suggestions.card.clone();
-        canvas(move |bounds, _, _| card.set(bounds), |_, _, _, _| {})
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .into_any_element()
+        let open = self.suggestions.open.is_some();
+        canvas(
+            move |bounds, window, cx| {
+                if card.replace(bounds) != bounds && open {
+                    window.defer(cx, |window, _| window.refresh());
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .into_any_element()
     }
 
     /// The list and its preview, over the chat and just above the message box card, if the
@@ -503,16 +531,9 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let open = self.suggestions.open.as_ref()?;
+        let room = self.suggestion_room()?;
         let card = self.suggestions.card.get();
-        if card.size.width <= px(0.) {
-            return None;
-        }
         let gap = ui_text::space(4.0);
-        // All of it above the card, below the window's top edge.
-        let room = (card.top() - ui_text::space(8.0) - gap).max(px(0.));
-        if room < ui_text::space(28.0) {
-            return None;
-        }
         let list_width = ui_text::space(LIST_WIDTH).min(card.size.width);
         let preview_width = ui_text::space(PREVIEW_WIDTH);
         let beside = card.size.width >= list_width + gap + preview_width;
@@ -576,6 +597,18 @@ impl ChatView {
             .with_priority(1)
             .into_any_element(),
         )
+    }
+
+    /// The room above the message box card, as last drawn, that the list may stand in: all of
+    /// it below the window's top edge. None while the card is not drawn or the room is too
+    /// little for a row, when the list is not shown and has no keys.
+    fn suggestion_room(&self) -> Option<Pixels> {
+        let card = self.suggestions.card.get();
+        if card.size.width <= px(0.) {
+            return None;
+        }
+        let room = (card.top() - ui_text::space(8.0) - ui_text::space(4.0)).max(px(0.));
+        (room >= ui_text::space(28.0)).then_some(room)
     }
 
     fn suggestion_list(
@@ -817,5 +850,17 @@ impl ChatView {
             .peeks
             .get(&(root.to_path_buf(), path.to_owned()))
             .cloned()
+    }
+
+    /// Fill the kept previews up to their bound with ones of another folder.
+    pub(super) fn fill_suggestion_peeks_for_tests(&mut self) {
+        for n in 0.. {
+            if self.suggestions.peeks.len() >= PEEKS {
+                break;
+            }
+            self.suggestions
+                .peeks
+                .insert((PathBuf::from("/elsewhere"), format!("{n}")), Peek::Binary);
+        }
     }
 }
