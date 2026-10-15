@@ -1,7 +1,7 @@
 import XCTest
 @testable import RiWorkCore
 
-/// The composer's `/` and `@` list: the shared rules against `Fixtures/composer-suggestions.json` (which the engine's
+/// The composer's `/`, `@` and `&` list: the shared rules against `Fixtures/composer-suggestions.json` (which the engine's
 /// `crates/riwork-engine/src/chat/suggest_tests.rs` checks too), the `chat.suggestions` request and reply, the list as the composer drives
 /// it, the catalog cache and the keys while the list is open.
 final class ComposerSuggestionsTests: XCTestCase {
@@ -128,9 +128,154 @@ final class ComposerSuggestionsTests: XCTestCase {
         XCTAssertEqual(reply.files, ComposerFileListing(entries: [ComposerFileEntry(path: "README.md", bytes: 2048), ComposerFileEntry(path: "src", dir: true),
                                                                   ComposerFileEntry(path: "src/main.rs", bytes: 900)]))
         XCTAssertEqual(reply.fileBound, 5000)
+        XCTAssertEqual(reply.models, try fixture["reply"]["models"].decode([ComposerModelEntry].self))
+        XCTAssertEqual(reply.models.map(\.id), ["default", "opus", "haiku"], "the provider's order, as the desktop sends it")
+        XCTAssertEqual(reply.models.first?.isDefault, true)
         let catalog = ComposerCatalog(reply: reply)
         XCTAssertEqual(catalog.provider, .claude)
         XCTAssertEqual(catalog.rankFiles("ma").map(\.path), ["src/main.rs"])
+        XCTAssertEqual(catalog.rankModels("").map(\.id), ["opus", "default", "haiku"], "the most used first")
+    }
+
+    // MARK: `&` models
+
+    private func models(_ fixture: JSONValue) throws -> [ComposerModelEntry] {
+        try fixture["model_ranking"]["models"].decode([ComposerModelEntry].self)
+    }
+    func testRemovingAModelTokenMatchesTheSharedVectors() throws {
+        let fixture = try fixture()
+        let mark = try XCTUnwrap(fixture["caret"].string)
+        XCTAssertFalse(fixture["removals"].array.isEmpty)
+        for vector in fixture["removals"].array {
+            let (text, at) = try caret(try XCTUnwrap(vector["text"].string), mark)
+            let trigger = try XCTUnwrap(ComposerSuggestions.trigger(in: text, caret: at), "a removal vector is in a token: \(text.debugDescription)")
+            XCTAssertEqual(trigger.sigil, .model)
+            let removed = ComposerSuggestions.remove(text, trigger: trigger)
+            XCTAssertEqual(marked(removed.text, at: removed.caret, mark), vector["expect"].string, text.debugDescription)
+        }
+    }
+    func testModelsRankByUseAsTheSharedVectorsSay() throws {
+        let fixture = try fixture()
+        let table = fixture["model_ranking"], list = try models(fixture)
+        XCTAssertFalse(table["cases"].array.isEmpty)
+        for vector in table["cases"].array {
+            let query = try XCTUnwrap(vector["query"].string)
+            XCTAssertEqual(ComposerSuggestions.rankModels(query, list).map(\.id), strings(vector["expect"]), "query \(query.debugDescription)")
+        }
+        XCTAssertEqual(ComposerSuggestions.orderModels(list).map(\.id), strings(table["cases"].array[0]["expect"]),
+                       "before anything is typed: the most used first, ties and unused ones in the provider's order")
+        for vector in table["current"].array {
+            XCTAssertEqual(ComposerSuggestions.currentModel(list, chosen: vector["chosen"].string), vector["expect"].string, "chosen \(vector["chosen"])")
+        }
+    }
+    func testModelRowsAndPreviewsReadAsTheSharedVectorsSay() throws {
+        let fixture = try fixture()
+        XCTAssertFalse(fixture["model_details"].array.isEmpty || fixture["model_previews"].array.isEmpty)
+        for vector in fixture["model_details"].array {
+            let chats = try XCTUnwrap(number(vector["chats"]).map { UInt64($0) })
+            let current = vector["current"] == .bool(true)
+            XCTAssertEqual(ComposerModelEntry(id: "m", name: "M", chats: chats).detail(current: current), vector["detail"].string)
+        }
+        for vector in fixture["model_usage_labels"].array {
+            let chats = try XCTUnwrap(number(vector["chats"]).map { UInt64($0) })
+            let provider = try XCTUnwrap(vector["provider"].string.flatMap(ChatProvider.init(rawValue:)))
+            XCTAssertEqual(ComposerSuggestions.usageLabel(chats: chats, provider: provider), vector["label"].string)
+        }
+        let list = try models(fixture)
+        func find(_ id: String?) -> ComposerModelEntry? { id.flatMap { id in list.first { $0.id == id } } }
+        for vector in fixture["model_previews"].array {
+            let model = try XCTUnwrap(find(vector["model"].string))
+            let provider = try XCTUnwrap(vector["provider"].string.flatMap(ChatProvider.init(rawValue:)))
+            let preview = ComposerPreview(model: model, current: find(vector["current"].string), provider: provider)
+            let expect = vector["expect"]
+            XCTAssertEqual(preview.title, expect["title"].string)
+            XCTAssertEqual(preview.kind, expect["kind"].string)
+            XCTAssertEqual(preview.body, strings(expect["body"]))
+            XCTAssertEqual(preview.inserts, expect["inserts"].string)
+            XCTAssertEqual(preview.effect, expect["effect"].string)
+        }
+    }
+    func testARefusedSwitchPutsTheDraftBackUnlessItWasEditedSince() {
+        let before = "fix it &o3", after = "fix it "
+        XCTAssertEqual(ComposerSuggestions.restoring(before: before, caret: 10, after: after, now: after)?.text, before)
+        XCTAssertEqual(ComposerSuggestions.restoring(before: before, caret: 10, after: after, now: after)?.caret, 10)
+        XCTAssertNil(ComposerSuggestions.restoring(before: before, caret: 10, after: after, now: "fix it now"), "an edit since is kept")
+        XCTAssertNil(ComposerSuggestions.restoring(before: "é&x", caret: 3, after: "é", now: "e\u{301}"), "compared as scalars, as the desktop does")
+    }
+    func testTheHighlightedModelStaysWhenTheUseIsReadAgainOnlyOnceMoved() throws {
+        let first = [ComposerModelEntry(id: "a", name: "A", isDefault: true, chats: 5), ComposerModelEntry(id: "b", name: "B", chats: 1),
+                     ComposerModelEntry(id: "c", name: "C", chats: 0)]
+        let later = [ComposerModelEntry(id: "a", name: "A", isDefault: true, chats: 5), ComposerModelEntry(id: "b", name: "B", chats: 9),
+                     ComposerModelEntry(id: "c", name: "C", chats: 0)]
+        let catalog = { (models: [ComposerModelEntry]) in ComposerCatalogState.ready(ComposerCatalog(chatID: self.chat, provider: .codex, commands: [], files: [], models: models)) }
+        var list = ComposerSuggestionList()
+        list.update(text: "&", caret: 1, catalog: catalog(first))
+        XCTAssertEqual(list.items.map(\.title), ["A", "B", "C"])
+        // Never moved: the catalog read again (its counts changed) keeps the highlight on the first row, the most used.
+        list.update(text: "&", caret: 1, catalog: catalog(later))
+        XCTAssertEqual(list.items.map(\.title), ["B", "A", "C"])
+        XCTAssertEqual(list.highlightedItem?.title, "B")
+        // Moved to C: it stays C's, wherever C goes.
+        list.move(.down); list.move(.down)
+        XCTAssertEqual(list.highlightedItem?.title, "C")
+        list.update(text: "&", caret: 1, catalog: catalog(first))
+        XCTAssertEqual(list.highlightedItem?.title, "C")
+        // A new query starts at the best match again.
+        list.update(text: "&b", caret: 2, catalog: catalog(first))
+        XCTAssertEqual(list.highlighted, 0)
+        // The chat's model, given with blank space around it, is still the one marked.
+        list.update(text: "&", caret: 1, catalog: catalog(first), chosenModel: " b ")
+        XCTAssertEqual(list.items.map(\.detail), ["Used in 5 chats", "Current · used in 1 chat", "Not used yet"])
+    }
+    func testAModelsDecodingKeepsTheGoodOnesAndDefaultsTheRest() throws {
+        let decoded = try value(#"[{"id":"a","name":"A"},{"id":"  ","name":"Blank"},{"name":"No id"},{"id":"b"},{"id":"c","name":"C","chats":"many","is_default":"yes"}]"#)
+            .decode([Lenient<ComposerModelEntry>].self).compactMap(\.value)
+        XCTAssertEqual(decoded, [ComposerModelEntry(id: "a", name: "A"), ComposerModelEntry(id: "c", name: "C")])
+        // A desktop from before `&` sends no models: the reply still reads, and offers none.
+        var older = try fixture()["reply"]
+        if case .object(var fields) = older { fields["models"] = nil; older = .object(fields) }
+        let reply = try ChatSuggestionsRequest(chatID: chat).parse(older)
+        XCTAssertTrue(reply.models.isEmpty)
+        var list = ComposerSuggestionList()
+        list.update(text: "&", caret: 1, catalog: .ready(ComposerCatalog(reply: reply)))
+        XCTAssertFalse(list.isShown, "no models, no `&` list")
+        XCTAssertNil(list.acceptance())
+    }
+    func testTheModelListMarksTheChatsModelAndAcceptingAsksForTheModelPickersOwnSwitch() throws {
+        let fixture = try fixture()
+        let catalog = ComposerCatalog(chatID: chat, provider: .codex, commands: [], files: [], models: try models(fixture))
+        var list = ComposerSuggestionList()
+        list.update(text: "review it &", caret: 11, catalog: .ready(catalog), chosenModel: "o3")
+        XCTAssertTrue(list.isShown)
+        XCTAssertEqual(list.items.map(\.title), ["GPT-5.1", "GPT-5.1 Codex", "o3", "GPT-5.1 Codex Mini", "GPT-4.1"], "the most used first")
+        XCTAssertEqual(list.items.map(\.detail), ["Used in 7 chats", "Used in 3 chats", "Current · used in 3 chats", "Not used yet", "Not used yet"],
+                       "the chat's own model is marked, not left out")
+        XCTAssertEqual(list.preview?.kind, "Codex model")
+        XCTAssertEqual(list.preview?.body, ["Now: o3", "7 of your Codex chats use it now"])
+        XCTAssertEqual(list.preview?.inserts, "", "a model is chosen, not put in")
+        XCTAssertNil(list.accepted(), "nothing to insert")
+        // The highlighted model: the switch to ask for, and the draft without the token once it went through.
+        XCTAssertEqual(list.acceptance(), .switchModel(model: "gpt-5.1", text: "review it ", caret: 10))
+        // Through the model picker's own change: one `configure` for the model, as `chooseChatModel` sends it.
+        let options = catalog.models.map { ChatModelOption(id: $0.id, name: $0.name, isDefault: $0.isDefault) }
+        let choices = ChatModelChoices(models: options, model: "o3", effort: nil, fast: false)
+        let configuration = try XCTUnwrap(choices.configuration(for: .model("gpt-5.1")))
+        XCTAssertEqual(configuration.command, .configure(model: "gpt-5.1"))
+        let request = try ChatCommandRequest(chatID: chat, command: configuration.command)
+        XCTAssertEqual(request.params["command"]?["command"].string, "configure")
+        XCTAssertEqual(request.params["command"]?["model"].string, "gpt-5.1")
+        // Filtering keeps the use as the order; the chat's own model only closes the list.
+        list.update(text: "review it &o", caret: 12, catalog: .ready(catalog), chosenModel: "o3")
+        XCTAssertEqual(list.items.map(\.title), ["o3", "GPT-5.1 Codex", "GPT-5.1 Codex Mini"])
+        XCTAssertEqual(list.acceptance(), .closeOnly)
+        XCTAssertNil(choices.configuration(for: .model("o3")), "the picker sends nothing for it either")
+        // A tap highlights first, then accepts, as for the other rows.
+        XCTAssertNil(list.tapped(1))
+        XCTAssertEqual(list.highlighted, 1)
+        XCTAssertEqual(list.tapped(1), .switchModel(model: "gpt-5.1-codex", text: "review it ", caret: 10))
+        // `&` before more words is only text.
+        list.update(text: "review &o it", caret: 9, catalog: .ready(catalog), chosenModel: "o3")
+        XCTAssertFalse(list.isShown)
     }
 
     // MARK: Rules the fixture does not spell out

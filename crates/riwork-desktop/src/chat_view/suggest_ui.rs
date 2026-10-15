@@ -1,10 +1,16 @@
-//! The `/` and `@` suggestions over the message box, from `chat::suggest`: a list just above
-//! the card, starting at the caret, and beside it (or above it, in a narrow pane) a card that
-//! says what the highlighted entry is and what accepting it puts in. ↑ and ↓ move the
+//! The `/`, `@` and `&` suggestions over the message box, from `chat::suggest`: a list just
+//! above the card, starting at the caret, and beside it (or above it, in a narrow pane) a card
+//! that says what the highlighted entry is and what accepting it does. ↑ and ↓ move the
 //! highlight, ⏎ or ⇥ accept it, ⎋ closes the list until that token is typed again; the
 //! pointer highlights a row and a click accepts it. Accepting only edits the draft: sending is
 //! still ⏎ or Send afterwards. The list stands wholly above the card, cut to the room there,
 //! so it never covers Send, Stop or the pickers.
+//!
+//! `&` lists the models the chat's driver listed (the model menu's own list), the most used
+//! first (`suggest::ModelUsage`, from the chats' saved info, read on a background thread and
+//! kept for every tab of that data folder as a listing is). Accepting one is the model menu's
+//! own choice (`ChatView::choose_model`): the chat is switched and the token leaves the draft;
+//! the chat's current model only closes the list.
 //!
 //! `@` lists the chat's folder once (`suggest::list_files`, bounded) on a background thread
 //! and keeps it for every tab of that folder (`Listings`, `suggest::FILE_TTL`); typing only
@@ -30,9 +36,11 @@ use gpui_kit::base::{
     input::{Enter, Escape, IndentInline, MoveDown, MoveUp},
 };
 
-use super::{ChatView, widgets::Look};
+use super::{ChatView, state::provider_name, widgets::Look};
 use crate::{
-    chat::suggest::{self, Command, FileEntry, Listing, Peek, Sigil, Trigger},
+    chat::suggest::{
+        self, Command, FileEntry, Listing, ModelEntry, ModelUsage, Peek, Sigil, Trigger,
+    },
     ui_text,
 };
 
@@ -49,22 +57,39 @@ const PEEKS: usize = 64;
 pub(super) enum Item {
     Command(Command),
     File(FileEntry),
+    /// A model of the chat's provider, and whether the chat runs it now.
+    Model {
+        entry: ModelEntry,
+        current: bool,
+    },
 }
 
 impl Item {
-    /// What accepting it puts in the draft, which is also how its row names it.
-    pub fn insertion(&self) -> String {
+    /// How its row names it: what accepting a command or a file puts in the draft, a model's
+    /// name.
+    pub fn label(&self) -> String {
         match self {
             Self::Command(command) => command.insertion(),
             Self::File(entry) => entry.insertion(),
+            Self::Model { entry, .. } => entry.name.clone(),
         }
     }
 
-    /// The row's second line: what a command is, what kind of thing a file is.
-    fn detail(&self) -> String {
+    /// Whether it is the same entry as `other`: a model by its id, whatever its use or mark.
+    fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Model { entry: a, .. }, Self::Model { entry: b, .. }) => a.id == b.id,
+            _ => self == other,
+        }
+    }
+
+    /// The row's second line: what a command is, what kind of thing a file is, whether the
+    /// chat runs a model and how much it is used.
+    pub(super) fn detail(&self) -> String {
         match self {
             Self::Command(command) => command.summary.clone(),
             Self::File(entry) => suggest::file_preview(entry, None).kind,
+            Self::Model { entry, current } => suggest::model_detail(entry, *current),
         }
     }
 }
@@ -74,10 +99,26 @@ pub(super) struct Open {
     pub trigger: Trigger,
     pub items: Vec<Item>,
     pub highlight: usize,
-    /// The chat's folder is still being listed for the first time.
+    /// The chat's folder is still being listed for the first time, or the models' use counted.
     pub loading: bool,
     /// Its listing stopped at `suggest::FILE_BOUND`.
     pub truncated: bool,
+    /// The model the chat ran when a `&` list was ranked: another one marks another row.
+    pub current: Option<String>,
+    /// The person moved the highlight (keys or pointer): a `&` list ordered again by use keeps
+    /// it on their row; one never moved keeps it on the first, the most used.
+    pub moved: bool,
+}
+
+/// A model `&` switched the chat to, kept until the host answers: a refusal puts the token back.
+struct Switched {
+    model: String,
+    /// The token as it was, where it was, and the caret then.
+    token: String,
+    at: usize,
+    caret: usize,
+    /// The draft as accepting left it: the token goes back only into this.
+    after: String,
 }
 
 /// A tab's suggestions.
@@ -96,6 +137,8 @@ pub(super) struct Suggestions {
     /// The message box card as last drawn, in window coordinates: the list stands on it.
     pub card: Rc<Cell<Bounds<Pixels>>>,
     scroll: ScrollHandle,
+    /// The last model change `&` asked for, until the host refuses it or another is asked.
+    switched: Option<Switched>,
 }
 
 /// The folders' listings, shared by every chat tab: one walk serves every tab of a folder.
@@ -107,6 +150,17 @@ struct Listings {
 }
 
 impl Global for Listings {}
+
+/// How much each model is used, by data folder, shared by every chat tab: counted once from the
+/// chats' saved info, kept `suggest::FILE_TTL`, and counted again only once stale.
+#[derive(Default)]
+struct ModelUses {
+    counted: HashMap<PathBuf, (Instant, Arc<ModelUsage>)>,
+    /// The folders being counted, and the tabs waiting for them.
+    counting: HashMap<PathBuf, Vec<WeakEntity<ChatView>>>,
+}
+
+impl Global for ModelUses {}
 
 impl ChatView {
     /// The folder the chat works in, which `@` lists.
@@ -160,8 +214,15 @@ impl ChatView {
             self.suggestions.dismissed = None;
         }
         let found = found.filter(|found| self.suggestions.dismissed != Some(found.start));
+        // A `&` list is ranked again when the chat's model changed under it: its mark moves.
+        let current = found
+            .as_ref()
+            .filter(|found| found.sigil == Sigil::Model)
+            .and_then(|_| self.current_model_id());
         let unchanged = match (&self.suggestions.open, &found) {
-            (Some(open), Some(found)) => open.trigger == *found,
+            (Some(open), Some(found)) => {
+                open.trigger == *found && (found.sigil != Sigil::Model || open.current == current)
+            }
             (None, None) => true,
             _ => false,
         };
@@ -198,6 +259,39 @@ impl ChatView {
                     highlight: 0,
                     loading: false,
                     truncated: false,
+                    current: None,
+                    moved: false,
+                })
+            }
+            Sigil::Model => {
+                let provider = self.provider()?;
+                if self.model.transcript.models.is_empty() {
+                    // The driver has not listed its models: none is offered, none made up.
+                    return None;
+                }
+                let usage = self.model_usage(cx);
+                let counting = usage.is_none() && self.catalog_home.is_some();
+                let entries = suggest::model_entries(
+                    &self.model.transcript.models,
+                    provider,
+                    usage.as_deref().unwrap_or(&ModelUsage::default()),
+                );
+                let current = self.current_model_id();
+                let items: Vec<_> = suggest::rank_models(&trigger.query, &entries)
+                    .into_iter()
+                    .map(|entry| Item::Model {
+                        current: current.as_deref() == Some(entry.id.as_str()),
+                        entry: entry.clone(),
+                    })
+                    .collect();
+                (!items.is_empty()).then_some(Open {
+                    trigger,
+                    items,
+                    highlight: 0,
+                    loading: counting,
+                    truncated: false,
+                    current,
+                    moved: false,
                 })
             }
             Sigil::Mention => {
@@ -220,6 +314,8 @@ impl ChatView {
                     highlight: 0,
                     loading,
                     truncated: listing.is_some_and(|listing| listing.truncated),
+                    current: None,
+                    moved: false,
                 })
             }
         }
@@ -265,22 +361,98 @@ impl ChatView {
         kept
     }
 
+    /// The id of the model the chat runs: the one it is set to, else its driver's default.
+    fn current_model_id(&self) -> Option<String> {
+        let chosen = self
+            .model
+            .transcript
+            .info
+            .as_ref()
+            .and_then(|info| info.model.as_deref());
+        let entries = suggest::model_entries(
+            &self.model.transcript.models,
+            self.provider()?,
+            &ModelUsage::default(),
+        );
+        suggest::current_model(&entries, chosen).map(str::to_owned)
+    }
+
+    /// How much each model is used, as counted for the chats' data folder, counting it again
+    /// (once, for every tab) when the count is stale or missing. Never waits: a stale count is
+    /// used meanwhile, and none while the folder is counted for the first time. None without a
+    /// data folder.
+    fn model_usage(&mut self, cx: &mut Context<Self>) -> Option<Arc<ModelUsage>> {
+        let home = self.catalog_home.clone()?;
+        let me = cx.weak_entity();
+        let uses = cx.default_global::<ModelUses>();
+        let kept = uses.counted.get(&home).cloned();
+        if let Some((read, usage)) = &kept
+            && read.elapsed() < suggest::FILE_TTL
+        {
+            return Some(usage.clone());
+        }
+        let waiting = uses.counting.entry(home.clone()).or_default();
+        let start = waiting.is_empty();
+        if !waiting.iter().any(|view| view == &me) {
+            waiting.push(me);
+        }
+        if start {
+            let count = {
+                let home = home.clone();
+                cx.background_executor()
+                    .spawn(async move { ModelUsage::of(&crate::chat::log::read_infos(&home)) })
+            };
+            cx.spawn(async move |_, cx| {
+                let usage = count.await;
+                cx.update(|cx| {
+                    let uses = cx.default_global::<ModelUses>();
+                    uses.counted
+                        .insert(home.clone(), (Instant::now(), Arc::new(usage)));
+                    let waiting = uses.counting.remove(&home).unwrap_or_default();
+                    for view in waiting {
+                        let _ = view.update(cx, |view, cx| view.model_usage_arrived(cx));
+                    }
+                });
+            })
+            .detach();
+        }
+        kept.map(|(_, usage)| usage)
+    }
+
+    /// The models' use was counted: an open `&` list is ordered again by it, the highlighted
+    /// model staying so.
+    pub(super) fn model_usage_arrived(&mut self, cx: &mut Context<Self>) {
+        self.reopen_with(Sigil::Model, cx);
+    }
+
     /// A folder's listing came: an open `@` list is worked out again from it.
     fn listing_arrived(&mut self, cx: &mut Context<Self>) {
+        self.reopen_with(Sigil::Mention, cx);
+    }
+
+    /// Work an open list of `sigil` out again, from what has come since; the row that was
+    /// highlighted stays so if it is still there.
+    fn reopen_with(&mut self, sigil: Sigil, cx: &mut Context<Self>) {
         let Some(open) = self
             .suggestions
             .open
-            .take_if(|open| open.trigger.sigil == Sigil::Mention)
+            .take_if(|open| open.trigger.sigil == sigil)
         else {
             return;
         };
-        let highlighted = open.items.get(open.highlight).cloned();
+        let highlighted = open
+            .items
+            .get(open.highlight)
+            .cloned()
+            .filter(|_| open.moved || sigil != Sigil::Model);
+        let moved = open.moved;
         self.suggestions.open = self.rank_suggestions(open.trigger, cx).map(|mut fresh| {
             // The row that was highlighted stays so if it is still there.
             if let Some(at) =
-                highlighted.and_then(|item| fresh.items.iter().position(|i| *i == item))
+                highlighted.and_then(|item| fresh.items.iter().position(|i| i.same(&item)))
             {
                 fresh.highlight = at;
+                fresh.moved = moved;
             }
             fresh
         });
@@ -444,6 +616,7 @@ impl ChatView {
         } else {
             (open.highlight + rows - 1) % rows
         };
+        open.moved = true;
         self.suggestions.scroll.scroll_to_item(open.highlight);
         self.peek_highlighted(cx);
         cx.notify();
@@ -455,6 +628,7 @@ impl ChatView {
         };
         if open.highlight != row && row < open.items.len() {
             open.highlight = row;
+            open.moved = true;
             self.peek_highlighted(cx);
             cx.notify();
         }
@@ -477,9 +651,17 @@ impl ChatView {
         let Some(open) = self.suggestions.open.take() else {
             return;
         };
-        let Some(insert) = open.items.get(row).map(Item::insertion) else {
-            self.suggestions.open = Some(open);
-            return;
+        let insert = match open.items.get(row) {
+            Some(Item::Model { entry, current }) => {
+                let (entry, current) = (entry.clone(), *current);
+                self.accept_model(open, entry, current, window, cx);
+                return;
+            }
+            Some(item) => item.label(),
+            None => {
+                self.suggestions.open = Some(open);
+                return;
+            }
         };
         let (text, caret) = {
             let state = self.composer.read(cx);
@@ -499,6 +681,92 @@ impl ChatView {
             state.replace(replacement, window, cx);
             state.set_selected_range(caret..caret, cx);
         });
+        cx.notify();
+    }
+
+    /// Switch the chat to `entry` as the model menu does (`choose_model`: one `Configure`, the
+    /// effort carried over or moved to the model's default) and take the `&` token out of the
+    /// draft, as an edit ⌘Z takes back. Nothing is sent. The chat's current model only closes
+    /// the list. When the change cannot be sent (no chat connected yet), the composer says so as
+    /// it says for any command, and the draft keeps the token.
+    fn accept_model(
+        &mut self,
+        open: Open,
+        entry: ModelEntry,
+        current: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (text, caret) = {
+            let state = self.composer.read(cx);
+            (state.value().to_string(), state.cursor())
+        };
+        // The draft may have changed since the list was drawn: act on its token now.
+        let Some(trigger) = suggest::trigger(&text, caret)
+            .filter(|now| now.start == open.trigger.start && now.sigil == Sigil::Model)
+        else {
+            cx.notify();
+            return;
+        };
+        if current {
+            self.suggestions.dismissed = Some(trigger.start);
+            cx.notify();
+            return;
+        }
+        let connected = self.feed.is_some();
+        self.choose_model(&entry.id, cx);
+        if !connected {
+            self.suggestions.dismissed = Some(trigger.start);
+            return;
+        }
+        // The token leaves at once, so that a ⏎ meanwhile cannot send it; a refusal puts it back.
+        let (after, at) = suggest::remove(&text, &trigger);
+        self.suggestions.switched = Some(Switched {
+            model: entry.id,
+            token: text[trigger.start..trigger.end].to_owned(),
+            at,
+            caret,
+            after,
+        });
+        self.composer.update(cx, |state, cx| {
+            state.set_selected_range(trigger.start..trigger.end, cx);
+            state.replace("", window, cx);
+            state.set_selected_range(at..at, cx);
+        });
+        cx.notify();
+    }
+
+    /// The host refused `command`: if it is the model change `&` asked for last, its token goes
+    /// back where it was, as an edit ⌘Z takes back, so the draft is what it was before. Only into
+    /// the draft accepting left: one edited since keeps the edit. The list stays closed for it.
+    pub(super) fn restore_model_token(
+        &mut self,
+        command: &crate::chat::model::ChatCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let crate::chat::model::ChatCommand::Configure {
+            model: Some(model), ..
+        } = command
+        else {
+            return;
+        };
+        let Some(switched) = self
+            .suggestions
+            .switched
+            .take_if(|switched| switched.model == *model)
+        else {
+            return;
+        };
+        if self.composer.read(cx).value().as_ref() != switched.after.as_str() {
+            return;
+        }
+        self.composer.update(cx, |state, cx| {
+            state.set_selected_range(switched.at..switched.at, cx);
+            state.replace(switched.token, window, cx);
+            state.set_selected_range(switched.caret..switched.caret, cx);
+        });
+        self.suggestions.dismissed = Some(switched.at);
         cx.notify();
     }
 
@@ -622,6 +890,10 @@ impl ChatView {
         let colors = look.colors;
         let title = match open.trigger.sigil {
             Sigil::Slash => "Commands".to_owned(),
+            Sigil::Model => match self.provider() {
+                Some(provider) => format!("{} models · most used first", provider_name(provider)),
+                None => "Models".to_owned(),
+            },
             Sigil::Mention => match self.suggestion_root() {
                 Some(root) => format!(
                     "Files in {}",
@@ -633,7 +905,9 @@ impl ChatView {
                 None => "Files".to_owned(),
             },
         };
-        let note = if open.loading {
+        let note = if open.loading && open.trigger.sigil == Sigil::Model {
+            Some("Counting use…".to_owned())
+        } else if open.loading {
             Some("Listing files…".to_owned())
         } else if open.truncated {
             Some(format!(
@@ -645,7 +919,7 @@ impl ChatView {
         };
         let rows = open.items.iter().enumerate().map(|(row, item)| {
             let highlighted = row == open.highlight;
-            let label = item.insertion();
+            let label = item.label();
             div()
                 .id(ElementId::NamedInteger(
                     "composer-suggestion".into(),
@@ -743,6 +1017,23 @@ impl ChatView {
         let colors = look.colors;
         let preview = match open.items.get(open.highlight)? {
             Item::Command(command) => suggest::command_preview(command, self.provider()?),
+            Item::Model { entry, .. } => {
+                let current = self.current_model_id().and_then(|id| {
+                    self.model
+                        .transcript
+                        .models
+                        .iter()
+                        .find(|model| model.id == id)
+                        .map(|model| ModelEntry {
+                            id: model.id.clone(),
+                            name: model.name.clone(),
+                            description: model.description.clone(),
+                            is_default: model.is_default,
+                            chats: 0,
+                        })
+                });
+                suggest::model_preview(entry, current.as_ref(), self.provider()?)
+            }
             Item::File(entry) => {
                 let peek = self
                     .suggestion_root()
@@ -755,6 +1046,7 @@ impl ChatView {
             }
         };
         let code = matches!(open.items.get(open.highlight), Some(Item::File(_)));
+        let model = matches!(open.items.get(open.highlight), Some(Item::Model { .. }));
         Some(
             div()
                 .id("composer-suggestion-preview")
@@ -803,7 +1095,7 @@ impl ChatView {
                                 .map(|line| div().truncate().child(line.clone())),
                         )
                 }))
-                .child(
+                .children((!preview.inserts.is_empty()).then(|| {
                     div()
                         .flex()
                         .gap(ui_text::space(4.0))
@@ -819,8 +1111,8 @@ impl ChatView {
                                 .truncate()
                                 .font_family(ui_text::code_family())
                                 .child(preview.inserts.clone()),
-                        ),
-                )
+                        )
+                }))
                 .child(
                     div()
                         .text_size(ui_text::text(10.0))
@@ -831,7 +1123,11 @@ impl ChatView {
                     div()
                         .text_size(ui_text::text(10.0))
                         .text_color(rgb(colors.muted))
-                        .child("⏎ or ⇥ inserts · ⎋ closes · nothing is sent"),
+                        .child(if model {
+                            "⏎ or ⇥ switches · ⎋ closes · nothing is sent"
+                        } else {
+                            "⏎ or ⇥ inserts · ⎋ closes · nothing is sent"
+                        }),
                 )
                 .test_support()
                 .into_any_element(),

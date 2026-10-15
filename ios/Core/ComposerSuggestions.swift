@@ -1,16 +1,20 @@
 import Foundation
 
-// What a chat's composer suggests while a `/` command or an `@` file is typed, and what each suggestion shows and puts in before anything
-// is sent. The phone's half of `crates/riwork-engine/src/chat/suggest.rs`: the desktop owns the catalog and sends it with
+// What a chat's composer suggests while a `/` command, an `@` file or a `&` model is typed, and what each suggestion shows and does before
+// anything is sent. The phone's half of `crates/riwork-engine/src/chat/suggest.rs`: the desktop owns the catalog and sends it with
 // `chat.suggestions` (`ChatSuggestionsReply`); the phone applies the same rules to it, which `Tests/Fixtures/composer-suggestions.json` pins
 // for both sides.
 //
 // - **When the list opens** (`ComposerSuggestions.trigger`): `/` as the first thing in the draft (leading blank space allowed), because a
 //   provider reads a slash command only at the start of a message; `@` at the start of the draft or after blank space. The token runs
-//   from the sigil to the next blank space, the query from after the sigil to the caret. A sigil inside a word (`a/b`, `me@host`) opens
-//   nothing, nor does a token that is not a whole command name (`/usr/bin`).
+//   from the sigil to the next blank space, the query from after the sigil to the caret. A sigil inside a word (`a/b`, `me@host`, `a&b`, a
+//   URL's `?x=1&y=2`) opens nothing, nor does a token that is not a whole command name (`/usr/bin`). `&` opens as `@` does, and only as the
+//   draft's last word.
+// - **`&` models** (`ComposerModelEntry`): the models the chat's provider listed, with how many of the person's own chats use each, the
+//   most used first (`ComposerSuggestions.orderModels`); the chat's own model is marked.
 // - **Accepting** (`ComposerSuggestions.accept`) replaces the token with the entry's text and a space. It never sends: that stays the
-//   person's own ⏎ or Send.
+//   person's own ⏎ or Send. A model inserts nothing: accepting one asks for the chat's model change (the model picker's own `configure`,
+//   `ComposerAcceptance.switchModel`) and the token leaves the draft once it went through; the chat's own model only closes the list.
 // - **Offsets** are UTF-16 code units, what `UITextView.selectedRange` counts, where the desktop counts bytes. Every rule works on Unicode
 //   scalars (Rust's `char`), never on Swift's grapheme clusters or its canonical string equality, so the two sides agree on every text.
 
@@ -20,10 +24,13 @@ public enum ComposerSigil: String, Sendable, Equatable, Hashable, Codable {
     case slash
     /// `@`: a file or folder of the chat's folder.
     case mention
+    /// `&`: a model of the chat's provider to switch the chat to.
+    case model
     public var scalar: Unicode.Scalar {
         switch self {
         case .slash: "/"
         case .mention: "@"
+        case .model: "&"
         }
     }
 }
@@ -71,6 +78,7 @@ public enum ComposerSuggestions {
         switch scalars[start] {
         case "/" where scalars[..<start].allSatisfy(\.properties.isWhitespace): sigil = .slash
         case "@": sigil = .mention
+        case "&": sigil = .model
         default: return nil
         }
         // The caret is before the sigil: the token is not being typed.
@@ -78,6 +86,8 @@ public enum ComposerSuggestions {
         let afterSigil = scalars.index(after: start)
         // A command name is one word: a path typed at the start of a message is just text.
         if sigil == .slash, scalars[afterSigil..<end].contains("/") { return nil }
+        // A model is picked with the draft's last word: `&` before more words is just text.
+        if sigil == .model, !scalars[end...].allSatisfy(\.properties.isWhitespace) { return nil }
         return ComposerTrigger(sigil: sigil, start: utf16.distance(from: utf16.startIndex, to: start), end: utf16.distance(from: utf16.startIndex, to: end),
                                caret: caret, query: String(scalars[afterSigil..<caretIndex]))
     }
@@ -100,6 +110,15 @@ public enum ComposerSuggestions {
         return (out, caret)
     }
 
+    /// `text` without the trigger's token, and the caret (a UTF-16 offset) where it was: what accepting a model leaves. The blank space
+    /// around it stays as it was. A trigger that no longer fits the text is held to it.
+    public static func remove(_ text: String, trigger: ComposerTrigger) -> (text: String, caret: Int) {
+        let count = text.utf16.count
+        let lower = min(max(trigger.start, 0), count), upper = min(max(trigger.end, lower), count)
+        let head = text[..<String.Index(utf16Offset: lower, in: text)], rest = text[String.Index(utf16Offset: upper, in: text)...]
+        return (String(head) + rest, lower)
+    }
+
     // MARK: Matching
 
     /// The commands that match `query`, best first: a name that starts with it, then one that holds it, then one that holds its letters
@@ -116,6 +135,51 @@ public enum ComposerSuggestions {
             return (tier, offset, command)
         }
         return ranked.sorted { ($0.tier, $0.offset) < ($1.tier, $1.offset) }.map(\.command)
+    }
+
+    /// The order the `&` list offers `models` in before anything is typed (`order_models`): the most used first; ties, and models never
+    /// used, in the provider's order.
+    public static func orderModels(_ models: [ComposerModelEntry]) -> [ComposerModelEntry] {
+        models.enumerated().sorted { ($1.element.chats, $0.offset) < ($0.element.chats, $1.offset) }.map(\.element)
+    }
+    /// The models that match `query` by id or name, best first as `rankCommands` ranks (the best tier either reaches), with
+    /// `orderModels`' order deciding ties (`rank_models`).
+    public static func rankModels(_ query: String, _ models: [ComposerModelEntry]) -> [ComposerModelEntry] {
+        let query = lowered(query)
+        let ranked = orderModels(models).enumerated().compactMap { offset, model -> (tier: Int, offset: Int, model: ComposerModelEntry)? in
+            let tiers = [model.id, model.name].compactMap { name -> Int? in
+                let name = lowered(name)
+                if name.starts(with: query) { return 0 }
+                if holds(name, query[...]) { return 1 }
+                if subsequence(query, of: name[...]) { return 2 }
+                return nil
+            }
+            guard let tier = tiers.min() else { return nil }
+            return (tier, offset, model)
+        }
+        return ranked.sorted { ($0.tier, $0.offset) < ($1.tier, $1.offset) }.map(\.model)
+    }
+    /// The id of the model the chat runs (`current_model`): the one it is set to, else its provider's default. Ids are compared as
+    /// Unicode scalars, as the desktop compares them.
+    public static func currentModel(_ models: [ComposerModelEntry], chosen: String?) -> String? {
+        let chosen = chosen?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let chosen, !chosen.isEmpty { return models.first { sameID($0.id, chosen) }?.id }
+        return models.first { $0.isDefault }?.id
+    }
+    /// Two model ids are the same id: the same Unicode scalars (not merely canonically equal text).
+    public static func sameID(_ a: String, _ b: String) -> Bool { a.unicodeScalars.elementsEqual(b.unicodeScalars) }
+    /// The draft to put back when a model change `&` asked for was refused: the draft as it was (`before`, the caret at `caret`), if
+    /// the draft is still what accepting left (`after`); nil once it was edited since, which keeps the edit.
+    public static func restoring(before: String, caret: Int, after: String, now: String) -> (text: String, caret: Int)? {
+        now.unicodeScalars.elementsEqual(after.unicodeScalars) ? (before, caret) : nil
+    }
+    /// What a model's use says (`usage_label`): how many of the person's chats of `provider` are set to it.
+    public static func usageLabel(chats: UInt64, provider: ChatProvider) -> String {
+        switch chats {
+        case 0: "None of your \(provider.title) chats use it now"
+        case 1: "1 of your \(provider.title) chats uses it now"
+        default: "\(chats) of your \(provider.title) chats use it now"
+        }
     }
 
     /// The entries that match `query`, best first and at most `limit`: a name that starts with it, then a path that does or has a part that
@@ -251,6 +315,44 @@ public struct ComposerFileListing: Sendable, Equatable, Decodable {
     }
 }
 
+// MARK: - Models
+
+/// A model of the chat's provider as the `&` list shows it, with how much the person uses it (`ModelEntry`).
+public struct ComposerModelEntry: Sendable, Equatable, Hashable, Decodable {
+    /// What the chat is set to: the provider's model id.
+    public let id: String
+    public let name: String
+    public let description: String
+    /// The provider uses it when the chat names none.
+    public let isDefault: Bool
+    /// How many of the person's own chats of the provider are set to it now.
+    public let chats: UInt64
+    public init(id: String, name: String, description: String = "", isDefault: Bool = false, chats: UInt64 = 0) {
+        self.id = id; self.name = name; self.description = description; self.isDefault = isDefault; self.chats = chats
+    }
+    private enum CodingKeys: String, CodingKey { case id, name, description, isDefault = "is_default", chats }
+    /// A model needs an id that is not blank and a name; one without is left out (`Lenient`), never the reply. The rest default as the
+    /// desktop's do.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try c.decode(String.self, forKey: .id)
+        guard !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "a blank model id")
+        }
+        self.init(id: id, name: try c.decode(String.self, forKey: .name), description: c.tolerant(String.self, forKey: .description) ?? "",
+                  isDefault: c.tolerant(Bool.self, forKey: .isDefault) ?? false, chats: c.tolerant(UInt64.self, forKey: .chats) ?? 0)
+    }
+    /// The row's second line (`model_detail`): whether the chat runs it, and how many chats use it.
+    public func detail(current: Bool) -> String {
+        let used = switch chats {
+        case 0: "not used yet"
+        case 1: "used in 1 chat"
+        default: "used in \(chats) chats"
+        }
+        return current ? "Current · \(used)" : used.prefix(1).uppercased() + used.dropFirst()
+    }
+}
+
 // MARK: - Previews
 
 /// What the card beside the list says about the highlighted entry before it is accepted (`Preview`).
@@ -280,6 +382,19 @@ public struct ComposerPreview: Sendable, Equatable {
     public init(file: ComposerFileEntry) {
         self.init(title: file.insertion, kind: file.kind, body: [], inserts: file.insertion, effect: Self.fileEffect)
     }
+    /// The preview of a model offered to a chat of `provider` that runs `current` now (`model_preview`): what choosing it does, the chat's
+    /// model, and the use the list is sorted by. It inserts nothing.
+    public init(model: ComposerModelEntry, current: ComposerModelEntry?, provider: ChatProvider) {
+        let isCurrent = current.map { ComposerSuggestions.sameID($0.id, model.id) } ?? false
+        var body: [String] = []
+        let description = model.description.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !description.isEmpty { body.append(description) }
+        body.append(current.map { "Now: \($0.name)" } ?? "Now: not known")
+        body.append(ComposerSuggestions.usageLabel(chats: model.chats, provider: provider))
+        self.init(title: model.name, kind: "\(provider.title) model" + (isCurrent ? " · current" : ""), body: body, inserts: "",
+                  effect: isCurrent ? "This chat runs it already: choosing it only closes the list."
+                      : "Switch this chat to \(model.name). The token leaves the draft; nothing is sent.")
+    }
 }
 
 // MARK: - A chat's catalog
@@ -297,19 +412,23 @@ public final class ComposerCatalog: Sendable {
     public let filesTruncated: Bool
     /// The most entries one listing holds (`FILE_BOUND`).
     public let fileBound: Int
+    /// The models the chat's provider listed, in its order, with their use; none from a desktop before `&`.
+    public let models: [ComposerModelEntry]
     private let keys: [FileKey]
 
-    public init(chatID: String, provider: ChatProvider, root: String = "", commands: [ComposerCommand], files: [ComposerFileEntry], filesTruncated: Bool = false, fileBound: Int = 5000) {
+    public init(chatID: String, provider: ChatProvider, root: String = "", commands: [ComposerCommand], files: [ComposerFileEntry], filesTruncated: Bool = false, fileBound: Int = 5000,
+                models: [ComposerModelEntry] = []) {
         self.chatID = chatID; self.provider = provider; self.root = root; self.commands = commands; self.files = files
-        self.filesTruncated = filesTruncated; self.fileBound = fileBound
+        self.filesTruncated = filesTruncated; self.fileBound = fileBound; self.models = models
         keys = files.map(FileKey.init)
     }
     public convenience init(reply: ChatSuggestionsReply) {
         self.init(chatID: reply.chatID, provider: reply.provider, root: reply.root, commands: reply.commands, files: reply.files.entries,
-                  filesTruncated: reply.files.truncated, fileBound: reply.fileBound)
+                  filesTruncated: reply.files.truncated, fileBound: reply.fileBound, models: reply.models)
     }
 
     public func rankCommands(_ query: String) -> [ComposerCommand] { ComposerSuggestions.rankCommands(query, commands) }
+    public func rankModels(_ query: String) -> [ComposerModelEntry] { ComposerSuggestions.rankModels(query, models) }
     public func rankFiles(_ query: String, limit: Int = ComposerSuggestions.shownFiles) -> [ComposerFileEntry] {
         Self.rank(query, keys, limit: limit).map { files[$0] }
     }
@@ -457,33 +576,55 @@ public struct ComposerCatalogCache: Sendable {
 public enum ComposerSuggestion: Sendable, Equatable, Hashable, Identifiable {
     case command(ComposerCommand)
     case file(ComposerFileEntry)
+    /// A model of the chat's provider, and whether the chat runs it now.
+    case model(ComposerModelEntry, current: Bool)
+    /// Whether it is the same entry as `other`: a model by its id, whatever its use or mark.
+    public func isSame(as other: ComposerSuggestion) -> Bool {
+        if case .model(let a, _) = self, case .model(let b, _) = other { return ComposerSuggestions.sameID(a.id, b.id) }
+        return self == other
+    }
     public var id: String {
         switch self {
         case .command(let command): command.insertion
         case .file(let file): "@" + file.shownPath
+        case .model(let model, _): "&" + model.id
         }
     }
-    /// The row's first line: `/compact`, `src/`, `src/main.rs`.
+    /// The row's first line: `/compact`, `src/`, `src/main.rs`, a model's name.
     public var title: String {
         switch self {
         case .command(let command): command.insertion
         case .file(let file): file.shownPath
+        case .model(let model, _): model.name
         }
     }
-    /// The row's second line: a command's summary, a file's kind and size.
+    /// The row's second line: a command's summary, a file's kind and size, whether the chat runs a model and how much it is used.
     public var detail: String {
         switch self {
         case .command(let command): command.summary
         case .file(let file): file.kind
+        case .model(let model, let current): model.detail(current: current)
         }
     }
-    /// What accepting it puts in the draft.
+    /// What accepting it puts in the draft; nothing for a model, which is chosen rather than put in.
     public var insertion: String {
         switch self {
         case .command(let command): command.insertion
         case .file(let file): file.insertion
+        case .model: ""
         }
     }
+}
+
+/// What accepting the highlighted row does.
+public enum ComposerAcceptance: Sendable, Equatable {
+    /// Put this text in the composer, the caret here: a command or a file.
+    case insert(text: String, caret: Int)
+    /// Ask for the chat's model change to `model`, the model picker's own `configure`; once it went through, the draft is `text` (the
+    /// token gone) with the caret at `caret`. A refused change keeps the draft as it is.
+    case switchModel(model: String, text: String, caret: Int)
+    /// The chat's own model: only close the list.
+    case closeOnly
 }
 
 /// The `/` and `@` list of a composer, without drawing: which token opened it, what matches, which row is highlighted, and what
@@ -511,15 +652,20 @@ public struct ComposerSuggestionList: Sendable, Equatable {
     public private(set) var filesTruncated = false
     /// The chat's provider, as its catalog says (for a command's preview).
     public private(set) var provider: ChatProvider?
+    /// The model the chat runs, among the catalog's (for a model's preview).
+    public private(set) var currentModel: ComposerModelEntry?
     /// The token Escape closed the list for, by its sigil and where the sigil is.
     private var dismissed: Mark?
+    /// The person moved the highlight for this query: a `&` list read again keeps it on their model; one never moved keeps it on the
+    /// first row, the most used.
+    private var moved = false
     /// What `items` were ranked from, so a caret that moves without changing the query does not rank them again.
     private var ranked: Ranked?
 
     private struct Mark: Sendable, Equatable { let sigil: ComposerSigil; let start: Int }
     /// The query as the scalars the matching compares, not as a `String`: canonically equal text (`é` and `e` with a combining acute) is
     /// another query.
-    private struct Ranked: Sendable, Equatable { let sigil: ComposerSigil; let query: [Unicode.Scalar]; let catalog: ComposerCatalogState }
+    private struct Ranked: Sendable, Equatable { let sigil: ComposerSigil; let query: [Unicode.Scalar]; let catalog: ComposerCatalogState; let chosenModel: String? }
 
     public init() {}
 
@@ -531,13 +677,15 @@ public struct ComposerSuggestionList: Sendable, Equatable {
         switch highlightedItem {
         case .command(let command)?: provider.map { ComposerPreview(command: command, provider: $0) }
         case .file(let file)?: ComposerPreview(file: file)
+        case .model(let model, _)?: provider.map { ComposerPreview(model: model, current: currentModel, provider: $0) }
         case nil: nil
         }
     }
 
     /// The text or the caret changed (`caret` is a UTF-16 offset; nil when text is selected rather than a caret placed), or the catalog
-    /// did. A new query highlights the best match again; the same query keeps the highlighted row where it can.
-    public mutating func update(text: String, caret: Int?, catalog: ComposerCatalogState) {
+    /// did, or the model the chat is set to (`chosenModel`, nil for its default). A new query highlights the best match again; the same
+    /// query keeps the highlighted row where it can.
+    public mutating func update(text: String, caret: Int?, catalog: ComposerCatalogState, chosenModel: String? = nil) {
         self.text = text
         guard let found = caret.flatMap({ ComposerSuggestions.trigger(in: text, caret: $0) }) else { dismissed = nil; close(); return }
         if let dismissed {
@@ -556,31 +704,41 @@ public struct ComposerSuggestionList: Sendable, Equatable {
         case .ready(let catalog):
             provider = catalog.provider
             filesTruncated = found.sigil == .mention && catalog.filesTruncated
-            let key = Ranked(sigil: found.sigil, query: Array(found.query.unicodeScalars), catalog: .ready(catalog))
+            let current = ComposerSuggestions.currentModel(catalog.models, chosen: chosenModel)
+            currentModel = catalog.models.first { model in current.map { ComposerSuggestions.sameID(model.id, $0) } ?? false }
+            let key = Ranked(sigil: found.sigil, query: Array(found.query.unicodeScalars), catalog: .ready(catalog), chosenModel: current)
             if ranked != key {
-                items = found.sigil == .slash ? catalog.rankCommands(found.query).map { .command($0) } : catalog.rankFiles(found.query).map { .file($0) }
+                items = switch found.sigil {
+                case .slash: catalog.rankCommands(found.query).map { .command($0) }
+                case .mention: catalog.rankFiles(found.query).map { .file($0) }
+                case .model: catalog.rankModels(found.query).map { model in .model(model, current: current.map { ComposerSuggestions.sameID(model.id, $0) } ?? false) }
+                }
                 ranked = key
             }
         }
         let sameQuery = previous.map {
             $0.sigil == found.sigil && $0.start == found.start && $0.query.unicodeScalars.elementsEqual(found.query.unicodeScalars)
         } ?? false
-        highlighted = sameQuery ? kept.flatMap { items.firstIndex(of: $0) } ?? 0 : 0
+        // A new query starts at the best match; the same one keeps the person's row (a model by its id, whatever its use).
+        if !sameQuery { moved = false }
+        let keep = sameQuery && (moved || found.sigil != .model)
+        highlighted = keep ? kept.flatMap { kept in items.firstIndex { $0.isSame(as: kept) } } ?? 0 : 0
     }
 
     /// ↑ or ↓: the next row up or down, around at the ends.
     public mutating func move(_ step: Step) {
         guard !items.isEmpty else { return }
         highlighted = (highlighted + (step == .down ? 1 : items.count - 1)) % items.count
+        moved = true
     }
     public mutating func highlight(_ index: Int) {
-        if items.indices.contains(index) { highlighted = index }
+        if items.indices.contains(index) { highlighted = index; moved = true }
     }
     /// A tap on a row: one that is not highlighted is highlighted (its card shows); the highlighted one is accepted.
     public mutating func tap(_ index: Int) -> (text: String, caret: Int)? {
         guard items.indices.contains(index) else { return nil }
         if index == highlighted { return accepted() }
-        highlighted = index
+        highlighted = index; moved = true
         return nil
     }
     /// Escape or the close button: closed until the token goes.
@@ -588,14 +746,36 @@ public struct ComposerSuggestionList: Sendable, Equatable {
         if let trigger { dismissed = Mark(sigil: trigger.sigil, start: trigger.start) }
         close()
     }
-    /// The text with the highlighted row put in for the token, and where the caret goes; nil when nothing is highlighted.
+    /// The text with the highlighted row put in for the token, and where the caret goes; nil when nothing is highlighted, or a model is
+    /// (see `acceptance`).
     public func accepted() -> (text: String, caret: Int)? {
+        guard case .insert(let text, let caret)? = acceptance() else { return nil }
+        return (text, caret)
+    }
+    /// What accepting the highlighted row does; nil when nothing is highlighted.
+    public func acceptance() -> ComposerAcceptance? {
         guard let trigger, let item = highlightedItem else { return nil }
-        return ComposerSuggestions.accept(text, trigger: trigger, insert: item.insertion)
+        switch item {
+        case .model(_, current: true):
+            return .closeOnly
+        case .model(let model, current: false):
+            let removed = ComposerSuggestions.remove(text, trigger: trigger)
+            return .switchModel(model: model.id, text: removed.text, caret: removed.caret)
+        case .command, .file:
+            let accepted = ComposerSuggestions.accept(text, trigger: trigger, insert: item.insertion)
+            return .insert(text: accepted.text, caret: accepted.caret)
+        }
+    }
+    /// A tap on a row, as `tap` does it: one that is not highlighted is highlighted; the highlighted one is accepted (`acceptance`).
+    public mutating func tapped(_ index: Int) -> ComposerAcceptance? {
+        guard items.indices.contains(index) else { return nil }
+        if index == highlighted { return acceptance() }
+        highlighted = index; moved = true
+        return nil
     }
 
     private mutating func close() {
-        trigger = nil; items = []; highlighted = 0; listingFiles = false; filesTruncated = false; ranked = nil
+        trigger = nil; items = []; highlighted = 0; listingFiles = false; filesTruncated = false; ranked = nil; currentModel = nil; moved = false
     }
 }
 

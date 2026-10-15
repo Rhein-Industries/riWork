@@ -109,7 +109,7 @@ riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--m
                 [--title TEXT] [--account LABEL_OR_ID]
 riwork chat models --provider codex|claude|muse [--project ID] [--json]
                                         The models chats of that provider reported, read from saved chats
-riwork chat suggestions CHAT_ID [--json]   The / commands and @ files a chat's message box offers
+riwork chat suggestions CHAT_ID [--json]   The / commands, @ files and & models a chat's message box offers
 riwork chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
 riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [--json]
                                         Read a chat's events after N, waiting up to M ms for the first
@@ -186,8 +186,10 @@ other settings, while a turn runs or waits or Muse still starts. A Codex or Clau
 refuses on; one that kept on from Muse can turn it off before it goes back to Muse.
 chat models lists what a chat of that provider can be set to, read from saved chats; a
 project selects the Codex account the list is for.
-chat suggestions lists the slash commands a chat offers and the files and folders of its
-folder (at most 5000, without what .gitignore leaves out), and starts no host or provider.
+chat suggestions lists the slash commands a chat offers, the files and folders of its
+folder (at most 5000, without what .gitignore leaves out) and the models its provider listed
+for it, with how many of your own chats of that provider are set to each now, and starts no
+host or provider.
 Its --json is at most 4 MiB: a listing that would print more keeps its first entries and
 says it is truncated.
 capabilities --json has \"chat\": true, \"orchestrator_create\": true,
@@ -1014,9 +1016,9 @@ fn open_command(args: Vec<String>, json: bool, invocation: Invocation) -> Result
 /// reads and starting nothing. An older CLI has no such command.
 ///
 /// `chat_suggestions`: `chat suggestions CHAT_ID --json` prints what the chat's message box
-/// offers for `/` and `@` (`chat::suggest::Reply`), which the remote connector's
-/// `chat.suggestions` passes on. It reads the chat's folder and starts nothing. An older CLI
-/// has no such command.
+/// offers for `/`, `@` and `&` (`chat::suggest::Reply`), which the remote connector's
+/// `chat.suggestions` passes on. It reads the chat's folder and the chats' saved metadata and
+/// starts nothing. An older CLI has no such command, and one before `&` prints no `models`.
 ///
 /// `project_memo`: `project memo show|set ID --json` reads and replaces a project's memo as the
 /// remote connector's `project.memo.get` and `project.memo.set` pass it on (`cli/memo.rs`). An
@@ -2820,7 +2822,13 @@ fn chat_client_command(
                 .and_then(|mut client| client.list())
                 .unwrap_or_else(|_| crate::chat::log::read_infos(home));
             let info = find_chat(&chats, &id)?;
-            let reply = crate::chat::suggest::reply(&info.id, info.provider, &info.cwd);
+            // `&`'s models: the chat's own list, with how many of the person's chats use each.
+            let models = crate::chat::suggest::model_entries(
+                &crate::chat::catalog::chat_models(home, info),
+                info.provider,
+                &crate::chat::suggest::ModelUsage::of(&chats),
+            );
+            let reply = crate::chat::suggest::reply(&info.id, info.provider, &info.cwd, models);
             if json {
                 return json_text(&reply);
             }
@@ -2829,6 +2837,14 @@ fn chat_client_command(
                 .iter()
                 .map(|command| format!("/{}\t{}\n", command.name, command.summary))
                 .collect();
+            for model in crate::chat::suggest::order_models(&reply.models) {
+                text.push_str(&format!(
+                    "&{}\t{}\t{}\n",
+                    terminal_safe(&model.id),
+                    terminal_safe(&model.name),
+                    crate::chat::suggest::usage_label(model.chats, reply.provider)
+                ));
+            }
             for entry in &reply.files.entries {
                 // A folder ends in `/`.
                 text.push_str(&terminal_safe(&entry.path));

@@ -1505,7 +1505,9 @@ fn suggestions_read_a_saved_chats_commands_and_folder_without_a_host() {
                 {"path": "src", "dir": true, "bytes": null},
                 {"path": "src/main.rs", "dir": false, "bytes": 13}
             ], "truncated": false},
-            "file_bound": 5000
+            "file_bound": 5000,
+            // No chat of the provider has listed its models: no `&` model is made up.
+            "models": []
         })
     );
     assert_eq!(reply["commands"][0]["name"], "compact");
@@ -1523,6 +1525,89 @@ fn suggestions_read_a_saved_chats_commands_and_folder_without_a_host() {
     );
     assert_eq!(reply["commands"][0]["name"], "memo");
     assert_eq!(reply["files"]["entries"].as_array().unwrap().len(), 3);
+    assert!(!home.join("run").exists(), "no host was started");
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn suggestions_offer_the_chats_models_with_how_much_each_is_used() {
+    let home =
+        std::env::temp_dir().join(format!("riwork-cli-suggestions-{}", uuid::Uuid::new_v4()));
+    let folder = home.join("work");
+    std::fs::create_dir_all(&folder).unwrap();
+    // A saved chat, as the host leaves it: set to `model`, written in or not, a worker's or not.
+    let save = |provider: &str, model: Option<&str>, used: bool, worker: bool| {
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut info: ChatInfo = serde_json::from_value(json!({
+            "id": id, "provider": provider, "cwd": folder, "title": "Saved",
+            "created_at_unix": 1, "state": {"state": "stopped"}
+        }))
+        .unwrap();
+        info.model = model.map(str::to_owned);
+        info.first_user_message = used.then(|| "hello".to_owned());
+        info.parent_id = worker.then(|| "parent".to_owned());
+        crate::chat::log::ChatLog::create(&crate::chat::log::chat_dir(&home, &id).unwrap(), &info)
+            .unwrap();
+        id
+    };
+    let chat = save("claude", Some("opus"), true, false);
+    // The chat's driver listed its models, in its order.
+    let models: Vec<crate::chat::model::ModelOption> = serde_json::from_value(json!([
+        {"id": "default", "name": "Default", "is_default": true},
+        {"id": "opus", "name": "Opus", "description": "For complex tasks"},
+        {"id": "haiku", "name": "Haiku"}
+    ]))
+    .unwrap();
+    let line = serde_json::to_vec(&Envelope {
+        chat_id: chat.clone(),
+        seq: 2,
+        event: ChatEvent::Models { models },
+    })
+    .unwrap();
+    let mut events = std::fs::OpenOptions::new()
+        .append(true)
+        .open(
+            crate::chat::log::chat_dir(&home, &chat)
+                .unwrap()
+                .join("events.jsonl"),
+        )
+        .unwrap();
+    std::io::Write::write_all(&mut events, &[line, b"\n".to_vec()].concat()).unwrap();
+    for _ in 0..2 {
+        save("claude", Some("opus"), true, false);
+    }
+    save("claude", None, true, false);
+    // Not the person's own use: never written in, a worker's, another provider's.
+    save("claude", Some("haiku"), false, false);
+    save("claude", Some("haiku"), true, true);
+    save("codex", Some("haiku"), true, false);
+
+    let run = |json: bool| {
+        chat_client_command(
+            &home,
+            vec!["suggestions".into(), chat.clone()],
+            json,
+            &|_| panic!("suggestions must never start the host"),
+        )
+        .unwrap()
+    };
+    let reply: Value = serde_json::from_str(&run(true)).unwrap();
+    assert_eq!(
+        reply["models"],
+        json!([
+            {"id": "default", "name": "Default", "description": "", "is_default": true, "chats": 1},
+            {"id": "opus", "name": "Opus", "description": "For complex tasks", "is_default": false, "chats": 3},
+            {"id": "haiku", "name": "Haiku", "description": "", "is_default": false, "chats": 0}
+        ]),
+        "the provider's order, with each model's use"
+    );
+    assert!(
+        run(false).contains(
+            "&opus\tOpus\t3 of your Claude chats use it now\n&default\tDefault\t1 of your Claude chats uses it now\n&haiku\tHaiku\tNone of your Claude chats use it now\n"
+        ),
+        "{}",
+        run(false)
+    );
     assert!(!home.join("run").exists(), "no host was started");
     std::fs::remove_dir_all(home).unwrap();
 }

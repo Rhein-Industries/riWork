@@ -29,6 +29,10 @@ pub const EFFORT_MAX_CHARS: usize = 32;
 pub const TITLE_MAX_CHARS: usize = 200;
 /// The longest slash command name `chat.suggestions` passes on, in bytes (`[a-z0-9-]`).
 const SUGGESTED_COMMAND_MAX: usize = 40;
+/// The most `&` models `chat.suggestions` passes on, and the longest name or description of
+/// one, in characters. A model's id is a `Configure` model (`MODEL_MAX_CHARS`).
+const SUGGESTED_MODELS_MAX: usize = 200;
+const SUGGESTED_MODEL_TEXT_MAX: usize = 500;
 /// The longest provider request id an approval or an answer may name.
 const REQUEST_ID_MAX_BYTES: usize = 200;
 /// What an `Answer` may hold: questions, choices per question, bytes of one choice, bytes in all.
@@ -477,9 +481,11 @@ pub(super) fn suggestions_spec(params: &Value) -> std::result::Result<Suggestion
     })
 }
 /// The `chat.suggestions` result for what the CLI printed, or `None` if it is not an answer for
-/// `chat`: the chat's id, provider and folder, its commands, the files and folders of its folder
-/// and the bound of a listing, and nothing else. A command or an entry that is malformed is left
-/// out on its own (see `suggested_command`, `suggested_file`).
+/// `chat`: the chat's id, provider and folder, its commands, the files and folders of its folder,
+/// the bound of a listing and its provider's models for `&`, and nothing else. A command, an
+/// entry or a model that is malformed is left out on its own (see `suggested_command`,
+/// `suggested_file`, `suggested_model`). A CLI from before `&` prints no models: the phone gets
+/// none and offers no `&` list.
 fn suggestions_result(chat: &str, cli: &Value) -> Option<Value> {
     if cli.get("chat_id")?.as_str()? != chat {
         return None;
@@ -491,6 +497,15 @@ fn suggestions_result(chat: &str, cli: &Value) -> Option<Value> {
     let commands = cli.get("commands")?.as_array()?;
     let files = cli.get("files")?;
     let entries = files.get("entries")?.as_array()?;
+    let models: Vec<Value> = match cli.get("models") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(models) => models
+            .as_array()?
+            .iter()
+            .filter_map(suggested_model)
+            .take(SUGGESTED_MODELS_MAX)
+            .collect(),
+    };
     Some(json!({
         "chat_id": chat,
         "provider": provider,
@@ -501,6 +516,43 @@ fn suggestions_result(chat: &str, cli: &Value) -> Option<Value> {
             "truncated": files.get("truncated")?.as_bool()?,
         },
         "file_bound": cli.get("file_bound")?.as_u64()?,
+        "models": models,
+    }))
+}
+/// A model as the phone may offer it for `&` and send back in a `Configure`: an id a chat may
+/// be set to (one line of at most `MODEL_MAX_CHARS`, not blank), a one-line name of at most
+/// `SUGGESTED_MODEL_TEXT_MAX` characters, its description when that is such a line too (else
+/// `""`, rather than leave the model out), whether it is the provider's default, and how many
+/// chats use it.
+fn suggested_model(model: &Value) -> Option<Value> {
+    let line = |text: &str, max: usize| text.chars().count() <= max && !has_control(text);
+    let id = model
+        .get("id")?
+        .as_str()
+        .filter(|id| !id.trim().is_empty() && line(id, MODEL_MAX_CHARS))?;
+    let name = model
+        .get("name")?
+        .as_str()
+        .filter(|name| line(name, SUGGESTED_MODEL_TEXT_MAX))?;
+    let description = match model.get("description") {
+        None | Some(Value::Null) => "",
+        Some(Value::String(text)) if line(text, SUGGESTED_MODEL_TEXT_MAX) => text,
+        Some(_) => "",
+    };
+    let is_default = match model.get("is_default") {
+        None | Some(Value::Null) => false,
+        Some(value) => value.as_bool()?,
+    };
+    let chats = match model.get("chats") {
+        None | Some(Value::Null) => 0,
+        Some(value) => value.as_u64()?,
+    };
+    Some(json!({
+        "id": id,
+        "name": name,
+        "description": description,
+        "is_default": is_default,
+        "chats": chats,
     }))
 }
 /// A slash command as the phone may show it: a name of 1 to `SUGGESTED_COMMAND_MAX` of
@@ -1097,7 +1149,28 @@ fn fit_suggestions(
     let (mut fit, mut over) = (0, entries.len());
     result["files"]["entries"] = json!([]);
     if !fits(&result)? {
-        return Err(cli_fault("chat suggestions exceed frame limit"));
+        // Only a provider's very long model list is left: the first models that fit, so that
+        // the commands still reach the phone.
+        let models = match result["models"].take() {
+            Value::Array(models) => models,
+            _ => Vec::new(),
+        };
+        let (mut fit, mut over) = (0, models.len());
+        result["models"] = json!([]);
+        if !fits(&result)? {
+            return Err(cli_fault("chat suggestions exceed frame limit"));
+        }
+        while over - fit > 1 {
+            let middle = (fit + over) / 2;
+            result["models"] = Value::Array(models[..middle].to_vec());
+            if fits(&result)? {
+                fit = middle;
+            } else {
+                over = middle;
+            }
+        }
+        result["models"] = Value::Array(models[..fit].to_vec());
+        return Ok(result);
     }
     while over - fit > 1 {
         let middle = (fit + over) / 2;

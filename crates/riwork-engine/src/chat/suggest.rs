@@ -1,5 +1,5 @@
-//! What a chat's message box suggests while a `/` command or an `@` file is typed, and what
-//! each suggestion shows and puts in before anything is sent. One catalog for every composer:
+//! What a chat's message box suggests while a `/` command, an `@` file or a `&` model is typed,
+//! and what each suggestion shows and does before anything is sent. One catalog for every composer:
 //! the desktop reads it here, and the phone gets the same entries from `riwork chat
 //! suggestions --json` (the connector's `chat.suggestions`) and applies the same rules, which
 //! `ios/Tests/Fixtures/composer-suggestions.json` pins for both.
@@ -8,8 +8,9 @@
 //!   space allowed), because a provider reads a slash command only at the start of a message;
 //!   `@` at the start of the draft or after blank space. The token runs from the sigil to the
 //!   next blank space, the query from after the sigil to the caret. A sigil inside a word
-//!   (`a/b`, `me@host`) opens nothing, nor does a token that is not a whole command name
-//!   (`/usr/bin`).
+//!   (`a/b`, `me@host`, `a&b`, a URL's `?x=1&y=2`) opens nothing, nor does a token that is not
+//!   a whole command name (`/usr/bin`). `&` opens as `@` does, and only as the draft's last
+//!   word: `&` before more words is just text.
 //! - **Slash commands** (`COMMANDS`): only what RiWork actually does with the text. RiWork's own
 //!   `/memo` is acted on by the composers before anything is sent; any other typed `/…` goes
 //!   to the provider as written, so the provider entries are the commands that verifiably work
@@ -21,8 +22,15 @@
 //!   Accepting one puts in its path relative to the chat's folder, which every provider's
 //!   agent can open from where it runs; nothing is attached. Chats and shells are not offered:
 //!   no provider and no RiWork pipeline resolves a reference to one from a message's text.
+//! - **`&` models** (`model_entries`): the models the chat's provider listed for it, as the
+//!   model menu has them, ordered by how much the person uses each (`order_models`): how many of
+//!   their own chats of the provider are set to it now, read from the chats' saved
+//!   `info.json` (`model_usage`). Nothing new is recorded for it.
 //! - **Accepting** (`accept`) replaces the token with the entry's text and a space. It never
-//!   sends: that stays the person's own ⏎ or Send.
+//!   sends: that stays the person's own ⏎ or Send. A model is the exception that inserts
+//!   nothing: accepting one switches the chat to it through the composer's own model change
+//!   (the model menu's) and takes the token out of the draft (`remove`); the chat's current
+//!   model only closes the list.
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -68,6 +76,8 @@ pub enum Sigil {
     Slash,
     /// `@`: a file or folder of the chat's folder.
     Mention,
+    /// `&`: a model of the chat's provider to switch the chat to.
+    Model,
 }
 
 impl Sigil {
@@ -75,6 +85,7 @@ impl Sigil {
         match self {
             Self::Slash => '/',
             Self::Mention => '@',
+            Self::Model => '&',
         }
     }
 }
@@ -110,6 +121,7 @@ pub fn trigger(text: &str, caret: usize) -> Option<Trigger> {
     let sigil = match text[start..].chars().next()? {
         '/' if text[..start].trim().is_empty() => Sigil::Slash,
         '@' => Sigil::Mention,
+        '&' => Sigil::Model,
         _ => return None,
     };
     if start == caret {
@@ -119,6 +131,10 @@ pub fn trigger(text: &str, caret: usize) -> Option<Trigger> {
     let query = text[start + 1..caret].to_owned();
     // A command name is one word: a path typed at the start of a message is just text.
     if sigil == Sigil::Slash && text[start + 1..end].contains('/') {
+        return None;
+    }
+    // A model is picked with the draft's last word: `&` before more words is just text.
+    if sigil == Sigil::Model && !text[end..].trim().is_empty() {
         return None;
     }
     Some(Trigger {
@@ -144,6 +160,15 @@ pub fn accept(text: &str, trigger: &Trigger, insert: &str) -> (String, usize) {
     };
     out.push_str(rest);
     (out, caret)
+}
+
+/// `text` without the trigger's token, and the caret where it was: what accepting a model leaves.
+/// The blank space around it stays as it was.
+pub fn remove(text: &str, trigger: &Trigger) -> (String, usize) {
+    let mut out = String::with_capacity(text.len());
+    out.push_str(&text[..trigger.start]);
+    out.push_str(&text[trigger.end..]);
+    (out, trigger.start)
 }
 
 // ---- Slash commands ------------------------------------------------------------------------
@@ -237,25 +262,156 @@ pub fn commands(provider: Provider) -> Vec<Command> {
 /// holds it, then one that holds its letters in order; ties in `commands` order. Case is
 /// ignored.
 pub fn rank_commands<'a>(query: &str, commands: &'a [Command]) -> Vec<&'a Command> {
+    rank_by_names(query, commands, |command| vec![command.name.as_str()])
+}
+
+/// `items` whose names match `query`, best first, by the best tier any of an item's names
+/// reaches: one that starts with it, then one that holds it, then one that holds its letters in
+/// order. Ties keep `items`' order. Case is ignored.
+fn rank_by_names<'a, T>(
+    query: &str,
+    items: &'a [T],
+    names: impl Fn(&T) -> Vec<&str>,
+) -> Vec<&'a T> {
     let query = query.to_lowercase();
-    let mut ranked: Vec<_> = commands
+    let mut ranked: Vec<_> = items
         .iter()
-        .filter_map(|command| {
-            let name = command.name.to_lowercase();
-            let tier = if name.starts_with(&query) {
-                0
-            } else if name.contains(&query) {
-                1
-            } else if subsequence(&query, &name) {
-                2
-            } else {
-                return None;
-            };
-            Some((tier, command))
+        .filter_map(|item| {
+            let tier = names(item)
+                .into_iter()
+                .filter_map(|name| {
+                    let name = name.to_lowercase();
+                    if name.starts_with(&query) {
+                        Some(0)
+                    } else if name.contains(&query) {
+                        Some(1)
+                    } else if subsequence(&query, &name) {
+                        Some(2)
+                    } else {
+                        None
+                    }
+                })
+                .min()?;
+            Some((tier, item))
         })
         .collect();
     ranked.sort_by_key(|(tier, _)| *tier);
-    ranked.into_iter().map(|(_, command)| command).collect()
+    ranked.into_iter().map(|(_, item)| item).collect()
+}
+
+// ---- Models --------------------------------------------------------------------------------
+
+/// A model of the chat's provider as the `&` list shows it, with how much the person uses it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelEntry {
+    /// What the chat is set to: the provider's model id (`ModelOption::id`).
+    pub id: String,
+    /// The name to show.
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// The provider uses it when the chat names none.
+    #[serde(default)]
+    pub is_default: bool,
+    /// How many of the person's own chats of the provider are set to it now (`model_usage`).
+    #[serde(default)]
+    pub chats: u64,
+}
+
+/// How many of the person's own chats are set to each model now, by provider: chats with a first
+/// message (`first_user_message`; a scheduled task's chat has one too), not a worker's
+/// (`parent_id`) nor an orchestrator's. A chat counts once, for the model it is set to now; one
+/// on its provider's default counts for the default (`DEFAULT_KEY`). Deleted chats are gone from
+/// it, and a chat that changed model counts only for its latest.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelUsage {
+    counts: HashMap<(Provider, String), u64>,
+}
+
+/// The key of chats set to no model, which their provider's default runs.
+const DEFAULT_KEY: &str = "";
+
+impl ModelUsage {
+    /// Counted from the chats' saved info (`log::read_infos`).
+    pub fn of(infos: &[super::model::ChatInfo]) -> Self {
+        let mut counts = HashMap::new();
+        for info in infos.iter().filter(|info| {
+            info.first_user_message.is_some()
+                && info.parent_id.is_none()
+                && info.orchestrator.is_none()
+        }) {
+            let model = info
+                .model
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or(DEFAULT_KEY)
+                .to_owned();
+            *counts.entry((info.provider, model)).or_default() += 1;
+        }
+        Self { counts }
+    }
+
+    /// The chats of `provider` set to `model`; `None` is its default.
+    pub fn chats(&self, provider: Provider, model: Option<&str>) -> u64 {
+        self.counts
+            .get(&(provider, model.unwrap_or(DEFAULT_KEY).to_owned()))
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+/// `models`, as `provider`'s driver listed them for the chat (the model menu's list, never one
+/// made up), with their use: the default model also counts the chats set to no model.
+pub fn model_entries(
+    models: &[super::model::ModelOption],
+    provider: Provider,
+    usage: &ModelUsage,
+) -> Vec<ModelEntry> {
+    models
+        .iter()
+        .filter(|model| !model.id.trim().is_empty())
+        .map(|model| ModelEntry {
+            id: model.id.clone(),
+            name: model.name.clone(),
+            description: model.description.clone(),
+            is_default: model.is_default,
+            chats: usage.chats(provider, Some(model.id.trim()))
+                + if model.is_default {
+                    usage.chats(provider, None)
+                } else {
+                    0
+                },
+        })
+        .collect()
+}
+
+/// The order the `&` list offers `entries` in before anything is typed: the most used first;
+/// ties, and models never used, in the provider's order.
+pub fn order_models(entries: &[ModelEntry]) -> Vec<&ModelEntry> {
+    let mut ordered: Vec<_> = entries.iter().collect();
+    ordered.sort_by_key(|entry| std::cmp::Reverse(entry.chats));
+    ordered
+}
+
+/// The entries that match `query` by id or name, best first as `rank_commands` ranks, with
+/// `order_models`' order deciding ties: the used models before the others.
+pub fn rank_models<'a>(query: &str, entries: &'a [ModelEntry]) -> Vec<&'a ModelEntry> {
+    let ordered = order_models(entries);
+    rank_by_names(query, &ordered, |entry| {
+        vec![entry.id.as_str(), entry.name.as_str()]
+    })
+    .into_iter()
+    .copied()
+    .collect()
+}
+
+/// The id of the model the chat runs: the one it is set to, else its provider's default.
+pub fn current_model<'a>(entries: &'a [ModelEntry], chosen: Option<&str>) -> Option<&'a str> {
+    match chosen.map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) => entries.iter().find(|entry| entry.id == id),
+        None => entries.iter().find(|entry| entry.is_default),
+    }
+    .map(|entry| entry.id.as_str())
 }
 
 // ---- Files ---------------------------------------------------------------------------------
@@ -607,6 +763,71 @@ pub fn command_preview(command: &Command, provider: Provider) -> Preview {
     }
 }
 
+/// A model row's second line: whether the chat runs it, and how many chats use it.
+pub fn model_detail(entry: &ModelEntry, current: bool) -> String {
+    let used = match entry.chats {
+        0 => "not used yet".to_owned(),
+        1 => "used in 1 chat".to_owned(),
+        n => format!("used in {n} chats"),
+    };
+    if current {
+        format!("Current · {used}")
+    } else {
+        let mut chars = used.chars();
+        chars
+            .next()
+            .map(|first| first.to_uppercase().chain(chars).collect())
+            .unwrap_or_default()
+    }
+}
+
+/// What a model's use says: how many of the person's `provider` chats are set to it.
+pub fn usage_label(chats: u64, provider: Provider) -> String {
+    let provider = provider_title(provider);
+    match chats {
+        0 => format!("None of your {provider} chats use it now"),
+        1 => format!("1 of your {provider} chats uses it now"),
+        n => format!("{n} of your {provider} chats use it now"),
+    }
+}
+
+/// The preview of a model offered to a chat of `provider` that runs `current` (its name) now:
+/// what choosing it does, the chat's model, and the use the list is sorted by.
+pub fn model_preview(
+    entry: &ModelEntry,
+    current: Option<&ModelEntry>,
+    provider: Provider,
+) -> Preview {
+    let is_current = current.is_some_and(|current| current.id == entry.id);
+    let mut kind = format!("{} model", provider_title(provider));
+    if is_current {
+        kind.push_str(" · current");
+    }
+    let mut body = Vec::new();
+    if !entry.description.trim().is_empty() {
+        body.push(entry.description.trim().to_owned());
+    }
+    body.push(match current {
+        Some(current) => format!("Now: {}", current.name),
+        None => "Now: not known".to_owned(),
+    });
+    body.push(usage_label(entry.chats, provider));
+    Preview {
+        title: entry.name.clone(),
+        kind,
+        body,
+        inserts: String::new(),
+        effect: if is_current {
+            "This chat runs it already: choosing it only closes the list.".to_owned()
+        } else {
+            format!(
+                "Switch this chat to {}. The token leaves the draft; nothing is sent.",
+                entry.name
+            )
+        },
+    }
+}
+
 /// The preview of a file or folder, with `peek`'s first lines when they were read.
 pub fn file_preview(entry: &FileEntry, peek: Option<&Peek>) -> Preview {
     let kind = if entry.dir {
@@ -731,7 +952,7 @@ impl Peek {
 // ---- The phone's reply ---------------------------------------------------------------------
 
 /// What `riwork chat suggestions CHAT --json` prints, and the connector's `chat.suggestions`
-/// passes to the phone: the chat's commands and its folder's listing.
+/// passes to the phone: the chat's commands, its folder's listing and its provider's models.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reply {
     pub chat_id: String,
@@ -742,6 +963,11 @@ pub struct Reply {
     pub files: Listing,
     /// The most entries a listing holds (`FILE_BOUND`), so the phone can say so.
     pub file_bound: usize,
+    /// The models the chat's provider listed, in the provider's order, with their use; the
+    /// composer orders them (`order_models`). Absent from an older CLI's reply, which offers no
+    /// `&` list.
+    #[serde(default)]
+    pub models: Vec<ModelEntry>,
 }
 
 /// The most bytes `riwork chat suggestions --json` prints: well within what the connector reads
@@ -749,9 +975,9 @@ pub struct Reply {
 /// or escaped paths comes near it.
 pub const REPLY_BYTES: usize = 4 * 1024 * 1024;
 
-/// The reply for chat `chat_id` of `provider` working in `root`, within `REPLY_BYTES`. Walks
-/// `root` once.
-pub fn reply(chat_id: &str, provider: Provider, root: &Path) -> Reply {
+/// The reply for chat `chat_id` of `provider` working in `root`, offering `models`, within
+/// `REPLY_BYTES`. Walks `root` once.
+pub fn reply(chat_id: &str, provider: Provider, root: &Path, models: Vec<ModelEntry>) -> Reply {
     Reply {
         chat_id: chat_id.to_owned(),
         provider,
@@ -759,6 +985,7 @@ pub fn reply(chat_id: &str, provider: Provider, root: &Path) -> Reply {
         commands: commands(provider),
         files: list_files(root),
         file_bound: FILE_BOUND,
+        models,
     }
     .within(REPLY_BYTES)
 }

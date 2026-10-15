@@ -175,7 +175,7 @@ fn the_phone_reply_reads_and_writes_as_the_shared_fixture() {
 fn a_reply_lists_the_chat_folder_and_the_providers_commands() {
     let root = temp();
     write(&root, "a.txt", "hello");
-    let made = reply("chat-1", Provider::Codex, &root);
+    let made = reply("chat-1", Provider::Codex, &root, Vec::new());
     assert_eq!(made.chat_id, "chat-1");
     assert_eq!(made.root, root.display().to_string());
     assert_eq!(
@@ -209,6 +209,11 @@ fn a_reply_keeps_the_first_entries_that_fit_its_bound() {
             truncated: false,
         },
         file_bound: FILE_BOUND,
+        models: model_entries(
+            &[option("gpt-5.1", true), option("o3", false)],
+            Provider::Codex,
+            &ModelUsage::default(),
+        ),
     };
     // As the CLI prints it: pretty, and a newline.
     let printed = |reply: &Reply| serde_json::to_string_pretty(reply).unwrap().len() + 1;
@@ -225,9 +230,203 @@ fn a_reply_keeps_the_first_entries_that_fit_its_bound() {
     let none = full.clone().within(0);
     assert!(none.files.entries.is_empty() && none.files.truncated);
     assert_eq!(none.commands, full.commands);
+    assert_eq!(
+        none.models, full.models,
+        "the models are never cut for the files"
+    );
+}
+
+fn models_of(value: &Value) -> Vec<ModelEntry> {
+    serde_json::from_value(value.clone()).unwrap()
+}
+
+fn ids(entries: &[&ModelEntry]) -> Vec<String> {
+    entries.iter().map(|entry| entry.id.clone()).collect()
+}
+
+#[test]
+fn removing_a_model_token_matches_the_shared_vectors() {
+    let fixture = fixture();
+    let mark = fixture["caret"].as_str().unwrap();
+    for case in fixture["removals"].as_array().unwrap() {
+        let (text, at) = caret(case["text"].as_str().unwrap(), mark);
+        let found = trigger(&text, at).expect("a removal vector is in a token");
+        assert_eq!(found.sigil, Sigil::Model, "{text:?}");
+        let (out, caret_at) = remove(&text, &found);
+        let mut shown = out.clone();
+        shown.insert_str(caret_at, mark);
+        assert_eq!(shown, case["expect"].as_str().unwrap(), "{text:?}");
+    }
+}
+
+#[test]
+fn models_rank_by_use_as_the_shared_vectors_say() {
+    let fixture = fixture();
+    let table = &fixture["model_ranking"];
+    let models = models_of(&table["models"]);
+    for case in table["cases"].as_array().unwrap() {
+        let query = case["query"].as_str().unwrap();
+        assert_eq!(
+            ids(&rank_models(query, &models)),
+            strings(&case["expect"]),
+            "{query:?}"
+        );
+    }
+    // Before anything is typed: the most used first, ties and unused ones in the provider's
+    // order.
+    assert_eq!(
+        ids(&order_models(&models)),
+        strings(&table["cases"][0]["expect"])
+    );
+    for case in table["current"].as_array().unwrap() {
+        assert_eq!(
+            current_model(&models, case["chosen"].as_str()),
+            case["expect"].as_str(),
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn model_rows_and_previews_read_as_the_shared_vectors_say() {
+    let fixture = fixture();
+    for case in fixture["model_details"].as_array().unwrap() {
+        let entry = ModelEntry {
+            id: "m".into(),
+            name: "M".into(),
+            description: String::new(),
+            is_default: false,
+            chats: case["chats"].as_u64().unwrap(),
+        };
+        assert_eq!(
+            model_detail(&entry, case["current"].as_bool().unwrap()),
+            case["detail"].as_str().unwrap(),
+            "{case}"
+        );
+    }
+    for case in fixture["model_usage_labels"].as_array().unwrap() {
+        let provider: Provider = serde_json::from_value(case["provider"].clone()).unwrap();
+        assert_eq!(
+            usage_label(case["chats"].as_u64().unwrap(), provider),
+            case["label"].as_str().unwrap()
+        );
+    }
+    let models = models_of(&fixture["model_ranking"]["models"]);
+    let find = |id: &str| models.iter().find(|entry| entry.id == id).unwrap();
+    for case in fixture["model_previews"].as_array().unwrap() {
+        let provider: Provider = serde_json::from_value(case["provider"].clone()).unwrap();
+        let preview = model_preview(
+            find(case["model"].as_str().unwrap()),
+            case["current"].as_str().map(find),
+            provider,
+        );
+        let expect = &case["expect"];
+        assert_eq!(preview.title, expect["title"].as_str().unwrap());
+        assert_eq!(preview.kind, expect["kind"].as_str().unwrap());
+        assert_eq!(preview.body, strings(&expect["body"]));
+        assert_eq!(preview.inserts, expect["inserts"].as_str().unwrap());
+        assert_eq!(preview.effect, expect["effect"].as_str().unwrap());
+    }
 }
 
 // ---- Rules that are not in the fixture -----------------------------------------------------
+
+fn option(id: &str, is_default: bool) -> super::super::model::ModelOption {
+    serde_json::from_value(serde_json::json!({
+        "id": id,
+        "name": id.to_uppercase(),
+        "is_default": is_default,
+    }))
+    .unwrap()
+}
+
+/// A saved chat of `provider` set to `model`, that the person wrote in unless `used` is false.
+fn chat(provider: &str, model: Option<&str>, used: bool) -> super::super::model::ChatInfo {
+    let mut info: super::super::model::ChatInfo = serde_json::from_value(serde_json::json!({
+        "id": uuid::Uuid::new_v4().to_string(),
+        "provider": provider,
+        "cwd": "/work",
+        "title": "Chat",
+        "created_at_unix": 1,
+        "state": {"state": "idle"},
+    }))
+    .unwrap();
+    info.model = model.map(str::to_owned);
+    info.first_user_message = used.then(|| "hello".to_owned());
+    info
+}
+
+#[test]
+fn use_counts_the_persons_own_chats_by_the_model_each_is_set_to_now() {
+    let mut worker = chat("codex", Some("o3"), true);
+    worker.parent_id = Some("parent".into());
+    let mut orchestrator = chat("codex", Some("o3"), true);
+    orchestrator.orchestrator = Some(super::super::model::OrchestratorScope::Global);
+    let infos = vec![
+        chat("codex", Some("o3"), true),
+        chat("codex", Some("o3"), true),
+        chat("codex", Some(" o3 "), true),
+        chat("codex", None, true),
+        chat("codex", Some("gpt-5.1"), true),
+        // Never written in, a worker's, an orchestrator's: not the person's own use.
+        chat("codex", Some("gpt-5.1"), false),
+        worker,
+        orchestrator,
+        // Another provider's chat of the same name counts for that provider only.
+        chat("claude", Some("o3"), true),
+        // A model no longer listed has no row to count for.
+        chat("codex", Some("retired"), true),
+    ];
+    let usage = ModelUsage::of(&infos);
+    assert_eq!(usage.chats(Provider::Codex, Some("o3")), 3);
+    assert_eq!(usage.chats(Provider::Codex, None), 1);
+    assert_eq!(usage.chats(Provider::Claude, Some("o3")), 1);
+    assert_eq!(usage.chats(Provider::Muse, Some("o3")), 0);
+    let entries = model_entries(
+        &[
+            option("gpt-5.1", true),
+            option("o3", false),
+            option("codex-mini", false),
+            option("  ", false),
+        ],
+        Provider::Codex,
+        &usage,
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| (entry.id.as_str(), entry.chats))
+            .collect::<Vec<_>>(),
+        // The default also counts the chat set to no model, which the default runs; a blank id
+        // is no model to offer.
+        [("gpt-5.1", 2), ("o3", 3), ("codex-mini", 0)]
+    );
+    assert_eq!(
+        ids(&order_models(&entries)),
+        ["o3", "gpt-5.1", "codex-mini"]
+    );
+    // No list, no `&` models: none is made up.
+    assert!(model_entries(&[], Provider::Codex, &usage).is_empty());
+}
+
+#[test]
+fn a_model_token_is_only_ever_the_drafts_last_word() {
+    // Blank space after it, a line break included, still leaves it the last word.
+    for (text, opens) in [
+        ("&gpt‸", true),
+        ("&gpt‸  \n ", true),
+        ("&gpt‸ then", false),
+        ("you &‸ me", false),
+        ("tom&‸", false),
+    ] {
+        let (text, at) = caret(text, "‸");
+        assert_eq!(
+            trigger(&text, at).is_some_and(|found| found.sigil == Sigil::Model),
+            opens,
+            "{text:?}"
+        );
+    }
+}
 
 #[test]
 fn the_largest_size_has_a_label() {

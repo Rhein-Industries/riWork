@@ -446,9 +446,9 @@ public struct ChatModelsReply: Sendable, Equatable {
 
 // MARK: - chat.suggestions
 
-/// `chat.suggestions` (`features.chat_suggestions`): what a chat's composer offers after `/` and `@` (`ComposerSuggestions.swift`), the
-/// chat's commands and its folder's files, in one read. Reading it starts nothing on the Mac; the desktop walks the folder within its
-/// bounds and sends at most `file_bound` entries.
+/// `chat.suggestions` (`features.chat_suggestions`): what a chat's composer offers after `/`, `@` and `&` (`ComposerSuggestions.swift`),
+/// the chat's commands, its folder's files and its provider's models, in one read. Reading it starts nothing on the Mac; the desktop walks
+/// the folder within its bounds and sends at most `file_bound` entries.
 public struct ChatSuggestionsRequest: Sendable, Equatable {
     public let chatID: String
     public init(chatID: String) throws {
@@ -479,15 +479,20 @@ public struct ChatSuggestionsReply: Sendable, Equatable, Decodable {
     public let files: ComposerFileListing
     /// The most entries a listing holds, so the phone can say so.
     public let fileBound: Int
-    public init(chatID: String, provider: ChatProvider, root: String, commands: [ComposerCommand], files: ComposerFileListing, fileBound: Int = 5000) {
+    /// The models the chat's provider listed, with their use, for `&`; none from a desktop before `&` (no `&` list opens then).
+    public let models: [ComposerModelEntry]
+    public init(chatID: String, provider: ChatProvider, root: String, commands: [ComposerCommand], files: ComposerFileListing, fileBound: Int = 5000,
+                models: [ComposerModelEntry] = []) {
         self.chatID = chatID; self.provider = provider; self.root = root; self.commands = commands; self.files = files; self.fileBound = fileBound
+        self.models = models
     }
-    private enum CodingKeys: String, CodingKey { case chatID = "chat_id", provider, root, commands, files, fileBound = "file_bound" }
+    private enum CodingKeys: String, CodingKey { case chatID = "chat_id", provider, root, commands, files, fileBound = "file_bound", models }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(chatID: try c.decode(String.self, forKey: .chatID), provider: try c.decode(ChatProvider.self, forKey: .provider),
                   root: c.tolerant(String.self, forKey: .root) ?? "", commands: c.leniently([ComposerCommand].self, forKey: .commands),
-                  files: c.tolerant(ComposerFileListing.self, forKey: .files) ?? ComposerFileListing(), fileBound: c.tolerant(Int.self, forKey: .fileBound) ?? 5000)
+                  files: c.tolerant(ComposerFileListing.self, forKey: .files) ?? ComposerFileListing(), fileBound: c.tolerant(Int.self, forKey: .fileBound) ?? 5000,
+                  models: c.leniently([ComposerModelEntry].self, forKey: .models))
     }
 }
 

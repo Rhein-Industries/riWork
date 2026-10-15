@@ -2470,7 +2470,7 @@ fn shared_suggestions() -> Value {
 }
 
 #[tokio::test]
-async fn chat_suggestions_passes_on_a_chats_commands_and_files_and_nothing_else() {
+async fn chat_suggestions_passes_on_a_chats_commands_files_and_models_and_nothing_else() {
     let f = Fixture::new();
     let reply = shared_suggestions();
     let chat = reply["chat_id"].as_str().unwrap().to_owned();
@@ -2490,14 +2490,69 @@ async fn chat_suggestions_passes_on_a_chats_commands_and_files_and_nothing_else(
     printed["commands"][0]["extra"] = json!(1);
     printed["files"]["entries"][0]["mtime"] = json!(7);
     printed["files"]["extra"] = json!(1);
+    printed["models"][0]["pricing"] = json!("x");
     f.says("suggestions.json", &printed);
     let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
     assert_eq!(response["ok"], true, "{response}");
     assert_eq!(response["result"], reply);
+
     assert_eq!(
         f.calls_of("chat", "suggestions"),
         vec![words(&["chat", "suggestions", &chat, "--json"])]
     );
+
+    assert!(
+        !reply["models"].as_array().unwrap().is_empty(),
+        "the fixture offers `&` models"
+    );
+
+    // A CLI from before `&` prints no models: the phone gets none, and offers no `&` list.
+    let mut printed = reply.clone();
+    printed.as_object_mut().unwrap().remove("models");
+    f.says("suggestions.json", &printed);
+    let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(response["result"]["models"], json!([]));
+    assert_eq!(response["result"]["commands"], reply["commands"]);
+
+    // A malformed model is left out on its own; a description that is not one line is dropped
+    // rather than the model.
+    let model = |id: Value, name: Value| json!({"id":id,"name":name,"description":"d","is_default":false,"chats":1});
+    let mut printed = reply.clone();
+    printed["models"] = json!([
+        reply["models"][0],
+        model(json!(""), json!("Blank")),
+        model(json!("   "), json!("Blank")),
+        model(json!("x".repeat(101)), json!("Long")),
+        model(json!("two\nlines"), json!("Broken")),
+        model(json!(7), json!("Number")),
+        model(json!("ok"), json!(7)),
+        model(json!("ok"), json!("a\u{1b}[31m")),
+        {"id":"no-name","description":"d","is_default":false,"chats":1},
+        {"id":"bad-count","name":"N","chats":-1},
+        {"id":"bad-default","name":"N","is_default":"yes"},
+        {"id":"multi","name":"Multi","description":"one\ntwo","is_default":false,"chats":2},
+        {"id":"odd","name":"Odd","description":7},
+        {"id":"bare","name":"Bare"},
+    ]);
+    f.says("suggestions.json", &printed);
+    let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(
+        response["result"]["models"],
+        json!([
+            reply["models"][0],
+            {"id":"multi","name":"Multi","description":"","is_default":false,"chats":2},
+            {"id":"odd","name":"Odd","description":"","is_default":false,"chats":0},
+            {"id":"bare","name":"Bare","description":"","is_default":false,"chats":0},
+        ])
+    );
+    // Models that are not a list are not an answer.
+    let mut printed = reply.clone();
+    printed["models"] = json!({"id":"x"});
+    f.says("suggestions.json", &printed);
+    let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+    assert_eq!(code(&response), "cli_error", "{response}");
 
     // A malformed command or entry is left out on its own.
     let command = |name: &str, argument: Value, handler: &str| json!({"name":name,"summary":"s","argument":argument,"sends":"t","handler":handler});
@@ -2634,6 +2689,10 @@ async fn chat_suggestions_cuts_a_big_listing_to_fit_one_frame() {
     assert_eq!(kept[..], entries[..kept.len()]);
     assert_eq!(plain["result"]["files"]["truncated"], true);
     assert_eq!(plain["result"]["commands"], reply["commands"]);
+    assert_eq!(
+        plain["result"]["models"], reply["models"],
+        "only the listing is cut, never the models"
+    );
     link::encode_reply(&plain, std::time::Instant::now(), false, MAX_PLAINTEXT).unwrap();
     // As many as fit: one more would not, with the room the connector keeps for `server_ms`.
     let mut more = plain.clone();
@@ -2669,6 +2728,29 @@ async fn chat_suggestions_cuts_a_big_listing_to_fit_one_frame() {
     assert_eq!(kept[..], entries[..kept.len()]);
     assert_eq!(deflated["result"]["files"]["truncated"], true);
     link::encode_reply(&deflated, std::time::Instant::now(), true, MAX_PLAINTEXT).unwrap();
+
+    // A provider's model list too long for a frame on its own: its first models that fit go,
+    // and the commands still reach the phone.
+    let models: Vec<Value> = (0..200)
+        .map(|i| {
+            json!({"id": format!("m-{i:03}-{}", noise(80, i + 7)), "name": noise(400, i + 1),
+            "description": noise(400, i + 900), "is_default": false, "chats": i})
+        })
+        .collect();
+    reply["files"]["entries"] = json!([]);
+    reply["models"] = json!(models);
+    f.says("suggestions.json", &reply);
+    let plain = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+    assert_eq!(plain["ok"], true, "{plain}");
+    let kept = plain["result"]["models"].as_array().unwrap();
+    assert!(
+        !kept.is_empty() && kept.len() < models.len(),
+        "{}",
+        kept.len()
+    );
+    assert_eq!(kept[..], models[..kept.len()]);
+    assert_eq!(plain["result"]["commands"], reply["commands"]);
+    link::encode_reply(&plain, std::time::Instant::now(), false, MAX_PLAINTEXT).unwrap();
 }
 
 /// The biggest listing a CLI prints (`REPLY_BYTES`, cut by the CLI itself) is read whole and

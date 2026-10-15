@@ -1,5 +1,5 @@
 {
-  "about": "The composer's / and @ suggestion rules, checked by the engine (crates/riwork-engine/src/chat/suggest_tests.rs) and by the phone (ios/Tests/ComposerSuggestionsTests.swift). The caret is the character in `caret`; every text holds it once. Hand-written: change it with both sides.",
+  "about": "The composer's /, @ and & suggestion rules, checked by the engine (crates/riwork-engine/src/chat/suggest_tests.rs) and by the phone (ios/Tests/ComposerSuggestionsTests.swift). The caret is the character in `caret`; every text holds it once. Hand-written: change it with both sides.",
   "caret": "‸",
   "triggers": [
     {
@@ -161,6 +161,86 @@
         "query": "RE",
         "token": "@RE"
       }
+    },
+    {
+      "text": "&‸",
+      "expect": {
+        "sigil": "model",
+        "query": "",
+        "token": "&"
+      }
+    },
+    {
+      "text": "&op‸",
+      "expect": {
+        "sigil": "model",
+        "query": "op",
+        "token": "&op"
+      }
+    },
+    {
+      "text": "switch to &so‸",
+      "expect": {
+        "sigil": "model",
+        "query": "so",
+        "token": "&so"
+      }
+    },
+    {
+      "text": "&op‸us",
+      "expect": {
+        "sigil": "model",
+        "query": "op",
+        "token": "&opus"
+      }
+    },
+    {
+      "text": "&opus‸ ",
+      "expect": {
+        "sigil": "model",
+        "query": "opus",
+        "token": "&opus"
+      }
+    },
+    {
+      "text": "line\n&g‸",
+      "expect": {
+        "sigil": "model",
+        "query": "g",
+        "token": "&g"
+      }
+    },
+    {
+      "text": "/compact &so‸",
+      "expect": {
+        "sigil": "model",
+        "query": "so",
+        "token": "&so"
+      }
+    },
+    {
+      "text": "&op‸ please",
+      "expect": null
+    },
+    {
+      "text": "&opus‸\nmore",
+      "expect": null
+    },
+    {
+      "text": "a&b‸",
+      "expect": null
+    },
+    {
+      "text": "see https://x.test/?a=1&b=2‸",
+      "expect": null
+    },
+    {
+      "text": "‸&opus",
+      "expect": null
+    },
+    {
+      "text": "&opus ‸",
+      "expect": null
     }
   ],
   "accept": [
@@ -530,6 +610,239 @@
       ],
       "truncated": false
     },
-    "file_bound": 5000
-  }
+    "file_bound": 5000,
+    "models": [
+      {
+        "id": "default",
+        "name": "Default (recommended)",
+        "description": "The model Claude recommends",
+        "is_default": true,
+        "chats": 4
+      },
+      {
+        "id": "opus",
+        "name": "Opus",
+        "description": "For complex tasks",
+        "is_default": false,
+        "chats": 9
+      },
+      {
+        "id": "haiku",
+        "name": "Haiku",
+        "description": "",
+        "is_default": false,
+        "chats": 0
+      }
+    ]
+  },
+  "removals": [
+    {
+      "text": "please review &op‸",
+      "expect": "please review ‸"
+    },
+    {
+      "text": "&op‸us",
+      "expect": "‸"
+    },
+    {
+      "text": "line\n&g‸ ",
+      "expect": "line\n‸ "
+    }
+  ],
+  "model_ranking": {
+    "models": [
+      {
+        "id": "gpt-5.1-codex",
+        "name": "GPT-5.1 Codex",
+        "description": "Frontier coding",
+        "is_default": true,
+        "chats": 3
+      },
+      {
+        "id": "gpt-5.1",
+        "name": "GPT-5.1",
+        "description": "",
+        "is_default": false,
+        "chats": 7
+      },
+      {
+        "id": "gpt-5.1-codex-mini",
+        "name": "GPT-5.1 Codex Mini",
+        "description": "Cheaper",
+        "is_default": false,
+        "chats": 0
+      },
+      {
+        "id": "o3",
+        "name": "o3",
+        "description": "",
+        "is_default": false,
+        "chats": 3
+      },
+      {
+        "id": "gpt-4.1",
+        "name": "GPT-4.1",
+        "description": "",
+        "is_default": false,
+        "chats": 0
+      }
+    ],
+    "cases": [
+      {
+        "query": "",
+        "expect": [
+          "gpt-5.1",
+          "gpt-5.1-codex",
+          "o3",
+          "gpt-5.1-codex-mini",
+          "gpt-4.1"
+        ]
+      },
+      {
+        "query": "codex",
+        "expect": [
+          "gpt-5.1-codex",
+          "gpt-5.1-codex-mini"
+        ]
+      },
+      {
+        "query": "o",
+        "expect": [
+          "o3",
+          "gpt-5.1-codex",
+          "gpt-5.1-codex-mini"
+        ]
+      },
+      {
+        "query": "GPT",
+        "expect": [
+          "gpt-5.1",
+          "gpt-5.1-codex",
+          "gpt-5.1-codex-mini",
+          "gpt-4.1"
+        ]
+      },
+      {
+        "query": "g5m",
+        "expect": [
+          "gpt-5.1-codex-mini"
+        ]
+      },
+      {
+        "query": "zz",
+        "expect": []
+      }
+    ],
+    "current": [
+      {
+        "chosen": null,
+        "expect": "gpt-5.1-codex"
+      },
+      {
+        "chosen": "  ",
+        "expect": "gpt-5.1-codex"
+      },
+      {
+        "chosen": "o3",
+        "expect": "o3"
+      },
+      {
+        "chosen": "retired-model",
+        "expect": null
+      }
+    ]
+  },
+  "model_details": [
+    {
+      "chats": 0,
+      "current": false,
+      "detail": "Not used yet"
+    },
+    {
+      "chats": 1,
+      "current": false,
+      "detail": "Used in 1 chat"
+    },
+    {
+      "chats": 7,
+      "current": false,
+      "detail": "Used in 7 chats"
+    },
+    {
+      "chats": 3,
+      "current": true,
+      "detail": "Current · used in 3 chats"
+    },
+    {
+      "chats": 0,
+      "current": true,
+      "detail": "Current · not used yet"
+    }
+  ],
+  "model_usage_labels": [
+    {
+      "chats": 0,
+      "provider": "claude",
+      "label": "None of your Claude chats use it now"
+    },
+    {
+      "chats": 1,
+      "provider": "muse",
+      "label": "1 of your Muse chats uses it now"
+    },
+    {
+      "chats": 12,
+      "provider": "codex",
+      "label": "12 of your Codex chats use it now"
+    }
+  ],
+  "model_previews": [
+    {
+      "model": "gpt-5.1-codex-mini",
+      "current": "gpt-5.1-codex",
+      "provider": "codex",
+      "expect": {
+        "title": "GPT-5.1 Codex Mini",
+        "kind": "Codex model",
+        "body": [
+          "Cheaper",
+          "Now: GPT-5.1 Codex",
+          "None of your Codex chats use it now"
+        ],
+        "inserts": "",
+        "effect": "Switch this chat to GPT-5.1 Codex Mini. The token leaves the draft; nothing is sent."
+      }
+    },
+    {
+      "model": "gpt-5.1-codex",
+      "current": "gpt-5.1-codex",
+      "provider": "codex",
+      "expect": {
+        "title": "GPT-5.1 Codex",
+        "kind": "Codex model · current",
+        "body": [
+          "Frontier coding",
+          "Now: GPT-5.1 Codex",
+          "3 of your Codex chats use it now"
+        ],
+        "inserts": "",
+        "effect": "This chat runs it already: choosing it only closes the list."
+      }
+    },
+    {
+      "model": "o3",
+      "current": null,
+      "provider": "codex",
+      "expect": {
+        "title": "o3",
+        "kind": "Codex model",
+        "body": [
+          "Now: not known",
+          "3 of your Codex chats use it now"
+        ],
+        "inserts": "",
+        "effect": "Switch this chat to o3. The token leaves the draft; nothing is sent."
+      }
+    }
+  ]
 }

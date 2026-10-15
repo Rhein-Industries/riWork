@@ -1602,8 +1602,8 @@ and is passed on as the CLI printed it; any other field of the CLI's answer is l
 CLI without it or an answer for another provider.
 
 **`chat.suggestions`** (since 2026-10-14, `features.chat_suggestions`) answers what a chat's
-message box offers while a `/` command or an `@` file is typed, so that the phone's composer
-lists what the desktop's does. Params exactly `{"chat_id":"UUID"}`. Result:
+message box offers while a `/` command, an `@` file or (since 2026-10-15) a `&` model is
+typed, so that the phone's composer lists what the desktop's does. Params exactly `{"chat_id":"UUID"}`. Result:
 
 ```json
 {"chat_id":"UUID","provider":"claude","root":"/Users/me/proj",
@@ -1612,7 +1612,9 @@ lists what the desktop's does. Params exactly `{"chat_id":"UUID"}`. Result:
  "files":{"entries":[{"path":"README.md","dir":false,"bytes":2048},
    {"path":"src","dir":true,"bytes":null},{"path":"src/main.rs","dir":false,"bytes":900}],
    "truncated":false},
- "file_bound":5000}
+ "file_bound":5000,
+ "models":[{"id":"default","name":"Default (recommended)","description":"…","is_default":true,"chats":4},
+   {"id":"opus","name":"Opus","description":"For complex tasks","is_default":false,"chats":9}]}
 ```
 
 - `commands` are the slash commands a chat of `provider` offers, in the order a list shows
@@ -1640,16 +1642,36 @@ lists what the desktop's does. Params exactly `{"chat_id":"UUID"}`. Result:
   seconds) and filters it while the person types; where the list opens, how it is ranked and
   what accepting puts in are pinned for both composers by
   `ios/Tests/Fixtures/composer-suggestions.json`, whose `reply` is a result of this method.
+- `models` (since 2026-10-15) are the models the chat's provider listed for it, in the
+  provider's order: the newest list its own driver reported (what its model menu shows), else
+  what `riwork chat models` reads for its provider; none when no chat of the provider ever
+  listed any (no model is made up). `id` is what the chat is set to, `name` and
+  `description` what to show, `is_default` that the provider runs it when the chat names
+  none, and `chats` how many of the person's own chats of the provider are set to it now
+  (counted from the chats' info, the running host's list or else the saved `info.json`:
+  chats with a first message, a scheduled task's included, not a worker's nor an
+  orchestrator's; one set to no model counts for the default; a deleted chat is gone from
+  it, and a chat that changed model counts only for its latest). A composer lists them after
+  `&`, the most used first (ties and unused ones in the provider's order), marks the chat's
+  own model, and accepting one sends the model picker's own `chat.command` `configure` with
+  that model; nothing is inserted or sent as a message. A desktop from before it sends no
+  `models` (the connector passes `[]`): no `&` list opens.
 - It starts nothing: a chat host that runs is asked for the chat, else the saved chats are
   read, and no agent or provider is started or asked. It runs in a shared (read) slot.
 
 The CLI's answer is checked before it reaches the phone and only the fields above are passed
 on: `chat_id` must be the one asked for and `provider` `codex`, `claude` or `muse`, and
 `root`, `commands`, `files.entries`, `files.truncated` and `file_bound` must have their
-types, or the answer is `cli_error`; a command or an entry that is malformed (a name outside
-its alphabet, an argument that is not a string or null, an unknown handler, a path that is
-empty, absolute, has a `..` part or a control character, a size that is not a non-negative
-integer) is left out on its own. `invalid_request` for bad params, `not_found` for an
+types, or the answer is `cli_error` (as is `models` that is not a list); a command, an entry
+or a model that is malformed (a name outside its alphabet, an argument that is not a string
+or null, an unknown handler, a path that is empty, absolute, has a `..` part or a control
+character, a size that is not a non-negative integer; a model id that is blank, longer than
+100 characters or not one line, a model name that is not one line of at most 500
+characters, an `is_default` that is not a boolean or `chats` that is not a non-negative
+integer) is left out on its own. A model's description that is not such a line (or not a string) is passed as
+`""` rather than leave the model out. At most 200 models are passed on. The files are cut to
+fit a frame first; only a model list too long for a frame on its own is cut too, to its first
+models that fit. `invalid_request` for bad params, `not_found` for an
 unknown chat, `cli_error` for a CLI without it.
 
 **`chat.stop`** stops the chat's agent process and keeps its history. Params
@@ -2398,6 +2420,14 @@ ready response. Values are test-only and must never provision production devices
   nothing. No new error code. An older desktop answers `invalid_request` "unsupported RPC
   method". New shared fixture `ios/Tests/Fixtures/composer-suggestions.json`. Needs the iOS
   worker's agreement; the iOS side implements the same text.
+
+- 2026-10-15: additive and backward compatible. `chat.suggestions` gains `models` (`id`,
+  `name`, `description`, `is_default`, `chats`): the chat's provider's models, with how many
+  of the person's own chats are set to each, for the composer's `&` list, which switches the
+  chat with the existing `chat.command` `configure`. No new method, feature flag or error
+  code: a CLI or connector from before it sends none (the connector passes `[]`) and an older
+  phone ignores the field. The shared fixture gains the `&` vectors. Needs the iOS worker's
+  agreement; the iOS side implements the same text.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),

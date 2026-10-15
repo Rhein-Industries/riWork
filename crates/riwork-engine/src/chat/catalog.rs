@@ -116,6 +116,18 @@ fn reported(home: &Path, id: &str, provider: Provider) -> Option<Vec<ModelOption
     latest
 }
 
+/// The models chat `info` can switch to without changing provider: the newest list its own
+/// driver reported, as its model menu shows it, else what a new chat of its project would be
+/// offered (`saved`, as `riwork chat models` reads it). Saved metadata only: no host, no provider.
+pub fn chat_models(home: &Path, info: &ChatInfo) -> Vec<ModelOption> {
+    let models = reported(home, &info.id, info.provider)
+        .unwrap_or_else(|| saved(home, info.project_id.as_deref(), info.provider).supported);
+    models
+        .into_iter()
+        .filter(|model| valid_model(&model.id))
+        .collect()
+}
+
 /// A model id a chat may be set to: one line of at most 100 characters.
 pub fn valid_model(id: &str) -> bool {
     !id.trim().is_empty() && id.chars().count() <= 100 && !id.chars().any(char::is_control)
