@@ -44,6 +44,11 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let look = Look::of(cx);
+        if let Some(super::display::Row::Item(at) | super::display::Row::Details(at)) =
+            self.visible.get(ix)
+        {
+            self.want_thumbnails(*at, cx);
+        }
         let content = match self.visible.get(ix) {
             Some(row @ (super::display::Row::Item(at) | super::display::Row::Details(at))) => {
                 let item = &self.model.transcript.items[*at];
@@ -51,18 +56,24 @@ impl ChatView {
                     .w_full()
                     .child(self.item(*at, item, look, cx))
                     .when(matches!(row, super::display::Row::Item(_)), |row| {
-                        row.children(item.presentation.images.iter().enumerate().map(
-                            |(n, image)| {
-                                self.image_card(
-                                    image,
-                                    &format!("{}:image:{n}", item.id),
-                                    Some(item),
-                                    None,
-                                    look,
-                                    cx,
-                                )
-                            },
-                        ))
+                        // A file the message shows as its own card is not shown twice.
+                        row.children(
+                            item.presentation
+                                .images
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, image)| !super::attachment_ui::covered(item, image))
+                                .map(|(n, image)| {
+                                    self.image_card(
+                                        image,
+                                        &format!("{}:image:{n}", item.id),
+                                        Some(item),
+                                        None,
+                                        look,
+                                        cx,
+                                    )
+                                }),
+                        )
                     })
                     .into_any_element()
             }
@@ -277,45 +288,56 @@ impl ChatView {
         match &item.body {
             // What you sent is a block across the reading column, in every design; Native's
             // is plain grey with its rounded corners, Hermes's a bordered panel, the colorful
-            // themes' tinted in their accent.
-            ItemBody::UserMessage { text } => div()
-                .w_full()
-                .flex()
-                .child(
-                    div()
-                        .id(id(format!("user-message:{}", item.id)))
-                        .w_full()
-                        .min_w_0()
-                        .px(ui_text::space(12.0))
-                        .py(ui_text::space(8.0))
-                        .when(look.native, |block| {
-                            block
-                                .rounded(controls::radius(BUBBLE_RADIUS))
-                                .bg(rgb(colors.panel_active))
-                        })
-                        .when(look.hermes(), |block| {
-                            block
-                                .rounded(px(4.0))
-                                .border_1()
-                                .border_color(rgb(colors.divider))
-                                .bg(rgb(colors.panel))
-                        })
-                        .when(!look.native && !look.hermes(), |block| {
-                            block
-                                .rounded(px(6.0))
-                                .border_1()
-                                .border_color(rgb(look.tint(colors.cyan, 0.45)))
-                                .bg(rgb(look.tint(colors.cyan, 0.10)))
-                        })
-                        .child(self.prose(
-                            &self.parsed(item, text),
-                            &format!("user:{}", item.id),
-                            look,
-                            cx,
-                        ))
-                        .test_support(),
-                )
-                .into_any_element(),
+            // themes' tinted in their accent. The files it sent come first, as the composer
+            // showed them, then what you typed.
+            ItemBody::UserMessage { text } => {
+                let sent = self.sent_attachments(item, look, cx);
+                let text = super::attachment_ui::shown_text(item, text);
+                div()
+                    .w_full()
+                    .flex()
+                    .child(
+                        div()
+                            .id(id(format!("user-message:{}", item.id)))
+                            .w_full()
+                            .min_w_0()
+                            .px(ui_text::space(12.0))
+                            .py(ui_text::space(8.0))
+                            .when(look.native, |block| {
+                                block
+                                    .rounded(controls::radius(BUBBLE_RADIUS))
+                                    .bg(rgb(colors.panel_active))
+                            })
+                            .when(look.hermes(), |block| {
+                                block
+                                    .rounded(px(4.0))
+                                    .border_1()
+                                    .border_color(rgb(colors.divider))
+                                    .bg(rgb(colors.panel))
+                            })
+                            .when(!look.native && !look.hermes(), |block| {
+                                block
+                                    .rounded(px(6.0))
+                                    .border_1()
+                                    .border_color(rgb(look.tint(colors.cyan, 0.45)))
+                                    .bg(rgb(look.tint(colors.cyan, 0.10)))
+                            })
+                            .when(sent.is_some(), |block| {
+                                block.flex().flex_col().gap(ui_text::space(8.0))
+                            })
+                            .children(sent)
+                            .children(text.map(|text| {
+                                self.prose(
+                                    &self.parsed(item, text),
+                                    &format!("user:{}", item.id),
+                                    look,
+                                    cx,
+                                )
+                            }))
+                            .test_support(),
+                    )
+                    .into_any_element()
+            }
             ItemBody::AgentMessage { text } => self.agent_message(ix, item, text, look, cx),
             ItemBody::Reasoning { text } => {
                 let head = cards::head(item, None).expect("reasoning has a head");

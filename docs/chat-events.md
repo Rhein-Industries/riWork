@@ -167,3 +167,39 @@ ordinary item (`crates/riwork-engine/src/chat/workers.rs`):
   shows a tool row titled `riwork.worker`. A `presentation.worker` a reader cannot decode
   is dropped, never the item. The relay never shortens `session_id`; `tail` is shortened
   like any other presentation string.
+
+## Sent files
+
+A message sent with files (`send_attachments`) is logged by Claude's and Muse's chats as an
+ordinary `user_message` whose text is what the user typed followed by one line per file,
+each on a line of its own (`attachments::summary` in
+`crates/riwork-engine/src/chat/attachments.rs`), with the host's snapshots of the files, in
+the same order, under `presentation`:
+
+```json
+{"event":"item_completed","item":{
+  "id":"user-<uuid>","turn_id":"turn-4","status":"completed",
+  "body":{"type":"user_message","text":"Why is this red?\n[Attached: shot.png (48213 bytes)]"},
+  "presentation":{
+    "images":[{"label":"shot.png","source":{"kind":"local","path":"<chat>/attachments/<id>/content"}}],
+    "attachments":[{"id":"<id>","name":"shot.png","path":"<chat>/attachments/<id>/content",
+      "kind":{"kind":"image","mime":"image/png"},"bytes":48213,"fingerprint":"…",
+      "preview":{"kind":"image","path":"<chat>/attachments/<id>/preview.png"}}]}}}
+```
+
+- **Desktop.** The message shows the files first, then what the user typed
+  (`attachments::typed` takes exactly those lines off). An image is its thumbnail, the
+  host's bounded `preview.png`, read only from the chat's own snapshot folder
+  (`chats/<id>/attachments/<attachment id>/`, beside the `content` the item names); any
+  other file is a card with its name and size, and an image whose preview cannot be read a
+  card with its name and "Image unavailable". A click shows the snapshot in Quick Look.
+  The images are not repeated as image cards below the message. A text that is not
+  exactly that summary (shortened by the recovery above, or logged otherwise) is shown
+  whole, beside the cards.
+- **Contract.** Readers take the lines off by their exact form, `[Attached: <name> (<bytes>
+  bytes)]`: change it only together with `attachments::typed`, and only so that messages
+  already logged still read.
+- **Readers from before.** A message logged before `presentation.attachments` existed, and
+  every reader that does not draw the files (the phone, an older desktop, the plain-text
+  transcript `riwork orchestrator output` reads), shows the text as logged. Codex logs its
+  own echo of the message instead, which keeps no snapshots, and is shown as before.

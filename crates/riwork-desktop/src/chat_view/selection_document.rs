@@ -72,12 +72,17 @@ pub(super) fn leaves(view: &ChatView, look: Look) -> Vec<SourceLeaf> {
             ItemBody::AgentMessage { text } => {
                 blocks(&view.parsed(item, text), &item.id, row, &mut result)
             }
-            ItemBody::UserMessage { text } => blocks(
-                &view.parsed(item, text),
-                &format!("user:{}", item.id),
-                row,
-                &mut result,
-            ),
+            // As the message shows it: the lines logged for its files are its cards.
+            ItemBody::UserMessage { text } => {
+                if let Some(text) = super::attachment_ui::shown_text(item, text) {
+                    blocks(
+                        &view.parsed(item, text),
+                        &format!("user:{}", item.id),
+                        row,
+                        &mut result,
+                    )
+                }
+            }
             ItemBody::Reasoning { text } if expanded => {
                 put(format!("thought:{}", item.id), text.trim().into())
             }
