@@ -87,7 +87,7 @@ riwork version | --version              Print the RiWork version
 riwork remote pair|revoke|devices|start|relay   Encrypted mobile access (standalone binary)
 riwork remote --help                    Pairing, relay and connector command options
 riwork shell create [--project ID | --worktree ID] [--command CMD] [--no-parent]
-riwork shell create [--worktree ID] --harness codex|claude|grok|muse [--model NAME] [--unrestricted | --as-settings]
+riwork shell create [--worktree ID] --harness codex|claude|grok|muse [--model NAME] [--account LABEL_OR_ID] [--unrestricted | --as-settings]
                     [--contributor-on]   Muse runs with contributor mode off unless --contributor-on
 riwork shell list [--project ID | --all]
 riwork shell output ID [--lines N] [--styled]   Read current shell output by UUID
@@ -106,7 +106,7 @@ riwork chat list [--project ID] [--json]   List Codex, Claude and Muse chats, ru
 riwork chat open CHAT_ID                 Reopen an ordinary chat in its Mac project window
 riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
                 [--model NAME] [--effort LEVEL] [--fast] [--contributor-on | --contributor-opt-out]
-                [--title TEXT]
+                [--title TEXT] [--account LABEL_OR_ID]
 riwork chat models --provider codex|claude|muse [--project ID] [--json]
                                         The models chats of that provider reported, read from saved chats
 riwork chat suggestions CHAT_ID [--json]   The / commands and @ files a chat's message box offers
@@ -147,6 +147,7 @@ chat new --no-parent explicitly starts a root; otherwise a same-project caller i
 chat new defaults to the active project, like shell create, and starts the chat's
 provider at once; --mode is how much the agent may do without asking (supervised by
 default). A chat whose provider cannot start is kept as failed; chat send retries.
+chat new --account LABEL_OR_ID pins a Codex subscription (or system-default) for resumes.
 chat new --json prints the chat as `chat list --json` shows it, also when its provider
 did not start (state failed); without --json that is an error. --model, --effort and
 --title (at most 100, 32 and 200 characters, no control characters) take their value
@@ -224,6 +225,7 @@ first, so a branch name shared by several projects is not ambiguous.
 shell create --harness H --model NAME starts the CLI on that model (Codex and Grok -m,
 Claude and Muse --model, as handoff does); without it the CLI's own default runs. A Muse
 also says its contributor mode once, off unless --contributor-on, with or without --model.
+shell create --account LABEL_OR_ID pins a Codex subscription (or system-default); needs --harness codex.
 shell create --json prints the new session as `shell list --json` shows it (id,
 project_id, worktree_id, kind, cwd, harness, alive, ...). A running RiWork
 window adds a tab for it behind the current one without taking focus.
@@ -2040,6 +2042,38 @@ fn harness_choices(
     }
 }
 
+fn account_setting(name: &str, text: String) -> Result<String, String> {
+    let account = text.trim();
+    if account.is_empty() || account.chars().count() > 200 || account.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "{name} must be an account label or id of at most 200 characters"
+        ));
+    }
+    Ok(account.to_owned())
+}
+
+/// Resolve before starting a host or creating a shell, using the same metadata and
+/// refusal as handoff. No account flag leaves the existing project/app choice alone.
+fn creation_account(
+    home: &Path,
+    harness: Option<HarnessKind>,
+    account: Option<&str>,
+) -> Result<Option<crate::codex_accounts::CodexAccountBinding>, String> {
+    let Some(account) = account else {
+        return Ok(None);
+    };
+    let harness =
+        harness.ok_or("--account requires --harness codex: only Codex accounts can be chosen")?;
+    if harness != HarnessKind::Codex {
+        return Err(format!(
+            "{} has no RiWork-managed accounts: it always uses the login of the system. Leave out --account; only Codex accounts can be chosen.",
+            crate::handoff::agent_name(harness)
+        ));
+    }
+    crate::codex_accounts::resolve_account(home, account).map(Some)
+}
+
 fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
     let manager = SessionManager::open_default()?;
     let operation = pop_command(&mut args, "list");
@@ -2071,6 +2105,9 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             let model = take_verbatim_option(&mut args, "--model")?
                 .map(|model| model_setting("--model", model))
                 .transpose()?;
+            let account = take_verbatim_option(&mut args, "--account")?
+                .map(|account| account_setting("--account", account))
+                .transpose()?;
             let unrestricted = take_flag(&mut args, "--unrestricted");
             let as_settings = take_flag(&mut args, "--as-settings");
             let contributor_on = take_flag(&mut args, "--contributor-on");
@@ -2096,6 +2133,7 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             if as_settings && harness.is_none() {
                 return Err("--as-settings requires --harness".to_owned());
             }
+            let binding = creation_account(manager.state_home(), harness, account.as_deref())?;
             // `--as-settings` is what the New tab menu does: unrestricted while
             // **Agent terminals run unrestricted** is on. Without it the CLI stays
             // restricted unless asked, so scripts keep their meaning.
@@ -2106,16 +2144,18 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             let (project_id, worktree_id, cwd) =
                 launch_scope(&state, project.as_deref(), worktree.as_deref())?;
             let shell = if let Some(harness) = harness
-                && (model.is_some() || contributor_on)
+                && (model.is_some() || contributor_on || binding.is_some())
             {
-                // A model, or Muse's contributor mode asked on (which is off unless asked):
-                // the launch says them; the rest as without them.
+                // Explicit model, account or Muse contributor mode; the rest as without them.
                 manager.create_harness_with(
                     project_id,
                     worktree_id,
                     cwd,
                     harness,
-                    harness_choices(model, unrestricted, contributor_on),
+                    crate::sessions::HarnessChoices {
+                        binding,
+                        ..harness_choices(model, unrestricted, contributor_on)
+                    },
                 )?
             } else if let Some(harness) = harness {
                 manager.create_harness(project_id, worktree_id, cwd, harness, unrestricted)?
@@ -2469,6 +2509,9 @@ fn chat_client_command(
                 Some(title) => title_setting("--title", title)?,
                 None => None,
             };
+            let account = take_verbatim_option(&mut args, "--account")?
+                .map(|account| account_setting("--account", account))
+                .transpose()?;
             let provider = match take_option(&mut args, "--provider")?.as_deref() {
                 Some("codex") => crate::chat::model::Provider::Codex,
                 Some("claude") => crate::chat::model::Provider::Claude,
@@ -2497,10 +2540,18 @@ fn chat_client_command(
                         .into(),
                 );
             }
+            let harness = match provider {
+                crate::chat::model::Provider::Codex => HarnessKind::Codex,
+                crate::chat::model::Provider::Claude => HarnessKind::Claude,
+                crate::chat::model::Provider::Muse => HarnessKind::Muse,
+            };
+            let account = creation_account(home, Some(harness), account.as_deref())?
+                .map(|binding| binding.id.unwrap_or_else(|| crate::codex_accounts::SYSTEM_DEFAULT_ID.into()));
             let state = Store::open(home)?.snapshot()?;
             let (project_id, worktree_id, cwd) =
                 launch_scope(&state, project.as_deref(), worktree.as_deref())?;
-            let chat = Client::connect(&ensure(home)?)?.create(crate::chat::model::NewChat {
+            let mut client = Client::connect(&ensure(home)?)?;
+            let chat = client.create(crate::chat::model::NewChat {
                 parent_id: if no_parent {
                     None
                 } else {
@@ -2510,7 +2561,8 @@ fn chat_client_command(
                 project_id: Some(project_id),
                 worktree_id,
                 cwd,
-                codex_account_id: None,
+                // Existing handoff wire field; an explicit system default must not inherit.
+                codex_account_id: account.clone(),
                 title,
                 approval_mode,
                 model,
@@ -2526,6 +2578,18 @@ fn chat_client_command(
                 // A Claude chat bills as Settings say.
                 claude_billing: None,
             })?;
+            if let Some(wanted) = account.as_deref()
+                && chat.codex_account_id.as_deref() != Some(wanted)
+                && !(wanted == crate::codex_accounts::SYSTEM_DEFAULT_ID && chat.codex_account_id.is_none())
+            {
+                let removed = match client.delete(&chat.id) {
+                    Ok(()) => "The chat was removed.".to_owned(),
+                    Err(error) => format!("Removing chat {} failed: {error}.", chat.id),
+                };
+                return Err(format!(
+                    "The chat host did not start the chat on the Codex account that was asked for; it is from an older build. {removed} Try again once the host has exited and been started anew (it exits by itself after 15 minutes without work)."
+                ));
+            }
             if json {
                 // A chat whose provider did not start still exists, and the
                 // caller needs its id (the next message tries again): its
@@ -2785,7 +2849,7 @@ fn chat_client_command(
 const CHAT_MODELS_USAGE: &str =
     "Usage: riwork chat models --provider codex|claude|muse [--project ID] [--json]";
 
-const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--contributor-on | --contributor-opt-out] [--title TEXT]";
+const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--contributor-on | --contributor-opt-out] [--title TEXT] [--account LABEL_OR_ID]";
 
 /// A chat's ID as typed: whole, or a unique prefix of at least eight characters.
 fn resolve_chat(
@@ -3945,6 +4009,8 @@ use chat_remote::{
     effort_setting, model_setting, parse_events_arguments, take_verbatim_option, title_setting,
 };
 
+#[cfg(test)]
+mod account_tests;
 #[cfg(test)]
 mod chat_remote_tests;
 #[cfg(test)]

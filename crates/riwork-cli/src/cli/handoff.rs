@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use super::{
-    effort_setting, ensure_empty, json_text, model_setting, take_flag, take_verbatim_option,
-    write_stdout,
+    account_setting, effort_setting, ensure_empty, json_text, model_setting, take_flag,
+    take_verbatim_option, write_stdout,
 };
 use crate::{
     chat::model::{ApprovalMode, ContributorMode},
@@ -115,17 +115,6 @@ fn note_setting(text: String) -> Result<Option<String>, String> {
         ));
     }
     Ok(handoff::tidy_note(&text))
-}
-
-fn account_setting(name: &str, text: String) -> Result<String, String> {
-    let account = text.trim();
-    if account.is_empty() || account.chars().count() > 200 || account.chars().any(char::is_control)
-    {
-        return Err(format!(
-            "{name} must be an account label or id of at most 200 characters"
-        ));
-    }
-    Ok(account.to_owned())
 }
 
 /// Where a `riwork handoff` runs: the data directory, the caller's own session, and the
