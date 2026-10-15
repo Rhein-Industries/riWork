@@ -949,8 +949,16 @@ fn attachment_send_refusal_retains_exact_draft_and_requires_explicit_resend(
                 recording.try_recv().is_err(),
                 "no automatic retry or text fallback"
             );
-            v.resend_snapshot(id, window, cx);
         });
+        // The saved draft names its files with their sizes as the cards do, not in raw bytes.
+        window.render_frame(cx);
+        window.click(format!("chat-review-{id}"), cx);
+        let saved = window.find(format!("chat-saved-attachment-{id}-{}", attachment.id));
+        assert_eq!(
+            saved.label(),
+            Some(format!("{} · {}", attachment.name, size_text(attachment.bytes)).as_str())
+        );
+        view.update(cx, |v, cx| v.resend_snapshot(id, window, cx));
     })
     .unwrap();
     let feed::Delivery::Submission {

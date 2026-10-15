@@ -9,7 +9,9 @@ use crate::{
     ui_text,
 };
 
-pub use riwork_core::status_bar::{StatusBarItem, StatusBarSettings, StatusItemKind, StatusSide};
+pub use riwork_core::status_bar::{
+    StatusBarItem, StatusBarSettings, StatusItemKind, StatusSide, UsageMode,
+};
 
 /// The status bar block of a settings page: the master switch with a reset
 /// button, then the items of each side. The caller supplies the surrounding
@@ -121,6 +123,7 @@ pub fn render_settings<V: 'static>(
                     .map(|control| crate::form_input::control_element("status-bar-reset", control)),
                 ),
         );
+    card = card.child(render_usage_mode(&settings, on_change.clone(), cx));
     for side in [StatusSide::Left, StatusSide::Right] {
         let items: Vec<_> = settings
             .items
@@ -165,6 +168,103 @@ pub fn render_settings<V: 'static>(
         );
     }
     card.into_any_element()
+}
+
+/// What the account usage item reads out: the current chat's account, or every account.
+fn render_usage_mode<V: 'static>(
+    settings: &StatusBarSettings,
+    on_change: impl Fn(&mut V, StatusBarSettings, &mut Window, &mut Context<V>) + Clone + 'static,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let colors = theme::palette(cx);
+    let selected = settings.usage_mode;
+    let choices = UsageMode::ALL.map(|mode| {
+        let active = mode == selected;
+        let on_change = on_change.clone();
+        let next = StatusBarSettings {
+            usage_mode: mode,
+            ..settings.clone()
+        };
+        behavior::radio_content(
+            format!("status-usage-mode-{}", mode.key()),
+            mode.label(),
+            ui_text::cased(mode.label()),
+            active,
+        )
+        .flex_none()
+        .px(ui_text::space(8.0))
+        .py(ui_text::space(4.0))
+        .border_1()
+        .border_color(rgb(if active { colors.cyan } else { colors.divider }))
+        .bg(rgb(colors.panel_active))
+        .text_color(rgb(if active { colors.cyan } else { colors.muted }))
+        .text_size(ui_text::text(10.0))
+        .hover(move |style| {
+            controls::hovered(style, controls::segment_hover(active, colors), |style| {
+                style.border_color(rgb(colors.cyan))
+            })
+        })
+        .map(|choice| controls::native(choice, |choice| controls::segment(choice, active, colors)))
+        .on_change({
+            let listener = cx.listener(move |view, _, window, cx| {
+                cx.stop_propagation();
+                if !active {
+                    on_change(view, next.clone(), window, cx);
+                }
+            });
+            move |_, event, window, cx| listener(event, window, cx)
+        })
+    });
+    div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(ui_text::space(8.0))
+        .px(ui_text::space(8.0))
+        .py(ui_text::space(6.0))
+        .bg(rgb(colors.panel_active))
+        .border_1()
+        .border_color(rgb(colors.divider))
+        .map(|row| controls::native(row, |row| controls::row(row, false, colors)))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(ui_text::space(2.0))
+                .child(
+                    div()
+                        .text_size(ui_text::text(11.0))
+                        .text_color(rgb(colors.text))
+                        .child("Account usage shows"),
+                )
+                .child(
+                    div()
+                        .text_size(ui_text::text(9.0))
+                        .text_color(rgb(colors.muted))
+                        .child(
+                            "The current chat's account, or every Codex account and Claude's subscription at once.",
+                        ),
+                ),
+        )
+        .child(
+            gpui_kit::base::RadioGroup::new("status-usage-mode")
+                .axis(gpui::Axis::Horizontal)
+                .aria_label("Account usage shows")
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(ui_text::space(if ui_text::is_native() { 2.0 } else { 6.0 }))
+                .when(ui_text::is_native(), |group| {
+                    group
+                        .p(ui_text::space(2.0))
+                        .rounded_full()
+                        .bg(rgb(colors.panel_active))
+                })
+                .children(choices),
+        )
+        .into_any_element()
 }
 
 fn render_item<V: 'static>(
@@ -542,6 +642,45 @@ mod kit_control_tests {
             settings: StatusBarSettings::default(),
             changes: Vec::new(),
         })
+    }
+
+    #[gpui::test]
+    fn the_usage_mode_is_chosen_beside_the_items_and_keeps_them(cx: &mut TestAppContext) {
+        let (window, owner) = mount(cx);
+        test_turn(cx, window, |window, app| {
+            let current = window.find("status-usage-mode-current-chat");
+            assert_eq!(current.label(), Some("Current chat"));
+            assert_eq!(
+                window.find("status-usage-mode-all-accounts").label(),
+                Some("All accounts")
+            );
+            window.click("status-item-usage-side", app);
+        });
+        test_turn(cx, window, |window, app| {
+            window.click("status-usage-mode-all-accounts", app)
+        });
+        test_turn(cx, window, |window, app| {
+            let owner = owner.read(app);
+            assert_eq!(owner.changes.len(), 2);
+            assert_eq!(owner.settings.usage_mode, UsageMode::AllAccounts);
+            // The item moved before the mode was chosen stays where it was put.
+            assert!(
+                owner
+                    .settings
+                    .visible_items(StatusSide::Left)
+                    .contains(&StatusItemKind::Usage)
+            );
+            // Choosing the mode already chosen saves nothing.
+            window.click("status-usage-mode-all-accounts", app);
+        });
+        test_turn(cx, window, |window, app| {
+            assert_eq!(owner.read(app).changes.len(), 2);
+            window.click("status-usage-mode-current-chat", app);
+        });
+        test_turn(cx, window, |_, app| {
+            assert_eq!(owner.read(app).settings.usage_mode, UsageMode::CurrentChat);
+            assert_eq!(owner.read(app).changes.len(), 3);
+        });
     }
 
     #[gpui::test]

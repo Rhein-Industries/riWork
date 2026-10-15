@@ -3614,6 +3614,7 @@ mod tests {
             notify_on_agent_done: false,
             wake_orchestrators_on_agent_done: false,
             orchestrator: Default::default(),
+            delegation_policy: Default::default(),
             codex_account: crate::store::ProjectCodexAccount::default(),
         }
     }
@@ -4579,6 +4580,7 @@ mod search_regression_tests {
                                     notify_on_agent_done: false,
                                     wake_orchestrators_on_agent_done: false,
                                     orchestrator: Default::default(),
+                                    delegation_policy: Default::default(),
                                     codex_account: Default::default(),
                                     created_at: 0,
                                 })

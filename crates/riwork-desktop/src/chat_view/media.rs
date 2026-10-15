@@ -1,4 +1,6 @@
-//! User-triggered, bounded image loading. Folding uses stable message/image keys.
+//! User-triggered, bounded image loading. Folding uses stable message/image keys. The
+//! thumbnails of images the user sent are read as their messages are drawn, a few at a time,
+//! from the chat's own snapshot folder only (`want_thumbnails`).
 use super::{
     ChatView, ChatViewEvent,
     image_scope::ImageScope,
@@ -10,7 +12,7 @@ use crate::{
     ui_text,
 };
 use base64::Engine;
-use gpui::{AnyElement, Context, SharedString, div, img, prelude::*, rgb};
+use gpui::{AnyElement, Context, RenderImage, SharedString, div, img, prelude::*, rgb};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::Read,
@@ -23,6 +25,8 @@ const LOADED: usize = 8;
 const OPEN: usize = 16;
 const OPEN_LIMIT: &str = "Fold an image before opening more.";
 const NETWORK_BYTES: u64 = 8 * 1024 * 1024;
+/// Thumbnails of sent images read at once; the rest are asked for as those come back.
+const THUMB_READS: usize = 4;
 pub(super) const ARTIFACT_PAGE: usize = 32;
 
 pub(super) fn artifact_range(count: usize, page: usize) -> std::ops::Range<usize> {
@@ -158,6 +162,17 @@ pub(super) struct MediaState {
     active: usize,
     generation: u64,
     pub viewer: Option<String>,
+    /// The thumbnails of the files users sent, by the keys `attachment_ui::thumbnails` gives.
+    thumbs: HashMap<String, Thumb>,
+}
+
+/// A sent attachment's thumbnail: the host's bounded preview of it, read as soon as its
+/// message is drawn rather than on a click, as only a small picture the user sent is.
+struct Thumb {
+    generation: u64,
+    path: String,
+    /// Nothing while it is read; then the picture, or why there is none.
+    content: Option<Result<Arc<RenderImage>, String>>,
 }
 
 impl MediaState {
@@ -489,6 +504,11 @@ fn load_remote(image: &ChatImage) -> Result<PreviewContent, String> {
         ImageSource::Unavailable { reason } => Err(reason.clone()),
     }
 }
+fn release_thumb(thumb: Thumb, cx: &mut gpui::App) {
+    if let Some(Ok(image)) = thumb.content {
+        cx.defer(move |cx| cx.drop_image(image, None));
+    }
+}
 fn release(slot: Slot, cx: &mut Context<ChatView>) {
     if let Some(Ok(content)) = slot.content
         && let Some(image) = content.render_image()
@@ -511,6 +531,10 @@ impl ChatView {
     pub(super) fn rescope_images(&mut self, cx: &mut Context<Self>) {
         for slot in self.media.rescope(&self.open) {
             release(slot, cx);
+        }
+        // Thumbnails are read again under the new scope when their messages are drawn.
+        for (_, thumb) in self.media.thumbs.drain() {
+            release_thumb(thumb, cx);
         }
         self.start_images(cx);
         self.list.remeasure();
@@ -544,6 +568,116 @@ impl ChatView {
                 cx.defer(move |cx| cx.drop_image(image, None));
             }
         }
+        for (_, thumb) in self.media.thumbs.drain() {
+            release_thumb(thumb, cx);
+        }
+    }
+
+    /// Start reading the thumbnails of what the user message at `at` sent that are not read
+    /// or being read: each as an image card reads a local image, within the chat's scope, a
+    /// few at a time. One that could not be read is not read again until the scope changes.
+    pub(super) fn want_thumbnails(&mut self, at: usize, cx: &mut Context<Self>) {
+        let Some(item) = self.model.transcript.items.get(at) else {
+            return;
+        };
+        let reading = self
+            .media
+            .thumbs
+            .values()
+            .filter(|thumb| thumb.content.is_none())
+            .count();
+        let wanted: Vec<(String, String)> =
+            super::attachment_ui::thumbnails(item, &self.image_scope)
+                .filter(|(key, path)| {
+                    !self
+                        .media
+                        .thumbs
+                        .get(key)
+                        .is_some_and(|thumb| thumb.path == *path)
+                })
+                .take(THUMB_READS.saturating_sub(reading))
+                .collect();
+        for (key, path) in wanted {
+            self.media.generation += 1;
+            let generation = self.media.generation;
+            let image = ChatImage {
+                label: String::new(),
+                source: ImageSource::Local { path: path.clone() },
+            };
+            let scope = self.image_scope.clone();
+            let work = cx
+                .background_executor()
+                .spawn(async move { load(&image, &scope).0 });
+            if let Some(old) = self.media.thumbs.insert(
+                key.clone(),
+                Thumb {
+                    generation,
+                    path,
+                    content: None,
+                },
+            ) {
+                release_thumb(old, cx);
+            }
+            cx.spawn(async move |this, cx| {
+                let content = match work.await {
+                    Ok(PreviewContent::Image { image, .. }) => Ok(image),
+                    Ok(PreviewContent::Message(message)) | Err(message) => Err(message),
+                    // `load` reads nothing else; a picture never drawn holds no atlas tiles.
+                    Ok(_) => Err("This reference is not a supported image.".into()),
+                };
+                let _ = this.update(cx, |view, cx| {
+                    match view
+                        .media
+                        .thumbs
+                        .get_mut(&key)
+                        .filter(|thumb| thumb.generation == generation)
+                    {
+                        Some(thumb) => {
+                            thumb.content = Some(content);
+                            cx.notify();
+                        }
+                        // Forgotten while it was read: its scope changed or the view let it go.
+                        None => {
+                            if let Ok(image) = content {
+                                cx.defer(move |cx| cx.drop_image(image, None));
+                            }
+                        }
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// For tests: how many thumbnails are being read, and when each one was last asked for.
+    #[cfg(test)]
+    pub(super) fn thumbnail_reads(&self) -> (usize, HashMap<String, u64>) {
+        (
+            self.media
+                .thumbs
+                .values()
+                .filter(|thumb| thumb.content.is_none())
+                .count(),
+            self.media
+                .thumbs
+                .iter()
+                .map(|(key, thumb)| (key.clone(), thumb.generation))
+                .collect(),
+        )
+    }
+
+    /// The thumbnail read for `key` from `path`: nothing while it is read or before.
+    pub(super) fn thumbnail(
+        &self,
+        key: &str,
+        path: &str,
+    ) -> Option<&Result<Arc<RenderImage>, String>> {
+        self.media
+            .thumbs
+            .get(key)
+            .filter(|thumb| thumb.path == path)?
+            .content
+            .as_ref()
     }
 
     pub(super) fn image_card(

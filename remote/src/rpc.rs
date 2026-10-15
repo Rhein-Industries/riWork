@@ -27,11 +27,13 @@ use tokio::{
 
 mod chat;
 mod dashboard;
+mod memo;
 mod orchestrator;
 mod tabs;
 mod upload;
 
 pub use dashboard::{DASHBOARD_AUTOMATIONS_MAX, DASHBOARD_KEYS, DASHBOARD_LISTS};
+pub use memo::MEMO_MAX_BYTES;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1126,8 +1128,12 @@ pub struct Rpc {
     chat_provider_switch: AtomicBool,
     /// Whether the CLI said it has `chat models` (see `chat_models_supported`).
     chat_models: AtomicBool,
+    /// Whether the CLI said it has `chat suggestions` (see `chat_suggestions_supported`).
+    chat_suggestions: AtomicBool,
     /// Whether the CLI said it has `dashboard` (see `dashboard_supported`).
     dashboard: AtomicBool,
+    /// Whether the CLI said it has `project memo` (see `project_memo_supported`).
+    project_memo: AtomicBool,
     /// Held while the CLI is asked what it can do (`capability_known`), so that two askers at
     /// once run it once.
     asking_chat: tokio::sync::Mutex<()>,
@@ -1153,7 +1159,9 @@ impl Rpc {
             shell_create_as_settings: AtomicBool::new(false),
             chat_provider_switch: AtomicBool::new(false),
             chat_models: AtomicBool::new(false),
+            chat_suggestions: AtomicBool::new(false),
             dashboard: AtomicBool::new(false),
+            project_memo: AtomicBool::new(false),
             asking_chat: tokio::sync::Mutex::new(()),
             capability_answers: AtomicU64::new(0),
             shell_paste: AtomicBool::new(false),
@@ -1185,20 +1193,45 @@ impl Rpc {
     /// that may be compressed (`handle_shared_up_to`) let the CLI write more than
     /// one encrypted frame holds; the reply itself is checked after.
     async fn raw_capped(&self, args: Vec<String>, limit: Duration, cap: usize) -> Result<Vec<u8>> {
+        self.raw_fed(args, None, limit, cap).await
+    }
+    /// `raw_capped` with `input` as the CLI's standard input (closed after it), for text that
+    /// must not be an argument: arguments are visible to every user of the Mac in a process list.
+    async fn raw_fed(
+        &self,
+        args: Vec<String>,
+        input: Option<&[u8]>,
+        limit: Duration,
+        cap: usize,
+    ) -> Result<Vec<u8>> {
         let mut child = Command::new(&self.cli)
             .env_remove("RIWORK_CHAT_ID")
             .env_remove("RIWORK_SHELL_ID")
             .env_remove("RIWORK_ORCHESTRATOR_SCOPE")
             .args(args)
-            .stdin(Stdio::null())
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .with_context(|| format!("start configured RiWork CLI {}", self.cli.display()))?;
+        let stdin = child.stdin.take();
         let stdout = child.stdout.take().context("stdout")?;
         let stderr = child.stderr.take().context("stderr")?;
         let run = async {
+            let feed = async {
+                if let (Some(mut stdin), Some(input)) = (stdin, input) {
+                    use tokio::io::AsyncWriteExt;
+                    // A CLI that exits without reading it all is judged by its exit status.
+                    let _ = stdin.write_all(input).await;
+                    let _ = stdin.shutdown().await;
+                }
+                Ok::<_, anyhow::Error>(())
+            };
             let out = async {
                 let mut b = vec![];
                 stdout.take((cap + 1) as u64).read_to_end(&mut b).await?;
@@ -1211,7 +1244,7 @@ impl Rpc {
                 ensure!(b.len() <= 4096, "CLI diagnostics exceeded limit");
                 Ok::<_, anyhow::Error>(b)
             };
-            let (out, err, status) = tokio::try_join!(out, err, async {
+            let (_, out, err, status) = tokio::try_join!(feed, out, err, async {
                 Ok::<_, anyhow::Error>(child.wait().await?)
             })?;
             ensure!(
@@ -1855,6 +1888,15 @@ impl Rpc {
                 let spec = project_spec(&r.params)?;
                 self.create_project(device, spec).await
             }
+            // A project's memo; see `memo`.
+            "project.memo.get" => {
+                let spec = memo::get_spec(r)?;
+                self.project_memo_get(spec).await
+            }
+            "project.memo.set" => {
+                let spec = memo::set_spec(r)?;
+                self.project_memo_set(device, spec).await
+            }
             "orchestrator.create" => {
                 let project = orchestrator::spec(&r.params)?;
                 self.orchestrator_create(device, project).await
@@ -1888,6 +1930,10 @@ impl Rpc {
             "chat.models" => {
                 let spec = chat::models_spec(&r.params)?;
                 self.chat_models(spec, reply_limit).await
+            }
+            "chat.suggestions" => {
+                let spec = chat::suggestions_spec(&r.params)?;
+                self.chat_suggestions(&r.id, spec, reply_limit).await
             }
             // Files from the phone; see `upload`.
             "upload.begin" => {

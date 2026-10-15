@@ -44,7 +44,7 @@ impl StatusItemKind {
             Self::LiveSessions => "Live sessions",
             Self::Resources => "CPU and memory",
             Self::Usage => "Account usage",
-            Self::CodexAccount => "Codex account email",
+            Self::CodexAccount => "Default Codex account",
             Self::SessionId => "Session ID",
             Self::GlobalOrchestrator => "Global orchestrator",
             Self::ProjectOrchestrator => "Project orchestrator",
@@ -59,8 +59,10 @@ impl StatusItemKind {
             Self::AgentActivity => "Whether agents are working, waiting, or done.",
             Self::LiveSessions => "Running sessions in the current project.",
             Self::Resources => "CPU and memory used by the project's sessions.",
-            Self::Usage => "The active account's remaining quota.",
-            Self::CodexAccount => "Focused Codex account email, or the configured project default.",
+            Self::Usage => "Remaining quota of the current chat's account, or of every account.",
+            Self::CodexAccount => {
+                "The account new Codex chats and shells in this project use; click to choose it."
+            }
             Self::SessionId => "The active session's ID; click to copy it.",
             Self::GlobalOrchestrator => "Open the global dashboard or the global chat.",
             Self::ProjectOrchestrator => "Open this project's orchestrator.",
@@ -153,10 +155,41 @@ impl<'de> Deserialize<'de> for StatusBarItem {
     }
 }
 
+/// What the account usage item reads out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageMode {
+    /// One readout for the account of the focused chat or shell, else the project's
+    /// default Codex account.
+    #[default]
+    CurrentChat,
+    /// One readout per known Codex account, and Claude's subscription when it is known.
+    AllAccounts,
+}
+
+impl UsageMode {
+    pub const ALL: [Self; 2] = [Self::CurrentChat, Self::AllAccounts];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CurrentChat => "Current chat",
+            Self::AllAccounts => "All accounts",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::CurrentChat => "current-chat",
+            Self::AllAccounts => "all-accounts",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct StatusBarSettings {
     pub enabled: bool,
     pub items: Vec<StatusBarItem>,
+    pub usage_mode: UsageMode,
 }
 
 impl Default for StatusBarSettings {
@@ -167,6 +200,7 @@ impl Default for StatusBarSettings {
                 .into_iter()
                 .map(StatusBarItem::default_for)
                 .collect(),
+            usage_mode: UsageMode::default(),
         }
     }
 }
@@ -190,6 +224,12 @@ impl<'de> Deserialize<'de> for StatusBarSettings {
                 .filter_map(|item| serde_json::from_value(item.clone()).ok())
                 .collect();
         }
+        // A mode a newer build added, or a damaged value, reads as the default and leaves
+        // the rest of the bar as it was saved.
+        settings.usage_mode = object
+            .get("usage_mode")
+            .and_then(|mode| serde_json::from_value(mode.clone()).ok())
+            .unwrap_or_default();
         settings.normalize();
         Ok(settings)
     }
@@ -339,6 +379,45 @@ mod tests {
         assert!(settings.visible_items(StatusSide::Right).is_empty());
         settings.enabled = true;
         assert_eq!(settings.visible_items(StatusSide::Right), right_before);
+    }
+
+    #[test]
+    fn the_usage_mode_defaults_to_the_current_chat_and_a_bad_one_keeps_the_rest_of_the_bar() {
+        // Saved before the mode existed: the current chat, and every other choice as it was.
+        let old: StatusBarSettings = serde_json::from_str(BEFORE_THE_LAYOUT_MENU).unwrap();
+        assert_eq!(old.usage_mode, UsageMode::CurrentChat);
+        assert_eq!(
+            StatusBarSettings::default().usage_mode,
+            UsageMode::CurrentChat
+        );
+
+        let mut chosen = old.clone();
+        chosen.usage_mode = UsageMode::AllAccounts;
+        let raw = serde_json::to_value(&chosen).unwrap();
+        assert_eq!(raw["usage_mode"], "all_accounts");
+        let reread: StatusBarSettings = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(reread, chosen);
+
+        // A mode from a newer build, or a damaged one, reads as the current chat; the items,
+        // their sides and the master switch stay as saved.
+        for bad in [
+            serde_json::json!("per_provider"),
+            serde_json::json!(3),
+            serde_json::json!({"mode": "all_accounts"}),
+            serde_json::Value::Null,
+        ] {
+            let mut raw = raw.clone();
+            raw["usage_mode"] = bad.clone();
+            raw["enabled"] = serde_json::json!(false);
+            let read: StatusBarSettings = serde_json::from_value(raw).unwrap();
+            assert_eq!(read.usage_mode, UsageMode::CurrentChat, "{bad}");
+            assert!(!read.enabled, "{bad}");
+            assert_eq!(read.items, chosen.items, "{bad}");
+        }
+        assert_eq!(
+            UsageMode::ALL.map(UsageMode::label),
+            ["Current chat", "All accounts"]
+        );
     }
 
     /// A bar as a build from before the layout menu saved it: ten items, in the old default

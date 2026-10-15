@@ -16,7 +16,7 @@ use std::{
 };
 use uuid::Uuid;
 
-use crate::session_keys::tmux_argument;
+use crate::{delegation::Delegation, session_keys::tmux_argument};
 
 mod sample;
 pub use sample::SessionSample;
@@ -105,6 +105,10 @@ pub struct ShellSession {
     pub orchestrator_skill_loaded: bool,
     #[serde(default)]
     pub orchestrator_skill_version: Option<String>,
+    /// `orchestrator_delegation_version` of the policy it was told with the skill; none
+    /// from a build before it was recorded.
+    #[serde(default)]
+    pub orchestrator_delegation_version: Option<String>,
     #[serde(default)]
     pub orchestrator_project_root: Option<PathBuf>,
     pub created_at_unix: u64,
@@ -117,6 +121,26 @@ impl ShellSession {
     pub fn is_worker(&self) -> bool {
         self.kind != ShellKind::Orchestrator && (self.parent_id.is_some() || !self.user_opened)
     }
+}
+
+/// The saved record of shell `id` under `home`, without asking tmux: what the chat host
+/// checks a worker note against.
+pub fn registered_shell(home: &Path, id: &str) -> Result<ShellSession, String> {
+    validate_uuid(id)?;
+    let path = home.join("sessions.json");
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!("unknown shell {id}"));
+        }
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
+    };
+    parse_registry(&bytes)
+        .map_err(|error| format!("parse {}: {error}", path.display()))?
+        .sessions
+        .into_iter()
+        .find(|session| session.id == id)
+        .ok_or_else(|| format!("unknown shell {id}"))
 }
 
 fn user_shell_caller() -> bool {
@@ -398,6 +422,7 @@ impl SessionManager {
             .transpose()?;
         let id = Uuid::new_v4().to_string();
         let default_codex = command.is_none();
+        let delegation = crate::orchestrators::delegation(&self.home, project_id.as_deref());
         let unrestricted = default_codex && project_id.is_some();
         let binding = if default_codex {
             Some(selected_codex_binding(&self.home, project_id.as_deref())?)
@@ -430,6 +455,7 @@ impl SessionManager {
                 &executable,
                 project_id.as_deref(),
                 project_root.as_deref(),
+                &delegation,
                 &id,
                 binding.as_ref().map(|binding| binding.home.as_path()),
                 crate::settings::agent_inline_mode(&self.home),
@@ -455,6 +481,8 @@ impl SessionManager {
             session.harness = Some(HarnessKind::Codex);
             session.orchestrator_skill_loaded = true;
             session.orchestrator_skill_version = Some(orchestrator_skill_version());
+            session.orchestrator_delegation_version =
+                Some(orchestrator_delegation_version(&delegation));
         }
         registry.sessions.push(session.clone());
         if let Err(error) = self.write_registry(&registry) {
@@ -550,10 +578,13 @@ impl SessionManager {
         result.map(|()| path)
     }
 
+    /// Whether the orchestrator has the skill this build ships and the delegation policy
+    /// its scope resolves to now (`orchestrators::delegation`): what LOAD SKILL brings.
     pub fn orchestrator_skill_is_current(&self, session: &ShellSession) -> bool {
-        session.orchestrator_skill_loaded
-            && session.orchestrator_skill_version.as_deref()
-                == Some(orchestrator_skill_version().as_str())
+        orchestrator_skill_is_current_with(
+            session,
+            &crate::orchestrators::delegation(&self.home, session.project_id.as_deref()),
+        )
     }
 
     /// Explicitly load the skill into an existing Codex singleton. This is
@@ -574,7 +605,9 @@ impl SessionManager {
             return Err(format!("shell {id} has exited"));
         }
         session.alive = true;
-        if self.orchestrator_skill_is_current(session) {
+        let delegation =
+            crate::orchestrators::delegation(&self.home, session.project_id.as_deref());
+        if orchestrator_skill_is_current_with(session, &delegation) {
             return Ok(session.clone());
         }
         let output = self.tmux_checked(&[
@@ -604,11 +637,14 @@ impl SessionManager {
                 &executable,
                 session.project_id.as_deref(),
                 session.orchestrator_project_root.as_deref(),
+                &delegation,
                 true,
             ),
         )?;
         session.orchestrator_skill_loaded = true;
         session.orchestrator_skill_version = Some(orchestrator_skill_version());
+        session.orchestrator_delegation_version =
+            Some(orchestrator_delegation_version(&delegation));
         session.harness = Some(HarnessKind::Codex);
         let session = session.clone();
         self.write_registry(&registry)?;
@@ -1137,6 +1173,16 @@ impl SessionManager {
     pub fn capture(&self, id: &str, lines: usize) -> Result<String, String> {
         self.require_live(id)?;
         self.capture_text(id, lines, false)
+    }
+
+    /// Capture a shell from a successful live sample without another liveness query.
+    /// A pane that exits after sampling returns the normal tmux error.
+    pub fn capture_sampled(&self, shell: &ShellSession, lines: usize) -> Result<String, String> {
+        validate_uuid(&shell.id)?;
+        if !shell.alive {
+            return Err("Shell has exited".into());
+        }
+        self.capture_text(&shell.id, lines, false)
     }
 
     /// The scrollback capture of a shell known to be live. `styled` keeps the
@@ -1978,7 +2024,7 @@ impl SessionManager {
 
     /// Called wherever this process changes sessions, so the next `sample` reads
     /// tmux again instead of showing the old state for the rest of its TTL.
-    fn invalidate_sample(&self) {
+    pub fn invalidate_sample(&self) {
         sample::cache_for(&self.socket_name).invalidate();
     }
 
@@ -2390,6 +2436,7 @@ impl SessionManager {
             codex_home: binding.map(|binding| binding.home),
             orchestrator_skill_loaded: false,
             orchestrator_skill_version: None,
+            orchestrator_delegation_version: None,
             orchestrator_project_root: None,
             created_at_unix,
             alive: true,
@@ -4098,6 +4145,41 @@ pub fn orchestrator_skill_version() -> String {
     format!("{:016x}", stable_hash(ORCHESTRATOR_SKILL.as_bytes()))
 }
 
+/// The delegation policy an orchestrator was told, as recorded beside its skill version:
+/// it changes with any resolved value.
+pub fn orchestrator_delegation_version(delegation: &Delegation) -> String {
+    let resolved = serde_json::json!([
+        delegation.spread_work,
+        delegation.parallel_shells,
+        delegation.design,
+        delegation.workhorse,
+    ]);
+    format!("{:016x}", stable_hash(resolved.to_string().as_bytes()))
+}
+
+/// Whether an orchestrator recorded as told `skill` and `delegation` (their versions) has
+/// this build's skill and `policy`, its scope's now. One recorded without the policy, by
+/// an older build, is not: what it was told cannot be known, and LOAD SKILL tells it again.
+pub(crate) fn orchestrator_told(
+    skill: Option<&str>,
+    delegation: Option<&str>,
+    policy: &Delegation,
+) -> bool {
+    skill == Some(orchestrator_skill_version().as_str())
+        && delegation == Some(orchestrator_delegation_version(policy).as_str())
+}
+
+/// `SessionManager::orchestrator_skill_is_current` with its scope's policy given, for a
+/// caller that holds Settings and the store already (a window, as it draws).
+pub fn orchestrator_skill_is_current_with(session: &ShellSession, policy: &Delegation) -> bool {
+    session.orchestrator_skill_loaded
+        && orchestrator_told(
+            session.orchestrator_skill_version.as_deref(),
+            session.orchestrator_delegation_version.as_deref(),
+            policy,
+        )
+}
+
 fn matches_orchestrator_scope(session: &ShellSession, project_id: Option<&str>) -> bool {
     session.kind == ShellKind::Orchestrator && session.project_id.as_deref() == project_id
 }
@@ -4135,7 +4217,10 @@ fn without_project_environment(command: &str, shell: &Path) -> String {
 }
 
 /// The message an orchestrator is started with (a terminal's launch command, a
-/// chat's first message) and that LOAD SKILL gives a running one.
+/// chat's first message) and that LOAD SKILL gives a running one. Beside its scope it
+/// carries `delegation`, the policy its scope resolves to now
+/// (`orchestrators::delegation`), in one sentence; a running orchestrator hears of a
+/// later change only through LOAD SKILL or when it is created again.
 ///
 /// `inline_skill` puts the whole skill in the message, which suits a message
 /// pasted into a running pane or sent to a chat. A launch must not: the message
@@ -4146,6 +4231,7 @@ pub(crate) fn orchestrator_prompt(
     executable: &Path,
     project_id: Option<&str>,
     project_root: Option<&Path>,
+    delegation: &Delegation,
     inline_skill: bool,
 ) -> String {
     let scope = match project_id {
@@ -4184,7 +4270,7 @@ pub(crate) fn orchestrator_prompt(
          {load} \
          Its installed source is {}. The installed RiWork CLI is {}: use this executable \
          for `riwork` commands if PATH does not resolve it, and retain RIWORK_HOME. \
-         {} \
+         {} {} \
          This startup message only loads the skill. Do not inspect projects, create tasks, \
          modify repositories, delegate work, submit input to other harnesses, or create schedules. \
          After loading, briefly acknowledge readiness and wait for the user's objective.\n\n\
@@ -4192,7 +4278,28 @@ pub(crate) fn orchestrator_prompt(
         quote_arg(&skill_path.to_string_lossy()),
         quote_arg(&executable.to_string_lossy()),
         scope,
+        delegation_brief(delegation, project_id.is_some()),
         CUA_GUIDANCE
+    )
+}
+
+/// The delegation policy of an orchestrator's scope as its startup message states it:
+/// one sentence of resolved values, which the skill's Fan out and relay section
+/// explains.
+fn delegation_brief(policy: &Delegation, project: bool) -> String {
+    let source = if project {
+        "this project's override, else Settings, else RiWork's default"
+    } else {
+        "Settings, else RiWork's default"
+    };
+    format!(
+        "Delegation policy for this scope ({source}, as they stood when this message was written): \
+         spread work {}; about {} parallel worker shells; design work on {}; workhorse work on {}. \
+         Apply it as the skill's Fan out and relay section says.",
+        if policy.spread_work { "on" } else { "off" },
+        policy.parallel_shells,
+        policy.design.describe(),
+        policy.workhorse.describe(),
     )
 }
 
@@ -4204,6 +4311,7 @@ fn orchestrator_command(
     executable: &Path,
     project_id: Option<&str>,
     project_root: Option<&Path>,
+    delegation: &Delegation,
     shell_id: &str,
     codex_home: Option<&Path>,
     inline: bool,
@@ -4244,6 +4352,7 @@ fn orchestrator_command(
         executable,
         project_id,
         project_root,
+        delegation,
         false,
     ));
     let command = format!(
@@ -8431,6 +8540,7 @@ else:
                 Path::new("/bin/riwork"),
                 None,
                 None,
+                &Delegation::built_in(),
                 "pane",
                 None,
                 false,
@@ -8509,6 +8619,7 @@ else:
             executable,
             None,
             None,
+            &Delegation::built_in(),
             "global-orchestrator-pane",
             None,
             false,
@@ -8535,11 +8646,23 @@ else:
         assert!(prompt.contains(&quote_arg(&executable.to_string_lossy())));
         assert!(prompt.contains("Scope: global."));
         assert!(prompt.contains("You have no project or worktree ownership."));
-        // A pane that is already running receives the skill itself, by paste.
-        let pasted = orchestrator_prompt(&skill, executable, None, None, true);
+        assert!(prompt.contains(
+            "Delegation policy for this scope (Settings, else RiWork's default, as they stood \
+             when this message was written): spread work on; about 4 parallel worker shells; \
+             design work on claude, model opus; workhorse work on codex, model gpt-6.1-sol. \
+             Apply it as the skill's Fan out and relay section says."
+        ));
+        // A pane that is already running receives the skill itself, by paste, with the
+        // policy as it resolves now.
+        let policy = Delegation {
+            parallel_shells: 7,
+            ..Delegation::built_in()
+        };
+        let pasted = orchestrator_prompt(&skill, executable, None, None, &policy, true);
         assert!(pasted.contains(ORCHESTRATOR_SKILL));
         assert!(pasted.contains("<riwork-orchestrator-skill>"));
         assert!(pasted.contains(CUA_GUIDANCE));
+        assert!(pasted.contains("about 7 parallel worker shells"));
     }
 
     /// A terminal orchestrator started with an older skill is offered LOAD SKILL, and what
@@ -8558,6 +8681,8 @@ else:
             let mut session = scope_session(ShellKind::Orchestrator, scope);
             session.orchestrator_skill_loaded = true;
             session.orchestrator_skill_version = Some(older.clone());
+            session.orchestrator_delegation_version =
+                Some(orchestrator_delegation_version(&Delegation::built_in()));
             assert!(!manager.orchestrator_skill_is_current(&session));
             session.orchestrator_skill_version = Some(orchestrator_skill_version());
             assert!(manager.orchestrator_skill_is_current(&session));
@@ -8570,6 +8695,7 @@ else:
                 Path::new("/bin/riwork"),
                 scope,
                 scope.map(|_| root),
+                &Delegation::built_in(),
                 true,
             );
             assert!(pasted.contains(ORCHESTRATOR_SKILL));
@@ -8582,6 +8708,67 @@ else:
             }
         }
         manager.kill_server();
+    }
+
+    /// A terminal orchestrator told the skill this build ships is out of date when its
+    /// scope's delegation policy changes, or when an older build recorded no policy, so
+    /// LOAD SKILL (which returns early only for a current one) tells it the policy now.
+    #[test]
+    fn a_terminal_orchestrator_is_out_of_date_when_its_policy_changes() {
+        let home = std::env::temp_dir().join(format!("riwork-skill-policy-{}", Uuid::new_v4()));
+        let manager = SessionManager::at(home.clone()).unwrap();
+        let store = crate::store::Store::open(&home).unwrap();
+        let root = home.join("project");
+        fs::create_dir_all(&root).unwrap();
+        let project = store.add_project(&root, Some("Project")).unwrap();
+        let settings = crate::settings::SettingsStore::open(&home).unwrap();
+        for scope in [None, Some(project.id.as_str())] {
+            let mut session = scope_session(ShellKind::Orchestrator, scope);
+            session.orchestrator_skill_loaded = true;
+            session.orchestrator_skill_version = Some(orchestrator_skill_version());
+            session.orchestrator_delegation_version = Some(orchestrator_delegation_version(
+                &crate::orchestrators::delegation(&home, scope),
+            ));
+            assert!(manager.orchestrator_skill_is_current(&session));
+            // An older build's record says nothing of the policy.
+            let older = ShellSession {
+                orchestrator_delegation_version: None,
+                ..session.clone()
+            };
+            assert!(!manager.orchestrator_skill_is_current(&older));
+            // Settings change for every scope; a project's own choice for its own.
+            settings
+                .update(|settings| {
+                    let shells = settings.delegation_policy.parallel_shells.unwrap_or(4);
+                    settings
+                        .delegation_policy
+                        .set_parallel_shells(Some(shells + 1));
+                })
+                .unwrap();
+            assert!(!manager.orchestrator_skill_is_current(&session));
+            let now = crate::orchestrators::delegation(&home, scope);
+            assert!(orchestrator_skill_is_current_with(
+                &ShellSession {
+                    orchestrator_delegation_version: Some(orchestrator_delegation_version(&now)),
+                    ..session.clone()
+                },
+                &now
+            ));
+        }
+        let mut session = scope_session(ShellKind::Orchestrator, Some(&project.id));
+        session.orchestrator_skill_loaded = true;
+        session.orchestrator_skill_version = Some(orchestrator_skill_version());
+        session.orchestrator_delegation_version = Some(orchestrator_delegation_version(
+            &crate::orchestrators::delegation(&home, Some(&project.id)),
+        ));
+        store
+            .set_project_delegation_policy(&project.id, |policy| {
+                policy.set_spread_work(Some(false))
+            })
+            .unwrap();
+        assert!(!manager.orchestrator_skill_is_current(&session));
+        manager.kill_server();
+        let _ = fs::remove_dir_all(home);
     }
 
     /// Both scopes read the delegation mandate before their own sections: an orchestrator
@@ -8609,6 +8796,40 @@ else:
             "not a licence to implement in it",
             "report the blocker; do not do the implementation yourself",
             "The global orchestrator never edits any project's files",
+        ] {
+            assert!(
+                ORCHESTRATOR_SKILL.contains(needle),
+                "the skill lacks {needle:?}"
+            );
+        }
+    }
+
+    /// Both scopes read, after the mandate, how to spread work by their delegation policy and
+    /// how status travels down and up the chain, through the transports RiWork already has.
+    #[test]
+    fn the_embedded_skill_fans_work_out_and_relays_through_the_chain() {
+        let mandate = ORCHESTRATOR_SKILL
+            .find("## Delegate; do not implement")
+            .unwrap();
+        let fan_out = ORCHESTRATOR_SKILL
+            .find("## Fan out and relay")
+            .expect("the skill lacks Fan out and relay");
+        assert!(mandate < fan_out);
+        assert!(fan_out < ORCHESTRATOR_SKILL.find("## Global coordination").unwrap());
+        for needle in [
+            "Your startup message states your scope's delegation policy",
+            "It is not refreshed while you run; a new orchestrator or LOAD SKILL brings a change.",
+            "Sessions are cheap to create",
+            "needs a stated reason",
+            "with the policy's design and workhorse choices in place of those two rows",
+            "the tasks it depends on or blocks",
+            "Relay down the chain, global orchestrator → project orchestrator → worker shells",
+            "Relay up the chain",
+            "`RiWork check-in`",
+            "Dashboard briefs",
+            "gathers project state through them",
+            "never by steering, sending to, or creating a project's workers",
+            "Either way, delegate as Delegate; do not implement says.",
         ] {
             assert!(
                 ORCHESTRATOR_SKILL.contains(needle),
@@ -8718,6 +8939,11 @@ else:
             Path::new("/Applications/RiWork App/Contents/MacOS/riwork"),
             Some(alpha),
             Some(project_root),
+            &Delegation {
+                spread_work: false,
+                parallel_shells: 2,
+                ..Delegation::built_in()
+            },
             "project-orchestrator-pane",
             None,
             false,
@@ -8751,6 +8977,16 @@ else:
         );
         assert!(prompt.contains(&quote_arg(&skill.to_string_lossy())));
         assert!(!prompt.contains(ORCHESTRATOR_SKILL));
+        // The launch carries the policy the project's scope resolved to.
+        assert!(
+            prompt.contains(
+                "Delegation policy for this scope (this project's override, else Settings, \
+                 else RiWork's default, as they stood when this message was written): \
+                 spread work off; about 2 parallel worker shells; design work on claude, \
+                 model opus; workhorse work on codex, model gpt-6.1-sol."
+            ),
+            "{prompt}"
+        );
         assert_eq!(
             orchestrator_environment(Some(alpha)),
             [
