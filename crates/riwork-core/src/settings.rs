@@ -298,6 +298,16 @@ fn serialize_billing_as_flag<S: serde::Serializer>(
 }
 
 impl Settings {
+    /// Known persisted keys and their typed values, using the settings file's names.
+    /// Runtime-only diagnostics (such as `orchestrator_unreadable`) are excluded.
+    pub fn values(&self) -> Result<Map<String, Value>, String> {
+        match serde_json::to_value(self) {
+            Ok(Value::Object(fields)) => Ok(fields),
+            Ok(_) => Err("Cannot encode settings: not an object".to_owned()),
+            Err(error) => Err(format!("Cannot encode settings: {error}")),
+        }
+    }
+
     /// What an orchestrator created now runs as by these settings.
     pub fn orchestrator_runs(&self) -> OrchestratorRuns {
         match self.orchestrator_mode {
@@ -696,12 +706,47 @@ impl SettingsStore {
     }
 
     pub fn update(&self, change: impl FnOnce(&mut Settings)) -> Result<Settings, String> {
+        self.update_with(None, |before, _| {
+            let mut settings = before.clone();
+            change(&mut settings);
+            Ok(settings)
+        })
+    }
+
+    /// Explicitly choose one known top-level setting. Validate against the latest
+    /// complete document under the write lock; a refusal never reaches the save path.
+    /// Input errors carry `invalid_request:`, as the CLI's structured errors do.
+    pub fn set_value(&self, key: &str, value: Value) -> Result<Settings, String> {
+        if !Settings::default().values()?.contains_key(key) {
+            return Err(format!(
+                "invalid_request: '{key}' is not a known setting; run riwork settings list"
+            ));
+        }
+        self.update_with(Some(key), |_, document| {
+            let invalid = |reason: String| format!("invalid_request: Cannot set '{key}': {reason}");
+            let mut prospective = document.clone();
+            prospective.insert(key.to_owned(), value.clone());
+            let settings = Settings::deserialize(Value::Object(prospective))
+                .map_err(|error| invalid(error.to_string()))?;
+            if settings.schema_version != 1 {
+                return Err(invalid("only settings schema 1 is supported".to_owned()));
+            }
+            let effective = settings.values()?;
+            validate_setting_input(key, &value, &effective[key], &settings).map_err(invalid)?;
+            Ok(settings)
+        })
+    }
+
+    fn update_with(
+        &self,
+        chosen_key: Option<&str>,
+        change: impl FnOnce(&Settings, &Map<String, Value>) -> Result<Settings, String>,
+    ) -> Result<Settings, String> {
         let lock = self.lock_file()?;
         FileExt::lock_exclusive(&lock).map_err(|error| format!("Cannot lock settings: {error}"))?;
         let (before, document) = self.read_with_document()?;
-        let mut settings = before.clone();
-        change(&mut settings);
-        let document = merged_document(document, &before, &settings)?;
+        let settings = change(&before, &document)?;
+        let document = merged_document(document, &before, &settings, chosen_key)?;
         // What the file says now, including what it keeps that this build cannot
         // read (`orchestrator_unreadable`), is what was saved.
         let settings = Settings::deserialize(Value::Object(document.clone()))
@@ -787,10 +832,13 @@ impl SettingsStore {
 /// `orchestrator_unreadable`). So a file without them keeps meaning "never chosen", and
 /// the default that stands for that can improve in a later build. The delegation policy
 /// keeps what it cannot read itself, so writing it whole loses nothing.
+/// `chosen_key` also saves an explicit CLI choice equal to the effective default:
+/// choosing Ghostty must replace a future theme that currently reads as Ghostty.
 fn merged_document(
     mut document: Map<String, Value>,
     before: &Settings,
     after: &Settings,
+    chosen_key: Option<&str>,
 ) -> Result<Map<String, Value>, String> {
     const CHOSEN_ONLY: [&str; 4] = [
         "orchestrator_mode",
@@ -798,21 +846,19 @@ fn merged_document(
         "orchestrator_chat_model",
         "delegation_policy",
     ];
-    let encode = |settings: &Settings| match serde_json::to_value(settings) {
-        Ok(Value::Object(fields)) => Ok(fields),
-        Ok(_) => Err("Cannot encode settings: not an object".to_owned()),
-        Err(error) => Err(format!("Cannot encode settings: {error}")),
-    };
     let chosen_over_unreadable = |key: &str| before.is_unreadable(key) && !after.is_unreadable(key);
-    let before_fields = encode(before)?;
+    let before_fields = before.values()?;
     let before = &before_fields;
-    for (key, value) in encode(after)? {
+    for (key, value) in after.values()? {
         let unchanged = before.get(&key) == Some(&value);
         if chosen_over_unreadable(&key) {
             document.insert(key, value);
             continue;
         }
-        if unchanged && (document.contains_key(&key) || CHOSEN_ONLY.contains(&key.as_str())) {
+        if unchanged
+            && chosen_key != Some(key.as_str())
+            && (document.contains_key(&key) || CHOSEN_ONLY.contains(&key.as_str()))
+        {
             continue;
         }
         if key == "chat_display_modes"
@@ -842,6 +888,67 @@ fn merged_document(
         document.insert(key, value);
     }
     Ok(document)
+}
+
+/// Settings intentionally loads many invalid fields as defaults. Merely succeeding
+/// at deserialization is therefore insufficient for an explicit CLI write. Check
+/// every supplied component against what the model actually understood, allowing
+/// omitted object defaults and the status bar's appended default items.
+fn validate_setting_input(
+    key: &str,
+    input: &Value,
+    effective: &Value,
+    settings: &Settings,
+) -> Result<(), String> {
+    if key == "delegation_policy"
+        && (!settings.delegation_policy.unreadable.is_empty()
+            || settings.delegation_policy.unreadable_whole.is_some())
+    {
+        return Err("the delegation policy contains unknown or unreadable values".to_owned());
+    }
+    if key == "ui_text_size" {
+        // This field deliberately rounds to a tenth and clamps to 9..=24.
+        // A non-number must still fail rather than silently become the default.
+        return TextPoints::deserialize(input)
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+    }
+    if key == "status_bar"
+        && let Some(items) = input.get("items").and_then(Value::as_array)
+    {
+        for item in items {
+            crate::status_bar::StatusBarItem::deserialize(item)
+                .map_err(|error| format!("invalid status bar item: {error}"))?;
+        }
+    }
+    retained_input(input, effective, key)
+}
+
+fn retained_input(input: &Value, effective: &Value, path: &str) -> Result<(), String> {
+    match (input, effective) {
+        (Value::Object(input), Value::Object(effective)) => {
+            for (key, value) in input {
+                let path = format!("{path}.{key}");
+                let decoded = effective
+                    .get(key)
+                    .ok_or_else(|| format!("{path} is unknown or would be discarded"))?;
+                retained_input(value, decoded, &path)?;
+            }
+            Ok(())
+        }
+        (Value::Array(input), Value::Array(effective))
+            if path == "status_bar.items" && input.len() <= effective.len() =>
+        {
+            for (index, (value, decoded)) in input.iter().zip(effective).enumerate() {
+                retained_input(value, decoded, &format!("{path}[{index}]"))?;
+            }
+            Ok(())
+        }
+        _ if input == effective => Ok(()),
+        _ => Err(format!(
+            "{path} has the wrong type or an unsupported value (the app would read {effective})"
+        )),
+    }
 }
 
 #[cfg(test)]

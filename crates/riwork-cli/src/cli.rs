@@ -56,6 +56,10 @@ riwork update [--source PATH] [--release | --debug] [--no-reload]   Build releas
 riwork instances                        List running RiWork apps and their windows
 riwork usage [--shell ID]               Read harness usage (Grok: session tokens and cost)
 riwork appearance [--json]              Show the colors RiWork publishes to the phone companion
+riwork settings list [--json]          List global settings and their typed values
+riwork settings get KEY [--json]       Read one known global setting
+riwork settings set KEY VALUE [--json]   Validate, save, and print the effective value
+riwork settings help                   Show settings input rules and reload behavior
 riwork setup                            Install and start Cua.ai Driver; link its skill into each CLI
 riwork cua setup|status|permissions      Manage native computer use (status only reads)
 riwork cua mcp                          Serve Cua.ai Driver over MCP stdio
@@ -140,6 +144,14 @@ need their full UUID. Project, worktree, and task data lives in RIWORK_HOME
 or ~/.local/share/riwork. Shell processes stay alive independently of the UI.
 Only no arguments or one existing project directory open the workspace; any
 other unknown command or option exits with an error.
+settings addresses top-level settings.json keys in RIWORK_HOME (no project overrides).
+set takes JSON or a bare string; --json selects structured output and can precede VALUE.
+For example: settings set theme tokyo_night, or settings set status_bar --json
+'{\"usage_mode\":\"all_accounts\"}'. Object values replace the known object preferences;
+omitted fields use model defaults. Invalid or ignored values are refused without saving.
+Running desktop windows poll settings every two seconds and apply interface preferences;
+launch defaults affect new sessions, and delegation changes reach an orchestrator when
+it starts or loads its skill. Run settings help for details and output shapes.
 The chat host (`chat serve`) owns the Codex, Claude and Muse processes behind chats so
 they outlive app windows; `chat ensure` starts it detached, and it exits after
 15 minutes with no client and no chat at work. Chats are kept in RIWORK_HOME/chats.
@@ -387,7 +399,8 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
             args.first().map(String::as_str),
             Some("agent-notify" | "agent-hook")
         );
-    let json = if matches!(args.get(..2), Some([shell, keys]) if shell == "shell" && (keys == "keys" || keys == "paste"))
+    let json = if args.first().map(String::as_str) == Some("settings")
+        || matches!(args.get(..2), Some([shell, keys]) if shell == "shell" && (keys == "keys" || keys == "paste"))
     {
         // Only a --json before the `--` is ours; every argument after it is a
         // typed item, whatever it looks like.
@@ -424,6 +437,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
             | "dashboard"
             | "usage"
             | "appearance"
+            | "settings"
             | "capabilities"
             | "telemetry"
             | "agent-notify"
@@ -486,6 +500,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
         }
         "usage" => usage_command(args, json)?,
         "appearance" => appearance_command(args, json)?,
+        "settings" => settings_cli::command(args, json)?,
         "capabilities" => capabilities_command(args, json)?,
         "setup" => {
             ensure_empty(&args)?;
@@ -4005,6 +4020,7 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 mod chat_remote;
 mod handoff;
 mod memo;
+mod settings_cli;
 use chat_remote::{
     effort_setting, model_setting, parse_events_arguments, take_verbatim_option, title_setting,
 };
