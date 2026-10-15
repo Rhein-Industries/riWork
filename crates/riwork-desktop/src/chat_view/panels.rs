@@ -385,6 +385,8 @@ impl ChatView {
         let behind = self.items_in_list > 0
             && !self.list.is_following_tail()
             && self.list.is_scrolled_to_end() != Some(true);
+        // Running workers whose cards are out of view, one click from them.
+        let workers_chip = self.workers_chip(look, cx);
         let stack = div()
             .size_full()
             .flex()
@@ -396,6 +398,15 @@ impl ChatView {
                     .flex_1()
                     .min_h_0()
                     .child(messages)
+                    .children(workers_chip.map(|chip| {
+                        div()
+                            .absolute()
+                            .top(ui_text::space(10.0))
+                            .w_full()
+                            .flex()
+                            .justify_center()
+                            .child(chip)
+                    }))
                     .children(behind.then(|| {
                         div()
                             .absolute()
@@ -429,6 +440,7 @@ impl ChatView {
             .children(self.banner(look, cx))
             .children(self.approval_bar(look, cx))
             .children(self.question_panel(look, window, cx))
+            .children(self.worker_bar(look, window, cx))
             .child(self.composer_box(look, window, cx));
         div()
             .relative()
@@ -2916,6 +2928,7 @@ impl ChatView {
                 .test_support()
         }))
         .child(content)
+        .child(self.suggestion_anchor())
         // Saved submissions to review, below the box.
         .children((!self.submissions.is_empty()).then(|| {
             div()
@@ -2968,8 +2981,10 @@ impl ChatView {
                 .w_full()
                 .h(px(0.0)),
             )
+            .children(self.memo_preview_card(look, cx))
             .children(self.notice_stack(look, cx))
             .child(card)
+            .children(self.suggestion_popup(look, cx))
             .into_any_element()
     }
 

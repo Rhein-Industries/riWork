@@ -1,6 +1,7 @@
 import Foundation
 
-// Talking to the desktop's chats: `chats.list`, `chat.create`, `chat.events`, `chat.command`, `chat.stop` and `chat.models`.
+// Talking to the desktop's chats: `chats.list`, `chat.create`, `chat.events`, `chat.command`, `chat.stop`, `chat.models` and
+// `chat.suggestions`.
 //
 // The request builders validate what the desktop validates, so a request that leaves the phone is one the desktop will not reject as
 // malformed (it denies unknown fields and checks every id and length before any command runs). The reply parsers check that an answer is
@@ -443,6 +444,53 @@ public struct ChatModelsReply: Sendable, Equatable {
     }
 }
 
+// MARK: - chat.suggestions
+
+/// `chat.suggestions` (`features.chat_suggestions`): what a chat's composer offers after `/` and `@` (`ComposerSuggestions.swift`), the
+/// chat's commands and its folder's files, in one read. Reading it starts nothing on the Mac; the desktop walks the folder within its
+/// bounds and sends at most `file_bound` entries.
+public struct ChatSuggestionsRequest: Sendable, Equatable {
+    public let chatID: String
+    public init(chatID: String) throws {
+        guard NewTerminalRequest.isCanonicalUUID(chatID) else { throw ChatValidationError.invalidID }
+        self.chatID = chatID
+    }
+    public var params: [String: JSONValue] { ["chat_id": .string(chatID)] }
+    public init(params: [String: JSONValue]) throws {
+        guard Set(params.keys) == ["chat_id"], case .string(let id)? = params["chat_id"] else { throw ChatValidationError.malformed }
+        try self.init(chatID: id)
+    }
+    /// The answer for this chat. It must name the chat and its provider and hold the commands and the listing; a command or an entry the
+    /// phone cannot read is left out, never the reply.
+    public func parse(_ result: JSONValue) throws -> ChatSuggestionsReply {
+        guard case .object = result, result["chat_id"].string == chatID, case .array = result["commands"], case .array = result["files"]["entries"],
+              let reply = try? result.decode(ChatSuggestionsReply.self) else { throw ChatControlError.unreadableReply }
+        return reply
+    }
+}
+
+/// What `chat.suggestions` answered (`Reply` in `suggest.rs`).
+public struct ChatSuggestionsReply: Sendable, Equatable, Decodable {
+    public let chatID: String
+    public let provider: ChatProvider
+    /// The chat's folder on the Mac, which the listing's paths are relative to.
+    public let root: String
+    public let commands: [ComposerCommand]
+    public let files: ComposerFileListing
+    /// The most entries a listing holds, so the phone can say so.
+    public let fileBound: Int
+    public init(chatID: String, provider: ChatProvider, root: String, commands: [ComposerCommand], files: ComposerFileListing, fileBound: Int = 5000) {
+        self.chatID = chatID; self.provider = provider; self.root = root; self.commands = commands; self.files = files; self.fileBound = fileBound
+    }
+    private enum CodingKeys: String, CodingKey { case chatID = "chat_id", provider, root, commands, files, fileBound = "file_bound" }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(chatID: try c.decode(String.self, forKey: .chatID), provider: try c.decode(ChatProvider.self, forKey: .provider),
+                  root: c.tolerant(String.self, forKey: .root) ?? "", commands: c.leniently([ComposerCommand].self, forKey: .commands),
+                  files: c.tolerant(ComposerFileListing.self, forKey: .files) ?? ComposerFileListing(), fileBound: c.tolerant(Int.self, forKey: .fileBound) ?? 5000)
+    }
+}
+
 // MARK: - Transport
 
 extension RemoteTransport {
@@ -473,6 +521,12 @@ extension RemoteTransport {
     /// Reading the list is harmless to repeat, so a failure is just reported.
     public func chatModels(_ request: ChatModelsRequest, id: String = UUID().uuidString.lowercased()) async throws -> ChatModelsReply {
         do { return try request.parse(try await self.request(method: "chat.models", params: request.params, id: id)) }
+        catch { throw ChatControlError.from(error, operation: .list) }
+    }
+    /// Reading the catalog is harmless to repeat, so a failure is just reported; an older desktop's "unsupported RPC method" is
+    /// `.unsupported`.
+    public func chatSuggestions(_ request: ChatSuggestionsRequest, id: String = UUID().uuidString.lowercased()) async throws -> ChatSuggestionsReply {
+        do { return try request.parse(try await self.request(method: "chat.suggestions", params: request.params, id: id)) }
         catch { throw ChatControlError.from(error, operation: .list) }
     }
 }

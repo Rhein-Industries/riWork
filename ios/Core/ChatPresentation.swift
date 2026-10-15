@@ -73,6 +73,8 @@ public enum ChatKey: Sendable, Equatable, CaseIterable {
     case commandDelete
     /// ⌘. : interrupt.
     case commandPeriod
+    /// ↑, ↓ and Tab: the composer claims them only while its `/` or `@` list is open (`ChatKeyContext.suggesting`).
+    case up, down, tab
 }
 
 /// The chords of those keys, as the rest of the app writes them (`KeyChord`), so that tests can see none of them is taken by the
@@ -86,6 +88,9 @@ public enum ChatKeyBindings {
         case .escape: KeyChord(keyCode: HIDKey.escape)
         case .commandDelete: KeyChord(keyCode: HIDKey.backspace, modifiers: .command)
         case .commandPeriod: KeyChord(keyCode: period, modifiers: .command)
+        case .up: KeyChord(keyCode: HIDKey.up)
+        case .down: KeyChord(keyCode: HIDKey.down)
+        case .tab: KeyChord(keyCode: HIDKey.tab)
         }
     }
 }
@@ -99,8 +104,10 @@ public struct ChatKeyContext: Sendable, Equatable {
     public var busy: Bool
     /// Connected and nothing being sent just now.
     public var canSend: Bool
-    public init(composerIsEmpty: Bool, approval: ChatApproval? = nil, busy: Bool = false, canSend: Bool = true) {
-        self.composerIsEmpty = composerIsEmpty; self.approval = approval; self.busy = busy; self.canSend = canSend
+    /// The composer's `/` or `@` list is open (`ComposerSuggestionList.isShown`).
+    public var suggesting: Bool
+    public init(composerIsEmpty: Bool, approval: ChatApproval? = nil, busy: Bool = false, canSend: Bool = true, suggesting: Bool = false) {
+        self.composerIsEmpty = composerIsEmpty; self.approval = approval; self.busy = busy; self.canSend = canSend; self.suggesting = suggesting
     }
     /// With a request waiting and nothing typed, Return, Shift-Return and Escape answer it. Typing anything gives them back to the text.
     public var answersApproval: Bool { approval != nil && composerIsEmpty }
@@ -112,14 +119,29 @@ public enum ChatKeyAction: Sendable, Equatable {
     case insertNewline
     case decide(ChatDecision)
     case interrupt
+    /// The suggestion list's: put the highlighted row in the draft (it never sends), move the highlight, close the list.
+    case acceptSuggestion
+    case moveSuggestion(ComposerSuggestionList.Step)
+    case closeSuggestions
     /// The key means nothing now and is swallowed.
     case none
 }
 
 /// What a key does. ⏎ sends and ⇧⏎ makes a new line; with a request waiting and nothing typed ⏎ allows it, ⇧⏎ allows it for the session
 /// and ⎋ (or ⌘⌫) denies it; ⌘. interrupts. A decision the provider does not offer is never made on a key: ⏎ does not choose Deny for you.
+/// While the composer's `/` or `@` list is open, ⏎ and Tab put the highlighted row in the draft (⏎ never sends then), ↑ and ↓ move the
+/// highlight and ⎋ closes the list; ⇧⏎ and ⌘. are as ever. ↑, ↓ and Tab mean nothing to the composer otherwise.
 public enum ChatKeyRouter {
     public static func action(for key: ChatKey, in context: ChatKeyContext) -> ChatKeyAction {
+        if context.suggesting && !context.answersApproval {
+            switch key {
+            case .return, .tab: return .acceptSuggestion
+            case .up: return .moveSuggestion(.up)
+            case .down: return .moveSuggestion(.down)
+            case .escape: return .closeSuggestions
+            case .shiftReturn, .commandDelete, .commandPeriod: break
+            }
+        }
         switch key {
         case .return:
             if context.answersApproval { return context.approval?.offers(.accept) == true ? .decide(.accept) : .none }
@@ -133,6 +155,8 @@ public enum ChatKeyRouter {
             return approval.offers(.cancel) ? .decide(.cancel) : .none
         case .commandPeriod:
             return context.busy ? .interrupt : .none
+        case .up, .down, .tab:
+            return .none
         }
     }
 }

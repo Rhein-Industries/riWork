@@ -231,6 +231,49 @@ impl ChatView {
 
     fn item(&self, ix: usize, item: &Item, look: Look, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
+        if let Some(worker) = crate::chat::workers::of(item) {
+            return self.worker_card(ix, item, worker, look, cx);
+        }
+        if let Some(run) = crate::chat::subagents::in_transcript(
+            item,
+            &self.model.transcript,
+            self.info().map(|info| info.provider),
+        ) {
+            use crate::chat::subagents::RunStatus;
+            let head = Head {
+                title: format!("Subagent · {}", run.name),
+                subtitle: run.purpose.clone(),
+                badge: Some(cards::Badge {
+                    label: run.status.label().into(),
+                    tone: match run.status {
+                        RunStatus::Running => cards::Tone::Accent,
+                        RunStatus::Failed => cards::Tone::Error,
+                        RunStatus::Declined => cards::Tone::Warning,
+                        _ => cards::Tone::Muted,
+                    },
+                    live: run.status == RunStatus::Running,
+                }),
+                expandable: run.summary.is_some() || !run.children.is_empty(),
+            };
+            let summary = run.result_text();
+            let body = |view: &Self, cx: &mut Context<Self>| {
+                div()
+                    .id(id(format!("subagent-result:{}", item.id)))
+                    .px(ui_text::space(10.0))
+                    .py(ui_text::space(6.0))
+                    .child(view.selectable(
+                        &format!("subagent:{}", item.id),
+                        summary.clone(),
+                        Vec::new(),
+                        Vec::new(),
+                        look,
+                        cx,
+                    ))
+                    .test_support()
+                    .into_any_element()
+            };
+            return self.card(ix, item, &head, Some(&body), look, cx);
+        }
         match &item.body {
             // What you sent is a block across the reading column, in every design; Native's
             // is plain grey with its rounded corners, Hermes's a bordered panel, the colorful

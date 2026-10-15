@@ -30,6 +30,16 @@ actor ChatTransport: RemoteTransport {
     /// What `chat.models` lists per provider (nothing unless a test says), and the `error` it gives for each.
     var providerModels: [ChatProvider: [ChatModelOption]] = [:]
     var providerModelsErrors: [ChatProvider: String] = [:]
+    /// `ready.features.chat_suggestions`, what `chat.suggestions` answers per chat (`not_found` for another), whether the desktop says
+    /// it does not know the method even so, and whether its answer is held back until the test lets go.
+    var suggestionsFeature = false
+    var suggestionReplies: [String: JSONValue] = [:]
+    var suggestionsRefused = false
+    var suggestionsGated = false
+    func setSuggestions(feature: Bool, replies: [String: JSONValue] = [:], refused: Bool = false) {
+        suggestionsFeature = feature; suggestionReplies = replies; suggestionsRefused = refused
+    }
+    func gateSuggestions(_ on: Bool) { suggestionsGated = on }
     var orchestratorMode = OrchestratorMode.ok
     /// A new orchestrator runs as a chat (`mode: "chat"` with a `chat_id`) rather than in a terminal.
     var newOrchestratorsAreChats = true
@@ -91,6 +101,9 @@ actor ChatTransport: RemoteTransport {
         while !heldReleased { try await Task.sleep(for: .milliseconds(3)) }
         return reply
     }
+    /// The next this many `chats.list` fail (a transient error).
+    var chatsListFailures = 0
+    func failChatsList(_ times: Int) { chatsListFailures = times }
     /// The next this many `tabs.list` fail (a transient error).
     var tabsListFailures = 0
     func failTabsList(_ times: Int) { tabsListFailures = times }
@@ -211,6 +224,7 @@ actor ChatTransport: RemoteTransport {
         if tabsFeature { features["tabs"] = .bool(true) }
         if switchFeature { features["chat_provider_switch"] = .bool(true) }
         if modelsFeature { features["chat_models"] = .bool(true) }
+        if suggestionsFeature { features["chat_suggestions"] = .bool(true) }
         if asSettingsFeature { features["shell_create_as_settings"] = .bool(true) }
         if dashboardFeature { features["dashboard"] = .bool(true) }
         return features.isEmpty ? DesktopFeatures() : DesktopFeatures(ready: .object(["features": .object(features)]))
@@ -243,6 +257,7 @@ actor ChatTransport: RemoteTransport {
             throw RemoteError.rpc(code: "not_found", message: "appearance not published")
         case "chats.list":
             guard chatFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            if chatsListFailures > 0 { chatsListFailures -= 1; throw RemoteError.rpc(code: "cli_error", message: "the chat list is busy") }
             // Another project's chats are not this one's (a chat with no project is listed everywhere, as a careless desktop might).
             let asked = params["project_id"]?.string
             let listed = chats.filter { asked == nil || $0.projectID == nil || $0.projectID == asked }
@@ -292,6 +307,11 @@ actor ChatTransport: RemoteTransport {
             let models = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(providerModels[provider] ?? []))
             return .object(["provider": .string(provider.rawValue), "models": models, "configured": .array([]), "account_label": .null,
                             "error": providerModelsErrors[provider].map { .string($0) } ?? .null])
+        case "chat.suggestions":
+            guard suggestionsFeature, !suggestionsRefused else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
+            while suggestionsGated { try await Task.sleep(for: .milliseconds(3)) }
+            guard let chat = params["chat_id"]?.string, let reply = suggestionReplies[chat] else { throw RemoteError.rpc(code: "not_found", message: "chat not found") }
+            return reply
         case "orchestrator.create":
             guard orchestratorFeature else { throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method") }
             return try await createOrchestrator(params)

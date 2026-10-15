@@ -21,6 +21,7 @@ mod chat_tabs;
 mod chat_view;
 mod controls;
 mod dashboard;
+mod delegation_choice;
 mod dictation;
 mod dock_menu;
 mod file_explorer;
@@ -30,6 +31,7 @@ mod global_nav;
 mod global_window;
 mod handoff_dialog;
 mod icons;
+mod memo_editor;
 mod metal_layer;
 mod notifications;
 mod orchestrator_choice;
@@ -44,6 +46,7 @@ mod schedule_panel;
 mod schedules;
 mod settings;
 mod status_bar;
+mod subshells;
 mod symbols;
 mod tab_close_dialog;
 mod tab_menu;
@@ -1420,6 +1423,7 @@ struct Workspace {
     orchestrators_starting: HashSet<OrchestratorScope>,
     shell_cwds: BTreeMap<String, PathBuf>,
     metrics: BTreeMap<String, SessionMetrics>,
+    subshells: subshells::WorkerState,
     session_refresh_pending: bool,
     session_refresh_generation: u64,
     native_sessions: session_catalog::Catalog,
@@ -2111,6 +2115,7 @@ impl Workspace {
             native_sessions: session_catalog::Catalog::default(),
             native_sessions_generation: 0,
             session_filter: session_catalog::Filter::default(),
+            subshells: Default::default(),
             session_refresh_pending: false,
             session_refresh_generation: 0,
             agent_activity: BTreeMap::new(),
@@ -2202,9 +2207,11 @@ impl Workspace {
         .detach();
         cx.on_release(|workspace, _| workspace.save_layout())
             .detach();
-        cx.observe_window_activation(window, |_, window, cx| {
+        workspace.start_worker_watch(window, cx);
+        cx.observe_window_activation(window, |workspace, window, cx| {
             if window.is_window_active() {
                 dock_menu::set_frontmost(window.window_handle().window_id().as_u64(), cx);
+                workspace.request_worker_refresh(window, cx);
             } else {
                 tooltip::hide(cx);
             }
@@ -2293,6 +2300,7 @@ impl Workspace {
             let home = self.sessions.state_home().to_path_buf();
             let work = cx.background_executor().spawn(async move {
                 let activity = tracker.sample_states(&shells, activity::unix_now());
+                let models = tracker.reported_models();
                 for completion in tracker.take_completions() {
                     if let Err(error) = notifications::record_completion(
                         &home,
@@ -2303,14 +2311,17 @@ impl Workspace {
                         eprintln!("riwork notifications: {error}");
                     }
                 }
-                (tracker, activity)
+                (tracker, activity, models)
             });
             cx.spawn(async move |this, cx| {
-                let (tracker, activity) = work.await;
+                let (tracker, activity, models) = work.await;
                 let _ = this.update(cx, |workspace, cx| {
                     workspace.activity_tracker = Some(tracker);
-                    if workspace.agent_activity != activity {
+                    if workspace.agent_activity != activity || workspace.subshells.models != models
+                    {
+                        workspace.subshells.models = models;
                         workspace.agent_activity = activity;
+                        workspace.worker_activity_changed(cx);
                         cx.notify();
                     }
                 });
@@ -5683,7 +5694,21 @@ impl Workspace {
         if self.session_refresh_pending {
             return;
         }
+        let polled = self.begin_worker_sample(window, cx);
         self.session_refresh_pending = true;
+        let previous_shells = self.shells.clone();
+        // A chat shows its workers' last lines, and a worker's recorded end keeps them: read
+        // them while a chat is shown or a chat's worker runs.
+        let capture_output = self.panes.values().any(|pane| {
+            pane.tabs
+                .get(pane.active)
+                .is_some_and(|tab| tab.chat().is_some())
+        }) || self.shells.iter().any(|shell| {
+            shell.alive
+                && shell.is_worker()
+                && shell.parent_id.is_some()
+                && shell.project_id.as_deref() == Some(self.project_id.as_str())
+        });
         let project_id = self.project_id.clone();
         let generation = self.session_refresh_generation;
         let chat_inventory_epoch = self.chat_tabs.epoch();
@@ -5727,7 +5752,20 @@ impl Workspace {
             .collect::<HashMap<_, _>>();
         let work = cx.background_executor().spawn(async move {
             // One tmux and `ps` sample serves every window for about a tick.
-            let sample = sessions.sample(want_metrics)?;
+            let sample = if polled {
+                sessions.sample(want_metrics)?
+            } else {
+                sessions::SessionSample {
+                    shells: previous_shells,
+                    metrics: None,
+                    directories: None,
+                }
+            };
+            let outputs = if polled && capture_output {
+                subshells::capture_workers(&sessions, &sample.shells, &work_project_id)
+            } else {
+                BTreeMap::new()
+            };
             let chats = {
                 let home = sessions.state_home();
                 let host = orchestrators::ChatHost {
@@ -5738,14 +5776,7 @@ impl Workspace {
                 let authoritative = live.is_some();
                 live.or_else(|| chat::log::read_infos_checked(home).ok())
                     .map(|chats| {
-                        let stale = chats
-                            .iter()
-                            .filter(|chat| {
-                                chat.orchestrator.is_some()
-                                    && !orchestrators::chat_skill_is_current(home, chat)
-                            })
-                            .map(|chat| chat.id.clone())
-                            .collect::<HashSet<_>>();
+                        let stale = orchestrators::stale_chat_skills(home, &chats);
                         (chats, stale, authoritative)
                     })
             };
@@ -5793,6 +5824,7 @@ impl Workspace {
                 chats,
                 shared_tabs,
                 foreign_tabs,
+                outputs,
             ))
         });
         cx.spawn_in(window, async move |this, cx| {
@@ -5804,25 +5836,45 @@ impl Workspace {
                 if workspace.project_id != project_id
                     || workspace.session_refresh_generation != generation
                 {
+                    if polled {
+                        workspace.subshells.poll.checking = false;
+                        workspace.subshells.poll.request();
+                    }
+                    workspace.refresh_sessions(window, cx);
                     return;
                 }
-                let (shells, metrics, cwds, claude_usage, chats, shared_tabs, foreign_tabs) =
-                    match result {
-                        Ok(sample) => sample,
-                        Err(error) => {
-                            // The dashboard says the sessions could not be read, not that
-                            // nothing runs.
-                            if workspace.sessions_sample_error.as_ref() != Some(&error) {
-                                workspace.sessions_sample_error = Some(error);
-                                cx.notify();
-                            }
-                            return;
+                let (
+                    shells,
+                    metrics,
+                    cwds,
+                    claude_usage,
+                    chats,
+                    shared_tabs,
+                    foreign_tabs,
+                    outputs,
+                ) = match result {
+                    Ok(sample) => sample,
+                    Err(error) => {
+                        // The dashboard says the sessions could not be read, not that
+                        // nothing runs.
+                        if workspace.sessions_sample_error.as_ref() != Some(&error) {
+                            workspace.sessions_sample_error = Some(error);
+                            cx.notify();
                         }
-                    };
-                let fresh = workspace.sessions_sampled_at.is_none()
-                    || workspace.sessions_sample_error.is_some();
-                workspace.sessions_sampled_at = Some(activity::unix_now());
-                workspace.sessions_sample_error = None;
+                        if polled {
+                            workspace.finish_worker_sample(BTreeMap::new(), false, false, cx);
+                        }
+                        return;
+                    }
+                };
+                let shell_changed = workspace.shells != shells;
+                let fresh = polled
+                    && (workspace.sessions_sampled_at.is_none()
+                        || workspace.sessions_sample_error.is_some());
+                if polled {
+                    workspace.sessions_sampled_at = Some(activity::unix_now());
+                    workspace.sessions_sample_error = None;
+                }
                 // Most ticks find everything as it was; the window is drawn again
                 // only when something it shows is different.
                 let mut changed = fresh
@@ -5878,9 +5930,17 @@ impl Workspace {
                     request_codex_usage_at(home, false, cx);
                 }
                 workspace.refresh_grok_usage(false, cx);
-                workspace.refresh_agent_activity(cx);
+                if polled {
+                    workspace.finish_worker_sample(outputs, shell_changed, true, cx);
+                    workspace.refresh_agent_activity(cx);
+                } else {
+                    workspace.publish_workers(cx);
+                }
                 changed |= workspace.remember_active_worktree(window, cx);
                 changed |= workspace.refresh_shell_titles();
+                if workspace.worker_refresh_requested() {
+                    workspace.refresh_sessions(window, cx);
+                }
                 if changed {
                     cx.notify();
                 }
@@ -7946,9 +8006,11 @@ impl Workspace {
         self.next_tab_id += 1;
         let (names, paths) = speech_context(&self.state, &self.project_id);
         let home = self.sessions.state_home().to_path_buf();
+        let store = self.store.clone();
         view.update(cx, |view, _| {
             view.set_speech_context(names, paths);
             view.set_catalog_home(home);
+            view.set_memo_store(store);
         });
         cx.subscribe_in(
             &view,
@@ -8083,7 +8145,17 @@ impl Workspace {
                 .map(|tab| (*pane_id, tab.id))
         });
         match event {
+            ChatViewEvent::WorkerShell { shell_id, action } => {
+                self.worker_chat_event(view, shell_id, action, window, cx);
+            }
             ChatViewEvent::Changed => {
+                if view
+                    .read(cx)
+                    .info()
+                    .is_some_and(|info| info.orchestrator.is_some())
+                {
+                    self.request_worker_refresh(window, cx);
+                }
                 // The tab's own title is what the layout menu and a dragged tab name it by.
                 let summary = view.read(cx).summary();
                 let scope = self.chat_image_scope(view, cx);
@@ -8159,6 +8231,13 @@ impl Workspace {
                 self.open_panel(PanelKind::Usage, self.active_pane, window, cx)
             }
             ChatViewEvent::OpenApiKeySettings => self.reveal_api_key_settings(window, cx),
+            ChatViewEvent::EditProjectMemo { project_id } if *project_id == self.project_id => {
+                self.reveal_project_memo(window, cx)
+            }
+            ChatViewEvent::EditProjectMemo { .. } => {
+                self.notice = Some("Open that chat's project to edit its memo.".into());
+                cx.notify();
+            }
         }
     }
 
@@ -8167,6 +8246,14 @@ impl Workspace {
         self.open_panel(PanelKind::Settings, self.active_pane, window, cx);
         self.settings_panel
             .update(cx, |panel, cx| panel.reveal_api_key(window, cx));
+    }
+
+    /// Project Settings, with the keys in the project's memo: `/memo`'s **Edit**.
+    fn reveal_project_memo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_panel(PanelKind::ProjectSettings, self.active_pane, window, cx);
+        if let Some(panel) = &self.project_settings_panel {
+            panel.update(cx, |panel, cx| panel.reveal_memo(window, cx));
+        }
     }
 
     /// What the orchestrator of `scope` is doing, if it runs as a chat: what its tab says
@@ -10102,8 +10189,16 @@ impl Workspace {
             .and_then(Tab::shell_id)
             .and_then(|id| self.shells.iter().find(|shell| shell.id == id))
             .filter(|shell| {
+                // Settings and the store as this window holds them: nothing is read to draw.
+                let project = shell
+                    .project_id
+                    .as_deref()
+                    .and_then(|id| self.state.project(id).ok());
                 shell.kind == ShellKind::Orchestrator
-                    && !self.sessions.orchestrator_skill_is_current(shell)
+                    && !sessions::orchestrator_skill_is_current_with(
+                        shell,
+                        &orchestrators::delegation_for(&self.settings, project),
+                    )
             })
             .map(|shell| SkillUpgrade::Terminal(shell.id.clone()))
             .or_else(|| {
@@ -13972,6 +14067,7 @@ mod workspace_tab_tests {
             unrestricted: false,
             orchestrator_skill_loaded: false,
             orchestrator_skill_version: None,
+            orchestrator_delegation_version: None,
             orchestrator_project_root: None,
             created_at_unix: 0,
             alive: true,
@@ -14381,6 +14477,7 @@ mod workspace_tab_tests {
             unrestricted: false,
             orchestrator_skill_loaded: false,
             orchestrator_skill_version: None,
+            orchestrator_delegation_version: None,
             orchestrator_project_root: None,
             created_at_unix: 0,
             alive: true,

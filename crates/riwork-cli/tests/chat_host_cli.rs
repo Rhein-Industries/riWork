@@ -230,8 +230,11 @@ fn events_and_command_refuse_an_unknown_chat_and_capabilities_announce_chat() {
     assert_eq!(capabilities["chat"], true);
     assert_eq!(capabilities["chat_provider_switch"], true);
     assert_eq!(capabilities["chat_models"], true);
+    assert_eq!(capabilities["chat_suggestions"], true);
     assert_eq!(capabilities["v"], 1);
-    assert!(stdout(&home.run(&["capabilities"])).contains("chat yes"));
+    let text = stdout(&home.run(&["capabilities"]));
+    assert!(text.contains("chat yes"), "{text}");
+    assert!(text.contains("chat_suggestions yes"), "{text}");
 
     // A command that is not one is refused before any host is started.
     let bad = home.run(&[
@@ -251,6 +254,15 @@ fn events_and_command_refuse_an_unknown_chat_and_capabilities_announce_chat() {
     assert!(!home.socket().exists(), "no host was started");
 
     let unknown = "00000000-0000-4000-8000-000000000000";
+    // Suggestions read the saved chats when no host runs, and start none.
+    let suggestions = home.run(&["chat", "suggestions", unknown, "--json"]);
+    assert_eq!(suggestions.status.code(), Some(2));
+    assert!(
+        stderr(&suggestions).contains("Unknown chat"),
+        "{}",
+        stderr(&suggestions)
+    );
+    assert!(!home.socket().exists(), "no host was started");
     let events = home.run(&[
         "chat",
         "events",

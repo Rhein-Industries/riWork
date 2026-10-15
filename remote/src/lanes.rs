@@ -95,6 +95,7 @@ pub fn classify(request: &Value) -> Lane {
             | "shell.create"
             | "shell.close"
             | "project.create"
+            | "project.memo.set"
             | "orchestrator.create"
             | "chat.create"
             | "chat.command"
@@ -318,6 +319,7 @@ mod tests {
             "shell.create",
             "shell.close",
             "project.create",
+            "project.memo.set",
             "orchestrator.create",
             "chat.create",
             "chat.command",
@@ -335,8 +337,10 @@ mod tests {
             "projects.list",
             "shells.list",
             "appearance.get",
+            "project.memo.get",
             "chats.list",
             "chat.models",
+            "chat.suggestions",
             "upload.begin",
             "upload.chunk",
             "upload.finish",

@@ -37,6 +37,9 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     var expanded: Set<String> = []
     /// The mode just chosen, shown until the desktop says so itself.
     var pendingMode: ChatApprovalMode?
+    /// Only host reports, including the explicit read after a Contributor restart.
+    var contributorState = ChatContributorState()
+    var changingContributor = false
     /// The model, effort or Fast just chosen, shown until the desktop says so itself (`RemoteModel+ChatModels.swift`).
     var pendingModel: ChatModelChoices.Configuration?
     /// Counts requests to go to the end of the transcript: a message sent, the menu.
@@ -95,6 +98,7 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     }
     func install(_ snapshot: ChatSnapshotReply) {
         feed.install(snapshot)
+        if let info = transcript.info { contributorState.observe(info, through: snapshot.next) }
         modelCatalogue = transcript.models; modelCatalogueSource = .live; modelCatalogueRevision &+= 1
         legacyLoading = false
         // A real snapshot: whatever an older desktop or a degraded replay had to say about loading is over.
@@ -120,6 +124,12 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
         let previousNext = feed.next
         let provider = transcript.info?.provider
         let outcome = feed.accept(reply, since: since)
+        if outcome == .restarted { contributorState = ChatContributorState() }
+        else {
+            for envelope in reply.events where envelope.seq > previousNext {
+                if case .info(let info) = envelope.event { contributorState.observe(info, through: envelope.seq) }
+            }
+        }
         if outcome == .restarted { modelCatalogue = []; modelCatalogueRevision &+= 1 }
         else if let provider, let now = transcript.info?.provider, now != provider {
             // The chat went on with the other provider: what was held for the last one (its list, a choice on its way) is not this one's.
@@ -144,6 +154,7 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     func reset() {
         let degraded = feed.degradedReplay
         feed = ChatFeed()
+        contributorState = ChatContributorState()
         if degraded { feed.beginDegradedReplay() }
         modelCatalogue = []; modelCatalogueRevision &+= 1; answered = []; readError = nil
     }
@@ -215,7 +226,7 @@ extension RemoteModel {
         restoreDraft(made)
         if chatConversations.count >= Self.keptConversations {
             // A conversation with a message on its way stays: its answer must land in it, not in one made again later.
-            let spare = chatConversations.values.filter { !$0.following && !$0.sending && $0.id != selectedChatID }.sorted { $0.lastUsed < $1.lastUsed }
+            let spare = chatConversations.values.filter { !$0.following && !$0.sending && !$0.changingContributor && $0.id != selectedChatID }.sorted { $0.lastUsed < $1.lastUsed }
             for old in spare.prefix(chatConversations.count - Self.keptConversations + 1) { chatConversations[old.id] = nil }
         }
         chatConversations[id] = made
@@ -288,11 +299,20 @@ extension RemoteModel {
         guard projectID == project else { return }
         let ordered = listed
         if ordered != chats { chats = ordered }
+        if !chatsListed { chatsListed = true }
         reconcileChatSelection()
         // A chat the desktop no longer has is not held on to (an orchestrator's chat is the orchestrator list's to keep, the global one's too).
         let known = Set(ordered.map(\.id)).union(projectTabs.compactMap { $0.chatInfo?.id }).union(globalTabs.compactMap { $0.chatInfo?.id })
         for id in chatConversations.keys where !known.contains(id) && chatConversations[id]?.following != true && !chatSendsInFlight.contains(id) { chatConversations[id] = nil }
         lastListRead[.sessions] = .now
+    }
+
+    /// What can say how the workers `chat` started are doing: the lists of the project on screen, and only for a chat of that project. A
+    /// chat of no project (the global orchestrator's) has none, and its live worker cards say so rather than that their worker ended. A
+    /// chat list not read yet (or that could not be) is none either: its worker chats are not taken to have ended.
+    func workerInventory(of chat: ChatInfo) -> WorkerInventory {
+        guard let project = chat.projectID, loadedProjectID == project else { return .unavailable }
+        return WorkerInventory(shells: shells, chats: chatsListed && chatSupport != .unsupported && desktopFeatures.chat ? chats : nil)
     }
 
     /// The chats of a project, for a project load; nil when the desktop has none to offer or the list could not be read.
@@ -412,6 +432,8 @@ extension RemoteModel {
             let connection = generation
             let canWait = waitSlots.canWait(at: ProcessInfo.processInfo.systemUptime)
             let since = conversation.feed.next, pin = conversation.feed.historyCursor
+            // A contributor mode an older host listed before this read is asked for stays shown until a read like it reaches the end.
+            let listing = conversation.contributorState.listing
             let request: ChatEventsRequest
             do { request = try ChatEventsRequest(chatID: id, since: since, waitMilliseconds: canWait ? chatWaitMilliseconds : 0, maxEvents: conversation.oversizeCap ?? (conversation.feed.historyCursor == nil && !conversation.feed.degradedReplay ? nil : ChatConversation.boundedPage), complete: conversation.feed.historyCursor != nil, bounded: conversation.feed.degradedReplay) } catch { return }
             do {
@@ -444,6 +466,7 @@ extension RemoteModel {
                 if !reply.events.isEmpty { conversation.oversizeCap = nil }
                 conversation.accept(reply, since: since)
                 if !reply.more {
+                    if listing != nil { conversation.contributorState.caughtUp(after: listing) }
                     // The older desktop's history is in: the note about loading it has done its work.
                     if conversation.legacyLoading, conversation.alerts.text(.desktop)?.hasPrefix("Update RiWork") == true { conversation.alerts.clear(.desktop) }
                     conversation.legacyLoading = false
