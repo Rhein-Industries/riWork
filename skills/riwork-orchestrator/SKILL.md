@@ -54,6 +54,7 @@ Both scopes use this routing whenever they choose a harness and model for new wo
 
 - Codex `gpt-6.1-sol` is also the fallback for every row.
 - An explicit choice wins over this table: a harness or model the user names, RiWork's settings (Settings > Agent sessions for orchestrators, a project's Project Settings override, and the delegation policy's design and workhorse choices in your startup message), and one an assignment names. Keep an existing session's harness and model; do not recreate or switch it to follow the table unless the user asks.
+- A `&model-id` mention in the user's instruction (`&opus`, `&gpt-6.1-sol`; RiWork's message box writes them) is the user's preferred model for the delegated work it introduces: honor it when that model is available and suitable, otherwise fall back per this table and say so; it never means switch your own model.
 - Always pass the model. Without one, each CLI starts its own default: Muse currently lists `muse-wonder-1.0`, not Wonder Full, as its default, and Claude's may be a smaller model than Opus. `opus` is Claude's alias: Claude's model list names it Opus 5.5, and a chat on it reports `opus`. `riwork chat models --provider codex|claude|muse --json` lists the ids each provider last reported.
 - Choose them with:
   - a chat: `riwork chat new --provider muse|claude|codex --worktree WORKTREE_ID --model MODEL --json` (or `--project PROJECT_ID`; `--mode` and `--effort` as `riwork help` says);

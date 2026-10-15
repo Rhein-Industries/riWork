@@ -2525,6 +2525,7 @@ async fn chat_suggestions_passes_on_a_chats_commands_files_and_models_and_nothin
         model(json!("   "), json!("Blank")),
         model(json!("x".repeat(101)), json!("Long")),
         model(json!("two\nlines"), json!("Broken")),
+        model(json!("two words"), json!("Spaced")),
         model(json!(7), json!("Number")),
         model(json!("ok"), json!(7)),
         model(json!("ok"), json!("a\u{1b}[31m")),

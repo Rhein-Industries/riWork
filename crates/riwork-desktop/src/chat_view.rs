@@ -778,7 +778,6 @@ impl ChatView {
                     }
                 }
                 FeedMsg::CommandFailed { command, error } => {
-                    self.restore_model_token(&command, window, cx);
                     self.command_failed(command, error);
                 }
             }

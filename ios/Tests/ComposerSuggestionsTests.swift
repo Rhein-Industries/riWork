@@ -142,16 +142,14 @@ final class ComposerSuggestionsTests: XCTestCase {
     private func models(_ fixture: JSONValue) throws -> [ComposerModelEntry] {
         try fixture["model_ranking"]["models"].decode([ComposerModelEntry].self)
     }
-    func testRemovingAModelTokenMatchesTheSharedVectors() throws {
-        let fixture = try fixture()
-        let mark = try XCTUnwrap(fixture["caret"].string)
-        XCTAssertFalse(fixture["removals"].array.isEmpty)
-        for vector in fixture["removals"].array {
-            let (text, at) = try caret(try XCTUnwrap(vector["text"].string), mark)
-            let trigger = try XCTUnwrap(ComposerSuggestions.trigger(in: text, caret: at), "a removal vector is in a token: \(text.debugDescription)")
-            XCTAssertEqual(trigger.sigil, .model)
-            let removed = ComposerSuggestions.remove(text, trigger: trigger)
-            XCTAssertEqual(marked(removed.text, at: removed.caret, mark), vector["expect"].string, text.debugDescription)
+    func testAModelIsPutInAsItsMentionAsTheSharedVectorsSay() throws {
+        let vectors = try fixture()["model_insertions"].array
+        XCTAssertFalse(vectors.isEmpty)
+        for vector in vectors {
+            let model = ComposerModelEntry(id: try XCTUnwrap(vector["id"].string), name: "Name")
+            XCTAssertEqual(model.insertion, vector["insert"].string)
+            XCTAssertEqual(ComposerSuggestion.model(model, current: true).insertion, vector["insert"].string, "the chat's own model goes in too")
+            XCTAssertEqual(ComposerSuggestion.model(model, current: false).title, vector["insert"].string, "its row reads as what goes in")
         }
     }
     func testModelsRankByUseAsTheSharedVectorsSay() throws {
@@ -182,11 +180,11 @@ final class ComposerSuggestionsTests: XCTestCase {
             XCTAssertEqual(ComposerSuggestions.usageLabel(chats: chats, provider: provider), vector["label"].string)
         }
         let list = try models(fixture)
-        func find(_ id: String?) -> ComposerModelEntry? { id.flatMap { id in list.first { $0.id == id } } }
         for vector in fixture["model_previews"].array {
-            let model = try XCTUnwrap(find(vector["model"].string))
+            let model = try XCTUnwrap(list.first { $0.id == vector["model"].string })
             let provider = try XCTUnwrap(vector["provider"].string.flatMap(ChatProvider.init(rawValue:)))
-            let preview = ComposerPreview(model: model, current: find(vector["current"].string), provider: provider)
+            let current = vector["current"] == .bool(true)
+            let preview = ComposerPreview(model: model, current: current, provider: provider)
             let expect = vector["expect"]
             XCTAssertEqual(preview.title, expect["title"].string)
             XCTAssertEqual(preview.kind, expect["kind"].string)
@@ -194,13 +192,6 @@ final class ComposerSuggestionsTests: XCTestCase {
             XCTAssertEqual(preview.inserts, expect["inserts"].string)
             XCTAssertEqual(preview.effect, expect["effect"].string)
         }
-    }
-    func testARefusedSwitchPutsTheDraftBackUnlessItWasEditedSince() {
-        let before = "fix it &o3", after = "fix it "
-        XCTAssertEqual(ComposerSuggestions.restoring(before: before, caret: 10, after: after, now: after)?.text, before)
-        XCTAssertEqual(ComposerSuggestions.restoring(before: before, caret: 10, after: after, now: after)?.caret, 10)
-        XCTAssertNil(ComposerSuggestions.restoring(before: before, caret: 10, after: after, now: "fix it now"), "an edit since is kept")
-        XCTAssertNil(ComposerSuggestions.restoring(before: "é&x", caret: 3, after: "é", now: "e\u{301}"), "compared as scalars, as the desktop does")
     }
     func testTheHighlightedModelStaysWhenTheUseIsReadAgainOnlyOnceMoved() throws {
         let first = [ComposerModelEntry(id: "a", name: "A", isDefault: true, chats: 5), ComposerModelEntry(id: "b", name: "B", chats: 1),
@@ -210,16 +201,16 @@ final class ComposerSuggestionsTests: XCTestCase {
         let catalog = { (models: [ComposerModelEntry]) in ComposerCatalogState.ready(ComposerCatalog(chatID: self.chat, provider: .codex, commands: [], files: [], models: models)) }
         var list = ComposerSuggestionList()
         list.update(text: "&", caret: 1, catalog: catalog(first))
-        XCTAssertEqual(list.items.map(\.title), ["A", "B", "C"])
+        XCTAssertEqual(list.items.map(\.title), ["&a", "&b", "&c"])
         // Never moved: the catalog read again (its counts changed) keeps the highlight on the first row, the most used.
         list.update(text: "&", caret: 1, catalog: catalog(later))
-        XCTAssertEqual(list.items.map(\.title), ["B", "A", "C"])
-        XCTAssertEqual(list.highlightedItem?.title, "B")
+        XCTAssertEqual(list.items.map(\.title), ["&b", "&a", "&c"])
+        XCTAssertEqual(list.highlightedItem?.title, "&b")
         // Moved to C: it stays C's, wherever C goes.
         list.move(.down); list.move(.down)
-        XCTAssertEqual(list.highlightedItem?.title, "C")
+        XCTAssertEqual(list.highlightedItem?.title, "&c")
         list.update(text: "&", caret: 1, catalog: catalog(first))
-        XCTAssertEqual(list.highlightedItem?.title, "C")
+        XCTAssertEqual(list.highlightedItem?.title, "&c")
         // A new query starts at the best match again.
         list.update(text: "&b", caret: 2, catalog: catalog(first))
         XCTAssertEqual(list.highlighted, 0)
@@ -228,7 +219,7 @@ final class ComposerSuggestionsTests: XCTestCase {
         XCTAssertEqual(list.items.map(\.detail), ["Used in 5 chats", "Current · used in 1 chat", "Not used yet"])
     }
     func testAModelsDecodingKeepsTheGoodOnesAndDefaultsTheRest() throws {
-        let decoded = try value(#"[{"id":"a","name":"A"},{"id":"  ","name":"Blank"},{"name":"No id"},{"id":"b"},{"id":"c","name":"C","chats":"many","is_default":"yes"}]"#)
+        let decoded = try value(#"[{"id":"a","name":"A"},{"id":"  ","name":"Blank"},{"id":"two words","name":"Spaced"},{"name":"No id"},{"id":"b"},{"id":"c","name":"C","chats":"many","is_default":"yes"}]"#)
             .decode([Lenient<ComposerModelEntry>].self).compactMap(\.value)
         XCTAssertEqual(decoded, [ComposerModelEntry(id: "a", name: "A"), ComposerModelEntry(id: "c", name: "C")])
         // A desktop from before `&` sends no models: the reply still reads, and offers none.
@@ -239,42 +230,45 @@ final class ComposerSuggestionsTests: XCTestCase {
         var list = ComposerSuggestionList()
         list.update(text: "&", caret: 1, catalog: .ready(ComposerCatalog(reply: reply)))
         XCTAssertFalse(list.isShown, "no models, no `&` list")
-        XCTAssertNil(list.acceptance())
+        XCTAssertNil(list.accepted())
     }
-    func testTheModelListMarksTheChatsModelAndAcceptingAsksForTheModelPickersOwnSwitch() throws {
+    func testAcceptingAModelPutsItsMentionInTheDraftAndNothingElse() throws {
         let fixture = try fixture()
         let catalog = ComposerCatalog(chatID: chat, provider: .codex, commands: [], files: [], models: try models(fixture))
         var list = ComposerSuggestionList()
         list.update(text: "review it &", caret: 11, catalog: .ready(catalog), chosenModel: "o3")
         XCTAssertTrue(list.isShown)
-        XCTAssertEqual(list.items.map(\.title), ["GPT-5.1", "GPT-5.1 Codex", "o3", "GPT-5.1 Codex Mini", "GPT-4.1"], "the most used first")
+        XCTAssertEqual(list.items.map(\.title), ["&gpt-5.1", "&gpt-5.1-codex", "&o3", "&gpt-5.1-codex-mini", "&gpt-4.1"], "the most used first")
         XCTAssertEqual(list.items.map(\.detail), ["Used in 7 chats", "Used in 3 chats", "Current · used in 3 chats", "Not used yet", "Not used yet"],
                        "the chat's own model is marked, not left out")
-        XCTAssertEqual(list.preview?.kind, "Codex model")
-        XCTAssertEqual(list.preview?.body, ["Now: o3", "7 of your Codex chats use it now"])
-        XCTAssertEqual(list.preview?.inserts, "", "a model is chosen, not put in")
-        XCTAssertNil(list.accepted(), "nothing to insert")
-        // The highlighted model: the switch to ask for, and the draft without the token once it went through.
-        XCTAssertEqual(list.acceptance(), .switchModel(model: "gpt-5.1", text: "review it ", caret: 10))
-        // Through the model picker's own change: one `configure` for the model, as `chooseChatModel` sends it.
-        let options = catalog.models.map { ChatModelOption(id: $0.id, name: $0.name, isDefault: $0.isDefault) }
-        let choices = ChatModelChoices(models: options, model: "o3", effort: nil, fast: false)
-        let configuration = try XCTUnwrap(choices.configuration(for: .model("gpt-5.1")))
-        XCTAssertEqual(configuration.command, .configure(model: "gpt-5.1"))
-        let request = try ChatCommandRequest(chatID: chat, command: configuration.command)
-        XCTAssertEqual(request.params["command"]?["command"].string, "configure")
-        XCTAssertEqual(request.params["command"]?["model"].string, "gpt-5.1")
-        // Filtering keeps the use as the order; the chat's own model only closes the list.
-        list.update(text: "review it &o", caret: 12, catalog: .ready(catalog), chosenModel: "o3")
-        XCTAssertEqual(list.items.map(\.title), ["o3", "GPT-5.1 Codex", "GPT-5.1 Codex Mini"])
-        XCTAssertEqual(list.acceptance(), .closeOnly)
-        XCTAssertNil(choices.configuration(for: .model("o3")), "the picker sends nothing for it either")
-        // A tap highlights first, then accepts, as for the other rows.
-        XCTAssertNil(list.tapped(1))
-        XCTAssertEqual(list.highlighted, 1)
-        XCTAssertEqual(list.tapped(1), .switchModel(model: "gpt-5.1-codex", text: "review it ", caret: 10))
-        // `&` before more words is only text.
-        list.update(text: "review &o it", caret: 9, catalog: .ready(catalog), chosenModel: "o3")
+        XCTAssertEqual(list.preview, ComposerPreview(title: "&gpt-5.1", kind: "Codex model", body: ["GPT-5.1", "7 of your Codex chats use it now"],
+                                                     inserts: "&gpt-5.1",
+                                                     effect: "Inserts &gpt-5.1 in the message. It does not switch this chat; the orchestrator still decides."))
+        // Accepting gives the composer text to put in and nothing else: the list has no way to ask the chat for anything, so no
+        // `chat.command` (a `configure` or any other) can come of it.
+        var accepted = try XCTUnwrap(list.accepted())
+        XCTAssertEqual(accepted.text, "review it &gpt-5.1 ")
+        XCTAssertEqual(accepted.caret, 19)
+        // Before more words, and the chat's own model: its mention goes in like any other, and what follows stays.
+        let draft = "&o design the API, then build it"
+        list.update(text: draft, caret: 2, catalog: .ready(catalog), chosenModel: "o3")
+        XCTAssertEqual(list.items.map(\.title), ["&o3", "&gpt-5.1-codex", "&gpt-5.1-codex-mini"])
+        XCTAssertEqual(list.preview?.kind, "Codex model · current")
+        accepted = try XCTUnwrap(list.accepted())
+        XCTAssertEqual(accepted.text, "&o3 design the API, then build it", "the token is replaced, no space doubled")
+        XCTAssertEqual(accepted.caret, 4)
+        // A second mention later in the same draft, put in with a tap: the first one and the text around it stay as they were.
+        let second = "&o3 design the API, then &gp build it", caret = "&o3 design the API, then &gp".utf16.count
+        list.update(text: second, caret: caret, catalog: .ready(catalog), chosenModel: "o3")
+        XCTAssertEqual(list.items.map(\.title), ["&gpt-5.1", "&gpt-5.1-codex", "&gpt-5.1-codex-mini", "&gpt-4.1"])
+        XCTAssertNil(list.tap(1), "the first tap only highlights")
+        accepted = try XCTUnwrap(list.tap(1))
+        XCTAssertEqual(accepted.text, "&o3 design the API, then &gpt-5.1-codex build it")
+        XCTAssertEqual(accepted.caret, "&o3 design the API, then &gpt-5.1-codex ".utf16.count)
+        // The caret back in a mention offers it again, as a path's would be; a `&` inside a word is only text.
+        list.update(text: accepted.text, caret: 2, catalog: .ready(catalog), chosenModel: "o3")
+        XCTAssertEqual(list.trigger?.query, "o")
+        list.update(text: "tom&jerry", caret: 4, catalog: .ready(catalog), chosenModel: "o3")
         XCTAssertFalse(list.isShown)
     }
 

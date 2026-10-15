@@ -263,9 +263,6 @@ struct ChatComposer: View {
     var wantSuggestions: (() -> Void)?
     /// The model the chat is set to (nil: its provider's default), which the `&` list marks.
     var chosenModel: String?
-    /// The model picker's own change of this chat's model (`RemoteModel.chooseChatModel`): true once it went through. A refusal is said
-    /// above the composer.
-    var switchModel: ((String) async -> Bool)?
     @State private var focused = false
     @State private var insertion = TextInsertion()
     /// The list and where the caret is (nil while text is selected); see ComposerSuggestionViews.swift.
@@ -294,7 +291,7 @@ struct ChatComposer: View {
                     .chatLayoutProbe("attachments")
             }
             if showsSuggestions {
-                ComposerSuggestionPanel(list: suggestions, tap: { accept(suggestions.tapped($0)) }, insert: { accept(suggestions.acceptance()) },
+                ComposerSuggestionPanel(list: suggestions, tap: { acceptSuggestion(suggestions.tap($0)) }, insert: { acceptSuggestion(suggestions.accepted()) },
                                         close: { suggestions.dismiss() })
                     .padding(.horizontal, Self.fieldMargin)
             }
@@ -368,43 +365,20 @@ struct ChatComposer: View {
         case .send: send()
         case .decide(let decision): decide(decision)
         case .interrupt: interrupt()
-        case .acceptSuggestion: accept(suggestions.acceptance())
+        case .acceptSuggestion: acceptSuggestion(suggestions.accepted())
         case .moveSuggestion(let step): suggestions.move(step)
         case .closeSuggestions: suggestions.dismiss()
         case .insertNewline, .none: break
         }
         return action
     }
-    /// Does what accepting the highlighted row does: puts a command or a file in, or switches the chat to a model (the chat's own model
-    /// only closes the list). Nothing is sent.
-    private func accept(_ acceptance: ComposerAcceptance?) {
-        switch acceptance {
-        case .insert(let text, let caret)?: putSuggestion(text: text, caret: caret)
-        case .closeOnly?: suggestions.dismiss()
-        case .switchModel(let model, let text, let caret)?: chooseModel(model, after: text, caret: caret)
-        case nil: break
-        }
-    }
-    /// Puts an accepted suggestion in the text view as dictation does (`TextInsertion`), so the draft follows. Nothing is sent.
-    private func putSuggestion(text: String, caret: Int) {
-        if let view = insertion.view { view.putDraft(text, caret: caret) } else { conversation.draft = text }
-        suggestionCaret = caret
-        suggestions.update(text: text, caret: caret, catalog: suggestionCatalog, chosenModel: chosenModel)
-    }
-    /// Switches the chat to `model` through the model picker's own change. The `&` token leaves the draft at once (`after`), so that a
-    /// Send meanwhile cannot send it; a refused change puts the draft back as it was (unless it was edited since), with the list closed
-    /// for the token, and the refusal is said above the composer.
-    private func chooseModel(_ model: String, after: String, caret: Int) {
-        guard let switchModel else { return }
-        let before = suggestions.text, beforeCaret = suggestionCaret ?? before.utf16.count
-        putSuggestion(text: after, caret: caret)
-        Task { @MainActor in
-            guard !(await switchModel(model)) else { return }
-            let now = insertion.view?.text ?? conversation.draft
-            guard let restored = ComposerSuggestions.restoring(before: before, caret: beforeCaret, after: after, now: now) else { return }
-            putSuggestion(text: restored.text, caret: restored.caret)
-            suggestions.dismiss()
-        }
+    /// Puts an accepted suggestion in the text view as dictation does (`TextInsertion`), so the draft follows: a command, a path or a
+    /// model's `&` mention, which is only text. Nothing is sent, and the chat's model stays as it is.
+    private func acceptSuggestion(_ accepted: (text: String, caret: Int)?) {
+        guard let accepted else { return }
+        if let view = insertion.view { view.putDraft(accepted.text, caret: accepted.caret) } else { conversation.draft = accepted.text }
+        suggestionCaret = accepted.caret
+        suggestions.update(text: accepted.text, caret: accepted.caret, catalog: suggestionCatalog, chosenModel: chosenModel)
     }
 }
 

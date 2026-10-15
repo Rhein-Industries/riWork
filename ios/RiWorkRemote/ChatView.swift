@@ -98,8 +98,7 @@ struct ChatScreen: View {
                                      pending: model.pendingAttachments(for: chat.id), cancelPending: model.cancelUpload,
                                      barAbove: barShown, suggestionCatalog: model.composerCatalog(for: chat.id), wantSuggestions: { model.wantComposerSuggestions(chat.id) },
                                      // The `&` list marks the model the picker shows as chosen.
-                                     chosenModel: conversation.modelChoices(fallback: info).current?.id ?? conversation.modelChoices(fallback: info).modelID,
-                                     switchModel: { id in await switchFromComposer(to: id) })
+                                     chosenModel: conversation.modelChoices(fallback: info).current?.id ?? conversation.modelChoices(fallback: info).modelID)
                     }
                     .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { bottomTop = $0; transcriptChanged(barShown: barShown) }
                 }
@@ -188,17 +187,6 @@ struct ChatScreen: View {
         Task { await model.decideChatApproval(chat.id, approval, decision) }
     }
     private func interrupt() { Task { await model.interruptChat(chat.id) } }
-    /// `&` in the composer: the model picker's own change of this chat's model (`chooseChatModel`), true once it went through. The model
-    /// the picker shows as chosen changes nothing; one the picker does not offer is not changed from here either, and that is said above
-    /// the composer, as a refused change is.
-    private func switchFromComposer(to id: String) async -> Bool {
-        let choices = conversation.modelChoices(fallback: info)
-        guard choices.configuration(for: .model(id)) != nil else {
-            if choices.current?.id != id { conversation.notice = "The model picker does not offer \(id) for this chat yet, so it was not changed." }
-            return false
-        }
-        return await model.chooseChatModel(info, .model(id)) == nil
-    }
     private func requestFocus() {
         let context = KeyboardFocusContext(hardwareKeyboard: model.keyboard.hardware.isAttached)
         if KeyboardFocusPolicy.decide(setting: model.keyboard.focusSetting, context: context).shouldFocus { focusToken &+= 1 }

@@ -8,9 +8,9 @@
 //!
 //! `&` lists the models the chat's driver listed (the model menu's own list), the most used
 //! first (`suggest::ModelUsage`, from the chats' saved info, read on a background thread and
-//! kept for every tab of that data folder as a listing is). Accepting one is the model menu's
-//! own choice (`ChatView::choose_model`): the chat is switched and the token leaves the draft;
-//! the chat's current model only closes the list.
+//! kept for every tab of that data folder as a listing is), the chat's own model marked.
+//! Accepting one puts in its mention (`&gpt-6.1-sol`), as text for an orchestrator to read: the
+//! chat's model, effort and everything else stay as they are, and nothing is sent.
 //!
 //! `@` lists the chat's folder once (`suggest::list_files`, bounded) on a background thread
 //! and keeps it for every tab of that folder (`Listings`, `suggest::FILE_TTL`); typing only
@@ -65,13 +65,13 @@ pub(super) enum Item {
 }
 
 impl Item {
-    /// How its row names it: what accepting a command or a file puts in the draft, a model's
-    /// name.
-    pub fn label(&self) -> String {
+    /// What accepting it puts in the draft, which is also how its row names it: a model's
+    /// mention.
+    pub fn insertion(&self) -> String {
         match self {
             Self::Command(command) => command.insertion(),
             Self::File(entry) => entry.insertion(),
-            Self::Model { entry, .. } => entry.name.clone(),
+            Self::Model { entry, .. } => entry.insertion(),
         }
     }
 
@@ -110,17 +110,6 @@ pub(super) struct Open {
     pub moved: bool,
 }
 
-/// A model `&` switched the chat to, kept until the host answers: a refusal puts the token back.
-struct Switched {
-    model: String,
-    /// The token as it was, where it was, and the caret then.
-    token: String,
-    at: usize,
-    caret: usize,
-    /// The draft as accepting left it: the token goes back only into this.
-    after: String,
-}
-
 /// A tab's suggestions.
 #[derive(Default)]
 pub(super) struct Suggestions {
@@ -137,8 +126,6 @@ pub(super) struct Suggestions {
     /// The message box card as last drawn, in window coordinates: the list stands on it.
     pub card: Rc<Cell<Bounds<Pixels>>>,
     scroll: ScrollHandle,
-    /// The last model change `&` asked for, until the host refuses it or another is asked.
-    switched: Option<Switched>,
 }
 
 /// The folders' listings, shared by every chat tab: one walk serves every tab of a folder.
@@ -651,17 +638,9 @@ impl ChatView {
         let Some(open) = self.suggestions.open.take() else {
             return;
         };
-        let insert = match open.items.get(row) {
-            Some(Item::Model { entry, current }) => {
-                let (entry, current) = (entry.clone(), *current);
-                self.accept_model(open, entry, current, window, cx);
-                return;
-            }
-            Some(item) => item.label(),
-            None => {
-                self.suggestions.open = Some(open);
-                return;
-            }
+        let Some(insert) = open.items.get(row).map(Item::insertion) else {
+            self.suggestions.open = Some(open);
+            return;
         };
         let (text, caret) = {
             let state = self.composer.read(cx);
@@ -681,92 +660,6 @@ impl ChatView {
             state.replace(replacement, window, cx);
             state.set_selected_range(caret..caret, cx);
         });
-        cx.notify();
-    }
-
-    /// Switch the chat to `entry` as the model menu does (`choose_model`: one `Configure`, the
-    /// effort carried over or moved to the model's default) and take the `&` token out of the
-    /// draft, as an edit ⌘Z takes back. Nothing is sent. The chat's current model only closes
-    /// the list. When the change cannot be sent (no chat connected yet), the composer says so as
-    /// it says for any command, and the draft keeps the token.
-    fn accept_model(
-        &mut self,
-        open: Open,
-        entry: ModelEntry,
-        current: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let (text, caret) = {
-            let state = self.composer.read(cx);
-            (state.value().to_string(), state.cursor())
-        };
-        // The draft may have changed since the list was drawn: act on its token now.
-        let Some(trigger) = suggest::trigger(&text, caret)
-            .filter(|now| now.start == open.trigger.start && now.sigil == Sigil::Model)
-        else {
-            cx.notify();
-            return;
-        };
-        if current {
-            self.suggestions.dismissed = Some(trigger.start);
-            cx.notify();
-            return;
-        }
-        let connected = self.feed.is_some();
-        self.choose_model(&entry.id, cx);
-        if !connected {
-            self.suggestions.dismissed = Some(trigger.start);
-            return;
-        }
-        // The token leaves at once, so that a ⏎ meanwhile cannot send it; a refusal puts it back.
-        let (after, at) = suggest::remove(&text, &trigger);
-        self.suggestions.switched = Some(Switched {
-            model: entry.id,
-            token: text[trigger.start..trigger.end].to_owned(),
-            at,
-            caret,
-            after,
-        });
-        self.composer.update(cx, |state, cx| {
-            state.set_selected_range(trigger.start..trigger.end, cx);
-            state.replace("", window, cx);
-            state.set_selected_range(at..at, cx);
-        });
-        cx.notify();
-    }
-
-    /// The host refused `command`: if it is the model change `&` asked for last, its token goes
-    /// back where it was, as an edit ⌘Z takes back, so the draft is what it was before. Only into
-    /// the draft accepting left: one edited since keeps the edit. The list stays closed for it.
-    pub(super) fn restore_model_token(
-        &mut self,
-        command: &crate::chat::model::ChatCommand,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let crate::chat::model::ChatCommand::Configure {
-            model: Some(model), ..
-        } = command
-        else {
-            return;
-        };
-        let Some(switched) = self
-            .suggestions
-            .switched
-            .take_if(|switched| switched.model == *model)
-        else {
-            return;
-        };
-        if self.composer.read(cx).value().as_ref() != switched.after.as_str() {
-            return;
-        }
-        self.composer.update(cx, |state, cx| {
-            state.set_selected_range(switched.at..switched.at, cx);
-            state.replace(switched.token, window, cx);
-            state.set_selected_range(switched.caret..switched.caret, cx);
-        });
-        self.suggestions.dismissed = Some(switched.at);
         cx.notify();
     }
 
@@ -919,7 +812,7 @@ impl ChatView {
         };
         let rows = open.items.iter().enumerate().map(|(row, item)| {
             let highlighted = row == open.highlight;
-            let label = item.label();
+            let label = item.insertion();
             div()
                 .id(ElementId::NamedInteger(
                     "composer-suggestion".into(),
@@ -1017,22 +910,8 @@ impl ChatView {
         let colors = look.colors;
         let preview = match open.items.get(open.highlight)? {
             Item::Command(command) => suggest::command_preview(command, self.provider()?),
-            Item::Model { entry, .. } => {
-                let current = self.current_model_id().and_then(|id| {
-                    self.model
-                        .transcript
-                        .models
-                        .iter()
-                        .find(|model| model.id == id)
-                        .map(|model| ModelEntry {
-                            id: model.id.clone(),
-                            name: model.name.clone(),
-                            description: model.description.clone(),
-                            is_default: model.is_default,
-                            chats: 0,
-                        })
-                });
-                suggest::model_preview(entry, current.as_ref(), self.provider()?)
+            Item::Model { entry, current } => {
+                suggest::model_preview(entry, *current, self.provider()?)
             }
             Item::File(entry) => {
                 let peek = self
@@ -1046,7 +925,6 @@ impl ChatView {
             }
         };
         let code = matches!(open.items.get(open.highlight), Some(Item::File(_)));
-        let model = matches!(open.items.get(open.highlight), Some(Item::Model { .. }));
         Some(
             div()
                 .id("composer-suggestion-preview")
@@ -1095,7 +973,7 @@ impl ChatView {
                                 .map(|line| div().truncate().child(line.clone())),
                         )
                 }))
-                .children((!preview.inserts.is_empty()).then(|| {
+                .child(
                     div()
                         .flex()
                         .gap(ui_text::space(4.0))
@@ -1111,8 +989,8 @@ impl ChatView {
                                 .truncate()
                                 .font_family(ui_text::code_family())
                                 .child(preview.inserts.clone()),
-                        )
-                }))
+                        ),
+                )
                 .child(
                     div()
                         .text_size(ui_text::text(10.0))
@@ -1123,11 +1001,7 @@ impl ChatView {
                     div()
                         .text_size(ui_text::text(10.0))
                         .text_color(rgb(colors.muted))
-                        .child(if model {
-                            "⏎ or ⇥ switches · ⎋ closes · nothing is sent"
-                        } else {
-                            "⏎ or ⇥ inserts · ⎋ closes · nothing is sent"
-                        }),
+                        .child("⏎ or ⇥ inserts · ⎋ closes · nothing is sent"),
                 )
                 .test_support()
                 .into_any_element(),

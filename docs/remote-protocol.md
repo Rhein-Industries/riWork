@@ -1645,7 +1645,8 @@ typed, so that the phone's composer lists what the desktop's does. Params exactl
 - `models` (since 2026-10-15) are the models the chat's provider listed for it, in the
   provider's order: the newest list its own driver reported (what its model menu shows), else
   what `riwork chat models` reads for its provider; none when no chat of the provider ever
-  listed any (no model is made up). `id` is what the chat is set to, `name` and
+  listed any (no model is made up), nor one whose id has blank space inside, which would not
+  read as one word in a mention. `id` is what the chat is set to, `name` and
   `description` what to show, `is_default` that the provider runs it when the chat names
   none, and `chats` how many of the person's own chats of the provider are set to it now
   (counted from the chats' info, the running host's list or else the saved `info.json`:
@@ -1653,9 +1654,11 @@ typed, so that the phone's composer lists what the desktop's does. Params exactl
   orchestrator's; one set to no model counts for the default; a deleted chat is gone from
   it, and a chat that changed model counts only for its latest). A composer lists them after
   `&`, the most used first (ties and unused ones in the provider's order), marks the chat's
-  own model, and accepting one sends the model picker's own `chat.command` `configure` with
-  that model; nothing is inserted or sent as a message. A desktop from before it sends no
-  `models` (the connector passes `[]`): no `&` list opens.
+  own model, and accepting one puts its mention in the draft: `&` and its `id` (trimmed), and
+  a space after it unless one already follows (`&opus `), as `/` and `@` put text in. The mention is only text, for an orchestrator to
+  read as the person's preferred model for the work the message hands out: no `chat.command`
+  is sent, the chat's model is not changed and nothing is sent as a message. A desktop from
+  before it sends no `models` (the connector passes `[]`): no `&` list opens.
 - It starts nothing: a chat host that runs is asked for the chat, else the saved chats are
   read, and no agent or provider is started or asked. It runs in a shared (read) slot.
 
@@ -1666,7 +1669,7 @@ types, or the answer is `cli_error` (as is `models` that is not a list); a comma
 or a model that is malformed (a name outside its alphabet, an argument that is not a string
 or null, an unknown handler, a path that is empty, absolute, has a `..` part or a control
 character, a size that is not a non-negative integer; a model id that is blank, longer than
-100 characters or not one line, a model name that is not one line of at most 500
+100 characters, not one line or with blank space inside (its mention would not be one word), a model name that is not one line of at most 500
 characters, an `is_default` that is not a boolean or `chats` that is not a non-negative
 integer) is left out on its own. A model's description that is not such a line (or not a string) is passed as
 `""` rather than leave the model out. At most 200 models are passed on. The files are cut to
@@ -2423,11 +2426,17 @@ ready response. Values are test-only and must never provision production devices
 
 - 2026-10-15: additive and backward compatible. `chat.suggestions` gains `models` (`id`,
   `name`, `description`, `is_default`, `chats`): the chat's provider's models, with how many
-  of the person's own chats are set to each, for the composer's `&` list, which switches the
-  chat with the existing `chat.command` `configure`. No new method, feature flag or error
-  code: a CLI or connector from before it sends none (the connector passes `[]`) and an older
-  phone ignores the field. The shared fixture gains the `&` vectors. Needs the iOS worker's
-  agreement; the iOS side implements the same text.
+  of the person's own chats are set to each, for the composer's `&` list. No new method,
+  feature flag or error code: a CLI or connector from before it sends none (the connector
+  passes `[]`) and an older phone ignores the field. The shared fixture gains the `&` vectors.
+  Needs the iOS worker's agreement; the iOS side implements the same text.
+
+- 2026-10-16: no wire change. Accepting a model from the composer's `&` list puts its
+  mention (`&` and its `id`) in the draft, anywhere in it and as often as wanted, instead of
+  switching the chat: no `chat.command` is sent for it. The shared fixture's `&` vectors
+  change with it (mentions in the middle of a draft, several per draft, `model_insertions`
+  for the old `removals`, previews that insert). A phone built on 2026-10-15 still switches
+  the chat with `configure` when a model is chosen; the connector cannot tell the two apart.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),

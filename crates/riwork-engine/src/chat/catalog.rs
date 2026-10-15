@@ -116,9 +116,10 @@ fn reported(home: &Path, id: &str, provider: Provider) -> Option<Vec<ModelOption
     latest
 }
 
-/// The models chat `info` can switch to without changing provider: the newest list its own
-/// driver reported, as its model menu shows it, else what a new chat of its project would be
-/// offered (`saved`, as `riwork chat models` reads it). Saved metadata only: no host, no provider.
+/// The models chat `info`'s provider offers it, as its `&` list shows them: the newest list its
+/// own driver reported, as its model menu shows it, else what a new chat of its project would
+/// be offered (`saved`, as `riwork chat models` reads it). Saved metadata only: no host, no
+/// provider.
 pub fn chat_models(home: &Path, info: &ChatInfo) -> Vec<ModelOption> {
     let models = reported(home, &info.id, info.provider)
         .unwrap_or_else(|| saved(home, info.project_id.as_deref(), info.provider).supported);

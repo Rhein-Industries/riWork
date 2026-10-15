@@ -2,13 +2,13 @@ import SwiftUI
 import UIKit
 import RiWorkCore
 
-// The `/`, `@` and `&` list above a chat's composer field: the highlighted row's card (what it is, what it puts in or, for a model, what
-// choosing it does), then the rows, at most five in view before they scroll. The decisions are `ComposerSuggestionList` in RiWorkCore; the catalog is the
+// The `/`, `@` and `&` list above a chat's composer field: the highlighted row's card (what it is, what it puts in, what sending does), then
+// the rows, at most five in view before they scroll. The decisions are `ComposerSuggestionList` in RiWorkCore; the catalog is the
 // desktop's (`RemoteModel+Suggestions.swift`).
 //
 // Touch: a tap on a row highlights it and its card shows; a tap on the highlighted row, or on the card's Insert, puts it in the draft (a
-// model's Switch switches the chat to it, through the model picker's own change); × closes the list until the token goes. A hardware keyboard: ↑ and ↓ move, ⏎ and Tab put the row in, ⎋ closes (`ChatKeyRouter`).
-// Nothing here sends: the person's own ⏎ or Send does, once the list is gone.
+// model as its `&` mention, which switches nothing); × closes the list until the token goes. A hardware keyboard: ↑ and ↓ move, ⏎ and Tab
+// put the row in, ⎋ closes (`ChatKeyRouter`). Nothing here sends: the person's own ⏎ or Send does, once the list is gone.
 
 extension ChatComposer {
     /// The list is on screen: a token opened it and something matches (or the files are being listed), and no request answers the keys
@@ -135,8 +135,7 @@ struct ComposerSuggestionPanel: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if index == 0 { rowHeight = $0 } }
         .accessibilityLabel("\(item.title), \(item.detail)")
         .accessibilityAddTraits(highlighted ? .isSelected : [])
-        .accessibilityHint(highlighted ? (Self.isModel(item) ? "Switches this chat to it. Nothing is sent." : "Puts it in the message. Nothing is sent.")
-                           : (Self.isModel(item) ? "Shows what choosing it does" : "Shows what it puts in"))
+        .accessibilityHint(highlighted ? "Puts it in the message. Nothing is sent." : "Shows what it puts in")
         .accessibilityAction(named: "Insert") {
             if !highlighted { tap(index) }
             tap(index)
@@ -150,7 +149,6 @@ struct ComposerSuggestionPanel: View {
         case .model(_, let current): current ? "checkmark.circle" : "cpu"
         }
     }
-    static func isModel(_ item: ComposerSuggestion) -> Bool { if case .model = item { true } else { false } }
 }
 
 /// What the highlighted row is before it is put in: its text, what kind of thing it is, what a command does, and what sending does
@@ -168,12 +166,9 @@ struct ComposerSuggestionCard: View {
                     Text(verbatim: preview.kind).font(style.system(.caption)).foregroundStyle(style.muted).lineLimit(1)
                 }
                 Spacer(minLength: 4)
-                // A model inserts nothing: its button switches the chat to it.
-                let switches = preview.inserts.isEmpty
-                Button(action: insert) { Text(switches ? "Switch" : "Insert").font(style.system(.subheadline, weight: .semibold)) }
+                Button(action: insert) { Text("Insert").font(style.system(.subheadline, weight: .semibold)) }
                     .buttonStyle(DesktopButtonStyle(prominent: true, compact: true))
-                    .accessibilityLabel(switches ? "Switch to \(preview.title)" : "Insert \(preview.inserts)")
-                    .accessibilityHint(switches ? "Switches this chat to it. Nothing is sent." : "Puts it in the message. Nothing is sent.")
+                    .accessibilityLabel("Insert \(preview.inserts)").accessibilityHint("Puts it in the message. Nothing is sent.")
                     .chatLayoutProbe("suggestion-insert", action: insert)
                 ComposerSuggestionClose(close: close)
             }

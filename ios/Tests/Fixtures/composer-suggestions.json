@@ -179,7 +179,7 @@
       }
     },
     {
-      "text": "switch to &so‸",
+      "text": "prefer &so‸",
       "expect": {
         "sigil": "model",
         "query": "so",
@@ -220,11 +220,43 @@
     },
     {
       "text": "&op‸ please",
-      "expect": null
+      "expect": {
+        "sigil": "model",
+        "query": "op",
+        "token": "&op"
+      }
     },
     {
       "text": "&opus‸\nmore",
-      "expect": null
+      "expect": {
+        "sigil": "model",
+        "query": "opus",
+        "token": "&opus"
+      }
+    },
+    {
+      "text": "&opus design the API, then &gpt‸ implement it",
+      "expect": {
+        "sigil": "model",
+        "query": "gpt",
+        "token": "&gpt"
+      }
+    },
+    {
+      "text": "&op‸us design the API, then &gpt-6.1-sol implement it",
+      "expect": {
+        "sigil": "model",
+        "query": "op",
+        "token": "&opus"
+      }
+    },
+    {
+      "text": "&opus and &‸",
+      "expect": {
+        "sigil": "model",
+        "query": "",
+        "token": "&"
+      }
     },
     {
       "text": "a&b‸",
@@ -273,6 +305,26 @@
       "text": "héé @dö‸",
       "insert": "döc/",
       "expect": "héé döc/ ‸"
+    },
+    {
+      "text": "&op‸",
+      "insert": "&opus",
+      "expect": "&opus ‸"
+    },
+    {
+      "text": "&op‸ design the API",
+      "insert": "&opus",
+      "expect": "&opus ‸design the API"
+    },
+    {
+      "text": "&op‸us design it",
+      "insert": "&opus",
+      "expect": "&opus ‸design it"
+    },
+    {
+      "text": "&opus design the API, then &gpt‸ implement it",
+      "insert": "&gpt-6.1-sol",
+      "expect": "&opus design the API, then &gpt-6.1-sol ‸implement it"
     }
   ],
   "commands": {
@@ -635,18 +687,18 @@
       }
     ]
   },
-  "removals": [
+  "model_insertions": [
     {
-      "text": "please review &op‸",
-      "expect": "please review ‸"
+      "id": "gpt-6.1-sol",
+      "insert": "&gpt-6.1-sol"
     },
     {
-      "text": "&op‸us",
-      "expect": "‸"
+      "id": "muse-wonder-full-1.0",
+      "insert": "&muse-wonder-full-1.0"
     },
     {
-      "text": "line\n&g‸ ",
-      "expect": "line\n‸ "
+      "id": " opus ",
+      "insert": "&opus"
     }
   ],
   "model_ranking": {
@@ -799,49 +851,48 @@
   "model_previews": [
     {
       "model": "gpt-5.1-codex-mini",
-      "current": "gpt-5.1-codex",
+      "current": false,
       "provider": "codex",
       "expect": {
-        "title": "GPT-5.1 Codex Mini",
+        "title": "&gpt-5.1-codex-mini",
         "kind": "Codex model",
         "body": [
+          "GPT-5.1 Codex Mini",
           "Cheaper",
-          "Now: GPT-5.1 Codex",
           "None of your Codex chats use it now"
         ],
-        "inserts": "",
-        "effect": "Switch this chat to GPT-5.1 Codex Mini. The token leaves the draft; nothing is sent."
+        "inserts": "&gpt-5.1-codex-mini",
+        "effect": "Inserts &gpt-5.1-codex-mini in the message. It does not switch this chat; the orchestrator still decides."
       }
     },
     {
       "model": "gpt-5.1-codex",
-      "current": "gpt-5.1-codex",
+      "current": true,
       "provider": "codex",
       "expect": {
-        "title": "GPT-5.1 Codex",
+        "title": "&gpt-5.1-codex",
         "kind": "Codex model · current",
         "body": [
+          "GPT-5.1 Codex",
           "Frontier coding",
-          "Now: GPT-5.1 Codex",
           "3 of your Codex chats use it now"
         ],
-        "inserts": "",
-        "effect": "This chat runs it already: choosing it only closes the list."
+        "inserts": "&gpt-5.1-codex",
+        "effect": "Inserts &gpt-5.1-codex in the message. It does not switch this chat; the orchestrator still decides."
       }
     },
     {
       "model": "o3",
-      "current": null,
+      "current": false,
       "provider": "codex",
       "expect": {
-        "title": "o3",
+        "title": "&o3",
         "kind": "Codex model",
         "body": [
-          "Now: not known",
           "3 of your Codex chats use it now"
         ],
-        "inserts": "",
-        "effect": "Switch this chat to o3. The token leaves the draft; nothing is sent."
+        "inserts": "&o3",
+        "effect": "Inserts &o3 in the message. It does not switch this chat; the orchestrator still decides."
       }
     }
   ]

@@ -519,17 +519,17 @@ fn suggestions_result(chat: &str, cli: &Value) -> Option<Value> {
         "models": models,
     }))
 }
-/// A model as the phone may offer it for `&` and send back in a `Configure`: an id a chat may
-/// be set to (one line of at most `MODEL_MAX_CHARS`, not blank), a one-line name of at most
-/// `SUGGESTED_MODEL_TEXT_MAX` characters, its description when that is such a line too (else
-/// `""`, rather than leave the model out), whether it is the provider's default, and how many
-/// chats use it.
+/// A model as the phone may offer it for `&`, which writes its id into the draft: an id a chat
+/// may be set to (one line of at most `MODEL_MAX_CHARS`, not blank) and that reads as one word
+/// in a mention (no blank space inside), a one-line name of at most `SUGGESTED_MODEL_TEXT_MAX`
+/// characters, its description when that is such a line too (else `""`, rather than leave the
+/// model out), whether it is the provider's default, and how many chats use it.
 fn suggested_model(model: &Value) -> Option<Value> {
     let line = |text: &str, max: usize| text.chars().count() <= max && !has_control(text);
-    let id = model
-        .get("id")?
-        .as_str()
-        .filter(|id| !id.trim().is_empty() && line(id, MODEL_MAX_CHARS))?;
+    let id = model.get("id")?.as_str().filter(|id| {
+        let word = id.trim();
+        !word.is_empty() && !word.contains(char::is_whitespace) && line(id, MODEL_MAX_CHARS)
+    })?;
     let name = model
         .get("name")?
         .as_str()

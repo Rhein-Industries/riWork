@@ -9,8 +9,8 @@
 //!   `@` at the start of the draft or after blank space. The token runs from the sigil to the
 //!   next blank space, the query from after the sigil to the caret. A sigil inside a word
 //!   (`a/b`, `me@host`, `a&b`, a URL's `?x=1&y=2`) opens nothing, nor does a token that is not
-//!   a whole command name (`/usr/bin`). `&` opens as `@` does, and only as the draft's last
-//!   word: `&` before more words is just text.
+//!   a whole command name (`/usr/bin`). `&` opens as `@` does, wherever the person writes, so
+//!   one message can name several models (`&opus design it, then &gpt-6.1-sol build it`).
 //! - **Slash commands** (`COMMANDS`): only what RiWork actually does with the text. RiWork's own
 //!   `/memo` is acted on by the composers before anything is sent; any other typed `/…` goes
 //!   to the provider as written, so the provider entries are the commands that verifiably work
@@ -25,12 +25,12 @@
 //! - **`&` models** (`model_entries`): the models the chat's provider listed for it, as the
 //!   model menu has them, ordered by how much the person uses each (`order_models`): how many of
 //!   their own chats of the provider are set to it now, read from the chats' saved
-//!   `info.json` (`model_usage`). Nothing new is recorded for it.
+//!   `info.json` (`model_usage`). Nothing new is recorded for it. Accepting one writes a
+//!   mention, `&` and the model's id (`ModelEntry::insertion`): a way to tell an orchestrator
+//!   which model the person would like for the work the message hands out. It is only text: it
+//!   switches nothing, and the orchestrator still decides; RiWork never reads it back.
 //! - **Accepting** (`accept`) replaces the token with the entry's text and a space. It never
-//!   sends: that stays the person's own ⏎ or Send. A model is the exception that inserts
-//!   nothing: accepting one switches the chat to it through the composer's own model change
-//!   (the model menu's) and takes the token out of the draft (`remove`); the chat's current
-//!   model only closes the list.
+//!   sends: that stays the person's own ⏎ or Send.
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -76,7 +76,7 @@ pub enum Sigil {
     Slash,
     /// `@`: a file or folder of the chat's folder.
     Mention,
-    /// `&`: a model of the chat's provider to switch the chat to.
+    /// `&`: a model of the chat's provider, mentioned in the message.
     Model,
 }
 
@@ -133,10 +133,6 @@ pub fn trigger(text: &str, caret: usize) -> Option<Trigger> {
     if sigil == Sigil::Slash && text[start + 1..end].contains('/') {
         return None;
     }
-    // A model is picked with the draft's last word: `&` before more words is just text.
-    if sigil == Sigil::Model && !text[end..].trim().is_empty() {
-        return None;
-    }
     Some(Trigger {
         sigil,
         start,
@@ -160,15 +156,6 @@ pub fn accept(text: &str, trigger: &Trigger, insert: &str) -> (String, usize) {
     };
     out.push_str(rest);
     (out, caret)
-}
-
-/// `text` without the trigger's token, and the caret where it was: what accepting a model leaves.
-/// The blank space around it stays as it was.
-pub fn remove(text: &str, trigger: &Trigger) -> (String, usize) {
-    let mut out = String::with_capacity(text.len());
-    out.push_str(&text[..trigger.start]);
-    out.push_str(&text[trigger.end..]);
-    (out, trigger.start)
 }
 
 // ---- Slash commands ------------------------------------------------------------------------
@@ -318,6 +305,14 @@ pub struct ModelEntry {
     pub chats: u64,
 }
 
+impl ModelEntry {
+    /// What accepting it puts in the draft: a mention of it, `&` and its id as the provider
+    /// takes it (`&gpt-6.1-sol`), never its display name.
+    pub fn insertion(&self) -> String {
+        format!("&{}", self.id.trim())
+    }
+}
+
 /// How many of the person's own chats are set to each model now, by provider: chats with a first
 /// message (`first_user_message`; a scheduled task's chat has one too), not a worker's
 /// (`parent_id`) nor an orchestrator's. A chat counts once, for the model it is set to now; one
@@ -361,7 +356,8 @@ impl ModelUsage {
 }
 
 /// `models`, as `provider`'s driver listed them for the chat (the model menu's list, never one
-/// made up), with their use: the default model also counts the chats set to no model.
+/// made up), with their use: the default model also counts the chats set to no model. An id
+/// with blank space in it is left out: its mention would not read as one word.
 pub fn model_entries(
     models: &[super::model::ModelOption],
     provider: Provider,
@@ -369,7 +365,10 @@ pub fn model_entries(
 ) -> Vec<ModelEntry> {
     models
         .iter()
-        .filter(|model| !model.id.trim().is_empty())
+        .filter(|model| {
+            let id = model.id.trim();
+            !id.is_empty() && !id.contains(char::is_whitespace)
+        })
         .map(|model| ModelEntry {
             id: model.id.clone(),
             name: model.name.clone(),
@@ -791,40 +790,32 @@ pub fn usage_label(chats: u64, provider: Provider) -> String {
     }
 }
 
-/// The preview of a model offered to a chat of `provider` that runs `current` (its name) now:
-/// what choosing it does, the chat's model, and the use the list is sorted by.
-pub fn model_preview(
-    entry: &ModelEntry,
-    current: Option<&ModelEntry>,
-    provider: Provider,
-) -> Preview {
-    let is_current = current.is_some_and(|current| current.id == entry.id);
+/// The preview of a model offered to a chat of `provider`, `current` if the chat runs it: its
+/// mention, its name where that is not its id, what it is, and the use the list is sorted by.
+pub fn model_preview(entry: &ModelEntry, current: bool, provider: Provider) -> Preview {
     let mut kind = format!("{} model", provider_title(provider));
-    if is_current {
+    if current {
         kind.push_str(" · current");
     }
     let mut body = Vec::new();
+    let name = entry.name.trim();
+    if !name.is_empty() && name != entry.id.trim() {
+        body.push(name.to_owned());
+    }
     if !entry.description.trim().is_empty() {
         body.push(entry.description.trim().to_owned());
     }
-    body.push(match current {
-        Some(current) => format!("Now: {}", current.name),
-        None => "Now: not known".to_owned(),
-    });
     body.push(usage_label(entry.chats, provider));
     Preview {
-        title: entry.name.clone(),
+        title: entry.insertion(),
         kind,
         body,
-        inserts: String::new(),
-        effect: if is_current {
-            "This chat runs it already: choosing it only closes the list.".to_owned()
-        } else {
-            format!(
-                "Switch this chat to {}. The token leaves the draft; nothing is sent.",
-                entry.name
-            )
-        },
+        inserts: entry.insertion(),
+        effect: format!(
+            "Inserts {} in the message. It does not switch this chat; the orchestrator still \
+             decides.",
+            entry.insertion()
+        ),
     }
 }
 

@@ -1,7 +1,7 @@
 //! The `/`, `@` and `&` list over a real message box: it opens on the trigger and filters as the
 //! token is typed, ↑ ↓ ⏎ ⇥ ⎋ and the pointer work it, its preview says what accepting does, it
-//! stands clear of the card in wide and narrow panes, and accepting never sends; a `&` model is
-//! the model menu's own choice.
+//! stands clear of the card in wide and narrow panes, and accepting never sends; a `&` model goes
+//! in as its mention and changes nothing else.
 use super::editor_tests::mount_sized;
 use super::suggest_ui::Item;
 use super::*;
@@ -83,10 +83,12 @@ fn draft(cx: &mut TestAppContext, mounted: &Mounted) -> (String, usize) {
 /// The rows as their text, and which one is highlighted; none while the list is closed.
 fn rows(cx: &mut TestAppContext, mounted: &Mounted) -> Option<(Vec<String>, usize)> {
     mounted.1.read_with(cx, |view, _| {
-        view.suggestions
-            .open
-            .as_ref()
-            .map(|open| (open.items.iter().map(Item::label).collect(), open.highlight))
+        view.suggestions.open.as_ref().map(|open| {
+            (
+                open.items.iter().map(Item::insertion).collect(),
+                open.highlight,
+            )
+        })
     })
 }
 
@@ -517,7 +519,7 @@ fn codex_models() -> Vec<crate::chat::model::ModelOption> {
 /// (`None`: to no model, the default), and one worker's chat that is not theirs.
 fn data_folder(uses: &[(Option<&str>, usize)]) -> PathBuf {
     let home = std::env::temp_dir().join(format!("riwork-suggest-uses-{}", uuid::Uuid::new_v4()));
-    let mut save = |model: Option<&str>, worker: bool| {
+    let save = |model: Option<&str>, worker: bool| {
         let mut info = testing::info(&uuid::Uuid::new_v4().to_string());
         info.provider = Provider::Codex;
         info.model = model.map(str::to_owned);
@@ -567,47 +569,39 @@ fn mount_models(
     mounted
 }
 
-/// What went to the chat as a command (a model change), apart from messages.
-fn commanded(recording: &Receiver<feed::Delivery>) -> Vec<ChatCommand> {
+/// Everything that went to the chat, commands and messages alike.
+fn went_out(recording: &Receiver<feed::Delivery>) -> Vec<String> {
     recording
         .try_iter()
-        .filter_map(|delivery| match delivery {
-            feed::Delivery::Command(command) => Some(command),
-            feed::Delivery::Submission { command, .. } => {
-                panic!("a message went out: {command:?}")
-            }
+        .map(|delivery| match delivery {
+            feed::Delivery::Command(command) => format!("command {command:?}"),
+            feed::Delivery::Submission { command, .. } => format!("message {command:?}"),
         })
         .collect()
 }
 
-fn configure(model: &str) -> ChatCommand {
-    ChatCommand::Configure {
-        model: Some(model.into()),
-        effort: None,
-        approval_mode: None,
-        fast: None,
-        contributor_mode: None,
-        contributor_opt_out: None,
-        claude_billing: None,
-    }
+/// Put the caret at byte `at` of the draft, as a click there would, and draw.
+fn put_caret(cx: &mut TestAppContext, mounted: &Mounted, at: usize) {
+    mounted.1.update(cx, |view, cx| {
+        view.composer
+            .update(cx, |state, cx| state.set_selected_range(at..at, cx));
+    });
+    frame(cx, mounted, |_, _| {});
 }
 
-/// The host refused `command`, as the feed tells the tab.
-fn refuse(cx: &mut TestAppContext, mounted: &Mounted, command: ChatCommand, error: &str) {
-    cx.update_window(handle(mounted), |_, window, cx| {
-        mounted.1.update(cx, |view, cx| {
-            view.accept(
-                vec![feed::FeedMsg::CommandFailed {
-                    command,
-                    error: error.into(),
-                }],
-                window,
-                cx,
-            )
-        })
+/// The model the chat is set to, its effort, and whether a turn runs.
+fn chat_setup(
+    cx: &mut TestAppContext,
+    mounted: &Mounted,
+) -> (Option<String>, Option<String>, bool) {
+    mounted.1.read_with(cx, |view, _| {
+        let info = view.model.transcript.info.as_ref().unwrap();
+        (
+            info.model.clone(),
+            info.effort.clone(),
+            view.model.transcript.state == crate::chat::model::ChatState::Running,
+        )
     })
-    .unwrap();
-    cx.run_until_parked();
 }
 
 fn details(cx: &mut TestAppContext, mounted: &Mounted) -> Vec<String> {
@@ -621,7 +615,7 @@ fn details(cx: &mut TestAppContext, mounted: &Mounted) -> Vec<String> {
 }
 
 #[gpui::test]
-fn ampersand_lists_the_models_most_used_first_and_return_switches_without_sending(
+fn ampersand_lists_the_models_most_used_first_and_return_puts_in_a_mention(
     cx: &mut TestAppContext,
 ) {
     let root = folder();
@@ -629,15 +623,15 @@ fn ampersand_lists_the_models_most_used_first_and_return_switches_without_sendin
     // worker's chats on the mini are not the person's own.
     let home = data_folder(&[(Some("o3"), 3), (None, 2), (Some("gpt-5.1"), 1)]);
     let mounted = mount_models(cx, &root, None, Some(&home));
-    type_text(cx, &mounted, "fix it &");
+    type_text(cx, &mounted, "fix it with &");
     assert_eq!(
         rows(cx, &mounted),
         Some((
             vec![
-                "o3".into(),
-                "GPT-5.1 Codex".into(),
-                "GPT-5.1".into(),
-                "GPT-5.1 Codex Mini".into()
+                "&o3".into(),
+                "&gpt-5.1-codex".into(),
+                "&gpt-5.1".into(),
+                "&gpt-5.1-codex-mini".into()
             ],
             0
         ))
@@ -659,31 +653,35 @@ fn ampersand_lists_the_models_most_used_first_and_return_switches_without_sendin
         );
         assert_eq!(
             window.find("composer-suggestion-preview").label(),
-            Some("Preview of o3")
+            Some("Preview of &o3")
         );
     });
-    // Typing filters, the use still ordering what matches.
+    // Typing filters, by id or name, the use still ordering what matches.
     type_text(cx, &mounted, "gpt");
     assert_eq!(
         rows(cx, &mounted).unwrap().0,
-        ["GPT-5.1 Codex", "GPT-5.1", "GPT-5.1 Codex Mini"]
+        ["&gpt-5.1-codex", "&gpt-5.1", "&gpt-5.1-codex-mini"]
     );
     press(cx, &mounted, "down");
     press(cx, &mounted, "enter");
-    // The model menu's own change, and nothing else: no message goes out.
-    assert_eq!(commanded(&mounted.2), [configure("gpt-5.1")]);
     assert_eq!(
         draft(cx, &mounted),
-        ("fix it ".into(), 7),
-        "the token left the draft"
+        ("fix it with &gpt-5.1 ".into(), 21),
+        "the token is now the model's mention, the caret after it"
     );
     assert_eq!(rows(cx, &mounted), None);
-    // Sending stays the person's own ⏎.
+    assert_eq!(
+        went_out(&mounted.2),
+        Vec::<String>::new(),
+        "no model change, no command of any kind, no message"
+    );
+    assert_eq!(chat_setup(cx, &mounted), (None, None, false));
+    // The mention is the message's own text: the person's ⏎ sends it as written.
     press(cx, &mounted, "enter");
     assert_eq!(
         sent(&mounted.2),
         [ChatCommand::Send {
-            text: "fix it".into()
+            text: "fix it with &gpt-5.1".into()
         }]
     );
     let _ = std::fs::remove_dir_all(root);
@@ -691,91 +689,82 @@ fn ampersand_lists_the_models_most_used_first_and_return_switches_without_sendin
 }
 
 #[gpui::test]
-fn choosing_the_chats_own_model_only_closes_the_list(cx: &mut TestAppContext) {
+fn the_chats_own_model_is_put_in_as_any_other_is(cx: &mut TestAppContext) {
     let root = folder();
     let mounted = mount_models(cx, &root, Some("o3"), None);
-    type_text(cx, &mounted, "&o3");
-    assert_eq!(rows(cx, &mounted), Some((vec!["o3".into()], 0)));
+    type_text(cx, &mounted, "ask &o3");
+    assert_eq!(rows(cx, &mounted), Some((vec!["&o3".into()], 0)));
     assert_eq!(details(cx, &mounted), ["Current · not used yet"]);
-    frame(cx, &mounted, |window, _| {
-        assert_eq!(
-            window.find("composer-suggestion-preview").label(),
-            Some("Preview of o3")
-        );
-    });
+    press(cx, &mounted, "backspace");
+    assert_eq!(rows(cx, &mounted).unwrap().0[0], "&o3");
     press(cx, &mounted, "enter");
-    assert!(
-        commanded(&mounted.2).is_empty(),
-        "nothing to change, nothing sent"
-    );
-    assert_eq!(draft(cx, &mounted).0, "&o3", "the draft is left as it is");
+    assert_eq!(draft(cx, &mounted), ("ask &o3 ".into(), 8));
     assert_eq!(rows(cx, &mounted), None, "the list closed");
+    assert_eq!(went_out(&mounted.2), Vec::<String>::new());
+    assert_eq!(chat_setup(cx, &mounted).0.as_deref(), Some("o3"));
+    // One edit of the box: ⌘Z gives the token back as it was typed.
+    press(cx, &mounted, "cmd-z");
+    assert_eq!(draft(cx, &mounted).0, "ask &o");
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[gpui::test]
-fn a_running_turn_or_a_refused_change_keeps_the_draft(cx: &mut TestAppContext) {
+fn mentions_go_anywhere_in_the_draft_more_than_once_whatever_the_chat_is_doing(
+    cx: &mut TestAppContext,
+) {
     let root = folder();
     let mounted = mount_models(cx, &root, None, None);
-    // While a turn runs, the model menu sends the change as it is (the provider takes it for
-    // the next turn): `&` sends the same, and the rest of the draft stays.
+    // A turn runs: writing a mention is editing the draft, which a running turn never stops.
     mounted.1.update(cx, |view, _| {
         view.model.transcript.state = crate::chat::model::ChatState::Running;
     });
-    type_text(cx, &mounted, "and then &o");
-    assert_eq!(rows(cx, &mounted).unwrap().0[0], "o3");
-    press(cx, &mounted, "tab");
-    assert_eq!(commanded(&mounted.2), [configure("o3")]);
-    assert_eq!(draft(cx, &mounted).0, "and then ", "the token left at once");
-    // The host refuses the change, as the feed hears it: the refusal shows where any refused
-    // change does, and the token goes back, so the draft is as it was.
-    refuse(cx, &mounted, configure("o3"), "muse has no session yet");
-    mounted.1.read_with(cx, |view, _| {
-        assert_eq!(
-            view.notices.local(notices::LocalKey::Link),
-            Some("Could not reach the chat: muse has no session yet")
-        );
-    });
-    assert_eq!(draft(cx, &mounted), ("and then &o".into(), 11));
+    type_text(cx, &mounted, "&o designs it, then &g");
     assert_eq!(
-        rows(cx, &mounted),
-        None,
-        "the list stays closed for the token"
+        rows(cx, &mounted).unwrap().0,
+        ["&gpt-5.1-codex", "&gpt-5.1", "&gpt-5.1-codex-mini"],
+        "a second `&` in the draft opens the list too"
     );
-    // A draft edited since the change was asked for keeps the edit.
-    press(cx, &mounted, "backspace");
-    press(cx, &mounted, "backspace");
-    type_text(cx, &mounted, "&gpt-5.1");
-    press(cx, &mounted, "down");
+    type_text(cx, &mounted, " builds it");
+    assert_eq!(rows(cx, &mounted), None);
+    // Back in the first token, before more words: its list opens, and accepting replaces only
+    // it, the space after it kept rather than doubled.
+    put_caret(cx, &mounted, "&o".len());
+    assert_eq!(rows(cx, &mounted).unwrap().0[0], "&o3");
     press(cx, &mounted, "enter");
-    assert_eq!(commanded(&mounted.2), [configure("gpt-5.1")]);
-    type_text(cx, &mounted, "go");
-    refuse(cx, &mounted, configure("gpt-5.1"), "refused");
-    assert_eq!(draft(cx, &mounted).0, "and then go");
-    // Clear the draft for what follows.
-    for _ in 0.."and then go".len() {
-        press(cx, &mounted, "backspace");
-    }
-    type_text(cx, &mounted, "and then ");
+    assert_eq!(
+        draft(cx, &mounted),
+        ("&o3 designs it, then &g builds it".into(), 4)
+    );
+    // And the second, in the middle of the message.
+    let at = "&o3 designs it, then &g".len();
+    put_caret(cx, &mounted, at);
+    press(cx, &mounted, "down");
+    press(cx, &mounted, "tab");
+    let text = "&o3 designs it, then &gpt-5.1 builds it";
+    assert_eq!(
+        draft(cx, &mounted),
+        (text.into(), "&o3 designs it, then &gpt-5.1 ".len())
+    );
+    assert_eq!(went_out(&mounted.2), Vec::<String>::new());
+    assert_eq!(
+        chat_setup(cx, &mounted),
+        (None, None, true),
+        "the chat's model and effort are as they were, its turn still running"
+    );
 
-    // Not connected yet: the change is refused as every command is then, and the token stays.
+    // Not connected yet: still only text, and nothing to say about the link.
     mounted.1.update(cx, |view, _| {
         view.feed = None;
         // As a tab whose link is not up: nothing starts another feed meanwhile.
         view.feed_started = true;
-        view.model.transcript.state = crate::chat::model::ChatState::Idle;
     });
-    type_text(cx, &mounted, "&o3");
-    assert_eq!(rows(cx, &mounted), Some((vec!["o3".into()], 0)));
+    put_caret(cx, &mounted, text.len());
+    type_text(cx, &mounted, " &o3");
     press(cx, &mounted, "enter");
+    assert_eq!(draft(cx, &mounted).0, format!("{text} &o3 "));
     mounted.1.read_with(cx, |view, _| {
-        assert_eq!(
-            view.notices.local(notices::LocalKey::Link),
-            Some("Not connected to the chat yet.")
-        );
+        assert_eq!(view.notices.local(notices::LocalKey::Link), None);
     });
-    assert_eq!(draft(cx, &mounted).0, "and then &o3");
-    assert_eq!(rows(cx, &mounted), None);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -789,10 +778,10 @@ fn the_keys_work_the_model_list_as_they_work_the_others(cx: &mut TestAppContext)
         rows(cx, &mounted),
         Some((
             vec![
-                "GPT-5.1 Codex".into(),
-                "GPT-5.1".into(),
-                "o3".into(),
-                "GPT-5.1 Codex Mini".into()
+                "&gpt-5.1-codex".into(),
+                "&gpt-5.1".into(),
+                "&o3".into(),
+                "&gpt-5.1-codex-mini".into()
             ],
             0
         ))
@@ -813,15 +802,15 @@ fn the_keys_work_the_model_list_as_they_work_the_others(cx: &mut TestAppContext)
     );
     press(cx, &mounted, "escape");
     assert_eq!(rows(cx, &mounted), None);
-    assert!(commanded(&mounted.2).is_empty());
+    assert_eq!(went_out(&mounted.2), Vec::<String>::new());
     // A closed list takes no keys: ⏎ sends what the box holds, as it would without `&`.
     type_text(cx, &mounted, "o");
     assert_eq!(rows(cx, &mounted), None, "the token ⎋ closed stays closed");
     press(cx, &mounted, "enter");
     assert_eq!(sent(&mounted.2), [ChatCommand::Send { text: "&o".into() }]);
 
-    // `&` before more words, or inside one, is only text.
-    type_text(cx, &mounted, "rock & roll and a&b");
+    // `&` inside a word is only text.
+    type_text(cx, &mounted, "rock&roll and a&b");
     assert_eq!(rows(cx, &mounted), None);
     // A chat whose driver has not listed its models offers none: ⏎ sends.
     let unlisted = mount(cx, Provider::Codex, &root, 700.);
@@ -847,7 +836,7 @@ fn the_highlighted_model_stays_as_the_use_arrives_and_the_mark_follows_the_chat(
     type_text(cx, &mounted, "&");
     press(cx, &mounted, "down");
     press(cx, &mounted, "down");
-    assert_eq!(rows(cx, &mounted).unwrap().0[2], "o3");
+    assert_eq!(rows(cx, &mounted).unwrap().0[2], "&o3");
     // The use is counted now, and the list orders by it: o3 stays the highlighted row.
     mounted.1.update(cx, |view, cx| {
         view.set_catalog_home(home.clone());
@@ -857,9 +846,9 @@ fn the_highlighted_model_stays_as_the_use_arrives_and_the_mark_follows_the_chat(
     let (shown, highlight) = rows(cx, &mounted).unwrap();
     assert_eq!(
         shown,
-        ["o3", "GPT-5.1 Codex", "GPT-5.1", "GPT-5.1 Codex Mini"]
+        ["&o3", "&gpt-5.1-codex", "&gpt-5.1", "&gpt-5.1-codex-mini"]
     );
-    assert_eq!(shown[highlight], "o3", "the highlight followed its model");
+    assert_eq!(shown[highlight], "&o3", "the highlight followed its model");
     // The chat moved to o3 meanwhile (from the model menu, say): the mark moves with it.
     mounted.1.update(cx, |view, cx| {
         let mut info = view.model.transcript.info.clone().unwrap();

@@ -245,17 +245,20 @@ fn ids(entries: &[&ModelEntry]) -> Vec<String> {
 }
 
 #[test]
-fn removing_a_model_token_matches_the_shared_vectors() {
-    let fixture = fixture();
-    let mark = fixture["caret"].as_str().unwrap();
-    for case in fixture["removals"].as_array().unwrap() {
-        let (text, at) = caret(case["text"].as_str().unwrap(), mark);
-        let found = trigger(&text, at).expect("a removal vector is in a token");
-        assert_eq!(found.sigil, Sigil::Model, "{text:?}");
-        let (out, caret_at) = remove(&text, &found);
-        let mut shown = out.clone();
-        shown.insert_str(caret_at, mark);
-        assert_eq!(shown, case["expect"].as_str().unwrap(), "{text:?}");
+fn a_model_is_put_in_as_its_mention_as_the_shared_vectors_say() {
+    for case in fixture()["model_insertions"].as_array().unwrap() {
+        let entry = ModelEntry {
+            id: case["id"].as_str().unwrap().into(),
+            name: "Name".into(),
+            description: String::new(),
+            is_default: false,
+            chats: 0,
+        };
+        assert_eq!(
+            entry.insertion(),
+            case["insert"].as_str().unwrap(),
+            "{case}"
+        );
     }
 }
 
@@ -317,7 +320,7 @@ fn model_rows_and_previews_read_as_the_shared_vectors_say() {
         let provider: Provider = serde_json::from_value(case["provider"].clone()).unwrap();
         let preview = model_preview(
             find(case["model"].as_str().unwrap()),
-            case["current"].as_str().map(find),
+            case["current"].as_bool().unwrap(),
             provider,
         );
         let expect = &case["expect"];
@@ -388,6 +391,7 @@ fn use_counts_the_persons_own_chats_by_the_model_each_is_set_to_now() {
             option("o3", false),
             option("codex-mini", false),
             option("  ", false),
+            option("two words", false),
         ],
         Provider::Codex,
         &usage,
@@ -398,7 +402,7 @@ fn use_counts_the_persons_own_chats_by_the_model_each_is_set_to_now() {
             .map(|entry| (entry.id.as_str(), entry.chats))
             .collect::<Vec<_>>(),
         // The default also counts the chat set to no model, which the default runs; a blank id
-        // is no model to offer.
+        // is no model to offer, and one with blank space in it has no one-word mention.
         [("gpt-5.1", 2), ("o3", 3), ("codex-mini", 0)]
     );
     assert_eq!(
@@ -410,14 +414,17 @@ fn use_counts_the_persons_own_chats_by_the_model_each_is_set_to_now() {
 }
 
 #[test]
-fn a_model_token_is_only_ever_the_drafts_last_word() {
-    // Blank space after it, a line break included, still leaves it the last word.
+fn a_model_mention_is_written_wherever_the_person_writes_and_more_than_once() {
+    // Before more words, between two mentions, on a later line: only a `&` inside a word is text.
     for (text, opens) in [
         ("&gpt‸", true),
-        ("&gpt‸  \n ", true),
-        ("&gpt‸ then", false),
-        ("you &‸ me", false),
+        ("&gpt‸ then", true),
+        ("you &‸ me", true),
+        ("&opus first, &gpt‸ second", true),
+        ("&op‸ first, &gpt second", true),
+        ("one\n&g‸\ntwo", true),
         ("tom&‸", false),
+        ("&opus ‸", false),
     ] {
         let (text, at) = caret(text, "‸");
         assert_eq!(
@@ -426,6 +433,15 @@ fn a_model_token_is_only_ever_the_drafts_last_word() {
             "{text:?}"
         );
     }
+    // Two mentions, one after the other: each is put in where its token is, and what follows
+    // stays as it was.
+    let draft = "&op‸ designs it, then &gp builds it";
+    let (text, at) = caret(draft, "‸");
+    let (text, _) = accept(&text, &trigger(&text, at).unwrap(), "&opus");
+    let at = text.find("&gp ").unwrap() + "&gp".len();
+    let (text, caret_at) = accept(&text, &trigger(&text, at).unwrap(), "&gpt-6.1-sol");
+    assert_eq!(text, "&opus designs it, then &gpt-6.1-sol builds it");
+    assert_eq!(&text[caret_at..], "builds it");
 }
 
 #[test]

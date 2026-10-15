@@ -8,13 +8,14 @@ import Foundation
 // - **When the list opens** (`ComposerSuggestions.trigger`): `/` as the first thing in the draft (leading blank space allowed), because a
 //   provider reads a slash command only at the start of a message; `@` at the start of the draft or after blank space. The token runs
 //   from the sigil to the next blank space, the query from after the sigil to the caret. A sigil inside a word (`a/b`, `me@host`, `a&b`, a
-//   URL's `?x=1&y=2`) opens nothing, nor does a token that is not a whole command name (`/usr/bin`). `&` opens as `@` does, and only as the
-//   draft's last word.
+//   URL's `?x=1&y=2`) opens nothing, nor does a token that is not a whole command name (`/usr/bin`). `&` opens as `@` does, wherever the
+//   person writes, so one message can name several models (`&opus design it, then &gpt-6.1-sol build it`).
 // - **`&` models** (`ComposerModelEntry`): the models the chat's provider listed, with how many of the person's own chats use each, the
-//   most used first (`ComposerSuggestions.orderModels`); the chat's own model is marked.
+//   most used first (`ComposerSuggestions.orderModels`); the chat's own model is marked. Accepting one writes a mention, `&` and the
+//   model's id (`ComposerModelEntry.insertion`): a way to tell an orchestrator which model the person would like for the work the message
+//   hands out. It is only text: it switches nothing, and the orchestrator still decides.
 // - **Accepting** (`ComposerSuggestions.accept`) replaces the token with the entry's text and a space. It never sends: that stays the
-//   person's own ⏎ or Send. A model inserts nothing: accepting one asks for the chat's model change (the model picker's own `configure`,
-//   `ComposerAcceptance.switchModel`) and the token leaves the draft once it went through; the chat's own model only closes the list.
+//   person's own ⏎ or Send.
 // - **Offsets** are UTF-16 code units, what `UITextView.selectedRange` counts, where the desktop counts bytes. Every rule works on Unicode
 //   scalars (Rust's `char`), never on Swift's grapheme clusters or its canonical string equality, so the two sides agree on every text.
 
@@ -24,7 +25,7 @@ public enum ComposerSigil: String, Sendable, Equatable, Hashable, Codable {
     case slash
     /// `@`: a file or folder of the chat's folder.
     case mention
-    /// `&`: a model of the chat's provider to switch the chat to.
+    /// `&`: a model of the chat's provider, mentioned in the message.
     case model
     public var scalar: Unicode.Scalar {
         switch self {
@@ -86,8 +87,6 @@ public enum ComposerSuggestions {
         let afterSigil = scalars.index(after: start)
         // A command name is one word: a path typed at the start of a message is just text.
         if sigil == .slash, scalars[afterSigil..<end].contains("/") { return nil }
-        // A model is picked with the draft's last word: `&` before more words is just text.
-        if sigil == .model, !scalars[end...].allSatisfy(\.properties.isWhitespace) { return nil }
         return ComposerTrigger(sigil: sigil, start: utf16.distance(from: utf16.startIndex, to: start), end: utf16.distance(from: utf16.startIndex, to: end),
                                caret: caret, query: String(scalars[afterSigil..<caretIndex]))
     }
@@ -108,15 +107,6 @@ public enum ComposerSuggestions {
         }
         out += rest
         return (out, caret)
-    }
-
-    /// `text` without the trigger's token, and the caret (a UTF-16 offset) where it was: what accepting a model leaves. The blank space
-    /// around it stays as it was. A trigger that no longer fits the text is held to it.
-    public static func remove(_ text: String, trigger: ComposerTrigger) -> (text: String, caret: Int) {
-        let count = text.utf16.count
-        let lower = min(max(trigger.start, 0), count), upper = min(max(trigger.end, lower), count)
-        let head = text[..<String.Index(utf16Offset: lower, in: text)], rest = text[String.Index(utf16Offset: upper, in: text)...]
-        return (String(head) + rest, lower)
     }
 
     // MARK: Matching
@@ -168,11 +158,6 @@ public enum ComposerSuggestions {
     }
     /// Two model ids are the same id: the same Unicode scalars (not merely canonically equal text).
     public static func sameID(_ a: String, _ b: String) -> Bool { a.unicodeScalars.elementsEqual(b.unicodeScalars) }
-    /// The draft to put back when a model change `&` asked for was refused: the draft as it was (`before`, the caret at `caret`), if
-    /// the draft is still what accepting left (`after`); nil once it was edited since, which keeps the edit.
-    public static func restoring(before: String, caret: Int, after: String, now: String) -> (text: String, caret: Int)? {
-        now.unicodeScalars.elementsEqual(after.unicodeScalars) ? (before, caret) : nil
-    }
     /// What a model's use says (`usage_label`): how many of the person's chats of `provider` are set to it.
     public static func usageLabel(chats: UInt64, provider: ChatProvider) -> String {
         switch chats {
@@ -331,17 +316,21 @@ public struct ComposerModelEntry: Sendable, Equatable, Hashable, Decodable {
         self.id = id; self.name = name; self.description = description; self.isDefault = isDefault; self.chats = chats
     }
     private enum CodingKeys: String, CodingKey { case id, name, description, isDefault = "is_default", chats }
-    /// A model needs an id that is not blank and a name; one without is left out (`Lenient`), never the reply. The rest default as the
-    /// desktop's do.
+    /// A model needs an id that is not blank and has no blank space inside (its mention must read as one word, as the desktop's
+    /// `model_entries` has it), and a name; one without is left out (`Lenient`), never the reply. The rest default as the desktop's do.
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let id = try c.decode(String.self, forKey: .id)
-        guard !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "a blank model id")
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.unicodeScalars.contains(where: \.properties.isWhitespace) else {
+            throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "a blank model id, or one of more than one word")
         }
         self.init(id: id, name: try c.decode(String.self, forKey: .name), description: c.tolerant(String.self, forKey: .description) ?? "",
                   isDefault: c.tolerant(Bool.self, forKey: .isDefault) ?? false, chats: c.tolerant(UInt64.self, forKey: .chats) ?? 0)
     }
+    /// What accepting it puts in the draft (`ModelEntry::insertion`): a mention of it, `&` and its id as the provider takes it
+    /// (`&gpt-6.1-sol`), never its display name.
+    public var insertion: String { "&" + id.trimmingCharacters(in: .whitespacesAndNewlines) }
     /// The row's second line (`model_detail`): whether the chat runs it, and how many chats use it.
     public func detail(current: Bool) -> String {
         let used = switch chats {
@@ -382,18 +371,17 @@ public struct ComposerPreview: Sendable, Equatable {
     public init(file: ComposerFileEntry) {
         self.init(title: file.insertion, kind: file.kind, body: [], inserts: file.insertion, effect: Self.fileEffect)
     }
-    /// The preview of a model offered to a chat of `provider` that runs `current` now (`model_preview`): what choosing it does, the chat's
-    /// model, and the use the list is sorted by. It inserts nothing.
-    public init(model: ComposerModelEntry, current: ComposerModelEntry?, provider: ChatProvider) {
-        let isCurrent = current.map { ComposerSuggestions.sameID($0.id, model.id) } ?? false
+    /// The preview of a model offered to a chat of `provider`, `current` if the chat runs it (`model_preview`): its mention, its name
+    /// where that is not its id, what it is, and the use the list is sorted by.
+    public init(model: ComposerModelEntry, current: Bool, provider: ChatProvider) {
         var body: [String] = []
+        let name = model.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty, !ComposerSuggestions.sameID(name, model.id.trimmingCharacters(in: .whitespacesAndNewlines)) { body.append(name) }
         let description = model.description.trimmingCharacters(in: .whitespacesAndNewlines)
         if !description.isEmpty { body.append(description) }
-        body.append(current.map { "Now: \($0.name)" } ?? "Now: not known")
         body.append(ComposerSuggestions.usageLabel(chats: model.chats, provider: provider))
-        self.init(title: model.name, kind: "\(provider.title) model" + (isCurrent ? " · current" : ""), body: body, inserts: "",
-                  effect: isCurrent ? "This chat runs it already: choosing it only closes the list."
-                      : "Switch this chat to \(model.name). The token leaves the draft; nothing is sent.")
+        self.init(title: model.insertion, kind: "\(provider.title) model" + (current ? " · current" : ""), body: body, inserts: model.insertion,
+                  effect: "Inserts \(model.insertion) in the message. It does not switch this chat; the orchestrator still decides.")
     }
 }
 
@@ -590,12 +578,12 @@ public enum ComposerSuggestion: Sendable, Equatable, Hashable, Identifiable {
         case .model(let model, _): "&" + model.id
         }
     }
-    /// The row's first line: `/compact`, `src/`, `src/main.rs`, a model's name.
+    /// The row's first line: `/compact`, `src/`, `src/main.rs`, `&gpt-6.1-sol`.
     public var title: String {
         switch self {
         case .command(let command): command.insertion
         case .file(let file): file.shownPath
-        case .model(let model, _): model.name
+        case .model(let model, _): model.insertion
         }
     }
     /// The row's second line: a command's summary, a file's kind and size, whether the chat runs a model and how much it is used.
@@ -606,28 +594,17 @@ public enum ComposerSuggestion: Sendable, Equatable, Hashable, Identifiable {
         case .model(let model, let current): model.detail(current: current)
         }
     }
-    /// What accepting it puts in the draft; nothing for a model, which is chosen rather than put in.
+    /// What accepting it puts in the draft: a model's mention as for any other row, the chat's own model's too.
     public var insertion: String {
         switch self {
         case .command(let command): command.insertion
         case .file(let file): file.insertion
-        case .model: ""
+        case .model(let model, _): model.insertion
         }
     }
 }
 
-/// What accepting the highlighted row does.
-public enum ComposerAcceptance: Sendable, Equatable {
-    /// Put this text in the composer, the caret here: a command or a file.
-    case insert(text: String, caret: Int)
-    /// Ask for the chat's model change to `model`, the model picker's own `configure`; once it went through, the draft is `text` (the
-    /// token gone) with the caret at `caret`. A refused change keeps the draft as it is.
-    case switchModel(model: String, text: String, caret: Int)
-    /// The chat's own model: only close the list.
-    case closeOnly
-}
-
-/// The `/` and `@` list of a composer, without drawing: which token opened it, what matches, which row is highlighted, and what
+/// The `/`, `@` and `&` list of a composer, without drawing: which token opened it, what matches, which row is highlighted, and what
 /// accepting puts in the draft. The composer calls `update` with every change to its text or caret; filtering is over the catalog it
 /// already has, so typing never waits for the Mac.
 ///
@@ -650,10 +627,8 @@ public struct ComposerSuggestionList: Sendable, Equatable {
     public private(set) var listingFiles = false
     /// An `@` list from a listing that stopped at a bound: the folder has more than was searched.
     public private(set) var filesTruncated = false
-    /// The chat's provider, as its catalog says (for a command's preview).
+    /// The chat's provider, as its catalog says (for a command's or a model's preview).
     public private(set) var provider: ChatProvider?
-    /// The model the chat runs, among the catalog's (for a model's preview).
-    public private(set) var currentModel: ComposerModelEntry?
     /// The token Escape closed the list for, by its sigil and where the sigil is.
     private var dismissed: Mark?
     /// The person moved the highlight for this query: a `&` list read again keeps it on their model; one never moved keeps it on the
@@ -677,7 +652,7 @@ public struct ComposerSuggestionList: Sendable, Equatable {
         switch highlightedItem {
         case .command(let command)?: provider.map { ComposerPreview(command: command, provider: $0) }
         case .file(let file)?: ComposerPreview(file: file)
-        case .model(let model, _)?: provider.map { ComposerPreview(model: model, current: currentModel, provider: $0) }
+        case .model(let model, let current)?: provider.map { ComposerPreview(model: model, current: current, provider: $0) }
         case nil: nil
         }
     }
@@ -705,7 +680,6 @@ public struct ComposerSuggestionList: Sendable, Equatable {
             provider = catalog.provider
             filesTruncated = found.sigil == .mention && catalog.filesTruncated
             let current = ComposerSuggestions.currentModel(catalog.models, chosen: chosenModel)
-            currentModel = catalog.models.first { model in current.map { ComposerSuggestions.sameID(model.id, $0) } ?? false }
             let key = Ranked(sigil: found.sigil, query: Array(found.query.unicodeScalars), catalog: .ready(catalog), chosenModel: current)
             if ranked != key {
                 items = switch found.sigil {
@@ -746,36 +720,15 @@ public struct ComposerSuggestionList: Sendable, Equatable {
         if let trigger { dismissed = Mark(sigil: trigger.sigil, start: trigger.start) }
         close()
     }
-    /// The text with the highlighted row put in for the token, and where the caret goes; nil when nothing is highlighted, or a model is
-    /// (see `acceptance`).
+    /// The text with the highlighted row put in for the token, and where the caret goes; nil when nothing is highlighted. A model goes
+    /// in as its mention; nothing else happens to the chat.
     public func accepted() -> (text: String, caret: Int)? {
-        guard case .insert(let text, let caret)? = acceptance() else { return nil }
-        return (text, caret)
-    }
-    /// What accepting the highlighted row does; nil when nothing is highlighted.
-    public func acceptance() -> ComposerAcceptance? {
         guard let trigger, let item = highlightedItem else { return nil }
-        switch item {
-        case .model(_, current: true):
-            return .closeOnly
-        case .model(let model, current: false):
-            let removed = ComposerSuggestions.remove(text, trigger: trigger)
-            return .switchModel(model: model.id, text: removed.text, caret: removed.caret)
-        case .command, .file:
-            let accepted = ComposerSuggestions.accept(text, trigger: trigger, insert: item.insertion)
-            return .insert(text: accepted.text, caret: accepted.caret)
-        }
-    }
-    /// A tap on a row, as `tap` does it: one that is not highlighted is highlighted; the highlighted one is accepted (`acceptance`).
-    public mutating func tapped(_ index: Int) -> ComposerAcceptance? {
-        guard items.indices.contains(index) else { return nil }
-        if index == highlighted { return acceptance() }
-        highlighted = index; moved = true
-        return nil
+        return ComposerSuggestions.accept(text, trigger: trigger, insert: item.insertion)
     }
 
     private mutating func close() {
-        trigger = nil; items = []; highlighted = 0; listingFiles = false; filesTruncated = false; ranked = nil; currentModel = nil; moved = false
+        trigger = nil; items = []; highlighted = 0; listingFiles = false; filesTruncated = false; ranked = nil; moved = false
     }
 }
 

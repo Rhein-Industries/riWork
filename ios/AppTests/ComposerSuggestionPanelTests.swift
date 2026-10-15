@@ -4,9 +4,9 @@ import UIKit
 import RiWorkCore
 @testable import RiWorkRemote
 
-/// The composer's `/` and `@` list in the real chat screen, with a scripted desktop behind it: the catalog is read once when a list
+/// The composer's `/`, `@` and `&` list in the real chat screen, with a scripted desktop behind it: the catalog is read once when a list
 /// opens, the list shows above the field, the keys of a hardware keyboard drive it (delivered as the `UIKeyCommand`s the composer
-/// declares, as `ChatViewTests` does), accepting puts text in and never sends, and an older desktop shows nothing.
+/// declares, as `ChatViewTests` does), accepting puts text in and never sends nor changes the chat, and an older desktop shows nothing.
 @MainActor final class ComposerSuggestionPanelTests: XCTestCase {
     private let project = ChatTransport.project
     private let chatID = "cccccccc-1111-4111-8111-111111111111"
@@ -24,7 +24,7 @@ import RiWorkCore
     private func chat() -> ChatInfo {
         ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Fix the build", createdAtUnix: 10, state: .idle)
     }
-    /// The desktop's answer for the chat: Claude's `/compact` and a small folder.
+    /// The desktop's answer for the chat: Claude's `/compact`, a small folder and Claude's models (opus the most used).
     private func reply(provider: String = "claude") throws -> JSONValue {
         try JSONDecoder().decode(JSONValue.self, from: Data("""
         {"chat_id":"\(chatID)","provider":"\(provider)","root":"/fixture",
@@ -32,7 +32,10 @@ import RiWorkCore
                       "sends":"Goes to Claude as typed. Claude compacts the chat's context.","handler":"provider"}],
          "files":{"entries":[{"path":"README.md","dir":false,"bytes":2048},{"path":"src","dir":true,"bytes":null},
                              {"path":"src/main.rs","dir":false,"bytes":900},{"path":"src/chat","dir":true,"bytes":null}],"truncated":false},
-         "file_bound":5000}
+         "file_bound":5000,
+         "models":[{"id":"default","name":"Default (recommended)","description":"","is_default":true,"chats":2},
+                   {"id":"opus","name":"Opus","description":"For complex tasks","is_default":false,"chats":9},
+                   {"id":"haiku","name":"Haiku","description":"","is_default":false,"chats":0}]}
         """.utf8))
     }
     private func descendants<T: UIView>(_ type: T.Type, in view: UIView) -> [T] {
@@ -182,6 +185,41 @@ import RiWorkCore
         await eventually("the draft follows and the list goes") { rig.model.conversation(self.chatID).draft == "README.md " && !self.listShown(rig) }
         let none = await sent(rig)
         XCTAssertTrue(none.isEmpty)
+        await finish(rig)
+    }
+
+    // MARK: Models
+
+    func testAnAmpersandPutsAModelsMentionInAndAsksTheChatForNothing() async throws {
+        let rig = try await makeRig()
+        // The chat's own model list has opus and haiku, so the model picker could switch to either: `&` must not.
+        let option = { (id: String, isDefault: Bool) in
+            ChatModelOption(id: id, name: id.capitalized, description: "", efforts: ["low", "high"], defaultEffort: "low", supportsFast: false, isDefault: isDefault)
+        }
+        await rig.transport.append(chatID, [.info(chat()), .models([option("default", true), option("opus", false), option("haiku", false)])])
+        let view = try await openChat(rig)
+        await eventually("the chat's models are in") { rig.model.conversation(self.chatID).transcript.models.count == 3 }
+        XCTAssertNotNil(rig.model.conversation(chatID).modelChoices(fallback: chat()).configuration(for: .model("opus")),
+                        "the picker would switch to opus: what follows tells a mention from a switch")
+        view.insertText("&op")
+        await eventually("the models are up") { self.listShown(rig) && rig.layout.frames["suggestion-preview"] != nil }
+        await eventually("the list's keys are claimed") { self.command(view, "\t") != nil }
+        press(view, "\r")
+        XCTAssertEqual(view.text, "&opus ", "⏎ puts the model's mention in, with a space after it")
+        // A second mention later in the same message.
+        view.returnReleased()
+        view.insertText("designs it, then &ha")
+        await eventually("a list again, for the second mention") { self.listShown(rig) && self.command(view, "\t") != nil }
+        press(view, "\t")
+        XCTAssertEqual(view.text, "&opus designs it, then &haiku ")
+        await eventually("the draft follows and the list goes") {
+            rig.model.conversation(self.chatID).draft == "&opus designs it, then &haiku " && !self.listShown(rig)
+        }
+        try await Task.sleep(for: .milliseconds(150))
+        let commands = await rig.transport.count("chat.command")
+        XCTAssertEqual(commands, 0, "no configure, no send: the chat is asked for nothing")
+        XCTAssertNil(rig.model.chats.first { $0.id == self.chatID }?.model, "the chat's model is as it was")
+        XCTAssertNil(rig.model.conversation(chatID).notice, "nothing to say about a model change")
         await finish(rig)
     }
 
