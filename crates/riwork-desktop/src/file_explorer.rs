@@ -3475,7 +3475,7 @@ impl FileExplorer {
                     .test_support()
                     .font_family(ui_text::ui_family())
                     .text_size(ui_text::text(controls::TOOLBAR_TEXT))
-                    .line_height(gpui::relative(1.618_034))
+                    .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
                     .flex()
                     .items_center()
                     .gap(ui_text::space(controls::DESKTOP_TOOLBAR_GAP))

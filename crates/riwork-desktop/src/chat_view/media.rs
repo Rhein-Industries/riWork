@@ -805,7 +805,7 @@ impl ChatView {
         };
         let size = image.size(0);
         let mut rgba = bytes.to_vec();
-        for pixel in rgba.chunks_exact_mut(4) {
+        for pixel in rgba.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
         let Some(buffer) =

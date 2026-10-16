@@ -340,10 +340,9 @@ fn patched_files(patch: &str) -> Vec<FileEdit> {
                 ("added", path)
             } else if let Some(path) = line.strip_prefix("*** Update File: ") {
                 ("edited", path)
-            } else if let Some(path) = line.strip_prefix("*** Delete File: ") {
-                ("deleted", path)
             } else {
-                return None;
+                let path = line.strip_prefix("*** Delete File: ")?;
+                ("deleted", path)
             };
             Some(FileEdit {
                 path: path.trim().to_owned(),

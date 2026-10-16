@@ -82,7 +82,7 @@ Before terminal mutation, the scheduler atomically persists the consumed readine
 
 ## Verification
 
-Use Zig 0.16 and this worktree's own Cargo target directory:
+Use Rust 1.99.1 (selected by `rust-toolchain.toml`), Zig 0.16 and this worktree's own Cargo target directory:
 
 ```sh
 PATH=/Users/dominik/.cache/uv/archive-v0/wTsWUKqQ1AgbZM4gXoYXu/ziglang:$PATH cargo build --offline

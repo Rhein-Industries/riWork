@@ -278,7 +278,7 @@ pub(crate) fn toolbar_capsule(
     let label = label.into();
     button(
         crate::behavior_controls::button_content(id, label.clone(), label)
-            .line_height(gpui::relative(1.618_034))
+            .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
             .disabled(kind == Button::Disabled)
             .flex_none()
             .flex()
@@ -298,7 +298,7 @@ pub(crate) fn toolbar_symbol_style<E: Styled + InteractiveElement + ParentElemen
     colors: Palette,
 ) -> E {
     control
-        .line_height(gpui::relative(1.618_034))
+        .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
         .flex_none()
         .size(ui_text::space(TOOLBAR_BUTTON))
         .flex()

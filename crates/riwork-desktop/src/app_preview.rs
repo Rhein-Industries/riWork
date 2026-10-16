@@ -1243,7 +1243,7 @@ fn decode_png(frame: &PreviewFrame) -> Result<Arc<RenderImage>, String> {
     if pixels.dimensions() != (frame.width, frame.height) {
         return Err("The app frame dimensions do not match its metadata.".into());
     }
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Ok(Arc::new(RenderImage::new([Frame::new(pixels)])))

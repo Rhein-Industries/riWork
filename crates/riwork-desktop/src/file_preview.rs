@@ -147,7 +147,7 @@ pub fn is_pdf(path: &Path) -> bool {
 /// Wrap RGBA pixels as a GPUI image, which expects BGRA.
 fn to_render_image(rgba: image::RgbaImage) -> Arc<RenderImage> {
     let mut rgba = rgba;
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Arc::new(RenderImage::new([Frame::new(rgba)]))

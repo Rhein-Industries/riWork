@@ -113,7 +113,7 @@ pub(super) fn button(
     }
     let ink = accent.unwrap_or(colors.text);
     behavior::button_content(id, label.clone(), label)
-        .line_height(gpui::relative(1.618_034))
+        .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
         .focus_visible(move |style| style.border_color(rgb(colors.focus)))
         .flex_none()
         .px(ui_text::space(8.0))
@@ -140,7 +140,7 @@ pub(super) fn dimmed(
         return capsule(id, label, Button::Disabled, look);
     }
     behavior::button_content(id, label.clone(), label)
-        .line_height(gpui::relative(1.618_034))
+        .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
         .disabled(true)
         .flex_none()
         .px(ui_text::space(8.0))
@@ -279,7 +279,7 @@ pub(super) fn segment(
         });
     behavior::toggle_content(id, label.clone(), pill, selected)
         .group(id)
-        .line_height(gpui::relative(1.618_034))
+        .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
         .flex_none()
         .rounded_full()
         // The margin: a hairline that shows only as the keyboard focus ring, and the rest.
@@ -416,7 +416,7 @@ pub(super) fn round_button_sized(
                 (side - px(4.0)).max(px(1.0)),
             ),
         )
-        .line_height(gpui::relative(1.618_034))
+        .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
         .disabled(kind == Button::Disabled)
         .flex_none()
         .size(side)
@@ -448,7 +448,7 @@ pub(super) const FIELD_TEXT: f32 = 12.0;
 /// The line box of an input box's text (GPUI's default line height, φ times the text size,
 /// rounded as GPUI rounds it), which the box sets explicitly.
 pub(super) fn field_line() -> Pixels {
-    px((f32::from(ui_text::text(FIELD_TEXT)) * 1.618_034).round())
+    px((f32::from(ui_text::text(FIELD_TEXT)) * std::f32::consts::GOLDEN_RATIO).round())
 }
 
 /// A button that copies something: `word` ("copy"), then "copied" once it has, in the
@@ -528,7 +528,7 @@ pub(super) fn toggle_button_with_disabled(
     let colors = look.colors;
     let toggle = behavior::toggle_content(id, label.clone(), label, pressed)
         .disabled(disabled)
-        .line_height(gpui::relative(1.618_034))
+        .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
         .flex_none()
         .text_size(ui_text::text(10.));
     if look.native {
@@ -583,7 +583,7 @@ pub(super) fn content_button(
         .gap_0()
         .p_0()
         .items_stretch()
-        .line_height(gpui::relative(1.618_034))
+        .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
         .focus_visible(move |style| style.bg(rgb(colors.divider)))
 }
 

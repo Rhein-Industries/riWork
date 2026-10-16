@@ -231,7 +231,7 @@ fn quiet_control<E: Styled + StatefulInteractiveElement + FluentBuilder>(
     };
     let hover_ink = if on.is_some() { ink } else { colors.text };
     pressable(control, look)
-        .line_height(relative(1.618_034))
+        .line_height(relative(std::f32::consts::GOLDEN_RATIO))
         .flex_none()
         .flex()
         .items_center()
@@ -303,7 +303,7 @@ fn mark_look<E: Styled + InteractiveElement + ParentElement>(
 ) -> E {
     let colors = look.colors;
     control
-        .line_height(gpui::relative(1.618_034))
+        .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
         .flex_none()
         .size(side)
         .flex()
@@ -313,7 +313,10 @@ fn mark_look<E: Styled + InteractiveElement + ParentElement>(
         .border_color(rgb(accent.unwrap_or(colors.divider)))
         .rounded(px(3.0))
         .bg(rgb(colors.panel))
-        .text_size(ui_text::text(11.0).min(((side - px(4.0)).max(px(1.0))) / 1.618_034))
+        .text_size(
+            ui_text::text(11.0)
+                .min(((side - px(4.0)).max(px(1.0))) / std::f32::consts::GOLDEN_RATIO),
+        )
         .text_color(rgb(accent.unwrap_or(colors.text)))
         .cursor_pointer()
         .hover(move |style| style.bg(rgb(colors.panel_active)))
@@ -673,7 +676,7 @@ impl ChatView {
                         "Copy provider thread ID",
                         id,
                     )
-                    .line_height(gpui::relative(1.618_034))
+                    .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
                     .flex_none()
                     .flex()
                     .items_center()
@@ -1568,7 +1571,7 @@ impl ChatView {
                     crate::behavior_controls::button_content("approval-more", if expanded { "Show less approval detail".to_owned() } else { format!("Show {hidden} more approval lines") },
                             if expanded { widgets::sentence("show less", look) } else { widgets::sentence(&format!("show {hidden} more lines"), look) })
                         .aria_expanded(expanded)
-                        .line_height(gpui::relative(1.618_034))
+                        .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
                         .cursor_pointer()
                         .text_size(ui_text::text(10.0))
                         .text_color(rgb(colors.cyan))
@@ -2801,7 +2804,7 @@ impl ChatView {
                 ),
                 look,
             )
-            .line_height(relative(1.618_034))
+            .line_height(relative(std::f32::consts::GOLDEN_RATIO))
             .flex_none()
             .size(side)
             .flex()
@@ -2958,18 +2961,15 @@ impl ChatView {
                 // The cards start where the text does.
                 .pl(px(text_lead))
                 .pr(px(text_lead))
-                .child(
-                    self.attachment_chips(
-                        look,
-                        Some(
-                            self.composer_width.get()
-                                - 2. * (layout.inset + layout.padding + text_lead),
-                        )
-                        .filter(|_| self.composer_width.get() > 0.),
-                        window,
-                        cx,
+                .child(self.attachment_chips(
+                    look,
+                    (self.composer_width.get() > 0.).then_some(
+                        self.composer_width.get()
+                            - 2. * (layout.inset + layout.padding + text_lead),
                     ),
-                )
+                    window,
+                    cx,
+                ))
                 .test_support()
         }))
         .child(content)
