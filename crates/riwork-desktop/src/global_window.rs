@@ -1223,7 +1223,7 @@ impl GlobalWindow {
                 self.notice = Some("That works on a project's chats, in its window.".into());
                 cx.notify();
             }
-            ChatViewEvent::OpenFile { .. } => {
+            ChatViewEvent::OpenFile { .. } | ChatViewEvent::OpenPreview { .. } => {
                 self.notice = Some(
                     "The global chat has no Files; open the file in its project's window.".into(),
                 );

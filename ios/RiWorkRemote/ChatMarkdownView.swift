@@ -42,8 +42,11 @@ private struct MarkdownBlockView: View {
                 .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityAddTraits(.isHeader).accessibilityHeading(level <= 1 ? .h1 : level == 2 ? .h2 : .h3)
         case .paragraph(let text):
-            Text(ChatMarkdown.inline(text)).chatProse().lineSpacing(3).foregroundStyle(muted ? style.muted : style.text).tint(style.link)
-                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(ChatMarkdown.inline(text)).chatProse().lineSpacing(3).foregroundStyle(muted ? style.muted : style.text).tint(style.link)
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                MarkdownFileReferences(source: text)
+            }
         case .code(let language, let text, _):
             CodeBlock(language: language, text: text)
         case .list(let ordered, let start, let items):
@@ -74,6 +77,18 @@ private struct MarkdownBlockView: View {
     private func marker(ordered: Bool, number: Int, item: ChatMarkdownListItem) -> ListMarker {
         if let checked = item.checked { return .check(checked) }
         return ordered ? .number(number) : .bullet
+    }
+}
+
+/// Local references stay inside the app. The core Markdown parser still permits external links only for http/https;
+/// a separate file chip opens the transcript's known reference without granting arbitrary URL schemes a handler.
+private struct MarkdownFileReferences: View {
+    @Environment(\.chatFileEntries) private var files
+    @Environment(\.chatFileIndex) private var index
+    let source: String
+    private var references: [ChatFileEntry] { index.references(in: source, files: files) }
+    var body: some View {
+        if !references.isEmpty { ChatFileStrip(files: references) }
     }
 }
 

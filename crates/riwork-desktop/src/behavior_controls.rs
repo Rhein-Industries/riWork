@@ -24,17 +24,18 @@ pub type Popup = base::Popup;
 pub fn init(cx: &mut App) {
     // `&&` tests one context. Root and its focused descendant are separate
     // contexts, so use `>` to suppress only the ancestor Base bindings.
-    // Input indentation/navigation and user/domain bindings remain intact.
+    // Inputs and the file viewer handle their own pane traversal; terminal
+    // navigation and user/domain bindings remain intact.
     cx.bind_keys([
         gpui::KeyBinding::new(
             "tab",
             gpui::Unbind("root::Tab".into()),
-            Some("Root > (Terminal || Input)"),
+            Some("Root > (Terminal || Input || FilePreview)"),
         ),
         gpui::KeyBinding::new(
             "shift-tab",
             gpui::Unbind("root::TabPrev".into()),
-            Some("Root > (Terminal || Input)"),
+            Some("Root > (Terminal || Input || FilePreview)"),
         ),
         #[cfg(target_os = "macos")]
         gpui::KeyBinding::new(

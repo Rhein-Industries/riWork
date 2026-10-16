@@ -187,8 +187,8 @@ fn file_excerpt_strips_numbering_copies_full_excerpt_and_opens_at_first_line(
     let recorded = preview_target.clone();
     let _subscription = cx.update(|cx| {
         cx.subscribe(&view, move |_, event: &ChatViewEvent, _| {
-            if let ChatViewEvent::OpenFile { target } = event {
-                *recorded.borrow_mut() = Some(target.clone());
+            if let ChatViewEvent::OpenPreview { sequence } = event {
+                *recorded.borrow_mut() = sequence.current().map(|e| e.target.clone());
             }
         })
     });

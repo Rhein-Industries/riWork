@@ -76,12 +76,16 @@ mod state;
 mod testing;
 mod toolbar;
 mod usage_chip;
+#[cfg(test)]
+mod viewer_tests;
 mod widgets;
 
 pub use display::DisplayMode;
 pub use host::HostConfig;
 pub use image_scope::ImageScope;
+pub(crate) use links::local_target as local_preview_target;
 pub use links::resolve as resolve_file;
+pub(crate) use media::load as load_preview_image;
 pub use state::{Link, Summary};
 pub(crate) use toolbar::contributor_label;
 
@@ -115,6 +119,9 @@ pub enum ChatViewEvent {
     NewChat,
     OpenFile {
         target: String,
+    },
+    OpenPreview {
+        sequence: crate::file_preview::PreviewSequence,
     },
     /// A usage-limit notice's **Show usage** was pressed.
     ShowUsage,

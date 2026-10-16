@@ -66,8 +66,9 @@ pub fn status(dictation: &Phase, mic: bool) -> Option<String> {
 
 /// The chat header's inset from the tab's sides and the gap between its controls, in design
 /// points.
-pub const BAR_INSET: f32 = 10.0;
-pub const BAR_GAP: f32 = 6.0;
+pub(crate) use crate::controls::{
+    DESKTOP_TOOLBAR_GAP as BAR_GAP, DESKTOP_TOOLBAR_INSET as BAR_INSET,
+};
 /// The message box card's inset from the pane's sides and bottom, its padding and the gap
 /// between its pieces, in design points. The bars above it (a notice, a request, a question)
 /// keep the same inset, so the bottom of the chat reads as one column of cards.

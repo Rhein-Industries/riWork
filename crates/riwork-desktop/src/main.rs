@@ -2023,6 +2023,22 @@ impl Workspace {
             }
             FileExplorerEvent::Selected => workspace.reveal_preview(false, cx),
             FileExplorerEvent::Revealed => workspace.reveal_preview(true, cx),
+            FileExplorerEvent::ClosePreview => {
+                let view = cx.weak_entity();
+                let entity_id = cx.entity_id();
+                cx.defer(move |app| {
+                    app.with_window(entity_id, |window, app| {
+                        let _ = view.update(app, |workspace, cx| {
+                            if let Some(explorer) = &workspace.file_explorer {
+                                explorer.update(cx, |explorer, cx| explorer.clear_chat_preview(cx));
+                            }
+                            if let Some((pane, tab, _)) = workspace.panel_tab(PanelKind::Preview) {
+                                workspace.remove_tab(pane, tab, window, cx);
+                            }
+                        });
+                    });
+                });
+            }
             FileExplorerEvent::NotListed(path) => workspace.open_unlisted(path.clone(), cx),
             FileExplorerEvent::RevealFailed(message) => {
                 workspace.notice = Some(message.clone());
@@ -7991,6 +8007,19 @@ impl Workspace {
             cx.notify();
             return;
         };
+        if info.orchestrator != Some(OrchestratorScope::Global) {
+            let sequence = view.read(cx).file_preview_sequence(&target);
+            let scope = view.read(cx).image_scope().clone();
+            self.selected_worktree_id = info.worktree_id.clone();
+            self.sync_file_explorer(window, cx);
+            if let Some(explorer) = &self.file_explorer {
+                explorer.update(cx, |explorer, cx| {
+                    explorer.show_chat_sequence(sequence, scope, cx)
+                });
+                self.open_preview(window, cx);
+            }
+            return;
+        }
         let project_id = project.to_owned();
         let worktree = info.worktree_id.clone();
         let work = cx
@@ -8154,6 +8183,19 @@ impl Workspace {
             }
             ChatViewEvent::OpenFile { target } => {
                 self.open_chat_file(view.clone(), target.clone(), window, cx)
+            }
+            ChatViewEvent::OpenPreview { sequence } => {
+                if let Some(info) = view.read(cx).info().cloned() {
+                    self.selected_worktree_id = info.worktree_id.clone();
+                    self.sync_file_explorer(window, cx);
+                    let scope = view.read(cx).image_scope().clone();
+                    if let Some(explorer) = &self.file_explorer {
+                        explorer.update(cx, |explorer, cx| {
+                            explorer.show_chat_sequence(sequence.clone(), scope, cx)
+                        });
+                        self.open_preview(window, cx);
+                    }
+                }
             }
             ChatViewEvent::ShowUsage => {
                 self.open_panel(PanelKind::Usage, self.active_pane, window, cx)
@@ -13227,6 +13269,29 @@ fn exit_startup(error: String) -> ! {
     std::process::exit(2);
 }
 
+/// The real application zoom keymap, shared with native preview routing tests.
+fn text_and_preview_zoom_bindings() -> [KeyBinding; 10] {
+    // Terminals and the file viewer own these gestures; only other surfaces
+    // change the global interface text size. The first binding is the menu hint.
+    let interface_text = Some("!Terminal && !FilePreview");
+    [
+        KeyBinding::new("cmd-=", BiggerText, interface_text),
+        KeyBinding::new("cmd-+", BiggerText, interface_text),
+        KeyBinding::new("cmd-shift-=", BiggerText, interface_text),
+        KeyBinding::new("cmd--", SmallerText, interface_text),
+        KeyBinding::new("cmd-0", ActualSizeText, interface_text),
+        KeyBinding::new("cmd-=", file_explorer::PreviewZoomIn, Some("FilePreview")),
+        KeyBinding::new("cmd-+", file_explorer::PreviewZoomIn, Some("FilePreview")),
+        KeyBinding::new(
+            "cmd-shift-=",
+            file_explorer::PreviewZoomIn,
+            Some("FilePreview"),
+        ),
+        KeyBinding::new("cmd--", file_explorer::PreviewZoomOut, Some("FilePreview")),
+        KeyBinding::new("cmd-0", file_explorer::PreviewZoomFit, Some("FilePreview")),
+    ]
+}
+
 fn main() {
     let args = env::args().skip(1).collect::<Vec<_>>();
     match cli::run_cli(&args) {
@@ -13353,18 +13418,7 @@ fn main() {
         cx.on_action(|_: &BiggerText, cx| ui_text::change(ui_text::SizeChange::Bigger, cx));
         cx.on_action(|_: &SmallerText, cx| ui_text::change(ui_text::SizeChange::Smaller, cx));
         cx.on_action(|_: &ActualSizeText, cx| ui_text::change(ui_text::SizeChange::Reset, cx));
-        // RiWork's text size, except inside a terminal: there GPUI finds no binding,
-        // so the key reaches Ghostty for its own font zoom (see `search_key_down`).
-        // `!Terminal` fails when any focused ancestor is gpui-libghostty's
-        // `key_context("Terminal")`. The first binding is the one the menu shows.
-        let outside_terminals = Some("!Terminal");
-        cx.bind_keys([
-            KeyBinding::new("cmd-=", BiggerText, outside_terminals),
-            KeyBinding::new("cmd-+", BiggerText, outside_terminals),
-            KeyBinding::new("cmd-shift-=", BiggerText, outside_terminals),
-            KeyBinding::new("cmd--", SmallerText, outside_terminals),
-            KeyBinding::new("cmd-0", ActualSizeText, outside_terminals),
-        ]);
+        cx.bind_keys(text_and_preview_zoom_bindings());
         // ⌘V in a terminal: RiWork pastes copied files and pictures (terminal_drop) and leaves
         // text to Ghostty, which gets the key when the action propagates.
         cx.bind_keys([KeyBinding::new(

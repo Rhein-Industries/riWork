@@ -1617,20 +1617,6 @@ impl ChatView {
             }))
             .into_any_element()
     }
-    pub(super) fn preview_image_reference(
-        &mut self,
-        image: &ChatImage,
-        key: &str,
-        _owner: Option<&str>,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.open.contains(key) {
-            self.toggle_image(key.to_owned(), image.clone(), cx);
-        }
-        self.media.viewer = Some(key.to_owned());
-        cx.notify();
-    }
-
     pub(super) fn toggle_image(&mut self, key: String, image: ChatImage, cx: &mut Context<Self>) {
         let offset = self.list.logical_scroll_top();
         self.list.pause_following_tail();
@@ -1986,8 +1972,6 @@ impl ChatView {
                     Some(look.colors.muted),
                 )
             });
-        let image = image.cloned();
-        let image_key = key.strip_prefix("artifact:").unwrap_or(&key).to_owned();
         crate::behavior_controls::button_content(
             SharedString::from(format!("chip:{key}")),
             format!("Preview {name}"),
@@ -2008,11 +1992,7 @@ impl ChatView {
         .text_color(rgb(look.colors.text))
         .on_click(cx.listener(move |v, _, _, cx| {
             cx.stop_propagation();
-            if let Some(image) = &image {
-                v.preview_image_reference(image, &image_key, Some(&owner), cx);
-            } else {
-                v.preview_reference(&target, Some(&owner), cx);
-            }
+            v.preview_reference(&target, Some(&owner), cx);
         }))
         .into_any_element()
     }
@@ -2151,13 +2131,20 @@ impl ChatView {
                     .flex_wrap()
                     .gap(ui_text::space(5.0))
                     .children(images.iter().map(|(key, image)| {
-                        let image = image.clone();
-                        let key = key.clone();
+                        let target = match &image.source {
+                            ImageSource::Local { path } => path.clone(),
+                            ImageSource::Url { url } => url.clone(),
+                            _ => format!(
+                                "image:{}:{}",
+                                item.id,
+                                key.rsplit(":image:").next().unwrap_or("0")
+                            ),
+                        };
                         let owner = item.id.clone();
                         crate::behavior_controls::button_content(
                             SharedString::from(format!("thumb:{key}")),
-                            format!("Preview {}", image_label(&image, Some(item))),
-                            self.thumbnail(&key, &image, gpui::ObjectFit::Cover, look, cx),
+                            format!("Preview {}", image_label(image, Some(item))),
+                            self.thumbnail(key, image, gpui::ObjectFit::Cover, look, cx),
                         )
                         .w(ui_text::space(if image_count == 2 { 150.0 } else { 100.0 }))
                         .aspect_square()
@@ -2168,7 +2155,7 @@ impl ChatView {
                         .overflow_hidden()
                         .on_click(cx.listener(move |v, _, _, cx| {
                             cx.stop_propagation();
-                            v.preview_image_reference(&image, &key, Some(&owner), cx);
+                            v.preview_reference(&target, Some(&owner), cx);
                         }))
                         .into_any_element()
                     })),

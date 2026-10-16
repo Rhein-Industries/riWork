@@ -601,3 +601,280 @@ private struct ChatFileFlowLayout: Layout {
         }.value
     }
 }
+
+/// Pushed in the chat's navigation stack, with the same compact toolbar surface as the chat.
+struct ChatFileViewer: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.desktopStyle) private var style
+    let files: [ChatFileEntry]
+    private let decodePreview: @MainActor (Data) async -> UIImage?
+    @State private var selectedID: String
+    @State private var image: UIImage?
+    @State private var text: String?
+    @State private var loadedBytes: Int?
+    @State private var shareURL: URL?
+    @State private var loading = true
+    @State private var zoom: CGFloat = 1
+    @State private var settledZoom: CGFloat = 1
+    @State private var fit = true
+    @State private var imageFitScale: CGFloat = 1
+    @State private var status = ""
+    @State private var openDocument: UIDocumentInteractionController?
+
+    init(files: [ChatFileEntry], initialID: String, initialLine: Int? = nil,
+         decodePreview: @escaping @MainActor (Data) async -> UIImage? = { data in
+             await Task.detached(priority: .userInitiated) { ChatFileBytes.decode(data, maxPixelSize: nil) }.value
+         }) {
+        self.decodePreview = decodePreview
+        self.files = files.map { file in
+            guard file.id == initialID, let initialLine else { return file }
+            var selected = file; selected.line = initialLine; return selected
+        }
+        _selectedID = State(initialValue: files.contains { $0.id == initialID } ? initialID : files.first?.id ?? "")
+    }
+    private var index: Int { files.firstIndex { $0.id == selectedID } ?? 0 }
+    private var file: ChatFileEntry? { files.first { $0.id == selectedID } ?? files.first }
+    private var zoomLabel: String { "\(fit ? "Fit · " : "")\(Int(((image == nil ? zoom : imageFitScale * zoom) * 100).rounded()))%" }
+
+    var body: some View {
+        Group {
+            if let file {
+                VStack(spacing: 0) {
+                    previewToolbar(file)
+                    Text(info(file)).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.top, 3).padding(.bottom, 8)
+                        .background(style.background).overlay(alignment: .bottom) { if !style.glass { DesktopRule() } }
+                        .accessibilityIdentifier("chat-file-info")
+                        .chatLayoutProbe("file-info")
+                    viewerContent(file).frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .background(Color(uiColor: .systemBackground))
+                .safeAreaInset(edge: .bottom, spacing: 0) { bottomToolbar }
+                .navigationTitle(file.displayName).navigationBarTitleDisplayMode(.inline)
+                .navigationBarBackButtonHidden()
+                .toolbar(.hidden, for: .navigationBar)
+                .task(id: file) { await load(file) }
+                .accessibilityIdentifier("chat-file-viewer")
+            } else { ContentUnavailableView("No file", systemImage: "doc") }
+        }
+        .onChange(of: files) { before, after in
+            guard !after.contains(where: { $0.id == selectedID }) else { return }
+            let previous = before.firstIndex { $0.id == selectedID } ?? 0
+            selectedID = after.isEmpty ? "" : after[min(previous, after.count - 1)].id
+        }
+    }
+
+    private func previewToolbar(_ file: ChatFileEntry) -> some View {
+        HStack(spacing: 2) {
+            Button { dismiss() } label: { Image(systemName: "chevron.left") }
+                .accessibilityLabel("Back to Chat").accessibilityIdentifier("chat-file-back")
+                .chatLayoutProbe("file-back", action: { dismiss() })
+            Image(systemName: file.isImage ? "photo" : "doc.text").foregroundStyle(style.muted).frame(width: 16)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(file.displayName).font(style.system(.footnote, weight: .semibold)).foregroundStyle(style.text)
+                if file.displayPath != file.displayName {
+                    Text(file.displayPath).font(style.system(.caption2)).foregroundStyle(style.muted)
+                }
+            }
+            .lineLimit(1).truncationMode(.middle).frame(maxWidth: .infinity, alignment: .leading)
+            if let shareURL {
+                ShareLink(item: shareURL) { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("Share file")
+                    .chatLayoutProbe("file-share")
+            } else {
+                Button {} label: { Image(systemName: "square.and.arrow.up") }.disabled(true).accessibilityLabel("Share file unavailable")
+            }
+            Menu {
+                Button("Zoom in", systemImage: "plus.magnifyingglass") { changeZoom(1.2) }
+                Button("Zoom out", systemImage: "minus.magnifyingglass") { changeZoom(1 / 1.2) }
+                Button("Fit", systemImage: "arrow.down.right.and.arrow.up.left") { resetZoom() }
+                Text("Pinch · Double tap fit/100%")
+            } label: { Image(systemName: "plus.magnifyingglass") }.accessibilityLabel("Zoom")
+                .chatLayoutProbe("file-zoom")
+        }
+        .font(style.system(.footnote)).foregroundStyle(style.text)
+        .buttonStyle(TargetButtonStyle())
+        .chatToolbarSurface()
+        .accessibilityIdentifier("chat-preview-toolbar")
+        .chatLayoutProbe("file-toolbar")
+    }
+
+    @ViewBuilder private func viewerContent(_ file: ChatFileEntry) -> some View {
+        if loading { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
+        else if let image {
+            GeometryReader { geometry in
+                ScrollView([.horizontal, .vertical]) {
+                    let scale = min(1, geometry.size.width / image.size.width, geometry.size.height / image.size.height)
+                    Image(uiImage: image).resizable().interpolation(.high)
+                        .frame(width: image.size.width * scale * zoom, height: image.size.height * scale * zoom)
+                        .frame(minWidth: geometry.size.width, minHeight: geometry.size.height)
+                        .contentShape(Rectangle())
+                        .onAppear { imageFitScale = scale }
+                        .onChange(of: geometry.size) { _, size in imageFitScale = min(1, size.width / image.size.width, size.height / image.size.height) }
+                }
+                .background(Color(uiColor: .secondarySystemBackground))
+                .simultaneousGesture(zoomGesture)
+                .simultaneousGesture(pageGesture)
+                .onTapGesture(count: 2, perform: toggleZoom)
+            }.chatLayoutProbe("file-preview-image")
+        } else if let text {
+            ChatCodeFileView(text: text, firstLine: loadedBytes == nil ? file.textStartLine : 1, highlightedLine: file.line, zoom: zoom, fit: fit)
+                .simultaneousGesture(zoomGesture).simultaneousGesture(pageGesture)
+                .highPriorityGesture(TapGesture(count: 2).onEnded(toggleZoom))
+                .chatLayoutProbe("file-preview-text")
+        } else {
+            VStack(spacing: 10) {
+                Image(systemName: file.isImage ? "photo" : "doc").font(.system(size: 32)).foregroundStyle(.tertiary)
+                Text(loadedBytes == nil ? "Not available on this device" : "Preview not available").font(.body).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle()).gesture(pageGesture)
+        }
+    }
+    private var bottomToolbar: some View {
+        HStack(spacing: 4) {
+            if files.count > 1 {
+                Button { page(-1) } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
+                    .disabled(index == 0).accessibilityLabel("Previous file")
+                    .chatLayoutProbe("file-previous", action: { page(-1) })
+            }
+            HStack(spacing: 10) {
+                if files.count > 1 { Text("\(index + 1)/\(files.count)").accessibilityLabel("File \(index + 1) of \(files.count)") }
+                Text(zoomLabel)
+            }.font(.system(size: 12)).monospacedDigit().foregroundStyle(Color(uiColor: .secondaryLabel)).frame(maxWidth: .infinity)
+            if files.count > 1 {
+                Button { page(1) } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }
+                    .disabled(index >= files.count - 1).accessibilityLabel("Next file")
+                    .chatLayoutProbe("file-next", action: { page(1) })
+            }
+            Menu {
+                if let shareURL {
+                    Button("Open in…", systemImage: "arrow.up.forward.app") { openIn(shareURL) }
+                    ShareLink(item: shareURL) { Label("Share", systemImage: "square.and.arrow.up") }
+                }
+                Button(file?.attachment == true ? "Copy filename" : "Copy path", systemImage: "doc.on.doc") {
+                    UIPasteboard.general.string = file?.displayPath
+                    status = file?.attachment == true ? "Filename copied" : "Path copied"
+                }
+                Button("Fit", systemImage: "arrow.down.right.and.arrow.up.left", action: resetZoom)
+                Button("Close preview", systemImage: "xmark") { dismiss() }
+            } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }.accessibilityLabel("More file actions")
+        }
+        .buttonStyle(.plain).foregroundStyle(Color(uiColor: .link))
+        .padding(.horizontal, 5).padding(.vertical, 3).modifier(ChatViewerGlass())
+        .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 6)
+        .overlay(alignment: .top) { if !status.isEmpty { Text(status).font(.caption2).foregroundStyle(.secondary).offset(y: -12) } }
+        .accessibilityIdentifier("chat-file-toolbar")
+    }
+    private var zoomGesture: some Gesture {
+        MagnifyGesture().onChanged { value in
+            zoom = min(10, max(0.5, settledZoom * value.magnification)); fit = false
+        }.onEnded { _ in settledZoom = zoom }
+    }
+    private var pageGesture: some Gesture {
+        DragGesture(minimumDistance: 35).onEnded { value in
+            guard fit, abs(value.translation.width) > 50, abs(value.translation.width) > abs(value.translation.height) * 1.4 else { return }
+            page(value.translation.width < 0 ? 1 : -1)
+        }
+    }
+    private func info(_ file: ChatFileEntry) -> String {
+        var parts = [file.typeName]
+        if let bytes = file.bytes ?? loadedBytes.map(UInt64.init), bytes > 0 { parts.append(ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)) }
+        if let image { parts.append("\(Int(image.size.width * image.scale)) × \(Int(image.size.height * image.scale)) px") }
+        else if let text { let count = ChatOutput.lineCount(text); parts.append("\(count) \(count == 1 ? "line" : "lines")\(file.isExcerpt && shareURL == nil ? " available" : "")") }
+        if files.count > 1 { parts.append("\(index + 1)/\(files.count)") }
+        parts.append("source: \(file.source)")
+        return parts.joined(separator: " · ")
+    }
+    private func load(_ file: ChatFileEntry) async {
+        loading = true; image = nil; text = nil; loadedBytes = nil; shareURL = nil; status = ""; resetZoom()
+        let data = await ChatFileBytes.data(for: file)
+        guard !Task.isCancelled, self.file?.id == file.id else { return }
+        loadedBytes = data?.count
+        if file.isImage, let data {
+            let decoded = await decodePreview(data)
+            guard !Task.isCancelled, self.file?.id == file.id else { return }
+            image = decoded
+        }
+        else { text = data.flatMap { String(data: $0, encoding: .utf8) } ?? file.availableText }
+        if let data {
+            let url = await Task.detached(priority: .userInitiated) { () -> URL? in
+                let folder = FileManager.default.temporaryDirectory.appendingPathComponent("ChatFileShares", isDirectory: true).appendingPathComponent(UUID().uuidString, isDirectory: true)
+                let url = folder.appendingPathComponent(file.displayName.isEmpty ? "File" : (file.displayName as NSString).lastPathComponent)
+                do {
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    try data.write(to: url, options: .atomic)
+                    return url
+                } catch { return nil }
+            }.value
+            guard !Task.isCancelled, self.file?.id == file.id else { return }
+            shareURL = url
+        }
+        loading = false
+    }
+    private func page(_ delta: Int) {
+        let next = index + delta
+        guard files.indices.contains(next) else { return }
+        selectedID = files[next].id
+    }
+    private func openIn(_ url: URL) {
+        guard let view = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
+            .flatMap(\.windows).first(where: \.isKeyWindow)?.rootViewController?.view else { return }
+        let controller = UIDocumentInteractionController(url: url)
+        openDocument = controller
+        if !controller.presentOpenInMenu(from: CGRect(x: view.bounds.midX, y: view.bounds.maxY - 44, width: 1, height: 1), in: view, animated: true) {
+            status = "No app available to open this file"
+            openDocument = nil
+        }
+    }
+    private func resetZoom() { zoom = 1; settledZoom = 1; fit = true }
+    private func changeZoom(_ factor: CGFloat) { zoom = min(10, max(0.5, zoom * factor)); settledZoom = zoom; fit = false }
+    private func toggleZoom() {
+        if fit { zoom = image == nil ? 1 : min(10, 1 / max(0.05, imageFitScale)); settledZoom = zoom; fit = false }
+        else { resetZoom() }
+    }
+}
+
+private struct ChatViewerGlass: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26, *) { content.glassEffect(.regular, in: .capsule) }
+        else { content.background(.regularMaterial, in: Capsule()).overlay(Capsule().stroke(.white.opacity(0.3), lineWidth: 0.5)) }
+    }
+}
+
+private struct ChatCodeFileView: View {
+    let text: String
+    let firstLine: Int
+    let highlightedLine: Int?
+    let zoom: CGFloat
+    let fit: Bool
+    private var lines: [Substring] { text.split(separator: "\n", omittingEmptySubsequences: false) }
+    private var highlight: Color { Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.30, green: 0.26, blue: 0.10, alpha: 1) : UIColor(red: 1, green: 0.95, blue: 0.80, alpha: 1) }) }
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(fit ? [.vertical] : [.horizontal, .vertical]) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(lines.indices, id: \.self) { index in
+                        let number = firstLine + index
+                        HStack(alignment: .top, spacing: 0) {
+                            Text("\(number)").foregroundStyle(.tertiary).monospacedDigit().frame(width: 30 * zoom, alignment: .trailing)
+                                .padding(.trailing, 6 * zoom)
+                                .accessibilityHidden(true)
+                            Text(verbatim: lines[index].isEmpty ? " " : String(lines[index])).foregroundStyle(.primary)
+                                .textSelection(.enabled).padding(.horizontal, 6 * zoom)
+                                .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: !fit, vertical: true)
+                        }
+                        .font(.system(size: 11 * zoom, design: .monospaced)).lineSpacing(3 * zoom)
+                        .frame(minHeight: 20 * zoom, alignment: .top).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(alignment: .leading) {
+                            (number == highlightedLine ? highlight : Color(uiColor: .secondarySystemBackground)).frame(width: 36 * zoom)
+                                .overlay(alignment: .trailing) { Rectangle().fill(Color(uiColor: .separator).opacity(0.4)).frame(width: 0.5) }
+                        }
+                        .background(number == highlightedLine ? highlight : .clear).id(number)
+                    }
+                }.padding(.vertical, 8)
+            }
+            .background(Color(uiColor: .systemBackground))
+            .onAppear { if let line = highlightedLine { proxy.scrollTo(max(firstLine, line - 8), anchor: .top) } }
+        }
+    }
+}

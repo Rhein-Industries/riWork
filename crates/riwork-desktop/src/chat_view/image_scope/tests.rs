@@ -591,9 +591,7 @@ mod mounted {
     }
 
     #[gpui::test]
-    fn project_image_chips_open_the_chat_viewer_without_an_extra_disclosure(
-        cx: &mut TestAppContext,
-    ) {
+    fn project_images_share_the_turn_preview_without_an_extra_disclosure(cx: &mut TestAppContext) {
         let fixture = Fixture::new();
         let (handle, view, _feed) = super::super::super::editor_tests::mount(cx);
         let info = fixture.chat(Some(ALPHA), Some("alpha-main"), &fixture.alpha, None);
@@ -643,6 +641,19 @@ mod mounted {
         })
         .unwrap();
         cx.run_until_parked();
+        let opened = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let recorded = opened.clone();
+        cx.update(|cx| {
+            cx.subscribe(
+                &view,
+                move |_, event: &super::super::super::ChatViewEvent, _| {
+                    if let super::super::super::ChatViewEvent::OpenPreview { sequence } = event {
+                        *recorded.borrow_mut() = Some(sequence.clone());
+                    }
+                },
+            )
+            .detach();
+        });
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
             assert_eq!(view.read(cx).image_slot("item-1:image:0"), Some(Ok(false)));
@@ -664,15 +675,20 @@ mod mounted {
         })
         .unwrap();
         cx.run_until_parked();
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            assert_eq!(
-                view.read(cx).media.viewer.as_deref(),
-                Some("item-1:image:0")
-            );
-            assert!(window.try_find("close-chat-image").is_some());
-        })
-        .unwrap();
+        let sequence = opened
+            .borrow()
+            .clone()
+            .expect("image opens the pane preview");
+        assert_eq!(sequence.entries.len(), 3);
+        assert_eq!(sequence.index, 0);
+        assert_eq!(
+            sequence.current().unwrap().target,
+            fixture.feature.join("my shot ü.png").to_string_lossy()
+        );
+        assert!(
+            view.read_with(cx, |view, _| view.media.viewer.is_none()),
+            "project images use the shared pane"
+        );
     }
 }
 

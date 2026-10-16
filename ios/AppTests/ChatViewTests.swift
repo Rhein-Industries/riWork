@@ -2923,6 +2923,32 @@ import RiWorkCore
         let inline = try XCTUnwrap(rig.layout.frames["inline-image-\(expanded.id)"])
         XCTAssertLessThanOrEqual(inline.height, rig.window.bounds.height * 0.5 + 1)
         XCTAssertEqual(inline.width / inline.height, 900 / 560, accuracy: 0.02, "expanded images preserve their aspect ratio")
+        try XCTUnwrap(rig.layout.actions["file-\(expanded.id)"])()
+        await eventually("image viewer and toolbar finish loading") {
+            rig.layout.frames["file-info"] != nil && rig.layout.frames["file-toolbar"] != nil
+                && ["file-back", "file-share", "file-zoom"].allSatisfy { rig.layout.frames[$0] != nil }
+        }
+        let previewToolbar = try XCTUnwrap(rig.layout.frames["file-toolbar"])
+        XCTAssertEqual(previewToolbar.height, chatToolbar.height, accuracy: 0.5, "preview and chat share the same compact toolbar height")
+        XCTAssertEqual(previewToolbar.width, chatToolbar.width, accuracy: 0.5)
+        for name in ["file-back", "file-share", "file-zoom"] {
+            let control = try XCTUnwrap(rig.layout.frames[name])
+            XCTAssertGreaterThanOrEqual(control.height, 44)
+            XCTAssertEqual(control.height, previewToolbar.height, accuracy: 0.5)
+        }
+        let infoFrame = try XCTUnwrap(rig.layout.frames["file-info"])
+        XCTAssertEqual(infoFrame.minX, 0, accuracy: 0.5, "the info line starts at the content edge with its normal text inset")
+        await eventually("preview image metadata is rendered") {
+            let text = (try? self.renderedText(rig, in: infoFrame)) ?? ""
+            return text.contains("900") && text.contains("560")
+        }
+        let info = try renderedText(rig, in: infoFrame)
+        XCTAssertTrue(info.contains("r06.jpg"), info)
+        XCTAssertTrue(info.contains("900") && info.contains("560"), info)
+        XCTAssertTrue(info.lowercased().contains("source"), info)
+        XCTAssertFalse(info.contains("toolu_"), info)
+        try XCTUnwrap(rig.layout.actions["file-back"])()
+        await eventually("back to image rows") { rig.layout.actions["activity-row-polish-expanded"] != nil }
         try XCTUnwrap(rig.layout.actions["activity-row-polish-expanded"])()
         try XCTUnwrap(rig.layout.actions["activity-row-polish-collapsed"])()
         await eventually("mixed image output remains available") { rig.layout.frames["output-block-polish-collapsed"] != nil && rig.layout.actions["copy-output-polish-collapsed"] != nil }
@@ -3017,6 +3043,10 @@ import RiWorkCore
             XCTAssertEqual(UIPasteboard.general.string, (12...33).map { "let line_\($0) = \($0)" }.joined(separator: "\n"))
             try XCTUnwrap(rig.layout.actions["output-show-all-containers-file"])()
             await eventually("file expands beyond its first fifteen lines") { rig.layout.frames["file-line-containers-file-21"] != nil }
+            try XCTUnwrap(rig.layout.actions["open-excerpt-containers-file"])()
+            await eventually("Open excerpt pushes the viewer") { rig.layout.actions["file-back"] != nil }
+            try XCTUnwrap(rig.layout.actions["file-back"])()
+            await eventually("viewer dismisses") { rig.layout.actions["activity-row-containers-file"] != nil }
         }
         try await openOnly("containers-image")
         do {
@@ -3054,6 +3084,42 @@ import RiWorkCore
             try await Task.sleep(for: .milliseconds(100))
             XCTAssertNotNil(rig.layout.frames["output-show-all-containers-shell"], "bounded Show all still offers Show less for one very long line")
         }
+        await finish(rig)
+    }
+
+    func testPastedAttachmentViewerDoesNotExposeHostStoragePaths() async throws {
+        let rig = try await makeRig(hardwareKeyboard: false, width: 402, height: 874, look: .nativeLight, pushed: true)
+        let attachmentID = "C284DFCE-59DF-4580-85A4-A1D2F0F26B1B"
+        let chatDirectory = "92A6848B-3B64-4453-92FC-C070A43F2DC9"
+        let path = "/host/chats/\(chatDirectory)/attachments/\(attachmentID)/content"
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let data = UIGraphicsImageRenderer(size: CGSize(width: 120, height: 80), format: format).pngData { context in
+            UIColor.systemTeal.setFill(); context.fill(CGRect(x: 0, y: 0, width: 120, height: 80))
+        }
+        XCTAssertTrue(rig.model.chatAttachmentImages.save(attachmentID, data: data))
+        defer { rig.model.chatAttachmentImages.remove(attachmentID) }
+        let item = ChatItem(id: "pasted-review", turnID: "pasted-turn", status: .completed, body: .userMessage("Review this pasted photo."), presentation: .init(attachments: [
+            .init(id: attachmentID, name: "pasted-photo.png", path: path, kind: .object(["kind": .string("image")]), bytes: UInt64(data.count))
+        ]))
+        await rig.transport.append(chatID, [.info(chat()), .turnStarted(turnID: "pasted-turn"), .itemCompleted(item), .turnCompleted(turnID: "pasted-turn", outcome: .completed), .state(.idle)])
+        rig.model.keyboard.setFocusSetting(.never)
+        _ = try await openChat(rig)
+        let file = try XCTUnwrap(ChatFileCatalog.entries(items: [item], images: rig.model.chatAttachmentImages).first)
+        await eventually("pasted attachment appears") { rig.layout.actions["file-\(file.id)"] != nil }
+        try XCTUnwrap(rig.layout.actions["file-\(file.id)"])()
+        await eventually("pasted attachment viewer opens") { rig.layout.frames["file-info"] != nil && rig.layout.frames["file-toolbar"] != nil }
+        try await Task.sleep(for: .milliseconds(400))
+        let toolbar = try renderedText(rig, in: XCTUnwrap(rig.layout.frames["file-toolbar"]))
+        let info = try renderedText(rig, in: XCTUnwrap(rig.layout.frames["file-info"]))
+        XCTAssertTrue(toolbar.contains("pasted-photo.png"), toolbar)
+        XCTAssertFalse(info.contains("pasted-photo.png"), "the filename already appears in the toolbar")
+        let displayed = toolbar + " " + info
+        XCTAssertFalse(displayed.contains("attachments/"), displayed)
+        XCTAssertFalse(displayed.contains(attachmentID), displayed)
+        XCTAssertFalse(displayed.contains(chatDirectory), displayed)
+        XCTAssertFalse(displayed.contains("/content"), displayed)
+        XCTAssertFalse(displayed.contains("1/1"), "a single file does not need a pager counter")
+        try XCTUnwrap(rig.layout.actions["file-back"])()
         await finish(rig)
     }
 
@@ -3912,13 +3978,20 @@ extension ChatViewTests {
         let disclosureStart = cpu()
         for index in 0..<6 { conversation.disclosure.toggle(disclosureID, currentlyOpen: index % 2 != 0); try await settle() }
         let perDisclosure = (cpu() - disclosureStart) * 1000 / 6
+        let file = try XCTUnwrap(ChatFileCatalog.entries(items: items, images: rig.model.chatAttachmentImages).last { $0.isImage })
+        let previewHost = UIHostingController(rootView: ChatFileViewer(files: [file], initialID: file.id).desktopThemed(rig.model.theme.style))
+        let previewStart = cpu()
+        rig.host.present(previewHost, animated: false)
+        for _ in 0..<5 { previewHost.view.layoutIfNeeded(); try await Task.sleep(for: .milliseconds(30)) }
+        let preview = (cpu() - previewStart) * 1000
         XCTAssertLessThan(perFrame, 80, "debug Simulator scrolling CPU budget")
         XCTAssertLessThan(perMode, 300, "debug Simulator display-mode CPU budget")
         XCTAssertLessThan(perExpand, 750, "debug Simulator dense bulk disclosure CPU budget")
         XCTAssertLessThan(Double(Perf.counts["body.ChatActivityOutput"] ?? 0) / 6, 100, "off-screen call outputs must remain virtualized")
-        print(String(format: "PERF tool-ui Simulator \(label): stream %.3f ms/event; scroll %.3f ms/frame; Normal/Verbose %.3f ms/toggle; Expand all %.3f ms/toggle; row %.3f ms/toggle", perEvent, perFrame, perMode, perExpand, perDisclosure))
+        print(String(format: "PERF tool-ui Simulator \(label): stream %.3f ms/event; scroll %.3f ms/frame; Normal/Verbose %.3f ms/toggle; Expand all %.3f ms/toggle; row %.3f ms/toggle; preview %.3f ms", perEvent, perFrame, perMode, perExpand, perDisclosure, preview))
         let shot = UIGraphicsImageRenderer(bounds: rig.window.bounds).image { _ in rig.window.drawHierarchy(in: rig.window.bounds, afterScreenUpdates: true) }
-        let attachment = XCTAttachment(image: shot); attachment.name = "tool-ui-perf"; attachment.lifetime = .keepAlways; add(attachment)
+        let attachment = XCTAttachment(image: shot); attachment.name = "tool-ui-perf-preview"; attachment.lifetime = .keepAlways; add(attachment)
+        previewHost.dismiss(animated: false)
         await finish(rig)
     }
 }

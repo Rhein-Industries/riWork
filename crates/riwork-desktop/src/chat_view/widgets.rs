@@ -155,7 +155,7 @@ pub(super) fn dimmed(
 /// The vertical padding of a `capsule` (and of the colorful themes' `button`) inside its
 /// hairline edge, which sets the height of the toolbar's controls; a `segments` track is
 /// built to the same height from it.
-pub(super) const CAPSULE_PAD_Y: f32 = 3.0;
+pub(super) use crate::controls::TOOLBAR_CAPSULE_PAD_Y as CAPSULE_PAD_Y;
 
 /// Native's push button at the chat's size, without its hover. Its children line up in a
 /// row, so a caller can add a symbol after the label.
@@ -165,20 +165,7 @@ pub(super) fn capsule(
     kind: Button,
     look: Look,
 ) -> behavior::Button {
-    let label = label.into();
-    controls::button(
-        behavior::button_content(id, label.clone(), label)
-            .line_height(gpui::relative(1.618_034))
-            .disabled(kind == Button::Disabled)
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(ui_text::space(4.0))
-            .py(ui_text::space(CAPSULE_PAD_Y))
-            .text_size(ui_text::text(10.0)),
-        kind,
-        look.colors,
-    )
+    controls::toolbar_capsule(id, label, kind, look.colors)
 }
 
 /// A segmented control's track: one continuous pill in the toolbar's grey control fill,
@@ -329,22 +316,7 @@ pub(super) fn symbol_button_sized(
     look: Look,
     side: Pixels,
 ) -> behavior::Button {
-    let name = tooltip.into();
-    bare_symbol(
-        behavior::button_content(
-            id,
-            name.clone(),
-            icons::symbol_in_box(
-                symbol,
-                controls::TOOLBAR_SYMBOL,
-                None,
-                (side - px(4.0)).max(px(1.0)),
-            ),
-        ),
-        name,
-        look,
-    )
-    .size(side)
+    controls::toolbar_symbol_button(id, symbol, tooltip, true, look.colors, side)
 }
 
 /// A `symbol_button` that stays pressed while `pressed`, such as the message box's mic.
@@ -400,20 +372,7 @@ fn bare_symbol<E: Styled + InteractiveElement + ParentElement>(
     name: SharedString,
     look: Look,
 ) -> E {
-    let colors = look.colors;
-    control
-        .line_height(gpui::relative(1.618_034))
-        .flex_none()
-        .size(ui_text::space(controls::TOOLBAR_BUTTON))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_full()
-        .text_color(rgb(colors.muted))
-        .cursor_pointer()
-        .hover(move |style| style.bg(rgb(colors.divider)).text_color(rgb(colors.text)))
-        .focus_visible(move |style| style.bg(rgb(colors.divider)).text_color(rgb(colors.focus)))
-        .child(crate::tooltip::anchor(name, crate::tooltip::Look::Control))
+    controls::toolbar_symbol_style(control, name, look.colors)
 }
 
 /// Native's round button with an SF Symbol and its name in a tooltip, as a message field's

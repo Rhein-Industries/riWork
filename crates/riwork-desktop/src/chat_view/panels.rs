@@ -965,16 +965,10 @@ impl ChatView {
         let thread = thread.map(|thread| measured(SLOT_THREAD, thread.flex_none()));
         let more = measured(SLOT_MORE, more);
 
-        let bar = div()
+        let bar = controls::desktop_toolbar(colors)
             .id("chat-toolbar")
             .test_support()
-            .debug_selector(|| "chat-header".into())
-            .w_full()
-            .px(ui_text::space(BAR_INSET))
-            .py(ui_text::space(5.0))
-            .border_b_1()
-            .border_color(rgb(colors.divider))
-            .bg(rgb(colors.panel));
+            .debug_selector(|| "chat-header".into());
         if one_line {
             bar.flex()
                 .items_center()

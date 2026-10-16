@@ -36,6 +36,7 @@ struct ChatScreen: View {
     @State private var transcriptTop: CGFloat = 0
     @State private var bottomTop: CGFloat = 0
     @State private var squeezeCheck: Task<Void, Never>?
+    @State private var viewingFile: ChatFileEntry?
 
     private var conversation: ChatConversation { model.chatConversations[chat.id] ?? model.conversation(chat.id) }
     private var state: ChatState { model.chatState(chat) }
@@ -95,6 +96,12 @@ struct ChatScreen: View {
         .background(style.background)
         .environment(\.chatFileEntries, files)
         .environment(\.chatFileIndex, fileIndex)
+        .environment(\.chatOpenFile, { file in viewingFile = file })
+        .navigationDestination(item: $viewingFile) { file in
+            ChatFileViewer(files: files.filter { $0.turnID == file.turnID }, initialID: file.id, initialLine: file.line)
+                .desktopThemed(model.theme.style)
+                .toolbar(.hidden, for: .navigationBar)
+        }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0; squeeze = 0 }
         .attachmentPicker($picking, onDone: requestFocus) { model.attach($0, to: .chat(chat.id)) }
         .task(id: chat.id) { await model.followChat(chat.id) }

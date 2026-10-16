@@ -249,6 +249,100 @@ pub const META_TEXT: f32 = 10.0;
 pub(crate) const TOOLBAR_BUTTON: f32 = 24.0;
 pub(crate) const TOOLBAR_SYMBOL: f32 = 11.0;
 
+/// Desktop chat and preview toolbars share their chrome and control geometry.
+pub(crate) const DESKTOP_TOOLBAR_INSET: f32 = 10.0;
+pub(crate) const DESKTOP_TOOLBAR_GAP: f32 = 6.0;
+pub(crate) const DESKTOP_TOOLBAR_PAD_Y: f32 = 5.0;
+pub(crate) const TOOLBAR_CAPSULE_PAD_Y: f32 = 3.0;
+pub(crate) const TOOLBAR_TEXT: f32 = 10.0;
+
+/// The desktop chat toolbar's surface, insets and bottom separator. Callers
+/// arrange their controls without inventing another kind of toolbar chrome.
+pub(crate) fn desktop_toolbar(colors: Palette) -> Div {
+    div()
+        .w_full()
+        .px(ui_text::space(DESKTOP_TOOLBAR_INSET))
+        .py(ui_text::space(DESKTOP_TOOLBAR_PAD_Y))
+        .border_b_1()
+        .border_color(rgb(colors.divider))
+        .bg(rgb(colors.panel))
+}
+
+/// The same capsule used for choices in the chat toolbar.
+pub(crate) fn toolbar_capsule(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<gpui::SharedString>,
+    kind: Button,
+    colors: Palette,
+) -> crate::behavior_controls::Button {
+    let label = label.into();
+    button(
+        crate::behavior_controls::button_content(id, label.clone(), label)
+            .line_height(gpui::relative(1.618_034))
+            .disabled(kind == Button::Disabled)
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(ui_text::space(4.0))
+            .py(ui_text::space(TOOLBAR_CAPSULE_PAD_Y))
+            .text_size(ui_text::text(TOOLBAR_TEXT)),
+        kind,
+        colors,
+    )
+}
+
+/// Shared styling for the chat toolbar's bare SF Symbol actions and toggles.
+pub(crate) fn toolbar_symbol_style<E: Styled + InteractiveElement + ParentElement>(
+    control: E,
+    name: gpui::SharedString,
+    colors: Palette,
+) -> E {
+    control
+        .line_height(gpui::relative(1.618_034))
+        .flex_none()
+        .size(ui_text::space(TOOLBAR_BUTTON))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .text_color(rgb(colors.muted))
+        .cursor_pointer()
+        .hover(move |style| style.bg(rgb(colors.divider)).text_color(rgb(colors.text)))
+        .focus_visible(move |style| style.bg(rgb(colors.divider)).text_color(rgb(colors.focus)))
+        .child(crate::tooltip::anchor(name, crate::tooltip::Look::Control))
+}
+
+/// A desktop toolbar symbol button. Base owns activation and keyboard focus.
+pub(crate) fn toolbar_symbol_button(
+    id: impl Into<gpui::ElementId>,
+    symbol: &'static str,
+    name: impl Into<gpui::SharedString>,
+    enabled: bool,
+    colors: Palette,
+    side: Pixels,
+) -> crate::behavior_controls::Button {
+    let name = name.into();
+    toolbar_symbol_style(
+        crate::behavior_controls::button_content(
+            id,
+            name.clone(),
+            crate::icons::symbol_in_box(
+                symbol,
+                TOOLBAR_SYMBOL,
+                None,
+                (side - gpui::px(4.0)).max(gpui::px(1.0)),
+            ),
+        )
+        .disabled(!enabled),
+        name,
+        colors,
+    )
+    .size(side)
+    .when(!enabled, |button| {
+        button.text_color(rgb(theme::mix(colors.muted, colors.panel, 0.45)))
+    })
+}
+
 /// A navigation panel's page: the sidebar grey, body text in the interface face.
 pub fn panel(colors: Palette) -> Div {
     div()
