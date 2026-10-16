@@ -2,7 +2,11 @@ use super::*;
 use crate::{
     activity::ActivityCounts,
     form_input::{test_turn, test_window},
-    global_overview::{Totals, Work},
+    global_overview::{
+        AppOverview, BackendsOverview, ChatHostOverview, CliState, Freshness, ProviderOverview,
+        Totals, Work, local_time,
+    },
+    sessions::HarnessKind,
     text_input::{self, InputEvent},
 };
 use gpui::{Render, TestAppContext, px, size};
@@ -194,7 +198,66 @@ fn overview(global: GlobalOrchestrator) -> Overview {
                 },
             ],
         },
+        backends: Backends::Read(backends()),
         chats_known: true,
+    }
+}
+
+/// The app current, the chat host from before the build on disk, Claude with an agent from
+/// before its update and one that cannot be told, Codex current, Muse installed and unused.
+fn backends() -> BackendsOverview {
+    BackendsOverview {
+        app: AppOverview {
+            running: 1,
+            windows: 3,
+            started_at: Some(NOW - 600),
+            build_at: Some(NOW - 7200),
+            freshness: Some(Freshness::Current),
+        },
+        chat_host: ChatHostOverview::Running {
+            pid: 4242,
+            started_at: Some(NOW - 172_800),
+            build_at: Some(NOW - 7200),
+            freshness: Freshness::Stale,
+        },
+        providers: vec![
+            ProviderOverview {
+                provider: HarnessKind::Codex,
+                cli: CliState::Found {
+                    version: Some("0.47.0".into()),
+                    replaced_at: Some(NOW - 86_400),
+                },
+                shells: 1,
+                chats: Some(0),
+                oldest_start: Some(NOW - 3600),
+                stale: 0,
+                unknown: 0,
+            },
+            ProviderOverview {
+                provider: HarnessKind::Claude,
+                cli: CliState::Found {
+                    version: Some("2.1.301".into()),
+                    replaced_at: Some(NOW - 1800),
+                },
+                shells: 2,
+                chats: Some(1),
+                oldest_start: Some(NOW - 9 * 86_400),
+                stale: 1,
+                unknown: 1,
+            },
+            ProviderOverview {
+                provider: HarnessKind::Muse,
+                cli: CliState::Found {
+                    version: None,
+                    replaced_at: Some(NOW - 600_000),
+                },
+                shells: 0,
+                chats: Some(0),
+                oldest_start: None,
+                stale: 0,
+                unknown: 0,
+            },
+        ],
     }
 }
 
@@ -1173,6 +1236,11 @@ fn at_every_size_nothing_crosses_the_edge_and_tasks_are_never_buried(cx: &mut Te
                     ] {
                         in_view(window, id);
                     }
+                    // The backends come last, below them, and stay inside the rail.
+                    for id in ["dashboard-backend-chat-host", "dashboard-backend-claude"] {
+                        let row = inside(window, id);
+                        assert!(row.left() >= rail.left() && row.right() <= rail.right() + px(0.5));
+                    }
                 }
                 Arrangement::Wide => {
                     let activity = inside(window, "dashboard-rail-activity");
@@ -1187,6 +1255,10 @@ fn at_every_size_nothing_crosses_the_edge_and_tasks_are_never_buried(cx: &mut Te
                     ] {
                         in_view(window, id);
                     }
+                    for id in ["dashboard-backend-chat-host", "dashboard-backend-claude"] {
+                        let row = inside(window, id);
+                        assert!(row.left() >= work.left() && row.right() <= work.right() + px(0.5));
+                    }
                 }
             }
         });
@@ -1199,6 +1271,8 @@ fn at_every_size_nothing_crosses_the_edge_and_tasks_are_never_buried(cx: &mut Te
                 assert!(window.try_find(last.clone()).is_none());
                 in_view(window, "dashboard-task-task-b");
                 in_view(window, "dashboard-automation-nightly");
+                inside(window, "dashboard-backend-chat-host");
+                inside(window, "dashboard-backend-claude");
                 window.click("dashboard-region-activity", app);
             });
             test_turn(cx, window, move |window, _| {
@@ -1260,5 +1334,160 @@ fn before_the_first_read_it_says_so_and_can_still_refresh(cx: &mut TestAppContex
         assert!(window.try_find("dashboard-projects").is_some());
         assert!(window.try_find("dashboard-summary").is_some());
         assert!(window.try_find("dashboard-working-0").is_some());
+    });
+}
+
+// ---- Backends -------------------------------------------------------------------------------
+
+/// The accessible text of backend row `key`, which is what the row shows.
+fn backend_label(window: &Window, key: &str) -> String {
+    window
+        .find(format!("dashboard-backend-{key}"))
+        .label()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[gpui::test]
+fn the_backends_say_what_runs_and_what_a_restart_would_apply_and_offer_no_click(
+    cx: &mut TestAppContext,
+) {
+    let (window, fixture) = mount(
+        cx,
+        overview(GlobalOrchestrator::None {
+            exited_terminal: false,
+        }),
+        Some(NOW - 1),
+        1900.0,
+        1000.0,
+    );
+    let at = |at: u64| local_time(at, NOW);
+    test_turn(cx, window, move |window, _| {
+        // In the work rail, after the automations.
+        let rail = window.find("dashboard-rail-work").bounds();
+        let section = window.find("dashboard-backends").bounds();
+        assert!(section.left() >= rail.left() && section.right() <= rail.right());
+        assert!(window.find("dashboard-automations").bounds().bottom() <= section.top());
+        assert_eq!(
+            backend_label(window, "app"),
+            format!(
+                "RiWork, current: running since {} · 3 windows · runs the {} build",
+                at(NOW - 600),
+                at(NOW - 7200)
+            )
+        );
+        assert_eq!(
+            backend_label(window, "chat-host"),
+            format!(
+                "Chat host, restart to apply: running since {} · pid 4242 · restart to apply the {} build",
+                at(NOW - 172_800),
+                at(NOW - 7200)
+            )
+        );
+        assert_eq!(
+            backend_label(window, "claude"),
+            format!(
+                "Claude, restart to apply: 2.1.301 on disk · 3 running, oldest {} · 1 predates the installed binary · 1 unknown",
+                at(NOW - 9 * 86_400)
+            )
+        );
+        assert_eq!(
+            backend_label(window, "codex"),
+            format!(
+                "Codex, current: 0.47.0 on disk · 1 running, oldest {}",
+                at(NOW - 3600)
+            )
+        );
+        assert_eq!(
+            backend_label(window, "muse"),
+            format!(
+                "Muse, not running: version unknown, installed {} · none running",
+                at(NOW - 600_000)
+            )
+        );
+        // Grok was neither found nor run: no row.
+        assert!(window.try_find("dashboard-backend-grok").is_none());
+    });
+    // The rows are facts: clicking one asks the window for nothing, a restart least of all.
+    for key in ["app", "chat-host", "claude", "muse"] {
+        test_turn(cx, window, |window, app| {
+            window.click(format!("dashboard-backend-{key}"), app)
+        });
+    }
+    test_turn(cx, window, |_, app| {
+        assert!(fixture.read(app).actions.is_empty());
+    });
+    // The search narrows them like every other list.
+    type_search(cx, window, "claude");
+    test_turn(cx, window, |window, _| {
+        assert!(window.try_find("dashboard-backend-claude").is_some());
+        assert!(window.try_find("dashboard-backend-codex").is_none());
+        assert!(window.try_find("dashboard-backend-app").is_none());
+    });
+}
+
+#[gpui::test]
+fn a_stopped_chat_host_and_providers_never_used_are_said_as_such(cx: &mut TestAppContext) {
+    let mut quiet = overview(GlobalOrchestrator::None {
+        exited_terminal: false,
+    });
+    quiet.backends = Backends::Read(BackendsOverview {
+        chat_host: ChatHostOverview::Stopped,
+        providers: Vec::new(),
+        ..backends()
+    });
+    let (window, _) = mount(cx, quiet, Some(NOW - 1), 1440.0, 2000.0);
+    test_turn(cx, window, |window, _| {
+        assert_eq!(
+            backend_label(window, "chat-host"),
+            "Chat host, not running: not running"
+        );
+        for provider in ["codex", "claude", "muse", "grok"] {
+            assert!(
+                window
+                    .try_find(format!("dashboard-backend-{provider}"))
+                    .is_none()
+            );
+        }
+        // In the one rail, last of all.
+        let rail = window.find("dashboard-rail").bounds();
+        let section = window.find("dashboard-backends").bounds();
+        assert!(section.left() >= rail.left() && section.right() <= rail.right());
+        assert!(window.find("dashboard-automations").bounds().bottom() <= section.top());
+    });
+    // Before the backends were read, no row is claimed.
+    let mut unread = overview(GlobalOrchestrator::None {
+        exited_terminal: false,
+    });
+    unread.backends = Backends::NotRead;
+    let (window, _) = mount(cx, unread, Some(NOW - 1), 1440.0, 2000.0);
+    test_turn(cx, window, |window, _| {
+        assert!(window.try_find("dashboard-backends").is_some());
+        assert!(window.try_find("dashboard-backend-app").is_none());
+        assert!(window.try_find("dashboard-backend-chat-host").is_none());
+    });
+}
+
+#[gpui::test]
+fn a_compact_dashboard_shows_the_backends_with_the_work(cx: &mut TestAppContext) {
+    let (window, _) = mount(
+        cx,
+        overview(GlobalOrchestrator::None {
+            exited_terminal: false,
+        }),
+        Some(NOW - 1),
+        640.0,
+        2000.0,
+    );
+    test_turn(cx, window, |window, app| {
+        assert!(window.try_find("dashboard-backends").is_none());
+        window.click("dashboard-region-work", app)
+    });
+    test_turn(cx, window, |window, _| {
+        let section = window.find("dashboard-backends").bounds();
+        assert!(section.left() >= px(0.0) && section.right() <= px(640.5));
+        assert!(window.find("dashboard-automations").bounds().bottom() <= section.top());
+        let row = window.find("dashboard-backend-chat-host").bounds();
+        assert!(row.right() <= px(640.5), "{row:?}");
     });
 }

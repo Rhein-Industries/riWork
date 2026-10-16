@@ -2141,6 +2141,82 @@ pub(crate) fn live_gui_pids(directory: &Path) -> Vec<u32> {
     pids.dedup();
     pids
 }
+/// Where this process's GUIs register: `RIWORK_RUNTIME_DIR`, else the default. Unlike
+/// `RuntimeManager::open_default` it creates nothing.
+pub(crate) fn registry_directory() -> Option<PathBuf> {
+    match env::var_os("RIWORK_RUNTIME_DIR") {
+        Some(directory) => Some(PathBuf::from(directory)),
+        None => default_directory().ok(),
+    }
+}
+
+/// A running GUI, as its registration and the system say.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RegisteredGui {
+    pub pid: u32,
+    /// When it started (Unix seconds), where the platform says.
+    pub started_unix: Option<u64>,
+    /// The executable it runs, as the system names it now, else as it registered it.
+    pub executable: Option<PathBuf>,
+    pub state_home: PathBuf,
+    pub windows: usize,
+}
+
+/// The running GUIs registered in `directory`. Like `live_gui_pids` it only reads: no lock,
+/// and nothing is created, pruned or removed. A registration whose process is gone, or is
+/// another process that took its pid, is left out.
+pub(crate) fn registered_guis(directory: &Path) -> Vec<RegisteredGui> {
+    #[derive(Deserialize)]
+    struct Registration {
+        pid: u32,
+        uid: u32,
+        started_token: String,
+        #[serde(default)]
+        executable: Option<PathBuf>,
+        state_home: PathBuf,
+        #[serde(default)]
+        windows: Vec<serde::de::IgnoredAny>,
+    }
+    let Ok(entries) = fs::read_dir(directory.join("instances")) else {
+        return vec![];
+    };
+    let mut guis: Vec<RegisteredGui> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|path| read_json::<Registration>(&path).ok())
+        .filter(|registration| registration.uid == current_uid())
+        .filter_map(|registration| {
+            let identity = process_identity(registration.pid).ok()??;
+            if identity.uid != registration.uid
+                || identity.started_token != registration.started_token
+            {
+                return None;
+            }
+            Some(RegisteredGui {
+                pid: registration.pid,
+                started_unix: identity.started_unix().map(|at| at as u64),
+                executable: identity.executable.or(registration.executable),
+                state_home: registration.state_home,
+                windows: registration.windows.len(),
+            })
+        })
+        .collect();
+    guis.sort_by_key(|gui| gui.pid);
+    guis.dedup_by_key(|gui| gui.pid);
+    guis
+}
+
+/// When process `pid` started (Unix seconds, where the platform says) and the executable
+/// it runs, read from the system without starting anything; `None` when it is not running.
+pub(crate) fn process_facts(pid: u32) -> Option<(Option<u64>, Option<PathBuf>)> {
+    let identity = process_identity(pid).ok()??;
+    Some((
+        identity.started_unix().map(|at| at as u64),
+        identity.executable,
+    ))
+}
+
 fn process_matches(instance: &RuntimeInstance) -> Result<bool, String> {
     process_alive(instance.pid, instance.uid, &instance.started_token)
 }

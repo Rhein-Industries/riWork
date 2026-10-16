@@ -311,9 +311,13 @@ final class NewTerminalTests: XCTestCase {
         f.handle(.down); XCTAssertEqual(f.kind, .codex)
         f.handle(.down); XCTAssertEqual(f.kind, .claude)
         f.handle(.down); XCTAssertEqual(f.kind, .grok)
+        f.handle(.down); XCTAssertEqual(f.kind, .muse)
         f.handle(.down); XCTAssertEqual(f.kind, .shell, "wraps")
-        f.handle(.up); XCTAssertEqual(f.kind, .grok, "wraps backwards")
+        f.handle(.up); XCTAssertEqual(f.kind, .muse, "wraps backwards")
+        f.handle(.up); XCTAssertEqual(f.kind, .grok)
         f.handle(.up); XCTAssertEqual(f.kind, .claude)
+        f.handle(.up); XCTAssertEqual(f.kind, .codex)
+        f.handle(.up); XCTAssertEqual(f.kind, .shell)
     }
     func testTabAndArrowsMoveTheFocusRingAndSkipAHiddenToggle() throws {
         var f = try form()

@@ -6,14 +6,18 @@
 //! that is not known is left out, never written as zero: without the chats there is no
 //! `live_chats`, and a time nothing recorded is absent. Optional keys are omitted, never
 //! `null`. Text is cut to a fixed number of Unicode scalar values, never inside one.
-//! No project root path and no model are part of it.
+//! No project root path, no model and no executable path are part of it.
+//!
+//! `backends` was added to version 1 additively: a reader from before it ignores the key, and
+//! a reader of it takes a reply without it as not read.
 
 use serde_json::{Map, Value};
 
 use super::{
-    ActivityCounts, AgentActivity, Attention, AttentionKind, AutomationSummary, Automations,
-    ChatState, GlobalOrchestrator, Outcome, Overview, ProjectOrchestrator, ProjectOverview,
-    Provider, SessionSummary, Target, TaskCounts, TaskOverview, Work,
+    ActivityCounts, AgentActivity, AppOverview, Attention, AttentionKind, AutomationSummary,
+    Automations, Backends, ChatHostOverview, ChatState, CliState, GlobalOrchestrator, Outcome,
+    Overview, ProjectOrchestrator, ProjectOverview, Provider, ProviderOverview, SessionSummary,
+    Target, TaskCounts, TaskOverview, Work,
 };
 use crate::chat::model::OrchestratorScope;
 
@@ -26,6 +30,8 @@ pub const WIRE_MAX_FINISHED: usize = 20;
 pub const WIRE_MAX_PROJECTS: usize = 150;
 pub const WIRE_MAX_TASKS_IN_PROGRESS: usize = 50;
 pub const WIRE_MAX_AUTOMATIONS: usize = 30;
+/// `backends.providers`: every provider RiWork knows fits.
+pub const WIRE_MAX_PROVIDERS: usize = 8;
 /// Titles, names, branches and folders: at most this many Unicode scalar values.
 pub const WIRE_MAX_NAME_CHARS: usize = 120;
 /// Failure and automation messages: at most this many Unicode scalar values.
@@ -58,6 +64,7 @@ pub fn wire(overview: &Overview, generated_at: u64) -> Value {
         task,
     );
     root.set("automations", automations(&overview.automations))
+        .set("backends", backends(&overview.backends))
         .done()
 }
 
@@ -395,6 +402,85 @@ fn automations(automations: &Automations) -> Value {
                 }),
             )
             .list("items", items, WIRE_MAX_AUTOMATIONS, automation)
+            .done(),
+    }
+}
+
+fn app(app: &AppOverview) -> Value {
+    Object::new()
+        .set("running", app.running)
+        .set("windows", app.windows)
+        .maybe("started_at", app.started_at)
+        .maybe("build_at", app.build_at)
+        .maybe(
+            "freshness",
+            app.freshness.map(|freshness| freshness.as_str()),
+        )
+        .done()
+}
+
+fn chat_host(host: &ChatHostOverview) -> Value {
+    match host {
+        ChatHostOverview::Stopped => Object::new().set("state", "stopped").done(),
+        ChatHostOverview::Unreadable(text) => Object::new()
+            .set("state", "unreadable")
+            .set("message", message(text))
+            .done(),
+        ChatHostOverview::Running {
+            pid,
+            started_at,
+            build_at,
+            freshness,
+        } => Object::new()
+            .set("state", "running")
+            .set("pid", *pid)
+            .maybe("started_at", *started_at)
+            .maybe("build_at", *build_at)
+            .set("freshness", freshness.as_str())
+            .done(),
+    }
+}
+
+fn provider_row(row: &ProviderOverview) -> Value {
+    let cli = match &row.cli {
+        CliState::Found { .. } => "found",
+        CliState::Missing => "missing",
+        CliState::Unknown => "unknown",
+    };
+    let (version, replaced_at) = match &row.cli {
+        CliState::Found {
+            version,
+            replaced_at,
+        } => (version.as_deref().map(name), *replaced_at),
+        CliState::Missing | CliState::Unknown => (None, None),
+    };
+    Object::new()
+        .set("provider", row.provider.program())
+        .set("cli", cli)
+        .maybe("version", version)
+        .maybe("replaced_at", replaced_at)
+        .set("shells", row.shells)
+        .maybe("chats", row.chats)
+        .maybe("running", row.running())
+        .maybe("oldest_start", row.oldest_start)
+        .set("stale", row.stale)
+        .set("unknown", row.unknown)
+        .done()
+}
+
+fn backends(backends: &Backends) -> Value {
+    match backends {
+        Backends::NotRead => Object::new().set("state", "not_read").done(),
+        Backends::Read(read) => Object::new()
+            .set("state", "read")
+            .set("app", app(&read.app))
+            .set("chat_host", chat_host(&read.chat_host))
+            .list(
+                "providers",
+                &read.providers,
+                WIRE_MAX_PROVIDERS,
+                provider_row,
+            )
             .done(),
     }
 }

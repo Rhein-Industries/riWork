@@ -144,6 +144,7 @@ struct Fixture {
     chats: Option<Vec<ChatInfo>>,
     chat_activity: BTreeMap<String, u64>,
     schedules: Option<Result<Vec<Schedule>, String>>,
+    backends: Option<BackendSample>,
 }
 
 impl Fixture {
@@ -156,6 +157,7 @@ impl Fixture {
             chats: self.chats.as_deref(),
             chat_activity: &self.chat_activity,
             schedules: self.schedules.as_ref(),
+            backends: self.backends.as_ref(),
             now: NOW,
         })
     }
@@ -229,6 +231,7 @@ fn busy() -> Fixture {
         ]),
         chat_activity: BTreeMap::new(),
         schedules: None,
+        backends: None,
     }
 }
 
@@ -771,6 +774,7 @@ fn an_empty_mac_has_an_empty_honest_overview() {
         chats: Some(Vec::new()),
         chat_activity: BTreeMap::new(),
         schedules: Some(Ok(Vec::new())),
+        backends: None,
     };
     let overview = fixture.overview();
     assert_eq!(overview.totals, Totals::default());
@@ -989,7 +993,7 @@ fn golden_busy() -> Fixture {
             "Nightly tests",
         ),
     ]));
-    renamed(
+    let mut fixture = renamed(
         fixture,
         &[
             ("s-alpha-codex", S_ALPHA_CODEX),
@@ -1012,7 +1016,47 @@ fn golden_busy() -> Fixture {
             ("t4", "7a5c0000-0000-4000-8000-000000000004"),
             ("t5", "7a5c0000-0000-4000-8000-000000000005"),
         ],
-    )
+    );
+    fixture.backends = Some(golden_backends());
+    fixture
+}
+
+/// The app and the chat host started before their build was replaced; Codex with an agent
+/// from before its update, one after and one whose start is not known, Claude likewise,
+/// Muse current with no version on disk, and Grok not installed.
+fn golden_backends() -> BackendSample {
+    let process = |pid: u32, started_at: u64, replaced_at: u64| Process {
+        pid,
+        started_at: Some(started_at),
+        binary: Some(Binary {
+            version: None,
+            replaced_at: Some(replaced_at),
+        }),
+    };
+    let found = |version: Option<&str>, replaced_at: u64| {
+        CliSample::Found(Binary {
+            version: version.map(str::to_owned),
+            replaced_at: Some(replaced_at),
+        })
+    };
+    BackendSample {
+        guis: vec![Gui {
+            process: process(501, NOW - 7200, NOW - 3600),
+            windows: 2,
+        }],
+        chat_host: HostSample::Running(process(4242, NOW - 172_800, NOW - 3600)),
+        providers: vec![
+            (HarnessKind::Codex, found(Some("0.47.0"), NOW - 86_400)),
+            (HarnessKind::Claude, found(Some("2.1.301"), NOW - 1800)),
+            (HarnessKind::Muse, found(None, NOW - 600_000)),
+            (HarnessKind::Grok, CliSample::Missing),
+        ],
+        shell_starts: BTreeMap::from([
+            (S_ALPHA_CODEX.to_owned(), NOW - 90_000),
+            (S_BETA_CODEX.to_owned(), NOW - 3000),
+            (S_ALPHA_CLAUDE.to_owned(), NOW - 3600),
+        ]),
+    }
 }
 
 fn empty_mac() -> Fixture {
@@ -1024,6 +1068,16 @@ fn empty_mac() -> Fixture {
         chats: Some(Vec::new()),
         chat_activity: BTreeMap::new(),
         schedules: Some(Ok(Vec::new())),
+        // Nothing installed, nothing running, no GUI of this home: read, and empty.
+        backends: Some(BackendSample {
+            guis: Vec::new(),
+            chat_host: HostSample::Stopped,
+            providers: PROVIDERS
+                .iter()
+                .map(|provider| (*provider, CliSample::Missing))
+                .collect(),
+            shell_starts: BTreeMap::new(),
+        }),
     }
 }
 
@@ -1040,6 +1094,9 @@ fn shared_cases() -> serde_json::Value {
     global_terminal.schedules = Some(Err(
         "Invalid schedule store: expected value at line 1 column 1".into(),
     ));
+    if let Some(backends) = global_terminal.backends.as_mut() {
+        backends.chat_host = HostSample::Unreadable("run/chat.lock: Permission denied".into());
+    }
     // A global terminal that ended and no chat in its place, before the automations were read.
     let mut global_exited = empty_mac();
     global_exited.state = state();
@@ -1047,6 +1104,7 @@ fn shared_cases() -> serde_json::Value {
         .shells
         .push(shell(S_GLOBAL, None, "orchestrator", None, false));
     global_exited.schedules = None;
+    global_exited.backends = None;
     json!({
         "busy": wire(&golden_busy().overview(), NOW),
         "chats_unknown": wire(&chats_unknown.overview(), NOW),
@@ -1185,6 +1243,55 @@ fn the_shared_fixture_has_what_the_phone_tells_apart() {
     assert_eq!(
         cases["global_exited"]["global"],
         json!({"kind": "none", "exited_terminal": true})
+    );
+
+    // Backends: the app and the host predate their build; each provider's agents by
+    // freshness, the providers that are neither installed nor running left out.
+    let backends = &busy["backends"];
+    assert_eq!(backends["state"], "read");
+    assert_eq!(
+        backends["app"],
+        json!({"running": 1, "windows": 2, "started_at": NOW - 7200,
+               "build_at": NOW - 3600, "freshness": "stale"})
+    );
+    assert_eq!(
+        backends["chat_host"],
+        json!({"state": "running", "pid": 4242, "started_at": NOW - 172_800,
+               "build_at": NOW - 3600, "freshness": "stale"})
+    );
+    assert_eq!(
+        backends["providers"],
+        json!([
+            {"provider": "codex", "cli": "found", "version": "0.47.0",
+             "replaced_at": NOW - 86_400, "shells": 3, "chats": 1, "running": 4,
+             "oldest_start": NOW - 90_000, "stale": 1, "unknown": 2},
+            {"provider": "claude", "cli": "found", "version": "2.1.301",
+             "replaced_at": NOW - 1800, "shells": 1, "chats": 2, "running": 3,
+             "oldest_start": NOW - 3600, "stale": 1, "unknown": 2},
+            {"provider": "muse", "cli": "found", "replaced_at": NOW - 600_000,
+             "shells": 0, "chats": 1, "running": 1, "stale": 0, "unknown": 0},
+        ])
+    );
+    assert_eq!(backends["providers_total"], 3);
+    // Before the chats are read, no chat figure is claimed.
+    for row in cases["chats_unknown"]["backends"]["providers"]
+        .as_array()
+        .unwrap()
+    {
+        assert!(row.get("chats").is_none() && row.get("running").is_none());
+    }
+    assert_eq!(
+        cases["global_terminal"]["backends"]["chat_host"],
+        json!({"state": "unreadable", "message": "run/chat.lock: Permission denied"})
+    );
+    assert_eq!(
+        cases["empty"]["backends"],
+        json!({"state": "read", "app": {"running": 0, "windows": 0},
+               "chat_host": {"state": "stopped"}, "providers": [], "providers_total": 0})
+    );
+    assert_eq!(
+        cases["global_exited"]["backends"],
+        json!({"state": "not_read"})
     );
 }
 

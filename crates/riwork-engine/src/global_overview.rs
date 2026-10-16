@@ -4,9 +4,11 @@
 //! worktrees and tasks, the sessions tmux has, the agent activity the window samples, the
 //! chats the chat host (or, with no host running, the saved chats) knows, and the
 //! automations' ledger. Nothing is estimated, and arranging reads no file and starts no
-//! process: the caller samples, `build` only arranges. The one reader here, `read_extras`
-//! (the automations and the chat logs' times), is shared by the desktop windows and
-//! `riwork dashboard`, so both sample alike. Looking never starts an agent or a chat host.
+//! process: the caller samples, `build` only arranges. The readers here, `read_extras`
+//! (the automations and the chat logs' times) and `read_backends` (the app, the chat host
+//! and the providers' CLIs on disk, `backends`), are shared by the desktop windows and
+//! `riwork dashboard`, so both sample alike. Looking never starts an agent, a provider CLI
+//! or a chat host.
 //!
 //! `wire` is the dashboard as the phone reads it (`dashboard.get`).
 
@@ -25,11 +27,17 @@ use crate::{
     store::{State, TaskStatus},
 };
 
+mod backends;
 mod wire;
+pub use backends::{
+    AppOverview, BackendSample, Backends, BackendsOverview, Binary, ChatHostOverview, CliSample,
+    CliState, Freshness, Gui, HostSample, Line, PROVIDERS, Process, ProviderOverview, Start, Tone,
+    freshness, harness_name, lines as backend_lines, local_time, read_backends,
+};
 pub use wire::{
     WIRE_MAX_ATTENTION, WIRE_MAX_AUTOMATIONS, WIRE_MAX_FINISHED, WIRE_MAX_MESSAGE_CHARS,
-    WIRE_MAX_NAME_CHARS, WIRE_MAX_PROJECTS, WIRE_MAX_TASKS_IN_PROGRESS, WIRE_MAX_WORKING,
-    WIRE_VERSION, wire,
+    WIRE_MAX_NAME_CHARS, WIRE_MAX_PROJECTS, WIRE_MAX_PROVIDERS, WIRE_MAX_TASKS_IN_PROGRESS,
+    WIRE_MAX_WORKING, WIRE_VERSION, wire,
 };
 
 /// An agent that finished its turn this recently is listed under recent work.
@@ -55,6 +63,8 @@ pub struct Inputs<'a> {
     pub chat_activity: &'a BTreeMap<String, u64>,
     /// The automations, once read; `Err` says why they could not be.
     pub schedules: Option<&'a Result<Vec<Schedule>, String>>,
+    /// The app, the chat host and the providers' CLIs, once read (`read_backends`).
+    pub backends: Option<&'a BackendSample>,
     pub now: u64,
 }
 
@@ -290,6 +300,8 @@ pub struct Overview {
     pub tasks_in_progress: Vec<TaskOverview>,
     pub global: GlobalOrchestrator,
     pub automations: Automations,
+    /// The processes behind the work and whether they run what is on disk.
+    pub backends: Backends,
     /// Whether the chats were read; until then chat figures are missing, not zero.
     pub chats_known: bool,
 }
@@ -847,6 +859,10 @@ pub fn build(inputs: &Inputs) -> Overview {
         tasks_in_progress,
         global: global_orchestrator(inputs.shells, inputs.activity, inputs.chats),
         automations,
+        backends: match inputs.backends {
+            None => Backends::NotRead,
+            Some(sample) => Backends::Read(backends::arrange(sample, inputs.shells, inputs.chats)),
+        },
         chats_known: inputs.chats.is_some(),
     }
 }

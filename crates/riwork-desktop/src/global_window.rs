@@ -179,6 +179,13 @@ impl DashboardReads {
         self.chat_activity = written;
         changed
     }
+
+    /// Take a finished read of the backends; whether it changed anything drawn.
+    pub(crate) fn take_backends(&mut self, backends: global_overview::BackendSample) -> bool {
+        let changed = self.backends.as_ref() != Some(&backends);
+        self.backends = Some(backends);
+        changed
+    }
 }
 
 /// The chats whose log times are read, and the reading itself (the automations and those
@@ -418,10 +425,12 @@ impl GlobalStartup {
     }
 }
 
-/// What one read of the sessions and chats found: the sessions, their folders, the chats.
+/// What one read of the sessions and chats found: the sessions, their folders, their panes'
+/// processes, the chats.
 type Sample = (
     Vec<ShellSession>,
     Option<BTreeMap<String, PathBuf>>,
+    Option<BTreeMap<String, u32>>,
     Option<Vec<ChatInfo>>,
 );
 
@@ -462,6 +471,8 @@ pub(crate) struct GlobalWindow {
     pub(crate) state: State,
     shells: Vec<ShellSession>,
     shell_cwds: BTreeMap<String, PathBuf>,
+    /// Each live shell's pane process, for when its agent started (`read_backends`).
+    shell_processes: BTreeMap<String, u32>,
     agent_activity: BTreeMap<String, AgentState>,
     activity_tracker: Option<ActivityTracker>,
     /// Every chat, as the chat host or the saved chats say; `None` until first read.
@@ -553,6 +564,7 @@ impl GlobalWindow {
             state,
             shells: Vec::new(),
             shell_cwds: BTreeMap::new(),
+            shell_processes: BTreeMap::new(),
             agent_activity: BTreeMap::new(),
             activity_tracker: Some(activity_tracker),
             chats: None,
@@ -811,7 +823,7 @@ impl GlobalWindow {
             };
             let chats = orchestrators::running_chats(&host)
                 .or_else(|| chat::log::read_infos_checked(home).ok());
-            Ok::<_, String>((sample.shells, sample.directories, chats))
+            Ok::<_, String>((sample.shells, sample.directories, sample.processes, chats))
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = work.await;
@@ -836,7 +848,12 @@ impl GlobalWindow {
             return;
         }
         match result {
-            Ok((shells, cwds, chats)) => self.take_sample(shells, cwds, chats, window, cx),
+            Ok((shells, cwds, processes, chats)) => {
+                if let Some(processes) = processes {
+                    self.shell_processes = processes;
+                }
+                self.take_sample(shells, cwds, chats, window, cx)
+            }
             Err(error) => {
                 if self.sample_error.as_ref() != Some(&error) {
                     self.sample_error = Some(error);
@@ -908,7 +925,8 @@ impl GlobalWindow {
         .detach();
     }
 
-    /// Read the automations and the times of failed or waiting chats, off the window.
+    /// Read the automations, the times of failed or waiting chats, and the app, the chat host
+    /// and the providers' CLIs (the Backends section), off the window. Nothing is started.
     fn refresh_dashboard(&mut self, force: bool, cx: &mut Context<Self>) {
         if !self.services || !self.dashboard.due(force) {
             return;
@@ -916,13 +934,18 @@ impl GlobalWindow {
         self.dashboard.pending = true;
         let home = self.sessions.state_home().to_path_buf();
         let chats = timed_chats(self.chats.as_deref());
-        let work = cx
-            .background_executor()
-            .spawn(async move { read_extras(&home, chats) });
+        let shells = self.shells.clone();
+        let processes = self.shell_processes.clone();
+        let work = cx.background_executor().spawn(async move {
+            let (schedules, written) = read_extras(&home, chats);
+            let backends = global_overview::read_backends(&home, &shells, &processes);
+            (schedules, written, backends)
+        });
         cx.spawn(async move |this, cx| {
-            let (schedules, written) = work.await;
+            let (schedules, written, backends) = work.await;
             let _ = this.update(cx, |global, cx| {
-                if global.dashboard.finish(schedules, written) {
+                let changed = global.dashboard.finish(schedules, written);
+                if changed | global.dashboard.take_backends(backends) {
                     cx.notify();
                 }
             });
@@ -939,6 +962,7 @@ impl GlobalWindow {
             chats: self.chats.as_deref(),
             chat_activity: &self.dashboard.chat_activity,
             schedules: self.dashboard.schedules.as_ref(),
+            backends: self.dashboard.backends.as_ref(),
             now: activity::unix_now(),
         })
     }

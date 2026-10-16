@@ -730,7 +730,12 @@ fn a_read_that_began_before_an_orchestrator_was_made_does_not_take_it_away(
             );
             assert_eq!(shown_chat(global).map(|(id, _)| id), Some(chat.id.clone()));
             // ...which ends with the chats as they were before it: it is let go.
-            global.sampled(begun, Ok((Vec::new(), None, Some(Vec::new()))), window, cx);
+            global.sampled(
+                begun,
+                Ok((Vec::new(), None, None, Some(Vec::new()))),
+                window,
+                cx,
+            );
             assert_eq!(shown_chat(global).map(|(id, _)| id), Some(chat.id.clone()));
         });
     });
@@ -741,12 +746,17 @@ fn a_read_that_began_before_an_orchestrator_was_made_does_not_take_it_away(
         global.update(cx, |global, cx| {
             global.sampled(
                 now,
-                Ok((Vec::new(), None, Some(vec![chat.clone()]))),
+                Ok((Vec::new(), None, None, Some(vec![chat.clone()]))),
                 window,
                 cx,
             );
             assert_eq!(shown_chat(global).map(|(id, _)| id), Some(chat.id.clone()));
-            global.sampled(now, Ok((Vec::new(), None, Some(Vec::new()))), window, cx);
+            global.sampled(
+                now,
+                Ok((Vec::new(), None, None, Some(Vec::new()))),
+                window,
+                cx,
+            );
             assert!(shown_chat(global).is_none(), "a chat deleted since is gone");
         });
     });

@@ -24,6 +24,7 @@ impl Workspace {
             chats: self.shared_chats.as_deref(),
             chat_activity: &self.dashboard.chat_activity,
             schedules: self.dashboard.schedules.as_ref(),
+            backends: self.dashboard.backends.as_ref(),
             now: activity::unix_now(),
         })
     }

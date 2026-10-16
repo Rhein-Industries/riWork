@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::{delegation::Delegation, session_keys::tmux_argument};
 
+mod orphans;
 mod sample;
 pub use sample::SessionSample;
 mod watch;
@@ -4113,6 +4114,18 @@ impl PaneTable {
             .collect()
     }
 
+    /// The process of each live shell's owned pane (window 0, pane 0): what a harness shell
+    /// `exec`s its agent into, so its start time is the agent's.
+    fn owned_processes(&self, live: &HashSet<&str>) -> BTreeMap<String, u32> {
+        self.rows
+            .iter()
+            .filter(|row| {
+                live.contains(row.session.as_str()) && row.window == "0" && row.pane == "0"
+            })
+            .filter_map(|row| Some((row.session.clone(), row.pid?)))
+            .collect()
+    }
+
     /// The process each live shell's pane runs. A session with several panes
     /// reports the last one listed.
     fn roots(&self, live: &HashSet<&str>) -> BTreeMap<String, u32> {
@@ -4501,13 +4514,15 @@ fn path_with_harness_shims(
     env::join_paths(directories).map_err(|error| format!("construct RiWork harness PATH: {error}"))
 }
 
+/// The login shell's directories, once this process asked for them.
+static LOGIN_SHELL_DIRECTORIES: OnceLock<Vec<PathBuf>> = OnceLock::new();
+
 /// A GUI launched from the Dock or Finder has launchd's minimal PATH, so CLIs
 /// that nvm, pnpm, bun, pyenv and similar tools install are invisible to it.
 /// The directories of the user's login shell are resolved once per process, and
 /// only when something needs them.
 fn login_shell_dirs() -> &'static [PathBuf] {
-    static DIRECTORIES: OnceLock<Vec<PathBuf>> = OnceLock::new();
-    DIRECTORIES.get_or_init(|| {
+    LOGIN_SHELL_DIRECTORIES.get_or_init(|| {
         // Unit tests must not depend on the developer's shell configuration.
         if cfg!(test) {
             return Vec::new();
@@ -4710,6 +4725,33 @@ pub(crate) fn find_grok_program() -> Option<PathBuf> {
         HarnessKind::Grok,
         Path::new("/nonexistent/riwork-harness-bin"),
     )
+}
+
+/// Where a launch looked for a CLI, as far as a look that starts nothing can tell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProgramLookup {
+    Found(PathBuf),
+    /// Not in any directory a launch searches.
+    Missing,
+    /// Not in this process's PATH or the usual install directories, and the login shell's
+    /// directories, where a launch would look last, were never read by this process.
+    Unknown,
+}
+
+/// The CLI a launch of `harness` would run, found without starting anything: the
+/// directories `find_harness_program` searches, the login shell's only when this process
+/// has already read them (the GUI does at startup; asking the shell starts a process).
+/// RiWork's own launcher shims are skipped by their marker wherever they live.
+pub fn installed_harness_program(harness: HarnessKind) -> ProgramLookup {
+    let shims = Path::new("/nonexistent/riwork-harness-bin");
+    if let Some(program) = find_harness_program_in(harness, shims, executable_dirs()) {
+        return ProgramLookup::Found(program);
+    }
+    match LOGIN_SHELL_DIRECTORIES.get() {
+        Some(login) => find_harness_program_in(harness, shims, login.iter().cloned())
+            .map_or(ProgramLookup::Missing, ProgramLookup::Found),
+        None => ProgramLookup::Unknown,
+    }
 }
 
 fn find_harness_program_via(

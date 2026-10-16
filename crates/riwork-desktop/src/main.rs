@@ -1308,13 +1308,16 @@ struct CodexUsageEntry {
 impl Global for AccountUsage {}
 
 /// What the global dashboard reads that a window does not sample anyway: the automations'
-/// ledger, and when failed chats last wrote (so old failures are not called new). Read off the
-/// window while the global window's dashboard or a project window's global menu is on screen;
-/// reading starts no agent and no chat host.
+/// ledger, when failed chats last wrote (so old failures are not called new), and, for the
+/// global window's Backends section, the app, the chat host and the providers' CLIs. Read off
+/// the window while the global window's dashboard or a project window's global menu is on
+/// screen; reading starts no agent, provider CLI or chat host.
 #[derive(Default)]
 struct DashboardReads {
     schedules: Option<Result<Vec<schedules::Schedule>, String>>,
     chat_activity: BTreeMap<String, u64>,
+    /// Only the global window reads them; a project window's menu does not show them.
+    backends: Option<global_overview::BackendSample>,
     pending: bool,
     read_at: Option<Instant>,
 }
@@ -5768,7 +5771,14 @@ impl Workspace {
             }))
             .filter(|(key, _)| shown.contains(key))
             .collect::<HashMap<_, _>>();
+        let shown_shells = shown
+            .iter()
+            .filter_map(|key| key.strip_prefix("shell:").map(str::to_owned))
+            .collect::<HashSet<_>>();
         let work = cx.background_executor().spawn(async move {
+            // Sessions of deleted worktrees end after a grace period, keeping
+            // shells in tabs or attached terminals; at most one look a minute.
+            sessions.reap_orphaned_worktree_sessions(&shown_shells);
             // One tmux and `ps` sample serves every window for about a tick.
             let sample = if polled {
                 sessions.sample(want_metrics)?
@@ -5777,6 +5787,7 @@ impl Workspace {
                     shells: previous_shells,
                     metrics: None,
                     directories: None,
+                    processes: None,
                 }
             };
             let outputs = if polled && capture_output {

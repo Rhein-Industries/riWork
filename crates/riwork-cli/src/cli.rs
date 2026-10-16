@@ -1094,10 +1094,12 @@ fn dashboard_command(args: Vec<String>, json: bool) -> Result<(), String> {
 }
 
 /// What the desktop's dashboard is drawn from, read once: the store, the shells and their
-/// directories, each agent's state read cold (`activity::states_once`), the chats, and the
-/// automations and the log times of failed and waiting chats (`global_overview::read_extras`).
+/// directories, each agent's state read cold (`activity::states_once`), the chats, the
+/// automations and the log times of failed and waiting chats (`global_overview::read_extras`),
+/// and the app, the chat host and the providers' CLIs (`global_overview::read_backends`, which
+/// runs no provider CLI and never connects to the chat host).
 fn dashboard_overview() -> Result<(crate::global_overview::Overview, u64), String> {
-    use crate::global_overview::{Inputs, build, read_extras, timed_chats};
+    use crate::global_overview::{Inputs, build, read_backends, read_extras, timed_chats};
     let state = Store::open_default()?.snapshot()?;
     let sessions = SessionManager::open_default()?;
     let sample = sessions.sample(false)?;
@@ -1115,6 +1117,11 @@ fn dashboard_overview() -> Result<(crate::global_overview::Overview, u64), Strin
     let chats = crate::orchestrators::running_chats(&host)
         .or_else(|| crate::chat::log::read_infos_checked(home).ok());
     let (schedules, chat_activity) = read_extras(home, timed_chats(chats.as_deref()));
+    let backends = read_backends(
+        home,
+        &sample.shells,
+        &sample.processes.clone().unwrap_or_default(),
+    );
     let cwds = sample.directories.unwrap_or_default();
     let overview = build(&Inputs {
         state: &state,
@@ -1124,6 +1131,7 @@ fn dashboard_overview() -> Result<(crate::global_overview::Overview, u64), Strin
         chats: chats.as_deref(),
         chat_activity: &chat_activity,
         schedules: Some(&schedules),
+        backends: Some(&backends),
         now,
     });
     Ok((overview, now))
@@ -1260,6 +1268,12 @@ fn dashboard_summary(overview: &crate::global_overview::Overview, now: u64) -> S
         }
     };
     let _ = writeln!(text, "Automations: {automations}");
+    if let crate::global_overview::Backends::Read(backends) = &overview.backends {
+        let _ = writeln!(text, "Backends:");
+        for line in crate::global_overview::backend_lines(backends, now) {
+            let _ = writeln!(text, "  {}  {}", line.title, line.detail);
+        }
+    }
     text
 }
 
