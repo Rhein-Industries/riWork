@@ -10,7 +10,7 @@
 use super::*;
 
 /// The top-level keys of a reply. Anything else the CLI writes is left out.
-pub const DASHBOARD_KEYS: [&str; 16] = [
+pub const DASHBOARD_KEYS: [&str; 17] = [
     "v",
     "generated_at",
     "chats_known",
@@ -27,16 +27,18 @@ pub const DASHBOARD_KEYS: [&str; 16] = [
     "tasks_in_progress",
     "tasks_in_progress_total",
     "automations",
+    "backends",
 ];
 /// Each list of a reply and the most rows the phone is sent of it, the CLI's own limits
 /// (`riwork_engine::global_overview::WIRE_MAX_*`). A CLI that wrote more has the tail cut;
-/// `<list>_total` still says how many there are.
-pub const DASHBOARD_LISTS: [(&str, usize); 5] = [
+/// `<list>_total` still says how many there are. A dotted name addresses a nested list.
+pub const DASHBOARD_LISTS: [(&str, usize); 6] = [
     ("attention", 40),
     ("working", 40),
     ("finished", 20),
     ("projects", 150),
     ("tasks_in_progress", 50),
+    ("backends.providers", 8),
 ];
 /// The most `automations.items` the phone is sent.
 pub const DASHBOARD_AUTOMATIONS_MAX: usize = 30;
@@ -65,7 +67,11 @@ fn reply(cli: Value) -> std::result::Result<Value, Fault> {
     }
     reply.retain(|key, _| DASHBOARD_KEYS.contains(&key.as_str()));
     for (list, cap) in DASHBOARD_LISTS {
-        if let Some(value) = reply.get_mut(list) {
+        let value = match list.split_once('.') {
+            Some((object, field)) => reply.get_mut(object).and_then(|value| value.get_mut(field)),
+            None => reply.get_mut(list),
+        };
+        if let Some(value) = value {
             rows(value, cap, list)?;
         }
     }

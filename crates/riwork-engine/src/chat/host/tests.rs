@@ -3823,24 +3823,18 @@ fn provider_observations_supersede_older_acknowledgements_and_reach_existing_inf
             }
         );
         let shape = serde_json::to_value(&live).unwrap();
-        assert_eq!(
-            shape
-                .as_object()
-                .unwrap()
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>(),
-            ["chat_id", "event", "seq"]
-        );
-        assert_eq!(
-            shape["event"]
-                .as_object()
-                .unwrap()
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>(),
-            ["event", "info"]
-        );
+        // Workspace dependencies can enable serde_json's preserve_order feature.
+        // The envelope's exact fields matter; JSON object key order does not.
+        let mut keys = shape.as_object().unwrap().keys().collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(keys, ["chat_id", "event", "seq"]);
+        let mut event_keys = shape["event"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>();
+        event_keys.sort_unstable();
+        assert_eq!(event_keys, ["event", "info"]);
         assert_eq!(shape["event"]["event"], "info");
         let disk = fs::read_to_string(host.home.join("chats").join(&chat.id).join("events.jsonl"))
             .unwrap();
