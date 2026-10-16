@@ -2887,7 +2887,10 @@ impl Session {
         };
         // Our own submission, at every revision: what the user sent, never
         // the model input Muse echoes.
-        let mut presentation = Presentation::default();
+        let mut presentation = Presentation {
+            subagent: super::subagents::muse(item, status),
+            ..Default::default()
+        };
         if matches!(body, ItemBody::UserMessage { .. })
             && let Some(shown) = item["commandId"].as_str().and_then(|command| {
                 self.shown

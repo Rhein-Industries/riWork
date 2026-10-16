@@ -116,6 +116,39 @@ fn reported(home: &Path, id: &str, provider: Provider) -> Option<Vec<ModelOption
     latest
 }
 
+/// The models chat `info`'s provider offers it, as its `&` list shows them: the newest list its
+/// own driver reported, as its model menu shows it, else what a new chat of its project would
+/// be offered (`saved`, as `riwork chat models` reads it). Saved metadata only: no host, no
+/// provider.
+pub fn chat_models(home: &Path, info: &ChatInfo) -> Vec<ModelOption> {
+    let models = reported(home, &info.id, info.provider)
+        .unwrap_or_else(|| saved(home, info.project_id.as_deref(), info.provider).supported);
+    models
+        .into_iter()
+        .filter(|model| valid_model(&model.id))
+        .collect()
+}
+
+/// What each provider offers a chat of `project`, as `saved` reads it (what `riwork chat models`
+/// lists), in `suggest::PROVIDERS` order: the lists `&` offers mentions of. `infos` are the
+/// chats' info as `log::read_infos` read it. A provider that cannot be offered (a Codex account
+/// that cannot be used) lists nothing. Saved metadata only.
+pub fn mention_lists(
+    home: &Path,
+    project: Option<&str>,
+    infos: &[ChatInfo],
+) -> Vec<(Provider, Vec<ModelOption>)> {
+    super::suggest::PROVIDERS
+        .into_iter()
+        .map(|provider| {
+            (
+                provider,
+                saved_among(home, infos, project, provider).supported,
+            )
+        })
+        .collect()
+}
+
 /// A model id a chat may be set to: one line of at most 100 characters.
 pub fn valid_model(id: &str) -> bool {
     !id.trim().is_empty() && id.chars().count() <= 100 && !id.chars().any(char::is_control)
@@ -125,6 +158,16 @@ pub fn valid_model(id: &str) -> bool {
 /// a chat that runs under the account a new chat there would get, and the other ids such chats
 /// were set to.
 pub fn saved(home: &Path, project: Option<&str>, provider: Provider) -> Catalog {
+    saved_among(home, &log::read_infos(home), project, provider)
+}
+
+/// `saved`, from the chats' info `infos` as `log::read_infos` read it.
+fn saved_among(
+    home: &Path,
+    infos: &[ChatInfo],
+    project: Option<&str>,
+    provider: Provider,
+) -> Catalog {
     let binding = match provider {
         Provider::Codex => match sessions::selected_codex_binding(home, project) {
             Ok(binding) => Some(binding),
@@ -145,7 +188,6 @@ pub fn saved(home: &Path, project: Option<&str>, provider: Provider) -> Catalog 
         ..Default::default()
     };
     let mut found_list = false;
-    let infos = log::read_infos(home);
     for info in infos
         .iter()
         .rev()

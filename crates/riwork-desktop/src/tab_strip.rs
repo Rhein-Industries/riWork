@@ -420,6 +420,7 @@ impl Workspace {
         }
         self.panel_menu = None;
         self.layout_menu_open = false;
+        self.account_menu_open = false;
         self.active_pane = pane;
         self.strip_menu = Some(menu);
         self.strip_menu_selection = self.selection();

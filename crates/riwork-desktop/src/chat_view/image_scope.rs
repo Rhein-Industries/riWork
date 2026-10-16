@@ -1,7 +1,9 @@
 //! Where a chat's image cards may read local images from.
 //!
 //! An image card reads a file read-only, after a click, through the same no-follow
-//! regular-file walk Files uses (`file_preview::open_regular_in`). Its folders are not only
+//! regular-file walk Files uses (`file_preview::open_regular_in`). The thumbnail of an image
+//! the user sent is read the same way without a click, and only from the chat's own snapshot
+//! folder (`snapshot`). Its folders are not only
 //! the chat's own worktree: an agent often shows an image another worktree of its project
 //! made, and the global orchestrator one from any project. They come from what the store
 //! registers, checked against the chat's own identity, never from the chat's working
@@ -38,6 +40,9 @@ pub struct ImageScope {
     /// The chat's own Files root, where Open in Files preview can reveal a file. Unchanged
     /// from before: the chat's worktree, when its project is the window's.
     files_root: Option<PathBuf>,
+    /// The chat's own attachment snapshots (`RIWORK_HOME/chats/ID/attachments`), once its
+    /// identity checks out.
+    snapshots: Option<PathBuf>,
 }
 
 /// A reference the scope allows: the registered folder that holds it, and the file.
@@ -128,9 +133,10 @@ impl ImageScope {
         }
         // What the user sent this chat: its own snapshots, under its own id, and only when the
         // id is a canonical UUID (`chat_dir` refuses any other id as a path component).
-        if let Some(chat) = crate::chat::log::chat_dir(home, &info.id) {
-            roots.push(chat.join("attachments"));
-        }
+        let snapshots = crate::chat::log::chat_dir(home, &info.id)
+            .map(|chat| chat.join("attachments"))
+            .filter(|folder| folder.is_absolute());
+        roots.extend(snapshots.clone());
         roots.retain(|root| root.is_absolute());
         roots.sort();
         roots.dedup();
@@ -138,7 +144,17 @@ impl ImageScope {
             cwd: Some(info.cwd.clone()),
             roots,
             files_root,
+            snapshots,
         }
+    }
+
+    /// The folder where the host keeps snapshot `id` the user sent this chat: in the chat's
+    /// own snapshot folder, for a canonical UUID only. Nothing before the chat's identity
+    /// checks out.
+    pub fn snapshot(&self, id: &str) -> Option<PathBuf> {
+        valid_uuid(id)
+            .then(|| self.snapshots.as_ref().map(|folder| folder.join(id)))
+            .flatten()
     }
 
     /// The registered folders.

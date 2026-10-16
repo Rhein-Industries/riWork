@@ -623,6 +623,72 @@ fn command(host: &TestHost, id: &str, json_text: &str) -> Result<String, String>
 }
 
 #[test]
+fn contributor_command_resumes_muse_on_the_same_session_and_surfaces_refusals() {
+    use crate::chat::model::ContributorMode::{Off, On};
+    let host = TestHost::new();
+    let chat = host.create(Provider::Muse);
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    assert_eq!(host.info(&chat.id).reported_contributor_mode(), Some(Off));
+    let on = r#"{"command":"configure","contributor_mode":"on"}"#;
+    let off = r#"{"command":"configure","contributor_mode":"off"}"#;
+    let session = host.info(&chat.id).provider_thread_id.unwrap();
+    for (text, mode) in [(on, On), (off, Off)] {
+        let reply: Value = serde_json::from_str(&command(&host, &chat.id, text).unwrap()).unwrap();
+        assert_eq!(reply, json!({"id": chat.id, "status": "ok"}));
+        let info = host.wait_for_info(&chat.id, |i| i.state == ChatState::Idle);
+        assert_eq!(info.reported_contributor_mode(), Some(mode));
+        assert_eq!(info.provider_thread_id.as_deref(), Some(session.as_str()));
+        let starts = host.fake();
+        let starts = starts.starts.lock().unwrap();
+        let config = starts.last().unwrap();
+        assert_eq!(config.resume.as_deref(), Some(session.as_str()));
+        assert_eq!(config.contributor_mode, mode);
+    }
+    // A different setting beside a changed mode is still refused by the engine.
+    let mixed = r#"{"command":"configure","contributor_mode":"on","effort":"low"}"#;
+    assert!(
+        command(&host, &chat.id, mixed)
+            .unwrap_err()
+            .contains("on its own")
+    );
+    assert_eq!(host.fake().start_count(), 3);
+    command(&host, &chat.id, r#"{"command":"send","text":"hang"}"#).unwrap();
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Running);
+    let busy = command(&host, &chat.id, on).unwrap_err();
+    assert!(
+        busy.contains("Wait for the turn to finish, or interrupt it"),
+        "{busy}"
+    );
+    assert_eq!(host.info(&chat.id).reported_contributor_mode(), Some(Off));
+    assert_eq!(host.fake().start_count(), 3);
+    // This fake's interrupt does not emit completion events; close and resume its turn.
+    command(&host, &chat.id, r#"{"command":"stop"}"#).unwrap();
+    command(
+        &host,
+        &chat.id,
+        r#"{"command":"send","text":"ready again"}"#,
+    )
+    .unwrap();
+    host.wait_for_state(&chat.id, |s| *s == ChatState::Idle);
+    *host.fake().fail_start.lock().unwrap() = Some("test resume refused".into());
+    let failed = command(&host, &chat.id, on).unwrap_err();
+    assert!(failed.contains("test resume refused"), "{failed}");
+    assert!(failed.contains("keeps contributor mode off"), "{failed}");
+    assert_eq!(host.info(&chat.id).reported_contributor_mode(), Some(Off));
+    // The info a relaunched phone reads remains the rolled-back value.
+    let listed = run_json(&host.home, &["list"]);
+    assert_eq!(listed[0]["contributor_opt_out"], true);
+    assert!(listed[0].get("contributor_mode").is_none());
+    let other = host.create_in("other-provider", Provider::Claude);
+    host.wait_for_state(&other.id, |s| *s == ChatState::Idle);
+    assert!(
+        command(&host, &other.id, on)
+            .unwrap_err()
+            .contains("Only Muse")
+    );
+}
+
+#[test]
 fn every_command_reaches_the_driver_in_either_argument_form() {
     let host = TestHost::new();
     let (chat, _) = idle_chat(&host);
@@ -820,6 +886,8 @@ fn a_command_that_is_not_strictly_a_command_is_refused_before_a_host_is_asked() 
         // Billing is chosen in the Mac's window, never by a command.
         r#"{"command":"configure","claude_billing":"api_key"}"#,
         r#"{"command":"configure","claude_billing":"subscription"}"#,
+        r#"{"command":"configure","contributor_mode":"on","claude_billing":"api_key"}"#,
+        r#"{"command":"configure","contributor_mode":"on","trust_workspace":true}"#,
         r#"{"command":"configure","claude_billing":"free"}"#,
         r#"{"command":"switch","provider":"claude","claude_billing":"api_key"}"#,
         r#"{"command":"approve","request_id":"r","decision":"yes"}"#,
@@ -1375,4 +1443,238 @@ fn models_lists_what_saved_chats_of_a_provider_reported_without_a_host() {
             .unwrap_err()
             .contains("Usage")
     );
+}
+
+#[test]
+fn suggestions_read_a_saved_chats_commands_and_folder_without_a_host() {
+    let home =
+        std::env::temp_dir().join(format!("riwork-cli-suggestions-{}", uuid::Uuid::new_v4()));
+    let folder = home.join("work");
+    std::fs::create_dir_all(folder.join("src")).unwrap();
+    std::fs::write(folder.join("README.md"), "hi").unwrap();
+    std::fs::write(folder.join("src/main.rs"), "fn main() {}\n").unwrap();
+    let run = |words: &[&str], json: bool| {
+        chat_client_command(
+            &home,
+            words.iter().map(|word| (*word).to_owned()).collect(),
+            json,
+            &|_| panic!("suggestions must never start the host"),
+        )
+    };
+    let save = |provider: &str| {
+        let id = uuid::Uuid::new_v4().to_string();
+        let info: ChatInfo = serde_json::from_value(json!({
+            "id": id, "provider": provider, "cwd": folder, "title": "Saved",
+            "created_at_unix": 1, "state": {"state": "stopped"}
+        }))
+        .unwrap();
+        crate::chat::log::ChatLog::create(&crate::chat::log::chat_dir(&home, &id).unwrap(), &info)
+            .unwrap();
+        id
+    };
+
+    let unknown = uuid::Uuid::new_v4().to_string();
+    assert_eq!(
+        run(&["suggestions", &unknown], true).unwrap_err(),
+        format!("Unknown chat {unknown}")
+    );
+    assert!(run(&["suggestions"], true).unwrap_err().contains("Usage"));
+
+    let claude = save("claude");
+    let reply: Value =
+        serde_json::from_str(&run(&["suggestions", &claude], true).unwrap()).unwrap();
+    // A unique prefix of eight characters or more names the chat, as for every chat command.
+    assert_eq!(
+        serde_json::from_str::<Value>(&run(&["suggestions", &claude[..8]], true).unwrap()).unwrap(),
+        reply
+    );
+    assert!(
+        run(&["suggestions", &claude[..7]], true)
+            .unwrap_err()
+            .contains("at least eight characters")
+    );
+    assert_eq!(
+        reply,
+        json!({
+            "chat_id": claude,
+            "provider": "claude",
+            "root": folder.display().to_string(),
+            "commands": serde_json::to_value(crate::chat::suggest::commands(Provider::Claude)).unwrap(),
+            "files": {"entries": [
+                {"path": "README.md", "dir": false, "bytes": 2},
+                {"path": "src", "dir": true, "bytes": null},
+                {"path": "src/main.rs", "dir": false, "bytes": 13}
+            ], "truncated": false},
+            "file_bound": 5000,
+            // No chat of any provider has listed its models: no `&` model is made up.
+            "models": [],
+            "mention_models": []
+        })
+    );
+    assert_eq!(reply["commands"][0]["name"], "compact");
+    assert_eq!(
+        run(&["suggestions", &claude], false).unwrap(),
+        "/compact\tSummarize the conversation so far to free up context\n/memo\tShow this project's memo\nREADME.md\nsrc/\nsrc/main.rs\n"
+    );
+    // A Codex chat offers only RiWork's /memo, and the same folder.
+    let codex = save("codex");
+    let reply: Value = serde_json::from_str(&run(&["suggestions", &codex], true).unwrap()).unwrap();
+    assert_eq!(reply["provider"], "codex");
+    assert_eq!(
+        reply["commands"],
+        serde_json::to_value(crate::chat::suggest::commands(Provider::Codex)).unwrap()
+    );
+    assert_eq!(reply["commands"][0]["name"], "memo");
+    assert_eq!(reply["files"]["entries"].as_array().unwrap().len(), 3);
+    assert!(!home.join("run").exists(), "no host was started");
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn suggestions_offer_the_chats_models_with_how_much_each_is_used() {
+    let home =
+        std::env::temp_dir().join(format!("riwork-cli-suggestions-{}", uuid::Uuid::new_v4()));
+    let folder = home.join("work");
+    std::fs::create_dir_all(&folder).unwrap();
+    // A saved chat, as the host leaves it: set to `model`, written in or not, a worker's or not.
+    let save = |provider: &str, model: Option<&str>, used: bool, worker: bool| {
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut info: ChatInfo = serde_json::from_value(json!({
+            "id": id, "provider": provider, "cwd": folder, "title": "Saved",
+            "created_at_unix": 1, "state": {"state": "stopped"}
+        }))
+        .unwrap();
+        info.model = model.map(str::to_owned);
+        info.first_user_message = used.then(|| "hello".to_owned());
+        info.parent_id = worker.then(|| "parent".to_owned());
+        crate::chat::log::ChatLog::create(&crate::chat::log::chat_dir(&home, &id).unwrap(), &info)
+            .unwrap();
+        id
+    };
+    // A driver listed its models in chat `id`, in its order.
+    let list = |id: &str, models: Value| {
+        let line = serde_json::to_vec(&Envelope {
+            chat_id: id.to_owned(),
+            seq: 2,
+            event: ChatEvent::Models {
+                models: serde_json::from_value(models).unwrap(),
+            },
+        })
+        .unwrap();
+        let mut events = std::fs::OpenOptions::new()
+            .append(true)
+            .open(
+                crate::chat::log::chat_dir(&home, id)
+                    .unwrap()
+                    .join("events.jsonl"),
+            )
+            .unwrap();
+        std::io::Write::write_all(&mut events, &[line, b"\n".to_vec()].concat()).unwrap();
+    };
+    // A Codex chat saved its provider's list: `&` offers it in a Claude chat too.
+    let codex = save("codex", Some("gpt-6.1-sol"), true, false);
+    list(
+        &codex,
+        json!([
+            {"id": "gpt-6.1-sol", "name": "GPT-6.1-Sol", "is_default": true},
+            {"id": "gpt-6-astra", "name": "GPT-6-Astra"}
+        ]),
+    );
+    let chat = save("claude", Some("opus"), true, false);
+    list(
+        &chat,
+        json!([
+            {"id": "default", "name": "Default", "is_default": true},
+            {"id": "opus", "name": "Opus", "description": "For complex tasks"},
+            {"id": "haiku", "name": "Haiku"}
+        ]),
+    );
+    for _ in 0..2 {
+        save("claude", Some("opus"), true, false);
+    }
+    save("claude", None, true, false);
+    // Not the person's own use: never written in, a worker's, another provider's.
+    save("claude", Some("haiku"), false, false);
+    save("claude", Some("haiku"), true, true);
+    save("codex", Some("haiku"), true, false);
+
+    let run = |json: bool| {
+        chat_client_command(
+            &home,
+            vec!["suggestions".into(), chat.clone()],
+            json,
+            &|_| panic!("suggestions must never start the host"),
+        )
+        .unwrap()
+    };
+    let reply: Value = serde_json::from_str(&run(true)).unwrap();
+    assert_eq!(
+        reply["models"],
+        json!([
+            {"id": "default", "name": "Default", "description": "", "is_default": true, "chats": 1},
+            {"id": "opus", "name": "Opus", "description": "For complex tasks", "is_default": false, "chats": 3},
+            {"id": "haiku", "name": "Haiku", "description": "", "is_default": false, "chats": 0}
+        ]),
+        "the provider's order, with each model's use, as a phone from before every provider's \
+         mentions offers them"
+    );
+    assert_eq!(
+        reply["mention_models"],
+        json!([
+            {"id": "opus", "name": "Opus", "description": "For complex tasks", "is_default": false, "chats": 3, "provider": "claude"},
+            {"id": "haiku", "name": "Haiku", "description": "", "is_default": false, "chats": 0, "provider": "claude"},
+            {"id": "gpt-6.1-sol", "name": "GPT-6.1-Sol", "description": "", "is_default": true, "chats": 1, "provider": "codex"},
+            {"id": "gpt-6-astra", "name": "GPT-6-Astra", "description": "", "is_default": false, "chats": 0, "provider": "codex"}
+        ]),
+        "the chat's own list, then the other providers' saved ones; `default` names no model"
+    );
+    assert!(
+        run(false).contains(
+            "&opus\tClaude\tOpus\t3 of your Claude chats use it now\n\
+             &gpt-6.1-sol\tCodex\tGPT-6.1-Sol\t1 of your Codex chats uses it now\n\
+             &haiku\tClaude\tHaiku\tNone of your Claude chats use it now\n\
+             &gpt-6-astra\tCodex\tGPT-6-Astra\tNone of your Codex chats use it now\n"
+        ),
+        "{}",
+        run(false)
+    );
+    assert!(!home.join("run").exists(), "no host was started");
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn suggestions_cut_a_listing_too_big_for_the_connector_to_read() {
+    let home =
+        std::env::temp_dir().join(format!("riwork-cli-suggestions-{}", uuid::Uuid::new_v4()));
+    // 5000 entries that print as far more than the connector reads of the reply (8 MiB):
+    // every control character of a name is six bytes of JSON.
+    let folder = home.join("work");
+    let long = "\u{1}".repeat(200);
+    std::fs::create_dir_all(folder.join(&long)).unwrap();
+    for n in 0..crate::chat::suggest::FILE_BOUND {
+        std::fs::write(folder.join(&long).join(format!("{long}{n}")), "").unwrap();
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let info: ChatInfo = serde_json::from_value(json!({
+        "id": id, "provider": "claude", "cwd": folder, "title": "Saved",
+        "created_at_unix": 1, "state": {"state": "stopped"}
+    }))
+    .unwrap();
+    crate::chat::log::ChatLog::create(&crate::chat::log::chat_dir(&home, &id).unwrap(), &info)
+        .unwrap();
+    let printed = chat_client_command(&home, vec!["suggestions".into(), id.clone()], true, &|_| {
+        panic!("suggestions must never start the host")
+    })
+    .unwrap();
+    assert!(printed.len() <= 8 << 20, "{} bytes", printed.len());
+    let reply: Value = serde_json::from_str(&printed).unwrap();
+    assert_eq!(reply["files"]["truncated"], true);
+    let entries = reply["files"]["entries"].as_array().unwrap();
+    assert!(entries.len() > 1000 && entries.len() < crate::chat::suggest::FILE_BOUND);
+    assert_eq!(
+        entries[0]["path"], long,
+        "the walk's first entries are kept"
+    );
+    assert_eq!(reply["commands"][0]["name"], "compact");
+    std::fs::remove_dir_all(home).unwrap();
 }

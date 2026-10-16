@@ -957,3 +957,73 @@ fn tmux_ignores_an_inherited_tmux_tmpdir() {
             .contains(" -u TMUX_TMPDIR ")
     );
 }
+
+/// LOAD SKILL into a terminal orchestrator whose skill is current but whose scope's
+/// delegation policy changed pastes the skill with the policy now, once.
+#[test]
+#[ignore = "slow: fake tmux processes; LOAD SKILL brings a policy change to a current skill"]
+fn load_skill_pastes_a_policy_change_into_an_orchestrator_with_the_current_skill() {
+    let orchestrator = "33333333-3333-4333-8333-333333333333";
+    let fixture = Fixture::new(|root| {
+        let tmux = root.join("fake-tmux");
+        Fixture::script(
+            &tmux,
+            &format!(
+                "echo \"$*\" >> {calls}\n\
+                 case \"$*\" in\n\
+                 *load-buffer*) cat > {pasted} ;;\n\
+                 *pane_current_command*) printf 'codex\\t0\\t0\\n' ;;\n\
+                 *pane_in_mode*) printf '0|0\\n' ;;\n\
+                 *) printf '{orchestrator}\\n' ;;\n\
+                 esac",
+                calls = quote_arg(&root.join("calls").to_string_lossy()),
+                pasted = quote_arg(&root.join("pasted").to_string_lossy()),
+            ),
+        );
+        tmux
+    });
+    let manager = &fixture.manager;
+    let mut row = shell(orchestrator, Some("codex"), None);
+    row.kind = ShellKind::Orchestrator;
+    row.orchestrator_skill_loaded = true;
+    row.orchestrator_skill_version = Some(orchestrator_skill_version());
+    row.orchestrator_delegation_version = Some(orchestrator_delegation_version(
+        &crate::orchestrators::delegation(&fixture.root, None),
+    ));
+    fixture.registry(vec![row]);
+    let calls = || fs::read_to_string(fixture.root.join("calls")).unwrap_or_default();
+
+    // Current: nothing goes to the pane.
+    manager.load_orchestrator_skill(orchestrator).unwrap();
+    assert!(!calls().contains("load-buffer"), "{}", calls());
+
+    crate::settings::SettingsStore::open(&fixture.root)
+        .unwrap()
+        .update(|settings| settings.delegation_policy.set_parallel_shells(Some(7)))
+        .unwrap();
+    let saved = manager.get(orchestrator).unwrap();
+    assert!(!manager.orchestrator_skill_is_current(&saved));
+    let loaded = manager.load_orchestrator_skill(orchestrator).unwrap();
+    let pasted = fs::read_to_string(fixture.root.join("pasted")).unwrap();
+    assert!(pasted.contains("<riwork-orchestrator-skill>"));
+    assert!(
+        pasted.contains("about 7 parallel worker shells"),
+        "{pasted}"
+    );
+    assert!(manager.orchestrator_skill_is_current(&loaded));
+    assert_eq!(
+        manager
+            .get(orchestrator)
+            .unwrap()
+            .orchestrator_delegation_version,
+        loaded.orchestrator_delegation_version
+    );
+
+    // Told once.
+    let before = calls();
+    manager.load_orchestrator_skill(orchestrator).unwrap();
+    assert_eq!(
+        calls().matches("load-buffer").count(),
+        before.matches("load-buffer").count()
+    );
+}

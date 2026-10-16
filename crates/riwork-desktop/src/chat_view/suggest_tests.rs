@@ -1,0 +1,1011 @@
+//! The `/`, `@` and `&` list over a real message box: it opens on the trigger and filters as the
+//! token is typed, ↑ ↓ ⏎ ⇥ ⎋ and the pointer work it, its preview says what accepting does, it
+//! stands clear of the card in wide and narrow panes, and accepting never sends; a `&` model goes
+//! in as its mention and changes nothing else.
+use super::editor_tests::mount_sized;
+use super::suggest_ui::Item;
+use super::*;
+use crate::chat::model::ChatCommand;
+use crate::chat::suggest::Peek;
+use gpui::{AnyWindowHandle, ElementId, TestAppContext, WindowHandle, size};
+use gpui_kit::test::TestWindowExt;
+use std::{path::PathBuf, sync::mpsc::Receiver};
+
+type Mounted = (
+    WindowHandle<gpui_kit::base::Root>,
+    Entity<ChatView>,
+    Receiver<feed::Delivery>,
+);
+
+/// A chat folder with a few files.
+fn folder() -> PathBuf {
+    let root = std::env::temp_dir().join(format!("riwork-suggest-ui-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("README.md"), "# Project\n\nRead me first.\n").unwrap();
+    std::fs::write(root.join("src/main.rs"), "fn main() {\n    run();\n}\n").unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub fn run() {}\n").unwrap();
+    root
+}
+
+/// A tab of a `provider` chat working in `root`, in a window `width` px wide, its message box
+/// focused.
+fn mount(
+    cx: &mut TestAppContext,
+    provider: Provider,
+    root: &std::path::Path,
+    width: f32,
+) -> Mounted {
+    let mounted = mount_sized(
+        cx,
+        HostConfig {
+            ensure: Arc::new(|| Err("fixture staging is disabled".into())),
+        },
+        width,
+    );
+    let mut info = testing::info("fixture-chat");
+    info.provider = provider;
+    info.cwd = root.to_path_buf();
+    mounted.1.update(cx, |view, cx| {
+        view.adopt_info_for_tests(info);
+        cx.notify();
+    });
+    cx.update_window(mounted.0.into(), |_, window, cx| {
+        window.click("chat-composer", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    mounted
+}
+
+fn handle(mounted: &Mounted) -> AnyWindowHandle {
+    mounted.0.into()
+}
+
+fn type_text(cx: &mut TestAppContext, mounted: &Mounted, text: &str) {
+    cx.update_window(handle(mounted), |_, window, cx| window.input(text, cx))
+        .unwrap();
+    cx.run_until_parked();
+}
+
+fn press(cx: &mut TestAppContext, mounted: &Mounted, key: &str) {
+    cx.update_window(handle(mounted), |_, window, cx| window.press(key, cx))
+        .unwrap();
+    cx.run_until_parked();
+}
+
+fn draft(cx: &mut TestAppContext, mounted: &Mounted) -> (String, usize) {
+    mounted.1.read_with(cx, |view, cx| {
+        let state = view.composer.read(cx);
+        (state.value().to_string(), state.cursor())
+    })
+}
+
+/// The rows as their text, and which one is highlighted; none while the list is closed.
+fn rows(cx: &mut TestAppContext, mounted: &Mounted) -> Option<(Vec<String>, usize)> {
+    mounted.1.read_with(cx, |view, _| {
+        view.suggestions.open.as_ref().map(|open| {
+            (
+                open.items.iter().map(Item::insertion).collect(),
+                open.highlight,
+            )
+        })
+    })
+}
+
+/// The kept first lines of `path` in the chat's folder.
+fn peeked(cx: &mut TestAppContext, mounted: &Mounted, path: &str) -> Option<Peek> {
+    mounted.1.read_with(cx, |view, _| {
+        let root = view.suggestion_root_for_tests().unwrap();
+        view.suggestion_peek_for_tests(&root, path)
+    })
+}
+
+fn sent(recording: &Receiver<feed::Delivery>) -> Vec<ChatCommand> {
+    recording
+        .try_iter()
+        .filter_map(|delivery| match delivery {
+            feed::Delivery::Submission { command, .. } => Some(command),
+            _ => None,
+        })
+        .collect()
+}
+
+fn row(n: u64) -> ElementId {
+    ElementId::NamedInteger("composer-suggestion".into(), n)
+}
+
+/// Draw a frame and read what is on it.
+fn frame<R>(
+    cx: &mut TestAppContext,
+    mounted: &Mounted,
+    read: impl FnOnce(&mut Window, &mut gpui::App) -> R,
+) -> R {
+    cx.update_window(handle(mounted), |_, window, cx| {
+        window.render_frame(cx);
+        read(window, cx)
+    })
+    .unwrap()
+}
+
+#[gpui::test]
+fn slash_opens_claudes_commands_and_return_inserts_without_sending(cx: &mut TestAppContext) {
+    let root = folder();
+    let mounted = mount(cx, Provider::Claude, &root, 700.);
+    type_text(cx, &mounted, "/");
+    assert_eq!(
+        rows(cx, &mounted),
+        Some((vec!["/compact".into(), "/memo".into()], 0))
+    );
+    frame(cx, &mounted, |window, _| {
+        assert!(window.find("composer-suggestions").visible());
+        let first = window.find(row(0));
+        assert_eq!(first.role(), Some(gpui::Role::ListBoxOption));
+        assert_eq!(first.selected(), Some(true));
+        assert_eq!(first.label(), Some("/compact"));
+        assert_eq!(
+            window.find("composer-suggestion-preview").label(),
+            Some("Preview of /compact")
+        );
+    });
+    type_text(cx, &mounted, "com");
+    assert_eq!(rows(cx, &mounted), Some((vec!["/compact".into()], 0)));
+    press(cx, &mounted, "enter");
+    assert_eq!(draft(cx, &mounted), ("/compact ".into(), 9));
+    assert_eq!(rows(cx, &mounted), None, "accepting closes the list");
+    assert!(sent(&mounted.2).is_empty(), "accepting never sends");
+    frame(cx, &mounted, |window, _| {
+        assert!(window.try_find("composer-suggestions").is_none());
+    });
+    // Sending stays the person's own ⏎, and sends what the box holds.
+    press(cx, &mounted, "enter");
+    assert_eq!(
+        sent(&mounted.2),
+        [ChatCommand::Send {
+            text: "/compact".into()
+        }]
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[gpui::test]
+fn only_a_trigger_at_a_word_start_opens_the_list(cx: &mut TestAppContext) {
+    let root = folder();
+    let mounted = mount(cx, Provider::Claude, &root, 700.);
+    type_text(cx, &mounted, "a/b me@host");
+    assert_eq!(rows(cx, &mounted), None, "a sigil inside a word is text");
+    type_text(cx, &mounted, " /");
+    assert_eq!(rows(cx, &mounted), None, "a command only starts a message");
+    type_text(cx, &mounted, " @");
+    assert!(rows(cx, &mounted).is_some(), "@ after a space lists files");
+    // A command that matches nothing closes the list.
+    let codex = mount(cx, Provider::Codex, &root, 700.);
+    type_text(cx, &codex, "/");
+    assert_eq!(
+        rows(cx, &codex),
+        Some((vec!["/memo".into()], 0)),
+        "Codex chats offer RiWork's /memo, not Claude's /compact"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[gpui::test]
+fn at_lists_the_chat_folder_and_the_keys_move_and_accept(cx: &mut TestAppContext) {
+    let root = folder();
+    let mounted = mount(cx, Provider::Codex, &root, 700.);
+    type_text(cx, &mounted, "see @");
+    assert_eq!(
+        rows(cx, &mounted),
+        Some((
+            vec![
+                "src/".into(),
+                "README.md".into(),
+                "src/lib.rs".into(),
+                "src/main.rs".into()
+            ],
+            0
+        ))
+    );
+    press(cx, &mounted, "down");
+    press(cx, &mounted, "down");
+    assert_eq!(rows(cx, &mounted).unwrap().1, 2);
+    press(cx, &mounted, "up");
+    press(cx, &mounted, "up");
+    press(cx, &mounted, "up");
+    assert_eq!(
+        rows(cx, &mounted).unwrap().1,
+        3,
+        "↑ from the first row goes round"
+    );
+    assert_eq!(
+        draft(cx, &mounted).0,
+        "see @",
+        "the arrows move the highlight, not the caret"
+    );
+    type_text(cx, &mounted, "ma");
+    assert_eq!(rows(cx, &mounted), Some((vec!["src/main.rs".into()], 0)));
+    press(cx, &mounted, "tab");
+    assert_eq!(draft(cx, &mounted), ("see src/main.rs ".into(), 16));
+    assert!(sent(&mounted.2).is_empty());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[gpui::test]
+fn the_preview_shows_a_files_first_lines_and_what_is_inserted(cx: &mut TestAppContext) {
+    let root = folder();
+    let mounted = mount(cx, Provider::Claude, &root, 700.);
+    type_text(cx, &mounted, "@main");
+    let peek = mounted.1.read_with(cx, |view, _| {
+        let open = view.suggestions.open.as_ref().unwrap();
+        let Item::File(entry) = &open.items[open.highlight] else {
+            panic!("a file row");
+        };
+        let root = view.suggestion_root_for_tests().unwrap();
+        view.suggestion_peek_for_tests(&root, &entry.path)
+    });
+    assert_eq!(
+        peek,
+        Some(crate::chat::suggest::Peek::Text(vec![
+            "fn main() {".into(),
+            "    run();".into(),
+            "}".into()
+        ]))
+    );
+    frame(cx, &mounted, |window, _| {
+        assert_eq!(
+            window.find("composer-suggestion-preview").label(),
+            Some("Preview of src/main.rs")
+        );
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[gpui::test]
+fn escape_closes_the_list_until_its_token_is_typed_again(cx: &mut TestAppContext) {
+    let root = folder();
+    let mounted = mount(cx, Provider::Claude, &root, 700.);
+    type_text(cx, &mounted, "@");
+    assert!(rows(cx, &mounted).is_some());
+    press(cx, &mounted, "escape");
+    assert_eq!(rows(cx, &mounted), None);
+    assert_eq!(draft(cx, &mounted).0, "@", "⎋ leaves the draft alone");
+    type_text(cx, &mounted, "src");
+    assert_eq!(rows(cx, &mounted), None, "the token ⎋ closed stays closed");
+    for _ in 0..4 {
+        press(cx, &mounted, "backspace");
+    }
+    type_text(cx, &mounted, "@s");
+    assert!(rows(cx, &mounted).is_some(), "a new token opens it again");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[gpui::test]
+fn the_pointer_highlights_and_a_click_accepts_into_the_focused_box(cx: &mut TestAppContext) {
+    let root = folder();
+    let mounted = mount(cx, Provider::Claude, &root, 700.);
+    type_text(cx, &mounted, "@");
+    cx.update_window(handle(&mounted), |_, window, cx| {
+        window.render_frame(cx);
+        window.hover(row(1), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(rows(cx, &mounted).unwrap().1, 1);
+    cx.update_window(handle(&mounted), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(row(2), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(draft(cx, &mounted), ("src/lib.rs ".into(), 11));
+    assert!(sent(&mounted.2).is_empty());
+    let focused = frame(cx, &mounted, |window, cx| {
+        mounted
+            .1
+            .read(cx)
+            .composer
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+    });
+    assert!(focused, "the click left the focus in the message box");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[gpui::test]
+fn shift_return_is_still_a_new_line_and_a_held_return_never_sends(cx: &mut TestAppContext) {
+    let root = folder();
+    let mounted = mount(cx, Provider::Claude, &root, 700.);
+    type_text(cx, &mounted, "/");
+    press(cx, &mounted, "shift-enter");
+    assert_eq!(draft(cx, &mounted).0, "/\n");
+    assert_eq!(rows(cx, &mounted), None, "the caret left the token");
+    assert!(sent(&mounted.2).is_empty());
+    // ⏎ held down: the press accepts, its repeats (no key-up between) send nothing.
+    press(cx, &mounted, "backspace");
+    assert!(rows(cx, &mounted).is_some());
+    cx.update_window(handle(&mounted), |_, window, cx| {
+        for _ in 0..3 {
+            window.dispatch_action(
+                Box::new(gpui_kit::base::input::Enter {
+                    secondary: false,
+                    shift: false,
+                }),
+                cx,
+            );
+        }
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(draft(cx, &mounted).0, "/compact ");
+    assert!(sent(&mounted.2).is_empty(), "a held ⏎ does not send");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// The list and its preview stand above the card, clear of Send, beside each other in a wide
+/// pane and stacked in a narrow one.
+#[gpui::test]
+fn the_list_stands_clear_of_the_controls_in_wide_and_narrow_panes(cx: &mut TestAppContext) {
+    let root = folder();
+    for (width, beside) in [(900., true), (300., false)] {
+        let mounted = mount(cx, Provider::Claude, &root, width);
+        type_text(cx, &mounted, "@");
+        let card = mounted
+            .1
+            .read_with(cx, |view, _| view.suggestions.card.get());
+        frame(cx, &mounted, |window, _| {
+            let popup = window.find("composer-suggestions").bounds();
+            let list = window.find("composer-suggestion-list").bounds();
+            let preview = window.find("composer-suggestion-preview").bounds();
+            let send = window.find("chat-send").bounds();
+            assert!(popup.bottom() <= card.top(), "{width}: above the card");
+            assert!(popup.bottom() <= send.top(), "{width}: Send stays clear");
+            assert!(
+                popup.left() >= px(0.) && popup.right() <= px(width),
+                "{width}"
+            );
+            if beside {
+                assert!(
+                    preview.left() >= list.right(),
+                    "a wide pane puts them side by side"
+                );
+            } else {
+                assert!(
+                    preview.bottom() <= list.top(),
+                    "a narrow pane stacks the preview"
+                );
+                assert!(list.size.width <= card.size.width);
+            }
+        });
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A list with no room above the card is not shown, and has no keys: ⏎ is the box's own.
+#[gpui::test]
+fn a_list_without_room_to_show_takes_no_keys(cx: &mut TestAppContext) {
+    let root = folder();
+    // Large text in a short window: the card stands too near the top for the list.
+    let before = crate::ui_text::set_for_tests(2.0, crate::ui_text::face());
+    let mounted = mount(cx, Provider::Claude, &root, 700.);
+    type_text(cx, &mounted, "/");
+    let open = rows(cx, &mounted).is_some();
+    cx.simulate_window_resize(handle(&mounted), size(px(700.), px(150.)));
+    cx.run_until_parked();
+    let shown = frame(cx, &mounted, |window, _| {
+        window.try_find("composer-suggestions").is_some()
+    });
+    press(cx, &mounted, "down");
+    press(cx, &mounted, "enter");
+    crate::ui_text::set_for_tests(before.0, before.1);
+    assert!(open && !shown, "the list is open but not shown");
+    assert_eq!(
+        sent(&mounted.2),
+        [ChatCommand::Send { text: "/".into() }],
+        "⏎ sends the draft as it is seen, never an unseen row"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A file's first lines are read again when the list opens again: a file changed meanwhile is
+/// shown as it is now.
+#[gpui::test]
+fn a_reopened_list_reads_a_changed_file_again(cx: &mut TestAppContext) {
+    let root = folder();
+    let mounted = mount(cx, Provider::Claude, &root, 700.);
+    type_text(cx, &mounted, "@READ");
+    assert_eq!(
+        peeked(cx, &mounted, "README.md"),
+        Some(Peek::Text(vec![
+            "# Project".into(),
+            "".into(),
+            "Read me first.".into()
+        ]))
+    );
+    for _ in 0..5 {
+        press(cx, &mounted, "backspace");
+    }
+    assert_eq!(rows(cx, &mounted), None);
+    std::fs::write(root.join("README.md"), "# Changed\n").unwrap();
+    type_text(cx, &mounted, "@READ");
+    assert_eq!(
+        peeked(cx, &mounted, "README.md"),
+        Some(Peek::Text(vec!["# Changed".into()]))
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// The kept previews are dropped once they are many, but never the highlighted file's for
+/// good: its card never stays at "Reading…".
+#[gpui::test]
+fn the_highlighted_preview_survives_dropping_the_kept_ones(cx: &mut TestAppContext) {
+    let root = folder();
+    let mounted = mount(cx, Provider::Claude, &root, 700.);
+    type_text(cx, &mounted, "@");
+    press(cx, &mounted, "down");
+    assert_eq!(rows(cx, &mounted).unwrap().1, 1, "README.md");
+    assert!(peeked(cx, &mounted, "README.md").is_some());
+    mounted
+        .1
+        .update(cx, |view, _| view.fill_suggestion_peeks_for_tests());
+    // Down to a file not read yet and back up before its read is done: that read finds the
+    // previews at their bound.
+    cx.update_window(handle(&mounted), |_, window, cx| {
+        window.press("down", cx);
+        window.press("up", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(rows(cx, &mounted).unwrap().1, 1);
+    assert!(
+        peeked(cx, &mounted, "README.md").is_some(),
+        "the highlighted file's preview is there"
+    );
+    frame(cx, &mounted, |window, _| {
+        assert_eq!(
+            window.find("composer-suggestion-preview").label(),
+            Some("Preview of README.md")
+        );
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// The list stands on the card as it is drawn now, also when the card moved since the frame
+/// before (the window was made shorter while the list is open).
+#[gpui::test]
+fn the_list_follows_the_card_when_the_window_changes(cx: &mut TestAppContext) {
+    let root = folder();
+    let mounted = mount(cx, Provider::Claude, &root, 700.);
+    type_text(cx, &mounted, "@");
+    frame(cx, &mounted, |window, _| {
+        assert!(window.find("composer-suggestions").visible());
+    });
+    cx.simulate_window_resize(handle(&mounted), size(px(700.), px(560.)));
+    cx.run_until_parked();
+    // The last frame drawn, as it is: not drawn again here.
+    cx.update_window(handle(&mounted), |_, window, _| {
+        let popup = window.find("composer-suggestions").bounds();
+        let send = window.find("chat-send").bounds();
+        assert!(
+            popup.bottom() <= send.top(),
+            "{popup:?} stands clear of Send at {send:?}"
+        );
+    })
+    .unwrap();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+// ---- `&` models --------------------------------------------------------------------------
+
+/// Codex's models as its driver lists them, in its order.
+fn codex_models() -> Vec<crate::chat::model::ModelOption> {
+    [
+        ("gpt-5.1-codex", "GPT-5.1 Codex", true),
+        ("gpt-5.1", "GPT-5.1", false),
+        ("o3", "o3", false),
+        ("gpt-5.1-codex-mini", "GPT-5.1 Codex Mini", false),
+    ]
+    .into_iter()
+    .map(|(id, name, is_default)| {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "name": name, "is_default": is_default,
+            "efforts": ["low", "medium", "high"], "default_effort": "medium"
+        }))
+        .unwrap()
+    })
+    .collect()
+}
+
+/// Save a chat of `provider` set to `model` in data folder `home`: one the person wrote in, or a
+/// worker's that is not theirs. Its id.
+fn save_chat(
+    home: &std::path::Path,
+    provider: Provider,
+    model: Option<&str>,
+    worker: bool,
+) -> String {
+    let mut info = testing::info(&uuid::Uuid::new_v4().to_string());
+    info.provider = provider;
+    info.model = model.map(str::to_owned);
+    info.first_user_message = Some("hello".into());
+    if worker {
+        info.parent_id = Some("parent".into());
+    }
+    let dir = home.join("chats").join(&info.id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("info.json"), serde_json::to_vec(&info).unwrap()).unwrap();
+    info.id
+}
+
+/// A data folder whose saved chats the person wrote in: `count` chats of each provider set to
+/// each model (`None`: to no model, the default), and Codex workers' chats that are not theirs.
+fn data_folder(uses: &[(Provider, Option<&str>, usize)]) -> PathBuf {
+    let home = std::env::temp_dir().join(format!("riwork-suggest-uses-{}", uuid::Uuid::new_v4()));
+    for (provider, model, count) in uses {
+        for _ in 0..*count {
+            save_chat(&home, *provider, *model, false);
+        }
+    }
+    for _ in 0..5 {
+        save_chat(&home, Provider::Codex, Some("gpt-5.1-codex-mini"), true);
+    }
+    home
+}
+
+/// A worker's chat of `provider` in `home` whose driver listed `models` (id, name, default), as
+/// `riwork chat models` reads a provider's list.
+fn save_list(home: &std::path::Path, provider: Provider, models: &[(&str, &str, bool)]) {
+    let id = save_chat(home, provider, None, true);
+    let models = models
+        .iter()
+        .map(|(id, name, is_default)| {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "name": name, "is_default": is_default
+            }))
+            .unwrap()
+        })
+        .collect();
+    let line = serde_json::to_string(&crate::chat::wire::Envelope {
+        chat_id: id.clone(),
+        seq: 1,
+        event: crate::chat::model::ChatEvent::Models { models },
+    })
+    .unwrap();
+    std::fs::write(
+        home.join("chats").join(&id).join("events.jsonl"),
+        format!("{line}\n"),
+    )
+    .unwrap();
+}
+
+/// A Codex chat whose driver listed `codex_models`, set to `model`, counting use in `home`.
+fn mount_models(
+    cx: &mut TestAppContext,
+    root: &std::path::Path,
+    model: Option<&str>,
+    home: Option<&std::path::Path>,
+) -> Mounted {
+    let mounted = mount(cx, Provider::Codex, root, 700.);
+    mounted.1.update(cx, |view, cx| {
+        let mut info = testing::info("fixture-chat");
+        info.provider = Provider::Codex;
+        info.cwd = root.to_path_buf();
+        info.model = model.map(str::to_owned);
+        view.adopt_info_for_tests(info);
+        view.model
+            .transcript
+            .apply(&crate::chat::model::ChatEvent::Models {
+                models: codex_models(),
+            });
+        if let Some(home) = home {
+            view.set_catalog_home(home.to_path_buf());
+        }
+        cx.notify();
+    });
+    mounted
+}
+
+/// Everything that went to the chat, commands and messages alike.
+fn went_out(recording: &Receiver<feed::Delivery>) -> Vec<String> {
+    recording
+        .try_iter()
+        .map(|delivery| match delivery {
+            feed::Delivery::Command(command) => format!("command {command:?}"),
+            feed::Delivery::Submission { command, .. } => format!("message {command:?}"),
+        })
+        .collect()
+}
+
+/// Put the caret at byte `at` of the draft, as a click there would, and draw.
+fn put_caret(cx: &mut TestAppContext, mounted: &Mounted, at: usize) {
+    mounted.1.update(cx, |view, cx| {
+        view.composer
+            .update(cx, |state, cx| state.set_selected_range(at..at, cx));
+    });
+    frame(cx, mounted, |_, _| {});
+}
+
+/// The model the chat is set to, its effort, and whether a turn runs.
+fn chat_setup(
+    cx: &mut TestAppContext,
+    mounted: &Mounted,
+) -> (Option<String>, Option<String>, bool) {
+    mounted.1.read_with(cx, |view, _| {
+        let info = view.model.transcript.info.as_ref().unwrap();
+        (
+            info.model.clone(),
+            info.effort.clone(),
+            view.model.transcript.state == crate::chat::model::ChatState::Running,
+        )
+    })
+}
+
+fn details(cx: &mut TestAppContext, mounted: &Mounted) -> Vec<String> {
+    mounted.1.read_with(cx, |view, _| {
+        view.suggestions
+            .open
+            .as_ref()
+            .map(|open| open.items.iter().map(|item| item.detail()).collect())
+            .unwrap_or_default()
+    })
+}
+
+#[gpui::test]
+fn ampersand_lists_every_providers_models_most_used_first_and_return_puts_in_a_mention(
+    cx: &mut TestAppContext,
+) {
+    let root = folder();
+    // The person's Codex chats: o3 on three, the default on two, GPT-5.1 on one (the workers'
+    // on the mini are not theirs); their Claude chats: Opus on four, Claude's own choice on two.
+    let home = data_folder(&[
+        (Provider::Codex, Some("o3"), 3),
+        (Provider::Codex, None, 2),
+        (Provider::Codex, Some("gpt-5.1"), 1),
+        (Provider::Claude, Some("opus"), 4),
+        (Provider::Claude, None, 2),
+    ]);
+    // Claude's list, as a Claude chat saved it: its `default` names no model, and its o3 is
+    // the chat's own Codex row already.
+    save_list(
+        &home,
+        Provider::Claude,
+        &[
+            ("default", "Default (recommended)", true),
+            ("opus", "Opus", false),
+            ("o3", "o3", false),
+            ("sonnet", "Sonnet", false),
+        ],
+    );
+    let mounted = mount_models(cx, &root, None, Some(&home));
+    type_text(cx, &mounted, "fix it with &");
+    assert_eq!(
+        rows(cx, &mounted),
+        Some((
+            vec![
+                "&opus".into(),
+                "&o3".into(),
+                "&gpt-5.1-codex".into(),
+                "&gpt-5.1".into(),
+                "&gpt-5.1-codex-mini".into(),
+                "&sonnet".into(),
+            ],
+            0
+        )),
+        "every provider's, the most used first, each id once"
+    );
+    assert_eq!(
+        details(cx, &mounted),
+        [
+            "Claude · used in 4 chats",
+            "Codex · used in 3 chats",
+            "Codex · current · used in 2 chats",
+            "Codex · used in 1 chat",
+            "Codex · not used yet",
+            "Claude · not used yet",
+        ],
+        "each row says its provider; the chat's model is marked, not left out"
+    );
+    frame(cx, &mounted, |window, _| {
+        assert_eq!(
+            window.find("composer-suggestion-list").label(),
+            Some("Models · most used first")
+        );
+        assert_eq!(
+            window.find("composer-suggestion-preview").label(),
+            Some("Preview of &opus")
+        );
+    });
+    // Typing filters, by id or name, the use still ordering what matches.
+    type_text(cx, &mounted, "o");
+    assert_eq!(rows(cx, &mounted).unwrap().0[..2], ["&opus", "&o3"]);
+    press(cx, &mounted, "enter");
+    assert_eq!(
+        draft(cx, &mounted),
+        ("fix it with &opus ".into(), 18),
+        "another provider's model goes in as its mention, the caret after it"
+    );
+    assert_eq!(rows(cx, &mounted), None);
+    assert_eq!(
+        went_out(&mounted.2),
+        Vec::<String>::new(),
+        "no model change, no command of any kind, no message"
+    );
+    assert_eq!(chat_setup(cx, &mounted), (None, None, false));
+    // The mention is the message's own text: the person's ⏎ sends it as written.
+    press(cx, &mounted, "enter");
+    assert_eq!(
+        sent(&mounted.2),
+        [ChatCommand::Send {
+            text: "fix it with &opus".into()
+        }]
+    );
+    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[gpui::test]
+fn a_chat_whose_driver_listed_nothing_mentions_the_other_providers_saved_models(
+    cx: &mut TestAppContext,
+) {
+    let root = folder();
+    let home = data_folder(&[(Provider::Codex, None, 1)]);
+    save_list(
+        &home,
+        Provider::Codex,
+        &[
+            ("gpt-6.1-sol", "GPT-6.1-Sol", true),
+            ("gpt-6-astra", "GPT-6-Astra", false),
+        ],
+    );
+    save_list(
+        &home,
+        Provider::Claude,
+        &[
+            ("default", "Default (recommended)", true),
+            ("opus", "Opus", false),
+        ],
+    );
+    // A Claude chat on Claude's own choice, whose driver has not listed its models yet.
+    let mounted = mount(cx, Provider::Claude, &root, 700.);
+    mounted
+        .1
+        .update(cx, |view, _| view.set_catalog_home(home.clone()));
+    type_text(cx, &mounted, "&");
+    assert_eq!(
+        rows(cx, &mounted).unwrap().0,
+        ["&gpt-6.1-sol", "&opus", "&gpt-6-astra"]
+    );
+    assert_eq!(
+        details(cx, &mounted),
+        [
+            "Codex · used in 1 chat",
+            "Claude · not used yet",
+            "Codex · not used yet"
+        ],
+        "Codex's default is no Claude chat's model, and Claude's own choice names none: no mark"
+    );
+    type_text(cx, &mounted, "gpt");
+    press(cx, &mounted, "tab");
+    assert_eq!(draft(cx, &mounted), ("&gpt-6.1-sol ".into(), 13));
+    assert_eq!(went_out(&mounted.2), Vec::<String>::new());
+    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[gpui::test]
+fn an_open_list_takes_the_chats_own_models_when_its_driver_lists_them(cx: &mut TestAppContext) {
+    let root = folder();
+    let home = data_folder(&[]);
+    save_list(&home, Provider::Claude, &[("opus", "Opus", false)]);
+    // A Codex chat whose driver has not listed its models yet: Claude's saved ones are offered.
+    let mounted = mount(cx, Provider::Codex, &root, 700.);
+    mounted
+        .1
+        .update(cx, |view, _| view.set_catalog_home(home.clone()));
+    type_text(cx, &mounted, "&");
+    assert_eq!(rows(cx, &mounted), Some((vec!["&opus".into()], 0)));
+    // The driver lists them while the list is open: they join it, the chat's default marked.
+    mounted.1.update(cx, |view, cx| {
+        view.model
+            .transcript
+            .apply(&crate::chat::model::ChatEvent::Models {
+                models: codex_models(),
+            });
+        cx.notify();
+    });
+    frame(cx, &mounted, |_, _| {});
+    assert_eq!(
+        rows(cx, &mounted).unwrap().0,
+        [
+            "&gpt-5.1-codex",
+            "&gpt-5.1",
+            "&o3",
+            "&gpt-5.1-codex-mini",
+            "&opus"
+        ]
+    );
+    assert_eq!(details(cx, &mounted)[0], "Codex · current · not used yet");
+    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[gpui::test]
+fn the_chats_own_model_is_put_in_as_any_other_is(cx: &mut TestAppContext) {
+    let root = folder();
+    let mounted = mount_models(cx, &root, Some("o3"), None);
+    type_text(cx, &mounted, "ask &o3");
+    assert_eq!(rows(cx, &mounted), Some((vec!["&o3".into()], 0)));
+    assert_eq!(details(cx, &mounted), ["Codex · current · not used yet"]);
+    press(cx, &mounted, "backspace");
+    assert_eq!(rows(cx, &mounted).unwrap().0[0], "&o3");
+    press(cx, &mounted, "enter");
+    assert_eq!(draft(cx, &mounted), ("ask &o3 ".into(), 8));
+    assert_eq!(rows(cx, &mounted), None, "the list closed");
+    assert_eq!(went_out(&mounted.2), Vec::<String>::new());
+    assert_eq!(chat_setup(cx, &mounted).0.as_deref(), Some("o3"));
+    // One edit of the box: ⌘Z gives the token back as it was typed.
+    press(cx, &mounted, "cmd-z");
+    assert_eq!(draft(cx, &mounted).0, "ask &o");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[gpui::test]
+fn mentions_go_anywhere_in_the_draft_more_than_once_whatever_the_chat_is_doing(
+    cx: &mut TestAppContext,
+) {
+    let root = folder();
+    let mounted = mount_models(cx, &root, None, None);
+    // A turn runs: writing a mention is editing the draft, which a running turn never stops.
+    mounted.1.update(cx, |view, _| {
+        view.model.transcript.state = crate::chat::model::ChatState::Running;
+    });
+    type_text(cx, &mounted, "&o designs it, then &g");
+    assert_eq!(
+        rows(cx, &mounted).unwrap().0,
+        ["&gpt-5.1-codex", "&gpt-5.1", "&gpt-5.1-codex-mini"],
+        "a second `&` in the draft opens the list too"
+    );
+    type_text(cx, &mounted, " builds it");
+    assert_eq!(rows(cx, &mounted), None);
+    // Back in the first token, before more words: its list opens, and accepting replaces only
+    // it, the space after it kept rather than doubled.
+    put_caret(cx, &mounted, "&o".len());
+    assert_eq!(rows(cx, &mounted).unwrap().0[0], "&o3");
+    press(cx, &mounted, "enter");
+    assert_eq!(
+        draft(cx, &mounted),
+        ("&o3 designs it, then &g builds it".into(), 4)
+    );
+    // And the second, in the middle of the message.
+    let at = "&o3 designs it, then &g".len();
+    put_caret(cx, &mounted, at);
+    press(cx, &mounted, "down");
+    press(cx, &mounted, "tab");
+    let text = "&o3 designs it, then &gpt-5.1 builds it";
+    assert_eq!(
+        draft(cx, &mounted),
+        (text.into(), "&o3 designs it, then &gpt-5.1 ".len())
+    );
+    assert_eq!(went_out(&mounted.2), Vec::<String>::new());
+    assert_eq!(
+        chat_setup(cx, &mounted),
+        (None, None, true),
+        "the chat's model and effort are as they were, its turn still running"
+    );
+
+    // Not connected yet: still only text, and nothing to say about the link.
+    mounted.1.update(cx, |view, _| {
+        view.feed = None;
+        // As a tab whose link is not up: nothing starts another feed meanwhile.
+        view.feed_started = true;
+    });
+    put_caret(cx, &mounted, text.len());
+    type_text(cx, &mounted, " &o3");
+    press(cx, &mounted, "enter");
+    assert_eq!(draft(cx, &mounted).0, format!("{text} &o3 "));
+    mounted.1.read_with(cx, |view, _| {
+        assert_eq!(view.notices.local(notices::LocalKey::Link), None);
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[gpui::test]
+fn the_keys_work_the_model_list_as_they_work_the_others(cx: &mut TestAppContext) {
+    let root = folder();
+    let mounted = mount_models(cx, &root, None, None);
+    type_text(cx, &mounted, "&");
+    // No use counted: the provider's order.
+    assert_eq!(
+        rows(cx, &mounted),
+        Some((
+            vec![
+                "&gpt-5.1-codex".into(),
+                "&gpt-5.1".into(),
+                "&o3".into(),
+                "&gpt-5.1-codex-mini".into()
+            ],
+            0
+        ))
+    );
+    press(cx, &mounted, "up");
+    assert_eq!(
+        rows(cx, &mounted).unwrap().1,
+        3,
+        "↑ from the first row goes round"
+    );
+    press(cx, &mounted, "down");
+    press(cx, &mounted, "down");
+    assert_eq!(rows(cx, &mounted).unwrap().1, 1);
+    assert_eq!(
+        draft(cx, &mounted).0,
+        "&",
+        "the arrows move the highlight, not the caret"
+    );
+    press(cx, &mounted, "escape");
+    assert_eq!(rows(cx, &mounted), None);
+    assert_eq!(went_out(&mounted.2), Vec::<String>::new());
+    // A closed list takes no keys: ⏎ sends what the box holds, as it would without `&`.
+    type_text(cx, &mounted, "o");
+    assert_eq!(rows(cx, &mounted), None, "the token ⎋ closed stays closed");
+    press(cx, &mounted, "enter");
+    assert_eq!(sent(&mounted.2), [ChatCommand::Send { text: "&o".into() }]);
+
+    // `&` inside a word is only text.
+    type_text(cx, &mounted, "rock&roll and a&b");
+    assert_eq!(rows(cx, &mounted), None);
+    // A chat whose driver has not listed its models offers none: ⏎ sends.
+    let unlisted = mount(cx, Provider::Codex, &root, 700.);
+    type_text(cx, &unlisted, "you &");
+    assert_eq!(rows(cx, &unlisted), None, "no model is made up");
+    press(cx, &unlisted, "enter");
+    assert_eq!(
+        sent(&unlisted.2),
+        [ChatCommand::Send {
+            text: "you &".into()
+        }]
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[gpui::test]
+fn the_highlighted_model_stays_as_the_use_arrives_and_the_mark_follows_the_chat(
+    cx: &mut TestAppContext,
+) {
+    let root = folder();
+    let home = data_folder(&[
+        (Provider::Codex, Some("o3"), 3),
+        (Provider::Codex, None, 2),
+        (Provider::Codex, Some("gpt-5.1"), 1),
+    ]);
+    let mounted = mount_models(cx, &root, None, None);
+    type_text(cx, &mounted, "&");
+    press(cx, &mounted, "down");
+    press(cx, &mounted, "down");
+    assert_eq!(rows(cx, &mounted).unwrap().0[2], "&o3");
+    // The use is counted now, and the list orders by it: o3 stays the highlighted row.
+    mounted.1.update(cx, |view, cx| {
+        view.set_catalog_home(home.clone());
+        view.model_sources_arrived(cx);
+    });
+    cx.run_until_parked();
+    let (shown, highlight) = rows(cx, &mounted).unwrap();
+    assert_eq!(
+        shown,
+        ["&o3", "&gpt-5.1-codex", "&gpt-5.1", "&gpt-5.1-codex-mini"]
+    );
+    assert_eq!(shown[highlight], "&o3", "the highlight followed its model");
+    // The chat moved to o3 meanwhile (from the model menu, say): the mark moves with it.
+    mounted.1.update(cx, |view, cx| {
+        let mut info = view.model.transcript.info.clone().unwrap();
+        info.model = Some("o3".into());
+        view.adopt_info_for_tests(info);
+        cx.notify();
+    });
+    frame(cx, &mounted, |_, _| {});
+    assert_eq!(
+        details(cx, &mounted)[0],
+        "Codex · current · used in 3 chats"
+    );
+    assert_eq!(details(cx, &mounted)[1], "Codex · used in 2 chats");
+    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(home);
+}

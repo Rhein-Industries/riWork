@@ -95,6 +95,7 @@ sys.stdout.write((root / (name + '.json')).read_text())
                     notify_on_agent_done: false,
                     wake_orchestrators_on_agent_done: false,
                     orchestrator: Default::default(),
+                    delegation_policy: Default::default(),
                     codex_account: crate::store::ProjectCodexAccount::default(),
                     created_at: 8,
                 });
@@ -397,6 +398,7 @@ fn explicit_nested_project_root_wins_and_worktree_dedup_is_per_project() {
                 notify_on_agent_done: false,
                 wake_orchestrators_on_agent_done: false,
                 orchestrator: Default::default(),
+                delegation_policy: Default::default(),
                 codex_account: crate::store::ProjectCodexAccount::default(),
                 created_at: 11,
             });

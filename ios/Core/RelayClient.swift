@@ -25,6 +25,8 @@ public enum RequestValidation {
         case "shell.create": required = ["kind"]; optional = ["project_id", "worktree_id", "unrestricted", "as_settings", "command"]
         case "shell.close": required = ["shell_id"]; optional = []
         case "project.create": required = ["name"]; optional = ["git"]
+        case "project.memo.get": required = ["project_id"]; optional = []
+        case "project.memo.set": required = ["project_id", "text"]; optional = []
         case "orchestrator.create": required = []; optional = ["project_id"]
         case "chats.list": required = []; optional = ["project_id"]
         case "chat.create": required = ["provider"]; optional = ["project_id", "worktree_id", "approval_mode", "model", "effort", "fast", "contributor_mode", "contributor_opt_out", "title"]
@@ -33,6 +35,7 @@ public enum RequestValidation {
         case "chat.command": required = ["chat_id", "command"]; optional = []
         case "chat.stop": required = ["chat_id"]; optional = []
         case "chat.models": required = ["provider"]; optional = ["project_id"]
+        case "chat.suggestions": required = ["chat_id"]; optional = []
         case "upload.begin", "upload.chunk", "upload.finish", "upload.cancel", "shell.paste":
             (required, optional) = UploadRequests.methods[method] ?? ([], [])
         default: throw RemoteError.protocolViolation("Unsupported operation.")
@@ -65,6 +68,7 @@ public enum RequestValidation {
         if method == "project.create" {
             do { _ = try NewProjectRequest(params: params) } catch { throw RemoteError.protocolViolation(error.localizedDescription) }
         }
+        try ProjectMemoRequests.validate(method: method, params: params)
         if method == "orchestrator.create" {
             do { _ = try NewOrchestratorRequest(params: params) } catch { throw RemoteError.protocolViolation(error.localizedDescription) }
         }
@@ -89,6 +93,7 @@ public enum RequestValidation {
             case "chat.events": _ = try ChatEventsRequest(params: params)
             case "chat.command": _ = try ChatCommandRequest(params: params)
             case "chat.models": _ = try ChatModelsRequest(params: params)
+            case "chat.suggestions": _ = try ChatSuggestionsRequest(params: params)
             default: break
             }
         } catch { throw RemoteError.protocolViolation(error.localizedDescription) }
@@ -167,6 +172,8 @@ public actor RelayClient: RemoteTransport {
         case "chat.stop": return max(base, .seconds(30))
         // A file for a shell first asks the CLI and the shell list; finishing hashes the whole file; a paste waits for the shell's lock.
         case "upload.begin", "upload.finish", "shell.paste": return max(base, .seconds(30))
+        // The connector gives the CLI 15 s for a save; a timeout here would tear the whole connection down first.
+        case "project.memo.set": return max(base, .seconds(30))
         case "chat.events":
             if case .number(let wait)? = params["wait_ms"], wait.isFinite, wait > 0 { return max(base, ChatLimits.timeout(waitMilliseconds: Int(min(wait, Double(ChatLimits.maximumWaitMilliseconds))))) }
             return base

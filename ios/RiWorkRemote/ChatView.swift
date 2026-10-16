@@ -20,6 +20,8 @@ struct ChatScreen: View {
     @State private var focusToken = 0
     /// The model picker is up.
     @State private var showModels = false
+    /// `/memo`'s **Edit** was pressed: the memo editor of this project comes up once the preview has gone.
+    @State private var editMemoAfterPreview: String?
     /// The history of the provider's notices is up.
     @State private var showNotices = false
     /// Counts requests from the tab row's ⋯ menu to show the notices.
@@ -41,6 +43,13 @@ struct ChatScreen: View {
     private var state: ChatState { model.chatState(chat) }
     private var info: ChatInfo { conversation.transcript.info ?? chat }
     private var connected: Bool { model.state == .connected }
+    /// What can say how this chat's workers are doing (`RemoteModel.workerInventory`). The lists are read again every few seconds while
+    /// the project's screen is up (`keepFresh(.sessions)`, which this chat is part of). A chat with no worker card does not read them,
+    /// so a change to them does not redraw it.
+    private var workerInventory: WorkerInventory {
+        guard conversation.transcript.items.contains(where: { $0.worker != nil }) else { return .unavailable }
+        return model.workerInventory(of: info)
+    }
 
     var body: some View {
         let conversation = conversation
@@ -50,7 +59,7 @@ struct ChatScreen: View {
         let barShown = !approvals.isEmpty || !questions.isEmpty || !elidedRequests.isEmpty
         VStack(spacing: 0) {
             ChatToolbar(model: model, chat: info, conversation: conversation, state: state, showModels: $showModels)
-            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, dismissesKeyboard: !model.keyboard.hardware.isAttached || model.keyboard.software.isShown, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) })
+            ChatTranscriptList(conversation: conversation, provider: info.provider, state: state, workers: workerInventory, dismissesKeyboard: !model.keyboard.hardware.isAttached || model.keyboard.software.isShown, loadOlder: { beforeInstall in await model.loadOlderChat(chat.id, beforeInstall: beforeInstall) })
                 .id(chat.id)
                 .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { transcriptTop = $0; transcriptChanged(barShown: barShown) }
                 // The composer floats over the transcript: the transcript scrolls on underneath it, seen through its glass field and
@@ -77,12 +86,19 @@ struct ChatScreen: View {
                             ChatNoticeBanners(model: model, chat: info, conversation: conversation, state: state, showHistory: { showNotices = true })
                         }
                         .background(style.background)
+                        if let choice = conversation.contributorState.choice(fallback: info) {
+                            ChatContributorButton(choice: choice, connected: connected, changing: conversation.changingContributor) {
+                                Task { await model.setChatContributor(chat.id, choice.nextMode) }
+                            }
+                        }
                         ChatComposer(conversation: conversation, provider: info.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
-                                     send: { Task { await model.sendChatDraft(chat.id) } }, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } },
+                                     send: send, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } },
                                      attach: { picking = $0 }, pasteFiles: pasteFiles,
                                      attachmentImages: model.chatAttachmentImages, removeAttachment: { model.removeStagedAttachment($0, from: chat.id) },
                                      pending: model.pendingAttachments(for: chat.id), cancelPending: model.cancelUpload,
-                                     barAbove: barShown)
+                                     barAbove: barShown, suggestionCatalog: model.composerCatalog(for: chat.id), wantSuggestions: { model.wantComposerSuggestions(chat.id) },
+                                     // The `&` list marks the model the picker shows as chosen.
+                                     chosenModel: conversation.modelChoices(fallback: info).current?.id ?? conversation.modelChoices(fallback: info).modelID)
                     }
                     .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { bottomTop = $0; transcriptChanged(barShown: barShown) }
                 }
@@ -121,6 +137,28 @@ struct ChatScreen: View {
         }
         .sheet(isPresented: $showModels, onDismiss: requestFocus) {
             ChatModelSheet(model: model, chat: info) { showModels = false }.desktopThemed(model.theme.style)
+        }
+        .sheet(item: Binding(get: { model.memoPreview?.chatID == chat.id ? model.memoPreview : nil }, set: { if $0 == nil { model.memoPreview = nil } }),
+               onDismiss: memoPreviewGone) { shown in
+            MemoPreviewSheet(preview: shown.preview, insert: { model.insertMemoPreview() }, edit: {
+                editMemoAfterPreview = shown.preview.projectID
+                model.memoPreview = nil
+            }, close: { model.memoPreview = nil })
+            .desktopThemed(model.theme.style)
+        }
+    }
+
+    /// Return or Send: `/memo` puts the project's memo up instead of sending (`RemoteModel.openMemoPreview`); anything else is sent.
+    private func send() {
+        if model.openMemoPreview(chat: info) { return }
+        Task { await model.sendChatDraft(chat.id) }
+    }
+    private func memoPreviewGone() {
+        if let project = editMemoAfterPreview {
+            editMemoAfterPreview = nil
+            model.openMemoEditor(projectID: project, name: model.projectName(project))
+        } else {
+            requestFocus()
         }
     }
 
@@ -581,6 +619,15 @@ struct StatusLineSurface: ViewModifier {
     }
 }
 
+/// Reports whether a worker card's row is in view, for the "workers running" chip. Other rows are not watched.
+private struct WorkerVisibility: ViewModifier {
+    let tracked: Bool
+    let changed: @MainActor (Bool) -> Void
+    @ViewBuilder func body(content: Content) -> some View {
+        if tracked { content.onScrollVisibilityChange(threshold: 0.2, changed) } else { content }
+    }
+}
+
 /// A tap on the transcript puts the software keyboard away: a tap recognizer on the transcript's scroll view (the one this view is
 /// inside), alongside its own gestures and the rows' buttons, which still get their touches.
 private struct TranscriptKeyboardTap: UIViewRepresentable {
@@ -620,6 +667,8 @@ private struct ChatTranscriptList: View {
     let conversation: ChatConversation
     let provider: ChatProvider
     let state: ChatState
+    /// The lists the worker cards take their live state from.
+    let workers: WorkerInventory
     /// The software keyboard is up (or no hardware keyboard is attached): dragging or tapping the transcript puts it away.
     let dismissesKeyboard: Bool
     var loadOlder: @MainActor (@MainActor () async -> Void) async -> Void = { _ in }
@@ -631,9 +680,16 @@ private struct ChatTranscriptList: View {
     @State private var userDriven = false
     @State private var bottomCorrection: Task<Void, Never>?
     @State private var bottomCorrectionAgain = false
+    /// The worker cards in view now, by item id: the running ones that are not are what the chip counts.
+    @State private var workersInView: Set<String> = []
+    /// The card the chip asked to be scrolled to, taken up (with the reader's current proxy) as soon as it is set.
+    @State private var revealRequest: String?
+    /// The chip's scroll to a worker card, put right once the rows on the way are measured.
+    @State private var revealCorrection: Task<Void, Never>?
 
     var body: some View {
         let transcript = conversation.transcript
+        let timeline = WorkerTimeline(items: transcript.items, inventory: workers)
         ScrollViewReader { proxy in
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
@@ -652,13 +708,21 @@ private struct ChatTranscriptList: View {
                 }
                 // The provider's notices are the banner row's (and the history's), not rows of the transcript.
                 ForEach(transcript.items.filter(ChatNotices.isTranscriptRow)) { item in
-                    ChatItemRow(item: item, provider: provider, open: open(for: item), toggle: toggle).equatable()
+                    let worker = timeline.card(for: item.id)
+                    ChatItemRow(item: item, provider: provider, worker: worker, subagent: worker == nil ? ChatSubagent.inTranscript(item, items: transcript.items, provider: provider) : nil,
+                                open: open(for: item), toggle: toggle).equatable()
                         .id(item.id)
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frame in
                             viewport.frames[item.id] = frame
                             if preservingHistory, viewport.pageInstalled || viewport.waitingForPage { scheduleHistoryCorrection(proxy) }
                         }
-                        .onDisappear { viewport.frames[item.id] = nil }
+                        .modifier(WorkerVisibility(tracked: worker != nil) { seen in
+                            if seen { workersInView.insert(item.id) } else if workersInView.contains(item.id) { workersInView.remove(item.id) }
+                        })
+                        .onDisappear {
+                            viewport.frames[item.id] = nil
+                            if workersInView.contains(item.id) { workersInView.remove(item.id) }
+                        }
                 }
                 if state == .running || state == .waiting || state == .starting { workingRow }
                 Color.clear.frame(height: 6).id(Self.end)
@@ -680,6 +744,7 @@ private struct ChatTranscriptList: View {
             if userDriven {
                 cancelHistoryAnchor()
                 sticky.stopFollowing(); bottomCorrection?.cancel(); bottomCorrection = nil
+                revealCorrection?.cancel(); revealCorrection = nil
             }
         }
         .onScrollGeometryChange(for: ScrollMetrics.self) { geometry in
@@ -705,12 +770,65 @@ private struct ChatTranscriptList: View {
         }
         .onChange(of: conversation.feed.itemArrivals) { _, count in sticky.contentChanged(end: count, epoch: 0) }
         .onChange(of: conversation.jumps) { _, _ in jump(proxy) }
+        .onChange(of: revealRequest) { _, id in
+            guard let id else { return }
+            revealRequest = nil
+            reveal(id, proxy)
+        }
         .onChange(of: conversation.feed.loaded) { _, loaded in if loaded && !userDriven { jump(proxy) } }
         .accessibilityLabel("\(provider.chatTitle) conversation")
-        .onDisappear { cancelHistoryAnchor(); paging?.cancel(); paging = nil; bottomCorrection?.cancel(); bottomCorrection = nil }
+        .onDisappear {
+            cancelHistoryAnchor(); paging?.cancel(); paging = nil; bottomCorrection?.cancel(); bottomCorrection = nil
+            revealCorrection?.cancel(); revealCorrection = nil
+        }
         // Over the transcript's bottom edge, not in a row of its own: the transcript reaches the composer, and showing or hiding the
         // pill never resizes the viewport. It is shown only while the reader is scrolled up, so it covers nothing being followed.
         .overlay(alignment: .bottomTrailing) { pill(proxy).padding(.bottom, 6) }
+        // Beside it, the running workers of this chat whose cards are out of view. Only while some card is live: the clock is read
+        // every second then, since a worker the lists have not caught up with counts as starting for its first seconds only.
+        .overlay(alignment: .bottomLeading) {
+            if timeline.hasLive {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let hidden = timeline.running(now: ChatWorkerCard.seconds(context.date)).filter { !workersInView.contains($0.itemID) }
+                    if let first = hidden.first, let title = WorkerTimeline.chipTitle(running: hidden.count) {
+                        WorkersRunningChip(title: title) { revealRequest = first.itemID }.padding(.bottom, 6)
+                    }
+                }
+            }
+        }
+        }
+    }
+
+    /// Scrolls a worker card into view (the chip). The transcript stops following the bottom, as a scroll by hand does.
+    ///
+    /// A row the lazy stack has not drawn yet is where its estimate puts it, and the estimates of the rows on the way are right only once
+    /// they are drawn: the first scroll can stop short of the card. So the card is looked for after each scroll: drawn and in view, that
+    /// is it; drawn, it is scrolled to again (now exactly); not drawn, the transcript moves most of a screen towards it and asks again.
+    /// The reader taking over, or the jump to the latest, ends it.
+    private func reveal(_ id: String, _ proxy: ScrollViewProxy) {
+        cancelHistoryAnchor()
+        sticky.stopFollowing(); bottomCorrection?.cancel(); bottomCorrection = nil
+        proxy.scrollTo(id, anchor: .top)
+        let order = Dictionary(conversation.transcript.items.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+        revealCorrection?.cancel()
+        revealCorrection = Task { @MainActor in
+            for _ in 0..<8 {
+                try? await Task.sleep(for: .milliseconds(60))
+                guard !Task.isCancelled, !userDriven, let metrics = viewport.metrics else { return }
+                let top = CGFloat(metrics.topInset), bottom = top + CGFloat(metrics.viewportHeight)
+                if let frame = viewport.frames[id] {
+                    if frame.minY >= top - 1, frame.maxY <= bottom + 1 { return }
+                    proxy.scrollTo(id, anchor: .top)
+                    continue
+                }
+                let drawn = viewport.frames.filter { $0.value.maxY > top && $0.value.minY < bottom }.compactMap { order[$0.key] }
+                guard let target = order[id], let seen = drawn.min() else { return }
+                let step = CGFloat(metrics.viewportHeight) * 0.75, offset = CGFloat(metrics.offset)
+                position.scrollTo(y: target < seen ? max(-top, offset - step) : offset + step)
+                try? await Task.sleep(for: .milliseconds(30))
+                guard !Task.isCancelled, !userDriven else { return }
+                proxy.scrollTo(id, anchor: .top)
+            }
         }
     }
 
@@ -813,6 +931,7 @@ private struct ChatTranscriptList: View {
     }
     private func jump(_ proxy: ScrollViewProxy) {
         cancelHistoryAnchor()
+        revealCorrection?.cancel(); revealCorrection = nil
         sticky.jumpToBottom()
         proxy.scrollTo(Self.end, anchor: .bottom)
         scheduleBottomCorrection { proxy.scrollTo(Self.end, anchor: .bottom) }

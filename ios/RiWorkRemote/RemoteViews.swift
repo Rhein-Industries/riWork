@@ -424,6 +424,9 @@ struct TerminalTabsView: View {
         .sheet(item: $sessionInfo) { SessionInfoSheet(info: $0).desktopThemed(model.theme.style) }
         .sheet(isPresented: $showingDisplay) { DisplaySettingsSheet(model: model).desktopThemed(model.theme.style) }
         .sheet(item: $newTerminal, onDismiss: { chatRefocus += 1 }) { NewTerminalSheet(sheet: $0).desktopThemed(model.theme.style) }
+        .sheet(isPresented: Binding(get: { model.memoEditor != nil }, set: { if !$0 { model.closeMemoEditor() } }), onDismiss: { chatRefocus += 1 }) {
+            ProjectMemoSheet(model: model).desktopThemed(model.theme.style)
+        }
         .alert("Close terminal?", isPresented: Binding(get: { closing != nil }, set: { if !$0 { closing = nil } }), presenting: closing) { session in
             Button("Close terminal", role: .destructive) { close(session) }
             Button("Cancel", role: .cancel) {}
@@ -441,7 +444,9 @@ struct TerminalTabsView: View {
                 .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
         }
         .task(id: project.id) { await model.chooseProject(project.id) }
-        // Each tab's state changes while the strip is looked at: read the tabs again every few seconds. Focus mode hides the strip.
+        // Each tab's state changes while the strip is looked at: read the tabs again every few seconds. Focus mode hides the strip, and
+        // the reading goes on: it runs for as long as this screen is up, whatever is on it. A chat on it takes its live worker cards'
+        // states from these same lists (`WorkerTimeline`), so they stay fresh while the chat is shown.
         .task(id: project.id) { await model.keepFresh(.sessions) }
         // The terminal is released (its long poll, its pinned size) the moment a chat takes the screen, and picked up again when a terminal tab does.
         .onAppear { onScreen = true; syncTerminalVisible(); openRequestedNewTerminal() }
@@ -583,6 +588,8 @@ struct TerminalTabsView: View {
                 }
             }
             Section(project.name) {
+                // The project's own Markdown notes, shared with the Mac (RemoteModel+Memo.swift).
+                Button("Memo…", systemImage: "note.text") { model.openMemoEditor(projectID: project.id, name: project.name) }
                 Button("Refresh terminal tabs", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
                 // The project's own orchestrator is a row of the New terminal sheet. The global one belongs to no project: this opens
                 // the dashboard's Global screen (Open, or Start there), leaving this project's tabs as they are.

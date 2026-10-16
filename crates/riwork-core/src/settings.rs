@@ -2,6 +2,7 @@
 //! UI globals and panels adapt these data types in the desktop crate.
 
 use crate::{
+    delegation::DelegationPolicy,
     project_sort::ProjectOrder,
     provider::{ClaudeBilling, Provider},
     status_bar::StatusBarSettings,
@@ -251,6 +252,11 @@ pub struct Settings {
     /// until the setting is changed. Never saved.
     #[serde(skip)]
     pub orchestrator_unreadable: Vec<(String, Value)>,
+    /// How every orchestrator spreads work over worker shells and which models it
+    /// prefers, where a project's own policy (`Project::delegation_policy`) chooses
+    /// nothing. Told to an orchestrator when it starts or loads its skill; one that
+    /// runs keeps what it was told. Written only once something is chosen in it.
+    pub delegation_policy: DelegationPolicy,
     /// RiWork's own interface text in points of its panel list text, like
     /// Ghostty's `font-size`: 11 is the design size, from `ui_text::MIN_POINTS`
     /// to `MAX_POINTS`. Terminals keep Ghostty's size.
@@ -292,6 +298,16 @@ fn serialize_billing_as_flag<S: serde::Serializer>(
 }
 
 impl Settings {
+    /// Known persisted keys and their typed values, using the settings file's names.
+    /// Runtime-only diagnostics (such as `orchestrator_unreadable`) are excluded.
+    pub fn values(&self) -> Result<Map<String, Value>, String> {
+        match serde_json::to_value(self) {
+            Ok(Value::Object(fields)) => Ok(fields),
+            Ok(_) => Err("Cannot encode settings: not an object".to_owned()),
+            Err(error) => Err(format!("Cannot encode settings: {error}")),
+        }
+    }
+
     /// What an orchestrator created now runs as by these settings.
     pub fn orchestrator_runs(&self) -> OrchestratorRuns {
         match self.orchestrator_mode {
@@ -393,6 +409,7 @@ impl Default for Settings {
             orchestrator_chat_provider: Provider::Codex,
             orchestrator_chat_model: None,
             orchestrator_unreadable: Vec::new(),
+            delegation_policy: DelegationPolicy::default(),
             ui_text_size: TextPoints::DEFAULT,
             ui_text_matches_terminal: false,
             native_terminal_colors: true,
@@ -513,6 +530,12 @@ impl<'de> Deserialize<'de> for Settings {
                 (!readable).then(|| (key.to_owned(), value.clone()))
             })
             .collect(),
+            // Field by field: what this build cannot read is kept in the policy.
+            delegation_policy: lenient_field(
+                &object,
+                "delegation_policy",
+                defaults.delegation_policy,
+            ),
             // A size out of range is pulled into it; anything but a number is the default.
             ui_text_size: lenient_field(&object, "ui_text_size", defaults.ui_text_size),
             ui_text_matches_terminal: lenient_field(
@@ -683,12 +706,47 @@ impl SettingsStore {
     }
 
     pub fn update(&self, change: impl FnOnce(&mut Settings)) -> Result<Settings, String> {
+        self.update_with(None, |before, _| {
+            let mut settings = before.clone();
+            change(&mut settings);
+            Ok(settings)
+        })
+    }
+
+    /// Explicitly choose one known top-level setting. Validate against the latest
+    /// complete document under the write lock; a refusal never reaches the save path.
+    /// Input errors carry `invalid_request:`, as the CLI's structured errors do.
+    pub fn set_value(&self, key: &str, value: Value) -> Result<Settings, String> {
+        if !Settings::default().values()?.contains_key(key) {
+            return Err(format!(
+                "invalid_request: '{key}' is not a known setting; run riwork settings list"
+            ));
+        }
+        self.update_with(Some(key), |_, document| {
+            let invalid = |reason: String| format!("invalid_request: Cannot set '{key}': {reason}");
+            let mut prospective = document.clone();
+            prospective.insert(key.to_owned(), value.clone());
+            let settings = Settings::deserialize(Value::Object(prospective))
+                .map_err(|error| invalid(error.to_string()))?;
+            if settings.schema_version != 1 {
+                return Err(invalid("only settings schema 1 is supported".to_owned()));
+            }
+            let effective = settings.values()?;
+            validate_setting_input(key, &value, &effective[key], &settings).map_err(invalid)?;
+            Ok(settings)
+        })
+    }
+
+    fn update_with(
+        &self,
+        chosen_key: Option<&str>,
+        change: impl FnOnce(&Settings, &Map<String, Value>) -> Result<Settings, String>,
+    ) -> Result<Settings, String> {
         let lock = self.lock_file()?;
         FileExt::lock_exclusive(&lock).map_err(|error| format!("Cannot lock settings: {error}"))?;
         let (before, document) = self.read_with_document()?;
-        let mut settings = before.clone();
-        change(&mut settings);
-        let document = merged_document(document, &before, &settings)?;
+        let settings = change(&before, &document)?;
+        let document = merged_document(document, &before, &settings, chosen_key)?;
         // What the file says now, including what it keeps that this build cannot
         // read (`orchestrator_unreadable`), is what was saved.
         let settings = Settings::deserialize(Value::Object(document.clone()))
@@ -772,32 +830,35 @@ impl SettingsStore {
 /// The orchestrator keys (`CHOSEN_ONLY`) are written only when they are chosen: a value
 /// that changed, or one chosen over a saved value this build could not read (it left
 /// `orchestrator_unreadable`). So a file without them keeps meaning "never chosen", and
-/// the default that stands for that can improve in a later build.
+/// the default that stands for that can improve in a later build. The delegation policy
+/// keeps what it cannot read itself, so writing it whole loses nothing.
+/// `chosen_key` also saves an explicit CLI choice equal to the effective default:
+/// choosing Ghostty must replace a future theme that currently reads as Ghostty.
 fn merged_document(
     mut document: Map<String, Value>,
     before: &Settings,
     after: &Settings,
+    chosen_key: Option<&str>,
 ) -> Result<Map<String, Value>, String> {
-    const CHOSEN_ONLY: [&str; 3] = [
+    const CHOSEN_ONLY: [&str; 4] = [
         "orchestrator_mode",
         "orchestrator_chat_provider",
         "orchestrator_chat_model",
+        "delegation_policy",
     ];
-    let encode = |settings: &Settings| match serde_json::to_value(settings) {
-        Ok(Value::Object(fields)) => Ok(fields),
-        Ok(_) => Err("Cannot encode settings: not an object".to_owned()),
-        Err(error) => Err(format!("Cannot encode settings: {error}")),
-    };
     let chosen_over_unreadable = |key: &str| before.is_unreadable(key) && !after.is_unreadable(key);
-    let before_fields = encode(before)?;
+    let before_fields = before.values()?;
     let before = &before_fields;
-    for (key, value) in encode(after)? {
+    for (key, value) in after.values()? {
         let unchanged = before.get(&key) == Some(&value);
         if chosen_over_unreadable(&key) {
             document.insert(key, value);
             continue;
         }
-        if unchanged && (document.contains_key(&key) || CHOSEN_ONLY.contains(&key.as_str())) {
+        if unchanged
+            && chosen_key != Some(key.as_str())
+            && (document.contains_key(&key) || CHOSEN_ONLY.contains(&key.as_str()))
+        {
             continue;
         }
         if key == "chat_display_modes"
@@ -827,6 +888,67 @@ fn merged_document(
         document.insert(key, value);
     }
     Ok(document)
+}
+
+/// Settings intentionally loads many invalid fields as defaults. Merely succeeding
+/// at deserialization is therefore insufficient for an explicit CLI write. Check
+/// every supplied component against what the model actually understood, allowing
+/// omitted object defaults and the status bar's appended default items.
+fn validate_setting_input(
+    key: &str,
+    input: &Value,
+    effective: &Value,
+    settings: &Settings,
+) -> Result<(), String> {
+    if key == "delegation_policy"
+        && (!settings.delegation_policy.unreadable.is_empty()
+            || settings.delegation_policy.unreadable_whole.is_some())
+    {
+        return Err("the delegation policy contains unknown or unreadable values".to_owned());
+    }
+    if key == "ui_text_size" {
+        // This field deliberately rounds to a tenth and clamps to 9..=24.
+        // A non-number must still fail rather than silently become the default.
+        return TextPoints::deserialize(input)
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+    }
+    if key == "status_bar"
+        && let Some(items) = input.get("items").and_then(Value::as_array)
+    {
+        for item in items {
+            crate::status_bar::StatusBarItem::deserialize(item)
+                .map_err(|error| format!("invalid status bar item: {error}"))?;
+        }
+    }
+    retained_input(input, effective, key)
+}
+
+fn retained_input(input: &Value, effective: &Value, path: &str) -> Result<(), String> {
+    match (input, effective) {
+        (Value::Object(input), Value::Object(effective)) => {
+            for (key, value) in input {
+                let path = format!("{path}.{key}");
+                let decoded = effective
+                    .get(key)
+                    .ok_or_else(|| format!("{path} is unknown or would be discarded"))?;
+                retained_input(value, decoded, &path)?;
+            }
+            Ok(())
+        }
+        (Value::Array(input), Value::Array(effective))
+            if path == "status_bar.items" && input.len() <= effective.len() =>
+        {
+            for (index, (value, decoded)) in input.iter().zip(effective).enumerate() {
+                retained_input(value, decoded, &format!("{path}[{index}]"))?;
+            }
+            Ok(())
+        }
+        _ if input == effective => Ok(()),
+        _ => Err(format!(
+            "{path} has the wrong type or an unsupported value (the app would read {effective})"
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -1291,6 +1413,109 @@ mod tests {
         assert!(agent_terminals_unrestricted(&dir));
         fs::write(dir.join("settings.json"), "{not json").unwrap();
         assert!(agent_terminals_unrestricted(&dir));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_delegation_policy_is_written_only_when_chosen_and_keeps_what_it_cannot_read() {
+        use crate::delegation::{Delegation, Route, Work, resolve};
+        let dir = env::temp_dir().join(format!("riwork-settings-delegation-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        let document = || -> Value {
+            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap()
+        };
+        let write = |text: &str| fs::write(dir.join("settings.json"), text).unwrap();
+
+        // A file from before the policy reads as nothing chosen, and saving something
+        // else does not write it.
+        write(r#"{"schema_version":1,"theme":"future_theme","future_setting":{"a":1}}"#);
+        let loaded = store.load().unwrap();
+        assert!(loaded.delegation_policy.is_empty());
+        assert_eq!(
+            resolve(&loaded.delegation_policy, None),
+            Delegation::built_in()
+        );
+        store
+            .update(|settings| settings.dictation_mic = true)
+            .unwrap();
+        assert!(document().get("delegation_policy").is_none());
+
+        // Choosing writes just what is chosen, and leaves unrelated keys alone.
+        store
+            .update(|settings| {
+                settings.delegation_policy.set_parallel_shells(Some(6));
+                settings
+                    .delegation_policy
+                    .set_route(Work::Design, Some(Route::recommended(Provider::Muse)))
+                    .unwrap();
+            })
+            .unwrap();
+        let file = document();
+        assert_eq!(
+            file["delegation_policy"],
+            serde_json::json!({
+                "parallel_shells": 6,
+                "design": {"provider": "muse", "model": "muse-wonder-full-1.0"}
+            })
+        );
+        assert_eq!(file["theme"], "future_theme");
+        assert_eq!(file["future_setting"], serde_json::json!({"a": 1}));
+        assert_eq!(file["dictation_mic"], true);
+        let policy = resolve(&store.load().unwrap().delegation_policy, None);
+        assert_eq!(policy.parallel_shells, 6);
+        assert!(policy.spread_work);
+        assert_eq!(policy.design, Route::recommended(Provider::Muse));
+
+        // Values this build cannot read stand down to the built-in policy, survive an
+        // unrelated save and a change to another field of the policy, and go only when
+        // their own field is chosen.
+        write(
+            r#"{"schema_version":1,"delegation_policy":{"spread_work":"often","parallel_shells":6,"workhorse":{"provider":"gemini","model":"x"},"future_field":true},"future_setting":2}"#,
+        );
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.delegation_policy.parallel_shells, Some(6));
+        assert_eq!(loaded.delegation_policy.unreadable.len(), 3);
+        let resolved = resolve(&loaded.delegation_policy, None);
+        assert!(resolved.spread_work);
+        assert_eq!(resolved.workhorse, Work::Workhorse.built_in());
+        store
+            .update(|settings| settings.use_riwork_colors = true)
+            .unwrap();
+        store
+            .update(|settings| settings.delegation_policy.set_parallel_shells(Some(2)))
+            .unwrap();
+        let file = document();
+        assert_eq!(file["delegation_policy"]["parallel_shells"], 2);
+        assert_eq!(file["delegation_policy"]["spread_work"], "often");
+        assert_eq!(
+            file["delegation_policy"]["workhorse"],
+            serde_json::json!({"provider": "gemini", "model": "x"})
+        );
+        assert_eq!(file["delegation_policy"]["future_field"], true);
+        assert_eq!(file["future_setting"], 2);
+        store
+            .update(|settings| settings.delegation_policy.set_spread_work(Some(false)))
+            .unwrap();
+        assert_eq!(document()["delegation_policy"]["spread_work"], false);
+
+        // A policy that is not an object reads as nothing chosen and stays as saved
+        // until the policy is changed.
+        write(r#"{"schema_version":1,"delegation_policy":"spread"}"#);
+        assert_eq!(
+            resolve(&store.load().unwrap().delegation_policy, None),
+            Delegation::built_in()
+        );
+        store
+            .update(|settings| settings.dictation_mic = true)
+            .unwrap();
+        assert_eq!(document()["delegation_policy"], "spread");
+        store
+            .update(|settings| settings.delegation_policy.set_spread_work(Some(true)))
+            .unwrap();
+        assert_eq!(
+            document()["delegation_policy"],
+            serde_json::json!({"spread_work": true})
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1768,6 +1993,54 @@ mod tests {
         assert!(!loaded.remember_window_size);
         assert!(loaded.use_riwork_colors);
         assert_eq!(loaded.project_order, project_order);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_usage_mode_this_build_cannot_read_reads_as_the_current_chat_and_keeps_the_bar() {
+        use crate::status_bar::{StatusItemKind, StatusSide, UsageMode};
+        let dir = env::temp_dir().join(format!("riwork-settings-usage-mode-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        // A newer build's mode, beside a bar routed its own way.
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version":1,"status_bar":{"enabled":true,"usage_mode":"per_provider","items":[
+                {"kind":"usage","enabled":true,"side":"left"},
+                {"kind":"codex_account","enabled":false,"side":"right"}]}}"#,
+        )
+        .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.status_bar.usage_mode, UsageMode::CurrentChat);
+        assert_eq!(
+            loaded.status_bar.visible_items(StatusSide::Left)[0],
+            StatusItemKind::Usage
+        );
+        assert!(
+            !loaded
+                .status_bar
+                .visible_items(StatusSide::Right)
+                .contains(&StatusItemKind::CodexAccount)
+        );
+
+        // An unrelated change leaves the newer build's mode in the file.
+        store
+            .update(|settings| settings.remember_window_size = false)
+            .unwrap();
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(file["status_bar"]["usage_mode"], "per_provider");
+
+        // Choosing All accounts saves it, and the routing chosen before stays.
+        store
+            .update(|settings| settings.status_bar.usage_mode = UsageMode::AllAccounts)
+            .unwrap();
+        let reloaded = SettingsStore::open(&dir).unwrap().load().unwrap();
+        assert_eq!(reloaded.status_bar.usage_mode, UsageMode::AllAccounts);
+        assert_eq!(
+            reloaded.status_bar.visible_items(StatusSide::Left)[0],
+            StatusItemKind::Usage
+        );
+        assert!(!reloaded.remember_window_size);
         fs::remove_dir_all(dir).unwrap();
     }
 
