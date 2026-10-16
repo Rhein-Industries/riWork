@@ -392,6 +392,7 @@ impl ChatView {
             .flex()
             .flex_col()
             .child(self.toolbar(look, window, cx))
+            .children(self.find_bar(look, window, cx))
             .child(
                 div()
                     .relative()

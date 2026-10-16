@@ -13373,6 +13373,15 @@ fn main() {
             KeyBinding::new("cmd-alt-shift-c", OpenNewChat, None),
             KeyBinding::new("cmd-.", chat_view::InterruptChat, Some("ChatView")),
             KeyBinding::new("ctrl-alt-d", ToggleDictation, Some("ChatView")),
+            // Find in a focused chat; ⌘⇧G is Open Grok again once its bar is closed. A binding
+            // with no context ranks with the deepest context, so in the chat's own fields (Kit's
+            // `Input`) these need `ChatView > Input`, bound after the window's to win the tie.
+            KeyBinding::new("cmd-f", chat_view::FindInChat, Some("ChatView")),
+            KeyBinding::new("cmd-f", chat_view::FindInChat, Some("ChatView > Input")),
+            KeyBinding::new("cmd-g", chat_view::FindNext, Some("ChatView")),
+            KeyBinding::new("cmd-g", chat_view::FindNext, Some("ChatView > Input")),
+            KeyBinding::new("cmd-shift-g", chat_view::FindPrevious, Some("ChatView")),
+            KeyBinding::new("cmd-shift-g", chat_view::FindPrevious, Some("ChatView > Input")),
         ]);
         cx.set_menus([
             Menu::new("RiWork").items([
@@ -16943,6 +16952,18 @@ mod chat_tab_tests {
             1
         );
         assert!(keys.contains(&("cmd-shift-d".to_owned(), "None".to_owned())));
+        // Find in a chat: bound only in a chat tab and its fields, after the window's own ⌘F
+        // and ⌘⇧G.
+        for keystroke in ["cmd-f", "cmd-g", "cmd-shift-g"] {
+            for context in ["Some(\"ChatView\"", "Some(\"ChatView > Input\""] {
+                assert!(
+                    keys.contains(&(keystroke.to_owned(), context.to_owned())),
+                    "{keys:?}"
+                );
+            }
+        }
+        assert!(keys.contains(&("cmd-f".to_owned(), "None".to_owned())));
+        assert!(keys.contains(&("cmd-shift-g".to_owned(), "None".to_owned())));
     }
 }
 

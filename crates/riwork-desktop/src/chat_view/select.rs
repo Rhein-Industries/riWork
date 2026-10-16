@@ -2,12 +2,12 @@
 //! Base owns all gestures/endpoints/multi-click/Shift/autoscroll. The renderer
 //! reports glyph runs; stable content keys and copy_with export current source,
 //! including leaves whose elements have genuinely left the virtual list.
-use super::{ChatView, selection_document::SourceLeaf, widgets::Look};
+use super::{ChatView, find::FindPaint, selection_document::SourceLeaf, widgets::Look};
 use gpui::{
-    AnyElement, AnyWindowHandle, App, Bounds, Context, Element, ElementId, Focusable,
+    AnyElement, AnyWindowHandle, App, BorderStyle, Bounds, Context, Element, ElementId, Focusable,
     GlobalElementId, HighlightStyle, HitboxBehavior, Hsla, InspectorElementId, InteractiveText,
     IntoElement, LayoutId, ListState, Pixels, Point, SharedString, StyledText, Subscription,
-    TextLayout, Window, div, prelude::*, rgb,
+    TextLayout, Window, div, prelude::*, px, rgb,
 };
 use gpui_kit::base::{
     TestSupportExt as _, TextSelection, TextSelectionContentKey, TextSelectionEvent,
@@ -19,7 +19,12 @@ use std::{
     collections::HashMap,
     ops::Range,
     rc::Rc,
+    sync::atomic::{AtomicU64, Ordering},
 };
+
+/// Each source the document is given has its own number, across every chat and window, so
+/// find can tell the text it searched from the text now shown.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 struct PaintedLeaf {
@@ -40,6 +45,14 @@ struct Document {
     scroll: Point<Pixels>,
     native: Option<bool>,
     participant: Option<gpui::EntityId>,
+    /// Which source this is (`GENERATION`), and how many frames have been laid out.
+    generation: u64,
+    paints: u64,
+    /// The matches of an open find bar, painted under each leaf's glyphs.
+    find: Option<FindPaint>,
+    /// What the last frame painted of `find`: leaf, bytes and whether it is the current one.
+    #[cfg(test)]
+    found: Vec<(String, Range<usize>, bool)>,
 }
 
 impl Document {
@@ -90,6 +103,21 @@ impl Document {
             return Vec::new();
         };
         self.source[a.0..=b.0].iter().map(|leaf| leaf.row).collect()
+    }
+    fn replace_source(&mut self, source: Vec<SourceLeaf>) {
+        self.source = source;
+        self.generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    }
+    /// Where `range` of source leaf `leaf` was drawn in the last frame, in window
+    /// coordinates; none for a leaf the virtual list did not draw.
+    fn painted_rect(&self, leaf: &SourceLeaf, range: Range<usize>) -> Option<Bounds<Pixels>> {
+        let painted = self
+            .frame
+            .iter()
+            .find(|painted| painted.key == leaf.key && painted.text.as_ref() == leaf.text)?;
+        range_quads(&painted.layout, range)
+            .into_iter()
+            .reduce(|a, b| a.union(&b))
     }
     fn content_key(&self, point: Point<Pixels>) -> Option<TextSelectionContentKey> {
         let window_point = point + self.origin + self.scroll;
@@ -181,6 +209,34 @@ impl TranscriptSelection {
     pub fn changed(&self) {
         self.dirty.set(true);
     }
+    /// Which source the document holds now; a new one has a new number.
+    pub fn generation(&self) -> u64 {
+        self.data.borrow().generation
+    }
+    /// How many frames have laid the transcript out.
+    pub fn paints(&self) -> u64 {
+        self.data.borrow().paints
+    }
+    pub fn with_source<R>(&self, read: impl FnOnce(&[SourceLeaf]) -> R) -> R {
+        read(&self.data.borrow().source)
+    }
+    /// See `Document::painted_rect`.
+    pub fn painted_rect(&self, leaf: usize, range: Range<usize>) -> Option<Bounds<Pixels>> {
+        let data = self.data.borrow();
+        data.painted_rect(data.source.get(leaf)?, range)
+    }
+    /// The matches find paints, or none.
+    pub fn set_find(&self, find: Option<FindPaint>) {
+        self.data.borrow_mut().find = find;
+    }
+    /// The transcript text selected now, as Copy would export it.
+    pub fn selected_text(&self, cx: &App) -> String {
+        self.data.borrow().export(self.handle.snapshot(cx))
+    }
+    #[cfg(test)]
+    pub(super) fn painted_find(&self) -> Vec<(String, Range<usize>, bool)> {
+        self.data.borrow().found.clone()
+    }
     pub fn selected_rows(&self, cx: &App) -> Vec<usize> {
         self.data.borrow().rows(self.handle.snapshot(cx))
     }
@@ -197,7 +253,7 @@ impl TranscriptSelection {
                 crate::behavior_controls::retire_content_scope(scope, window, cx)
             });
         });
-        self.data.borrow_mut().source.clear();
+        self.data.borrow_mut().replace_source(Vec::new());
         self.data.borrow_mut().frame.clear();
         self.handle.update_runs(&[], cx);
         self.scope = TextSelectionScopeId::new();
@@ -305,7 +361,7 @@ impl ChatView {
                 data.ids.insert(leaf.key.clone(), id);
             }
         }
-        data.source = source;
+        data.replace_source(source);
         data.native = Some(look.native);
     }
     pub(super) fn copy_transcript(
@@ -320,6 +376,7 @@ impl ChatView {
                 .read(cx)
                 .focus_handle(cx)
                 .is_focused(window)
+            || self.find.field_focused(window, cx)
             || self
                 .answers
                 .values()
@@ -436,7 +493,8 @@ impl IntoElement for LeafRenderer {
 }
 impl Element for LeafRenderer {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    /// The leaf's place in the source, which find's matches are recorded by.
+    type PrepaintState = Option<usize>;
     fn id(&self) -> Option<ElementId> {
         Some(ElementId::Name(format!("leaf:{}", self.key).into()))
     }
@@ -460,10 +518,11 @@ impl Element for LeafRenderer {
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> Option<usize> {
         self.body.prepaint(window, cx);
         let mut data = self.data.borrow_mut();
-        if let Some(order) = data.source.iter().position(|leaf| leaf.key == self.key) {
+        let order = data.source.iter().position(|leaf| leaf.key == self.key);
+        if let Some(order) = order {
             debug_assert_eq!(
                 data.source[order].text.as_str(),
                 self.text.as_ref(),
@@ -478,6 +537,7 @@ impl Element for LeafRenderer {
                 order: order as u64,
             });
         }
+        order
     }
     fn paint(
         &mut self,
@@ -485,10 +545,43 @@ impl Element for LeafRenderer {
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
         _: &mut (),
-        _: &mut (),
+        order: &mut Option<usize>,
         window: &mut Window,
         cx: &mut App,
     ) {
+        // Find's matches go under the glyphs and over the card or code background, so the
+        // text stays as it is drawn and nothing is in the way of a click or a selection.
+        if let Some(order) = *order {
+            let mut data = self.data.borrow_mut();
+            let data = &mut *data;
+            if let Some(find) = data
+                .find
+                .as_ref()
+                .filter(|f| f.generation == data.generation)
+            {
+                let first = find.hits.partition_point(|hit| hit.leaf < order);
+                for (at, hit) in find.hits[first..]
+                    .iter()
+                    .take_while(|hit| hit.leaf == order)
+                    .enumerate()
+                {
+                    let current = find.current == Some(first + at);
+                    for quad in range_quads(&self.layout, hit.range.clone()) {
+                        window.paint_quad(gpui::quad(
+                            quad,
+                            px(2.),
+                            if current { find.strong } else { find.fill },
+                            px(if current { 1. } else { 0. }),
+                            find.edge,
+                            BorderStyle::Solid,
+                        ));
+                    }
+                    #[cfg(test)]
+                    data.found
+                        .push((self.key.clone(), hit.range.clone(), current));
+                }
+            }
+        }
         self.body.paint(window, cx);
     }
 }
@@ -534,7 +627,13 @@ impl Element for DocumentViewport {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.data.borrow_mut().frame.clear();
+        {
+            let mut data = self.data.borrow_mut();
+            data.frame.clear();
+            data.paints += 1;
+            #[cfg(test)]
+            data.found.clear();
+        }
         self.body.prepaint(window, cx);
         let bounds = self.list.viewport_bounds();
         let scroll = self.list.scroll_px_offset_for_scrollbar();
@@ -651,11 +750,22 @@ fn paint_projection(
     window: &mut Window,
     cx: &mut App,
 ) {
+    for quad in range_quads(layout, range) {
+        window.paint_quad(gpui::fill(quad, color));
+        window.with_content_mask(Some(gpui::ContentMask { bounds: quad }), |window| {
+            let _ = layout.paint_foreground(window, cx);
+        });
+    }
+}
+
+/// The boxes `range` of a laid-out text covers, one per line it runs over, in window
+/// coordinates.
+fn range_quads(layout: &TextLayout, range: Range<usize>) -> Vec<Bounds<Pixels>> {
     let (Some(start), Some(end)) = (
         layout.position_for_index(range.start),
         layout.position_for_index(range.end),
     ) else {
-        return;
+        return Vec::new();
     };
     let bounds = layout.bounds();
     let height = layout.line_height();
@@ -681,10 +791,5 @@ fn paint_projection(
             Point::new(end.x, end.y + height),
         ));
     }
-    for quad in quads {
-        window.paint_quad(gpui::fill(quad, color));
-        window.with_content_mask(Some(gpui::ContentMask { bounds: quad }), |window| {
-            let _ = layout.paint_foreground(window, cx);
-        });
-    }
+    quads
 }

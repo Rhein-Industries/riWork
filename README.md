@@ -498,6 +498,7 @@ The new agent's first message is "You are taking over a conversation from SOURCE
 | Close tab / pane (shell stays alive; refused in a locked pane) | Cmd+W / Cmd+Shift+W |
 | Next / previous tab | Ctrl+Tab / Ctrl+Shift+Tab |
 | Search current panel (opens Projects from a shell tab) | Cmd+F |
+| Find in a chat (its transcript or message box focused). While its bar is open, Return / Shift+Return or Cmd+G / Cmd+Shift+G go to the next / previous match (so Cmd+Shift+G does not open Grok then), and Esc closes it | Cmd+F |
 | Open / select Projects panel | Cmd+B |
 | Open / select Files / Preview panel | Cmd+Shift+E / Cmd+Shift+P |
 | Global window: Chat / Dashboard | Cmd+Shift+O / Cmd+Option+G |
