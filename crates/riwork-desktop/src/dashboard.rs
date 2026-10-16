@@ -2204,7 +2204,7 @@ fn section(
     title: &str,
     count: Option<String>,
     colors: Palette,
-) -> gpui::Stateful<Div> {
+) -> impl IntoElement + ParentElement + use<> {
     let heading = if ui_text::is_native() {
         controls::section_heading(ui_text::cased(title.to_owned()), colors)
             .px(ui_text::space(ROW_PAD))
@@ -2236,6 +2236,7 @@ fn section(
         .flex_col()
         .min_w_0()
         .child(heading)
+        .test_support()
 }
 
 /// "3", or "1 of 3" while a search hides some.
