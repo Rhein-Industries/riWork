@@ -9,7 +9,7 @@ public enum ChatDisplayMode: String, Codable, Sendable, CaseIterable {
 public enum ChatProjectionRowKind: String, Codable, Sendable {
     case user, final, commentary, reasoning, shell, read, search, list
     case webSearch = "web_search", webFetch = "web_fetch"
-    case mcp, subagent, other, edit, plan, todo, compaction, notice, request, group, activity
+    case mcp, worker, subagent, other, edit, plan, todo, compaction, notice, request, group, activity
 }
 
 public struct ChatArtifactRef: Codable, Sendable, Equatable {
@@ -93,7 +93,24 @@ public struct ChatDisclosureState: Codable, Sendable, Equatable {
     public init(overrides: [String: Bool] = [:], bulk: Bool? = nil) { self.overrides = overrides; self.bulk = bulk }
     public mutating func toggle(_ id: String, currentlyOpen: Bool) { overrides[id] = !currentlyOpen }
     public mutating func resetMode() { overrides = [:]; bulk = nil }
+    /// Legacy blanket default for serialized fixture/client compatibility.
+    /// Interactive commands snapshot the current rows with `resetBulkForRows`.
     public mutating func resetBulk(open: Bool) { overrides = [:]; bulk = open }
+    /// Later streaming arrivals retain their default closed state. Normal affects
+    /// activity lines only; Verbose also visits calls hidden beneath closed rows.
+    public mutating func resetBulkForRows(open: Bool, mode: ChatDisplayMode, rows: [ChatProjectionRow]) {
+        func visit(_ rows: [ChatProjectionRow], overrides: inout [String: Bool]) {
+            for row in rows {
+                let affected = mode == .normal ? row.kind == .activity
+                    : ![ChatProjectionRowKind.user, .final, .commentary, .compaction, .notice, .request].contains(row.kind)
+                if affected { overrides[row.id] = open }
+                visit(row.children, overrides: &overrides)
+                visit(row.comments, overrides: &overrides)
+            }
+        }
+        resetMode()
+        visit(rows, overrides: &overrides)
+    }
     fileprivate func isOpen(_ id: String, mode: ChatDisplayMode, activity: Bool = false) -> Bool {
         overrides[id] ?? ((activity || mode == .verbose) ? bulk ?? false : false)
     }
@@ -107,24 +124,26 @@ public struct ChatDisclosureState: Codable, Sendable, Equatable {
 
 public struct ChatProjectionOptions: Codable, Sendable, Equatable {
     public var mode: ChatDisplayMode
+    public var provider: ChatProvider?
     public var nowMS: UInt64?
     public var runningTurnID: String?
     public var turnTiming: [String: ChatTurnTiming]
     public var disclosure: ChatDisclosureState
     public var provisional: Bool
     public var elidedItems: Set<String>
-    public init(mode: ChatDisplayMode = .normal, nowMS: UInt64? = nil, runningTurnID: String? = nil,
+    public init(mode: ChatDisplayMode = .normal, provider: ChatProvider? = nil, nowMS: UInt64? = nil, runningTurnID: String? = nil,
                 turnTiming: [String: ChatTurnTiming] = [:], disclosure: ChatDisclosureState = .init(), provisional: Bool = false,
                 elidedItems: Set<String> = []) {
-        self.mode = mode; self.nowMS = nowMS; self.runningTurnID = runningTurnID
+        self.mode = mode; self.provider = provider; self.nowMS = nowMS; self.runningTurnID = runningTurnID
         self.turnTiming = turnTiming; self.disclosure = disclosure; self.provisional = provisional; self.elidedItems = elidedItems
     }
     private enum CodingKeys: String, CodingKey {
-        case mode, nowMS = "now_ms", runningTurnID = "running_turn_id", turnTiming = "turn_timing", disclosure, provisional, elidedItems = "elided_items"
+        case mode, provider, nowMS = "now_ms", runningTurnID = "running_turn_id", turnTiming = "turn_timing", disclosure, provisional, elidedItems = "elided_items"
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         mode = try c.decodeIfPresent(ChatDisplayMode.self, forKey: .mode) ?? .normal
+        provider = try c.decodeIfPresent(ChatProvider.self, forKey: .provider)
         nowMS = try c.decodeIfPresent(UInt64.self, forKey: .nowMS)
         runningTurnID = try c.decodeIfPresent(String.self, forKey: .runningTurnID)
         turnTiming = try c.decodeIfPresent([String: ChatTurnTiming].self, forKey: .turnTiming) ?? [:]
@@ -157,6 +176,7 @@ public enum ChatProjection {
 
     public static func project(transcript: ChatTranscript, options: ChatProjectionOptions = .init()) -> [ChatProjectionRow] {
         var options = options
+        options.provider = options.provider ?? transcript.info?.provider
         for (turn, timing) in transcript.turnTiming where options.turnTiming[turn] == nil { options.turnTiming[turn] = timing }
         if options.runningTurnID == nil { options.runningTurnID = transcript.turnID }
         return project(items: transcript.items, itemSequences: transcript.itemSequences, requests: transcript.requests, options: options)
@@ -186,6 +206,7 @@ public enum ChatProjection {
             var end = start + 1
             while end < unique.count && sameTurn(unique[start], unique[end]) { end += 1 }
             let turnItems = Array(unique[start..<end])
+            let inlineCards = Set(turnItems.filter { [.worker, .subagent].contains(rowKind($0)) }.map(\.id))
             let firstSeq = itemSequences[unique[start].id] ?? UInt64(start) * 2 + 1
             let nextSeq = end < unique.count ? itemSequences[unique[end].id] ?? UInt64.max : UInt64.max
             for record in unplaced where record.requestedSeq < firstSeq {
@@ -209,12 +230,23 @@ public enum ChatProjection {
                     let current = work.last { $0.status == .inProgress }.map(shortLabel)
                     let duration = activityDuration(turn: turn, work: work, running: running, options: options)
                     let artifacts = turnItems.filter { ![.user, .final].contains(rowKind($0)) }.flatMap(artifacts)
-                    let children = verbose.filter { ![.user, .final, .request, .compaction, .commentary, .notice].contains($0.kind) }.map(stripNormalDetails)
+                    let children = verbose.filter { ![.user, .final, .request, .compaction, .commentary, .notice].contains($0.kind) && !inlineCards.contains($0.id) }
+                        .map { stripNormalDetails($0, excluding: inlineCards) }
                     rows.append(.init(id: id, kind: .activity, title: activityTitle(work: work, running: running, duration: duration, current: current),
                                       open: options.disclosure.isOpen(id, mode: options.mode, activity: true), children: children, artifacts: artifacts,
                                       failedCount: work.filter(failed).count, running: running, durationMS: duration,
                                       currentLabel: current, provisional: options.provisional))
                 }
+                // Inline host cards are always visible in Normal, independently of
+                // the activity disclosure. Keep every card before the answer even
+                // when reconciliation appended its marker after that answer.
+                func cards(_ source: [ChatProjectionRow]) {
+                    for row in source {
+                        if inlineCards.contains(row.id) { rows.append(stripNormalDetails(row, excluding: inlineCards)) }
+                        cards(row.children)
+                    }
+                }
+                cards(verbose)
                 func outside(_ source: [ChatProjectionRow]) {
                     for row in source {
                         if [.request, .compaction, .final].contains(row.kind) { rows.append(row) }
@@ -231,10 +263,11 @@ public enum ChatProjection {
 
     private static func sameTurn(_ a: ChatItem, _ b: ChatItem) -> Bool { a.turnID != nil && a.turnID == b.turnID }
 
-    private static func stripNormalDetails(_ source: ChatProjectionRow) -> ChatProjectionRow {
+    private static func stripNormalDetails(_ source: ChatProjectionRow, excluding inlineCards: Set<String> = []) -> ChatProjectionRow {
         var row = source
         row.artifacts = []; row.comments = []
-        row.children = row.children.filter { ![.commentary, .request, .compaction, .final].contains($0.kind) }.map(stripNormalDetails)
+        row.children = row.children.filter { ![.commentary, .request, .compaction, .final].contains($0.kind) && !inlineCards.contains($0.id) }
+            .map { stripNormalDetails($0, excluding: inlineCards) }
         return row
     }
 
@@ -309,6 +342,8 @@ public enum ChatProjection {
     }
 
     private static func eligible(_ item: ChatItem, approvalGated: Bool) -> Bool {
+        if showsInlineCard(item) { return false }
+        if case .toolCall(let server, let tool, _, _) = item.body, server == "riwork", tool == "worker" { return false }
         // Provider hints never bypass the actual command-body safety check.
         if case .command(let command, _, _, _) = item.body { return !approvalGated && isReadOnlyShell(command) }
         return switch rowKind(item) {
@@ -322,8 +357,18 @@ public enum ChatProjection {
         }
     }
 
+    /// Upstream's dedicated cards, including its exact older-provider fallbacks.
+    /// A generic semantic subagent still uses the projected parent/child renderer.
+    public static func showsInlineCard(_ item: ChatItem) -> Bool {
+        if item.worker != nil || item.subagent != nil { return true }
+        guard case .toolCall(let server, let tool, _, _) = item.body, server == nil else { return false }
+        return ["Task", "Agent", "collabAgentToolCall"].contains(tool)
+    }
+
     public static func rowKind(_ item: ChatItem) -> ChatProjectionRowKind {
-        switch item.body {
+        if item.worker != nil { return .worker }
+        if item.subagent != nil { return .subagent }
+        return switch item.body {
         case .userMessage: .user
         case .agentMessage: item.presentation.phase == .commentary ? .commentary : .final
         case .reasoning: .reasoning
@@ -350,6 +395,7 @@ public enum ChatProjection {
         case .webFetch: "Fetched"
         case .mcp: "Used MCP"
         case .shell: "Ran"
+        case .worker: "Worker"
         case .subagent: "Agent"
         case .reasoning: "Thought"
         case .edit: "Edited"
@@ -369,16 +415,41 @@ public enum ChatProjection {
             default: target = nil
             }
         }
-        let running = isWork(item) && item.status == .inProgress
+        // Operation completion does not complete delegated children. Explicit
+        // upstream subagent status remains authoritative while children exist.
+        let run = options.provider.flatMap { ChatSubagent.of(item, provider: $0) } ?? item.subagent
+        let status = run.map { run -> ChatSubagent.Status in
+            if run.status == .running && run.children.isEmpty && item.status != .inProgress {
+                return switch item.status {
+                case .completed: .unknown
+                case .failed: .failed
+                case .interrupted: .interrupted
+                case .declined: .declined
+                case .inProgress: .running
+                }
+            }
+            return run.status
+        }
+        let running = status.map { $0 == .running } ?? (isWork(item) && item.status == .inProgress)
+        let failed = status.map { $0 == .failed } ?? (isWork(item) && failed(item))
         let open = ![.user, .final, .commentary, .compaction, .notice].contains(kind) && options.disclosure.isOpen(item.id, mode: options.mode)
         return .init(id: item.id, kind: kind, title: title, target: target, open: open, artifacts: artifacts(item),
-                     failedCount: isWork(item) && failed(item) ? 1 : 0, running: running,
+                     failedCount: failed ? 1 : 0, running: running,
                      durationMS: itemDuration(item, nowMS: options.nowMS), currentLabel: running ? shortLabel(item) : nil,
                      elided: options.elidedItems.contains(item.id))
     }
 
     private static func artifacts(_ item: ChatItem) -> [ChatArtifactRef] {
-        (item.presentation.semantics?.produced ?? []).map { .init(itemID: item.id, path: $0) }
+        var paths = item.presentation.semantics?.produced ?? []
+        // Native edit bodies predate semantic hints. Keep their file actions
+        // available on older hosts, preserving explicit paths and line hints.
+        if case .fileChange(let changes) = item.body {
+            var seen = Set(paths.map(\.path))
+            for change in changes where !change.path.isEmpty && seen.insert(change.path).inserted {
+                paths.append(.init(path: change.path))
+            }
+        }
+        return paths.map { .init(itemID: item.id, path: $0) }
         + item.presentation.images.indices.map { .init(itemID: item.id, imageIndex: $0) }
     }
     private static func failed(_ item: ChatItem) -> Bool {
@@ -387,7 +458,10 @@ public enum ChatProjection {
         return false
     }
     private static func isWork(_ item: ChatItem) -> Bool {
-        switch item.body { case .userMessage, .agentMessage, .notice, .compaction: false; default: true }
+        // Host markers are lifecycle records, not provider calls.
+        if item.worker != nil { return false }
+        if case .toolCall(let server, let tool, _, _) = item.body, server == "riwork", tool == "worker" { return false }
+        return switch item.body { case .userMessage, .agentMessage, .notice, .compaction: false; default: true }
     }
     private static func difference(_ end: UInt64?, _ start: UInt64?) -> UInt64? {
         guard let end, let start, end >= start else { return nil }; return end - start

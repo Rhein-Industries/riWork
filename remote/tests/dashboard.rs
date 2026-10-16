@@ -244,6 +244,12 @@ async fn the_reply_keeps_only_the_contract_and_each_list_within_its_limit() {
     cli["automations"]["items"] = json!((0..35).map(|_| item.clone()).collect::<Vec<_>>());
     cli["automations"]["items_total"] = json!(35);
     cli["finished"] = json!([7, "x", false]);
+    let provider = cli["backends"]["providers"][0].clone();
+    let mut providers = vec![provider.clone(); 12];
+    providers.insert(1, json!("not an object"));
+    providers.insert(3, json!(null));
+    cli["backends"]["providers"] = json!(providers);
+    cli["backends"]["providers_total"] = json!(12);
     cli["root"] = json!("/Users/me/secret");
     cli["model"] = json!("gpt-secret");
     cli["debug"] = json!({"argv": ["riwork"]});
@@ -270,6 +276,19 @@ async fn the_reply_keeps_only_the_contract_and_each_list_within_its_limit() {
     );
     assert_eq!(result["automations"]["items_total"], 35);
     assert_eq!(result["finished"], json!([]));
+    assert_eq!(
+        result["backends"]["providers"],
+        json!(vec![
+            provider;
+            riwork_engine::global_overview::WIRE_MAX_PROVIDERS
+        ])
+    );
+    assert_eq!(result["backends"]["providers_total"], 12);
+    assert_eq!(result["backends"]["app"], busy()["backends"]["app"]);
+    assert_eq!(
+        result["backends"]["chat_host"],
+        busy()["backends"]["chat_host"]
+    );
     // What was within the contract is passed on as it is.
     for key in [
         "totals",
@@ -280,6 +299,23 @@ async fn the_reply_keeps_only_the_contract_and_each_list_within_its_limit() {
     ] {
         assert_eq!(result[key], busy()[key], "{key}");
     }
+}
+
+#[tokio::test]
+async fn backend_status_is_additive_for_older_clis_and_unread_samples() {
+    let f = Fixture::new();
+    let mut legacy = busy();
+    legacy.as_object_mut().unwrap().remove("backends");
+    f.cli_says(&legacy);
+    let response = f.get(json!({})).await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(response["result"], legacy);
+
+    legacy["backends"] = json!({"state": "not_read"});
+    f.cli_says(&legacy);
+    let response = f.get(json!({})).await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(response["result"], legacy);
 }
 
 #[tokio::test]
@@ -304,6 +340,9 @@ async fn a_reply_of_another_version_or_shape_is_a_cli_error() {
     let mut items = busy();
     items["automations"]["items"] = json!("none");
     wrong.push(items);
+    let mut providers = busy();
+    providers["backends"]["providers"] = json!({"0": {}});
+    wrong.push(providers);
     for cli in wrong {
         f.cli_says(&cli);
         let response = f.get(json!({})).await;
@@ -354,6 +393,7 @@ fn the_connectors_limits_and_keys_are_the_engines() {
             ("finished", engine::WIRE_MAX_FINISHED),
             ("projects", engine::WIRE_MAX_PROJECTS),
             ("tasks_in_progress", engine::WIRE_MAX_TASKS_IN_PROGRESS),
+            ("backends.providers", engine::WIRE_MAX_PROVIDERS),
         ]
     );
     assert_eq!(DASHBOARD_AUTOMATIONS_MAX, engine::WIRE_MAX_AUTOMATIONS);

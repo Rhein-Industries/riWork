@@ -78,6 +78,7 @@ impl Fixture {
             notify_on_agent_done: false,
             wake_orchestrators_on_agent_done: false,
             orchestrator: Default::default(),
+            delegation_policy: Default::default(),
             codex_account: Default::default(),
             created_at: 0,
         };
@@ -512,7 +513,7 @@ fn data_and_url_images_are_read_as_before_whatever_the_scope() {
 mod mounted {
     use super::*;
     use crate::chat::{
-        model::{ChatEvent, Item, ItemBody, ItemStatus, MessagePhase, Presentation},
+        model::{ChatEvent, Item, ItemBody, ItemStatus, Presentation},
         wire::Envelope,
     };
     use gpui::{AppContext as _, TestAppContext};
@@ -591,17 +592,14 @@ mod mounted {
     }
 
     #[gpui::test]
-    fn project_images_share_the_turn_preview_without_an_extra_disclosure(cx: &mut TestAppContext) {
+    fn open_in_files_is_offered_only_for_images_files_can_show(cx: &mut TestAppContext) {
         let fixture = Fixture::new();
         let (handle, view, _feed) = super::super::super::editor_tests::mount(cx);
         let info = fixture.chat(Some(ALPHA), Some("alpha-main"), &fixture.alpha, None);
         let snapshot = sent(&fixture.home, CHAT, &fixture.alpha.join("shot.png"));
         let item = Item {
-            started_at: None,
-            ended_at: None,
-            // A final answer: Normal mode shows it, with its images.
+            // User-message images use the image cards in the projected renderer.
             presentation: Presentation {
-                phase: Some(MessagePhase::Final),
                 images: vec![
                     local(&fixture.feature.join("my shot ü.png")),
                     local(&fixture.alpha.join("shot.png")),
@@ -609,10 +607,12 @@ mod mounted {
                 ],
                 ..Presentation::default()
             },
+            started_at: None,
+            ended_at: None,
             id: "item-1".into(),
             turn_id: None,
             status: ItemStatus::Completed,
-            body: ItemBody::AgentMessage {
+            body: ItemBody::UserMessage {
                 text: "Here are the screenshots.".into(),
             },
         };
@@ -641,54 +641,41 @@ mod mounted {
         })
         .unwrap();
         cx.run_until_parked();
-        let opened = std::rc::Rc::new(std::cell::RefCell::new(None));
-        let recorded = opened.clone();
-        cx.update(|cx| {
-            cx.subscribe(
-                &view,
-                move |_, event: &super::super::super::ChatViewEvent, _| {
-                    if let super::super::super::ChatViewEvent::OpenPreview { sequence } = event {
-                        *recorded.borrow_mut() = Some(sequence.clone());
-                    }
-                },
-            )
-            .detach();
-        });
+        for key in ["item-1:image:0", "item-1:image:1", "item-1:image:2"] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.click(format!("fold:{key}"), cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+        }
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
             assert_eq!(view.read(cx).image_slot("item-1:image:0"), Some(Ok(false)));
             assert_eq!(view.read(cx).image_slot("item-1:image:1"), Some(Ok(true)));
+            // The other worktree's image is viewed in the chat; its own opens in Files too.
+            assert!(window.try_find("view:item-1:image:0").is_some());
+            assert!(window.try_find("preview:item-1:image:0").is_none());
+            assert!(window.try_find("view:item-1:image:1").is_some());
+            assert!(window.try_find("preview:item-1:image:1").is_some());
+            // The chat's own uploaded snapshot is shown too, and is not a Files item.
             assert_eq!(view.read(cx).image_slot("item-1:image:2"), Some(Ok(false)));
-            for index in 0..3 {
-                assert!(
-                    window
-                        .try_find(format!("chip:artifact:item-1:image:{index}"))
-                        .is_some()
-                );
-                assert!(
-                    window
-                        .try_find(format!("fold:item-1:image:{index}"))
-                        .is_none()
-                );
-            }
-            window.click("chip:artifact:item-1:image:0", cx);
+            assert!(window.try_find("view:item-1:image:2").is_some());
+            assert!(window.try_find("preview:item-1:image:2").is_none());
+            // The full viewer opens for the cross-worktree image.
+            window.click("view:item-1:image:0", cx);
         })
         .unwrap();
         cx.run_until_parked();
-        let sequence = opened
-            .borrow()
-            .clone()
-            .expect("image opens the pane preview");
-        assert_eq!(sequence.entries.len(), 3);
-        assert_eq!(sequence.index, 0);
-        assert_eq!(
-            sequence.current().unwrap().target,
-            fixture.feature.join("my shot ü.png").to_string_lossy()
-        );
-        assert!(
-            view.read_with(cx, |view, _| view.media.viewer.is_none()),
-            "project images use the shared pane"
-        );
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                view.read(cx).media.viewer.as_deref(),
+                Some("item-1:image:0")
+            );
+            assert!(window.try_find("close-chat-image").is_some());
+        })
+        .unwrap();
     }
 }
 

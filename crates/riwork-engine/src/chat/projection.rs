@@ -11,7 +11,8 @@
 //! Normal emits one `activity:<turn>` between the user and answer. It counts
 //! unique item IDs (including known descendants once), unique edited paths, then
 //! commands, reads and MCP/other calls, at most four nonzero buckets. Requests and
-//! produced artifacts stay visible outside its disclosure. Commentary stays hidden.
+//! produced artifacts and worker/subagent cards stay visible outside its disclosure.
+//! Cards precede the answer; Verbose keeps them in place. Commentary stays hidden.
 //! Timing is supplied, or falls back to known item durations; absent is not zero.
 //! Every disclosure starts closed. Mode/bulk resets replace manual overrides;
 //! closing an activity preserves its children's manual overrides. Anchor IDs name
@@ -22,8 +23,8 @@
 //! Providers' output is deliberately absent here: collapsed rows have no preview.
 
 use super::model::{
-    Item, ItemBody, ItemStatus, MessagePhase, PathRef, RequestKind, RequestRecord, ToolKind,
-    Transcript,
+    Item, ItemBody, ItemStatus, MessagePhase, PathRef, Provider, RequestKind, RequestRecord,
+    ToolKind, Transcript,
 };
 use super::semantics::{classify_body, is_read_only_shell};
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,11 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 pub const SPEC_VERSION: u8 = 2;
+
+#[cfg(test)]
+mod upstream_grouping_tests;
+#[cfg(test)]
+mod upstream_presentation_tests;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -54,6 +60,7 @@ pub enum RowKind {
     WebSearch,
     WebFetch,
     Mcp,
+    Worker,
     Subagent,
     #[default]
     Other,
@@ -183,6 +190,8 @@ pub use super::model::TurnTiming;
 #[serde(default)]
 pub struct ProjectionOptions {
     pub mode: DisplayMode,
+    /// Resolve exact legacy delegation tools when presentation metadata is absent.
+    pub provider: Option<Provider>,
     pub now_ms: Option<u64>,
     pub running_turn_id: Option<String>,
     pub turn_timing: HashMap<String, TurnTiming>,
@@ -210,6 +219,7 @@ struct CachedTurn {
     identity: Vec<(String, Option<u64>, bool)>,
     requests: Vec<RequestRecord>,
     mode: DisplayMode,
+    provider: Option<Provider>,
     provisional: bool,
     turn_clock: Option<(Option<u64>, Option<u64>)>,
     running_turn: bool,
@@ -258,6 +268,9 @@ impl ProjectionCache {
             })
             .collect();
         let mut options = options.clone();
+        options.provider = options
+            .provider
+            .or_else(|| transcript.info.as_ref().map(|info| info.provider));
         for (turn, timing) in &transcript.turn_timing {
             options.turn_timing.entry(turn.clone()).or_insert(*timing);
         }
@@ -344,6 +357,9 @@ pub fn project_transcript(transcript: &Transcript, options: &ProjectionOptions) 
         })
         .collect();
     let mut options = options.clone();
+    options.provider = options
+        .provider
+        .or_else(|| transcript.info.as_ref().map(|info| info.provider));
     for (turn, timing) in &transcript.turn_timing {
         options.turn_timing.entry(turn.clone()).or_insert(*timing);
     }
@@ -358,23 +374,6 @@ pub fn project_transcript(transcript: &Transcript, options: &ProjectionOptions) 
 /// for item/header/status changes; this helper uses the transcript's turn clock
 /// rather than caller-specific timing overrides. Returns whether a row changed.
 pub fn refresh_timing(rows: &mut [Row], transcript: &Transcript, now_ms: Option<u64>) -> bool {
-    fn work_items<'a>(rows: &[Row], items: &HashMap<&str, &'a Item>, work: &mut Vec<&'a Item>) {
-        for row in rows {
-            if !matches!(
-                row.kind,
-                RowKind::User
-                    | RowKind::Final
-                    | RowKind::Commentary
-                    | RowKind::Compaction
-                    | RowKind::Notice
-                    | RowKind::Request
-            ) && let Some(item) = items.get(row.id.as_str())
-            {
-                work.push(*item);
-            }
-            work_items(&row.children, items, work);
-        }
-    }
     fn visit(
         rows: &mut [Row],
         items: &HashMap<&str, &Item>,
@@ -394,8 +393,20 @@ pub fn refresh_timing(rows: &mut [Row], transcript: &Transcript, now_ms: Option<
             }
             let duration = match row.kind {
                 RowKind::Activity => {
-                    let mut work = Vec::new();
-                    work_items(&row.children, items, &mut work);
+                    // Inline cards live outside this disclosure in Normal, but
+                    // their captured descendant work still contributes timing.
+                    let turn = row.id.strip_prefix("activity:");
+                    let legacy_item = row.id.strip_prefix("activity:legacy:");
+                    let work: Vec<_> = items
+                        .values()
+                        .copied()
+                        .filter(|item| {
+                            (item.turn_id.as_deref() == turn
+                                || (item.turn_id.is_none()
+                                    && legacy_item == Some(item.id.as_str())))
+                                && is_work(item)
+                        })
+                        .collect();
                     activity_duration_at(
                         row.id
                             .strip_prefix("activity:")
@@ -575,6 +586,7 @@ fn project_rows(
                             .eq(identity())
                         && cached.requests.iter().eq(turn_requests.iter().copied())
                         && cached.mode == options.mode
+                        && cached.provider == options.provider
                         && cached.provisional == options.provisional
                         && cached.turn_clock == clock
                         && cached.running_turn == running_turn
@@ -612,6 +624,7 @@ fn project_rows(
                             .map(|record| (**record).clone())
                             .collect(),
                         mode: options.mode,
+                        provider: options.provider,
                         provisional: options.provisional,
                         turn_clock: clock,
                         running_turn,
@@ -693,6 +706,8 @@ fn project_turn(
                             | RowKind::Compaction
                             | RowKind::Commentary
                             | RowKind::Notice
+                            | RowKind::Worker
+                            | RowKind::Subagent
                     )
                 })
                 .cloned()
@@ -713,20 +728,65 @@ fn project_turn(
                 ..Row::default()
             });
         }
-        // Compaction and records remain visible even while activity is closed.
+        // Cards and records remain visible even while activity is closed. Lift
+        // nested cards too, removing them from their former parent so each has
+        // exactly one presentation path.
         fn outside(rows: Vec<Row>, output: &mut Vec<Row>) {
-            for row in rows {
+            for mut row in rows {
                 if matches!(
                     row.kind,
-                    RowKind::Request | RowKind::Compaction | RowKind::Final
+                    RowKind::Request
+                        | RowKind::Compaction
+                        | RowKind::Final
+                        | RowKind::Worker
+                        | RowKind::Subagent
                 ) {
+                    let mut lifted = Vec::new();
+                    retain_card_details(&mut row.children, &mut lifted);
+                    strip_normal_details(&mut row.children);
+                    // Final media stays on its answer, rather than the activity
+                    // strip used for tool/card artifacts.
+                    if row.kind != RowKind::Final {
+                        row.artifacts.clear();
+                    }
+                    row.comments.clear();
                     output.push(row);
+                    output.extend(lifted);
                 } else {
                     outside(row.children, output);
                 }
             }
         }
-        outside(verbose, &mut rows);
+        fn retain_card_details(children: &mut Vec<Row>, lifted: &mut Vec<Row>) {
+            let mut retained = Vec::new();
+            for mut child in children.drain(..) {
+                if matches!(
+                    child.kind,
+                    RowKind::Worker
+                        | RowKind::Subagent
+                        | RowKind::Request
+                        | RowKind::Compaction
+                        | RowKind::Final
+                ) {
+                    outside(vec![child], lifted);
+                } else {
+                    retain_card_details(&mut child.children, lifted);
+                    retained.push(child);
+                }
+            }
+            *children = retained;
+        }
+        let mut inline = Vec::new();
+        outside(verbose, &mut inline);
+        // Host markers may arrive after the answer. They must not hide it or
+        // fall below it in Normal's user/activity/cards/answer layout.
+        rows.extend(
+            inline
+                .iter()
+                .filter(|row| row.kind != RowKind::Final)
+                .cloned(),
+        );
+        rows.extend(inline.into_iter().filter(|row| row.kind == RowKind::Final));
     }
     rows
 }
@@ -765,7 +825,12 @@ fn strip_normal_details(rows: &mut [Row]) {
         row.children.retain(|child| {
             !matches!(
                 child.kind,
-                RowKind::Commentary | RowKind::Request | RowKind::Compaction | RowKind::Final
+                RowKind::Commentary
+                    | RowKind::Request
+                    | RowKind::Compaction
+                    | RowKind::Final
+                    | RowKind::Worker
+                    | RowKind::Subagent
             )
         });
         strip_normal_details(&mut row.children);
@@ -956,6 +1021,9 @@ fn flush(rows: &mut Vec<Row>, run: &mut Vec<Row>, turn: &str, options: &Projecti
 }
 
 fn eligible(item: &Item, approval_gated: bool) -> bool {
+    if super::workers::is_marker(item) {
+        return false;
+    }
     // A forward-compatible hint must never bypass the command-body check.
     if let ItemBody::Command { command, .. } = &item.body {
         return !approval_gated && is_read_only_shell(command);
@@ -986,6 +1054,13 @@ fn eligible(item: &Item, approval_gated: bool) -> bool {
 }
 
 fn row_kind(item: &Item) -> RowKind {
+    // Host/provider card metadata takes precedence over generic tool semantics.
+    if super::workers::of(item).is_some() {
+        return RowKind::Worker;
+    }
+    if item.presentation.subagent.is_some() {
+        return RowKind::Subagent;
+    }
     match &item.body {
         ItemBody::UserMessage { .. } => RowKind::User,
         ItemBody::AgentMessage { .. } => {
@@ -1036,6 +1111,7 @@ fn item_row(item: &Item, options: &ProjectionOptions) -> Row {
         RowKind::WebFetch => "Fetched",
         RowKind::Mcp => "Used MCP",
         RowKind::Shell => "Ran",
+        RowKind::Worker => "Worker",
         RowKind::Subagent => "Agent",
         RowKind::Reasoning => "Thought",
         RowKind::Edit => "Edited",
@@ -1060,7 +1136,18 @@ fn item_row(item: &Item, options: &ProjectionOptions) -> Row {
                 _ => None,
             })
     };
-    let running = is_work(item) && item.status == ItemStatus::InProgress;
+    // An operation completing is not evidence that its delegated work finished.
+    // Worker inventory/live-tail status is resolved by the native card renderer;
+    // Provider subagents use presentation metadata or exact legacy tool input.
+    let subagent = super::subagents::of(item, options.provider);
+    let running = subagent.as_ref().map_or_else(
+        || is_work(item) && item.status == ItemStatus::InProgress,
+        |run| run.status == super::subagents::RunStatus::Running,
+    );
+    let failed = subagent.as_ref().map_or_else(
+        || is_work(item) && failed(item),
+        |run| run.status == super::subagents::RunStatus::Failed,
+    );
     Row {
         id: item.id.clone(),
         kind,
@@ -1074,7 +1161,7 @@ fn item_row(item: &Item, options: &ProjectionOptions) -> Row {
                 | RowKind::Compaction
                 | RowKind::Notice
         ) && options.disclosure.is_open(&item.id, options.mode, false),
-        failed_count: usize::from(is_work(item) && failed(item)),
+        failed_count: usize::from(failed),
         running,
         duration_ms: item_duration(item, options.now_ms),
         current_label: running.then(|| short_label(item)),
@@ -1085,14 +1172,31 @@ fn item_row(item: &Item, options: &ProjectionOptions) -> Row {
 }
 
 fn artifacts(item: &Item) -> Vec<ArtifactRef> {
-    let mut refs: Vec<_> = item
+    let mut paths: Vec<_> = item
         .presentation
         .semantics
         .iter()
         .flat_map(|semantics| &semantics.produced)
+        .cloned()
+        .collect();
+    // Native edits are recorded provenance on older hosts too. Explicit refs
+    // retain their order and line hints; append only previously absent paths.
+    if let ItemBody::FileChange { changes } = &item.body {
+        let mut seen: HashSet<_> = paths.iter().map(|path| path.path.clone()).collect();
+        for change in changes {
+            if !change.path.is_empty() && seen.insert(change.path.clone()) {
+                paths.push(PathRef {
+                    path: change.path.clone(),
+                    line: None,
+                });
+            }
+        }
+    }
+    let mut refs: Vec<_> = paths
+        .into_iter()
         .map(|path| ArtifactRef {
             item_id: item.id.clone(),
-            path: Some(path.clone()),
+            path: Some(path),
             image_index: None,
         })
         .collect();
@@ -1116,13 +1220,14 @@ fn failed(item: &Item) -> bool {
 }
 
 fn is_work(item: &Item) -> bool {
-    !matches!(
-        item.body,
-        ItemBody::UserMessage { .. }
-            | ItemBody::AgentMessage { .. }
-            | ItemBody::Notice { .. }
-            | ItemBody::Compaction
-    )
+    !super::workers::is_marker(item)
+        && !matches!(
+            item.body,
+            ItemBody::UserMessage { .. }
+                | ItemBody::AgentMessage { .. }
+                | ItemBody::Notice { .. }
+                | ItemBody::Compaction
+        )
 }
 
 fn item_duration(item: &Item, now_ms: Option<u64>) -> Option<u64> {
@@ -1351,6 +1456,29 @@ pub fn visible_anchor(rows: &[Row], item_id: &str) -> Option<String> {
     None
 }
 
+/// Hidden banners keep their place in their own turn when switching modes.
+/// Prefer the preceding visible item (usually the answer), never the next turn.
+pub fn transcript_anchor(transcript: &Transcript, rows: &[Row], item_id: &str) -> Option<String> {
+    if let Some(anchor) = visible_anchor(rows, item_id) {
+        return Some(anchor);
+    }
+    let at = transcript
+        .items
+        .iter()
+        .position(|item| item.id == item_id)?;
+    let item = &transcript.items[at];
+    transcript.items[..at]
+        .iter()
+        .rev()
+        .take_while(|other| same_turn(item, other))
+        .chain(
+            transcript.items[at + 1..]
+                .iter()
+                .take_while(|other| same_turn(item, other)),
+        )
+        .find_map(|other| visible_anchor(rows, &other.id))
+}
+
 /// Remap manual overrides after streaming regroup or oversized-page backfill.
 /// A group's first known child is a stable item anchor even when its first member
 /// changes. An opened standalone call keeps its output visible in a new group.
@@ -1566,9 +1694,50 @@ mod tests {
                 "attachments",
                 "semantics",
                 "parent_id",
+                "subagent",
+                "worker",
                 "elided",
             ],
         )?;
+        keys(
+            &presentation["worker"],
+            &[
+                "session_id",
+                "kind",
+                "title",
+                "harness",
+                "model",
+                "worktree_id",
+                "assignment",
+                "noted_at",
+                "after",
+                "late",
+                "follow_up",
+                "final",
+            ],
+        )?;
+        keys(
+            &presentation["worker"]["final"],
+            &[
+                "status",
+                "ended_at",
+                "tail",
+                "turn",
+                "turn_end",
+                "done_since",
+            ],
+        )?;
+        keys(
+            &presentation["subagent"],
+            &[
+                "name", "purpose", "status", "summary", "children", "omitted",
+            ],
+        )?;
+        if let Some(children) = presentation["subagent"]["children"].as_array() {
+            for child in children {
+                keys(child, &["id", "status", "summary"])?;
+            }
+        }
         let semantics = &presentation["semantics"];
         keys(
             semantics,
@@ -1712,6 +1881,7 @@ mod tests {
             &value,
             &[
                 "mode",
+                "provider",
                 "now_ms",
                 "running_turn_id",
                 "turn_timing",
@@ -1764,13 +1934,24 @@ mod tests {
             .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
             .collect();
         paths.sort();
-        assert!(!paths.is_empty(), "shared fixtures must be checked in");
+        assert_eq!(paths.len(), 8, "every shared fixture file must be checked");
+        let mut case_names = HashSet::new();
+        let mut shell_commands = HashSet::new();
+        let mut case_count = 0;
+        let mut shell_count = 0;
         for path in paths {
             let file: FixtureFile = serde_json::from_slice(&std::fs::read(&path).unwrap())
                 .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
             assert_eq!(file.spec_version, SPEC_VERSION);
             assert!(!file.cases.is_empty() || !file.shell_cases.is_empty());
+            case_count += file.cases.len();
+            shell_count += file.shell_cases.len();
             for shell in file.shell_cases {
+                assert!(
+                    shell_commands.insert(shell.command.clone()),
+                    "duplicate shared shell command: {}",
+                    shell.command
+                );
                 assert_eq!(
                     is_read_only_shell(&shell.command),
                     shell.allowed,
@@ -1780,6 +1961,11 @@ mod tests {
                 );
             }
             for mut fixture in file.cases {
+                assert!(
+                    case_names.insert(fixture.name.clone()),
+                    "duplicate shared fixture name: {}",
+                    fixture.name
+                );
                 if let Some(page) = fixture.page.take() {
                     let window =
                         turn_aligned_page(&fixture.items, page.start, page.end, page.max_items);
@@ -1893,80 +2079,11 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn fixture_inputs_reject_misspelled_keys_at_every_contract_boundary() {
-        use serde_json::json;
-        let valid =
-            json!({"spec_version":2,"cases":[{"name":"strict","items":[],"expected_rows":[]}]});
-        for path in [
-            "file",
-            "case",
-            "item",
-            "body",
-            "presentation",
-            "semantics",
-            "worker",
-            "options",
-            "timing",
-            "disclosure",
-            "action",
-            "page",
-            "window",
-            "request",
-        ] {
-            let mut value = valid.clone();
-            match path {
-                "file" => value["spec_verison"] = json!(2),
-                "case" => value["cases"][0]["item_sequence"] = json!({}),
-                "item" | "body" | "presentation" | "semantics" | "worker" => {
-                    value["cases"][0]["items"] =
-                        json!([{"id":"a","body":{"type":"tool_call","tool":"Read"}}]);
-                    match path {
-                        "item" => value["cases"][0]["items"][0]["started"] = json!(1),
-                        "body" => value["cases"][0]["items"][0]["body"]["outpt"] = json!("oops"),
-                        "presentation" => {
-                            value["cases"][0]["items"][0]["presentation"] = json!({"semantic":{}})
-                        }
-                        "semantics" => {
-                            value["cases"][0]["items"][0]["presentation"] =
-                                json!({"semantics":{"targt":"a"}})
-                        }
-                        _ => {
-                            value["cases"][0]["items"][0]["presentation"] =
-                                json!({"semantics":{"worker":{"child_cout":2}}})
-                        }
-                    }
-                }
-                "options" => value["cases"][0]["options"] = json!({"running_turn":"t"}),
-                "timing" => {
-                    value["cases"][0]["options"] = json!({"turn_timing":{"t":{"started":1}}})
-                }
-                "disclosure" => {
-                    value["cases"][0]["options"] = json!({"disclosure":{"override":{}}})
-                }
-                "action" => {
-                    value["cases"][0]["actions"] =
-                        json!([{"action":"bulk","open":true,"expected_open_ids":[],"opened":true}])
-                }
-                "page" => {
-                    value["cases"][0]["page"] = json!({"start":0,"end":0,"expected":{"start":0,"end":0,"provisional":false},"limit":1})
-                }
-                "window" => {
-                    value["cases"][0]["page"] = json!({"start":0,"end":0,"expected":{"start":0,"end":0,"provisional":false,"limt":1}})
-                }
-                _ => {
-                    value["cases"][0]["requests"] =
-                        json!([{"request_id":"q","kind":"question","requested_sequnce":1}])
-                }
-            }
-            assert!(
-                serde_json::from_value::<FixtureFile>(value).is_err(),
-                "{path} typo accepted"
-            );
-        }
-        assert!(serde_json::from_value::<FixtureFile>(valid).is_ok());
+        assert_eq!(
+            case_count, 66,
+            "every shared projection case must be checked"
+        );
+        assert_eq!(shell_count, 44, "every shared shell case must be checked");
     }
 
     #[test]
@@ -2033,183 +2150,6 @@ mod tests {
             options.disclosure.reset_bulk_for_rows(false, mode, &rows);
             assert!(open_ids(&project(&expanded, &HashMap::new(), &[], &options)).is_empty());
         }
-    }
-
-    #[test]
-    fn opened_lone_call_stays_visible_when_streaming_forms_a_group() {
-        use serde_json::json;
-        let mut items: Vec<Item> = serde_json::from_value(json!([
-            {"id":"a","turn_id":"t","body":{"type":"command","command":"cat a"}}
-        ]))
-        .unwrap();
-        let mut options = ProjectionOptions {
-            mode: DisplayMode::Verbose,
-            ..ProjectionOptions::default()
-        };
-        options.disclosure.toggle("a", false);
-        let before = project(&items, &HashMap::new(), &[], &options);
-        items.push(
-            serde_json::from_value(json!({
-                "id":"b","turn_id":"t","body":{"type":"command","command":"cat b"}
-            }))
-            .unwrap(),
-        );
-        let after = project(&items, &HashMap::new(), &[], &options);
-        options.disclosure = remap_disclosures(&options.disclosure, &before, &after);
-        let regrouped = project(&items, &HashMap::new(), &[], &options);
-        assert!(find(&regrouped, "g:t:a").unwrap().open);
-        assert!(find(&regrouped, "a").unwrap().open);
-        assert!(!find(&regrouped, "b").unwrap().open);
-        assert_eq!(visible_anchor(&regrouped, "a"), Some("a".into()));
-
-        // Keeping a child open must not undo the user's later group collapse.
-        options.disclosure.toggle("g:t:a", true);
-        let before = project(&items, &HashMap::new(), &[], &options);
-        items.push(
-            serde_json::from_value(json!({
-                "id":"c","turn_id":"t","body":{"type":"command","command":"cat c"}
-            }))
-            .unwrap(),
-        );
-        let after = project(&items, &HashMap::new(), &[], &options);
-        options.disclosure = remap_disclosures(&options.disclosure, &before, &after);
-        let rows = project(&items, &HashMap::new(), &[], &options);
-        assert!(!find(&rows, "g:t:a").unwrap().open);
-        assert!(find(&rows, "a").unwrap().open);
-
-        // A retained explicit override for the new group also wins at creation.
-        let single = project(&items[..1], &HashMap::new(), &[], &options);
-        let state = remap_disclosures(&options.disclosure, &single, &rows);
-        assert_eq!(state.overrides.get("g:t:a"), Some(&false));
-    }
-
-    #[test]
-    fn timing_refresh_matches_projection_without_rebuilding_nested_running_rows() {
-        use serde_json::json;
-        let mut transcript = Transcript::default();
-        transcript.items = serde_json::from_value(json!([
-            {"id":"old","turn_id":"old","status":"completed","started_at":100,"ended_at":500,"body":{"type":"command","command":"cargo check"}},
-            {"id":"user","turn_id":"t","status":"completed","body":{"type":"user_message","text":"Inspect"}},
-            {"id":"agent","turn_id":"t","status":"completed","started_at":1100,"ended_at":4000,"body":{"type":"tool_call","tool":"agent","input":{"description":"inspect"}}},
-            {"id":"a","turn_id":"t","status":"completed","started_at":1200,"ended_at":3200,"presentation":{"parent_id":"agent"},"body":{"type":"command","command":"cat a"}},
-            {"id":"b","turn_id":"t","started_at":2000,"presentation":{"parent_id":"agent"},"body":{"type":"command","command":"cat b"}},
-            {"id":"c","turn_id":"t","started_at":2100,"body":{"type":"command","command":"cargo check"}}
-        ])).unwrap();
-        transcript.turn_id = Some("t".into());
-        for captured_turn_clock in [false, true] {
-            if captured_turn_clock {
-                transcript.turn_timing.insert(
-                    "t".into(),
-                    TurnTiming {
-                        started_at: Some(1000),
-                        ended_at: None,
-                    },
-                );
-            }
-            for mode in [DisplayMode::Normal, DisplayMode::Verbose] {
-                let mut options = ProjectionOptions {
-                    mode,
-                    now_ms: Some(5000),
-                    ..ProjectionOptions::default()
-                };
-                let mut rows = project_transcript(&transcript, &options);
-                let old = find(&rows, "old").unwrap().clone();
-                for now_ms in [Some(21000), None, Some(500)] {
-                    let before = rows.clone();
-                    let changed = refresh_timing(&mut rows, &transcript, now_ms);
-                    options.now_ms = now_ms;
-                    assert_eq!(rows, project_transcript(&transcript, &options));
-                    assert_eq!(changed, before != rows);
-                    assert_eq!(find(&rows, "old"), Some(&old));
-                    assert!(!refresh_timing(&mut rows, &transcript, now_ms));
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn cached_projection_reuses_historical_turns_and_preserves_global_requests() {
-        use serde_json::json;
-        let mut transcript = Transcript::default();
-        transcript.items = serde_json::from_value(json!([
-            {"id":"old-a","turn_id":"old-a","status":"completed","body":{"type":"command","command":"cat a","output":"historic output"}},
-            {"id":"old-b","turn_id":"old-b","status":"completed","body":{"type":"command","command":"cat b"}},
-            {"id":"live","turn_id":"live","started_at":1000,"body":{"type":"command","command":"cargo check"}}
-        ])).unwrap();
-        transcript.turn_id = Some("live".into());
-        transcript.requests = serde_json::from_value(json!([
-            {"request_id":"global","kind":"question","title":"Continue?","requested_seq":4}
-        ]))
-        .unwrap();
-        let mut cache = ProjectionCache::default();
-        let mut options = ProjectionOptions {
-            now_ms: Some(5000),
-            ..ProjectionOptions::default()
-        };
-        let rows = cache.project(&transcript, &options, &HashSet::new());
-        assert_eq!(rows, project_transcript(&transcript, &options));
-        assert_eq!(cache.projected_turns, 3);
-
-        if let ItemBody::Command { output, .. } = &mut transcript.items[2].body {
-            output.push_str(&"live output\n".repeat(1000));
-        }
-        let rows = cache.project(&transcript, &options, &HashSet::from(["live".into()]));
-        assert_eq!(rows, project_transcript(&transcript, &options));
-        assert_eq!(
-            cache.projected_turns, 4,
-            "only the invalidated turn was rebuilt"
-        );
-
-        // Selected request records are checked even without explicit invalidation.
-        transcript.requests[0].answer_summary = Some("yes".into());
-        let rows = cache.project(&transcript, &options, &HashSet::new());
-        assert_eq!(rows, project_transcript(&transcript, &options));
-        assert_eq!(cache.projected_turns, 5);
-
-        options.disclosure.toggle("activity:old-a", false);
-        let rows = cache.project(&transcript, &options, &HashSet::new());
-        assert_eq!(rows, project_transcript(&transcript, &options));
-        assert_eq!(
-            cache.projected_turns, 5,
-            "disclosure changes reuse projected headers"
-        );
-
-        options.now_ms = Some(8000);
-        let rows = cache.project(&transcript, &options, &HashSet::new());
-        assert_eq!(rows, project_transcript(&transcript, &options));
-        assert_eq!(
-            cache.projected_turns, 6,
-            "clock changes leave completed history cached"
-        );
-
-        transcript.items.insert(
-            0,
-            serde_json::from_value(json!({
-                "id":"backfilled", "turn_id":"old-a", "status":"completed",
-                "body":{"type":"command","command":"cat earlier"}
-            }))
-            .unwrap(),
-        );
-        let rows = cache.project(&transcript, &options, &HashSet::new());
-        assert_eq!(rows, project_transcript(&transcript, &options));
-
-        options.mode = DisplayMode::Verbose;
-        let rows = cache.project(&transcript, &options, &HashSet::new());
-        assert_eq!(rows, project_transcript(&transcript, &options));
-
-        // An update in one mode must evict the hidden variant as well. Otherwise
-        // switching back can resurrect an old title, status or group membership.
-        transcript.items[1].status = ItemStatus::Failed;
-        let rows = cache.project(&transcript, &options, &HashSet::from(["old-a".into()]));
-        assert_eq!(rows, project_transcript(&transcript, &options));
-        options.mode = DisplayMode::Normal;
-        let rows = cache.project(&transcript, &options, &HashSet::new());
-        assert_eq!(rows, project_transcript(&transcript, &options));
-
-        // Synthetic duplicate identities retain the pure projection's latest-wins behavior.
-        transcript.items.push(transcript.items[2].clone());
-        let rows = cache.project(&transcript, &options, &HashSet::new());
-        assert_eq!(rows, project_transcript(&transcript, &options));
     }
 
     /// Exercise the same cache entry point used by desktop on a transcript whose
@@ -2355,51 +2295,5 @@ mod tests {
                 "{scenario} regressed to {per_event_ms:.3}ms per event on 2305 items"
             );
         }
-    }
-
-    #[test]
-    fn expanded_turn_disclosure_remapping_stays_linear() {
-        use std::{hint::black_box, time::Instant};
-        let before = vec![Row {
-            id: "g:turn:call-0".into(),
-            kind: RowKind::Group,
-            open: true,
-            children: (0..1200)
-                .map(|index| Row {
-                    id: format!("call-{index}"),
-                    kind: RowKind::Read,
-                    open: true,
-                    ..Row::default()
-                })
-                .collect(),
-            ..Row::default()
-        }];
-        let mut after = before.clone();
-        after[0].id = "g:turn:backfilled".into();
-        after[0].children.insert(
-            0,
-            Row {
-                id: "backfilled".into(),
-                kind: RowKind::Read,
-                ..Row::default()
-            },
-        );
-        let mut disclosure = DisclosureState::default();
-        disclosure.reset_bulk_for_rows(true, DisplayMode::Verbose, &before);
-        let started = Instant::now();
-        for _ in 0..40 {
-            let remapped = remap_disclosures(&disclosure, &before, &after);
-            assert_eq!(remapped.overrides.get("g:turn:backfilled"), Some(&true));
-            assert!(!remapped.overrides.contains_key("g:turn:call-0"));
-            assert!(!remapped.overrides.contains_key("backfilled"));
-            assert_eq!(remapped.overrides.len(), 1201);
-            black_box(remapped);
-        }
-        let event_ms = started.elapsed().as_secs_f64() * 1000. / 40.;
-        eprintln!("tool-ui perf: remap 1201 expanded overrides={event_ms:.3}ms/event");
-        assert!(
-            event_ms < 30.,
-            "disclosure remap regressed to {event_ms:.3}ms"
-        );
     }
 }

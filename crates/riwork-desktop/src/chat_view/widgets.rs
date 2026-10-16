@@ -727,6 +727,10 @@ impl Scroller {
         }
     }
 
+    pub fn handle(&self) -> &ScrollHandle {
+        &self.handle
+    }
+
     /// `element` scrolls with this handle and stops a wheel turn that moved it.
     pub fn attach<E: StatefulInteractiveElement>(&self, element: E) -> E {
         self.seen.set(self.handle.offset());

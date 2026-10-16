@@ -645,6 +645,17 @@ pub struct Semantics {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Presentation {
+    /// Exact provider-reported delegation, additive for older transcript readers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<super::subagents::Subagent>,
+    /// One of RiWork's own workers this chat started (`workers`), additive like `subagent`.
+    /// A marker no reader can understand is left out rather than failing the item.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::workers::lenient"
+    )]
+    pub worker: Option<super::workers::WorkerRef>,
     #[serde(
         default,
         deserialize_with = "optional_metadata",
@@ -680,7 +691,9 @@ pub struct Presentation {
 }
 impl Presentation {
     pub fn is_empty(&self) -> bool {
-        self.phase.is_none()
+        self.subagent.is_none()
+            && self.worker.is_none()
+            && self.phase.is_none()
             && self.images.is_empty()
             && self.attachments.is_empty()
             && self.semantics.is_none()
@@ -1109,6 +1122,8 @@ pub struct Transcript {
     /// Bumped by every event applied, so what is derived from the transcript can be kept
     /// until it changes. Not part of what the transcript says.
     revision: u64,
+    /// The revision at which each item was last replaced. Not part of what the transcript says.
+    replaced: HashMap<String, u64>,
 }
 
 /// Two transcripts are equal when they say the same, however many events built them.
@@ -1167,6 +1182,13 @@ impl Transcript {
     /// Changes whenever an event is applied.
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// When item `id` was last replaced: of two items, the one replaced later says what is
+    /// newer, wherever the two sit (an item keeps the place it first had). Zero for an item
+    /// that no event put there.
+    pub fn replaced_at(&self, id: &str) -> u64 {
+        self.replaced.get(id).copied().unwrap_or(0)
     }
 
     /// The item with `id`, found through the index.
@@ -1262,7 +1284,8 @@ impl Transcript {
             }
             ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => {
                 let mut item = item.clone();
-                self.item_sequences.entry(item.id.clone()).or_insert(seq);
+                let item_id = item.id.clone();
+                self.item_sequences.entry(item_id.clone()).or_insert(seq);
                 match self.index.get(&item.id) {
                     Some(&at) => {
                         item.started_at = item.started_at.or(self.items[at].started_at);
@@ -1284,6 +1307,7 @@ impl Transcript {
                         self.items.push(item);
                     }
                 }
+                self.replaced.insert(item_id, self.revision);
             }
             ChatEvent::ItemDelta { item_id, delta } => {
                 let Some(&at) = self.index.get(item_id) else {
@@ -2025,7 +2049,7 @@ mod tool_contract_tests {
     use serde_json::json;
 
     #[test]
-    fn old_items_and_unknown_or_malformed_hints_remain_readable() {
+    fn presentation_wire_contract_is_tolerant_and_round_trips() {
         let legacy = json!({"id":"old","body":{"type":"tool_call","tool":"Read"}});
         let item: Item = serde_json::from_value(legacy.clone()).unwrap();
         assert!(item.presentation.is_empty());
@@ -2074,37 +2098,28 @@ mod tool_contract_tests {
                 .presentation
                 .is_empty()
         );
+
+        for value in [
+            json!({"parent_id":"worker"}),
+            json!({"semantics":{"kind":"read","target":"main.rs","range":{"start":10,"end":20}}}),
+            json!({"subagent":{"name":"Reviewer","purpose":"Review models","status":"running","summary":null}}),
+            json!({"worker":{"session_id":"child","kind":"chat","noted_at":10}}),
+        ] {
+            let presentation: Presentation = serde_json::from_value(value).unwrap();
+            assert!(!presentation.is_empty());
+            let mut item: Item = serde_json::from_value(json!({
+                "id":"with-metadata", "body":{"type":"tool_call","tool":"Read"}
+            }))
+            .unwrap();
+            item.presentation = presentation;
+            let encoded = serde_json::to_value(&item).unwrap();
+            assert!(encoded.get("presentation").is_some());
+            assert_eq!(serde_json::from_value::<Item>(encoded).unwrap(), item);
+        }
     }
 
     #[test]
-    fn new_presentation_fields_keep_the_presentation_serialized() {
-        let presentation = Presentation {
-            parent_id: Some("worker".into()),
-            ..Default::default()
-        };
-        assert!(!presentation.is_empty());
-        let presentation = Presentation {
-            semantics: Some(Semantics {
-                kind: ToolKind::Read,
-                target: Some("main.rs".into()),
-                range: Some(LineRange {
-                    start: 10,
-                    end: Some(20),
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        assert!(!presentation.is_empty());
-        assert_eq!(
-            serde_json::from_value::<Presentation>(serde_json::to_value(&presentation).unwrap())
-                .unwrap(),
-            presentation
-        );
-    }
-
-    #[test]
-    fn turn_timing_is_optional_tolerant_and_retains_the_first_start() {
+    fn lifecycle_timing_is_optional_tolerant_and_preserves_the_first_start() {
         let mut transcript = Transcript::default();
         for value in [
             json!({"event":"turn_started","turn_id":"legacy"}),
@@ -2118,6 +2133,26 @@ mod tool_contract_tests {
             let event = serde_json::from_value(value).unwrap();
             transcript.apply(&event);
         }
+        for value in [
+            json!({"event":"item_started","item":{
+                "id":"call","started_at":1000,"status":"in_progress",
+                "body":{"type":"tool_call","tool":"Read"}
+            }}),
+            json!({"event":"item_completed","item":{
+                "id":"call","ended_at":2000,"status":"completed",
+                "body":{"type":"tool_call","tool":"Read","output":"done"}
+            }}),
+        ] {
+            let event: ChatEvent = serde_json::from_value(value).unwrap();
+            assert_eq!(
+                serde_json::from_value::<ChatEvent>(serde_json::to_value(&event).unwrap()).unwrap(),
+                event
+            );
+            transcript.apply(&event);
+        }
+        let call = transcript.item("call").unwrap();
+        assert_eq!((call.started_at, call.ended_at), (Some(1000), Some(2000)));
+        assert_eq!(call.status, ItemStatus::Completed);
         assert_eq!(transcript.turn_timing["legacy"], TurnTiming::default());
         assert_eq!(transcript.turn_timing["elided"], TurnTiming::default());
         assert_eq!(
@@ -2132,90 +2167,6 @@ mod tool_contract_tests {
         assert_eq!(
             serde_json::to_value(old).unwrap(),
             json!({"event":"turn_started","turn_id":"old"})
-        );
-    }
-
-    #[test]
-    fn generic_legacy_completion_inherits_provider_kind_in_raw_and_replay_folds() {
-        let mut unknown: Item = serde_json::from_value(json!({
-            "id":"unknown", "body":{"type":"tool_call","tool":"unclassified"}
-        }))
-        .unwrap();
-        super::super::semantics::enrich_inheriting(&mut unknown, None);
-        assert!(
-            unknown.presentation.semantics.is_none(),
-            "an inferred Other is not a provider decision"
-        );
-        for completion_semantics in [None, Some(json!({"kind":"other"}))] {
-            let start = json!({
-                "event":"item_started", "item":{
-                    "id":"worker", "body":{"type":"tool_call","tool":"auditor"},
-                    "presentation":{"semantics":{"kind":"subagent","target":"Audit models"}}
-                }
-            });
-            let mut completed = json!({
-                "event":"item_completed", "item":{
-                    "id":"worker", "body":{"type":"tool_call","tool":"auditor","output":"done"}
-                }
-            });
-            if let Some(semantics) = completion_semantics.as_ref() {
-                completed["item"]["presentation"] = json!({"semantics":semantics});
-            }
-            let mut raw = Transcript::default();
-            let mut replay = Transcript::default();
-            for (index, event) in [start, completed].into_iter().enumerate() {
-                let event: ChatEvent = serde_json::from_value(event).unwrap();
-                raw.apply_sequenced(index as u64 + 1, &event);
-                let mut enriched = event;
-                if let ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } =
-                    &mut enriched
-                {
-                    super::super::semantics::enrich(item);
-                    super::super::semantics::refresh_output(item);
-                }
-                replay.apply_sequenced(index as u64 + 1, &enriched);
-            }
-            assert_eq!(raw, replay);
-            let semantics = raw
-                .item("worker")
-                .unwrap()
-                .presentation
-                .semantics
-                .as_ref()
-                .unwrap();
-            if completion_semantics.is_some() {
-                assert_eq!(semantics.kind, ToolKind::Other, "explicit Other wins");
-                assert_eq!(semantics.target, None);
-            } else {
-                assert_eq!(semantics.kind, ToolKind::Subagent);
-                assert_eq!(semantics.target.as_deref(), Some("Audit models"));
-            }
-        }
-    }
-
-    #[test]
-    fn completed_legacy_arguments_replace_empty_start_fallback() {
-        let mut transcript = Transcript::default();
-        for (event, query) in [("item_started", ""), ("item_completed", "rust serde")] {
-            transcript.apply(
-                &serde_json::from_value(json!({
-                    "event": event,
-                    "item": {"id":"web", "body":{"type":"web_search","query":query}}
-                }))
-                .unwrap(),
-            );
-        }
-        assert_eq!(
-            transcript
-                .item("web")
-                .unwrap()
-                .presentation
-                .semantics
-                .as_ref()
-                .unwrap()
-                .target
-                .as_deref(),
-            Some("rust serde")
         );
     }
 

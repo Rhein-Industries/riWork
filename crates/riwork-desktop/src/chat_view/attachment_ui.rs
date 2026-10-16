@@ -29,7 +29,12 @@ use std::{
 };
 use uuid::Uuid;
 
+pub(super) use sent::{covered, shown_text};
+
 mod quick_look;
+mod sent;
+#[cfg(test)]
+mod sent_tests;
 #[cfg(test)]
 mod tests;
 
@@ -621,7 +626,7 @@ impl ChatView {
                 .child(button(format!("chat-review-{id}"), if expanded {"▾ Saved draft"} else {"▸ Saved draft"}, None, look).aria_expanded(expanded).on_click(cx.listener(move |view, _, _, cx| view.toggle(&review_key, None, cx))))
                 .children(expanded.then(|| div().flex().flex_col().gap(ui_text::space(3.))
                     .child(div().id(format!("chat-saved-text-{id}")).max_h(ui_text::space(160.)).overflow_y_scroll().child(saved.snapshot.text.clone()))
-                    .children(saved.snapshot.attachments.iter().map(|a| div().child(format!("{} ({} bytes)",a.name,a.bytes))))
+                    .children(saved.snapshot.attachments.iter().map(|a| { let line = format!("{} · {}", a.name, size_text(a.bytes)); div().id(format!("chat-saved-attachment-{id}-{}", a.id)).role(gpui::Role::Label).aria_label(line.clone()).text_color(rgb(look.colors.muted)).child(line).test_support() }))
                     .child(button(format!("chat-copy-saved-{id}"), "Copy saved text", None, look).on_click(cx.listener(move |view, _, _, cx| { if let Some(s) = view.submissions.iter().find(|s| s.id == id) { cx.write_to_clipboard(ClipboardItem::new_string(s.snapshot.text.clone())); } })))
                 ))
                 .children((saved.status != Status::Pending && self.pending_submission.is_none()).then(|| div().flex().flex_wrap().gap(ui_text::space(6.))

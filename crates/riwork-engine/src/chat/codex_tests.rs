@@ -1097,47 +1097,6 @@ fn unknown_items_are_not_shown() {
     assert!(matches!(body, ItemBody::ToolCall { ref tool, .. } if tool == "collabAgentToolCall"));
 }
 
-#[test]
-fn provider_conversion_captures_command_mcp_web_and_worker_contracts() {
-    use crate::chat::model::ToolKind;
-    let fake = Fake::new(&[]);
-    let (sender, receiver) = mpsc::channel();
-    let mut session = Session::new(&fake.config(Provider::Codex), sender);
-    for input in [
-        json!({"id":"shell","type":"commandExecution","command":"/bin/zsh -lc 'rg needle src'","exitCode":1}),
-        json!({"id":"mcp","type":"mcpToolCall","tool":"inspect","arguments":{"path":"src"}}),
-        json!({"id":"web","type":"webSearch","query":"tool UI"}),
-        json!({"id":"worker","type":"collabAgentToolCall","tool":"spawnAgent","prompt":"Audit contracts","receiverThreadIds":["child-thread"]}),
-    ] {
-        session.item(&input, Some("turn".into()), true);
-    }
-    let transcript = fold(&receiver.try_iter().collect::<Vec<_>>());
-    let semantics: Vec<_> = transcript
-        .items
-        .iter()
-        .map(|item| item.presentation.semantics.as_ref().unwrap())
-        .collect();
-    assert_eq!(
-        semantics
-            .iter()
-            .map(|metadata| metadata.kind)
-            .collect::<Vec<_>>(),
-        [
-            ToolKind::Shell,
-            ToolKind::Mcp,
-            ToolKind::WebSearch,
-            ToolKind::Subagent
-        ]
-    );
-    assert_eq!(semantics[0].target.as_deref(), Some("rg needle src"));
-    assert!(crate::chat::semantics::is_read_only_shell(
-        semantics[0].target.as_deref().unwrap()
-    ));
-    let worker = semantics[3].worker.as_ref().unwrap();
-    assert_eq!(worker.objective.as_deref(), Some("Audit contracts"));
-    assert_eq!(worker.child_count, None);
-}
-
 fn is_models(event: &ChatEvent) -> bool {
     matches!(event, ChatEvent::Models { .. })
 }

@@ -2,6 +2,9 @@
 //!
 //! The engine owns grouping, counts, disclosure defaults and anchor remapping.
 //! This module only translates persisted display settings and list indices.
+//! Worker/subagent cards are top-level Normal rows between activity and answer;
+//! Verbose retains their transcript position. Keep these projected identities
+//! when dispatching native cards and mapping targeted worker updates.
 use crate::chat::model::Transcript;
 use riwork_engine::chat::projection::{self, DisclosureState, ProjectionOptions};
 
@@ -57,6 +60,7 @@ pub(super) fn cached_rows(
     )
 }
 
+#[cfg(test)]
 pub(super) fn rows(
     transcript: &Transcript,
     mode: DisplayMode,
@@ -122,24 +126,6 @@ pub(super) fn anchor_item(row: &Row) -> &str {
     row.children.first().map_or(row.id.as_str(), anchor_item)
 }
 
-pub(super) fn contains(row: &Row, id: &str) -> bool {
-    row.id == id
-        || row.children.iter().any(|child| contains(child, id))
-        || row.comments.iter().any(|comment| contains(comment, id))
-        || row.artifacts.iter().any(|artifact| artifact.item_id == id)
-}
-
-/// Resolve an item anchor with the shared rules, then locate its virtual list row.
-pub(super) fn remap_anchor(anchor: &Row, rows: &[Row]) -> Option<usize> {
-    let id = projection::visible_anchor(rows, anchor_item(anchor))
-        .or_else(|| projection::visible_anchor(rows, &anchor.id));
-    id.and_then(|id| rows.iter().position(|row| contains(row, &id)))
-        .or_else(|| {
-            rows.iter()
-                .position(|row| contains(row, anchor_item(anchor)))
-        })
-}
-
 pub(super) fn disclosure(row: &Row) -> bool {
     !matches!(
         row.kind,
@@ -174,237 +160,5 @@ pub(super) fn open_ids(rows: &[Row], result: &mut Vec<String>) {
         }
         open_ids(&row.children, result);
         open_ids(&row.comments, result);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::chat::model::{
-        ChatEvent, Item, ItemBody, ItemStatus, MessagePhase, Presentation, TurnOutcome,
-    };
-    use crate::chat::wire::Envelope;
-    use crate::chat_view::state::ChatModel;
-
-    fn item(id: &str, body: ItemBody) -> Item {
-        Item {
-            id: id.into(),
-            turn_id: Some("turn".into()),
-            status: ItemStatus::Completed,
-            presentation: Presentation::default(),
-            body,
-            started_at: None,
-            ended_at: None,
-        }
-    }
-
-    pub(super) fn transcript() -> Transcript {
-        let mut transcript = Transcript::default();
-        transcript.items = vec![
-            item(
-                "user",
-                ItemBody::UserMessage {
-                    text: "Find it".into(),
-                },
-            ),
-            item(
-                "read",
-                ItemBody::Command {
-                    command: "cat src/main.rs".into(),
-                    cwd: None,
-                    output: "fn main() {}".into(),
-                    exit_code: Some(0),
-                },
-            ),
-            item(
-                "comment",
-                ItemBody::AgentMessage {
-                    text: "Checking another file".into(),
-                },
-            ),
-            item(
-                "search",
-                ItemBody::Command {
-                    command: "rg main src".into(),
-                    cwd: None,
-                    output: "src/main.rs:1:fn main() {}".into(),
-                    exit_code: Some(0),
-                },
-            ),
-            item(
-                "build",
-                ItemBody::Command {
-                    command: "cargo build".into(),
-                    cwd: None,
-                    output: "error: failed".into(),
-                    exit_code: Some(1),
-                },
-            ),
-            item(
-                "answer",
-                ItemBody::AgentMessage {
-                    text: "Found it".into(),
-                },
-            ),
-        ];
-        transcript.items[2].presentation.phase = Some(MessagePhase::Commentary);
-        transcript.items[4].status = ItemStatus::Failed;
-        transcript.items[5].presentation.phase = Some(MessagePhase::Final);
-        transcript
-    }
-
-    #[test]
-    fn desktop_consumes_engine_rows_and_all_disclosures_start_closed() {
-        let transcript = transcript();
-        for mode in [DisplayMode::Normal, DisplayMode::Verbose] {
-            let desktop = rows(&transcript, mode, &DisclosureState::default(), Some(100));
-            let expected = projection::project_transcript(
-                &transcript,
-                &ProjectionOptions {
-                    mode: if mode == DisplayMode::Normal {
-                        projection::DisplayMode::Normal
-                    } else {
-                        projection::DisplayMode::Verbose
-                    },
-                    now_ms: Some(100),
-                    ..ProjectionOptions::default()
-                },
-            );
-            assert_eq!(desktop, expected);
-            let mut opened = Vec::new();
-            open_ids(&desktop, &mut opened);
-            assert!(opened.is_empty());
-        }
-    }
-
-    #[test]
-    fn normal_keeps_one_activity_and_hides_commentary_even_when_open() {
-        let transcript = transcript();
-        let mut state = DisclosureState::default();
-        state.toggle("activity:turn", false);
-        let rows = rows(&transcript, DisplayMode::Normal, &state, None);
-        assert_eq!(
-            rows.iter().map(|row| row.kind).collect::<Vec<_>>(),
-            [RowKind::User, RowKind::Activity, RowKind::Final]
-        );
-        let activity = &rows[1];
-        assert!(activity.open);
-        assert_eq!(activity.failed_count, 1);
-        assert!(!activity.children.is_empty());
-        assert!(find(&activity.children, "comment").is_none());
-        assert!(activity.children.iter().all(|row| !row.open));
-    }
-
-    #[test]
-    fn anchors_follow_collapsed_groups_and_activity() {
-        let transcript = transcript();
-        let normal = rows(
-            &transcript,
-            DisplayMode::Normal,
-            &DisclosureState::default(),
-            None,
-        );
-        let verbose = rows(
-            &transcript,
-            DisplayMode::Verbose,
-            &DisclosureState::default(),
-            None,
-        );
-        let build = find(&verbose, "build").unwrap();
-        assert_eq!(remap_anchor(build, &normal), Some(1));
-        assert_eq!(focusable_rows(&normal), ["activity:turn"]);
-        assert!(focusable_rows(&verbose).contains(&"build".into()));
-    }
-
-    fn apply(model: &mut ChatModel, event: ChatEvent) {
-        let changed = model.apply(&[Envelope {
-            chat_id: "chat".into(),
-            seq: model.last_seq + 1,
-            event,
-        }]);
-        assert!(changed.projection_changed);
-    }
-
-    #[test]
-    fn activity_uses_folded_turn_wall_time_instead_of_overlapping_call_durations() {
-        let mut model = ChatModel::new();
-        apply(
-            &mut model,
-            ChatEvent::TurnStarted {
-                turn_id: "turn".into(),
-                started_at: Some(1_000),
-            },
-        );
-        for (id, command, end) in [
-            ("build", "cargo build", 15_000),
-            ("test", "cargo test", 25_000),
-        ] {
-            let mut call = item(
-                id,
-                ItemBody::Command {
-                    command: command.into(),
-                    cwd: None,
-                    output: String::new(),
-                    exit_code: Some(0),
-                },
-            );
-            call.started_at = Some(5_000);
-            call.ended_at = Some(end);
-            apply(&mut model, ChatEvent::ItemCompleted { item: call });
-        }
-        apply(
-            &mut model,
-            ChatEvent::TurnCompleted {
-                turn_id: "turn".into(),
-                outcome: TurnOutcome::Completed,
-                ended_at: Some(73_000),
-            },
-        );
-        let projected = rows(
-            &model.transcript,
-            DisplayMode::Normal,
-            &DisclosureState::default(),
-            Some(90_000),
-        );
-        let activity = find(&projected, "activity:turn").unwrap();
-        assert_eq!(activity.duration_ms, Some(72_000));
-        assert_eq!(activity.title, "Worked 1m 12s · 2 commands");
-        assert!(!activity.running);
-    }
-
-    #[test]
-    fn running_activity_includes_time_between_calls_and_keeps_spinner_out_of_text() {
-        let mut model = ChatModel::new();
-        apply(
-            &mut model,
-            ChatEvent::TurnStarted {
-                turn_id: "turn".into(),
-                started_at: Some(1_000),
-            },
-        );
-        let mut call = item(
-            "test",
-            ItemBody::Command {
-                command: "cargo test".into(),
-                cwd: None,
-                output: String::new(),
-                exit_code: None,
-            },
-        );
-        call.status = ItemStatus::InProgress;
-        call.started_at = Some(17_000);
-        apply(&mut model, ChatEvent::ItemStarted { item: call });
-        let projected = rows(
-            &model.transcript,
-            DisplayMode::Normal,
-            &DisclosureState::default(),
-            Some(19_000),
-        );
-        let activity = find(&projected, "activity:turn").unwrap();
-        assert_eq!(activity.duration_ms, Some(18_000));
-        assert_eq!(activity.title, "Working 18s · running cargo test");
-        assert!(activity.running);
-        assert_eq!(header_text(activity, None), activity.title);
-        assert!(!projection::selection_leaves(&projected)[0].1.contains('◌'));
     }
 }

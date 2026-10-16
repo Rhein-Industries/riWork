@@ -5,7 +5,8 @@ projections. Source: proposal rev. 5, §§2.2–2.4 and §3. Rust implements it 
 `crates/riwork-engine/src/chat/projection.rs`. The tests execute every JSON file
 in this directory, including the shared shell classification table. A Swift
 implementation must use these same inputs and exact expected JSON, rather than
-reverse-engineering the Rust implementation. All times below are Unix milliseconds.
+reverse-engineering the Rust implementation. Projection and item lifecycle times
+are Unix milliseconds; host worker `noted_at` and `final.ended_at` are Unix seconds.
 
 ## Input schema and defaults
 
@@ -15,8 +16,12 @@ A projection receives `items`, `item_sequences`, `requests`, and `options`.
   `ended_at`, and `presentation`; `status` defaults to `in_progress`. Its body is
   the existing tagged engine body (`type`). No body or image-source variant was
   added for this feature. Tool-call `input` is arbitrary JSON.
-- Presentation has optional `phase` (`commentary` or `final`), `semantics` and
-  `parent_id`, plus `images` and `attachments` arrays (empty by default).
+- Presentation has optional `phase` (`commentary` or `final`), `semantics`,
+  `parent_id`, upstream `subagent` and lenient `worker` metadata, plus `images`
+  and `attachments` arrays (empty by default). The host `worker` is the upstream
+  lifecycle record with required `session_id`, `kind` and `noted_at`; it is separate
+  from `semantics.worker`. Malformed optional hints are discarded independently,
+  preserving valid worker and subagent records.
 - Semantics has `kind` (default/unknown word → `other`), optional `target`,
   `range:{start,end?}` (inclusive line numbers), `match_count`, `excerpt`,
   `worker:{role?,objective?,child_count?}`, and `produced:[{path,line?}]` (empty).
@@ -24,7 +29,10 @@ A projection receives `items`, `item_sequences`, `requests`, and `options`.
   `subagent`, `other`. Wrong-typed or `{"elided":true}` optional hints disappear;
   malformed elements of metadata arrays are discarded individually. Unknown
   metadata must not discard the item. Produced paths require recorded provenance;
-  neither output prose nor filenames mentioned in assistant text create artifacts.
+  native `file_change.changes` paths also provide that provenance for older hosts.
+  Explicit produced refs retain their order and line hints; native paths absent
+  from those refs are appended in change order, once per path. Images follow file
+  refs. Neither output prose nor filenames mentioned in assistant text create artifacts.
 - `item_sequences` maps an item ID to the sequence that first introduced it,
   never the sequence of its latest update. It defaults to `{}`. Without an entry,
   ordering inside a projected sibling list is `sibling_index * 2 + 1`; the outer
@@ -110,6 +118,15 @@ bodies use semantic kind, defaulting to `other`. In mockup vocabulary,
 `thought/comment/web/fetch/agent` mean
 `reasoning/commentary/web_search/web_fetch/subagent` here.
 
+Readable host `presentation.worker` metadata produces a `worker` row, and explicit
+`presentation.subagent` metadata produces a `subagent` row ahead of generic tool
+semantics. Host worker markers never enter ordinary call groups or activity counts,
+including markers whose newer metadata cannot be decoded. The original item stays
+available to the native card renderer, which resolves live worker status from the
+inventory and child reports with `Transcript.replaced_at`, independently of the
+first-arrival `item_sequences`. Provider subagent status takes precedence over the
+completion status of the operation which reported it.
+
 A known `parent_id` nests an item under an existing Subagent in that block. A
 missing parent, self-parent, non-subagent parent, or cycle leaves it as a root row.
 Nested lists use the same projection rules and original item orders. A request
@@ -125,7 +142,7 @@ script is unavailable is its own row: unknown script is never read-only. Without
 a known discriminator the placeholder is `other`. This requires no new ItemBody.
 
 Leaf IDs equal item IDs. Header titles are User, Answer, Commentary, Thought, Ran,
-Read, Searched, Listed, Searched the web, Fetched, Used MCP, Agent, Used tool,
+Read, Searched, Listed, Searched the web, Fetched, Used MCP, Worker, Agent, Used tool,
 Edited, Plan, Todo, Context compacted, Notice. Target comes from semantics, then
 command/query/single edited path; **a Command's target always comes from its body**.
 Bodies/output/diffs remain on the original item for lookup, never in a projected
@@ -185,6 +202,13 @@ Normal keeps user/final rows visible and emits `activity:<turn_id>` between them
 for every named turn, or for a legacy block with work. Running turns also get an
 activity without calls. Its children are the grouped Verbose projection, with
 commentary/notices hidden and requests/compaction/finals outside the disclosure.
+Worker/subagent cards also remain as their own lines outside the activity,
+between it and the answer, live while running and collapsed to their result after
+completion. They appear once, including nested cards, and retain their stable item
+IDs. Normal activity bulk disclosure does not open these cards. Verbose keeps cards
+in place among the calls and includes them in its disclosure controls. A host marker
+arriving after an answer neither hides that answer nor moves its card below the
+answer in Normal.
 Artifacts are lifted to one strip and removed from disclosed child rows; final
 and user images stay on their message rows. Verbose artifacts stay on their owning
 rows. Known descendant items are counted once by stable ID; a worker with known

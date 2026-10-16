@@ -24,6 +24,7 @@ impl Workspace {
             chats: self.shared_chats.as_deref(),
             chat_activity: &self.dashboard.chat_activity,
             schedules: self.dashboard.schedules.as_ref(),
+            backends: self.dashboard.backends.as_ref(),
             now: activity::unix_now(),
         })
     }
@@ -138,11 +139,12 @@ impl Workspace {
             return;
         }
         self.dismiss_project_sort_menus(window, cx);
-        if self.panel_menu.is_none() && !self.layout_menu_open {
+        if self.panel_menu.is_none() && !self.layout_menu_open && !self.account_menu_open {
             self.menu_return.capture(window, cx);
         }
         self.panel_menu = None;
         self.layout_menu_open = false;
+        self.account_menu_open = false;
         self.global_menu_open = true;
         // Terminals are native views drawn above everything of ours; the menu is drawn over
         // their snapshots instead, as the layout menu is.

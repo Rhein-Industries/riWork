@@ -98,16 +98,17 @@ struct ChatActivityRows: View, Equatable {
             if row.kind == .user {
                 HStack {
                     Spacer(minLength: 36)
+                    let typedText = ChatFileCatalog.messageText(messageText, files: ownedFiles, attachments: item?.presentation.attachments ?? [])
                     VStack(alignment: .leading, spacing: 0) {
-                        if !messageText.isEmpty {
-                            Text(ChatFileCatalog.messageText(messageText, files: ownedFiles)).chatProse().foregroundStyle(style.text)
+                        if !ownedFiles.isEmpty { ChatSentAttachments(files: ownedFiles) }
+                        if !typedText.isEmpty {
+                            Text(typedText).chatProse().foregroundStyle(style.text)
                                 .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                         }
-                        if !ownedFiles.isEmpty { ChatSentAttachments(files: ownedFiles) }
                     }
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     .background(style.native ? style.active : style.accent.opacity(0.12), in: style.block(18))
-                    .accessibilityLabel("You said").accessibilityValue(messageText)
+                    .accessibilityLabel("You said").accessibilityValue(typedText)
                 }
             } else {
                 if !messageText.isEmpty {
@@ -222,10 +223,11 @@ struct ChatActivityFooter: View {
     let files: [ChatFileEntry]
     let ownedFiles: [ChatFileEntry]
     let provider: ChatProvider
+    var showsDetail = true
     var body: some View {
         let strip = ChatActivityRows.stripArtifacts(row: row, artifacts: files, owned: ownedFiles)
         VStack(alignment: .leading, spacing: 0) {
-            if row.open, row.kind == .subagent, !row.children.isEmpty, let item {
+            if showsDetail, row.open, row.kind == .subagent, !row.children.isEmpty, let item {
                 ChatActivityDetail(item: item, kind: row.kind, files: ownedFiles, provider: provider, childrenCaptured: true)
             }
             if !strip.isEmpty { ChatFileStrip(files: strip) }

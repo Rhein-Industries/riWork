@@ -7,7 +7,9 @@
 //!
 //! The page is a toolbar (the search, the figures in a line, how fresh they are), then the
 //! projects as a table beside rails for what needs the user, the work under way, the tasks
-//! in progress and the automations. The search narrows every list; the filters and the
+//! in progress, the automations, and the backends: the app, the chat host and each
+//! provider's CLI, and whether what runs started before what is on disk was replaced
+//! (`global_overview::backends`). The backends are shown only; nothing here restarts them. The search narrows every list; the filters and the
 //! order apply to the projects. How much sits side by side follows the width the window
 //! gives the dashboard (`Layout`): two rails when wide, one at an ordinary size, and one
 //! region at a time, chosen above it, when compact. Columns that do not fit fold into the
@@ -31,9 +33,9 @@ use crate::{
     chat::model::{ChatState, OrchestratorScope, Provider},
     controls,
     global_overview::{
-        Attention, AttentionKind, AutomationSummary, Automations, GlobalOrchestrator, Overview,
-        ProjectOrchestrator, ProjectOverview, SessionSummary, Target, TaskCounts, TaskOverview,
-        Work, short_duration,
+        Attention, AttentionKind, AutomationSummary, Automations, Backends, GlobalOrchestrator,
+        Line as BackendLine, Overview, ProjectOrchestrator, ProjectOverview, SessionSummary,
+        Target, TaskCounts, TaskOverview, Tone, Work, backend_lines, short_duration,
     },
     icons,
     layouts::PanelKind,
@@ -917,6 +919,8 @@ struct Lists<'a> {
     finished: Vec<(usize, &'a Work)>,
     tasks: Vec<&'a TaskOverview>,
     automations: Vec<&'a AutomationSummary>,
+    /// The Backends rows under the search; `None` before they were read.
+    backends: Option<(usize, Vec<BackendLine>)>,
 }
 
 impl<'a> Lists<'a> {
@@ -973,6 +977,20 @@ impl<'a> Lists<'a> {
                     })
                     .collect(),
                 _ => Vec::new(),
+            },
+            backends: match &overview.backends {
+                Backends::NotRead => None,
+                Backends::Read(backends) => {
+                    let lines = backend_lines(backends, data.now);
+                    let total = lines.len();
+                    Some((
+                        total,
+                        lines
+                            .into_iter()
+                            .filter(|line| matches(query, &[&line.title, &line.detail]))
+                            .collect(),
+                    ))
+                }
             },
         }
     }
@@ -1066,6 +1084,7 @@ fn body<V: 'static>(
         vec![
             tasks_section(data, &lists, on_action.clone(), cx),
             automations_section(data, &lists, on_action.clone(), cx),
+            backends_section(data, &lists, cx),
         ]
     };
     let main = div()
@@ -1087,13 +1106,15 @@ fn body<V: 'static>(
         }
         Arrangement::Normal => {
             // The pressing first: what needs the user and what works, then the tasks and
-            // the automations, and what finished last of all.
+            // the automations, what finished, and the backends last of all.
             let mut sections = vec![
                 attention_section(data, &lists, on_action.clone(), cx),
                 work_section(data, &lists, on_action.clone(), cx),
+                tasks_section(data, &lists, on_action.clone(), cx),
+                automations_section(data, &lists, on_action.clone(), cx),
             ];
-            sections.extend(work(cx));
             sections.extend(finished_section(data, &lists, on_action.clone(), cx));
+            sections.push(backends_section(data, &lists, cx));
             main.child(projects_region(data, &lists, layout, on_action.clone(), cx))
                 .child(rail("dashboard-rail", sections, false, colors))
         }
@@ -2183,7 +2204,7 @@ fn section(
     title: &str,
     count: Option<String>,
     colors: Palette,
-) -> gpui::Stateful<Div> {
+) -> impl IntoElement + ParentElement + use<> {
     let heading = if ui_text::is_native() {
         controls::section_heading(ui_text::cased(title.to_owned()), colors)
             .px(ui_text::space(ROW_PAD))
@@ -2215,6 +2236,7 @@ fn section(
         .flex_col()
         .min_w_0()
         .child(heading)
+        .test_support()
 }
 
 /// "3", or "1 of 3" while a search hides some.
@@ -2619,6 +2641,111 @@ fn automations_section<V: 'static>(
                 .into_any_element()
         }
     }
+}
+
+/// The app, the chat host and the providers, and whether each runs what is on disk. Its rows
+/// are facts, not buttons: no restart is offered here.
+fn backends_section<V: 'static>(
+    data: &DashboardData<'_>,
+    lists: &Lists<'_>,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let colors = theme::palette(cx);
+    let Some((total, lines)) = &lists.backends else {
+        return section("dashboard-backends", "Backends", None, colors)
+            .child(note(
+                "Reading the app, the chat host and the providers…",
+                colors.muted,
+            ))
+            .into_any_element();
+    };
+    let stale = lines.iter().filter(|line| line.tone == Tone::Stale).count();
+    let count = (stale > 0).then(|| format!("{stale} to restart"));
+    let mut section = section("dashboard-backends", "Backends", count, colors);
+    if lines.is_empty() && *total > 0 {
+        section = section.child(note(no_match(data.query), colors.muted));
+    }
+    for line in lines {
+        let (mark, color, state) = match line.tone {
+            Tone::Current => ("●", colors.cyan, "current"),
+            Tone::Stale => ("↻", colors.gold, "restart to apply"),
+            Tone::Unknown => ("?", colors.muted, "freshness unknown"),
+            Tone::Idle => ("○", colors.muted, "not running"),
+        };
+        section = section.child(fact_row(
+            format!("dashboard-backend-{}", line.key),
+            format!("{}, {state}: {}", line.title, line.detail),
+            (mark, color),
+            &line.title,
+            &line.detail,
+            colors,
+        ));
+    }
+    if let Backends::Read(backends) = &data.overview.backends
+        && backends.providers.is_empty()
+        && data.query.trim().is_empty()
+    {
+        section = section.child(note("No provider CLI was found.", colors.muted));
+    }
+    section.into_any_element()
+}
+
+/// A row that says something and leads nowhere: a `row` without the click. Its detail wraps,
+/// so what to restart is never cut off.
+fn fact_row(
+    id: String,
+    name: String,
+    (mark, color): (&'static str, u32),
+    title: &str,
+    detail: &str,
+    colors: Palette,
+) -> AnyElement {
+    let native = ui_text::is_native();
+    div()
+        .id(gpui::SharedString::from(id))
+        .role(gpui::Role::ListItem)
+        .aria_label(name)
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_start()
+        .gap(ui_text::space(6.0))
+        .px(ui_text::space(ROW_PAD))
+        .py(ui_text::space(3.0))
+        .when(!native, |row| {
+            row.border_b_1().border_color(rgb(colors.divider))
+        })
+        .child(controls::on_first_line(
+            div()
+                .w(ui_text::space(10.0))
+                .text_size(ui_text::text(controls::ROW_TITLE_TEXT))
+                .text_color(rgb(color))
+                .child(mark),
+            15.0,
+        ))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(ui_text::space(1.0))
+                .child(line(
+                    title.to_owned(),
+                    colors.text,
+                    controls::ROW_TITLE_TEXT,
+                ))
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .text_size(ui_text::text(controls::ROW_DETAIL_TEXT))
+                        .text_color(rgb(colors.muted))
+                        .child(detail.to_owned()),
+                ),
+        )
+        .test_support()
+        .into_any_element()
 }
 
 #[cfg(test)]

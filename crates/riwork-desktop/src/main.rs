@@ -12,7 +12,9 @@ pub use riwork_engine::{
 };
 mod chat;
 
+mod account_status;
 mod api_key;
+mod app_preview;
 mod appearance_sync;
 mod behavior_controls;
 mod chat_choice;
@@ -21,6 +23,7 @@ mod chat_tabs;
 mod chat_view;
 mod controls;
 mod dashboard;
+mod delegation_choice;
 mod dictation;
 mod dock_menu;
 mod file_explorer;
@@ -30,12 +33,15 @@ mod global_nav;
 mod global_window;
 mod handoff_dialog;
 mod icons;
+mod memo_editor;
 mod metal_layer;
 mod notifications;
+mod nuke_shells;
 mod orchestrator_choice;
 mod orchestrator_wakes;
 mod orchestrators;
 mod panels;
+mod preview_host;
 mod project_creator;
 mod project_settings;
 mod remote_prompt;
@@ -44,6 +50,7 @@ mod schedule_panel;
 mod schedules;
 mod settings;
 mod status_bar;
+mod subshells;
 mod symbols;
 mod tab_close_dialog;
 mod tab_menu;
@@ -69,6 +76,7 @@ use std::{
 
 use crate::text_input::{EnterBehavior, InputEvent, InputState};
 use activity::{ActivityTracker, AgentActivity, AgentState, ChatActivity};
+use app_preview::{AppPreviewEvent, AppPreviewView};
 use chat::model::{ChatInfo, NewChat, OrchestratorScope, Provider};
 use chat_view::{ChatView, ChatViewEvent, HostConfig, ToggleDictation};
 use file_explorer::{
@@ -100,6 +108,7 @@ use remote_prompt::{PromptKind, RemotePrompt, RemotePromptEvent};
 use remote_service::RemoteState;
 use remote_tree::{NewShellKind, RemoteShell};
 use riwork_core::global_window::GlobalView;
+use riwork_engine::app_preview::{PreviewMode, PreviewSpec};
 use sessions::{HarnessKind, SessionManager, SessionMetrics, ShellKind, ShellSession};
 use settings::{CuaSetupState, Settings, SettingsEvent, SettingsPanel, SettingsStore};
 use store::{Project, ProjectCodexAccount, SearchHit, State, Store};
@@ -139,6 +148,7 @@ actions!(
         OpenGrok,
         OpenMuse,
         OpenNewChat,
+        OpenAppPreview,
         CreateProject,
         ToggleFocusMode,
         OpenSettings,
@@ -166,6 +176,7 @@ enum PaneMenuAction {
     Harness(HarnessKind),
     /// Open the shared provider/model choice dialog.
     NewChat,
+    AppPreview,
     Orchestrator(bool),
     /// Pass the selected agent tab's conversation to a new shell or chat.
     Handoff,
@@ -270,6 +281,11 @@ enum TabContent {
         chat_id: String,
         view: Entity<ChatView>,
     },
+    AppPreview {
+        preview_id: String,
+        spec: PreviewSpec,
+        view: Entity<AppPreviewView>,
+    },
 }
 
 /// The bookkeeping every terminal tab has, whatever it attaches to.
@@ -304,7 +320,7 @@ impl TabContent {
                 error: attach_error,
                 failures: attach_failures,
             }),
-            Self::Panel(_) | Self::Chat { .. } => None,
+            Self::Panel(_) | Self::Chat { .. } | Self::AppPreview { .. } => None,
         }
     }
 }
@@ -327,6 +343,12 @@ impl Tab {
             },
             TabContent::Panel(panel) => SavedTab::Panel { panel: *panel },
             TabContent::Chat { chat_id, .. } => saved_chat(chat_id)?,
+            TabContent::AppPreview {
+                preview_id, spec, ..
+            } => SavedTab::AppPreview {
+                preview_id: preview_id.clone(),
+                spec: spec.clone(),
+            },
         })
     }
 
@@ -386,7 +408,7 @@ impl Tab {
             TabContent::Shell { terminal, .. } | TabContent::RemoteShell { terminal, .. } => {
                 terminal.as_ref()
             }
-            TabContent::Panel(_) | TabContent::Chat { .. } => None,
+            TabContent::Panel(_) | TabContent::Chat { .. } | TabContent::AppPreview { .. } => None,
         }
     }
 
@@ -406,6 +428,9 @@ impl Tab {
     fn set_visible(&self, visible: bool, cx: &mut Context<Workspace>) {
         if let Some(terminal) = self.terminal() {
             terminal.update(cx, |terminal, _| terminal.set_visible(visible));
+        }
+        if let TabContent::AppPreview { view, .. } = &self.content {
+            view.update(cx, |view, cx| view.set_visible(visible, cx));
         }
     }
 }
@@ -1303,13 +1328,16 @@ struct CodexUsageEntry {
 impl Global for AccountUsage {}
 
 /// What the global dashboard reads that a window does not sample anyway: the automations'
-/// ledger, and when failed chats last wrote (so old failures are not called new). Read off the
-/// window while the global window's dashboard or a project window's global menu is on screen;
-/// reading starts no agent and no chat host.
+/// ledger, when failed chats last wrote (so old failures are not called new), and, for the
+/// global window's Backends section, the app, the chat host and the providers' CLIs. Read off
+/// the window while the global window's dashboard or a project window's global menu is on
+/// screen; reading starts no agent, provider CLI or chat host.
 #[derive(Default)]
 struct DashboardReads {
     schedules: Option<Result<Vec<schedules::Schedule>, String>>,
     chat_activity: BTreeMap<String, u64>,
+    /// Only the global window reads them; a project window's menu does not show them.
+    backends: Option<global_overview::BackendSample>,
     pending: bool,
     read_at: Option<Instant>,
 }
@@ -1318,6 +1346,7 @@ struct DashboardReads {
 const DASHBOARD_READ_EVERY: Duration = Duration::from_secs(10);
 
 struct Workspace {
+    preview_host: Option<preview_host::PreviewHost>,
     modal_selection_scope: gpui_kit::base::TextSelectionScopeId,
     menu_focus: FocusHandle,
     menu_return: behavior_controls::FocusReturn,
@@ -1329,6 +1358,14 @@ struct Workspace {
     handoff_dialog: Option<Entity<HandoffDialog>>,
     tab_close_dialog: Option<Entity<tab_close_dialog::TabCloseDialog>>,
     tab_close_target: Option<(String, Option<(PaneId, TabId)>)>,
+    /// The confirmation behind **Nuke all shells**, while it is open, and the shells it
+    /// counted: confirming exits those and no others.
+    nuke_dialog: Option<Entity<nuke_shells::NukeShellsDialog>>,
+    nuke_target: Option<Vec<String>>,
+    /// A nuke's exits are running; the button waits for them.
+    nuke_running: bool,
+    /// How Exit and Nuke all shells end a session (`exit_session`).
+    session_exit: SessionExit,
     /// Explicit launch choices; the chat does not exist before confirmation.
     new_chat_dialog: Option<Entity<chat_choice::ChatChoice>>,
     /// A hand off whose dialog was hidden while it works (see `HandoffEvent::Detached`);
@@ -1420,6 +1457,7 @@ struct Workspace {
     orchestrators_starting: HashSet<OrchestratorScope>,
     shell_cwds: BTreeMap<String, PathBuf>,
     metrics: BTreeMap<String, SessionMetrics>,
+    subshells: subshells::WorkerState,
     session_refresh_pending: bool,
     session_refresh_generation: u64,
     native_sessions: session_catalog::Catalog,
@@ -1454,6 +1492,11 @@ struct Workspace {
     global_menu_open: bool,
     /// Where the global item was last drawn, for the menu's place and its own toggle.
     global_item_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// The Codex account menu of the status bar is open: the project's account for new Codex
+    /// sessions, hung from the Codex account item and freezing the terminals as the others do.
+    account_menu_open: bool,
+    /// Where the Codex account item was last drawn, for the menu's place and its own toggle.
+    account_item_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// What the dashboard reads beside the sessions, while it is on screen.
     dashboard: DashboardReads,
     /// When the sessions were last read (Unix seconds), and why the last read failed if it
@@ -1777,22 +1820,14 @@ fn verified_shell_email(
     })
 }
 
-fn codex_session_status_label(
-    shell: &ShellSession,
-    numbers: &BTreeMap<String, usize>,
-    snapshot: Option<&codex_accounts::AccountsSnapshot>,
-) -> String {
-    let email = verified_shell_email(shell, snapshot).unwrap_or_else(|| "Email unknown".to_owned());
-    match numbers.get(&shell.id) {
-        Some(number) => format!("CODEX A{number} · {email}"),
-        None => format!("CODEX · {email}"),
-    }
-}
-
+/// What the Codex account item says: the account new Codex sessions of the project get, and
+/// whether the project, the app or the system default decides it. `system_label` is what Codex
+/// last reported for the system default's home, the only name it has.
 fn project_default_account_label(
     project: Option<&Project>,
     app_selected: Option<&str>,
     snapshot: Option<&codex_accounts::AccountsSnapshot>,
+    system_label: Option<&str>,
 ) -> String {
     let choice = project.map(|project| &project.codex_account);
     let (source, selected) = match choice {
@@ -1806,7 +1841,10 @@ fn project_default_account_label(
     let account =
         selected.and_then(|id| snapshot?.accounts.iter().find(|account| account.id == id));
     let detail = match (selected, account) {
-        (None, _) => "System default · email unknown".to_owned(),
+        (None, _) => format!(
+            "System default · {}",
+            system_label.unwrap_or("email unknown")
+        ),
         (Some(_), Some(account)) if account.available => account
             .email
             .clone()
@@ -2048,7 +2086,9 @@ impl Workspace {
         .detach();
         let file_preview = cx.new(|cx| FilePreview::new(panel.clone(), cx));
         let file_explorer = panel;
+        let preview_host = preview_host::PreviewHost::open(sessions.state_home()).ok();
         let mut workspace = Self {
+            preview_host,
             modal_selection_scope: gpui_kit::base::TextSelectionScopeId::new(),
             menu_focus: cx.focus_handle(),
             menu_return: Default::default(),
@@ -2058,6 +2098,10 @@ impl Workspace {
             handoff_dialog: None,
             tab_close_dialog: None,
             tab_close_target: None,
+            nuke_dialog: None,
+            nuke_target: None,
+            nuke_running: false,
+            session_exit: Arc::new(exit_session),
             new_chat_dialog: None,
             handoff_running: None,
             remote_ended: HashSet::new(),
@@ -2127,6 +2171,7 @@ impl Workspace {
             native_sessions: session_catalog::Catalog::default(),
             native_sessions_generation: 0,
             session_filter: session_catalog::Filter::default(),
+            subshells: Default::default(),
             session_refresh_pending: false,
             session_refresh_generation: 0,
             agent_activity: BTreeMap::new(),
@@ -2149,6 +2194,8 @@ impl Workspace {
             layout_item_bounds: Rc::new(Cell::new(Bounds::default())),
             global_menu_open: false,
             global_item_bounds: Rc::new(Cell::new(Bounds::default())),
+            account_menu_open: false,
+            account_item_bounds: Rc::new(Cell::new(Bounds::default())),
             dashboard: DashboardReads::default(),
             sessions_sampled_at: None,
             sessions_sample_error: None,
@@ -2184,6 +2231,7 @@ impl Workspace {
             workspace.refresh_window_title(window, cx);
         }
         workspace.load_project(window, cx);
+        workspace.start_preview_host(window, cx);
         workspace.refresh_project_recency(cx);
         if cua::CuaManager::open_default()
             .and_then(|manager| manager.driver_path())
@@ -2218,9 +2266,11 @@ impl Workspace {
         .detach();
         cx.on_release(|workspace, _| workspace.save_layout())
             .detach();
-        cx.observe_window_activation(window, |_, window, cx| {
+        workspace.start_worker_watch(window, cx);
+        cx.observe_window_activation(window, |workspace, window, cx| {
             if window.is_window_active() {
                 dock_menu::set_frontmost(window.window_handle().window_id().as_u64(), cx);
+                workspace.request_worker_refresh(window, cx);
             } else {
                 tooltip::hide(cx);
             }
@@ -2309,6 +2359,7 @@ impl Workspace {
             let home = self.sessions.state_home().to_path_buf();
             let work = cx.background_executor().spawn(async move {
                 let activity = tracker.sample_states(&shells, activity::unix_now());
+                let models = tracker.reported_models();
                 for completion in tracker.take_completions() {
                     if let Err(error) = notifications::record_completion(
                         &home,
@@ -2319,14 +2370,17 @@ impl Workspace {
                         eprintln!("riwork notifications: {error}");
                     }
                 }
-                (tracker, activity)
+                (tracker, activity, models)
             });
             cx.spawn(async move |this, cx| {
-                let (tracker, activity) = work.await;
+                let (tracker, activity, models) = work.await;
                 let _ = this.update(cx, |workspace, cx| {
                     workspace.activity_tracker = Some(tracker);
-                    if workspace.agent_activity != activity {
+                    if workspace.agent_activity != activity || workspace.subshells.models != models
+                    {
+                        workspace.subshells.models = models;
                         workspace.agent_activity = activity;
+                        workspace.worker_activity_changed(cx);
                         cx.notify();
                     }
                 });
@@ -2671,7 +2725,9 @@ impl Workspace {
                             shell_id,
                             ..
                         } => AttachTarget::Remote(desktop_id.clone(), shell_id.clone()),
-                        TabContent::Panel(_) | TabContent::Chat { .. } => continue,
+                        TabContent::Panel(_)
+                        | TabContent::Chat { .. }
+                        | TabContent::AppPreview { .. } => continue,
                     };
                     let Some(AttachState { terminal, .. }) = tab.content.attach_state() else {
                         continue;
@@ -3157,6 +3213,17 @@ impl Workspace {
                 self.set_search(String::new(), None, window, cx);
             }
             PanelAction::RefreshSessions => self.refresh_native_sessions(true, cx),
+            PanelAction::NukeShells {
+                project,
+                generation,
+            } => {
+                if !self.is_remote()
+                    && project == self.project_id
+                    && generation == self.native_sessions_generation
+                {
+                    self.request_nuke_shells(window, cx);
+                }
+            }
             PanelAction::Search => self.focus_search_input(window, cx),
             // The panel keeps its own field's editor focused (see `panels::panel_search`).
             PanelAction::ClearSearch => self.set_search(String::new(), None, window, cx),
@@ -3661,6 +3728,7 @@ impl Workspace {
             || self.remote_prompt.is_some()
             || self.handoff_dialog.is_some()
             || self.tab_close_dialog.is_some()
+            || self.nuke_dialog.is_some()
             || self.shared_tab_menu.is_some()
             || self.new_chat_dialog.is_some()
     }
@@ -4012,6 +4080,7 @@ impl Workspace {
         self.tab_dragging = false;
         self.layout_menu_open = false;
         self.global_menu_open = false;
+        self.account_menu_open = false;
         self.release_snapshots(cx);
         self.drop_target = None;
         self.resizing = None;
@@ -4087,7 +4156,8 @@ impl Workspace {
                     SavedTab::Shell { shell_id } => Some(shell_id.clone()),
                     SavedTab::Panel { .. }
                     | SavedTab::RemoteShell { .. }
-                    | SavedTab::Chat { .. } => None,
+                    | SavedTab::Chat { .. }
+                    | SavedTab::AppPreview { .. } => None,
                 })
             })
             .collect();
@@ -4247,6 +4317,18 @@ impl Workspace {
                             ),
                             SavedTab::Chat { chat_id } => {
                                 self.restore_chat_tab(*pane_id, chat_id.clone(), window, cx)
+                            }
+                            SavedTab::AppPreview { preview_id, spec } => {
+                                let tab = self.app_preview_tab(
+                                    preview_id.clone(),
+                                    spec.clone(),
+                                    window,
+                                    cx,
+                                );
+                                if let Some(pane) = self.panes.get_mut(pane_id) {
+                                    pane.tabs.push(tab);
+                                    pane.active = pane.tabs.len() - 1;
+                                }
                             }
                         }
                     }
@@ -5601,6 +5683,10 @@ impl Workspace {
         // The order of projects is for the eye: a window nobody can see catches up
         // on the first tick after it shows again.
         if self.window_visible {
+            panels::refresh_worktree_presence(
+                self.state.worktrees.iter().map(|tree| tree.path.as_path()),
+                cx,
+            );
             self.refresh_project_recency(cx);
         }
         self.refresh_window_title(window, cx);
@@ -5699,7 +5785,21 @@ impl Workspace {
         if self.session_refresh_pending {
             return;
         }
+        let polled = self.begin_worker_sample(window, cx);
         self.session_refresh_pending = true;
+        let previous_shells = self.shells.clone();
+        // A chat shows its workers' last lines, and a worker's recorded end keeps them: read
+        // them while a chat is shown or a chat's worker runs.
+        let capture_output = self.panes.values().any(|pane| {
+            pane.tabs
+                .get(pane.active)
+                .is_some_and(|tab| tab.chat().is_some())
+        }) || self.shells.iter().any(|shell| {
+            shell.alive
+                && shell.is_worker()
+                && shell.parent_id.is_some()
+                && shell.project_id.as_deref() == Some(self.project_id.as_str())
+        });
         let project_id = self.project_id.clone();
         let generation = self.session_refresh_generation;
         let chat_inventory_epoch = self.chat_tabs.epoch();
@@ -5741,9 +5841,52 @@ impl Workspace {
             }))
             .filter(|(key, _)| shown.contains(key))
             .collect::<HashMap<_, _>>();
+        let shown_shells = shown
+            .iter()
+            .filter_map(|key| key.strip_prefix("shell:").map(str::to_owned))
+            .collect::<HashSet<_>>();
+        let worker_parents: HashSet<_> = self
+            .panes
+            .iter()
+            .filter(|(id, _)| !self.focus_mode || **id == self.active_pane)
+            .filter_map(|(_, pane)| pane.tabs.get(pane.active)?.chat_id().map(str::to_owned))
+            .collect();
+        let worker_chats: Vec<_> = self
+            .shared_chats
+            .iter()
+            .flatten()
+            .filter(|chat| {
+                chat.parent_id
+                    .as_ref()
+                    .is_some_and(|id| worker_parents.contains(id))
+            })
+            .cloned()
+            .collect();
         let work = cx.background_executor().spawn(async move {
+            // Sessions of deleted worktrees end after a grace period, keeping
+            // shells in tabs or attached terminals; at most one look a minute.
+            sessions.reap_orphaned_worktree_sessions(&shown_shells);
             // One tmux and `ps` sample serves every window for about a tick.
-            let sample = sessions.sample(want_metrics)?;
+            let sample = if polled {
+                sessions.sample(want_metrics)?
+            } else {
+                sessions::SessionSample {
+                    shells: previous_shells,
+                    metrics: None,
+                    directories: None,
+                    processes: None,
+                }
+            };
+            let outputs = if polled && capture_output {
+                subshells::capture_workers(
+                    &sessions,
+                    &sample.shells,
+                    &work_project_id,
+                    &worker_chats,
+                )
+            } else {
+                BTreeMap::new()
+            };
             let chats = {
                 let home = sessions.state_home();
                 let host = orchestrators::ChatHost {
@@ -5754,14 +5897,7 @@ impl Workspace {
                 let authoritative = live.is_some();
                 live.or_else(|| chat::log::read_infos_checked(home).ok())
                     .map(|chats| {
-                        let stale = chats
-                            .iter()
-                            .filter(|chat| {
-                                chat.orchestrator.is_some()
-                                    && !orchestrators::chat_skill_is_current(home, chat)
-                            })
-                            .map(|chat| chat.id.clone())
-                            .collect::<HashSet<_>>();
+                        let stale = orchestrators::stale_chat_skills(home, &chats);
                         (chats, stale, authoritative)
                     })
             };
@@ -5809,6 +5945,7 @@ impl Workspace {
                 chats,
                 shared_tabs,
                 foreign_tabs,
+                outputs,
             ))
         });
         cx.spawn_in(window, async move |this, cx| {
@@ -5820,25 +5957,45 @@ impl Workspace {
                 if workspace.project_id != project_id
                     || workspace.session_refresh_generation != generation
                 {
+                    if polled {
+                        workspace.subshells.poll.checking = false;
+                        workspace.subshells.poll.request();
+                    }
+                    workspace.refresh_sessions(window, cx);
                     return;
                 }
-                let (shells, metrics, cwds, claude_usage, chats, shared_tabs, foreign_tabs) =
-                    match result {
-                        Ok(sample) => sample,
-                        Err(error) => {
-                            // The dashboard says the sessions could not be read, not that
-                            // nothing runs.
-                            if workspace.sessions_sample_error.as_ref() != Some(&error) {
-                                workspace.sessions_sample_error = Some(error);
-                                cx.notify();
-                            }
-                            return;
+                let (
+                    shells,
+                    metrics,
+                    cwds,
+                    claude_usage,
+                    chats,
+                    shared_tabs,
+                    foreign_tabs,
+                    outputs,
+                ) = match result {
+                    Ok(sample) => sample,
+                    Err(error) => {
+                        // The dashboard says the sessions could not be read, not that
+                        // nothing runs.
+                        if workspace.sessions_sample_error.as_ref() != Some(&error) {
+                            workspace.sessions_sample_error = Some(error);
+                            cx.notify();
                         }
-                    };
-                let fresh = workspace.sessions_sampled_at.is_none()
-                    || workspace.sessions_sample_error.is_some();
-                workspace.sessions_sampled_at = Some(activity::unix_now());
-                workspace.sessions_sample_error = None;
+                        if polled {
+                            workspace.finish_worker_sample(BTreeMap::new(), false, false, cx);
+                        }
+                        return;
+                    }
+                };
+                let shell_changed = workspace.shells != shells;
+                let fresh = polled
+                    && (workspace.sessions_sampled_at.is_none()
+                        || workspace.sessions_sample_error.is_some());
+                if polled {
+                    workspace.sessions_sampled_at = Some(activity::unix_now());
+                    workspace.sessions_sample_error = None;
+                }
                 // Most ticks find everything as it was; the window is drawn again
                 // only when something it shows is different.
                 let mut changed = fresh
@@ -5894,9 +6051,17 @@ impl Workspace {
                     request_codex_usage_at(home, false, cx);
                 }
                 workspace.refresh_grok_usage(false, cx);
-                workspace.refresh_agent_activity(cx);
+                if polled {
+                    workspace.finish_worker_sample(outputs, shell_changed, true, cx);
+                    workspace.refresh_agent_activity(cx);
+                } else {
+                    workspace.publish_workers(cx);
+                }
                 changed |= workspace.remember_active_worktree(window, cx);
                 changed |= workspace.refresh_shell_titles();
+                if workspace.worker_refresh_requested() {
+                    workspace.refresh_sessions(window, cx);
+                }
                 if changed {
                     cx.notify();
                 }
@@ -6395,11 +6560,13 @@ impl Workspace {
 
     /// Grok tabs whose session usage this window shows: every live one of the
     /// project while the Usage panel is on screen, and the focused one while the
-    /// bottom bar's usage item is. Anything else is not worth a `grok usage`.
+    /// bottom bar's usage item reads out the current chat. Anything else is not worth a
+    /// `grok usage`.
     fn grok_usage_targets(&self) -> Vec<String> {
         let panel = self.usage_panel_visible();
-        let focused = self
-            .usage_chip_visible()
+        // All accounts reads out no session, so it asks for none.
+        let focused = (self.usage_chip_visible()
+            && self.settings.status_bar.usage_mode == status_bar::UsageMode::CurrentChat)
             .then(|| self.active_shell())
             .flatten()
             .map(|shell| shell.id.as_str());
@@ -6591,6 +6758,104 @@ impl Workspace {
         self.save_layout();
     }
 
+    fn add_app_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.ensure_layout(window, cx) {
+            return;
+        }
+        if let Err(error) = self.local_only(cx) {
+            self.notice = Some(error);
+            cx.notify();
+            return;
+        }
+        let cwd = self
+            .selected_worktree_id
+            .as_ref()
+            .and_then(|id| self.state.worktrees.iter().find(|tree| &tree.id == id))
+            .map(|tree| tree.path.clone())
+            .unwrap_or_else(|| self.cwd.clone());
+        let spec = PreviewSpec {
+            command: String::new(),
+            cwd,
+            mode: PreviewMode::Cooperative,
+            ios: None,
+        };
+        let tab = self.app_preview_tab(uuid::Uuid::new_v4().to_string(), spec, window, cx);
+        if let Err(error) = self.place_new_tab(self.new_tab_pane(), tab, window, cx) {
+            self.notice = Some(error);
+        }
+        self.focus_active(window, cx);
+        self.save_layout();
+        cx.notify();
+    }
+
+    /// Build an idle preview. Only the view's Run action launches its command.
+    fn app_preview_tab(
+        &mut self,
+        preview_id: String,
+        spec: PreviewSpec,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Tab {
+        let mut preview_id = preview_host::instance_id(preview_id);
+        if let Some(host) = &self.preview_host {
+            if host.store.begin(&preview_id, &host.id).is_err() {
+                preview_id = uuid::Uuid::new_v4().to_string();
+                let _ = host.store.begin(&preview_id, &host.id);
+            }
+        }
+        let view = cx.new(|cx| AppPreviewView::new(spec.clone(), window, cx));
+        if let Some(host) = &self.preview_host {
+            view.update(cx, |view, _| {
+                view.bind_control(
+                    host.store.clone(),
+                    preview_id.clone(),
+                    host.id.clone(),
+                    self.project_id.clone(),
+                )
+            });
+        }
+        cx.subscribe(&view, |workspace, view, event: &AppPreviewEvent, cx| {
+            let AppPreviewEvent::Configured(spec) = event;
+            for tab in workspace.panes.values_mut().flat_map(|pane| &mut pane.tabs) {
+                if let TabContent::AppPreview {
+                    spec: saved,
+                    view: current,
+                    ..
+                } = &mut tab.content
+                    && current == &view
+                {
+                    *saved = spec.clone();
+                    tab.title = view.read(cx).title();
+                    workspace.save_layout();
+                    cx.notify();
+                    break;
+                }
+            }
+        })
+        .detach();
+        let tab = Tab {
+            id: self.next_tab_id,
+            title: view.read(cx).title(),
+            content: TabContent::AppPreview {
+                preview_id,
+                spec,
+                view,
+            },
+            hidden_since: None,
+        };
+        self.next_tab_id += 1;
+        tab
+    }
+
+    fn open_app_preview_action(
+        &mut self,
+        _: &OpenAppPreview,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.add_app_preview(window, cx);
+    }
+
     fn add_split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
         if self.focus_mode {
             self.set_focus_mode(false, window, cx);
@@ -6704,6 +6969,19 @@ impl Workspace {
         if let Some(view) = chat_active {
             self.search_focused = false;
 
+            view.update(cx, |view, cx| view.focus(window, cx));
+            return;
+        }
+        let app_preview = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .and_then(|tab| match &tab.content {
+                TabContent::AppPreview { view, .. } => Some(view.clone()),
+                _ => None,
+            });
+        if let Some(view) = app_preview {
+            self.search_focused = false;
             view.update(cx, |view, cx| view.focus(window, cx));
             return;
         }
@@ -7131,6 +7409,7 @@ impl Workspace {
         self.panel_menu = None;
         self.layout_menu_open = false;
         self.global_menu_open = false;
+        self.account_menu_open = false;
         self.finish_tab_drag(cx);
         // Focus mode shows one pane, where the new arrangement could not be seen.
         if self.focus_mode {
@@ -7228,6 +7507,7 @@ impl Workspace {
         }
         self.panel_menu = None;
         self.global_menu_open = false;
+        self.account_menu_open = false;
         self.layout_menu_open = true;
         // Terminals are native views drawn above everything of ours; the menu is drawn over
         // their snapshots instead, as a pane's menu is.
@@ -7387,20 +7667,10 @@ impl Workspace {
         self.apply_shared_tabs(window, cx);
         if choice == settings::TabCloseBehavior::Exit {
             let sessions = self.sessions.clone();
-            let work = cx.background_executor().spawn(async move {
-                let (kind, id) = key.split_once(':').ok_or("invalid session key")?;
-                if kind == "shell" {
-                    sessions.close(id)
-                } else {
-                    let socket = chat::client::socket_path(sessions.state_home());
-                    if !socket.exists() {
-                        return Ok(());
-                    }
-                    chat::client::Client::connect(&socket)?
-                        .command(id, chat::model::ChatCommand::Stop)
-                        .map(|_| ())
-                }
-            });
+            let exit = self.session_exit.clone();
+            let work = cx
+                .background_executor()
+                .spawn(async move { exit(&sessions, &key) });
             cx.spawn_in(window, async move |this, cx| {
                 let result = work.await;
                 let _ = this.update_in(cx, |workspace, _, cx| {
@@ -7672,8 +7942,7 @@ impl Workspace {
             path: self.cwd.clone(),
         }];
         locations.extend(
-            self.state
-                .worktrees_for(&self.project_id)
+            panels::visible_worktrees(&self.state, &self.project_id)
                 .into_iter()
                 .map(|tree| chat_choice::Location {
                     worktree_id: Some(tree.id.clone()),
@@ -7813,7 +8082,9 @@ impl Workspace {
                         .as_deref()
                         .is_some_and(|project| project != self.project_id)
             }),
-            SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } => false,
+            SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } | SavedTab::AppPreview { .. } => {
+                false
+            }
         }
     }
 
@@ -7828,7 +8099,9 @@ impl Workspace {
                     && shell.kind == ShellKind::Orchestrator
                     && shell.project_id.as_deref() == Some(self.project_id.as_str())
             }),
-            SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } => false,
+            SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } | SavedTab::AppPreview { .. } => {
+                false
+            }
         }
     }
 
@@ -7962,9 +8235,11 @@ impl Workspace {
         self.next_tab_id += 1;
         let (names, paths) = speech_context(&self.state, &self.project_id);
         let home = self.sessions.state_home().to_path_buf();
+        let store = self.store.clone();
         view.update(cx, |view, _| {
             view.set_speech_context(names, paths);
             view.set_catalog_home(home);
+            view.set_memo_store(store);
         });
         cx.subscribe_in(
             &view,
@@ -8112,7 +8387,17 @@ impl Workspace {
                 .map(|tab| (*pane_id, tab.id))
         });
         match event {
+            ChatViewEvent::WorkerShell { shell_id, action } => {
+                self.worker_chat_event(view, shell_id, action, window, cx);
+            }
             ChatViewEvent::Changed => {
+                if view
+                    .read(cx)
+                    .info()
+                    .is_some_and(|info| info.orchestrator.is_some())
+                {
+                    self.request_worker_refresh(window, cx);
+                }
                 // The tab's own title is what the layout menu and a dragged tab name it by.
                 let summary = view.read(cx).summary();
                 let scope = self.chat_image_scope(view, cx);
@@ -8186,8 +8471,27 @@ impl Workspace {
             }
             ChatViewEvent::OpenPreview { sequence } => {
                 if let Some(info) = view.read(cx).info().cloned() {
-                    self.selected_worktree_id = info.worktree_id.clone();
-                    self.sync_file_explorer(window, cx);
+                    if info.orchestrator != Some(OrchestratorScope::Global) {
+                        if info.project_id.as_deref() != Some(self.project_id.as_str()) {
+                            self.notice =
+                                Some("This chat's project is not open in this window.".into());
+                            cx.notify();
+                            return;
+                        }
+                        if file_explorer_root(
+                            &self.state,
+                            &self.project_id,
+                            info.worktree_id.as_deref(),
+                        )
+                        .is_none()
+                        {
+                            self.notice = Some("This chat's worktree is unavailable.".into());
+                            cx.notify();
+                            return;
+                        }
+                        self.selected_worktree_id = info.worktree_id.clone();
+                        self.sync_file_explorer(window, cx);
+                    }
                     let scope = view.read(cx).image_scope().clone();
                     if let Some(explorer) = &self.file_explorer {
                         explorer.update(cx, |explorer, cx| {
@@ -8201,6 +8505,13 @@ impl Workspace {
                 self.open_panel(PanelKind::Usage, self.active_pane, window, cx)
             }
             ChatViewEvent::OpenApiKeySettings => self.reveal_api_key_settings(window, cx),
+            ChatViewEvent::EditProjectMemo { project_id } if *project_id == self.project_id => {
+                self.reveal_project_memo(window, cx)
+            }
+            ChatViewEvent::EditProjectMemo { .. } => {
+                self.notice = Some("Open that chat's project to edit its memo.".into());
+                cx.notify();
+            }
         }
     }
 
@@ -8209,6 +8520,14 @@ impl Workspace {
         self.open_panel(PanelKind::Settings, self.active_pane, window, cx);
         self.settings_panel
             .update(cx, |panel, cx| panel.reveal_api_key(window, cx));
+    }
+
+    /// Project Settings, with the keys in the project's memo: `/memo`'s **Edit**.
+    fn reveal_project_memo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_panel(PanelKind::ProjectSettings, self.active_pane, window, cx);
+        if let Some(panel) = &self.project_settings_panel {
+            panel.update(cx, |panel, cx| panel.reveal_memo(window, cx));
+        }
     }
 
     /// What the orchestrator of `scope` is doing, if it runs as a chat: what its tab says
@@ -8250,11 +8569,16 @@ impl Workspace {
 
     fn toggle_panel_menu(&mut self, pane_id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
         self.dismiss_project_sort_menus(window, cx);
-        if self.panel_menu.is_none() && !self.layout_menu_open && !self.global_menu_open {
+        if self.panel_menu.is_none()
+            && !self.layout_menu_open
+            && !self.global_menu_open
+            && !self.account_menu_open
+        {
             self.menu_return.capture(window, cx);
         }
         self.layout_menu_open = false;
         self.global_menu_open = false;
+        self.account_menu_open = false;
         self.active_pane = pane_id;
         self.panel_menu = if self.panel_menu == Some(pane_id) {
             None
@@ -9036,6 +9360,7 @@ impl Workspace {
         self.panel_menu = None;
         self.layout_menu_open = false;
         self.global_menu_open = false;
+        self.account_menu_open = false;
         self.resizing = None;
         self.drop_target = None;
         self.finish_tab_drag(cx);
@@ -9349,6 +9674,11 @@ impl Workspace {
         }
         if event.keystroke.key == "escape" && self.global_menu_open {
             self.close_global_menu(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        if event.keystroke.key == "escape" && self.account_menu_open {
+            self.close_account_menu(window, cx);
             cx.stop_propagation();
             return;
         }
@@ -10144,8 +10474,16 @@ impl Workspace {
             .and_then(Tab::shell_id)
             .and_then(|id| self.shells.iter().find(|shell| shell.id == id))
             .filter(|shell| {
+                // Settings and the store as this window holds them: nothing is read to draw.
+                let project = shell
+                    .project_id
+                    .as_deref()
+                    .and_then(|id| self.state.project(id).ok());
                 shell.kind == ShellKind::Orchestrator
-                    && !self.sessions.orchestrator_skill_is_current(shell)
+                    && !sessions::orchestrator_skill_is_current_with(
+                        shell,
+                        &orchestrators::delegation_for(&self.settings, project),
+                    )
             })
             .map(|shell| SkillUpgrade::Terminal(shell.id.clone()))
             .or_else(|| {
@@ -10273,6 +10611,7 @@ impl Workspace {
                 }
             }
             Some(TabContent::Chat { view, .. }) => view.clone().into_any_element(),
+            Some(TabContent::AppPreview { view, .. }) => view.clone().into_any_element(),
             Some(TabContent::Panel(kind))
                 if remote_host_label.is_some()
                     && panels::remote_support(*kind) == panels::RemoteSupport::Unavailable =>
@@ -10328,6 +10667,7 @@ impl Workspace {
                     native_chats: self.native_sessions.chats(),
                     session_catalog_note: self.native_sessions.note(),
                     session_catalog_loading: self.native_sessions.loading(),
+                    nuke_running: self.nuke_running,
                     session_catalog_generation: self.native_sessions_generation,
                     session_filter: self.session_filter,
                     query: &self.search,
@@ -10605,6 +10945,12 @@ impl Workspace {
                                 "",
                                 None,
                                 PaneMenuAction::NewChat,
+                            )))
+                            .chain(std::iter::once((
+                                "App preview…",
+                                "",
+                                None,
+                                PaneMenuAction::AppPreview,
                             )))
                             .map(|(label, shortcut, icon, action)| {
                                 self.pane_menu_row(pane_id, label, shortcut, icon, action, cx)
@@ -10957,7 +11303,7 @@ impl Workspace {
                     .into_any_element()
             }
             StatusItemKind::Usage => self.render_usage_chip(cx),
-            StatusItemKind::CodexAccount => self.render_codex_account_status(cx),
+            StatusItemKind::CodexAccount => self.render_default_account_status(cx),
             StatusItemKind::SessionId => {
                 let id = self
                     .panes
@@ -11197,105 +11543,6 @@ impl Workspace {
                     }
                 }))
             })
-            .into_any_element()
-    }
-
-    fn render_codex_account_status(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme::palette(cx);
-        let snapshot = cx
-            .global::<settings::CodexAccountsState>()
-            .snapshot
-            .as_ref();
-        let active = self
-            .panes
-            .get(&self.active_pane)
-            .and_then(|pane| pane.tabs.get(pane.active))
-            .and_then(Tab::shell_id)
-            .and_then(|id| self.shells.iter().find(|shell| shell.id == id))
-            .filter(|shell| shell.harness == Some(HarnessKind::Codex));
-        let label = if let Some(shell) = active {
-            codex_session_status_label(shell, &codex_account_numbers(&self.shells), snapshot)
-        } else {
-            project_default_account_label(
-                self.state
-                    .projects
-                    .iter()
-                    .find(|project| project.id == self.project_id),
-                self.settings.selected_codex_account.as_deref(),
-                snapshot,
-            )
-        };
-        behavior_controls::action("status-codex-account", format!("Account {label}"), colors)
-            .max_w(ui_text::space(300.0))
-            .min_w_0()
-            .overflow_hidden()
-            .text_ellipsis()
-            .text_color(rgb(status_accent(colors.cyan, colors)))
-            .child(ui_text::quiet(label))
-            .on_click(cx.listener(|workspace, _, window, cx| {
-                workspace.open_panel(
-                    PanelKind::ProjectSettings,
-                    workspace.active_pane,
-                    window,
-                    cx,
-                );
-            }))
-            .into_any_element()
-    }
-
-    fn render_usage_chip(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme::palette(cx);
-        let active_shell = self.active_shell();
-        let cache = cx.global::<AccountUsage>();
-        let label = if let Some(shell) =
-            active_shell.filter(|shell| shell.harness == Some(HarnessKind::Claude))
-        {
-            self.claude_usage
-                .get(&shell.id)
-                .map(|snapshot| usage_summary("CLAUDE", snapshot))
-                .unwrap_or_else(|| "CLAUDE · WAITING".to_owned())
-        } else if let Some(shell) =
-            active_shell.filter(|shell| shell.harness == Some(HarnessKind::Grok))
-        {
-            // Grok's allowance is not readable, so the chip shows this session.
-            if shell.alive {
-                usage::grok_chip_label(self.grok_usage.get(&shell.id))
-            } else {
-                "GROK · EXITED".to_owned()
-            }
-        } else {
-            let profile = if let Some(shell) =
-                active_shell.filter(|shell| shell.harness == Some(HarnessKind::Codex))
-            {
-                shell.codex_home.clone()
-            } else {
-                project_selected_codex_home(self, cx)
-            };
-            let entry = profile.as_ref().and_then(|home| cache.codex.get(home));
-            entry
-                .and_then(|entry| entry.codex.as_ref())
-                .map(|snapshot| usage_summary("CODEX", snapshot))
-                .unwrap_or_else(|| {
-                    if profile.is_none() {
-                        "CODEX · ACCOUNT UNKNOWN"
-                    } else if entry.is_some_and(|entry| entry.pending) {
-                        "USAGE · LOADING"
-                    } else {
-                        "USAGE · —"
-                    }
-                    .to_owned()
-                })
-        };
-        behavior_controls::action("usage-chip", format!("Usage {label}"), colors)
-            .max_w(ui_text::space(220.0))
-            .overflow_hidden()
-            .text_ellipsis()
-            .text_color(rgb(status_accent(colors.cyan, colors)))
-            .hover(|style| style.text_color(rgb(colors.magenta)))
-            .child(ui_text::quiet(label))
-            .on_click(cx.listener(|workspace, _, window, cx| {
-                workspace.open_panel(PanelKind::Usage, workspace.active_pane, window, cx);
-            }))
             .into_any_element()
     }
 
@@ -11864,6 +12111,7 @@ impl Workspace {
                     PaneMenuAction::NewChat => {
                         workspace.begin_new_chat(None, false, window, cx);
                     }
+                    PaneMenuAction::AppPreview => workspace.add_app_preview(window, cx),
                     PaneMenuAction::Orchestrator(project_scoped) => {
                         let project_id = project_scoped.then(|| workspace.project_id.clone());
                         workspace.open_scoped_orchestrator(project_id, window, cx);
@@ -11984,6 +12232,9 @@ impl Render for Workspace {
         if self.global_menu_open && (!self.global_item_shown() || !self.tab_dragging) {
             self.global_menu_open = false;
         }
+        if self.account_menu_open && (!self.account_item_shown() || !self.tab_dragging) {
+            self.account_menu_open = false;
+        }
         self.settle_terminal_drop(cx);
         if !cx.has_active_drag() {
             self.drop_target = None;
@@ -11997,6 +12248,7 @@ impl Render for Workspace {
                 && self.strip_menu.is_none()
                 && !self.layout_menu_open
                 && !self.global_menu_open
+                && !self.account_menu_open
                 && !self.modal_open()
             {
                 self.finish_tab_drag(cx);
@@ -12024,6 +12276,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_grok_action))
             .on_action(cx.listener(Self::open_muse_action))
             .on_action(cx.listener(Self::open_new_chat_action))
+            .on_action(cx.listener(Self::open_app_preview_action))
             .on_action(cx.listener(Self::split_right_action))
             .on_action(cx.listener(Self::split_down_action))
             .on_action(cx.listener(Self::close_tab_action))
@@ -12170,6 +12423,10 @@ impl Render for Workspace {
                 self.global_menu_open
                     .then(|| self.render_global_menu(window.viewport_size().width.as_f32(), cx)),
             )
+            .children(
+                self.account_menu_open
+                    .then(|| self.render_account_menu(window.viewport_size().width.as_f32(), cx)),
+            )
             .children(show_window_controls.then(|| window_controls_island(cx)))
             .children(self.project_creator.as_ref().map(|creator| {
                 // The child Base Dialog owns the only focus trap and restoration.
@@ -12221,6 +12478,19 @@ impl Render for Workspace {
                 )
             }))
             .children(self.tab_close_dialog.as_ref().map(|dialog| {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .size_full()
+                    .p(ui_text::space(16.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(gpui::rgba(0x00000099))
+                    .occlude()
+                    .child(dialog.clone())
+            }))
+            .children(self.nuke_dialog.as_ref().map(|dialog| {
                 div()
                     .absolute()
                     .inset_0()
@@ -12556,6 +12826,27 @@ fn panel_tooltip(panel: PanelKind) -> &'static str {
     }
 }
 
+/// How a session is ended for good (`exit_session`). Tests put a recording fake here.
+type SessionExit = Arc<dyn Fn(&SessionManager, &str) -> Result<(), String> + Send + Sync>;
+
+/// End session `key` (`shell:<id>` or `chat:<id>`) for good: what Exit does once the tab is
+/// closed, and what Nuke all shells does for each shell. A shell's tmux session is killed and
+/// its record and shared tab entry removed (`SessionManager::close`); a chat is told to stop.
+fn exit_session(sessions: &SessionManager, key: &str) -> Result<(), String> {
+    let (kind, id) = key.split_once(':').ok_or("invalid session key")?;
+    if kind == "shell" {
+        sessions.close(id)
+    } else {
+        let socket = chat::client::socket_path(sessions.state_home());
+        if !socket.exists() {
+            return Ok(());
+        }
+        chat::client::Client::connect(&socket)?
+            .command(id, chat::model::ChatCommand::Stop)
+            .map(|_| ())
+    }
+}
+
 /// What closing a session tab does: a worker is only detached; any other tab, the project
 /// orchestrator included, follows the close setting (Ask, Detach or Exit). A tab without a
 /// shared entry asks `unknown_is_worker`.
@@ -12657,7 +12948,7 @@ fn belongs_to_global_window(
         SavedTab::Shell { shell_id } => live_shells
             .get(shell_id)
             .is_some_and(is_global_orchestrator_shell),
-        SavedTab::RemoteShell { .. } => false,
+        SavedTab::RemoteShell { .. } | SavedTab::AppPreview { .. } => false,
     }
 }
 
@@ -12786,62 +13077,16 @@ fn request_codex_usage(force: bool, cx: &mut App) {
     }
 }
 
-fn selected_codex_home(cx: &App) -> Option<PathBuf> {
-    let selected = cx.global::<Settings>().selected_codex_account.as_deref();
-    if let Some(snapshot) = &cx.global::<settings::CodexAccountsState>().snapshot {
-        snapshot
-            .accounts
-            .iter()
-            .find(|account| {
-                account.available
-                    && match selected {
-                        Some(id) => account.id == id,
-                        None => account.is_system_default,
-                    }
-            })
-            .map(|account| account.home.clone())
-    } else if selected.is_none() {
-        codex_accounts::default_codex_home().ok()
-    } else {
-        None
-    }
-}
-
-fn project_selected_codex_home(workspace: &Workspace, cx: &App) -> Option<PathBuf> {
-    match workspace
-        .state
-        .projects
-        .iter()
-        .find(|project| project.id == workspace.project_id)
-        .map(|project| &project.codex_account)
-    {
-        Some(ProjectCodexAccount::SystemDefault) => codex_accounts::default_codex_home().ok(),
-        Some(ProjectCodexAccount::Saved(id)) => cx
-            .global::<settings::CodexAccountsState>()
-            .snapshot
-            .as_ref()?
-            .accounts
-            .iter()
-            .find(|account| account.available && account.id == *id)
-            .map(|account| account.home.clone()),
-        _ => selected_codex_home(cx),
-    }
-}
-
+/// The accounts whose usage is read: what the usage item's All accounts reads out.
 fn codex_usage_profiles(cx: &App) -> BTreeMap<PathBuf, String> {
-    if let Some(snapshot) = &cx.global::<settings::CodexAccountsState>().snapshot {
-        snapshot
-            .accounts
-            .iter()
-            .filter(|account| account.available)
-            .map(|account| (account.home.clone(), account.label.clone()))
-            .collect()
-    } else {
-        codex_accounts::default_codex_home()
-            .ok()
-            .map(|home| BTreeMap::from([(home, "System default".to_owned())]))
-            .unwrap_or_default()
-    }
+    account_status::known_codex_profiles(
+        cx.global::<settings::CodexAccountsState>()
+            .snapshot
+            .as_ref(),
+    )
+    .into_iter()
+    .map(|profile| (profile.home, profile.label))
+    .collect()
 }
 
 fn request_codex_usage_at(home: PathBuf, force: bool, cx: &mut App) {
@@ -12891,28 +13136,6 @@ fn request_codex_usage_at(home: PathBuf, force: bool, cx: &mut App) {
         });
     })
     .detach();
-}
-
-fn usage_summary(provider: &str, snapshot: &ProviderUsage) -> String {
-    let stale = unix_time().saturating_sub(snapshot.updated_at_unix) > 15 * 60;
-    let limits = snapshot
-        .windows
-        .iter()
-        .take(2)
-        .map(|window| {
-            format!(
-                "{} {:.0}% left",
-                window.label,
-                (100.0 - window.used_percent).clamp(0.0, 100.0)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" / ");
-    format!(
-        "{provider}{} · {}",
-        if stale { "*" } else { "" },
-        if limits.is_empty() { "—" } else { &limits }
-    )
 }
 
 fn reset_summary(resets_at: Option<u64>) -> String {
@@ -13293,6 +13516,10 @@ fn text_and_preview_zoom_bindings() -> [KeyBinding; 10] {
 }
 
 fn main() {
+    #[cfg(feature = "app-preview-fixture")]
+    if app_preview::render_fixture_if_requested() {
+        return;
+    }
     let args = env::args().skip(1).collect::<Vec<_>>();
     match cli::run_cli(&args) {
         Ok(true) => return,
@@ -13472,6 +13699,15 @@ fn main() {
             KeyBinding::new("cmd-alt-shift-c", OpenNewChat, None),
             KeyBinding::new("cmd-.", chat_view::InterruptChat, Some("ChatView")),
             KeyBinding::new("ctrl-alt-d", ToggleDictation, Some("ChatView")),
+            // Find in a focused chat; ⌘⇧G is Open Grok again once its bar is closed. A binding
+            // with no context ranks with the deepest context, so in the chat's own fields (Kit's
+            // `Input`) these need `ChatView > Input`, bound after the window's to win the tie.
+            KeyBinding::new("cmd-f", chat_view::FindInChat, Some("ChatView")),
+            KeyBinding::new("cmd-f", chat_view::FindInChat, Some("ChatView > Input")),
+            KeyBinding::new("cmd-g", chat_view::FindNext, Some("ChatView")),
+            KeyBinding::new("cmd-g", chat_view::FindNext, Some("ChatView > Input")),
+            KeyBinding::new("cmd-shift-g", chat_view::FindPrevious, Some("ChatView")),
+            KeyBinding::new("cmd-shift-g", chat_view::FindPrevious, Some("ChatView > Input")),
             KeyBinding::new("cmd-shift-v", chat_view::ToggleTranscriptMode, Some("ChatView")),
             KeyBinding::new("cmd-alt-right", chat_view::ExpandTranscript, Some("ChatView")),
             KeyBinding::new("cmd-alt-left", chat_view::CollapseTranscript, Some("ChatView")),
@@ -13491,6 +13727,7 @@ fn main() {
                 MenuItem::action("Global Chat", OpenOrchestrator),
                 MenuItem::separator(),
                 MenuItem::action("New chat…", OpenNewChat),
+                MenuItem::action("App preview…", OpenAppPreview),
                 MenuItem::action("Sessions", OpenSessions),
                 MenuItem::action("Default Layout", ApplyDefaultLayout),
                 MenuItem::action("Gather Tabs into Main Pane", GatherTabs),
@@ -14033,6 +14270,7 @@ mod workspace_tab_tests {
             unrestricted: false,
             orchestrator_skill_loaded: false,
             orchestrator_skill_version: None,
+            orchestrator_delegation_version: None,
             orchestrator_project_root: None,
             created_at_unix: 0,
             alive: true,
@@ -14442,6 +14680,7 @@ mod workspace_tab_tests {
             unrestricted: false,
             orchestrator_skill_loaded: false,
             orchestrator_skill_version: None,
+            orchestrator_delegation_version: None,
             orchestrator_project_root: None,
             created_at_unix: 0,
             alive: true,
@@ -14630,22 +14869,22 @@ mod workspace_tab_tests {
         }))
         .unwrap();
         assert_eq!(
-            project_default_account_label(Some(&project), Some("a"), Some(&snapshot)),
+            project_default_account_label(Some(&project), Some("a"), Some(&snapshot), None),
             "DEFAULT (APP) · a@example.test"
         );
         project.codex_account = ProjectCodexAccount::Saved("a".into());
         assert_eq!(
-            project_default_account_label(Some(&project), Some("missing"), Some(&snapshot)),
+            project_default_account_label(Some(&project), Some("missing"), Some(&snapshot), None),
             "DEFAULT (PROJECT) · a@example.test"
         );
         project.codex_account = ProjectCodexAccount::SystemDefault;
         assert_eq!(
-            project_default_account_label(Some(&project), Some("a"), Some(&snapshot)),
+            project_default_account_label(Some(&project), Some("a"), Some(&snapshot), None),
             "DEFAULT (SYSTEM) · System default · email unknown"
         );
         project.codex_account = ProjectCodexAccount::Saved("missing".into());
         assert_eq!(
-            project_default_account_label(Some(&project), None, Some(&snapshot)),
+            project_default_account_label(Some(&project), None, Some(&snapshot), None),
             "DEFAULT (PROJECT) · Account unavailable"
         );
     }
@@ -15225,6 +15464,59 @@ mod main_pane_tests {
                 .unwrap()
                 .id
         })
+    }
+
+    #[gpui::test]
+    fn app_preview_routes_to_main_pane_and_saves_committed_settings(cx: &mut gpui::TestAppContext) {
+        let (handle, workspace, _, home, _) = strip_workspace(cx, 0);
+        let mut preview_view = None;
+        crate::form_input::test_turn(cx, handle, |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.layout_ready = true;
+                workspace.panes.insert(2, pane(Vec::new(), 0));
+                workspace.layout = side(0.5, Layout::Pane(1), Layout::Pane(2));
+                workspace.active_pane = 2;
+                workspace.add_app_preview(window, cx);
+                assert_eq!(workspace.active_pane, 1);
+                assert!(workspace.panes[&2].tabs.is_empty());
+                let tab = &workspace.panes[&1].tabs[1];
+                let TabContent::AppPreview { view, spec, .. } = &tab.content else {
+                    panic!("new tab is an app preview")
+                };
+                assert!(spec.command.is_empty());
+                assert_eq!(spec.cwd, home);
+                assert_eq!(spec.mode, PreviewMode::Cooperative);
+                preview_view = Some(view.clone());
+            });
+        });
+        let view = preview_view.unwrap();
+        let committed = PreviewSpec {
+            command: "cargo run -p demo".into(),
+            cwd: home.join("nested folder"),
+            mode: PreviewMode::WindowCapture,
+            ios: None,
+        };
+        crate::form_input::test_turn(cx, handle, |_, cx| {
+            view.update(cx, |_, cx| {
+                cx.emit(AppPreviewEvent::Configured(committed.clone()))
+            });
+        });
+        workspace.read_with(cx, |workspace, _| {
+            let tab = &workspace.panes[&1].tabs[1];
+            assert!(
+                matches!(tab.saved(), Some(SavedTab::AppPreview { spec, .. }) if spec == committed)
+            );
+            let saved = workspace
+                .layouts
+                .load(&workspace.project_id)
+                .unwrap()
+                .unwrap();
+            assert!(
+                saved.panes[&1].tabs.iter().any(
+                    |tab| matches!(tab, SavedTab::AppPreview { spec, .. } if spec == &committed)
+                )
+            );
+        });
     }
 
     /// Whether the tab is drawn wholly inside its strip's visible scrolling area.
@@ -17047,6 +17339,18 @@ mod chat_tab_tests {
             1
         );
         assert!(keys.contains(&("cmd-shift-d".to_owned(), "None".to_owned())));
+        // Find in a chat: bound only in a chat tab and its fields, after the window's own ⌘F
+        // and ⌘⇧G.
+        for keystroke in ["cmd-f", "cmd-g", "cmd-shift-g"] {
+            for context in ["Some(\"ChatView\"", "Some(\"ChatView > Input\""] {
+                assert!(
+                    keys.contains(&(keystroke.to_owned(), context.to_owned())),
+                    "{keys:?}"
+                );
+            }
+        }
+        assert!(keys.contains(&("cmd-f".to_owned(), "None".to_owned())));
+        assert!(keys.contains(&("cmd-shift-g".to_owned(), "None".to_owned())));
     }
 }
 

@@ -168,6 +168,151 @@
           "action": "mode",
           "mode": "normal",
           "expected_open_ids": []
+        },
+        {
+          "action": "bulk",
+          "open": true,
+          "expected_open_ids": [
+            "activity:t"
+          ]
+        },
+        {
+          "action": "backfill",
+          "items": [
+            {
+              "id": "a",
+              "turn_id": "t",
+              "status": "completed",
+              "body": {
+                "type": "tool_call",
+                "tool": "fixture"
+              },
+              "presentation": {
+                "semantics": {
+                  "kind": "read"
+                }
+              }
+            },
+            {
+              "id": "b",
+              "turn_id": "t",
+              "status": "completed",
+              "body": {
+                "type": "tool_call",
+                "tool": "fixture"
+              },
+              "presentation": {
+                "semantics": {
+                  "kind": "read"
+                }
+              }
+            },
+            {
+              "id": "c",
+              "turn_id": "later",
+              "status": "completed",
+              "body": {
+                "type": "tool_call",
+                "tool": "fixture"
+              },
+              "presentation": {
+                "semantics": {
+                  "kind": "read"
+                }
+              }
+            }
+          ],
+          "expected_open_ids": [
+            "activity:t"
+          ],
+          "anchors": {
+            "c": "activity:later"
+          }
+        },
+        {
+          "action": "mode",
+          "mode": "verbose",
+          "expected_open_ids": []
+        },
+        {
+          "action": "bulk",
+          "open": true,
+          "expected_open_ids": [
+            "g:t:a",
+            "a",
+            "b",
+            "c"
+          ]
+        },
+        {
+          "action": "backfill",
+          "items": [
+            {
+              "id": "a",
+              "turn_id": "t",
+              "status": "completed",
+              "body": {
+                "type": "tool_call",
+                "tool": "fixture"
+              },
+              "presentation": {
+                "semantics": {
+                  "kind": "read"
+                }
+              }
+            },
+            {
+              "id": "b",
+              "turn_id": "t",
+              "status": "completed",
+              "body": {
+                "type": "tool_call",
+                "tool": "fixture"
+              },
+              "presentation": {
+                "semantics": {
+                  "kind": "read"
+                }
+              }
+            },
+            {
+              "id": "c",
+              "turn_id": "later",
+              "status": "completed",
+              "body": {
+                "type": "tool_call",
+                "tool": "fixture"
+              },
+              "presentation": {
+                "semantics": {
+                  "kind": "read"
+                }
+              }
+            },
+            {
+              "id": "d",
+              "turn_id": "later",
+              "status": "completed",
+              "body": {
+                "type": "command",
+                "command": "swift test"
+              }
+            }
+          ],
+          "expected_open_ids": [
+            "g:t:a",
+            "a",
+            "b",
+            "c"
+          ],
+          "anchors": {
+            "d": "d"
+          }
+        },
+        {
+          "action": "bulk",
+          "open": false,
+          "expected_open_ids": []
         }
       ]
     },

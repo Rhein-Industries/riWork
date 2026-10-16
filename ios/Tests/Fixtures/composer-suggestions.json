@@ -1,0 +1,1168 @@
+{
+  "about": "The composer's /, @ and & suggestion rules, checked by the engine (crates/riwork-engine/src/chat/suggest_tests.rs) and by the phone (ios/Tests/ComposerSuggestionsTests.swift). The caret is the character in `caret`; every text holds it once. Hand-written: change it with both sides.",
+  "caret": "‸",
+  "triggers": [
+    {
+      "text": "‸",
+      "expect": null
+    },
+    {
+      "text": "/‸",
+      "expect": {
+        "sigil": "slash",
+        "query": "",
+        "token": "/"
+      }
+    },
+    {
+      "text": "/com‸",
+      "expect": {
+        "sigil": "slash",
+        "query": "com",
+        "token": "/com"
+      }
+    },
+    {
+      "text": "/co‸mpact now",
+      "expect": {
+        "sigil": "slash",
+        "query": "co",
+        "token": "/compact"
+      }
+    },
+    {
+      "text": "  /com‸",
+      "expect": {
+        "sigil": "slash",
+        "query": "com",
+        "token": "/com"
+      }
+    },
+    {
+      "text": "\n/com‸",
+      "expect": {
+        "sigil": "slash",
+        "query": "com",
+        "token": "/com"
+      }
+    },
+    {
+      "text": "/compact‸",
+      "expect": {
+        "sigil": "slash",
+        "query": "compact",
+        "token": "/compact"
+      }
+    },
+    {
+      "text": "/compact ‸",
+      "expect": null
+    },
+    {
+      "text": "please /com‸",
+      "expect": null
+    },
+    {
+      "text": "x /‸",
+      "expect": null
+    },
+    {
+      "text": "a/b‸",
+      "expect": null
+    },
+    {
+      "text": "/usr/bin‸",
+      "expect": null
+    },
+    {
+      "text": "/usr‸/bin",
+      "expect": null
+    },
+    {
+      "text": "‸/compact",
+      "expect": null
+    },
+    {
+      "text": "@‸",
+      "expect": {
+        "sigil": "mention",
+        "query": "",
+        "token": "@"
+      }
+    },
+    {
+      "text": "see @src/ma‸",
+      "expect": {
+        "sigil": "mention",
+        "query": "src/ma",
+        "token": "@src/ma"
+      }
+    },
+    {
+      "text": "see @src/ma‸ please",
+      "expect": {
+        "sigil": "mention",
+        "query": "src/ma",
+        "token": "@src/ma"
+      }
+    },
+    {
+      "text": "line\n@fi‸le rest",
+      "expect": {
+        "sigil": "mention",
+        "query": "fi",
+        "token": "@file"
+      }
+    },
+    {
+      "text": "@one @two‸",
+      "expect": {
+        "sigil": "mention",
+        "query": "two",
+        "token": "@two"
+      }
+    },
+    {
+      "text": "tab\t@x‸",
+      "expect": {
+        "sigil": "mention",
+        "query": "x",
+        "token": "@x"
+      }
+    },
+    {
+      "text": "héé @dö‸",
+      "expect": {
+        "sigil": "mention",
+        "query": "dö",
+        "token": "@dö"
+      }
+    },
+    {
+      "text": "me@host‸",
+      "expect": null
+    },
+    {
+      "text": "mail me@ho‸st",
+      "expect": null
+    },
+    {
+      "text": "‸@src",
+      "expect": null
+    },
+    {
+      "text": "@src ‸",
+      "expect": null
+    },
+    {
+      "text": "/compact @RE‸",
+      "expect": {
+        "sigil": "mention",
+        "query": "RE",
+        "token": "@RE"
+      }
+    },
+    {
+      "text": "&‸",
+      "expect": {
+        "sigil": "model",
+        "query": "",
+        "token": "&"
+      }
+    },
+    {
+      "text": "&op‸",
+      "expect": {
+        "sigil": "model",
+        "query": "op",
+        "token": "&op"
+      }
+    },
+    {
+      "text": "prefer &so‸",
+      "expect": {
+        "sigil": "model",
+        "query": "so",
+        "token": "&so"
+      }
+    },
+    {
+      "text": "&op‸us",
+      "expect": {
+        "sigil": "model",
+        "query": "op",
+        "token": "&opus"
+      }
+    },
+    {
+      "text": "&opus‸ ",
+      "expect": {
+        "sigil": "model",
+        "query": "opus",
+        "token": "&opus"
+      }
+    },
+    {
+      "text": "line\n&g‸",
+      "expect": {
+        "sigil": "model",
+        "query": "g",
+        "token": "&g"
+      }
+    },
+    {
+      "text": "/compact &so‸",
+      "expect": {
+        "sigil": "model",
+        "query": "so",
+        "token": "&so"
+      }
+    },
+    {
+      "text": "&op‸ please",
+      "expect": {
+        "sigil": "model",
+        "query": "op",
+        "token": "&op"
+      }
+    },
+    {
+      "text": "&opus‸\nmore",
+      "expect": {
+        "sigil": "model",
+        "query": "opus",
+        "token": "&opus"
+      }
+    },
+    {
+      "text": "&opus design the API, then &gpt‸ implement it",
+      "expect": {
+        "sigil": "model",
+        "query": "gpt",
+        "token": "&gpt"
+      }
+    },
+    {
+      "text": "&op‸us design the API, then &gpt-6.1-sol implement it",
+      "expect": {
+        "sigil": "model",
+        "query": "op",
+        "token": "&opus"
+      }
+    },
+    {
+      "text": "&opus and &‸",
+      "expect": {
+        "sigil": "model",
+        "query": "",
+        "token": "&"
+      }
+    },
+    {
+      "text": "a&b‸",
+      "expect": null
+    },
+    {
+      "text": "see https://x.test/?a=1&b=2‸",
+      "expect": null
+    },
+    {
+      "text": "‸&opus",
+      "expect": null
+    },
+    {
+      "text": "&opus ‸",
+      "expect": null
+    }
+  ],
+  "accept": [
+    {
+      "text": "/com‸",
+      "insert": "/compact",
+      "expect": "/compact ‸"
+    },
+    {
+      "text": "/co‸mpact now",
+      "insert": "/compact",
+      "expect": "/compact ‸now"
+    },
+    {
+      "text": "see @src/ma‸ please",
+      "insert": "src/main.rs",
+      "expect": "see src/main.rs ‸please"
+    },
+    {
+      "text": "@fi‸le\nnext",
+      "insert": "file.txt",
+      "expect": "file.txt ‸\nnext"
+    },
+    {
+      "text": "a @b‸",
+      "insert": "`my notes.md`",
+      "expect": "a `my notes.md` ‸"
+    },
+    {
+      "text": "héé @dö‸",
+      "insert": "döc/",
+      "expect": "héé döc/ ‸"
+    },
+    {
+      "text": "&op‸",
+      "insert": "&opus",
+      "expect": "&opus ‸"
+    },
+    {
+      "text": "&op‸ design the API",
+      "insert": "&opus",
+      "expect": "&opus ‸design the API"
+    },
+    {
+      "text": "&op‸us design it",
+      "insert": "&opus",
+      "expect": "&opus ‸design it"
+    },
+    {
+      "text": "&opus design the API, then &gpt‸ implement it",
+      "insert": "&gpt-6.1-sol",
+      "expect": "&opus design the API, then &gpt-6.1-sol ‸implement it"
+    }
+  ],
+  "commands": {
+    "claude": [
+      {
+        "name": "compact",
+        "summary": "Summarize the conversation so far to free up context",
+        "argument": null,
+        "sends": "Goes to Claude as typed. Claude compacts the chat's context, as the Compact button does, and the transcript marks where.",
+        "handler": "provider"
+      },
+      {
+        "name": "memo",
+        "summary": "Show this project's memo",
+        "argument": null,
+        "sends": "RiWork opens this project's memo above the message box and sends nothing. Insert puts the memo in your draft; Edit opens the memo editor.",
+        "handler": "riwork"
+      }
+    ],
+    "codex": [
+      {
+        "name": "memo",
+        "summary": "Show this project's memo",
+        "argument": null,
+        "sends": "RiWork opens this project's memo above the message box and sends nothing. Insert puts the memo in your draft; Edit opens the memo editor.",
+        "handler": "riwork"
+      }
+    ],
+    "muse": [
+      {
+        "name": "memo",
+        "summary": "Show this project's memo",
+        "argument": null,
+        "sends": "RiWork opens this project's memo above the message box and sends nothing. Insert puts the memo in your draft; Edit opens the memo editor.",
+        "handler": "riwork"
+      }
+    ]
+  },
+  "command_ranking": {
+    "commands": [
+      "compact",
+      "context",
+      "pact",
+      "Review"
+    ],
+    "cases": [
+      {
+        "query": "",
+        "expect": [
+          "compact",
+          "context",
+          "pact",
+          "Review"
+        ]
+      },
+      {
+        "query": "co",
+        "expect": [
+          "compact",
+          "context"
+        ]
+      },
+      {
+        "query": "pa",
+        "expect": [
+          "pact",
+          "compact"
+        ]
+      },
+      {
+        "query": "cpt",
+        "expect": [
+          "compact"
+        ]
+      },
+      {
+        "query": "REV",
+        "expect": [
+          "Review"
+        ]
+      },
+      {
+        "query": "zz",
+        "expect": []
+      }
+    ]
+  },
+  "file_ranking": {
+    "entries": [
+      {
+        "path": "README.md",
+        "dir": false,
+        "bytes": 2048
+      },
+      {
+        "path": "src",
+        "dir": true
+      },
+      {
+        "path": "docs",
+        "dir": true
+      },
+      {
+        "path": "src/main.rs",
+        "dir": false,
+        "bytes": 900
+      },
+      {
+        "path": "src/chat",
+        "dir": true
+      },
+      {
+        "path": "docs/remote.md",
+        "dir": false,
+        "bytes": 5000
+      },
+      {
+        "path": "src/chat/suggest.rs",
+        "dir": false,
+        "bytes": 12000
+      },
+      {
+        "path": "src/chat/main_view.rs",
+        "dir": false,
+        "bytes": 300
+      },
+      {
+        "path": "Makefile",
+        "dir": false,
+        "bytes": 10
+      }
+    ],
+    "cases": [
+      {
+        "query": "",
+        "limit": 4,
+        "expect": [
+          "src",
+          "docs",
+          "Makefile",
+          "README.md"
+        ]
+      },
+      {
+        "query": "main",
+        "limit": 50,
+        "expect": [
+          "src/main.rs",
+          "src/chat/main_view.rs"
+        ]
+      },
+      {
+        "query": "MA",
+        "limit": 50,
+        "expect": [
+          "Makefile",
+          "src/main.rs",
+          "src/chat/main_view.rs"
+        ]
+      },
+      {
+        "query": "src/ch",
+        "limit": 50,
+        "expect": [
+          "src/chat",
+          "src/chat/suggest.rs",
+          "src/chat/main_view.rs"
+        ]
+      },
+      {
+        "query": "chat",
+        "limit": 50,
+        "expect": [
+          "src/chat",
+          "src/chat/suggest.rs",
+          "src/chat/main_view.rs"
+        ]
+      },
+      {
+        "query": "remote",
+        "limit": 50,
+        "expect": [
+          "docs/remote.md"
+        ]
+      },
+      {
+        "query": "ote",
+        "limit": 50,
+        "expect": [
+          "docs/remote.md"
+        ]
+      },
+      {
+        "query": "sgs",
+        "limit": 50,
+        "expect": [
+          "src/chat/suggest.rs"
+        ]
+      },
+      {
+        "query": "rs",
+        "limit": 2,
+        "expect": [
+          "src/main.rs",
+          "src/chat/suggest.rs"
+        ]
+      },
+      {
+        "query": "nothing",
+        "limit": 50,
+        "expect": []
+      }
+    ]
+  },
+  "insertions": [
+    {
+      "entry": {
+        "path": "src/main.rs",
+        "dir": false,
+        "bytes": 900
+      },
+      "insert": "src/main.rs"
+    },
+    {
+      "entry": {
+        "path": "src",
+        "dir": true
+      },
+      "insert": "src/"
+    },
+    {
+      "entry": {
+        "path": "docs/my notes.md",
+        "dir": false,
+        "bytes": 10
+      },
+      "insert": "`docs/my notes.md`"
+    }
+  ],
+  "kinds": [
+    {
+      "entry": {
+        "path": "src",
+        "dir": true
+      },
+      "kind": "Folder"
+    },
+    {
+      "entry": {
+        "path": "a.txt",
+        "dir": false,
+        "bytes": 2048
+      },
+      "kind": "File · 2 KB"
+    },
+    {
+      "entry": {
+        "path": "a.txt",
+        "dir": false
+      },
+      "kind": "File"
+    }
+  ],
+  "sizes": [
+    {
+      "bytes": 0,
+      "label": "0 bytes"
+    },
+    {
+      "bytes": 1,
+      "label": "1 byte"
+    },
+    {
+      "bytes": 1023,
+      "label": "1023 bytes"
+    },
+    {
+      "bytes": 1024,
+      "label": "1 KB"
+    },
+    {
+      "bytes": 1536,
+      "label": "2 KB"
+    },
+    {
+      "bytes": 1048575,
+      "label": "1023 KB"
+    },
+    {
+      "bytes": 1048576,
+      "label": "1.0 MB"
+    },
+    {
+      "bytes": 5347737,
+      "label": "5.1 MB"
+    }
+  ],
+  "reply": {
+    "chat_id": "c4a70000-0000-4000-8000-000000000001",
+    "provider": "claude",
+    "root": "/Users/me/proj",
+    "commands": [
+      {
+        "name": "compact",
+        "summary": "Summarize the conversation so far to free up context",
+        "argument": null,
+        "sends": "Goes to Claude as typed. Claude compacts the chat's context, as the Compact button does, and the transcript marks where.",
+        "handler": "provider"
+      },
+      {
+        "name": "memo",
+        "summary": "Show this project's memo",
+        "argument": null,
+        "sends": "RiWork opens this project's memo above the message box and sends nothing. Insert puts the memo in your draft; Edit opens the memo editor.",
+        "handler": "riwork"
+      }
+    ],
+    "files": {
+      "entries": [
+        {
+          "path": "README.md",
+          "dir": false,
+          "bytes": 2048
+        },
+        {
+          "path": "src",
+          "dir": true,
+          "bytes": null
+        },
+        {
+          "path": "src/main.rs",
+          "dir": false,
+          "bytes": 900
+        }
+      ],
+      "truncated": false
+    },
+    "file_bound": 5000,
+    "models": [
+      {
+        "id": "default",
+        "name": "Default (recommended)",
+        "description": "The model Claude recommends",
+        "is_default": true,
+        "chats": 4
+      },
+      {
+        "id": "opus",
+        "name": "Opus",
+        "description": "For complex tasks",
+        "is_default": false,
+        "chats": 9
+      },
+      {
+        "id": "haiku",
+        "name": "Haiku",
+        "description": "",
+        "is_default": false,
+        "chats": 0
+      }
+    ],
+    "mention_models": [
+      {
+        "id": "opus",
+        "name": "Opus",
+        "description": "For complex tasks",
+        "is_default": false,
+        "chats": 9,
+        "provider": "claude"
+      },
+      {
+        "id": "haiku",
+        "name": "Haiku",
+        "description": "",
+        "is_default": false,
+        "chats": 0,
+        "provider": "claude"
+      },
+      {
+        "id": "gpt-6.1-sol",
+        "name": "GPT-6.1-Sol",
+        "description": "Latest workhorse model",
+        "is_default": true,
+        "chats": 7,
+        "provider": "codex"
+      },
+      {
+        "id": "muse-wonder-full-1.0",
+        "name": "Muse Wonder Full",
+        "description": "",
+        "is_default": true,
+        "chats": 2,
+        "provider": "muse"
+      }
+    ]
+  },
+  "model_insertions": [
+    {
+      "id": "gpt-6.1-sol",
+      "insert": "&gpt-6.1-sol"
+    },
+    {
+      "id": "muse-wonder-full-1.0",
+      "insert": "&muse-wonder-full-1.0"
+    },
+    {
+      "id": " opus ",
+      "insert": "&opus"
+    }
+  ],
+  "mentionable": [
+    {
+      "id": "opus",
+      "expect": true
+    },
+    {
+      "id": " gpt-6.1-sol ",
+      "expect": true
+    },
+    {
+      "id": "muse-wonder-full-1.0",
+      "expect": true
+    },
+    {
+      "id": "default",
+      "expect": false
+    },
+    {
+      "id": "Default",
+      "expect": false
+    },
+    {
+      "id": "two words",
+      "expect": false
+    },
+    {
+      "id": "   ",
+      "expect": false
+    }
+  ],
+  "model_ranking": {
+    "models": [
+      {
+        "id": "gpt-5.1-codex",
+        "name": "GPT-5.1 Codex",
+        "description": "Frontier coding",
+        "is_default": true,
+        "chats": 3
+      },
+      {
+        "id": "gpt-5.1",
+        "name": "GPT-5.1",
+        "description": "",
+        "is_default": false,
+        "chats": 7
+      },
+      {
+        "id": "gpt-5.1-codex-mini",
+        "name": "GPT-5.1 Codex Mini",
+        "description": "Cheaper",
+        "is_default": false,
+        "chats": 0
+      },
+      {
+        "id": "o3",
+        "name": "o3",
+        "description": "",
+        "is_default": false,
+        "chats": 3
+      },
+      {
+        "id": "gpt-4.1",
+        "name": "GPT-4.1",
+        "description": "",
+        "is_default": false,
+        "chats": 0
+      }
+    ],
+    "cases": [
+      {
+        "query": "",
+        "expect": [
+          "gpt-5.1",
+          "gpt-5.1-codex",
+          "o3",
+          "gpt-5.1-codex-mini",
+          "gpt-4.1"
+        ]
+      },
+      {
+        "query": "codex",
+        "expect": [
+          "gpt-5.1-codex",
+          "gpt-5.1-codex-mini"
+        ]
+      },
+      {
+        "query": "o",
+        "expect": [
+          "o3",
+          "gpt-5.1-codex",
+          "gpt-5.1-codex-mini"
+        ]
+      },
+      {
+        "query": "GPT",
+        "expect": [
+          "gpt-5.1",
+          "gpt-5.1-codex",
+          "gpt-5.1-codex-mini",
+          "gpt-4.1"
+        ]
+      },
+      {
+        "query": "g5m",
+        "expect": [
+          "gpt-5.1-codex-mini"
+        ]
+      },
+      {
+        "query": "zz",
+        "expect": []
+      }
+    ],
+    "current": [
+      {
+        "chosen": null,
+        "expect": "gpt-5.1-codex"
+      },
+      {
+        "chosen": "  ",
+        "expect": "gpt-5.1-codex"
+      },
+      {
+        "chosen": "o3",
+        "expect": "o3"
+      },
+      {
+        "chosen": "retired-model",
+        "expect": null
+      }
+    ]
+  },
+  "mention_ranking": {
+    "models": [
+      {
+        "id": "muse-wonder-full-1.0",
+        "name": "Muse Wonder Full",
+        "description": "",
+        "is_default": true,
+        "chats": 2,
+        "provider": "muse"
+      },
+      {
+        "id": "muse-wonder-1.0",
+        "name": "Muse Wonder",
+        "description": "",
+        "is_default": false,
+        "chats": 0,
+        "provider": "muse"
+      },
+      {
+        "id": "gpt-6.1-sol",
+        "name": "GPT-6.1-Sol",
+        "description": "Latest workhorse model",
+        "is_default": true,
+        "chats": 7,
+        "provider": "codex"
+      },
+      {
+        "id": "gpt-6-astra",
+        "name": "GPT-6-Astra",
+        "description": "",
+        "is_default": false,
+        "chats": 0,
+        "provider": "codex"
+      },
+      {
+        "id": "opus",
+        "name": "Opus",
+        "description": "For complex tasks",
+        "is_default": false,
+        "chats": 9,
+        "provider": "claude"
+      },
+      {
+        "id": "sonnet",
+        "name": "Sonnet",
+        "description": "",
+        "is_default": false,
+        "chats": 2,
+        "provider": "claude"
+      },
+      {
+        "id": "haiku",
+        "name": "Haiku",
+        "description": "",
+        "is_default": false,
+        "chats": 0,
+        "provider": "claude"
+      }
+    ],
+    "cases": [
+      {
+        "query": "",
+        "expect": [
+          "opus",
+          "gpt-6.1-sol",
+          "muse-wonder-full-1.0",
+          "sonnet",
+          "muse-wonder-1.0",
+          "gpt-6-astra",
+          "haiku"
+        ]
+      },
+      {
+        "query": "o",
+        "expect": [
+          "opus",
+          "gpt-6.1-sol",
+          "muse-wonder-full-1.0",
+          "sonnet",
+          "muse-wonder-1.0"
+        ]
+      },
+      {
+        "query": "gpt",
+        "expect": [
+          "gpt-6.1-sol",
+          "gpt-6-astra"
+        ]
+      },
+      {
+        "query": "wonder",
+        "expect": [
+          "muse-wonder-full-1.0",
+          "muse-wonder-1.0"
+        ]
+      },
+      {
+        "query": "son",
+        "expect": [
+          "sonnet",
+          "muse-wonder-full-1.0",
+          "muse-wonder-1.0"
+        ]
+      }
+    ],
+    "current": [
+      {
+        "provider": "muse",
+        "chosen": null,
+        "expect": "muse-wonder-full-1.0"
+      },
+      {
+        "provider": "codex",
+        "chosen": null,
+        "expect": "gpt-6.1-sol"
+      },
+      {
+        "provider": "claude",
+        "chosen": null,
+        "expect": null
+      },
+      {
+        "provider": "claude",
+        "chosen": "opus",
+        "expect": "opus"
+      },
+      {
+        "provider": "claude",
+        "chosen": "default",
+        "expect": null
+      },
+      {
+        "provider": "muse",
+        "chosen": "opus",
+        "expect": null
+      }
+    ]
+  },
+  "model_details": [
+    {
+      "chats": 0,
+      "current": false,
+      "detail": "Not used yet"
+    },
+    {
+      "chats": 1,
+      "current": false,
+      "detail": "Used in 1 chat"
+    },
+    {
+      "chats": 7,
+      "current": false,
+      "detail": "Used in 7 chats"
+    },
+    {
+      "chats": 3,
+      "current": true,
+      "detail": "Current · used in 3 chats"
+    },
+    {
+      "chats": 0,
+      "current": true,
+      "detail": "Current · not used yet"
+    },
+    {
+      "chats": 3,
+      "current": true,
+      "provider": "codex",
+      "detail": "Codex · current · used in 3 chats"
+    },
+    {
+      "chats": 0,
+      "current": false,
+      "provider": "claude",
+      "detail": "Claude · not used yet"
+    },
+    {
+      "chats": 1,
+      "current": false,
+      "provider": "muse",
+      "detail": "Muse · used in 1 chat"
+    }
+  ],
+  "model_usage_labels": [
+    {
+      "chats": 0,
+      "provider": "claude",
+      "label": "None of your Claude chats use it now"
+    },
+    {
+      "chats": 1,
+      "provider": "muse",
+      "label": "1 of your Muse chats uses it now"
+    },
+    {
+      "chats": 12,
+      "provider": "codex",
+      "label": "12 of your Codex chats use it now"
+    }
+  ],
+  "model_previews": [
+    {
+      "model": "gpt-5.1-codex-mini",
+      "current": false,
+      "provider": "codex",
+      "expect": {
+        "title": "&gpt-5.1-codex-mini",
+        "kind": "Codex model",
+        "body": [
+          "GPT-5.1 Codex Mini",
+          "Cheaper",
+          "None of your Codex chats use it now"
+        ],
+        "inserts": "&gpt-5.1-codex-mini",
+        "effect": "Inserts &gpt-5.1-codex-mini in the message. It does not switch this chat; the orchestrator still decides."
+      }
+    },
+    {
+      "model": "gpt-5.1-codex",
+      "current": true,
+      "provider": "codex",
+      "expect": {
+        "title": "&gpt-5.1-codex",
+        "kind": "Codex model · current",
+        "body": [
+          "GPT-5.1 Codex",
+          "Frontier coding",
+          "3 of your Codex chats use it now"
+        ],
+        "inserts": "&gpt-5.1-codex",
+        "effect": "Inserts &gpt-5.1-codex in the message. It does not switch this chat; the orchestrator still decides."
+      }
+    },
+    {
+      "model": "o3",
+      "current": false,
+      "provider": "codex",
+      "expect": {
+        "title": "&o3",
+        "kind": "Codex model",
+        "body": [
+          "3 of your Codex chats use it now"
+        ],
+        "inserts": "&o3",
+        "effect": "Inserts &o3 in the message. It does not switch this chat; the orchestrator still decides."
+      }
+    }
+  ],
+  "mention_previews": [
+    {
+      "model": "opus",
+      "current": false,
+      "chat_provider": "codex",
+      "expect": {
+        "title": "&opus",
+        "kind": "Claude model",
+        "body": [
+          "Opus",
+          "For complex tasks",
+          "9 of your Claude chats use it now"
+        ],
+        "inserts": "&opus",
+        "effect": "Inserts &opus in the message. It does not switch this chat; the orchestrator still decides."
+      }
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "current": true,
+      "chat_provider": "codex",
+      "expect": {
+        "title": "&gpt-6.1-sol",
+        "kind": "Codex model · current",
+        "body": [
+          "GPT-6.1-Sol",
+          "Latest workhorse model",
+          "7 of your Codex chats use it now"
+        ],
+        "inserts": "&gpt-6.1-sol",
+        "effect": "Inserts &gpt-6.1-sol in the message. It does not switch this chat; the orchestrator still decides."
+      }
+    },
+    {
+      "model": "muse-wonder-1.0",
+      "current": false,
+      "chat_provider": "claude",
+      "expect": {
+        "title": "&muse-wonder-1.0",
+        "kind": "Muse model",
+        "body": [
+          "Muse Wonder",
+          "None of your Muse chats use it now"
+        ],
+        "inserts": "&muse-wonder-1.0",
+        "effect": "Inserts &muse-wonder-1.0 in the message. It does not switch this chat; the orchestrator still decides."
+      }
+    }
+  ]
+}

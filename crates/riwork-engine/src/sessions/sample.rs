@@ -39,6 +39,9 @@ pub struct SessionSample {
     /// The window 0 pane directory of each live shell. Always present in a
     /// sample that succeeded: it comes from the same tmux answer as the shells.
     pub directories: Option<BTreeMap<String, PathBuf>>,
+    /// The process of each live shell's window 0 pane, from the same tmux answer; `None`
+    /// where no sample was taken.
+    pub processes: Option<BTreeMap<String, u32>>,
 }
 
 /// Where a sample comes from: the registry, tmux and `ps` in the app, counters
@@ -138,6 +141,7 @@ impl SampleCache {
             let shells = source.shells(saved, &panes);
             let sample = SessionSample {
                 directories: Some(source.directories(&shells, &panes)),
+                processes: Some(panes.owned_processes(&super::live_shells(&shells))),
                 metrics: want_metrics
                     .then(|| source.metrics(&shells, &panes).ok())
                     .flatten(),

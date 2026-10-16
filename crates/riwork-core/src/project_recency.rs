@@ -1523,6 +1523,7 @@ mod tests {
                     notify_on_agent_done: false,
                     wake_orchestrators_on_agent_done: false,
                     orchestrator: Default::default(),
+                    delegation_policy: Default::default(),
                     codex_account: crate::store::ProjectCodexAccount::default(),
                     created_at: 999_999,
                 }],
@@ -1887,6 +1888,7 @@ mod tests {
             notify_on_agent_done: false,
             wake_orchestrators_on_agent_done: false,
             orchestrator: Default::default(),
+            delegation_policy: Default::default(),
             codex_account: crate::store::ProjectCodexAccount::default(),
             created_at: 999_999,
         }

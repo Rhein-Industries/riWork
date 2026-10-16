@@ -392,7 +392,8 @@ import RiWorkCore
                 }
             }
             // Cards: collapsed (above), then open.
-            conversation.expanded = ["edit", "edit#/tmp/brief-ios-chat-chrome.md", "cmd", "read", "edit2"]
+            conversation.setDisplayMode(.verbose)
+            conversation.disclosure = ChatDisclosureState(overrides: ["edit": true, "cmd": true, "read": true, "edit2": true])
             conversation.jumpToEnd()
             try await Task.sleep(for: .milliseconds(500))
             try await shot(window, prefix + "-04-cards-open-bottom")
@@ -407,7 +408,7 @@ import RiWorkCore
                 try await Task.sleep(for: .milliseconds(300))
                 try await shot(window, prefix + "-05b-cards-open-middle")
             }
-            conversation.expanded = []
+            conversation.discloseAll(false)
             conversation.jumpToEnd()
             try await Task.sleep(for: .milliseconds(400))
             try await shot(window, prefix + "-06-cards-collapsed")
@@ -728,7 +729,8 @@ import RiWorkCore
             model.selectChat(chatID)
             let conversation = model.conversation(chatID)
             await eventually("chat up") { conversation.following && conversation.transcript.items.count > 8 }
-            conversation.expanded.insert("read")
+            conversation.setDisplayMode(.verbose)
+            conversation.disclosure.overrides["read"] = true
             window.endEditing(true)
             try await Task.sleep(for: .milliseconds(1200))
             let prefix = look.rawValue

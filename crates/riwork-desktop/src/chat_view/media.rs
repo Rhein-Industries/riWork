@@ -19,16 +19,16 @@ use std::{
     time::Duration,
 };
 
-const CONCURRENT: usize = 2;
+const CONCURRENT: usize = 4;
 const LOADED: usize = 8;
 const OPEN: usize = 16;
 const THUMBNAILS: usize = 64;
 const THUMBNAIL_EDGE: u32 = 360;
 const OPEN_LIMIT: &str = "Fold an image before opening more.";
 const NETWORK_BYTES: u64 = 8 * 1024 * 1024;
-pub(super) const ARTIFACT_PAGE: usize = 32;
+const ARTIFACT_PAGE: usize = 32;
 
-pub(super) fn artifact_range(count: usize, page: usize) -> std::ops::Range<usize> {
+fn artifact_range(count: usize, page: usize) -> std::ops::Range<usize> {
     let start = page.min(count.saturating_sub(1) / ARTIFACT_PAGE) * ARTIFACT_PAGE;
     start..count.min(start.saturating_add(ARTIFACT_PAGE))
 }
@@ -155,7 +155,7 @@ fn card_label(
 }
 #[derive(Default)]
 pub(super) struct MediaState {
-    pub artifact_pages: HashMap<String, usize>,
+    artifact_pages: HashMap<String, usize>,
     thumbnails: ThumbnailCache,
     expanded: HashSet<String>,
     slots: HashMap<String, Slot>,
@@ -240,28 +240,6 @@ impl ThumbnailCache {
 }
 
 impl MediaState {
-    /// Explicitly collapsing a disclosure folds its images on every page.
-    /// Removing slots invalidates in-flight generations; active workers still
-    /// drain normally and release their results without reviving hidden cards.
-    fn fold_images(&mut self, keys: &[String], open: &mut HashSet<String>) -> Vec<Slot> {
-        let hidden: HashSet<&str> = keys.iter().map(String::as_str).collect();
-        self.queue.retain(|(key, _)| !hidden.contains(key.as_str()));
-        if self
-            .viewer
-            .as_deref()
-            .is_some_and(|key| hidden.contains(key))
-        {
-            self.viewer = None;
-        }
-        keys.iter()
-            .filter_map(|key| {
-                self.expanded.remove(key);
-                open.remove(key);
-                self.slots.remove(key)
-            })
-            .collect()
-    }
-
     /// Return stale decoded content to the caller for resource release.
     fn complete(
         &mut self,
@@ -324,19 +302,11 @@ impl MediaState {
             .map(|(key, _)| key.clone())
             .collect();
         for key in stale {
-            let slot = self.thumbnails.slots.remove(&key).unwrap();
-            self.thumbnails.lru.retain(|cached| cached != &key);
-            self.thumbnails.queue.retain(|(queued, _)| queued != &key);
-            self.generation += 1;
-            released.extend(self.thumbnails.prepare(
-                key,
-                ChatImage {
-                    label: String::new(),
-                    source: slot.source.clone(),
-                },
-                self.generation,
-            ));
-            released.push(slot);
+            if let Some(slot) = self.thumbnails.slots.remove(&key) {
+                self.thumbnails.lru.retain(|cached| cached != &key);
+                self.thumbnails.queue.retain(|(queued, _)| queued != &key);
+                released.push(slot);
+            }
         }
         released
     }
@@ -345,710 +315,40 @@ impl MediaState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::model::{ItemStatus, Presentation};
+    use gpui::TestAppContext;
+    use gpui_kit::test::TestWindowExt;
     use std::io::Write;
 
-    fn decoded_image(width: u32, height: u32) -> PreviewContent {
-        PreviewContent::Image {
-            image: Arc::new(gpui::RenderImage::new([image::Frame::new(
-                image::RgbaImage::from_pixel(width, height, image::Rgba([17, 31, 47, 255])),
-            )])),
-            description: format!("{width} × {height} pixels"),
-        }
-    }
-
-    #[test]
-    fn thumbnail_cache_evicts_lru_and_rejects_a_late_result_for_an_evicted_entry() {
-        let image = ChatImage {
-            label: "Thumbnail".into(),
-            source: ImageSource::Unavailable {
-                reason: "fixture".into(),
+    fn image_item(n: usize) -> Item {
+        Item {
+            id: format!("tool-{n}"),
+            turn_id: Some("images".into()),
+            status: ItemStatus::Completed,
+            body: ItemBody::Command {
+                command: "cat result.txt".into(),
+                cwd: None,
+                output: String::new(),
+                exit_code: Some(0),
             },
-        };
-        let mut cache = ThumbnailCache::default();
-        for n in 0..THUMBNAILS {
-            assert!(
-                cache
-                    .prepare(format!("{n}"), image.clone(), n as u64)
-                    .is_empty()
-            );
-        }
-        cache.prepare("0".into(), image.clone(), 100);
-        let released = cache.prepare("new".into(), image.clone(), 101);
-        assert_eq!(released.len(), 1);
-        assert!(
-            cache.slots.contains_key("0"),
-            "a reused thumbnail is most recent"
-        );
-        assert!(!cache.slots.contains_key("1"));
-        assert_eq!(cache.slots.len(), THUMBNAILS);
-        assert_eq!(cache.queue.len(), THUMBNAILS);
-        assert!(
-            cache
-                .complete("1", 1, &image.source, Ok(decoded_image(20, 10)), false)
-                .is_some()
-        );
-        cache.prepare("1".into(), image.clone(), 102);
-        assert!(
-            cache
-                .complete("1", 1, &image.source, Ok(decoded_image(20, 10)), false)
-                .is_some()
-        );
-        assert!(cache.slots["1"].content.is_none());
-        assert!(
-            cache
-                .complete("1", 102, &image.source, Ok(decoded_image(20, 10)), false)
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn thumbnails_keep_only_downscaled_pixels_and_preserve_their_channel_order() {
-        let large = thumbnail_content(decoded_image(1600, 900));
-        let image = large.render_image().unwrap();
-        let size = image.size(0);
-        assert_eq!(size.width.0, THUMBNAIL_EDGE as i32);
-        assert!(size.height.0 <= THUMBNAIL_EDGE as i32);
-        assert_eq!(&image.as_bytes(0).unwrap()[..4], &[17, 31, 47, 255]);
-        let small = thumbnail_content(decoded_image(40, 20));
-        assert_eq!(small.render_image().unwrap().size(0).width.0, 40);
-    }
-
-    #[test]
-    fn rescoping_requeues_local_thumbnails_without_accepting_the_old_scope_result() {
-        let source = ImageSource::Local {
-            path: "shot.png".into(),
-        };
-        let mut media = MediaState {
-            generation: 1,
-            ..Default::default()
-        };
-        media.thumbnails.prepare(
-            "shot:image:0".into(),
-            ChatImage {
-                label: "Shot".into(),
-                source: source.clone(),
+            presentation: Presentation {
+                images: vec![ChatImage {
+                    label: format!("result-{n}.png"),
+                    source: ImageSource::Local {
+                        path: format!("result-{n}.png"),
+                    },
+                }],
+                ..Presentation::default()
             },
-            1,
-        );
-        media.thumbnails.queue.clear(); // the old scope's worker is in flight
-        assert_eq!(media.rescope(&HashSet::new()).len(), 1);
-        let generation = media.thumbnails.slots["shot:image:0"].generation;
-        assert_ne!(generation, 1);
-        assert_eq!(media.thumbnails.queue.len(), 1);
-        assert!(
-            media
-                .thumbnails
-                .complete("shot:image:0", 1, &source, Ok(decoded_image(20, 10)), false)
-                .is_some()
-        );
-        assert!(media.thumbnails.slots["shot:image:0"].content.is_none());
-        assert!(
-            media
-                .thumbnails
-                .complete(
-                    "shot:image:0",
-                    generation,
-                    &source,
-                    Ok(decoded_image(20, 10)),
-                    false
-                )
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn image_canvas_caps_height_and_never_upscales_small_images() {
-        assert_eq!(fitted_image_size(40.0, 20.0, 800.0), (40.0, 20.0));
-        assert_eq!(fitted_image_size(1000.0, 500.0, 400.0), (400.0, 200.0));
-        assert_eq!(fitted_image_size(640.0, 360.0, 800.0).1, 320.0);
-        assert_eq!(fitted_image_size(100.0, 1000.0, 800.0), (32.0, 320.0));
+            started_at: None,
+            ended_at: None,
+        }
     }
 
     #[gpui::test]
-    fn full_image_completion_invalidates_prose_and_hidden_artifact_measurements(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        use crate::chat::model::{ItemStatus, Presentation};
-        use gpui_kit::test::TestWindowExt;
-        let (handle, view, _) = super::super::editor_tests::mount_selection(cx);
-        cx.update_window(handle.into(), |_, window, cx| {
-            view.update(cx, |view, cx| {
-                view.model.link = super::super::Link::Live;
-                view.model.transcript.items = ["message-a", "message-b"]
-                    .into_iter()
-                    .map(|id| Item {
-                        id: id.into(),
-                        turn_id: None,
-                        started_at: None,
-                        ended_at: None,
-                        status: ItemStatus::Completed,
-                        presentation: Presentation::default(),
-                        body: ItemBody::AgentMessage { text: id.into() },
-                    })
-                    .collect();
-                view.refresh_projection(cx);
-            });
-            for key in [
-                "message-a:image:0",
-                "user:message-a/0/image/hash/0",
-                "hidden-artifact-call:image:0",
-            ] {
-                window.render_frame(cx);
-                view.update(cx, |view, _| {
-                    assert!(view.list.bounds_for_item(0).is_some());
-                    assert!(view.list.bounds_for_item(1).is_some());
-                    view.remeasure_completed_image(key);
-                    assert!(view.list.bounds_for_item(0).is_none());
-                    assert_eq!(
-                        view.list.bounds_for_item(1).is_some(),
-                        key == "message-a:image:0",
-                        "{key} must invalidate every row if its rendered owner is unknown"
-                    );
-                });
-            }
-        })
-        .unwrap();
-    }
-
-    #[gpui::test]
-    fn tool_images_keep_compact_headers_and_only_unshown_artifact_chips(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        use crate::chat::model::{ItemStatus, PathRef, Presentation, Semantics, ToolKind};
-        use gpui_kit::test::TestWindowExt;
-        let old = ui_text::set_for_tests(1.0, ui_text::Face::Menlo);
-        let (handle, view, _) = super::super::editor_tests::mount_selection(cx);
-        let paths = ["/tmp/polish-first.png", "/tmp/polish-second.png"];
-        let images: Vec<_> = paths
-            .iter()
-            .map(|path| ChatImage {
-                label: "Image".into(),
-                source: ImageSource::Local {
-                    path: (*path).into(),
-                },
-            })
-            .collect();
-        view.update(cx, |view, cx| {
-            view.model.link = super::super::Link::Live;
-            view.model.transcript.items = vec![Item {
-                id: "shot".into(),
-                turn_id: Some("turn".into()),
-                started_at: None,
-                ended_at: None,
-                status: ItemStatus::Completed,
-                presentation: Presentation {
-                    semantics: Some(Semantics {
-                        kind: ToolKind::Read,
-                        target: Some(paths[0].into()),
-                        produced: paths
-                            .iter()
-                            .copied()
-                            .chain(["/tmp/polish-notes.txt"])
-                            .map(|path| PathRef {
-                                path: path.into(),
-                                line: None,
-                            })
-                            .collect(),
-                        ..Default::default()
-                    }),
-                    images: images.clone(),
-                    ..Default::default()
-                },
-                body: ItemBody::ToolCall {
-                    server: None,
-                    tool: "Read".into(),
-                    input: serde_json::json!({ "file_path": paths[0] }),
-                    output: Some(" [image]\n\n[IMAGE] ".into()),
-                },
-            }];
-            view.display_mode = super::super::DisplayMode::Verbose;
-            view.refresh_projection(cx);
-            // Decoded fixtures keep this test independent of disk and image workers.
-            for (index, image) in images.iter().enumerate() {
-                view.media.thumbnails.slots.insert(
-                    format!("shot:image:{index}"),
-                    Slot {
-                        generation: 0,
-                        source: image.source.clone(),
-                        content: Some(Ok(decoded_image(120, 60))),
-                        in_files: false,
-                    },
-                );
-            }
-            view.list.remeasure();
-            cx.notify();
-        });
-        cx.run_until_parked();
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            assert_eq!(window.find("card:shot").bounds().size.height, px(24.0));
-            let thumb = window.find("header-thumb:shot:image:0").bounds();
-            assert_eq!(
-                window.find("header-thumb:shot:image:0").role(),
-                Some(gpui::Role::Image)
-            );
-            assert!(thumb.size.height > px(0.0));
-            assert!(thumb.size.height <= px(20.0), "{thumb:?}");
-            assert!(window.try_find("chip:artifact:shot:image:0").is_none());
-            assert!(
-                window
-                    .try_find("chip:artifact:shot:path:/tmp/polish-first.png")
-                    .is_none()
-            );
-            assert!(window.find("chip:artifact:shot:image:1").visible());
-            assert!(
-                window
-                    .find("chip:artifact:shot:path:/tmp/polish-second.png")
-                    .visible()
-            );
-            assert!(
-                window
-                    .find("chip:artifact:shot:path:/tmp/polish-notes.txt")
-                    .visible()
-            );
-
-            view.update(cx, |view, cx| {
-                for (index, image) in images.iter().enumerate() {
-                    view.media.slots.insert(
-                        format!("shot:image:{index}"),
-                        Slot {
-                            generation: 0,
-                            source: image.source.clone(),
-                            content: Some(Ok(decoded_image(120, 60))),
-                            in_files: false,
-                        },
-                    );
-                }
-                view.list.remeasure();
-                cx.notify();
-            });
-            window.click("header-thumb:shot:image:0", cx);
-            assert!(
-                super::super::display::find(&view.read(cx).visible, "shot")
-                    .unwrap()
-                    .open,
-                "a thumbnail is row decoration, so clicking it toggles the row"
-            );
-            window.render_frame(cx);
-            assert!(window.try_find("header-thumb:shot:image:0").is_none());
-            assert!(window.try_find("transcript:tool-output:shot").is_none());
-            assert!(window.try_find("copy:shot").is_none());
-            for index in 0..2 {
-                assert!(
-                    window
-                        .find(SharedString::from(format!("view:shot:image:{index}")))
-                        .visible()
-                );
-                assert!(
-                    window
-                        .try_find(SharedString::from(format!(
-                            "chip:artifact:shot:image:{index}"
-                        )))
-                        .is_none()
-                );
-            }
-            for path in paths {
-                assert!(
-                    window
-                        .try_find(SharedString::from(format!(
-                            "chip:artifact:shot:path:{path}"
-                        )))
-                        .is_none()
-                );
-            }
-            assert!(
-                window
-                    .find("chip:artifact:shot:path:/tmp/polish-notes.txt")
-                    .visible()
-            );
-
-            view.update(cx, |view, cx| {
-                let ItemBody::ToolCall { output, .. } = &mut view.model.transcript.items[0].body
-                else {
-                    unreachable!();
-                };
-                *output = Some("Image caption\n[image]".into());
-                view.refresh_projection(cx);
-                view.list.remeasure();
-                cx.notify();
-            });
-            window.render_frame(cx);
-            assert_eq!(
-                window.find("transcript:tool-output:shot:0").label(),
-                Some("Image caption")
-            );
-            assert!(window.try_find("transcript:tool-output:shot:1").is_none());
-            assert!(
-                window
-                    .try_find("output-placeholder:tool-output:shot")
-                    .is_none()
-            );
-            window.hover("output-block:shot", cx);
-            assert!(window.find("copy:shot").visible());
-
-            view.update(cx, |view, cx| {
-                view.apply_display_mode(super::super::DisplayMode::Normal, cx)
-            });
-            window.render_frame(cx);
-            assert_eq!(window.find("card:activity:turn").expanded(), Some(false));
-            assert!(window.find("chip:artifact:shot:image:0").visible());
-            assert!(window.find("chip:artifact:shot:image:1").visible());
-            assert!(
-                window
-                    .find("chip:artifact:shot:path:/tmp/polish-notes.txt")
-                    .visible()
-            );
-        })
-        .unwrap();
-        ui_text::set_for_tests(old.0, old.1);
-    }
-
-    #[gpui::test]
-    fn one_hundred_image_message_loads_visible_thumbnails_without_starvation_or_manual_opens(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        use crate::chat::model::{ChatEvent, ItemStatus, Presentation};
-        use gpui_kit::test::TestWindowExt;
-        let (handle, view, _) = super::super::editor_tests::mount_selection(cx);
-        let images: Vec<_> = (0..100)
-            .map(|n| ChatImage {
-                label: format!("Image {n}"),
-                source: ImageSource::Unavailable {
-                    reason: format!("fixture {n}"),
-                },
-            })
-            .collect();
-        view.update(cx, |view, cx| {
-            view.model.apply(&[crate::chat::wire::Envelope {
-                chat_id: "fixture-chat".into(),
-                seq: 1,
-                event: ChatEvent::ItemCompleted {
-                    item: Item {
-                        id: "history".into(),
-                        turn_id: Some("turn".into()),
-                        started_at: None,
-                        ended_at: None,
-                        status: ItemStatus::Completed,
-                        presentation: Presentation {
-                            images: images.clone(),
-                            ..Default::default()
-                        },
-                        body: ItemBody::UserMessage {
-                            text: "All screenshots".into(),
-                        },
-                    },
-                },
-            }]);
-            view.refresh_projection(cx);
-            view.list.pause_following_tail();
-            view.list.scroll_to(gpui::ListOffset {
-                item_ix: 0,
-                offset_in_item: px(0.0),
-            });
-            cx.notify();
-        });
-        for _ in 0..3 {
-            cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
-                .unwrap();
-            cx.run_until_parked();
-        }
-        view.read_with(cx, |view, _| {
-            assert!(view.open.is_empty());
-            assert!(view.media.slots.is_empty());
-            assert!(
-                view.media.thumbnails.slots.len() < THUMBNAILS,
-                "offscreen grid cells must not evict visible thumbnails"
-            );
-            assert!(
-                view.media.thumbnails.slots["history:image:0"]
-                    .content
-                    .is_some()
-            );
-        });
-        // Walk the same long grid, exceeding its decoded cache, then return to
-        // the first image. A missing/evicted visible image must be queued again.
-        for offset in (0..=4200).step_by(600).chain([0]) {
-            view.update(cx, |view, cx| {
-                view.list.scroll_to(gpui::ListOffset {
-                    item_ix: 0,
-                    offset_in_item: px(offset as f32),
-                });
-                cx.notify();
-            });
-            cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
-                .unwrap();
-            cx.run_until_parked();
-        }
-        view.update(cx, |view, cx| {
-            assert!(view.media.thumbnails.slots.len() <= THUMBNAILS);
-            assert!(view.media.thumbnails.queue.is_empty());
-            assert!(
-                view.media.thumbnails.slots["history:image:0"]
-                    .content
-                    .is_some()
-            );
-            view.toggle_image("manual:image:0".into(), images[0].clone(), cx);
-            assert_eq!(view.open, HashSet::from(["manual:image:0".to_owned()]));
-        });
-        cx.run_until_parked();
-    }
-
-    #[gpui::test]
-    fn opened_image_layout_is_unscaled_and_small_pixels_stay_at_natural_size(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        use crate::chat::model::{ChatEvent, ItemStatus, Presentation};
-        use gpui_kit::test::TestWindowExt;
-        let (handle, view, _) = super::super::editor_tests::mount_selection(cx);
-        let old = ui_text::set_for_tests(1.5, ui_text::Face::SystemMono);
-        let image = ChatImage {
-            label: "Shot".into(),
-            source: ImageSource::Unavailable {
-                reason: "fixture".into(),
-            },
-        };
-        view.update(cx, |view, cx| {
-            view.model.apply(&[crate::chat::wire::Envelope {
-                chat_id: "fixture-chat".into(),
-                seq: 1,
-                event: ChatEvent::ItemCompleted {
-                    item: Item {
-                        id: "shot".into(),
-                        turn_id: Some("turn".into()),
-                        started_at: None,
-                        ended_at: None,
-                        status: ItemStatus::Completed,
-                        presentation: Presentation {
-                            images: vec![image.clone()],
-                            ..Default::default()
-                        },
-                        body: ItemBody::ToolCall {
-                            server: None,
-                            tool: "capture_image".into(),
-                            input: serde_json::Value::Null,
-                            output: None,
-                        },
-                    },
-                },
-            }]);
-            view.display_mode = super::super::display::DisplayMode::Verbose;
-            view.disclosure.overrides.insert("shot".into(), true);
-            view.refresh_projection(cx);
-        });
-        for (width, height) in [(640, 360), (40, 20)] {
-            view.update(cx, |view, cx| {
-                view.media.slots.insert(
-                    "shot:image:0".into(),
-                    Slot {
-                        generation: 0,
-                        source: image.source.clone(),
-                        content: Some(Ok(decoded_image(width, height))),
-                        in_files: false,
-                    },
-                );
-                view.list.remeasure();
-                cx.notify();
-            });
-            cx.run_until_parked();
-            cx.update_window(handle.into(), |_, window, cx| {
-                window.render_frame(cx);
-                let bounds = window.find("view:shot:image:0").bounds();
-                assert!(bounds.size.height > px(0.0));
-                assert!(
-                    bounds.size.height <= px(320.0),
-                    "font scale must not enlarge the image cap: {bounds:?}"
-                );
-                let frame = window.find("tool-image:shot:image:0").bounds();
-                assert!(
-                    frame.size.width <= px(width as f32),
-                    "image frame never upscales"
-                );
-                assert!(frame.size.height <= px(320.0));
-                if width == 40 {
-                    assert_eq!(frame.size.width, px(40.0));
-                    assert_eq!(frame.size.height, px(20.0));
-                }
-                window.hover("tool-image:shot:image:0", cx);
-                window.click("copy-image:shot:image:0", cx);
-                let clipboard = cx.read_from_clipboard().expect("copied raster");
-                let gpui::ClipboardEntry::Image(copied_image) = &clipboard.entries()[0] else {
-                    panic!("copy image writes image bytes, not a path");
-                };
-                let decoded = image::load_from_memory(copied_image.bytes())
-                    .unwrap()
-                    .into_rgba8();
-                assert_eq!(decoded.dimensions(), (width, height));
-                assert_eq!(decoded.get_pixel(0, 0).0, [47, 31, 17, 255]);
-                assert_eq!(
-                    view.read(cx).copied.as_deref(),
-                    Some("copy-image:shot:image:0")
-                );
-            })
-            .unwrap();
-        }
-        // Loading and failed images keep the same compact placeholder geometry.
-        for content in [None, Some(Err("Image could not be loaded".into()))] {
-            view.update(cx, |view, cx| {
-                view.copied = None;
-                view.media.slots.insert(
-                    "shot:image:0".into(),
-                    Slot {
-                        generation: 0,
-                        source: image.source.clone(),
-                        content,
-                        in_files: false,
-                    },
-                );
-                view.list.remeasure();
-                cx.notify();
-            });
-            cx.update_window(handle.into(), |_, window, cx| {
-                window.render_frame(cx);
-                assert_eq!(
-                    window.find("tool-image:shot:image:0").bounds().size.height,
-                    px(72.0)
-                );
-                assert_eq!(
-                    window.find("copy-image:shot:image:0").label(),
-                    Some("Copy image")
-                );
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                    "unavailable sentinel".into(),
-                ));
-                window.hover("tool-image:shot:image:0", cx);
-                window.click("copy-image:shot:image:0", cx);
-                assert_eq!(
-                    cx.read_from_clipboard().and_then(|item| item.text()),
-                    Some("unavailable sentinel".into())
-                );
-                assert_eq!(
-                    window.find("open-image:shot:image:0").bounds().size,
-                    gpui::size(px(20.0), px(20.0))
-                );
-            })
-            .unwrap();
-        }
-        ui_text::set_for_tests(old.0, old.1);
-    }
-
-    #[test]
-    fn collapsing_group_frees_hidden_expansions_and_rejects_late_results_after_reopening() {
-        let source = ImageSource::Local {
-            path: "shot.png".into(),
-        };
-        let image = ChatImage {
-            label: "Image".into(),
-            source: source.clone(),
-        };
-        let keys: Vec<String> = (0..15).map(|n| format!("tool-{n}:image:0")).collect();
-        let other = "user:image:0".to_owned();
-        let mut open: HashSet<String> = keys.iter().cloned().chain([other.clone()]).collect();
-        let mut media = MediaState {
-            active: 2,
-            generation: 10,
-            viewer: Some(keys[0].clone()),
-            ..Default::default()
-        };
-        media.slots.insert(
-            keys[0].clone(),
-            Slot {
-                generation: 8,
-                source: source.clone(),
-                content: Some(Ok(PreviewContent::Message("Loaded".into()))),
-                in_files: false,
-            },
-        );
-        media.slots.insert(
-            keys[1].clone(),
-            Slot {
-                generation: 9,
-                source: source.clone(),
-                content: None,
-                in_files: false,
-            },
-        );
-        media.slots.insert(
-            other.clone(),
-            Slot {
-                generation: 10,
-                source: source.clone(),
-                content: None,
-                in_files: false,
-            },
-        );
-        media.queue.extend(
-            keys[2..]
-                .iter()
-                .cloned()
-                .chain([other.clone()])
-                .map(|key| (key, image.clone())),
-        );
-        assert_eq!(open.len(), 16);
-        let released = media.fold_images(&keys, &mut open);
-        assert_eq!(released.len(), 2);
-        assert!(released.iter().any(|slot| slot.content.is_some()));
-        assert_eq!(open, HashSet::from([other.clone()]));
-        assert_eq!(media.slots.len(), 1);
-        assert!(media.slots.contains_key(&other));
-        assert_eq!(media.queue.len(), 1);
-        assert_eq!(media.queue[0].0, other);
-        assert!(media.viewer.is_none());
-        assert_eq!(media.active, 2); // running workers keep the concurrency bound until they drain
-        assert!(
-            media
-                .complete(
-                    &keys[1],
-                    9,
-                    &source,
-                    Ok(PreviewContent::Message("Late".into())),
-                    false
-                )
-                .is_some()
-        );
-        assert!(!media.slots.contains_key(&keys[1]));
-
-        open.insert(keys[1].clone());
-        media.generation += 1;
-        media.slots.insert(
-            keys[1].clone(),
-            Slot {
-                generation: media.generation,
-                source: source.clone(),
-                content: None,
-                in_files: false,
-            },
-        );
-        assert!(
-            media
-                .complete(
-                    &keys[1],
-                    9,
-                    &source,
-                    Ok(PreviewContent::Message("Old generation".into())),
-                    false
-                )
-                .is_some()
-        );
-        assert!(media.slots[&keys[1]].content.is_none());
-        assert!(
-            media
-                .complete(
-                    &keys[1],
-                    11,
-                    &source,
-                    Ok(PreviewContent::Message("Reopened".into())),
-                    false
-                )
-                .is_none()
-        );
-        assert!(
-            matches!(&media.slots[&keys[1]].content, Some(Ok(PreviewContent::Message(text))) if text == "Reopened")
-        );
-        assert_eq!(open.len(), 2);
-    }
-
-    #[test]
-    fn artifact_pages_bound_rendering_and_keep_all_images_reachable() {
+    fn artifact_pages_bound_rendering_and_keep_all_images_reachable(cx: &mut TestAppContext) {
+        // The projected Activity's artifact strip keeps upstream's bounded pages;
+        // opening an image also exposes the complete shared preview sequence.
         assert_eq!(artifact_range(9, 0), 0..9);
         assert_eq!(artifact_range(0, 100), 0..0);
         let pages = (0..313)
@@ -1057,6 +357,202 @@ mod tests {
         assert_eq!(pages, (0..10_000).collect::<Vec<_>>());
         assert_eq!(artifact_range(33, 99), 32..33);
         assert_eq!(artifact_range(10_000, 20), 640..672);
+        let (handle, view, _feed) = super::super::editor_tests::mount_selection(cx);
+        view.update(cx, |view, cx| {
+            view.model.transcript.items = (0..10_000).map(image_item).collect();
+            view.refresh_projection(cx);
+            assert_eq!(view.items_in_list, 1);
+            assert_eq!(view.visible[0].artifacts.len(), 10_000);
+            cx.notify();
+
+            let mut sequence = view.file_preview_sequence("result-0.png");
+            assert_eq!(sequence.entries.len(), 10_000);
+            assert!(!sequence.step(-1));
+            for n in 0..10_000 {
+                let current = sequence.current().unwrap();
+                assert_eq!(current.target, format!("result-{n}.png"));
+                assert_eq!(
+                    current.image,
+                    Some(image_item(n).presentation.images.remove(0))
+                );
+                assert_eq!(sequence.step(1), n < 9999);
+            }
+            assert_eq!(sequence.index, 9999);
+        });
+        for page in [0, 1, 312] {
+            view.update(cx, |view, cx| {
+                view.media
+                    .artifact_pages
+                    .insert("activity:images".into(), page);
+                view.list.remeasure();
+                cx.notify();
+            });
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let range = artifact_range(10_000, page);
+                for n in range.clone() {
+                    assert!(
+                        window
+                            .try_find(format!("chip:artifact:tool-{n}:image:0"))
+                            .is_some()
+                    );
+                }
+                if range.start > 0 {
+                    assert!(
+                        window
+                            .try_find(format!("chip:artifact:tool-{}:image:0", range.start - 1))
+                            .is_none()
+                    );
+                }
+                assert!(
+                    window
+                        .try_find(format!("chip:artifact:tool-{}:image:0", range.end))
+                        .is_none()
+                );
+                if page == 0 {
+                    assert!(
+                        window
+                            .try_find("previous:artifacts:activity:images")
+                            .is_none()
+                    );
+                    window.click("next:artifacts:activity:images", cx);
+                    assert_eq!(view.read(cx).media.artifact_pages["activity:images"], 1);
+                } else {
+                    window.click("previous:artifacts:activity:images", cx);
+                    assert_eq!(
+                        view.read(cx).media.artifact_pages["activity:images"],
+                        page - 1
+                    );
+                }
+            })
+            .unwrap();
+        }
+    }
+
+    #[gpui::test]
+    fn collapsing_group_frees_hidden_expansions_and_rejects_late_results_after_reopening(
+        cx: &mut TestAppContext,
+    ) {
+        // Projected calls now own automatic image demand independently of manually
+        // opened image cards. Collapsing their parent must retire that demand and
+        // its resources, while leaving unrelated manual disclosures alone.
+        let (_, view, _feed) = super::super::editor_tests::mount_selection(cx);
+        view.update(cx, |view, cx| {
+            view.model.transcript.items = (0..15).map(image_item).collect();
+            view.apply_display_mode(super::super::DisplayMode::Verbose, cx);
+            view.expand_transcript(true, cx);
+            let source = ImageSource::Local {
+                path: "shot.png".into(),
+            };
+            let image = ChatImage {
+                label: "Image".into(),
+                source: source.clone(),
+            };
+            let keys: Vec<String> = (0..15).map(|n| format!("tool-{n}:image:0")).collect();
+            let other = "user:image:0".to_owned();
+            view.open.insert(other.clone());
+            view.media = MediaState {
+                expanded: keys.iter().cloned().collect(),
+                active: 2,
+                generation: 10,
+                viewer: Some(keys[0].clone()),
+                ..Default::default()
+            };
+            for (key, generation, content) in [
+                (
+                    keys[0].clone(),
+                    8,
+                    Some(Ok(PreviewContent::Message("Loaded".into()))),
+                ),
+                (keys[1].clone(), 9, None),
+                (other.clone(), 10, None),
+            ] {
+                view.media.slots.insert(
+                    key,
+                    Slot {
+                        generation,
+                        source: source.clone(),
+                        content,
+                        in_files: false,
+                    },
+                );
+            }
+            view.media.queue.extend(
+                keys[2..]
+                    .iter()
+                    .cloned()
+                    .chain([other.clone()])
+                    .map(|key| (key, image.clone())),
+            );
+
+            view.toggle_projected("g:images:tool-0", cx);
+            assert!(view.media.expanded.is_empty());
+            assert_eq!(view.media.slots.len(), 1);
+            assert!(view.media.slots.contains_key(&other));
+            assert_eq!(view.media.queue.len(), 1);
+            assert_eq!(view.media.queue[0].0, other);
+            assert!(view.media.viewer.is_none());
+            assert_eq!(view.media.active, 2); // In-flight workers still occupy their slots.
+            assert!(view.open.contains(&other));
+            assert!(
+                view.media
+                    .complete(
+                        &keys[1],
+                        9,
+                        &source,
+                        Ok(PreviewContent::Message("Late".into())),
+                        false,
+                    )
+                    .is_some()
+            );
+            assert!(!view.media.slots.contains_key(&keys[1]));
+
+            view.toggle_projected("g:images:tool-0", cx);
+            view.media.expanded.insert(keys[1].clone());
+            view.media.generation += 1;
+            view.media.slots.insert(
+                keys[1].clone(),
+                Slot {
+                    generation: view.media.generation,
+                    source: source.clone(),
+                    content: None,
+                    in_files: false,
+                },
+            );
+            assert!(
+                view.media
+                    .complete(
+                        &keys[1],
+                        9,
+                        &source,
+                        Ok(PreviewContent::Message("Old generation".into())),
+                        false,
+                    )
+                    .is_some()
+            );
+            assert!(view.media.slots[&keys[1]].content.is_none());
+            assert!(
+                view.media
+                    .complete(
+                        &keys[1],
+                        11,
+                        &source,
+                        Ok(PreviewContent::Message("Reopened".into())),
+                        false,
+                    )
+                    .is_none()
+            );
+            assert!(
+                matches!(&view.media.slots[&keys[1]].content, Some(Ok(PreviewContent::Message(text))) if text == "Reopened")
+            );
+            assert!(view.open.contains(&other));
+            // This fixture supplies in-flight slots itself, without background reads.
+            // Retire it before the test harness draws the reopened calls.
+            view.model.transcript.items.clear();
+            view.open.clear();
+            view.media = MediaState::default();
+            view.refresh_projection(cx);
+        });
     }
 
     #[test]
@@ -1218,15 +714,6 @@ fn release(slot: Slot, cx: &mut Context<ChatView>) {
     }
 }
 impl ChatView {
-    pub(super) fn fold_group_images(&mut self, keys: &[String], cx: &mut Context<Self>) {
-        for slot in self.media.fold_images(keys, &mut self.open) {
-            release(slot, cx);
-        }
-        if self.open.iter().filter(|id| id.contains("image")).count() < OPEN {
-            self.notices.clear(super::notices::LocalKey::Media);
-        }
-    }
-
     /// A new image scope: what the old one let a card read is forgotten and read again.
     pub(super) fn rescope_images(&mut self, cx: &mut Context<Self>) {
         for slot in self.media.rescope(&self.open) {
@@ -1353,13 +840,18 @@ impl ChatView {
                 Some(crate::chat::model::OrchestratorScope::Global)
             )
         });
-        if !global
-            || context.is_some_and(|item| {
-                !matches!(
-                    item.body,
-                    ItemBody::UserMessage { .. } | ItemBody::AgentMessage { .. }
-                )
-            })
+        // Old user messages without owned snapshot metadata keep their explicit
+        // image disclosure. New sent files use the owned-snapshot grid instead.
+        let legacy_user =
+            context.is_some_and(|item| matches!(item.body, ItemBody::UserMessage { .. }));
+        if !legacy_user
+            && (!global
+                || context.is_some_and(|item| {
+                    !matches!(
+                        item.body,
+                        ItemBody::UserMessage { .. } | ItemBody::AgentMessage { .. }
+                    )
+                }))
         {
             let owner = context.map(|item| item.id.clone());
             let preview_image = image.clone();
@@ -1839,9 +1331,45 @@ impl ChatView {
         self.start_images(cx);
     }
 
+    /// The owned snapshot preview and tool thumbnails share one bounded cache.
+    pub(super) fn thumbnail(
+        &self,
+        key: &str,
+        path: &str,
+    ) -> Option<Result<&Arc<gpui::RenderImage>, &str>> {
+        let source = ImageSource::Local {
+            path: path.to_owned(),
+        };
+        let content = self
+            .media
+            .thumbnails
+            .slots
+            .get(key)
+            .filter(|slot| slot.source == source)?
+            .content
+            .as_ref()?;
+        Some(match content {
+            Ok(PreviewContent::Image { image, .. }) => Ok(image),
+            Ok(PreviewContent::Message(message)) | Err(message) => Err(message.as_str()),
+            Ok(_) => Err("This reference is not a supported image."),
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn thumbnail_reads(&self) -> (usize, HashMap<String, u64>) {
+        let slots = &self.media.thumbnails.slots;
+        (
+            slots.values().filter(|slot| slot.content.is_none()).count(),
+            slots
+                .iter()
+                .map(|(key, slot)| (key.clone(), slot.generation))
+                .collect(),
+        )
+    }
+
     /// Loading follows clipped thumbnail bounds, so even one message containing
     /// hundreds of images cannot evict its first images before they are drawn.
-    fn thumbnail(
+    pub(super) fn render_thumbnail(
         &self,
         key: &str,
         image: &ChatImage,
@@ -1882,6 +1410,11 @@ impl ChatView {
             .on_prepaint(move |bounds, window, cx| {
                 if bounds.intersects(&window.content_mask().bounds) {
                     let _ = view.update(cx, |view, cx| {
+                        if !view.media.thumbnails.slots.contains_key(&key)
+                            && view.media.active >= CONCURRENT
+                        {
+                            return;
+                        }
                         view.media.generation += 1;
                         for slot in view
                             .media
@@ -1912,7 +1445,7 @@ impl ChatView {
                 .id(SharedString::from(format!("header-thumb:{key}")))
                 .role(gpui::Role::Image)
                 .aria_label(image_label(&image, Some(item)))
-                .child(self.thumbnail(&key, &image, gpui::ObjectFit::Contain, look, cx))
+                .child(self.render_thumbnail(&key, &image, gpui::ObjectFit::Contain, look, cx))
                 .w(px(28.0))
                 .h(px(20.0))
                 .flex_none()
@@ -1962,7 +1495,13 @@ impl ChatView {
                 let cache_key = key.strip_prefix("artifact:").unwrap_or(&key);
                 div()
                     .size(ui_text::space(24.0))
-                    .child(self.thumbnail(cache_key, image, gpui::ObjectFit::Cover, look, cx))
+                    .child(self.render_thumbnail(
+                        cache_key,
+                        image,
+                        gpui::ObjectFit::Cover,
+                        look,
+                        cx,
+                    ))
                     .into_any_element()
             })
             .unwrap_or_else(|| {
@@ -1999,16 +1538,24 @@ impl ChatView {
 
     pub(super) fn render_artifact_refs(
         &self,
+        owner: &str,
         refs: &[riwork_engine::chat::projection::ArtifactRef],
         look: Look,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        div()
+        let range = artifact_range(
+            refs.len(),
+            self.media.artifact_pages.get(owner).copied().unwrap_or(0),
+        );
+        let page = range.start / ARTIFACT_PAGE;
+        let previous_owner = owner.to_owned();
+        let next_owner = owner.to_owned();
+        let chips = div()
             .flex()
             .flex_wrap()
             .items_center()
             .gap(ui_text::space(4.0))
-            .children(refs.iter().filter_map(|artifact| {
+            .children(refs[range.clone()].iter().filter_map(|artifact| {
                 let (_, item) = self.projected_item(&artifact.item_id)?;
                 if let Some(path) = &artifact.path {
                     let target = path
@@ -2062,119 +1609,72 @@ impl ChatView {
                         cx,
                     ))
                 }
-            }))
+            }));
+        div()
+            .flex()
+            .flex_col()
+            .gap(ui_text::space(4.0))
+            .child(chips)
+            .when(refs.len() > ARTIFACT_PAGE, |body| {
+                body.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(ui_text::space(6.0))
+                        .children((range.start > 0).then(|| {
+                            button(
+                                SharedString::from(format!("previous:artifacts:{owner}")),
+                                "Previous files",
+                                None,
+                                look,
+                            )
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    view.set_artifact_page(
+                                        &previous_owner,
+                                        page.saturating_sub(1),
+                                        cx,
+                                    );
+                                },
+                            ))
+                        }))
+                        .child(format!(
+                            "{}–{} of {}",
+                            range.start + 1,
+                            range.end,
+                            refs.len()
+                        ))
+                        .children((range.end < refs.len()).then(|| {
+                            button(
+                                SharedString::from(format!("next:artifacts:{owner}")),
+                                "Next files",
+                                None,
+                                look,
+                            )
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    view.set_artifact_page(&next_owner, page + 1, cx);
+                                },
+                            ))
+                        })),
+                )
+            })
             .into_any_element()
     }
 
-    pub(super) fn sent_attachment_strip(
-        &self,
-        item: &Item,
-        look: Look,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        use crate::chat::attachments::AttachmentKind;
-        let mut images: Vec<(String, ChatImage)> = item
-            .presentation
-            .attachments
+    fn set_artifact_page(&mut self, owner: &str, page: usize, cx: &mut Context<Self>) {
+        let offset = self.list.logical_scroll_top();
+        self.list.pause_following_tail();
+        self.media.artifact_pages.insert(owner.to_owned(), page);
+        if let Some(at) = self
+            .list_rows
             .iter()
-            .enumerate()
-            .filter_map(|(i, a)| {
-                matches!(a.kind, AttachmentKind::Image { .. }).then(|| {
-                    (
-                        format!("attachment:{}:image:{i}", item.id),
-                        ChatImage {
-                            label: a.name.clone(),
-                            source: ImageSource::Local {
-                                path: a.path.to_string_lossy().into_owned(),
-                            },
-                        },
-                    )
-                })
-            })
-            .collect();
-        for (i, image) in item.presentation.images.iter().enumerate() {
-            if !images.iter().any(|(_, other)| other.source == image.source) {
-                images.push((format!("{}:image:{i}", item.id), image.clone()));
-            }
+            .position(|entry| entry.row.id == owner)
+        {
+            self.list.remeasure_items(at..at + 1);
         }
-        let files: Vec<_> = item
-            .presentation
-            .attachments
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| !matches!(a.kind, AttachmentKind::Image { .. }))
-            .collect();
-        if images.is_empty() && files.is_empty() {
-            return div().into_any_element();
-        }
-        let image_count = images.len();
-        let file_count = files.len();
-        div()
-            .mt(ui_text::space(8.0))
-            .flex()
-            .flex_col()
-            .gap(ui_text::space(5.0))
-            .child(
-                div()
-                    .text_size(ui_text::text(11.0))
-                    .text_color(rgb(look.colors.muted))
-                    .child(format!(
-                        "{image_count} {}, {file_count} {}",
-                        if image_count == 1 { "image" } else { "images" },
-                        if file_count == 1 { "file" } else { "files" }
-                    )),
-            )
-            .child(
-                div()
-                    .max_w(ui_text::space(310.0))
-                    .flex()
-                    .flex_wrap()
-                    .gap(ui_text::space(5.0))
-                    .children(images.iter().map(|(key, image)| {
-                        let target = match &image.source {
-                            ImageSource::Local { path } => path.clone(),
-                            ImageSource::Url { url } => url.clone(),
-                            _ => format!(
-                                "image:{}:{}",
-                                item.id,
-                                key.rsplit(":image:").next().unwrap_or("0")
-                            ),
-                        };
-                        let owner = item.id.clone();
-                        crate::behavior_controls::button_content(
-                            SharedString::from(format!("thumb:{key}")),
-                            format!("Preview {}", image_label(image, Some(item))),
-                            self.thumbnail(key, image, gpui::ObjectFit::Cover, look, cx),
-                        )
-                        .w(ui_text::space(if image_count == 2 { 150.0 } else { 100.0 }))
-                        .aspect_square()
-                        .border_1()
-                        .border_color(rgb(look.colors.divider))
-                        .rounded(ui_text::space(6.0))
-                        .bg(rgb(look.colors.panel))
-                        .overflow_hidden()
-                        .on_click(cx.listener(move |v, _, _, cx| {
-                            cx.stop_propagation();
-                            v.preview_reference(&target, Some(&owner), cx);
-                        }))
-                        .into_any_element()
-                    })),
-            )
-            .child(div().flex().flex_wrap().gap(ui_text::space(4.0)).children(
-                files.into_iter().map(|(i, a)| {
-                    self.file_chip(
-                        format!("attachment:{}:{i}", item.id),
-                        a.name.clone(),
-                        Some(a.bytes),
-                        a.path.to_string_lossy().into_owned(),
-                        item.id.clone(),
-                        None,
-                        look,
-                        cx,
-                    )
-                }),
-            ))
-            .into_any_element()
+        self.list.scroll_to(offset);
+        cx.notify();
     }
 }
 

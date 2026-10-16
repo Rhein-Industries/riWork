@@ -5976,11 +5976,13 @@ dependencies = [
  "gpui-pre-platform",
  "image",
  "libc",
+ "notify",
  "objc2 0.6.4",
  "raw-window-handle",
  "riwork-cli",
  "riwork-core",
  "riwork-engine",
+ "riwork-gpui-preview",
  "serde",
  "serde_json",
  "ureq",
@@ -5994,6 +5996,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "fs2",
+ "ignore",
  "image",
  "libc",
  "riwork-core",
@@ -6003,6 +6006,20 @@ dependencies = [
  "toml_edit 0.22.27",
  "unicode-normalization",
  "uuid",
+]
+
+[[package]]
+name = "riwork-gpui-preview"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "gpui-pre",
+ "gpui-pre-platform",
+ "image",
+ "riwork-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

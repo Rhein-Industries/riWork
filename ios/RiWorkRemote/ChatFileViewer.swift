@@ -107,8 +107,23 @@ enum ChatFileCatalog {
         }
     }
 
-    /// Sent messages from old hosts carry attachment paths on separate lines rather than owned snapshots.
-    static func messageText(_ text: String, files: [ChatFileEntry]) -> String {
+    /// Owned snapshots carry the host's exact attachment-summary suffix. Recover only that suffix,
+    /// so text the person typed that happens to name a file remains intact.
+    static func messageText(_ text: String, files: [ChatFileEntry], attachments: [ChatSubmittedAttachment] = []) -> String {
+        if !attachments.isEmpty {
+            var typed = text
+            for (index, attachment) in attachments.enumerated().reversed() {
+                let summary = "[Attached: \(attachment.name) (\(attachment.bytes) bytes)]"
+                if index == 0, typed == summary { return "" }
+                guard typed.hasSuffix(summary) else { return text }
+                typed.removeLast(summary.count)
+                guard typed.last == "\n" else { return text }
+                typed.removeLast()
+                guard !typed.isEmpty else { return text }
+            }
+            return typed
+        }
+        // Sent messages from old hosts carry attachment paths rather than owned snapshots.
         let paths = Set(files.map(\.path))
         return text.components(separatedBy: "\n").compactMap { line -> String? in
             if paths.contains(line.trimmingCharacters(in: .whitespaces)) { return nil }
@@ -182,7 +197,7 @@ enum ChatFileCatalog {
                 files[index].localPreviewPaths.insert(previewPath, at: 0)
             }
         }
-        if case .userMessage(let text) = item.body {
+        if case .userMessage(let text) = item.body, item.presentation.attachments.isEmpty {
             for line in text.components(separatedBy: .newlines) {
                 let path = line.trimmingCharacters(in: .whitespaces)
                 guard path.hasPrefix("/"), !path.contains("\t"), !files.contains(where: { $0.path == path }) else { continue }
@@ -200,9 +215,7 @@ enum ChatFileCatalog {
                     }
                 }
             }
-            if item.presentation.attachments.isEmpty {
-                files.sort { (text.range(of: $0.path)?.lowerBound ?? text.endIndex) < (text.range(of: $1.path)?.lowerBound ?? text.endIndex) }
-            }
+            files.sort { (text.range(of: $0.path)?.lowerBound ?? text.endIndex) < (text.range(of: $1.path)?.lowerBound ?? text.endIndex) }
         }
         if !user, let semantics = item.presentation.semantics, let path = semantics.target,
            semantics.kind == .read, !path.hasPrefix("http") {
@@ -333,7 +346,7 @@ struct ChatFileStrip: View {
     }
 }
 
-/// The sent-message arrangement in the mockup: count, three-column thumbnails, then file chips.
+/// Sent files use one catalog and loader: a three-column image grid followed by file chips.
 struct ChatSentAttachments: View {
     @Environment(\.chatOpenFile) private var openFile
     let files: [ChatFileEntry]
@@ -347,7 +360,7 @@ struct ChatSentAttachments: View {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: 3), spacing: 5) {
                     ForEach(images) { file in
                         Button { openFile(file) } label: {
-                            ChatFileThumbnail(file: file).frame(height: 70).clipped()
+                            ChatFileThumbnail(file: file, showsFileFallback: true).frame(height: 70).clipped()
                                 .clipShape(RoundedRectangle(cornerRadius: 9)).contentShape(Rectangle())
                         }.buttonStyle(.plain).accessibilityLabel("Open image, \(file.displayName)")
                             .chatLayoutProbe("file-\(file.id)", action: { openFile(file) })
@@ -362,20 +375,31 @@ struct ChatSentAttachments: View {
 
 struct ChatFileThumbnail: View {
     let file: ChatFileEntry
+    var showsFileFallback = false
     @State private var image: UIImage?
+    @State private var loading = true
     var body: some View {
         GeometryReader { geometry in
             ZStack {
                 Color(uiColor: .tertiarySystemFill)
                 if let image {
                     Image(uiImage: image).resizable().scaledToFill().frame(width: geometry.size.width, height: geometry.size.height).clipped()
+                } else if showsFileFallback, !loading {
+                    VStack(spacing: 3) {
+                        Text(file.displayName).lineLimit(1).truncationMode(.middle)
+                        Text("Image unavailable").font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    .font(.system(size: 11)).padding(.horizontal, 5)
                 } else { Image(systemName: "photo").foregroundStyle(.secondary) }
             }
         }
         .task(id: file) {
+            image = nil
+            loading = true
             let decoded = await ChatFileBytes.image(for: file)
             guard !Task.isCancelled else { return }
             image = decoded
+            loading = false
         }
     }
 }
@@ -518,6 +542,7 @@ private struct ChatFileFlowLayout: Layout {
     static let images: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
         cache.totalCostLimit = 64 * 1024 * 1024
+        cache.countLimit = 128
         return cache
     }()
     private static var pendingImages: [NSString: Task<UIImage?, Never>] = [:]

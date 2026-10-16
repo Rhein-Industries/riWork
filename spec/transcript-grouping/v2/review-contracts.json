@@ -963,19 +963,17 @@
           "id": "activity:t",
           "kind": "activity",
           "title": "Worked · 1 tool call",
-          "children": [
-            {
-              "id": "a",
-              "kind": "subagent",
-              "title": "Agent",
-              "target": "review",
-              "open": false,
-              "failed_count": 0,
-              "running": false,
-              "provisional": false,
-              "elided": false
-            }
-          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "a",
+          "kind": "subagent",
+          "title": "Agent",
+          "target": "review",
           "open": false,
           "failed_count": 0,
           "running": false,

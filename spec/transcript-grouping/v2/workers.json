@@ -1,0 +1,583 @@
+{
+  "spec_version": 2,
+  "cases": [
+    {
+      "name": "Normal keeps host cards before a legacy answer even when the marker arrives later",
+      "items": [
+        {
+          "id": "u",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "user_message",
+            "text": "Inspect"
+          }
+        },
+        {
+          "id": "r",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "cat a"
+          }
+        },
+        {
+          "id": "answer",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "agent_message",
+            "text": "Done"
+          }
+        },
+        {
+          "id": "w",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "server": "riwork",
+            "tool": "worker"
+          },
+          "presentation": {
+            "worker": {
+              "session_id": "session",
+              "kind": "shell",
+              "title": "Reviewer",
+              "noted_at": 100
+            }
+          }
+        }
+      ],
+      "expected_rows": [
+        {
+          "id": "u",
+          "kind": "user",
+          "title": "User",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Worked · 1 command",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false,
+          "children": [
+            {
+              "id": "r",
+              "kind": "shell",
+              "title": "Ran",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false,
+              "target": "cat a"
+            }
+          ]
+        },
+        {
+          "id": "w",
+          "kind": "worker",
+          "title": "Worker",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "answer",
+          "kind": "final",
+          "title": "Answer",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ],
+      "anchors": {
+        "w": "w",
+        "answer": "answer"
+      },
+      "actions": [
+        {
+          "action": "bulk",
+          "open": true,
+          "expected_open_ids": [
+            "activity:t"
+          ],
+          "anchors": {
+            "w": "w"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Verbose keeps host cards in place and splits adjacent tool runs",
+      "items": [
+        {
+          "id": "r",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "cat a"
+          }
+        },
+        {
+          "id": "w",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "server": "riwork",
+            "tool": "worker"
+          },
+          "presentation": {
+            "worker": {
+              "session_id": "session",
+              "kind": "shell",
+              "title": "Reviewer",
+              "noted_at": 100
+            }
+          }
+        },
+        {
+          "id": "r2",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "cat b"
+          }
+        },
+        {
+          "id": "answer",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "agent_message",
+            "text": "Done"
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "r",
+          "kind": "shell",
+          "title": "Ran",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false,
+          "target": "cat a"
+        },
+        {
+          "id": "w",
+          "kind": "worker",
+          "title": "Worker",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "r2",
+          "kind": "shell",
+          "title": "Ran",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false,
+          "target": "cat b"
+        },
+        {
+          "id": "answer",
+          "kind": "final",
+          "title": "Answer",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Normal keeps provider cards live outside activity and counts captured children once",
+      "items": [
+        {
+          "id": "u",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "user_message",
+            "text": "Inspect"
+          }
+        },
+        {
+          "id": "s",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "reviewer"
+          },
+          "presentation": {
+            "subagent": {
+              "name": "Reviewer",
+              "status": "running",
+              "purpose": "Audit",
+              "summary": null,
+              "children": [
+                {
+                  "id": "child-session",
+                  "status": "running",
+                  "summary": null
+                }
+              ]
+            },
+            "semantics": {
+              "kind": "mcp"
+            }
+          }
+        },
+        {
+          "id": "c",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "cargo test"
+          },
+          "presentation": {
+            "parent_id": "s"
+          }
+        },
+        {
+          "id": "answer",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "agent_message",
+            "text": "Done"
+          }
+        }
+      ],
+      "expected_rows": [
+        {
+          "id": "u",
+          "kind": "user",
+          "title": "User",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Worked · 1 command",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "s",
+          "kind": "subagent",
+          "title": "Agent",
+          "open": false,
+          "failed_count": 0,
+          "running": true,
+          "provisional": false,
+          "elided": false,
+          "children": [
+            {
+              "id": "c",
+              "kind": "shell",
+              "title": "Ran",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false,
+              "target": "cargo test"
+            }
+          ],
+          "current_label": "agent reviewer"
+        },
+        {
+          "id": "answer",
+          "kind": "final",
+          "title": "Answer",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ],
+      "anchors": {
+        "s": "s",
+        "c": "s"
+      },
+      "actions": [
+        {
+          "action": "bulk",
+          "open": true,
+          "expected_open_ids": [
+            "activity:t"
+          ],
+          "anchors": {
+            "s": "s",
+            "c": "s"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Completed subagent result stays collapsed as its own Normal line",
+      "items": [
+        {
+          "id": "u",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "user_message",
+            "text": "Inspect"
+          }
+        },
+        {
+          "id": "s",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "reviewer"
+          },
+          "presentation": {
+            "subagent": {
+              "name": "Reviewer",
+              "status": "done",
+              "purpose": "Audit",
+              "summary": "Approved"
+            }
+          }
+        },
+        {
+          "id": "answer",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "agent_message",
+            "text": "Done"
+          }
+        }
+      ],
+      "expected_rows": [
+        {
+          "id": "u",
+          "kind": "user",
+          "title": "User",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Worked · 1 tool call",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "s",
+          "kind": "subagent",
+          "title": "Agent",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "answer",
+          "kind": "final",
+          "title": "Answer",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Verbose uses provider delegation status instead of operation completion",
+      "items": [
+        {
+          "id": "r",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "cat a"
+          }
+        },
+        {
+          "id": "s",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "reviewer"
+          },
+          "presentation": {
+            "subagent": {
+              "name": "Reviewer",
+              "status": "running",
+              "purpose": "Audit",
+              "summary": null,
+              "children": [
+                {
+                  "id": "child-session",
+                  "status": "running",
+                  "summary": null
+                }
+              ]
+            },
+            "semantics": {
+              "kind": "mcp"
+            }
+          }
+        },
+        {
+          "id": "legacy-running",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "collabAgentToolCall",
+            "input": {
+              "tool": "spawnAgent",
+              "agentsStates": {
+                "legacy-child": {
+                  "status": "running"
+                }
+              }
+            }
+          }
+        },
+        {
+          "id": "legacy-failed",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "collabAgentToolCall",
+            "input": {
+              "tool": "wait",
+              "agentsStates": {
+                "failed-child": {
+                  "status": "errored"
+                }
+              }
+            }
+          }
+        },
+        {
+          "id": "answer",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "agent_message",
+            "text": "Done"
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose",
+        "provider": "codex"
+      },
+      "expected_rows": [
+        {
+          "id": "r",
+          "kind": "shell",
+          "title": "Ran",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false,
+          "target": "cat a"
+        },
+        {
+          "id": "s",
+          "kind": "subagent",
+          "title": "Agent",
+          "open": false,
+          "failed_count": 0,
+          "running": true,
+          "provisional": false,
+          "elided": false,
+          "current_label": "agent reviewer"
+        },
+        {
+          "id": "legacy-running",
+          "kind": "subagent",
+          "title": "Agent",
+          "open": false,
+          "failed_count": 0,
+          "running": true,
+          "provisional": false,
+          "elided": false,
+          "current_label": "agent collabAgentToolCall"
+        },
+        {
+          "id": "legacy-failed",
+          "kind": "subagent",
+          "title": "Agent",
+          "open": false,
+          "failed_count": 1,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "answer",
+          "kind": "final",
+          "title": "Answer",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    }
+  ]
+}

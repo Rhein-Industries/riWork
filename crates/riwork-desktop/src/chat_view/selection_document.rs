@@ -81,7 +81,42 @@ fn append_row(
     if !visible.contains(&projected.id) {
         return;
     }
-    if let Some((_, item)) = view.projected_item(&projected.id) {
+    if let Some((at, item)) = view.projected_item(&projected.id) {
+        // The native cards own these result bodies. Their live tails are status
+        // displays, never selectable or searchable transcript text.
+        if let Some(worker) = crate::chat::workers::of(item) {
+            let tail = worker
+                .end
+                .as_ref()
+                .map(|end| end.tail.clone())
+                .unwrap_or_default();
+            if view.open.contains(&item.id)
+                && !tail.trim().is_empty()
+                && !view.worker_status(at, worker).running()
+            {
+                result.push(SourceLeaf {
+                    key: format!("worker:{}", item.id),
+                    text: tail,
+                    row,
+                });
+            }
+            return;
+        }
+        if let Some(run) = crate::chat::subagents::in_transcript(
+            item,
+            &view.model.transcript,
+            view.info().map(|info| info.provider),
+        ) {
+            let text = run.result_text();
+            if view.open.contains(&item.id) && !text.is_empty() {
+                result.push(SourceLeaf {
+                    key: format!("subagent:{}", item.id),
+                    text,
+                    row,
+                });
+            }
+            return;
+        }
         let expanded = projected.open;
         let mut entries = Vec::new();
         let mut put = |key: String, text: String| entries.push(SourceLeaf { key, text, row });
@@ -92,12 +127,16 @@ fn append_row(
             ItemBody::AgentMessage { text } => {
                 blocks(&view.parsed(item, text), &item.id, row, result)
             }
-            ItemBody::UserMessage { text } => blocks(
-                &view.parsed(item, text),
-                &format!("user:{}", item.id),
-                row,
-                result,
-            ),
+            ItemBody::UserMessage { text } => {
+                if let Some(text) = super::attachment_ui::shown_text(item, text) {
+                    blocks(
+                        &view.parsed(item, text),
+                        &format!("user:{}", item.id),
+                        row,
+                        result,
+                    );
+                }
+            }
             ItemBody::Reasoning { text } if expanded => {
                 put(format!("thought:{}", item.id), text.trim().into())
             }
@@ -232,26 +271,6 @@ fn append_row(
         result.extend(entries);
     }
 
-    if projected.kind == RowKind::User {
-        if let Some((_, item)) = view.projected_item(&projected.id) {
-            for (index, attachment) in item.presentation.attachments.iter().enumerate() {
-                if matches!(
-                    attachment.kind,
-                    crate::chat::attachments::AttachmentKind::Text
-                ) {
-                    result.push(SourceLeaf {
-                        key: format!("attachment:{}:{index}", item.id),
-                        text: format!(
-                            "{} {}",
-                            attachment.name,
-                            crate::file_preview::format_size(attachment.bytes)
-                        ),
-                        row,
-                    });
-                }
-            }
-        }
-    }
     if projected.kind == RowKind::Activity {
         artifacts(view, &projected.artifacts, row, result);
     }

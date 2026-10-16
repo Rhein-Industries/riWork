@@ -318,6 +318,10 @@ impl ChatView {
             self.model_input.update(cx, |state, cx| {
                 state.marked_text_range(window, cx).is_some()
             })
+        } else if self.find.field_focused(window, cx) {
+            self.find.input.update(cx, |state, cx| {
+                state.marked_text_range(window, cx).is_some()
+            })
         } else {
             let active = self
                 .answers
@@ -333,6 +337,8 @@ impl ChatView {
         if composing {
             return;
         }
+        // A menu closed from the find field leaves the keys there, not in the message box.
+        let in_find = self.find.field_focused(window, cx);
         let handled = if self.media.viewer.take().is_some() {
             true
         } else if self.open.remove(panels::ATTACHMENT_MENU_KEY) {
@@ -341,8 +347,14 @@ impl ChatView {
         } else if self.menu.is_some() {
             self.close_menu(cx);
             true
+        } else if self.memo_preview.is_some() {
+            self.close_memo_preview(window, cx);
+            true
         } else if self.dictation.phase().is_active() {
             self.cancel_dictation(window, cx);
+            true
+        } else if self.find_takes_escape(window, cx) {
+            self.close_find(window, cx);
             true
         } else if self.composer.read(cx).focus_handle(cx).is_focused(window) {
             match super::composer::escape(
@@ -369,12 +381,19 @@ impl ChatView {
             false
         };
         if handled {
+            if in_find {
+                self.focus_composer = false;
+            }
             cx.stop_propagation();
             cx.notify();
         }
     }
 
     pub(super) fn send_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // `/memo` previews the project's memo and sends nothing (`memo`).
+        if self.open_memo_preview(window, cx) {
+            return;
+        }
         if !self.accepts_input() || self.pending_submission.is_some() {
             return;
         }

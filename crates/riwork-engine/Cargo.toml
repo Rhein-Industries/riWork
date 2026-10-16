@@ -21,3 +21,5 @@ toml_edit = "0.22"
 unicode-normalization = "0.1"
 # Already in the lockfile (rustls-native-certs); the Anthropic API key's Keychain item.
 security-framework = "3"
+# Already in the lockfile (globwalk); `.gitignore` rules for the composer's file suggestions.
+ignore = "0.4"

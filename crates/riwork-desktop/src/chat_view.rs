@@ -54,11 +54,17 @@ mod draft_tests;
 mod editor_tests;
 mod editors;
 mod feed;
+mod find;
+#[cfg(test)]
+mod find_tests;
 mod host;
 mod image_scope;
 mod links;
 mod markdown;
 mod media;
+mod memo;
+#[cfg(test)]
+mod memo_tests;
 #[cfg(test)]
 mod notice_tests;
 mod notice_ui;
@@ -72,6 +78,16 @@ mod selection_document;
 #[cfg(test)]
 mod selection_tests;
 mod state;
+mod subshells;
+#[cfg(test)]
+mod subshells_tests;
+mod worker_shelf;
+#[cfg(test)]
+mod worker_shelf_tests;
+pub use subshells::ShellAction;
+#[cfg(test)]
+mod suggest_tests;
+mod suggest_ui;
 #[cfg(test)]
 mod testing;
 mod toolbar;
@@ -79,6 +95,7 @@ mod usage_chip;
 #[cfg(test)]
 mod viewer_tests;
 mod widgets;
+mod worker_summary;
 
 pub use display::DisplayMode;
 pub use host::HostConfig;
@@ -98,6 +115,9 @@ actions!(
     [
         InterruptChat,
         ToggleDictation,
+        FindInChat,
+        FindNext,
+        FindPrevious,
         ToggleTranscriptMode,
         ExpandTranscript,
         CollapseTranscript
@@ -106,6 +126,10 @@ actions!(
 
 /// What a chat tab tells the window.
 pub enum ChatViewEvent {
+    WorkerShell {
+        shell_id: String,
+        action: ShellAction,
+    },
     /// The title, the agent behind it, or what it is doing changed: the tab and the counts
     /// of agents are drawn again.
     Changed,
@@ -127,6 +151,10 @@ pub enum ChatViewEvent {
     ShowUsage,
     /// A usage-limit notice's **Enter API key** was pressed: Settings, at the key field.
     OpenApiKeySettings,
+    /// `/memo`'s **Edit**: open this project's memo where it is written.
+    EditProjectMemo {
+        project_id: String,
+    },
 }
 
 impl EventEmitter<ChatViewEvent> for ChatView {}
@@ -205,6 +233,8 @@ struct DrawnDiff {
 }
 
 pub struct ChatView {
+    workers: subshells::WorkerUi,
+    worker_summaries: worker_summary::SummaryState,
     config: HostConfig,
     window_handle: gpui::AnyWindowHandle,
     /// The host's id for the chat; none while a new chat is being made.
@@ -329,6 +359,12 @@ pub struct ChatView {
     /// A usage limit's **Use API key** waits for the host to say the chat bills its API key,
     /// then sends this again, if anything (`billing::rejected_prompt`).
     limit_switch: Option<LimitSwitch>,
+    /// The `/`, `@` and `&` list over the message box.
+    suggestions: suggest_ui::Suggestions,
+    memo_store: Option<crate::store::Store>,
+    memo_preview: Option<memo::Preview>,
+    /// Each tab keeps its own find state across tab switches.
+    find: find::Find,
 }
 
 /// What a usage limit's **Use API key** still has to do once the switch holds.
@@ -483,10 +519,16 @@ impl ChatView {
         let composer =
             text_input::multiline("", "Message", 1, 8, EnterBehavior::Submit, window, cx);
         let model_input = text_input::single_line("", "model name, then ⏎", window, cx);
+        let find = find::Find::new(window, cx);
         let focus = cx.focus_handle();
         let subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::composer_event),
+            // Caret and focus changes also update the suggestion list.
+            cx.observe_in(&composer, window, |view, _, window, cx| {
+                view.sync_suggestions(window, cx)
+            }),
             cx.subscribe_in(&model_input, window, Self::model_event),
+            cx.subscribe_in(&find.input, window, Self::find_event),
             // A key held as focus leaves comes up elsewhere (the new-chat chooser, another
             // tab), never in this view's key-up: forget it, or the next ⏎ here is taken for
             // its repeat and swallowed.
@@ -501,6 +543,8 @@ impl ChatView {
             select::TranscriptSelection::new(window.window_handle(), cx.weak_entity(), cx);
         Self {
             config,
+            workers: Default::default(),
+            worker_summaries: Default::default(),
             window_handle: window.window_handle(),
             chat_id: None,
             creation: None,
@@ -587,6 +631,10 @@ impl ChatView {
             speech_names: Vec::new(),
             speech_paths: Vec::new(),
             limit_switch: None,
+            suggestions: Default::default(),
+            memo_store: None,
+            memo_preview: None,
+            find,
         }
     }
 
@@ -814,6 +862,7 @@ impl ChatView {
         self.notices.observe(self.model.transcript.items.len());
         self.schedule_notice_expiry(cx);
         self.sync_list(&applied, cx);
+        self.schedule_worker_summaries(cx);
         self.forget_settled();
         self.ready_inputs(window, cx);
         self.announce(cx);
@@ -824,12 +873,32 @@ impl ChatView {
     /// drawn, so a row that changed must be measured again.
     fn sync_list(&mut self, applied: &Applied, cx: &mut Context<Self>) {
         let _timing = perf::Span::new("stream-event");
-        let touched_ids: HashSet<_> = applied
+        if applied.events > 0 {
+            self.transcript_selection.invalidate_search();
+        }
+        let mut touched_ids: HashSet<_> = applied
             .touched
             .iter()
             .filter_map(|at| self.model.transcript.items.get(*at))
             .map(|item| item.id.clone())
             .collect();
+        // A later Codex report can settle an earlier spawn/send card without
+        // replacing that card's item. Invalidate those stable item identities
+        // too, then measure only their currently flattened list entries.
+        let provider = self.info().map(|info| info.provider);
+        let child_reports_changed =
+            provider == Some(Provider::Codex)
+                && (applied.appended > 0
+                    || applied.touched.iter().any(|at| {
+                        self.model.transcript.items.get(*at).is_some_and(|item| {
+                            crate::chat::subagents::of(item, provider).is_some()
+                        })
+                    }));
+        if child_reports_changed {
+            touched_ids.extend(self.model.transcript.items.iter().filter_map(|item| {
+                crate::chat::subagents::of(item, provider).map(|_| item.id.clone())
+            }));
+        }
         let mounted_ids: HashSet<_> = touched_ids
             .iter()
             .filter(|id| self.transcript_selection.source_was_mounted(id))
@@ -893,9 +962,15 @@ impl ChatView {
         ));
         self.list
             .remeasure_items(self.items_in_list..self.items_in_list + 1);
+        // Streaming child reports also refresh the shelf and generated-summary
+        // inputs even when their projected topology did not change.
+        if child_reports_changed {
+            self.reindex_workers();
+        }
         self.schedule_activity_clock(cx);
     }
 
+    #[cfg(test)]
     fn refresh_projection(&mut self, cx: &mut Context<Self>) {
         // Explicit refreshes also support source-only fixtures and backfill.
         self.projection_cache.clear();
@@ -1014,6 +1089,7 @@ impl ChatView {
                 });
             }
         }
+        self.reindex_workers();
         self.projection_stamp = Some((
             self.model.projection_revision,
             self.model.transcript.revision(),
@@ -1099,14 +1175,58 @@ impl ChatView {
     }
 
     fn remap_list_anchor(&self, anchor: &display::Row) -> Option<usize> {
-        let id = riwork_engine::chat::projection::visible_anchor(&self.visible, &anchor.id)
-            .or_else(|| {
-                riwork_engine::chat::projection::visible_anchor(
-                    &self.visible,
-                    display::anchor_item(anchor),
-                )
-            })?;
+        let id = riwork_engine::chat::projection::transcript_anchor(
+            &self.model.transcript,
+            &self.visible,
+            &anchor.id,
+        )
+        .or_else(|| {
+            riwork_engine::chat::projection::transcript_anchor(
+                &self.model.transcript,
+                &self.visible,
+                display::anchor_item(anchor),
+            )
+        })?;
         self.list_rows.iter().position(|entry| entry.row.id == id)
+    }
+
+    /// Bring a native card into the virtual list without opening its own body.
+    /// Verbose may keep it beneath closed parent cards; Normal lifts it out.
+    pub(super) fn reveal_projected_item(&mut self, id: &str, cx: &mut Context<Self>) {
+        fn ancestors(rows: &[display::Row], id: &str, closed: &mut Vec<String>) -> bool {
+            for row in rows {
+                if row.id == id {
+                    return true;
+                }
+                if ancestors(&row.children, id, closed) {
+                    if !row.open && display::disclosure(row) {
+                        closed.push(row.id.clone());
+                    }
+                    return true;
+                }
+                // Comments sit beside a disclosure, so they do not open it.
+                if ancestors(&row.comments, id, closed) {
+                    return true;
+                }
+            }
+            false
+        }
+        let mut closed = Vec::new();
+        if !ancestors(&self.visible, id, &mut closed) {
+            return;
+        }
+        self.list.pause_following_tail();
+        if !closed.is_empty() {
+            for ancestor in closed {
+                self.disclosure.overrides.insert(ancestor, true);
+            }
+            self.transcript_selection.clear(self.window_handle, cx);
+            self.refresh_projection_for(&HashSet::new(), cx);
+        }
+        if let Some(row) = self.list_rows.iter().position(|row| row.row.id == id) {
+            self.list.scroll_to_reveal_item(row);
+            cx.notify();
+        }
     }
 
     pub(super) fn projected_item(&self, id: &str) -> Option<(usize, &crate::chat::model::Item)> {
@@ -1982,16 +2102,21 @@ impl ChatView {
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // Arrow and Space disclosure controls belong to transcript focus; editors keep
         // their own cursor motion and whitespace handling.
-        let editing = self.composer.read(cx).focus_handle(cx).is_focused(window)
-            || self
-                .model_input
-                .read(cx)
-                .focus_handle(cx)
-                .is_focused(window)
-            || self
-                .answers
-                .values()
-                .any(|answer| answer.state.read(cx).focus_handle(cx).is_focused(window));
+        let editing =
+            self.composer.read(cx).focus_handle(cx).is_focused(window)
+                || self.find.input.read(cx).focus_handle(cx).is_focused(window)
+                || self.workers.message.as_ref().is_some_and(|(_, input, _)| {
+                    input.read(cx).focus_handle(cx).is_focused(window)
+                })
+                || self
+                    .model_input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+                || self
+                    .answers
+                    .values()
+                    .any(|answer| answer.state.read(cx).focus_handle(cx).is_focused(window));
         let modifiers = event.keystroke.modifiers;
         if !editing
             && self.menu.is_none()
@@ -2103,10 +2228,13 @@ impl Render for ChatView {
             self.transcript_selection =
                 select::TranscriptSelection::new(window.window_handle(), cx.weak_entity(), cx);
             self.window_handle = window.window_handle();
+            self.find.new_window();
         }
         self.follow_text_size(cx);
         self.refresh_selection_document(look, cx);
+        self.refresh_find(look, window, cx);
         self.ready_inputs(window, cx);
+        self.sync_suggestions(window, cx);
         if self.focus_composer {
             self.focus_composer = false;
             self.focus(window, cx);
@@ -2139,6 +2267,9 @@ impl Render for ChatView {
             .on_action(cx.listener(Self::expand_transcript_action))
             .on_action(cx.listener(Self::collapse_transcript_action))
             .on_action(cx.listener(Self::copy_transcript))
+            .on_action(cx.listener(Self::find_action))
+            .on_action(cx.listener(Self::find_next_action))
+            .on_action(cx.listener(Self::find_previous_action))
             .on_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, _| {
                 view.menu_armed = true;
                 if matches!(event.keystroke.key.as_str(), "up" | "down") {
@@ -2152,6 +2283,12 @@ impl Render for ChatView {
                     view.escape_down = false;
                 }
             }))
+            // Suggestions precede menus and the composer.
+            .capture_action(cx.listener(Self::suggestion_escape))
+            .capture_action(cx.listener(Self::suggestion_up))
+            .capture_action(cx.listener(Self::suggestion_down))
+            .capture_action(cx.listener(Self::suggestion_enter))
+            .capture_action(cx.listener(Self::suggestion_tab))
             .capture_action(cx.listener(Self::escape_action))
             .capture_action(cx.listener(Self::menu_up))
             .capture_action(cx.listener(Self::menu_down))

@@ -401,7 +401,7 @@ public struct ChatPathRef: Codable, Sendable, Equatable, Hashable {
     }
 }
 
-public struct ChatWorker: Codable, Sendable, Equatable, Hashable {
+public struct ChatSemanticWorker: Codable, Sendable, Equatable, Hashable {
     public var role: String?
     public var objective: String?
     public var childCount: UInt64?
@@ -431,9 +431,9 @@ public struct ChatSemantics: Codable, Sendable, Equatable, Hashable {
     public var matchCount: UInt64?
     public var excerpt: String?
     public var produced: [ChatPathRef]
-    public var worker: ChatWorker?
+    public var worker: ChatSemanticWorker?
     public init(kind: ChatToolKind = .other, target: String? = nil, range: ChatLineRange? = nil, matchCount: UInt64? = nil,
-                excerpt: String? = nil, produced: [ChatPathRef] = [], worker: ChatWorker? = nil) {
+                excerpt: String? = nil, produced: [ChatPathRef] = [], worker: ChatSemanticWorker? = nil) {
         self.kind = kind; self.target = target; self.range = range; self.matchCount = matchCount
         self.excerpt = excerpt; self.produced = produced; self.worker = worker
     }
@@ -446,7 +446,7 @@ public struct ChatSemantics: Codable, Sendable, Equatable, Hashable {
         kind = c.tolerant(ChatToolKind.self, forKey: .kind) ?? .other; target = c.tolerant(String.self, forKey: .target)
         range = c.tolerant(ChatLineRange.self, forKey: .range); matchCount = c.tolerant(UInt64.self, forKey: .matchCount)
         excerpt = c.tolerant(String.self, forKey: .excerpt); produced = c.leniently([ChatPathRef].self, forKey: .produced)
-        worker = c.tolerant(ChatWorker.self, forKey: .worker)
+        worker = c.tolerant(ChatSemanticWorker.self, forKey: .worker)
     }
     public func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -523,17 +523,21 @@ public struct ChatPresentation: Codable, Sendable, Equatable {
     public var attachments: [ChatSubmittedAttachment]
     public var semantics: ChatSemantics?
     public var parentID: String?
+    public var subagent: ChatSubagent?
+    public var worker: ChatWorker?
     public init(phase: ChatMessagePhase? = nil, images: [ChatImage] = [], attachments: [ChatSubmittedAttachment] = [],
-                semantics: ChatSemantics? = nil, parentID: String? = nil) {
+                semantics: ChatSemantics? = nil, parentID: String? = nil, subagent: ChatSubagent? = nil, worker: ChatWorker? = nil) {
         self.phase = phase; self.images = images; self.attachments = attachments; self.semantics = semantics; self.parentID = parentID
+        self.subagent = subagent; self.worker = worker
     }
-    public var isEmpty: Bool { phase == nil && images.isEmpty && attachments.isEmpty && semantics == nil && parentID == nil }
-    private enum CodingKeys: String, CodingKey { case phase, images, attachments, semantics, parentID = "parent_id" }
+    public var isEmpty: Bool { phase == nil && images.isEmpty && attachments.isEmpty && semantics == nil && parentID == nil && subagent == nil && worker == nil }
+    private enum CodingKeys: String, CodingKey { case phase, images, attachments, semantics, subagent, worker, parentID = "parent_id" }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         phase = c.tolerant(ChatMessagePhase.self, forKey: .phase); images = c.leniently([ChatImage].self, forKey: .images)
         attachments = c.leniently([ChatSubmittedAttachment].self, forKey: .attachments)
         semantics = c.tolerant(ChatSemantics.self, forKey: .semantics); parentID = c.tolerant(String.self, forKey: .parentID)
+        subagent = c.tolerant(ChatSubagent.self, forKey: .subagent); worker = c.tolerant(ChatWorker.self, forKey: .worker)
     }
     public func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -541,6 +545,7 @@ public struct ChatPresentation: Codable, Sendable, Equatable {
         if !images.isEmpty { try c.encode(images, forKey: .images) }
         if !attachments.isEmpty { try c.encode(attachments, forKey: .attachments) }
         try c.encodeIfPresent(semantics, forKey: .semantics); try c.encodeIfPresent(parentID, forKey: .parentID)
+        try c.encodeIfPresent(subagent, forKey: .subagent); try c.encodeIfPresent(worker, forKey: .worker)
     }
 }
 
@@ -634,6 +639,16 @@ public enum ChatItemBody: Sendable, Equatable, Codable {
 
 /// One entry of the transcript (`Item`).
 public struct ChatItem: Codable, Sendable, Equatable, Identifiable {
+    public var subagent: ChatSubagent? {
+        get { presentation.subagent }
+        set { presentation.subagent = newValue }
+    }
+    /// RiWork's own worker this item marks (`presentation.worker`, `WorkerTimeline.swift`); nil for every other item, and for a marker the
+    /// phone cannot read, which then shows as the tool row its body also is.
+    public var worker: ChatWorker? {
+        get { presentation.worker }
+        set { presentation.worker = newValue }
+    }
     /// Unique within the chat.
     public var id: String
     public var turnID: String?

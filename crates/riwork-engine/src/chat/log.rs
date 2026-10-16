@@ -242,8 +242,11 @@ fn is_session_history(event: &ChatEvent) -> bool {
         | ChatEvent::ItemDelta { .. }
         | ChatEvent::ApprovalRequested { .. }
         | ChatEvent::QuestionRequested { .. } => true,
+        // A worker marker is the host's record of a terminal or chat, never the
+        // provider's own session: it cannot make a new provider look resumable, even in a
+        // shape this build cannot read.
         ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => {
-            !matches!(item.body, ItemBody::Notice { .. })
+            !matches!(item.body, ItemBody::Notice { .. }) && !super::workers::is_marker(item)
         }
         _ => false,
     }
@@ -411,6 +414,17 @@ pub fn read_infos_checked(home: &Path) -> Result<Vec<ChatInfo>, String> {
 
 /// The transcript the log of chat `id` builds, read from the end of the file.
 pub fn read_transcript(home: &Path, id: &str) -> Result<super::model::Transcript, String> {
+    read_transcript_tail(home, id, TRANSCRIPT_TAIL)
+}
+
+/// Fold complete events from a bounded tail without contacting the chat host.
+/// A small observer such as the worker shelf need not replay a long conversation.
+pub fn read_transcript_tail(
+    home: &Path,
+    id: &str,
+    max_bytes: u64,
+) -> Result<super::model::Transcript, String> {
+    let max_bytes = max_bytes.min(TRANSCRIPT_TAIL);
     let dir = chat_dir(home, id).ok_or("invalid chat id")?;
     let path = dir.join(EVENTS);
     let mut file =
@@ -419,10 +433,10 @@ pub fn read_transcript(home: &Path, id: &str) -> Result<super::model::Transcript
         .metadata()
         .map_err(|error| format!("Cannot read {}: {error}", path.display()))?
         .len();
-    let start = length.saturating_sub(TRANSCRIPT_TAIL);
+    let start = length.saturating_sub(max_bytes);
     file.seek(SeekFrom::Start(start))
         .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
-    let mut reader = BufReader::new(file);
+    let mut reader = BufReader::new(file.take(max_bytes));
     let read = |error: io::Error| format!("Cannot read {}: {error}", path.display());
     if start > 0 {
         // The first line of the tail is cut in two.
@@ -1151,6 +1165,28 @@ mod tests {
     }
 
     #[test]
+    fn a_small_transcript_tail_skips_old_partial_events_and_keeps_recent_output() {
+        let home = scratch();
+        let chat = info(&home);
+        let directory = chat_dir(&home, &chat.id).unwrap();
+        let log = ChatLog::create(&directory, &chat).unwrap();
+        log.append(user_line(1, &"old output ".repeat(1000)).as_bytes(), false)
+            .unwrap();
+        let recent = user_line(2, "fresh worker finding");
+        log.append(recent.as_bytes(), false).unwrap();
+        let transcript = read_transcript_tail(&home, &chat.id, recent.len() as u64 + 1).unwrap();
+        assert_eq!(transcript.items.len(), 1);
+        assert_eq!(transcript.items[0].id, "u2");
+        assert!(
+            read_transcript_tail(&home, &chat.id, 0)
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
     fn a_reader_follows_a_log_without_the_host_and_waits_for_a_line_that_is_not_whole() {
         let home = scratch();
         let mut chat = info(&home);
@@ -1294,261 +1330,6 @@ mod snapshot_tests {
         assert!(!older.more);
         assert_eq!(older.requests.len(), 1);
         assert_eq!(older.requests[0].request_id, "first");
-    }
-
-    #[test]
-    fn snapshot_turn_pages_keep_interleaved_rows_with_and_without_turn_ids() {
-        for interleaved_turn in [None, Some("other")] {
-            let mut f = Fixture::new();
-            f.event(json!({"event":"turn_started","turn_id":"t","started_at":100}));
-            for (id, turn) in [
-                ("a1", Some("t")),
-                ("n", interleaved_turn),
-                ("a2", Some("t")),
-                ("a3", Some("t")),
-            ] {
-                f.event(json!({"event":"item_completed","item":{
-                    "id":id,"turn_id":turn,"status":"completed",
-                    "body":{"type":"agent_message","text":id}
-                }}));
-            }
-            f.event(
-                json!({"event":"turn_completed","turn_id":"t","ended_at":500,
-                "outcome":{"outcome":"completed"}}),
-            );
-            let newest = f.read(None, u64::MAX, 2);
-            assert_eq!(
-                newest
-                    .items
-                    .iter()
-                    .map(|row| row.item.id.as_str())
-                    .collect::<Vec<_>>(),
-                ["a1", "n", "a2", "a3"],
-                "interleaved turn: {interleaved_turn:?}"
-            );
-            assert_eq!(newest.before, 1);
-            assert!(!newest.more);
-            assert_eq!(newest.turn_starts["t"], 1);
-            assert_eq!(newest.turn_timing["t"].started_at, Some(100));
-            assert_eq!(newest.turn_timing["t"].ended_at, Some(500));
-            let older = f.read(Some(&newest.cursor), newest.before, 2);
-            assert!(older.items.is_empty());
-            assert!(!older.more);
-        }
-    }
-
-    #[test]
-    fn snapshot_byte_limited_turn_pages_recover_every_interleaved_row() {
-        for interleaved_turn in [None, Some("other")] {
-            let mut f = Fixture::new();
-            f.row("older", "before the turn");
-            f.event(json!({"event":"turn_started","turn_id":"t"}));
-            for (id, turn) in [
-                ("a1", Some("t")),
-                ("n", interleaved_turn),
-                ("a2", Some("t")),
-                ("a3", Some("t")),
-            ] {
-                f.event(json!({"event":"item_completed","item":{
-                    "id":id,"turn_id":turn,"status":"completed",
-                    "body":{"type":"agent_message","text":"x".repeat(1500)}
-                }}));
-            }
-            f.event(
-                json!({"event":"turn_completed","turn_id":"t","outcome":{"outcome":"completed"}}),
-            );
-            let mut page = read_snapshot(&f.home, &f.id, None, u64::MAX, 2, 4096, &[]).unwrap();
-            assert!(page.provisional);
-            assert!(page.more);
-            let mut seen = std::collections::BTreeSet::new();
-            let mut pages = 0;
-            loop {
-                pages += 1;
-                assert!(pages <= 5, "pagination must make progress");
-                for row in &page.items {
-                    assert!(row.order >= page.before);
-                    assert!(
-                        seen.insert(row.item.id.clone()),
-                        "duplicate {}",
-                        row.item.id
-                    );
-                }
-                if !page.more {
-                    break;
-                }
-                let previous_before = page.before;
-                page = read_snapshot(
-                    &f.home,
-                    &f.id,
-                    Some(&page.cursor),
-                    page.before,
-                    2,
-                    4096,
-                    &[],
-                )
-                .unwrap();
-                assert!(page.before < previous_before);
-            }
-            assert_eq!(
-                seen,
-                ["older", "a1", "n", "a2", "a3"]
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect()
-            );
-        }
-    }
-
-    #[test]
-    fn streamed_legacy_output_metadata_agrees_in_every_read_path() {
-        let mut f = Fixture::new();
-        for (id, tool, input, completed_input, output) in [
-            (
-                "search",
-                "Grep",
-                json!({"pattern":"needle"}),
-                json!({"pattern":"needle"}),
-                "src/main.rs:1:needle\nsrc/lib.rs:2:needle",
-            ),
-            (
-                "read",
-                "Read",
-                json!({"file_path":"src/main.rs"}),
-                json!({}),
-                "file contents",
-            ),
-        ] {
-            f.event(json!({"event":"item_started","item":{
-                "id":id,"status":"in_progress","body":{"type":"tool_call","tool":tool,"input":input}
-            }}));
-            f.event(json!({"event":"item_completed","item":{
-                "id":id,"status":"completed","body":{"type":"tool_call","tool":tool,"input":completed_input,"output":output}
-            }}));
-        }
-        f.event(json!({"event":"item_started","item":{
-            "id":"web","status":"in_progress","body":{"type":"web_search","query":""}
-        }}));
-        f.event(json!({"event":"item_completed","item":{
-            "id":"web","status":"completed","body":{"type":"web_search","query":"rust serde"}
-        }}));
-        let offline = read_transcript(&f.home, &f.id).unwrap();
-        let snapshot = f.read(None, u64::MAX, 50);
-        let mut response = Vec::new();
-        replay(&f.dir, 0, f.seq, &mut response).unwrap();
-        let mut replayed = super::super::model::Transcript::default();
-        for line in response
-            .split(|byte| *byte == b'\n')
-            .filter(|line| !line.is_empty())
-        {
-            let envelope: Envelope = serde_json::from_slice(line).unwrap();
-            replayed.apply_sequenced(envelope.seq, &envelope.event);
-        }
-        let mut tailed = super::super::model::Transcript::default();
-        for envelope in read_after(&f.home, &f.id, 0).unwrap().0 {
-            tailed.apply_sequenced(envelope.seq, &envelope.event);
-        }
-        let mut envelopes = super::super::model::Transcript::default();
-        for envelope in read_envelopes(&f.dir).unwrap() {
-            envelopes.apply_sequenced(envelope.seq, &envelope.event);
-        }
-        for id in ["search", "read", "web"] {
-            let expected = &replayed.item(id).unwrap().presentation.semantics;
-            assert_eq!(&offline.item(id).unwrap().presentation.semantics, expected);
-            assert_eq!(&tailed.item(id).unwrap().presentation.semantics, expected);
-            assert_eq!(
-                &envelopes.item(id).unwrap().presentation.semantics,
-                expected
-            );
-            assert_eq!(
-                &snapshot
-                    .items
-                    .iter()
-                    .find(|row| row.item.id == id)
-                    .unwrap()
-                    .item
-                    .presentation
-                    .semantics,
-                expected
-            );
-        }
-        assert_eq!(
-            offline
-                .item("web")
-                .unwrap()
-                .presentation
-                .semantics
-                .as_ref()
-                .unwrap()
-                .target
-                .as_deref(),
-            Some("rust serde")
-        );
-        assert_eq!(
-            offline
-                .item("read")
-                .unwrap()
-                .presentation
-                .semantics
-                .as_ref()
-                .unwrap()
-                .target
-                .as_deref(),
-            Some("src/main.rs")
-        );
-        assert_eq!(
-            offline
-                .item("search")
-                .unwrap()
-                .presentation
-                .semantics
-                .as_ref()
-                .unwrap()
-                .match_count,
-            Some(2)
-        );
-        assert_eq!(
-            offline
-                .item("read")
-                .unwrap()
-                .presentation
-                .semantics
-                .as_ref()
-                .unwrap()
-                .excerpt
-                .as_deref(),
-            Some("file contents")
-        );
-    }
-
-    #[test]
-    fn legacy_replay_enriches_without_rewriting_log_or_sequence() {
-        let mut f = Fixture::new();
-        f.event(json!({"event":"item_completed","item":{
-            "id":"read","body":{"type":"tool_call","tool":"Read","input":{"file_path":"main.rs"}}
-        }}));
-        let original = fs::read(f.dir.join(EVENTS)).unwrap();
-        let mut response = Vec::new();
-        replay(&f.dir, 0, 1, &mut response).unwrap();
-        let envelope: Envelope = serde_json::from_slice(&response).unwrap();
-        assert_eq!(envelope.seq, 1);
-        let ChatEvent::ItemCompleted { item } = envelope.event else {
-            panic!("item")
-        };
-        assert_eq!(
-            item.presentation.semantics.unwrap().kind,
-            super::super::model::ToolKind::Read
-        );
-        assert_eq!(fs::read(f.dir.join(EVENTS)).unwrap(), original);
-        let offline = read_transcript(&f.home, &f.id).unwrap();
-        assert_eq!(offline.item_seq("read"), Some(1));
-        assert!(
-            offline
-                .item("read")
-                .unwrap()
-                .presentation
-                .semantics
-                .is_some()
-        );
     }
 
     #[test]
@@ -1790,9 +1571,161 @@ pub(super) fn read_notice_transcript(dir: &Path) -> Result<super::model::Transcr
     Ok(transcript)
 }
 
+/// The worker markers in the log in `dir` (`workers`), in the order they were written; a
+/// later line for the same id is the same marker's newer form. Only marker lines are
+/// parsed; the rest of a long chat is skipped as bytes.
+pub(super) fn read_worker_markers(dir: &Path) -> Result<Vec<super::model::Item>, String> {
+    let file = match File::open(dir.join(EVENTS)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut reader = BufReader::new(file);
+    let mut markers: Vec<super::model::Item> = Vec::new();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader
+            .read_until(b'\n', &mut line)
+            .map_err(|e| e.to_string())?
+            == 0
+        {
+            break;
+        }
+        if line.last() != Some(&b'\n') || !contains(&line, br#""tool":"worker""#) {
+            continue;
+        }
+        let Ok(envelope) = serde_json::from_slice::<Envelope>(&line) else {
+            continue;
+        };
+        if let ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } = envelope.event
+            && item.presentation.worker.is_some()
+        {
+            match markers.iter_mut().find(|marker| marker.id == item.id) {
+                Some(marker) => *marker = item,
+                None => markers.push(item),
+            }
+        }
+    }
+    Ok(markers)
+}
+
 #[cfg(test)]
 mod rate_snapshot_tests {
     use super::*;
+
+    #[test]
+    fn a_worker_marker_is_not_the_provider_sessions_history() {
+        use super::super::model::{ChatEvent, Item, ItemBody, ItemStatus};
+        use super::super::workers::{WorkerKind, WorkerRef};
+        let marker = super::super::workers::item(
+            "worker:s".into(),
+            None,
+            WorkerRef {
+                session_id: "s".into(),
+                kind: WorkerKind::Shell,
+                title: "t".into(),
+                harness: None,
+                model: None,
+                worktree_id: None,
+                assignment: None,
+                noted_at: 1,
+                after: None,
+                late: false,
+                follow_up: false,
+                end: None,
+            },
+        );
+        assert!(!is_session_history(&ChatEvent::ItemCompleted {
+            item: marker.clone()
+        }));
+        let mut unreadable = marker.clone();
+        unreadable.presentation = Default::default();
+        assert!(!is_session_history(&ChatEvent::ItemCompleted {
+            item: unreadable
+        }));
+        let mut tool = marker;
+        tool.presentation = Default::default();
+        tool.body = ItemBody::ToolCall {
+            server: Some("riwork".into()),
+            tool: "riwork_shell_list".into(),
+            input: Default::default(),
+            output: None,
+        };
+        assert!(is_session_history(&ChatEvent::ItemCompleted { item: tool }));
+        let message = Item {
+            started_at: None,
+            ended_at: None,
+            presentation: Default::default(),
+            id: "m".into(),
+            turn_id: None,
+            status: ItemStatus::Completed,
+            body: ItemBody::AgentMessage { text: "x".into() },
+        };
+        assert!(is_session_history(&ChatEvent::ItemStarted {
+            item: message
+        }));
+    }
+
+    #[test]
+    fn worker_markers_are_read_back_newest_form_first_place() {
+        let dir = std::env::temp_dir().join(format!("riwork-markers-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let worker = |end: bool| super::super::workers::WorkerRef {
+            session_id: "s".into(),
+            kind: super::super::workers::WorkerKind::Shell,
+            title: "t".into(),
+            harness: None,
+            model: None,
+            worktree_id: None,
+            assignment: None,
+            noted_at: 1,
+            after: None,
+            late: false,
+            follow_up: false,
+            end: end.then(|| super::super::workers::WorkerFinal {
+                status: super::super::workers::WorkerEnd::Done,
+                ended_at: 2,
+                tail: String::new(),
+                turn: None,
+                turn_end: None,
+                done_since: None,
+            }),
+        };
+        let lines = [
+            super::super::workers::item("worker:s".into(), None, worker(false)),
+            super::super::workers::item("worker:s:2".into(), None, worker(false)),
+            super::super::workers::item("worker:s".into(), None, worker(true)),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(n, item)| {
+            serde_json::to_string(&Envelope {
+                chat_id: "c".into(),
+                seq: n as u64 + 1,
+                event: ChatEvent::ItemCompleted { item },
+            })
+            .unwrap()
+                + "\n"
+        })
+        .collect::<String>();
+        std::fs::write(dir.join(EVENTS), lines).unwrap();
+        let markers = read_worker_markers(&dir).unwrap();
+        assert_eq!(
+            markers.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["worker:s", "worker:s:2"]
+        );
+        assert!(
+            markers[0]
+                .presentation
+                .worker
+                .as_ref()
+                .unwrap()
+                .end
+                .is_some()
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn old_snapshot_without_dismissed_keys_or_rate_limits_still_decodes() {

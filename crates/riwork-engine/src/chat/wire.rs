@@ -48,6 +48,14 @@ pub enum Request {
     Close { id: String, chat_id: String },
     /// Stop the chat and delete its history.
     Delete { id: String, chat_id: String },
+    /// Record one of the chat's workers in its timeline (`workers::WorkerNote`). Never
+    /// starts the chat's provider. Older hosts refuse it as unreadable, which callers
+    /// treat as nothing recorded.
+    NoteWorker {
+        id: String,
+        chat_id: String,
+        note: super::workers::WorkerNote,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

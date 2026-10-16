@@ -70,7 +70,15 @@
           "failed_count": 0,
           "running": false,
           "provisional": false,
-          "elided": false
+          "elided": false,
+          "artifacts": [
+            {
+              "item_id": "break",
+              "path": {
+                "path": "a.rs"
+              }
+            }
+          ]
         },
         {
           "id": "b",

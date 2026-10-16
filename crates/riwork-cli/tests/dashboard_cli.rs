@@ -304,6 +304,7 @@ fn the_dashboard_reports_the_store_and_the_saved_chats_and_starts_nothing() {
             "attention",
             "attention_total",
             "automations",
+            "backends",
             "chats_known",
             "finished",
             "finished_total",
@@ -325,6 +326,11 @@ fn the_dashboard_reports_the_store_and_the_saved_chats_and_starts_nothing() {
         !all.iter().any(|key| key == "model" || key == "root"),
         "{all:?}"
     );
+    let backends = &dashboard["backends"];
+    assert_eq!(backends["state"], "read");
+    assert_eq!(backends["app"]["running"], 0);
+    assert_eq!(backends["chat_host"]["state"], "stopped");
+    assert!(backends["providers"].is_array());
 
     // The store's projects and tasks.
     let totals = &dashboard["totals"];

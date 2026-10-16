@@ -14,33 +14,6 @@ fn approval_modes_map_to_muse_words() {
     assert_eq!(policy(ApprovalMode::Plan), "denyUnmatched");
 }
 
-#[test]
-fn subagent_semantics_survives_role_named_tool_conversion() {
-    use crate::chat::model::ToolKind;
-    let fake = Fake::new(&[]);
-    let (sender, receiver) = mpsc::channel();
-    let mut session = Session::new(&fake.config(Provider::Muse), sender);
-    session.item(&json!({"itemId":"worker","kind":"subagent","role":"auditor","objective":"Audit contracts","result":{"summary":"Checked"},"turnId":"turn"}), true);
-    let transcript = fold(&receiver.try_iter().collect::<Vec<_>>());
-    let item = transcript
-        .items
-        .iter()
-        .find(|item| item.id == "worker")
-        .unwrap();
-    assert!(matches!(&item.body, ItemBody::ToolCall { tool, .. } if tool == "auditor"));
-    let metadata = item.presentation.semantics.as_ref().unwrap();
-    assert_eq!(metadata.kind, ToolKind::Subagent);
-    assert_eq!(
-        metadata.worker.as_ref().unwrap().role.as_deref(),
-        Some("auditor")
-    );
-    assert_eq!(
-        metadata.worker.as_ref().unwrap().objective.as_deref(),
-        Some("Audit contracts")
-    );
-    assert_eq!(metadata.worker.as_ref().unwrap().child_count, None);
-}
-
 fn choice(decision: &str, scope: &str, choice_id: &str) -> Choice {
     Choice {
         decision: decision.into(),
@@ -179,6 +152,7 @@ fn the_cua_server_is_riwork_cua_mcp_for_this_session_with_literal_values() {
         &config,
         Path::new("/Applications/RiWork.app/Contents/MacOS/riwork"),
         Some(Path::new("/opt/cua/driver")),
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -191,9 +165,15 @@ fn the_cua_server_is_riwork_cua_mcp_for_this_session_with_literal_values() {
             "mode": "required",
         }})
     );
+    // The opt-in that turns off the guard on input to RiWork's own windows, only when set.
+    let allowed = cua_servers(&config, Path::new("/x"), None, true).unwrap();
+    assert_eq!(
+        allowed["cua-driver"]["env"],
+        json!({"RIWORK_HOME": home, "RIWORK_CUA_ALLOW_RIWORK_INPUT": "1"})
+    );
     let mut bare = config.clone();
     bare.env.retain(|(name, _)| name != "RIWORK_HOME");
-    assert!(cua_servers(&bare, Path::new("/x"), None).is_none());
+    assert!(cua_servers(&bare, Path::new("/x"), None, false).is_none());
 }
 
 #[test]
@@ -1644,7 +1624,7 @@ impl Live {
         &self,
         config: DriverConfig,
     ) -> (Box<dyn Driver>, Receiver<ChatEvent>, Vec<ChatEvent>) {
-        let servers = cua_servers(&config, &self.fake_mcp, None);
+        let servers = cua_servers(&config, &self.fake_mcp, None, false);
         let (sender, events) = mpsc::channel();
         let driver =
             start_with(config, sender, servers).expect("the driver starts against real muse");
@@ -1961,4 +1941,53 @@ fn live_model_discovery_lists_models_without_creating_a_conversation() {
         .count();
     assert_eq!(sessions, 0, "no conversation was written");
     eprintln!("discovered {} Muse models without a session", models.len());
+}
+
+#[test]
+fn reported_subagent_items_keep_structured_lifecycle_and_generic_tools_do_not() {
+    let fake = Fake::new(&[]);
+    let config = fake.config(Provider::Muse);
+    let (sender, events) = mpsc::channel();
+    let mut session = Session::new(&config, sender);
+    session.item(&json!({"itemId":"child","kind":"subagent","revision":1,"role":"Reviewer","objective":"Review changes","status":"inProgress"}),false);
+    session.item(&json!({"itemId":"child","kind":"subagent","revision":2,"role":"Reviewer","objective":"Review changes","status":"completed","result":{"summary":"Reviewed"}}),true);
+    session.item(&json!({"itemId":"tool","kind":"toolCall","tool":"Reviewer","args":"{\"objective\":\"Review changes\"}","status":"completed"}),true);
+    let events: Vec<_> = events.try_iter().collect();
+    let items: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => Some(item),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        items[0].presentation.subagent.as_ref().unwrap().status,
+        super::super::subagents::RunStatus::Running
+    );
+    let done = items
+        .iter()
+        .find(|item| item.id == "child" && item.status == ItemStatus::Completed)
+        .unwrap();
+    assert_eq!(
+        done.presentation
+            .subagent
+            .as_ref()
+            .unwrap()
+            .summary
+            .as_deref(),
+        Some("Reviewed")
+    );
+    assert_eq!(
+        done.presentation.subagent.as_ref().unwrap().status,
+        super::super::subagents::RunStatus::Done
+    );
+    assert!(
+        items
+            .iter()
+            .find(|item| item.id == "tool")
+            .unwrap()
+            .presentation
+            .subagent
+            .is_none()
+    );
 }

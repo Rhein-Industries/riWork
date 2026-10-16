@@ -444,9 +444,32 @@ pub fn summary(text: &str, attachments: &[Attachment]) -> String {
         if !text.is_empty() {
             text.push('\n');
         }
-        text.push_str(&format!("[Attached: {} ({} bytes)]", a.name, a.bytes));
+        text.push_str(&summary_line(a));
     }
     text
+}
+
+/// What the user typed, from the `summary` of it a chat logged with `attachments`: a reader
+/// that draws the attachments itself shows this beside them. `None` when `shown` is not
+/// exactly that summary, so the reader shows it whole.
+pub fn typed<'a>(shown: &'a str, attachments: &[Attachment]) -> Option<&'a str> {
+    let mut rest = shown;
+    for (at, a) in attachments.iter().enumerate().rev() {
+        let line = summary_line(a);
+        if at == 0 && rest == line {
+            return Some("");
+        }
+        // A line follows text before it on a line of its own; that text is never empty.
+        rest = rest.strip_suffix(line.as_str())?.strip_suffix('\n')?;
+        if rest.is_empty() {
+            return None;
+        }
+    }
+    Some(rest)
+}
+
+fn summary_line(a: &Attachment) -> String {
+    format!("[Attached: {} ({} bytes)]", a.name, a.bytes)
 }
 
 #[cfg(test)]

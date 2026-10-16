@@ -16,8 +16,9 @@ use std::{
 };
 use uuid::Uuid;
 
-use crate::session_keys::tmux_argument;
+use crate::{delegation::Delegation, session_keys::tmux_argument};
 
+mod orphans;
 mod sample;
 pub use sample::SessionSample;
 mod watch;
@@ -25,6 +26,14 @@ pub use watch::{PaneWatch, Woke};
 
 const HISTORY_LINES: usize = 100_000;
 const ORCHESTRATOR_SKILL: &str = include_str!("../skills/riwork-orchestrator/SKILL.md");
+/// The skill's Hard boundaries in brief, in every orchestrator startup and LOAD SKILL
+/// message, so a fresh or reloaded orchestrator hears them even before it reads the skill.
+pub(crate) const ORCHESTRATOR_BOUNDARIES: &str = "Hard boundaries (the skill's first section; they bind \
+    you for the whole session, after any context compaction too): never click, type or send \
+    any other input to your own or any live orchestrator window; never live-test close, kill, \
+    nuke, delete, update or restart against real project state, even if you would cancel; \
+    verify only by reading evidence from isolated runs, else mark it unverified; restart or \
+    update nothing that can interrupt sessions without the user's approval this turn naming it.";
 /// Additive session guidance shared by the supported coding harnesses.
 const CUA_GUIDANCE: &str = "RiWork provides Cua.ai Driver through the cua-driver MCP server. \
     Use this server for desktop screenshots, application inspection, and desktop interaction. \
@@ -33,6 +42,8 @@ const CUA_GUIDANCE: &str = "RiWork provides Cua.ai Driver through the cua-driver
     or reports missing macOS permissions, explain the reported problem and direct the user \
     to RiWork's Cua setup; do not silently switch to another computer-use provider. \
     Read the driver's tool descriptions and current state before interacting. \
+    RiWork's server refuses input to RiWork's own live windows and, while RiWork runs, \
+    input that names no target app, so pass the target's `pid` on every input call. \
     These instructions choose a desktop automation provider; they do not authorize new \
     tasks or change the user's permission policy.";
 
@@ -105,6 +116,10 @@ pub struct ShellSession {
     pub orchestrator_skill_loaded: bool,
     #[serde(default)]
     pub orchestrator_skill_version: Option<String>,
+    /// `orchestrator_delegation_version` of the policy it was told with the skill; none
+    /// from a build before it was recorded.
+    #[serde(default)]
+    pub orchestrator_delegation_version: Option<String>,
     #[serde(default)]
     pub orchestrator_project_root: Option<PathBuf>,
     pub created_at_unix: u64,
@@ -117,6 +132,26 @@ impl ShellSession {
     pub fn is_worker(&self) -> bool {
         self.kind != ShellKind::Orchestrator && (self.parent_id.is_some() || !self.user_opened)
     }
+}
+
+/// The saved record of shell `id` under `home`, without asking tmux: what the chat host
+/// checks a worker note against.
+pub fn registered_shell(home: &Path, id: &str) -> Result<ShellSession, String> {
+    validate_uuid(id)?;
+    let path = home.join("sessions.json");
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!("unknown shell {id}"));
+        }
+        Err(error) => return Err(format!("read {}: {error}", path.display())),
+    };
+    parse_registry(&bytes)
+        .map_err(|error| format!("parse {}: {error}", path.display()))?
+        .sessions
+        .into_iter()
+        .find(|session| session.id == id)
+        .ok_or_else(|| format!("unknown shell {id}"))
 }
 
 fn user_shell_caller() -> bool {
@@ -398,6 +433,7 @@ impl SessionManager {
             .transpose()?;
         let id = Uuid::new_v4().to_string();
         let default_codex = command.is_none();
+        let delegation = crate::orchestrators::delegation(&self.home, project_id.as_deref());
         let unrestricted = default_codex && project_id.is_some();
         let binding = if default_codex {
             Some(selected_codex_binding(&self.home, project_id.as_deref())?)
@@ -430,6 +466,7 @@ impl SessionManager {
                 &executable,
                 project_id.as_deref(),
                 project_root.as_deref(),
+                &delegation,
                 &id,
                 binding.as_ref().map(|binding| binding.home.as_path()),
                 crate::settings::agent_inline_mode(&self.home),
@@ -455,6 +492,8 @@ impl SessionManager {
             session.harness = Some(HarnessKind::Codex);
             session.orchestrator_skill_loaded = true;
             session.orchestrator_skill_version = Some(orchestrator_skill_version());
+            session.orchestrator_delegation_version =
+                Some(orchestrator_delegation_version(&delegation));
         }
         registry.sessions.push(session.clone());
         if let Err(error) = self.write_registry(&registry) {
@@ -550,10 +589,13 @@ impl SessionManager {
         result.map(|()| path)
     }
 
+    /// Whether the orchestrator has the skill this build ships and the delegation policy
+    /// its scope resolves to now (`orchestrators::delegation`): what LOAD SKILL brings.
     pub fn orchestrator_skill_is_current(&self, session: &ShellSession) -> bool {
-        session.orchestrator_skill_loaded
-            && session.orchestrator_skill_version.as_deref()
-                == Some(orchestrator_skill_version().as_str())
+        orchestrator_skill_is_current_with(
+            session,
+            &crate::orchestrators::delegation(&self.home, session.project_id.as_deref()),
+        )
     }
 
     /// Explicitly load the skill into an existing Codex singleton. This is
@@ -574,7 +616,9 @@ impl SessionManager {
             return Err(format!("shell {id} has exited"));
         }
         session.alive = true;
-        if self.orchestrator_skill_is_current(session) {
+        let delegation =
+            crate::orchestrators::delegation(&self.home, session.project_id.as_deref());
+        if orchestrator_skill_is_current_with(session, &delegation) {
             return Ok(session.clone());
         }
         let output = self.tmux_checked(&[
@@ -604,11 +648,14 @@ impl SessionManager {
                 &executable,
                 session.project_id.as_deref(),
                 session.orchestrator_project_root.as_deref(),
+                &delegation,
                 true,
             ),
         )?;
         session.orchestrator_skill_loaded = true;
         session.orchestrator_skill_version = Some(orchestrator_skill_version());
+        session.orchestrator_delegation_version =
+            Some(orchestrator_delegation_version(&delegation));
         session.harness = Some(HarnessKind::Codex);
         let session = session.clone();
         self.write_registry(&registry)?;
@@ -1137,6 +1184,16 @@ impl SessionManager {
     pub fn capture(&self, id: &str, lines: usize) -> Result<String, String> {
         self.require_live(id)?;
         self.capture_text(id, lines, false)
+    }
+
+    /// Capture a shell from a successful live sample without another liveness query.
+    /// A pane that exits after sampling returns the normal tmux error.
+    pub fn capture_sampled(&self, shell: &ShellSession, lines: usize) -> Result<String, String> {
+        validate_uuid(&shell.id)?;
+        if !shell.alive {
+            return Err("Shell has exited".into());
+        }
+        self.capture_text(&shell.id, lines, false)
     }
 
     /// The scrollback capture of a shell known to be live. `styled` keeps the
@@ -1978,7 +2035,7 @@ impl SessionManager {
 
     /// Called wherever this process changes sessions, so the next `sample` reads
     /// tmux again instead of showing the old state for the rest of its TTL.
-    fn invalidate_sample(&self) {
+    pub fn invalidate_sample(&self) {
         sample::cache_for(&self.socket_name).invalidate();
     }
 
@@ -2279,6 +2336,13 @@ impl SessionManager {
             args.push("-e".to_owned());
             args.push(format!("RIWORK_CUA_DRIVER={}", driver.to_string_lossy()));
         }
+        // So is the opt-in that turns off the Cua guard on input to RiWork's own windows:
+        // it must come from this launch, never linger in the server from an earlier one.
+        let allow_riwork_input = crate::cua::riwork_input_allowed();
+        if allow_riwork_input {
+            args.push("-e".to_owned());
+            args.push(format!("{}=1", crate::cua::ALLOW_RIWORK_INPUT));
+        }
         // The tmux server does not inherit this client's environment, so Grok's
         // timeout has to be named on the pane. A value the user already set is
         // forwarded unchanged.
@@ -2308,6 +2372,9 @@ impl SessionManager {
         let mut absent = stale_profile_variables(&profile_locations);
         if cua_driver.is_none() {
             absent.push("RIWORK_CUA_DRIVER");
+        }
+        if !allow_riwork_input {
+            absent.push(crate::cua::ALLOW_RIWORK_INPUT);
         }
         // A server that a chat's agent started must not hand that chat's id to
         // every pane (`riwork handoff` reads it to tell whose conversation it is).
@@ -2390,6 +2457,7 @@ impl SessionManager {
             codex_home: binding.map(|binding| binding.home),
             orchestrator_skill_loaded: false,
             orchestrator_skill_version: None,
+            orchestrator_delegation_version: None,
             orchestrator_project_root: None,
             created_at_unix,
             alive: true,
@@ -3503,16 +3571,20 @@ pub(crate) fn cua_harness_arguments(
         executable,
         state_home,
         crate::cua::driver_override_for_harness().as_deref(),
+        crate::cua::riwork_input_allowed(),
     )
 }
 
 /// The harnesses filter their MCP servers' environments, so a custom driver
-/// that the launcher accepted reaches `riwork cua mcp` only if named here.
+/// that the launcher accepted reaches `riwork cua mcp` only if named here, and so
+/// does `RIWORK_CUA_ALLOW_RIWORK_INPUT=1` when the launch has it (`allow_riwork_input`),
+/// which turns off the proxy's guard on input to RiWork's own windows.
 fn cua_harness_arguments_with(
     harness: HarnessKind,
     executable: &Path,
     state_home: &Path,
     custom_driver: Option<&Path>,
+    allow_riwork_input: bool,
 ) -> Vec<String> {
     match harness {
         HarnessKind::Codex => {
@@ -3533,6 +3605,12 @@ fn cua_harness_arguments_with(
                     toml_string(&driver.to_string_lossy())
                 ));
             }
+            if allow_riwork_input {
+                overrides.push(format!(
+                    "mcp_servers.cua-driver.env.{}=\"1\"",
+                    crate::cua::ALLOW_RIWORK_INPUT
+                ));
+            }
             overrides.extend([
                 "mcp_servers.cua-driver.enabled=true".to_owned(),
                 "mcp_servers.cua-driver.required=true".to_owned(),
@@ -3549,6 +3627,9 @@ fn cua_harness_arguments_with(
                 serde_json::json!({ "RIWORK_HOME": state_home.to_string_lossy() });
             if let Some(driver) = custom_driver {
                 environment["RIWORK_CUA_DRIVER"] = driver.to_string_lossy().into();
+            }
+            if allow_riwork_input {
+                environment[crate::cua::ALLOW_RIWORK_INPUT] = "1".into();
             }
             let config = serde_json::json!({
                 "mcpServers": {
@@ -3569,7 +3650,7 @@ fn cua_harness_arguments_with(
         }
         HarnessKind::Grok => vec![
             "--agent".to_owned(),
-            grok_agent_path(state_home, executable, custom_driver)
+            grok_agent_path(state_home, executable, custom_driver, allow_riwork_input)
                 .to_string_lossy()
                 .into_owned(),
         ],
@@ -3585,6 +3666,10 @@ fn cua_harness_arguments_with(
             if custom_driver.is_some() {
                 environment["RIWORK_CUA_DRIVER"] = "${RIWORK_CUA_DRIVER}".into();
             }
+            if allow_riwork_input {
+                environment[crate::cua::ALLOW_RIWORK_INPUT] =
+                    format!("${{{}}}", crate::cua::ALLOW_RIWORK_INPUT).into();
+            }
             let server = serde_json::json!({
                 "command": executable.to_string_lossy(),
                 "args": ["cua", "mcp"],
@@ -3595,12 +3680,22 @@ fn cua_harness_arguments_with(
     }
 }
 
-/// Launches with different custom drivers must not overwrite one another's definition.
-fn grok_agent_path(state_home: &Path, executable: &Path, custom_driver: Option<&Path>) -> PathBuf {
+/// Launches with different custom drivers, or with and without the guard on input to
+/// RiWork's windows, must not overwrite one another's definition.
+fn grok_agent_path(
+    state_home: &Path,
+    executable: &Path,
+    custom_driver: Option<&Path>,
+    allow_riwork_input: bool,
+) -> PathBuf {
     let mut identity = executable.to_string_lossy().into_owned();
     if let Some(driver) = custom_driver {
         identity.push('\0');
         identity.push_str(&driver.to_string_lossy());
+    }
+    if allow_riwork_input {
+        identity.push('\0');
+        identity.push_str(crate::cua::ALLOW_RIWORK_INPUT);
     }
     state_home.join(format!(
         "cua/grok-agent-{:016x}.md",
@@ -3620,8 +3715,9 @@ fn grok_agent_definition(
     executable: &Path,
     state_home: &Path,
     custom_driver: Option<&Path>,
+    allow_riwork_input: bool,
 ) -> String {
-    let custom_driver = custom_driver
+    let mut custom_driver = custom_driver
         .map(|driver| {
             format!(
                 "      RIWORK_CUA_DRIVER: {}\n",
@@ -3629,6 +3725,12 @@ fn grok_agent_definition(
             )
         })
         .unwrap_or_default();
+    if allow_riwork_input {
+        custom_driver.push_str(&format!(
+            "      {}: \"1\"\n",
+            crate::cua::ALLOW_RIWORK_INPUT
+        ));
+    }
     format!(
         concat!(
             "---\n",
@@ -3715,6 +3817,7 @@ fn ensure_grok_agent(state_home: &Path, executable: &Path) -> Result<(), String>
         state_home,
         executable,
         crate::cua::driver_override_for_harness().as_deref(),
+        crate::cua::riwork_input_allowed(),
         &|path, content| fs::write(path, content),
         GROK_AGENT_MAX_AGE,
     )
@@ -3730,14 +3833,15 @@ fn ensure_grok_agent_with(
     state_home: &Path,
     executable: &Path,
     custom_driver: Option<&Path>,
+    allow_riwork_input: bool,
     write: &dyn Fn(&Path, &str) -> std::io::Result<()>,
     max_age: Duration,
 ) -> Result<(), String> {
-    let path = grok_agent_path(state_home, executable, custom_driver);
+    let path = grok_agent_path(state_home, executable, custom_driver, allow_riwork_input);
     let directory = path.parent().expect("Grok agent has a parent directory");
     fs::create_dir_all(directory)
         .map_err(|error| format!("create Grok Cua agent directory: {error}"))?;
-    let content = grok_agent_definition(executable, state_home, custom_driver);
+    let content = grok_agent_definition(executable, state_home, custom_driver, allow_riwork_input);
     if fs::read_to_string(&path).ok().as_deref() == Some(&content) {
         touch(&path);
     } else {
@@ -4010,6 +4114,18 @@ impl PaneTable {
             .collect()
     }
 
+    /// The process of each live shell's owned pane (window 0, pane 0): what a harness shell
+    /// `exec`s its agent into, so its start time is the agent's.
+    fn owned_processes(&self, live: &HashSet<&str>) -> BTreeMap<String, u32> {
+        self.rows
+            .iter()
+            .filter(|row| {
+                live.contains(row.session.as_str()) && row.window == "0" && row.pane == "0"
+            })
+            .filter_map(|row| Some((row.session.clone(), row.pid?)))
+            .collect()
+    }
+
     /// The process each live shell's pane runs. A session with several panes
     /// reports the last one listed.
     fn roots(&self, live: &HashSet<&str>) -> BTreeMap<String, u32> {
@@ -4098,6 +4214,41 @@ pub fn orchestrator_skill_version() -> String {
     format!("{:016x}", stable_hash(ORCHESTRATOR_SKILL.as_bytes()))
 }
 
+/// The delegation policy an orchestrator was told, as recorded beside its skill version:
+/// it changes with any resolved value.
+pub fn orchestrator_delegation_version(delegation: &Delegation) -> String {
+    let resolved = serde_json::json!([
+        delegation.spread_work,
+        delegation.parallel_shells,
+        delegation.design,
+        delegation.workhorse,
+    ]);
+    format!("{:016x}", stable_hash(resolved.to_string().as_bytes()))
+}
+
+/// Whether an orchestrator recorded as told `skill` and `delegation` (their versions) has
+/// this build's skill and `policy`, its scope's now. One recorded without the policy, by
+/// an older build, is not: what it was told cannot be known, and LOAD SKILL tells it again.
+pub(crate) fn orchestrator_told(
+    skill: Option<&str>,
+    delegation: Option<&str>,
+    policy: &Delegation,
+) -> bool {
+    skill == Some(orchestrator_skill_version().as_str())
+        && delegation == Some(orchestrator_delegation_version(policy).as_str())
+}
+
+/// `SessionManager::orchestrator_skill_is_current` with its scope's policy given, for a
+/// caller that holds Settings and the store already (a window, as it draws).
+pub fn orchestrator_skill_is_current_with(session: &ShellSession, policy: &Delegation) -> bool {
+    session.orchestrator_skill_loaded
+        && orchestrator_told(
+            session.orchestrator_skill_version.as_deref(),
+            session.orchestrator_delegation_version.as_deref(),
+            policy,
+        )
+}
+
 fn matches_orchestrator_scope(session: &ShellSession, project_id: Option<&str>) -> bool {
     session.kind == ShellKind::Orchestrator && session.project_id.as_deref() == project_id
 }
@@ -4135,7 +4286,11 @@ fn without_project_environment(command: &str, shell: &Path) -> String {
 }
 
 /// The message an orchestrator is started with (a terminal's launch command, a
-/// chat's first message) and that LOAD SKILL gives a running one.
+/// chat's first message) and that LOAD SKILL gives a running one. Beside its scope it
+/// carries `delegation`, the policy its scope resolves to now
+/// (`orchestrators::delegation`), in one sentence; a running orchestrator hears of a
+/// later change only through LOAD SKILL or when it is created again. It also restates
+/// the skill's Hard boundaries in brief (`ORCHESTRATOR_BOUNDARIES`), whichever way it goes.
 ///
 /// `inline_skill` puts the whole skill in the message, which suits a message
 /// pasted into a running pane or sent to a chat. A launch must not: the message
@@ -4146,6 +4301,7 @@ pub(crate) fn orchestrator_prompt(
     executable: &Path,
     project_id: Option<&str>,
     project_root: Option<&Path>,
+    delegation: &Delegation,
     inline_skill: bool,
 ) -> String {
     let scope = match project_id {
@@ -4184,15 +4340,37 @@ pub(crate) fn orchestrator_prompt(
          {load} \
          Its installed source is {}. The installed RiWork CLI is {}: use this executable \
          for `riwork` commands if PATH does not resolve it, and retain RIWORK_HOME. \
-         {} \
+         {} {} \
          This startup message only loads the skill. Do not inspect projects, create tasks, \
          modify repositories, delegate work, submit input to other harnesses, or create schedules. \
          After loading, briefly acknowledge readiness and wait for the user's objective.\n\n\
+         {ORCHESTRATOR_BOUNDARIES}\n\n\
          {skill}{}",
         quote_arg(&skill_path.to_string_lossy()),
         quote_arg(&executable.to_string_lossy()),
         scope,
+        delegation_brief(delegation, project_id.is_some()),
         CUA_GUIDANCE
+    )
+}
+
+/// The delegation policy of an orchestrator's scope as its startup message states it:
+/// one sentence of resolved values, which the skill's Fan out and relay section
+/// explains.
+fn delegation_brief(policy: &Delegation, project: bool) -> String {
+    let source = if project {
+        "this project's override, else Settings, else RiWork's default"
+    } else {
+        "Settings, else RiWork's default"
+    };
+    format!(
+        "Delegation policy for this scope ({source}, as they stood when this message was written): \
+         spread work {}; about {} parallel worker shells; design work on {}; workhorse work on {}. \
+         Apply it as the skill's Fan out and relay section says.",
+        if policy.spread_work { "on" } else { "off" },
+        policy.parallel_shells,
+        policy.design.describe(),
+        policy.workhorse.describe(),
     )
 }
 
@@ -4204,6 +4382,7 @@ fn orchestrator_command(
     executable: &Path,
     project_id: Option<&str>,
     project_root: Option<&Path>,
+    delegation: &Delegation,
     shell_id: &str,
     codex_home: Option<&Path>,
     inline: bool,
@@ -4244,6 +4423,7 @@ fn orchestrator_command(
         executable,
         project_id,
         project_root,
+        delegation,
         false,
     ));
     let command = format!(
@@ -4319,28 +4499,46 @@ fn effective_path() -> std::ffi::OsString {
     env::join_paths(executable_dirs()).unwrap_or_else(|_| env::var_os("PATH").unwrap_or_default())
 }
 
+/// The runtime PATH a standalone harness gets, including version-manager runtimes
+/// from the login shell. Unlike a normal chat launch, this adds no RiWork Cua shims.
+pub(crate) fn unmanaged_harness_path() -> Result<std::ffi::OsString, String> {
+    joined_harness_path(login_shell_dirs().iter().cloned().chain(executable_dirs()))
+}
+
+fn joined_harness_path(
+    directories: impl IntoIterator<Item = PathBuf>,
+) -> Result<std::ffi::OsString, String> {
+    let mut unique = Vec::new();
+    for directory in directories {
+        if !unique.contains(&directory) {
+            unique.push(directory);
+        }
+    }
+    env::join_paths(unique).map_err(|error| format!("construct RiWork harness PATH: {error}"))
+}
+
 /// The RiWork shim directory comes first, then the login shell's directories in
 /// the user's order, then this process's own.
 fn path_with_harness_shims(
     shim_directory: &Path,
     login_directories: &[PathBuf],
 ) -> Result<std::ffi::OsString, String> {
-    let mut directories = vec![shim_directory.to_path_buf()];
-    for directory in login_directories.iter().cloned().chain(executable_dirs()) {
-        if !directories.contains(&directory) {
-            directories.push(directory);
-        }
-    }
-    env::join_paths(directories).map_err(|error| format!("construct RiWork harness PATH: {error}"))
+    joined_harness_path(
+        std::iter::once(shim_directory.to_path_buf())
+            .chain(login_directories.iter().cloned())
+            .chain(executable_dirs()),
+    )
 }
+
+/// The login shell's directories, once this process asked for them.
+static LOGIN_SHELL_DIRECTORIES: OnceLock<Vec<PathBuf>> = OnceLock::new();
 
 /// A GUI launched from the Dock or Finder has launchd's minimal PATH, so CLIs
 /// that nvm, pnpm, bun, pyenv and similar tools install are invisible to it.
 /// The directories of the user's login shell are resolved once per process, and
 /// only when something needs them.
 fn login_shell_dirs() -> &'static [PathBuf] {
-    static DIRECTORIES: OnceLock<Vec<PathBuf>> = OnceLock::new();
-    DIRECTORIES.get_or_init(|| {
+    LOGIN_SHELL_DIRECTORIES.get_or_init(|| {
         // Unit tests must not depend on the developer's shell configuration.
         if cfg!(test) {
             return Vec::new();
@@ -4543,6 +4741,33 @@ pub(crate) fn find_grok_program() -> Option<PathBuf> {
         HarnessKind::Grok,
         Path::new("/nonexistent/riwork-harness-bin"),
     )
+}
+
+/// Where a launch looked for a CLI, as far as a look that starts nothing can tell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProgramLookup {
+    Found(PathBuf),
+    /// Not in any directory a launch searches.
+    Missing,
+    /// Not in this process's PATH or the usual install directories, and the login shell's
+    /// directories, where a launch would look last, were never read by this process.
+    Unknown,
+}
+
+/// The CLI a launch of `harness` would run, found without starting anything: the
+/// directories `find_harness_program` searches, the login shell's only when this process
+/// has already read them (the GUI does at startup; asking the shell starts a process).
+/// RiWork's own launcher shims are skipped by their marker wherever they live.
+pub fn installed_harness_program(harness: HarnessKind) -> ProgramLookup {
+    let shims = Path::new("/nonexistent/riwork-harness-bin");
+    if let Some(program) = find_harness_program_in(harness, shims, executable_dirs()) {
+        return ProgramLookup::Found(program);
+    }
+    match LOGIN_SHELL_DIRECTORIES.get() {
+        Some(login) => find_harness_program_in(harness, shims, login.iter().cloned())
+            .map_or(ProgramLookup::Missing, ProgramLookup::Found),
+        None => ProgramLookup::Unknown,
+    }
 }
 
 fn find_harness_program_via(
@@ -7420,7 +7645,7 @@ mod tests {
         let key = "mcp_servers.cua-driver.env.RIWORK_CUA_DRIVER=";
         let codex = |custom: Option<&Path>| {
             let arguments =
-                cua_harness_arguments_with(HarnessKind::Codex, executable, home, custom);
+                cua_harness_arguments_with(HarnessKind::Codex, executable, home, custom, false);
             arguments
                 .windows(2)
                 .filter(|pair| pair[0] == "-c")
@@ -7434,7 +7659,7 @@ mod tests {
 
         let claude = |custom: Option<&Path>| {
             let arguments =
-                cua_harness_arguments_with(HarnessKind::Claude, executable, home, custom);
+                cua_harness_arguments_with(HarnessKind::Claude, executable, home, custom, false);
             let index = arguments
                 .iter()
                 .position(|arg| arg == "--mcp-config")
@@ -7452,21 +7677,81 @@ mod tests {
         );
         assert!(claude(None).get("RIWORK_CUA_DRIVER").is_none());
 
-        let with_driver = grok_agent_definition(executable, home, Some(driver));
+        let with_driver = grok_agent_definition(executable, home, Some(driver), false);
         assert!(with_driver.contains(&format!(
             "      RIWORK_HOME: {}\n      RIWORK_CUA_DRIVER: {}\n---\n",
             toml_string(&home.to_string_lossy()),
             toml_string(&driver.to_string_lossy())
         )));
-        assert!(!grok_agent_definition(executable, home, None).contains("RIWORK_CUA_DRIVER"));
+        assert!(
+            !grok_agent_definition(executable, home, None, false).contains("RIWORK_CUA_DRIVER")
+        );
         // Launches with different drivers keep separate agent definitions.
         assert_ne!(
-            grok_agent_path(home, executable, Some(driver)),
-            grok_agent_path(home, executable, None)
+            grok_agent_path(home, executable, Some(driver), false),
+            grok_agent_path(home, executable, None, false)
         );
         assert_eq!(
-            cua_harness_arguments_with(HarnessKind::Grok, executable, home, Some(driver))[1],
-            grok_agent_path(home, executable, Some(driver)).to_string_lossy()
+            cua_harness_arguments_with(HarnessKind::Grok, executable, home, Some(driver), false)[1],
+            grok_agent_path(home, executable, Some(driver), false).to_string_lossy()
+        );
+    }
+
+    /// `RIWORK_CUA_ALLOW_RIWORK_INPUT=1` at launch, and only then, reaches each harness's
+    /// `riwork cua mcp`, whose environment the harness filters: it is the one way to turn the
+    /// proxy's guard on input to RiWork's own windows off for a session.
+    #[test]
+    fn the_riwork_input_opt_in_reaches_every_harness_mcp_server_only_when_set() {
+        let executable = Path::new("/Applications/RiWork/riwork");
+        let home = Path::new("/Users/test/RiWork State");
+        let key = "mcp_servers.cua-driver.env.RIWORK_CUA_ALLOW_RIWORK_INPUT=";
+        let codex = |allow: bool| {
+            cua_harness_arguments_with(HarnessKind::Codex, executable, home, None, allow)
+                .windows(2)
+                .filter(|pair| pair[0] == "-c")
+                .find_map(|pair| pair[1].strip_prefix(key).map(str::to_owned))
+        };
+        assert_eq!(codex(true).as_deref(), Some("\"1\""));
+        assert_eq!(codex(false), None);
+
+        let server_env = |harness: HarnessKind, allow: bool, flag: &str| {
+            let arguments = cua_harness_arguments_with(harness, executable, home, None, allow);
+            let index = arguments.iter().position(|arg| arg == flag).unwrap();
+            let value = &arguments[index + 1];
+            let json = value
+                .strip_prefix("mcpServers.cua-driver=")
+                .unwrap_or(value);
+            let config: serde_json::Value = serde_json::from_str(json).unwrap();
+            config
+                .pointer("/mcpServers/cua-driver/env")
+                .or_else(|| config.get("env"))
+                .cloned()
+                .unwrap()
+        };
+        let claude = server_env(HarnessKind::Claude, true, "--mcp-config");
+        assert_eq!(claude["RIWORK_CUA_ALLOW_RIWORK_INPUT"], "1");
+        let claude = server_env(HarnessKind::Claude, false, "--mcp-config");
+        assert!(claude.get("RIWORK_CUA_ALLOW_RIWORK_INPUT").is_none());
+        // Muse takes `${VAR}` references to its own environment only.
+        let muse = server_env(HarnessKind::Muse, true, "-c");
+        assert_eq!(
+            muse["RIWORK_CUA_ALLOW_RIWORK_INPUT"],
+            "${RIWORK_CUA_ALLOW_RIWORK_INPUT}"
+        );
+        let muse = server_env(HarnessKind::Muse, false, "-c");
+        assert!(muse.get("RIWORK_CUA_ALLOW_RIWORK_INPUT").is_none());
+
+        assert!(
+            grok_agent_definition(executable, home, None, true)
+                .contains("      RIWORK_CUA_ALLOW_RIWORK_INPUT: \"1\"\n---\n")
+        );
+        assert!(
+            !grok_agent_definition(executable, home, None, false)
+                .contains("RIWORK_CUA_ALLOW_RIWORK_INPUT")
+        );
+        assert_ne!(
+            grok_agent_path(home, executable, None, true),
+            grok_agent_path(home, executable, None, false)
         );
     }
 
@@ -7655,7 +7940,8 @@ mod tests {
                 grok_agent_path(
                     home,
                     executable,
-                    crate::cua::driver_override_for_harness().as_deref()
+                    crate::cua::driver_override_for_harness().as_deref(),
+                    crate::cua::riwork_input_allowed(),
                 )
                 .to_string_lossy()
             );
@@ -7664,7 +7950,7 @@ mod tests {
                 unrestricted
             );
         }
-        let definition = grok_agent_definition(executable, home, None);
+        let definition = grok_agent_definition(executable, home, None, false);
         assert!(definition.contains("mcpServers:\n  - name: cua-driver\n"));
         assert!(definition.contains(&format!(
             "    command: {}\n",
@@ -8431,6 +8717,7 @@ else:
                 Path::new("/bin/riwork"),
                 None,
                 None,
+                &Delegation::built_in(),
                 "pane",
                 None,
                 false,
@@ -8509,6 +8796,7 @@ else:
             executable,
             None,
             None,
+            &Delegation::built_in(),
             "global-orchestrator-pane",
             None,
             false,
@@ -8530,16 +8818,30 @@ else:
         assert!(!prompt.contains("<riwork-orchestrator-skill>"));
         assert!(prompt.contains("read its installed SKILL.md in full"));
         assert!(prompt.contains(CUA_GUIDANCE));
+        assert!(prompt.contains(ORCHESTRATOR_BOUNDARIES));
         assert!(prompt.contains("wait for the user's objective"));
         assert!(prompt.contains(&quote_arg(&skill.to_string_lossy())));
         assert!(prompt.contains(&quote_arg(&executable.to_string_lossy())));
         assert!(prompt.contains("Scope: global."));
         assert!(prompt.contains("You have no project or worktree ownership."));
-        // A pane that is already running receives the skill itself, by paste.
-        let pasted = orchestrator_prompt(&skill, executable, None, None, true);
+        assert!(prompt.contains(
+            "Delegation policy for this scope (Settings, else RiWork's default, as they stood \
+             when this message was written): spread work on; about 4 parallel worker shells; \
+             design work on claude, model opus; workhorse work on codex, model gpt-6.1-sol. \
+             Apply it as the skill's Fan out and relay section says."
+        ));
+        // A pane that is already running receives the skill itself, by paste, with the
+        // policy as it resolves now.
+        let policy = Delegation {
+            parallel_shells: 7,
+            ..Delegation::built_in()
+        };
+        let pasted = orchestrator_prompt(&skill, executable, None, None, &policy, true);
         assert!(pasted.contains(ORCHESTRATOR_SKILL));
         assert!(pasted.contains("<riwork-orchestrator-skill>"));
         assert!(pasted.contains(CUA_GUIDANCE));
+        assert!(pasted.contains(ORCHESTRATOR_BOUNDARIES));
+        assert!(pasted.contains("about 7 parallel worker shells"));
     }
 
     /// A terminal orchestrator started with an older skill is offered LOAD SKILL, and what
@@ -8558,6 +8860,8 @@ else:
             let mut session = scope_session(ShellKind::Orchestrator, scope);
             session.orchestrator_skill_loaded = true;
             session.orchestrator_skill_version = Some(older.clone());
+            session.orchestrator_delegation_version =
+                Some(orchestrator_delegation_version(&Delegation::built_in()));
             assert!(!manager.orchestrator_skill_is_current(&session));
             session.orchestrator_skill_version = Some(orchestrator_skill_version());
             assert!(manager.orchestrator_skill_is_current(&session));
@@ -8570,6 +8874,7 @@ else:
                 Path::new("/bin/riwork"),
                 scope,
                 scope.map(|_| root),
+                &Delegation::built_in(),
                 true,
             );
             assert!(pasted.contains(ORCHESTRATOR_SKILL));
@@ -8582,6 +8887,67 @@ else:
             }
         }
         manager.kill_server();
+    }
+
+    /// A terminal orchestrator told the skill this build ships is out of date when its
+    /// scope's delegation policy changes, or when an older build recorded no policy, so
+    /// LOAD SKILL (which returns early only for a current one) tells it the policy now.
+    #[test]
+    fn a_terminal_orchestrator_is_out_of_date_when_its_policy_changes() {
+        let home = std::env::temp_dir().join(format!("riwork-skill-policy-{}", Uuid::new_v4()));
+        let manager = SessionManager::at(home.clone()).unwrap();
+        let store = crate::store::Store::open(&home).unwrap();
+        let root = home.join("project");
+        fs::create_dir_all(&root).unwrap();
+        let project = store.add_project(&root, Some("Project")).unwrap();
+        let settings = crate::settings::SettingsStore::open(&home).unwrap();
+        for scope in [None, Some(project.id.as_str())] {
+            let mut session = scope_session(ShellKind::Orchestrator, scope);
+            session.orchestrator_skill_loaded = true;
+            session.orchestrator_skill_version = Some(orchestrator_skill_version());
+            session.orchestrator_delegation_version = Some(orchestrator_delegation_version(
+                &crate::orchestrators::delegation(&home, scope),
+            ));
+            assert!(manager.orchestrator_skill_is_current(&session));
+            // An older build's record says nothing of the policy.
+            let older = ShellSession {
+                orchestrator_delegation_version: None,
+                ..session.clone()
+            };
+            assert!(!manager.orchestrator_skill_is_current(&older));
+            // Settings change for every scope; a project's own choice for its own.
+            settings
+                .update(|settings| {
+                    let shells = settings.delegation_policy.parallel_shells.unwrap_or(4);
+                    settings
+                        .delegation_policy
+                        .set_parallel_shells(Some(shells + 1));
+                })
+                .unwrap();
+            assert!(!manager.orchestrator_skill_is_current(&session));
+            let now = crate::orchestrators::delegation(&home, scope);
+            assert!(orchestrator_skill_is_current_with(
+                &ShellSession {
+                    orchestrator_delegation_version: Some(orchestrator_delegation_version(&now)),
+                    ..session.clone()
+                },
+                &now
+            ));
+        }
+        let mut session = scope_session(ShellKind::Orchestrator, Some(&project.id));
+        session.orchestrator_skill_loaded = true;
+        session.orchestrator_skill_version = Some(orchestrator_skill_version());
+        session.orchestrator_delegation_version = Some(orchestrator_delegation_version(
+            &crate::orchestrators::delegation(&home, Some(&project.id)),
+        ));
+        store
+            .set_project_delegation_policy(&project.id, |policy| {
+                policy.set_spread_work(Some(false))
+            })
+            .unwrap();
+        assert!(!manager.orchestrator_skill_is_current(&session));
+        manager.kill_server();
+        let _ = fs::remove_dir_all(home);
     }
 
     /// Both scopes read the delegation mandate before their own sections: an orchestrator
@@ -8614,6 +8980,138 @@ else:
                 ORCHESTRATOR_SKILL.contains(needle),
                 "the skill lacks {needle:?}"
             );
+        }
+    }
+
+    /// Both scopes read, after the mandate, how to spread work by their delegation policy and
+    /// how status travels down and up the chain, through the transports RiWork already has.
+    #[test]
+    fn the_embedded_skill_fans_work_out_and_relays_through_the_chain() {
+        let mandate = ORCHESTRATOR_SKILL
+            .find("## Delegate; do not implement")
+            .unwrap();
+        let fan_out = ORCHESTRATOR_SKILL
+            .find("## Fan out and relay")
+            .expect("the skill lacks Fan out and relay");
+        assert!(mandate < fan_out);
+        assert!(fan_out < ORCHESTRATOR_SKILL.find("## Global coordination").unwrap());
+        for needle in [
+            "Your startup message states your scope's delegation policy",
+            "It is not refreshed while you run; a new orchestrator or LOAD SKILL brings a change.",
+            "Sessions are cheap to create",
+            "needs a stated reason",
+            "with the policy's design and workhorse choices in place of those two rows",
+            "the tasks it depends on or blocks",
+            "Relay down the chain, global orchestrator → project orchestrator → worker shells",
+            "Relay up the chain",
+            "`RiWork check-in`",
+            "Dashboard briefs",
+            "gathers project state through them",
+            "never by steering, sending to, or creating a project's workers",
+            "Either way, delegate as Delegate; do not implement says.",
+        ] {
+            assert!(
+                ORCHESTRATOR_SKILL.contains(needle),
+                "the skill lacks {needle:?}"
+            );
+        }
+    }
+
+    /// Both scopes read the Hard boundaries first: before the delegation mandate and every
+    /// scope section. They forbid testing in an orchestrator window, live destructive or
+    /// session-interrupting tests, live verification and unapproved restarts, and no later
+    /// bullet still lets an orchestrator run acceptance checks itself.
+    #[test]
+    fn the_embedded_skill_opens_with_hard_boundaries_for_both_scopes() {
+        let first_section = ORCHESTRATOR_SKILL
+            .lines()
+            .find(|line| line.starts_with("## "))
+            .unwrap();
+        assert_eq!(first_section, "## Hard boundaries");
+        let boundaries = ORCHESTRATOR_SKILL.find("## Hard boundaries").unwrap();
+        let intro = ORCHESTRATOR_SKILL.find("RiWork has one global orchestrator");
+        let mandate = ORCHESTRATOR_SKILL.find("## Delegate; do not implement");
+        assert!(boundaries < intro.unwrap());
+        let section = &ORCHESTRATOR_SKILL[boundaries..mandate.unwrap()];
+        for needle in [
+            "These bind every orchestrator, global and project, for the whole session.",
+            "after a context compaction, read them again before acting",
+            "explicit approval in the same turn, naming the target",
+            "**Never test in an orchestrator window.**",
+            "Your own chat or terminal window, and any other live orchestrator window",
+            "no find-bar or dialog interaction, and no layout, focus or draft changes",
+            "never route around that refusal (the `cua-driver` CLI, another server, or a worker)",
+            "**Never live-test destructive or session-interrupting behavior**",
+            "close, kill, nuke, delete, update or restart",
+            "isolated private `RIWORK_HOME` with disposable data",
+            "even if you cancel before confirming",
+            "**Verify only by reading evidence:**",
+            "mark it `unverified` and ask the user to look; never improvise a live test",
+            "**Never restart or update what can interrupt sessions without approval.**",
+            "Installed is not restarted.",
+            "**Never accept evidence without its environment.**",
+            "`verification_environment`",
+            "Refuse acceptance evidence produced against live orchestrator or user state",
+        ] {
+            assert!(section.contains(needle), "Hard boundaries lack {needle:?}");
+        }
+        // The permission that let an orchestrator test live is gone.
+        assert!(!ORCHESTRATOR_SKILL.contains("run the acceptance checks"));
+        assert!(ORCHESTRATOR_SKILL.contains("as Hard boundaries limits verification"));
+        assert!(
+            ORCHESTRATOR_SKILL
+                .contains("Installing does not authorize a restart that interrupts sessions.")
+        );
+        // Assignments in both scopes name where verification runs.
+        assert_eq!(
+            ORCHESTRATOR_SKILL
+                .matches("verification environment and targets")
+                .count(),
+            4
+        );
+    }
+
+    /// Every orchestrator startup and LOAD SKILL message, in either scope, restates the Hard
+    /// boundaries in brief ahead of any inlined skill, and points at the skill's section.
+    #[test]
+    fn every_orchestrator_message_restates_the_hard_boundaries_in_brief() {
+        assert!(ORCHESTRATOR_BOUNDARIES.starts_with("Hard boundaries (the skill's first section;"));
+        assert!(
+            ORCHESTRATOR_BOUNDARIES.len() < 600,
+            "{}",
+            ORCHESTRATOR_BOUNDARIES.len()
+        );
+        for needle in [
+            "after any context compaction",
+            "your own or any live orchestrator window",
+            "close, kill, nuke, delete, update or restart",
+            "even if you would cancel",
+            "reading evidence from isolated runs, else mark it unverified",
+            "without the user's approval this turn naming it",
+        ] {
+            assert!(ORCHESTRATOR_BOUNDARIES.contains(needle), "{needle:?}");
+        }
+        let skill = Path::new("/state/orchestrator/.agents/skills/riwork-orchestrator/SKILL.md");
+        let root = Path::new("/projects/app");
+        for scope in [None, Some("11111111-1111-4111-8111-111111111111")] {
+            for inline in [false, true] {
+                let message = orchestrator_prompt(
+                    skill,
+                    Path::new("/bin/riwork"),
+                    scope,
+                    scope.map(|_| root),
+                    &Delegation::built_in(),
+                    inline,
+                );
+                let at = message
+                    .find(ORCHESTRATOR_BOUNDARIES)
+                    .unwrap_or_else(|| panic!("{scope:?} inline={inline}: {message}"));
+                assert_eq!(message.matches(ORCHESTRATOR_BOUNDARIES).count(), 1);
+                assert!(at < message.find(CUA_GUIDANCE).unwrap());
+                if inline {
+                    assert!(at < message.find("<riwork-orchestrator-skill>").unwrap());
+                }
+            }
         }
     }
 
@@ -8718,6 +9216,11 @@ else:
             Path::new("/Applications/RiWork App/Contents/MacOS/riwork"),
             Some(alpha),
             Some(project_root),
+            &Delegation {
+                spread_work: false,
+                parallel_shells: 2,
+                ..Delegation::built_in()
+            },
             "project-orchestrator-pane",
             None,
             false,
@@ -8751,6 +9254,16 @@ else:
         );
         assert!(prompt.contains(&quote_arg(&skill.to_string_lossy())));
         assert!(!prompt.contains(ORCHESTRATOR_SKILL));
+        // The launch carries the policy the project's scope resolved to.
+        assert!(
+            prompt.contains(
+                "Delegation policy for this scope (this project's override, else Settings, \
+                 else RiWork's default, as they stood when this message was written): \
+                 spread work off; about 2 parallel worker shells; design work on claude, \
+                 model opus; workhorse work on codex, model gpt-6.1-sol."
+            ),
+            "{prompt}"
+        );
         assert_eq!(
             orchestrator_environment(Some(alpha)),
             [
@@ -9093,11 +9606,35 @@ else:
 
     #[cfg(unix)]
     #[test]
+    fn unmanaged_harness_path_finds_login_runtime_for_env_shebangs_without_adding_shims() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("summary-runtime-path");
+        let login = root.join("version-manager/bin");
+        let app = root.join("app/bin");
+        fs::create_dir_all(&login).unwrap();
+        fs::create_dir_all(&app).unwrap();
+        let runtime = login.join("riwork-summary-test-runtime");
+        fs::write(&runtime, "#!/bin/sh\nprintf 'login runtime'").unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        let harness = root.join("harness");
+        fs::write(&harness, "#!/usr/bin/env riwork-summary-test-runtime\n").unwrap();
+        fs::set_permissions(&harness, fs::Permissions::from_mode(0o700)).unwrap();
+        let path = joined_harness_path([login.clone(), app.clone(), login.clone()]).unwrap();
+        let directories: Vec<_> = env::split_paths(&path).collect();
+        assert_eq!(directories, [login, app]);
+        let output = Command::new(&harness).env("PATH", path).output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"login runtime");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn grok_agent_install_cleans_up_a_failed_write_and_prunes_old_definitions() {
         let root = scratch("grok-agent");
         let executable = Path::new("/Applications/RiWork/riwork");
         let directory = root.join("cua");
-        let current = grok_agent_path(&root, executable, None);
+        let current = grok_agent_path(&root, executable, None, false);
         let names = |suffix: &str| -> Vec<String> {
             fs::read_dir(&directory)
                 .map(|entries| {
@@ -9110,7 +9647,7 @@ else:
                 .unwrap_or_default()
         };
         let install = |write: &dyn Fn(&Path, &str) -> std::io::Result<()>| {
-            ensure_grok_agent_with(&root, executable, None, write, GROK_AGENT_MAX_AGE)
+            ensure_grok_agent_with(&root, executable, None, false, write, GROK_AGENT_MAX_AGE)
         };
 
         // A write that fails after creating the file leaves nothing behind.
@@ -9271,7 +9808,50 @@ else:
     fn a_launch_without_a_custom_driver_clears_the_servers_copy() {
         const NAME: &str = "a_launch_without_a_custom_driver_clears_the_servers_copy";
         let fixture = AccountFixture::new();
-        if !fixture.run_in_child_with(NAME, &[("RIWORK_CUA_DRIVER", None)]) {
+        if !fixture.run_in_child_with(
+            NAME,
+            &[
+                ("RIWORK_CUA_DRIVER", None),
+                ("RIWORK_CUA_ALLOW_RIWORK_INPUT", None),
+            ],
+        ) {
+            return;
+        }
+        let state = fixture.selected("account-a");
+        let (manager, capture) = recording_launcher(&fixture, &state);
+        manager
+            .create(
+                Uuid::new_v4().to_string(),
+                None,
+                fixture.0.clone(),
+                Some("sleep 60".into()),
+            )
+            .unwrap();
+        let arguments = take_recorded(&capture);
+        // Nor may an opt-in out of the Cua guard that an earlier launch had.
+        for variable in ["RIWORK_CUA_DRIVER", "RIWORK_CUA_ALLOW_RIWORK_INPUT"] {
+            assert!(contains_sequence(
+                &arguments,
+                &[";", "set-environment", "-gu", variable]
+            ));
+            assert!(
+                !arguments
+                    .iter()
+                    .any(|argument| argument.starts_with(&format!("{variable}="))),
+                "{arguments:?}"
+            );
+        }
+    }
+
+    /// A launch with `RIWORK_CUA_ALLOW_RIWORK_INPUT=1` names it on its own pane, as the
+    /// server's environment is not this launch's, and does not clear it there.
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "slow: re-runs the test binary and launches through a fake tmux script"]
+    fn a_launch_with_the_riwork_input_opt_in_names_it_on_its_pane() {
+        const NAME: &str = "a_launch_with_the_riwork_input_opt_in_names_it_on_its_pane";
+        let fixture = AccountFixture::new();
+        if !fixture.run_in_child_with(NAME, &[("RIWORK_CUA_ALLOW_RIWORK_INPUT", Some("1"))]) {
             return;
         }
         let state = fixture.selected("account-a");
@@ -9287,14 +9867,17 @@ else:
         let arguments = take_recorded(&capture);
         assert!(contains_sequence(
             &arguments,
-            &[";", "set-environment", "-gu", "RIWORK_CUA_DRIVER"]
+            &["-e", "RIWORK_CUA_ALLOW_RIWORK_INPUT=1"]
         ));
-        assert!(
-            !arguments
-                .iter()
-                .any(|argument| argument.starts_with("RIWORK_CUA_DRIVER=")),
-            "{arguments:?}"
-        );
+        assert!(!contains_sequence(
+            &arguments,
+            &[
+                ";",
+                "set-environment",
+                "-gu",
+                "RIWORK_CUA_ALLOW_RIWORK_INPUT"
+            ]
+        ));
     }
 
     /// `RIWORK_HOME=` used to make the session manager (but not the store)

@@ -252,39 +252,49 @@
               "elided": false
             },
             {
-              "id": "agent",
-              "kind": "subagent",
-              "title": "Agent",
-              "target": "review",
+              "id": "b",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "agent",
+          "kind": "subagent",
+          "title": "Agent",
+          "target": "review",
+          "children": [
+            {
+              "id": "g:t:child1",
+              "kind": "group",
+              "title": "Read 1 file · Searched 1 pattern",
               "children": [
                 {
-                  "id": "g:t:child1",
-                  "kind": "group",
-                  "title": "Read 1 file · Searched 1 pattern",
-                  "children": [
-                    {
-                      "id": "child1",
-                      "kind": "read",
-                      "title": "Read",
-                      "target": "a.rs",
-                      "open": false,
-                      "failed_count": 0,
-                      "running": false,
-                      "provisional": false,
-                      "elided": false
-                    },
-                    {
-                      "id": "child2",
-                      "kind": "search",
-                      "title": "Searched",
-                      "target": "word",
-                      "open": false,
-                      "failed_count": 0,
-                      "running": false,
-                      "provisional": false,
-                      "elided": false
-                    }
-                  ],
+                  "id": "child1",
+                  "kind": "read",
+                  "title": "Read",
+                  "target": "a.rs",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "child2",
+                  "kind": "search",
+                  "title": "Searched",
+                  "target": "word",
                   "open": false,
                   "failed_count": 0,
                   "running": false,
@@ -292,16 +302,6 @@
                   "elided": false
                 }
               ],
-              "open": false,
-              "failed_count": 0,
-              "running": false,
-              "provisional": false,
-              "elided": false
-            },
-            {
-              "id": "b",
-              "kind": "read",
-              "title": "Read",
               "open": false,
               "failed_count": 0,
               "running": false,
@@ -586,33 +586,31 @@
           "id": "activity:t",
           "kind": "activity",
           "title": "Worked · 2 reads",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "agent",
+          "kind": "subagent",
+          "title": "Agent",
           "children": [
             {
-              "id": "agent",
-              "kind": "subagent",
-              "title": "Agent",
-              "children": [
-                {
-                  "id": "child1",
-                  "kind": "read",
-                  "title": "Read",
-                  "open": false,
-                  "failed_count": 0,
-                  "running": false,
-                  "provisional": false,
-                  "elided": false
-                },
-                {
-                  "id": "child2",
-                  "kind": "read",
-                  "title": "Read",
-                  "open": false,
-                  "failed_count": 0,
-                  "running": false,
-                  "provisional": false,
-                  "elided": false
-                }
-              ],
+              "id": "child1",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "child2",
+              "kind": "read",
+              "title": "Read",
               "open": false,
               "failed_count": 0,
               "running": false,

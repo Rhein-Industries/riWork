@@ -987,6 +987,11 @@ pub enum SavedTab {
     Chat {
         chat_id: String,
     },
+    /// Launch settings only. Restoring this tab never starts its application.
+    AppPreview {
+        preview_id: String,
+        spec: crate::app_preview::PreviewSpec,
+    },
 }
 
 impl SavedTab {
@@ -999,6 +1004,7 @@ impl SavedTab {
                 shell_id,
             } => format!("remote:{desktop_id}:{shell_id}"),
             Self::Chat { chat_id } => format!("chat:{chat_id}"),
+            Self::AppPreview { preview_id, .. } => format!("app_preview:{preview_id}"),
         }
     }
 }
@@ -1181,7 +1187,8 @@ impl ProjectLayout {
                     SavedTab::Shell { shell_id } => Some(shell_id.clone()),
                     SavedTab::Panel { .. }
                     | SavedTab::RemoteShell { .. }
-                    | SavedTab::Chat { .. } => None,
+                    | SavedTab::Chat { .. }
+                    | SavedTab::AppPreview { .. } => None,
                 })
             })
             .collect::<HashSet<_>>();
@@ -1306,6 +1313,7 @@ impl ProjectLayout {
         let mut panel_kinds = HashSet::new();
         let mut remote_shells = HashSet::new();
         let mut chats = HashSet::new();
+        let mut previews = HashSet::new();
         for id in ordered_pane_ids {
             let pane = self.panes.entry(id).or_default();
             // Older layouts may have bottom strips; all current strips belong at the top.
@@ -1342,6 +1350,9 @@ impl ProjectLayout {
                 }
                 // A chat shows in one tab; a tab that is still being created has no id yet.
                 SavedTab::Chat { chat_id } => !chat_id.is_empty() && chats.insert(chat_id.clone()),
+                SavedTab::AppPreview { preview_id, .. } => {
+                    Uuid::parse_str(preview_id).is_ok() && previews.insert(preview_id.clone())
+                }
             });
             if !pane
                 .active_tab_key
@@ -1357,7 +1368,8 @@ impl ProjectLayout {
                     SavedTab::Shell { shell_id } => Some(shell_id.clone()),
                     SavedTab::Panel { .. }
                     | SavedTab::RemoteShell { .. }
-                    | SavedTab::Chat { .. } => None,
+                    | SavedTab::Chat { .. }
+                    | SavedTab::AppPreview { .. } => None,
                 })
                 .collect();
             pane.active_shell_id = pane.tabs.iter().find_map(|tab| match tab {
@@ -1532,7 +1544,10 @@ fn sync_saved_pane(pane: &mut SavedPane) {
         .iter()
         .filter_map(|tab| match tab {
             SavedTab::Shell { shell_id } => Some(shell_id.clone()),
-            SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } | SavedTab::Chat { .. } => None,
+            SavedTab::Panel { .. }
+            | SavedTab::RemoteShell { .. }
+            | SavedTab::Chat { .. }
+            | SavedTab::AppPreview { .. } => None,
         })
         .collect();
     pane.active_shell_id = pane.tabs.iter().find_map(|tab| match tab {
@@ -2896,6 +2911,63 @@ mod tests {
             desktop_id: desktop.into(),
             shell_id: shell_id.into(),
         }
+    }
+
+    #[test]
+    fn app_preview_launch_settings_round_trip_and_deduplicate_by_identity() {
+        use crate::app_preview::{PreviewMode, PreviewSpec};
+
+        let directory = TestDirectory::new();
+        let store = directory.store();
+        let preview_id = Uuid::new_v4().to_string();
+        let tab = SavedTab::AppPreview {
+            preview_id: preview_id.clone(),
+            spec: PreviewSpec {
+                command: "cargo run -p demo --features riwork-preview".into(),
+                cwd: PathBuf::from("/tmp/development project"),
+                mode: PreviewMode::Cooperative,
+                ios: None,
+            },
+        };
+        let mut layout = saved_layout();
+        layout
+            .panes
+            .insert(4, pane(vec![tab.clone(), shell("shell-a")], 0));
+        layout.panes.get_mut(&8).unwrap().tabs.push(tab.clone());
+        layout
+            .panes
+            .get_mut(&8)
+            .unwrap()
+            .tabs
+            .push(SavedTab::AppPreview {
+                preview_id: String::new(),
+                spec: PreviewSpec {
+                    command: String::new(),
+                    cwd: PathBuf::from("/"),
+                    mode: PreviewMode::WindowCapture,
+                    ios: None,
+                },
+            });
+        store.save("preview-project", &layout).unwrap();
+        let saved = store.load("preview-project").unwrap().unwrap();
+        assert_eq!(saved.panes[&4].tabs[0], tab);
+        assert_eq!(
+            saved.panes[&4].active_tab_key,
+            Some(format!("app_preview:{preview_id}"))
+        );
+        assert_eq!(saved.panes[&4].shell_ids, ["shell-a"]);
+        assert_eq!(
+            saved
+                .panes
+                .values()
+                .flat_map(|pane| &pane.tabs)
+                .filter(|tab| matches!(tab, SavedTab::AppPreview { .. }))
+                .count(),
+            1
+        );
+        let json = serde_json::to_value(&tab).unwrap();
+        assert_eq!(json["kind"], "app_preview");
+        assert_eq!(json["spec"]["mode"], "cooperative");
     }
 
     #[test]

@@ -20,8 +20,10 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod guard;
 mod skills;
 
+pub use guard::{ALLOW_RIWORK_INPUT, riwork_input_allowed};
 pub use skills::{CuaSkills, SkillCli, SkillLinkState, SkillTarget};
 
 const INSTALLER_URL: &str = "https://cua.ai/driver/install.sh";
@@ -776,7 +778,15 @@ impl CuaManager {
     /// `prepare_for_grok` first, so the first start is not racing Grok's
     /// 30-second limit. Codex and a direct `riwork cua mcp` still start the
     /// service here.
+    ///
+    /// Input to the user's own live RiWork app is refused unless this process's
+    /// environment has `RIWORK_CUA_ALLOW_RIWORK_INPUT=1` (`guard`).
     pub fn run_mcp(&self) -> Result<(), String> {
+        if riwork_input_allowed() {
+            self.record_driver_log(&format!(
+                "MCP proxy: {ALLOW_RIWORK_INPUT}=1, so input to RiWork's own windows is not refused"
+            ));
+        }
         self.run_mcp_with(
             McpIo {
                 input: Box::new(BufReader::with_capacity(64 * 1024, io::stdin())),
@@ -1714,6 +1724,8 @@ struct McpPolicy {
     /// How long a new driver has to answer the replayed `initialize`.
     replay_timeout: Duration,
     line_limit: usize,
+    /// The guard on input to RiWork's own live windows; `None` forwards every call.
+    guard: Option<McpGuard>,
 }
 
 impl McpPolicy {
@@ -1723,6 +1735,7 @@ impl McpPolicy {
             stable_after: Duration::from_secs(30),
             replay_timeout: MCP_READY_TIMEOUT,
             line_limit: MCP_LINE_LIMIT,
+            guard: McpGuard::for_this_process(),
         }
     }
 
@@ -1733,6 +1746,53 @@ impl McpPolicy {
             .copied()
             .unwrap_or(Duration::from_secs(1))
     }
+}
+
+/// Where the proxy learns the pids of the user's running RiWork apps, which the guard
+/// keeps tool calls from sending input to (`guard`).
+#[derive(Clone)]
+struct McpGuard(Arc<dyn Fn() -> Vec<u32> + Send + Sync>);
+
+impl std::fmt::Debug for McpGuard {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("McpGuard")
+    }
+}
+
+impl McpGuard {
+    /// The apps registered in the user's own runtime registry, whatever
+    /// `RIWORK_RUNTIME_DIR` says, so a fixture app is not among them. None when this
+    /// process's environment turns the guard off.
+    fn for_this_process() -> Option<Self> {
+        Self::reading(
+            riwork_input_allowed(),
+            crate::runtime::default_directory().ok(),
+        )
+    }
+
+    /// The apps registered in `registry` (none without one), or no guard when `allowed`.
+    fn reading(allowed: bool, registry: Option<PathBuf>) -> Option<Self> {
+        if allowed {
+            return None;
+        }
+        Some(Self(Arc::new(move || {
+            registry
+                .as_deref()
+                .map(crate::runtime::live_gui_pids)
+                .unwrap_or_default()
+        })))
+    }
+}
+
+/// The answer to a tool call the guard refused: a tool error the agent reads, not a
+/// protocol error.
+fn refused_call_line(id: &Value, reason: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": { "content": [{ "type": "text", "text": reason }], "isError": true },
+    }))
+    .unwrap_or_default()
 }
 
 /// The parts of a JSON-RPC message the proxy needs. Payloads are skipped
@@ -1932,6 +1992,7 @@ struct McpProxy {
     events: mpsc::Sender<McpEvent>,
     on_note: Box<dyn Fn(&str) + Send + Sync>,
     line_limit: usize,
+    guard: Option<McpGuard>,
     client_gone: AtomicBool,
     output_failed: AtomicBool,
 }
@@ -1967,6 +2028,7 @@ fn run_mcp_proxy(
         events: sender,
         on_note,
         line_limit: policy.line_limit,
+        guard: policy.guard.clone(),
         client_gone: AtomicBool::new(false),
         output_failed: AtomicBool::new(false),
     });
@@ -2072,6 +2134,14 @@ impl McpProxy {
 
     fn forward_client_line(&self, line: &[u8]) {
         let envelopes = parse_envelopes(line);
+        if let Some(answers) = self.refusals(line, envelopes.as_deref()) {
+            // Nothing of a refused line reaches the driver, so nothing waits for it.
+            let mut output = locked(&self.output);
+            for answer in answers {
+                self.write_message(&mut **output, &answer);
+            }
+            return;
+        }
         let requests: Vec<Value> = envelopes
             .iter()
             .flatten()
@@ -2141,6 +2211,60 @@ impl McpProxy {
                 oversized: false,
             });
         }
+    }
+
+    /// The answers to a client line the guard refuses, or `None` to forward it. A line with
+    /// a refused tool call is refused whole: its other requests are answered as not sent.
+    fn refusals(&self, line: &[u8], envelopes: Option<&[Envelope]>) -> Option<Vec<Vec<u8>>> {
+        let guard = self.guard.as_ref()?;
+        let calls_a_tool = |envelope: &Envelope| envelope.method.as_deref() == Some("tools/call");
+        if !envelopes?.iter().any(calls_a_tool) {
+            return None;
+        }
+        let message = serde_json::from_slice::<Value>(line).ok()?;
+        let messages = match &message {
+            Value::Array(messages) => messages.iter().collect(),
+            single => vec![single],
+        };
+        let mut live = None;
+        let mut answers = vec![];
+        let mut refused = vec![];
+        for message in messages {
+            let Some(id) = message.get("method").and(message.get("id")) else {
+                continue;
+            };
+            let verdict = (message.get("method").and_then(Value::as_str) == Some("tools/call"))
+                .then(|| {
+                    let tool = message
+                        .pointer("/params/name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let arguments = message.pointer("/params/arguments").unwrap_or(&Value::Null);
+                    let verdict = guard::verdict(tool, arguments, || {
+                        live.get_or_insert_with(|| (guard.0)()).clone()
+                    });
+                    (tool.to_owned(), verdict)
+                });
+            match verdict {
+                Some((tool, guard::Verdict::Refuse(reason))) => {
+                    answers.push(refused_call_line(id, &reason));
+                    refused.push(tool);
+                }
+                _ => answers.push(error_line(
+                    id,
+                    MCP_PROXY_ERROR,
+                    "Not sent to Cua Driver: RiWork refused another call in this batch",
+                )),
+            }
+        }
+        if refused.is_empty() {
+            return None;
+        }
+        self.note(&format!(
+            "refused input to RiWork's own windows: {}",
+            refused.join(", ")
+        ));
+        Some(answers)
     }
 
     /// The driver did not take these requests; answer those still unanswered.
@@ -3828,11 +3952,157 @@ else:
             stable_after: Duration::from_secs(30),
             replay_timeout: Duration::from_secs(20),
             line_limit: MCP_LINE_LIMIT,
+            guard: None,
         }
     }
 
     fn tool_call(name: &str, arguments: Value) -> Value {
         serde_json::json!({ "name": name, "arguments": arguments })
+    }
+
+    /// A RiWork app that the guard's registry says is running.
+    const LIVE_RIWORK: u32 = 4242;
+
+    fn live_riwork() -> Option<McpGuard> {
+        Some(McpGuard(Arc::new(|| vec![LIVE_RIWORK])))
+    }
+
+    /// A proxy ready for traffic but with no driver: a line it forwards is only counted
+    /// as in flight, and whatever it answers itself lands in the returned buffer.
+    fn driverless_proxy(guard: Option<McpGuard>) -> (McpProxy, SharedBuffer) {
+        let output = SharedBuffer::default();
+        let proxy = McpProxy {
+            output: Mutex::new(Box::new(output.clone())),
+            stderr: Mutex::new(Box::new(io::sink())),
+            child_input: Mutex::new(None),
+            state: Mutex::new(McpState {
+                ready: true,
+                ..McpState::default()
+            }),
+            events: mpsc::channel().0,
+            on_note: Box::new(|_| {}),
+            line_limit: MCP_LINE_LIMIT,
+            guard,
+            client_gone: AtomicBool::new(false),
+            output_failed: AtomicBool::new(false),
+        };
+        (proxy, output)
+    }
+
+    fn call_line(id: u64, name: &str, arguments: Value) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": tool_call(name, arguments),
+        }))
+        .unwrap()
+    }
+
+    fn answers(output: &SharedBuffer) -> Vec<Value> {
+        output
+            .text()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    /// A real proxy guards by default, from the user's own registry; the opt-in leaves it
+    /// unguarded. A fixture registry stands in for the user's.
+    #[test]
+    fn a_real_proxy_guards_unless_its_environment_opts_out() {
+        assert_eq!(
+            McpPolicy::standard().guard.is_some(),
+            !riwork_input_allowed()
+        );
+        let temp = TemporaryDirectory::new(&env::temp_dir(), "riwork-cua-guard").unwrap();
+        let registry = temp.path.join("runtime");
+        let runtime = crate::runtime::RuntimeManager::at(registry.clone()).unwrap();
+        let guard = McpGuard::reading(false, Some(registry.clone())).unwrap();
+        assert!((guard.0)().is_empty());
+        let _gui = runtime.register(temp.path.join("home")).unwrap();
+        assert_eq!((guard.0)(), vec![std::process::id()]);
+        assert!(McpGuard::reading(true, Some(registry)).is_none());
+        assert!((McpGuard::reading(false, None).unwrap().0)().is_empty());
+    }
+
+    /// Input aimed at a live RiWork app is answered by the proxy as a tool error and never
+    /// sent on; read-only calls, input to other apps, and every call once the guard is off
+    /// go to the driver as before. Fakes only: no driver, no window.
+    #[test]
+    fn the_proxy_refuses_input_to_live_riwork_windows_and_forwards_the_rest() {
+        let (proxy, output) = driverless_proxy(live_riwork());
+        proxy.forward_client_line(&call_line(
+            7,
+            "click",
+            serde_json::json!({"pid": LIVE_RIWORK, "element_index": 4, "snapshot_id": "s0000abcd", "window_id": 12}),
+        ));
+        let refused = answers(&output);
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert_eq!(refused[0]["id"], 7);
+        assert_eq!(refused[0]["result"]["isError"], true);
+        let text = refused[0]["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("RiWork refused `click`"), "{text}");
+        assert!(text.contains(&format!("pid {LIVE_RIWORK}")), "{text}");
+        assert!(locked(&proxy.state).in_flight.is_empty());
+
+        // Read-only state of the same window, and input to another app, go on.
+        proxy.forward_client_line(&call_line(
+            8,
+            "get_window_state",
+            serde_json::json!({"pid": LIVE_RIWORK, "window_id": 12}),
+        ));
+        proxy.forward_client_line(&call_line(
+            9,
+            "type_text",
+            serde_json::json!({"pid": 77, "text": "hello"}),
+        ));
+        assert_eq!(answers(&output).len(), 1);
+        assert_eq!(
+            locked(&proxy.state).in_flight,
+            vec![serde_json::json!(8), serde_json::json!(9)]
+        );
+
+        // A batch with a refused call is refused whole.
+        let batch = serde_json::to_vec(&serde_json::json!([
+            {"jsonrpc": "2.0", "id": 10, "method": "ping"},
+            {"jsonrpc": "2.0", "id": 11, "method": "tools/call",
+             "params": tool_call("type_text", serde_json::json!({"scope": "desktop", "text": "x"}))},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        ]))
+        .unwrap();
+        proxy.forward_client_line(&batch);
+        let all = answers(&output);
+        assert_eq!(all.len(), 3, "{all:?}");
+        assert_eq!(all[1]["id"], 10);
+        assert!(
+            all[1]["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("refused another call")
+        );
+        assert_eq!(all[2]["id"], 11);
+        assert_eq!(all[2]["result"]["isError"], true);
+        assert!(!locked(&proxy.state).initialized);
+        assert_eq!(locked(&proxy.state).in_flight.len(), 2);
+
+        // With the guard off (RIWORK_CUA_ALLOW_RIWORK_INPUT=1), the same click goes on.
+        let (open, output) = driverless_proxy(None);
+        open.forward_client_line(&call_line(
+            7,
+            "click",
+            serde_json::json!({"pid": LIVE_RIWORK, "x": 1, "y": 1}),
+        ));
+        assert!(output.text().is_empty());
+        assert_eq!(locked(&open.state).in_flight, vec![serde_json::json!(7)]);
+
+        // And with no RiWork app running, nothing is refused.
+        let (idle, output) = driverless_proxy(Some(McpGuard(Arc::new(Vec::new))));
+        idle.forward_client_line(&call_line(
+            7,
+            "hotkey",
+            serde_json::json!({"keys": ["cmd", "w"]}),
+        ));
+        assert!(output.text().is_empty());
+        assert_eq!(locked(&idle.state).in_flight.len(), 1);
     }
 
     fn pid_gone(pid: u32) -> bool {
@@ -4122,6 +4392,47 @@ else:
         assert!(!world.read("received").contains("bytes>"));
         assert!(client.stderr.text().contains("longer than 2048"));
         assert_eq!(world.starts().len(), 1);
+        assert_eq!(client.finish(), Ok(()));
+    }
+
+    #[test]
+    #[ignore = "slow: real Python MCP driver double"]
+    fn a_refused_tool_call_never_reaches_the_driver() {
+        let world = McpWorld::new(&[]);
+        let mut client = world.start(McpPolicy {
+            guard: live_riwork(),
+            ..quick_policy()
+        });
+        client.handshake();
+        let refused = client.request(
+            serde_json::json!(21),
+            "tools/call",
+            tool_call(
+                "press_key",
+                serde_json::json!({ "pid": LIVE_RIWORK, "key": "return" }),
+            ),
+        );
+        assert_eq!(refused["result"]["isError"], true, "{refused}");
+        let echoed = client.request(
+            serde_json::json!(22),
+            "tools/call",
+            tool_call("echo", serde_json::json!({ "pid": 77 })),
+        );
+        assert!(
+            echoed["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("77")
+        );
+        let received = world.read("received");
+        assert!(!received.contains("press_key"), "{received}");
+        assert!(received.contains("echo"));
+        assert!(
+            client
+                .stderr
+                .text()
+                .contains("refused input to RiWork's own windows: press_key")
+        );
         assert_eq!(client.finish(), Ok(()));
     }
 

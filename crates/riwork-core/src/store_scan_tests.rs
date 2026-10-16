@@ -36,6 +36,7 @@ fn project_at(root: &Path) -> Project {
         notify_on_agent_done: false,
         wake_orchestrators_on_agent_done: false,
         orchestrator: Default::default(),
+        delegation_policy: Default::default(),
         codex_account: ProjectCodexAccount::default(),
         created_at: 0,
     }

@@ -446,12 +446,32 @@
           "failed_count": 0,
           "running": false,
           "provisional": false,
-          "elided": false
+          "elided": false,
+          "artifacts": [
+            {
+              "item_id": "e0",
+              "path": {
+                "path": "f0.rs"
+              }
+            },
+            {
+              "item_id": "e1",
+              "path": {
+                "path": "f1.rs"
+              }
+            },
+            {
+              "item_id": "e2",
+              "path": {
+                "path": "f2.rs"
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "Unique edited paths and partial known durations",
+      "name": "Unique edited paths, recorded artifact lines and partial known durations",
       "items": [
         {
           "id": "e1",
@@ -471,7 +491,18 @@
             ]
           },
           "started_at": 10,
-          "ended_at": 2010
+          "ended_at": 2010,
+          "presentation": {
+            "semantics": {
+              "kind": "other",
+              "produced": [
+                {
+                  "path": "a",
+                  "line": 7
+                }
+              ]
+            }
+          }
         },
         {
           "id": "e2",
@@ -522,7 +553,28 @@
           "failed_count": 0,
           "running": false,
           "provisional": false,
-          "elided": false
+          "elided": false,
+          "artifacts": [
+            {
+              "item_id": "e1",
+              "path": {
+                "path": "a",
+                "line": 7
+              }
+            },
+            {
+              "item_id": "e1",
+              "path": {
+                "path": "b"
+              }
+            },
+            {
+              "item_id": "e2",
+              "path": {
+                "path": "a"
+              }
+            }
+          ]
         }
       ]
     },
@@ -739,6 +791,17 @@
           "body": {
             "type": "agent_message",
             "text": "done"
+          },
+          "presentation": {
+            "images": [
+              {
+                "label": "Result",
+                "source": {
+                  "kind": "unavailable",
+                  "reason": "on Mac"
+                }
+              }
+            ]
           }
         }
       ],
@@ -836,7 +899,13 @@
           "failed_count": 0,
           "running": false,
           "provisional": false,
-          "elided": false
+          "elided": false,
+          "artifacts": [
+            {
+              "item_id": "answer",
+              "image_index": 0
+            }
+          ]
         }
       ]
     },
@@ -894,6 +963,314 @@
           "elided": false
         }
       ]
+    },
+    {
+      "name": "Normal keeps host worker and explicit subagent cards outside activity before the answer even for a late marker",
+      "items": [
+        {
+          "id": "user",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "user_message",
+            "text": "Review the change"
+          }
+        },
+        {
+          "id": "call",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "swift test",
+            "output": "Passed",
+            "exit_code": 0
+          }
+        },
+        {
+          "id": "subagent",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "delegate",
+            "input": null
+          },
+          "presentation": {
+            "subagent": {
+              "name": "Reviewer",
+              "status": "done",
+              "summary": "Reviewed",
+              "children": [
+                {
+                  "id": "review-child",
+                  "status": "done",
+                  "summary": "Checked"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "answer",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "agent_message",
+            "text": "All checks passed"
+          }
+        },
+        {
+          "id": "worker",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "server": "riwork",
+            "tool": "worker",
+            "input": {
+              "session_id": "child"
+            },
+            "output": "Passed"
+          },
+          "presentation": {
+            "worker": {
+              "session_id": "child",
+              "kind": "chat",
+              "title": "Review",
+              "noted_at": 1000,
+              "late": true,
+              "final": {
+                "status": "done",
+                "ended_at": 1001,
+                "tail": "Passed"
+              }
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "normal"
+      },
+      "expected_rows": [
+        {
+          "id": "user",
+          "kind": "user",
+          "title": "User",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Worked · 1 command · 1 tool call",
+          "children": [
+            {
+              "id": "call",
+              "kind": "shell",
+              "title": "Ran",
+              "target": "swift test",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "subagent",
+          "kind": "subagent",
+          "title": "Agent",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "worker",
+          "kind": "worker",
+          "title": "Worker",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "answer",
+          "kind": "final",
+          "title": "Answer",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ],
+      "anchors": {
+        "call": "activity:t",
+        "subagent": "subagent",
+        "worker": "worker",
+        "answer": "answer"
+      }
+    },
+    {
+      "name": "Verbose keeps host worker and explicit subagent cards in transcript order including a late marker after the answer",
+      "items": [
+        {
+          "id": "user",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "user_message",
+            "text": "Review the change"
+          }
+        },
+        {
+          "id": "call",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "swift test",
+            "output": "Passed",
+            "exit_code": 0
+          }
+        },
+        {
+          "id": "subagent",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "delegate",
+            "input": null
+          },
+          "presentation": {
+            "subagent": {
+              "name": "Reviewer",
+              "status": "done",
+              "summary": "Reviewed",
+              "children": [
+                {
+                  "id": "review-child",
+                  "status": "done",
+                  "summary": "Checked"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "answer",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "agent_message",
+            "text": "All checks passed"
+          }
+        },
+        {
+          "id": "worker",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "server": "riwork",
+            "tool": "worker",
+            "input": {
+              "session_id": "child"
+            },
+            "output": "Passed"
+          },
+          "presentation": {
+            "worker": {
+              "session_id": "child",
+              "kind": "chat",
+              "title": "Review",
+              "noted_at": 1000,
+              "late": true,
+              "final": {
+                "status": "done",
+                "ended_at": 1001,
+                "tail": "Passed"
+              }
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "user",
+          "kind": "user",
+          "title": "User",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "call",
+          "kind": "shell",
+          "title": "Ran",
+          "target": "swift test",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "subagent",
+          "kind": "subagent",
+          "title": "Agent",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "answer",
+          "kind": "final",
+          "title": "Answer",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "worker",
+          "kind": "worker",
+          "title": "Worker",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ],
+      "anchors": {
+        "call": "call",
+        "subagent": "subagent",
+        "worker": "worker",
+        "answer": "answer"
+      }
     }
   ]
 }

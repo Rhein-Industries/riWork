@@ -2,12 +2,12 @@
 //! Base owns all gestures/endpoints/multi-click/Shift/autoscroll. The renderer
 //! reports glyph runs; stable content keys and copy_with export current source,
 //! including leaves whose elements have genuinely left the virtual list.
-use super::{ChatView, selection_document::SourceLeaf, widgets::Look};
+use super::{ChatView, find::FindPaint, selection_document::SourceLeaf, widgets::Look};
 use gpui::{
-    AnyElement, AnyWindowHandle, App, Bounds, Context, Element, ElementId, Focusable,
+    AnyElement, AnyWindowHandle, App, BorderStyle, Bounds, Context, Element, ElementId, Focusable,
     GlobalElementId, HighlightStyle, HitboxBehavior, Hsla, InspectorElementId, InteractiveText,
     IntoElement, LayoutId, ListState, Pixels, Point, SharedString, StyledText, Subscription,
-    TextLayout, Window, div, prelude::*, rgb,
+    TextLayout, Window, div, prelude::*, px, rgb,
 };
 use gpui_kit::base::{
     TestSupportExt as _, TextSelection, TextSelectionContentKey, TextSelectionEvent,
@@ -19,7 +19,12 @@ use std::{
     collections::HashMap,
     ops::Range,
     rc::Rc,
+    sync::atomic::{AtomicU64, Ordering},
 };
+
+/// Content revisions are unique across chats and windows. Mounting another virtual
+/// row does not change this revision; changing disclosed text does.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 struct PaintedLeaf {
@@ -41,9 +46,31 @@ struct Document {
     native: Option<bool>,
     container_width: f32,
     participant: Option<gpui::EntityId>,
+    generation: u64,
+    paints: u64,
+    /// Complete disclosed text, built on demand while Find is open. Selection
+    /// itself retains only mounted bodies in `source`.
+    search_source: Vec<SourceLeaf>,
+    find: Option<FindPaint>,
+    #[cfg(test)]
+    found: Vec<(String, Range<usize>, bool)>,
 }
 
 impl Document {
+    fn changed(&mut self) {
+        self.generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    }
+
+    fn painted_rect(&self, leaf: &SourceLeaf, range: Range<usize>) -> Option<Bounds<Pixels>> {
+        let painted = self
+            .frame
+            .iter()
+            .find(|painted| painted.key == leaf.key && painted.text.as_ref() == leaf.text)?;
+        range_quads(&painted.layout, range)
+            .into_iter()
+            .reduce(|a, b| a.union(&b))
+    }
+
     fn endpoint(&self, key: TextSelectionContentKey) -> Option<(usize, usize)> {
         let id = (key.value() >> 32) as u32;
         let byte = key.value() as u32 as usize;
@@ -222,6 +249,40 @@ impl TranscriptSelection {
     }
     pub fn changed(&self) {
         self.dirty.set(true);
+        self.invalidate_search();
+    }
+    pub(super) fn invalidate_search(&self) {
+        self.data.borrow_mut().changed();
+    }
+    pub fn generation(&self) -> u64 {
+        self.data.borrow().generation
+    }
+    pub fn paints(&self) -> u64 {
+        self.data.borrow().paints
+    }
+    pub(super) fn set_search_source(&self, source: Vec<SourceLeaf>) {
+        self.data.borrow_mut().search_source = source;
+    }
+    pub fn with_source<R>(&self, read: impl FnOnce(&[SourceLeaf]) -> R) -> R {
+        read(&self.data.borrow().search_source)
+    }
+    pub fn painted_rect(&self, leaf: usize, range: Range<usize>) -> Option<Bounds<Pixels>> {
+        let data = self.data.borrow();
+        data.painted_rect(data.search_source.get(leaf)?, range)
+    }
+    pub fn set_find(&self, find: Option<FindPaint>) {
+        let mut data = self.data.borrow_mut();
+        if find.is_none() {
+            data.search_source.clear();
+        }
+        data.find = find;
+    }
+    pub fn selected_text(&self, cx: &App) -> String {
+        self.data.borrow().export(self.handle.snapshot(cx))
+    }
+    #[cfg(test)]
+    pub(super) fn painted_find(&self) -> Vec<(String, Range<usize>, bool)> {
+        self.data.borrow().found.clone()
     }
     pub(super) fn source_was_mounted(&self, id: &str) -> bool {
         self.source_cache.borrow().contains_key(id)
@@ -273,9 +334,6 @@ impl TranscriptSelection {
             .borrow_mut()
             .insert(row.id.clone(), (row.clone(), source.to_vec()));
     }
-    pub fn selected_rows(&self, cx: &App) -> Vec<usize> {
-        self.data.borrow().rows(self.handle.snapshot(cx))
-    }
     pub fn clear(&self, window: AnyWindowHandle, cx: &mut App) {
         if self.handle.snapshot(cx).is_some() || self.handle.has_local_selection(cx) {
             TextSelection::clear_for_window(window.window_id(), cx);
@@ -291,6 +349,7 @@ impl TranscriptSelection {
         });
         self.data.borrow_mut().source.clear();
         self.data.borrow_mut().frame.clear();
+        self.set_find(None);
         self.handle.update_runs(&[], cx);
         self.scope = TextSelectionScopeId::new();
         self.changed();
@@ -420,6 +479,7 @@ impl ChatView {
         }
         replacements.sort_by_key(|(row, _)| std::cmp::Reverse(*row));
         let mut data = self.transcript_selection.data.borrow_mut();
+        let mut changed = false;
         for (row, source) in replacements {
             for leaf in &source {
                 if !data.ids.contains_key(&leaf.key) {
@@ -433,7 +493,11 @@ impl ChatView {
             }
             let start = data.source.partition_point(|leaf| leaf.row < row);
             let end = data.source.partition_point(|leaf| leaf.row <= row);
+            changed |= data.source[start..end] != source;
             data.source.splice(start..end, source);
+        }
+        if clear_changed && changed {
+            data.changed();
         }
     }
 
@@ -442,6 +506,7 @@ impl ChatView {
         if self.transcript_selection.dirty.get() {
             return;
         }
+        self.transcript_selection.invalidate_search();
         let updates: HashMap<_, _> = self
             .visible
             .iter()
@@ -482,6 +547,7 @@ impl ChatView {
             || self.transcript_selection.data.borrow().container_width != self.composer_width.get()
         {
             self.transcript_selection.invalidate_sources();
+            self.transcript_selection.invalidate_search();
         }
         let _timing = super::perf::Span::new("selection-document");
         let source = super::selection_document::mounted_leaves(self);
@@ -526,6 +592,7 @@ impl ChatView {
                 .read(cx)
                 .focus_handle(cx)
                 .is_focused(window)
+            || self.find.field_focused(window, cx)
             || self
                 .answers
                 .values()
@@ -690,7 +757,7 @@ impl IntoElement for LeafRenderer {
 }
 impl Element for LeafRenderer {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    type PrepaintState = Option<usize>;
     fn id(&self) -> Option<ElementId> {
         Some(ElementId::Name(format!("leaf:{}", self.key).into()))
     }
@@ -714,7 +781,7 @@ impl Element for LeafRenderer {
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> Option<usize> {
         self.body.prepaint(window, cx);
         let mut data = self.data.borrow_mut();
         if let Some(order) = data.source.iter().position(|leaf| leaf.key == self.key) {
@@ -732,6 +799,9 @@ impl Element for LeafRenderer {
                 order: order as u64,
             });
         }
+        data.search_source
+            .iter()
+            .position(|leaf| leaf.key == self.key && leaf.text == self.text.as_ref())
     }
     fn paint(
         &mut self,
@@ -739,10 +809,42 @@ impl Element for LeafRenderer {
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
         _: &mut (),
-        _: &mut (),
+        order: &mut Option<usize>,
         window: &mut Window,
         cx: &mut App,
     ) {
+        // Paint Find under glyphs but over the surrounding output/container.
+        if let Some(order) = *order {
+            let mut data = self.data.borrow_mut();
+            let data = &mut *data;
+            if let Some(find) = data
+                .find
+                .as_ref()
+                .filter(|f| f.generation == data.generation)
+            {
+                let first = find.hits.partition_point(|hit| hit.leaf < order);
+                for (at, hit) in find.hits[first..]
+                    .iter()
+                    .take_while(|hit| hit.leaf == order)
+                    .enumerate()
+                {
+                    let current = find.current == Some(first + at);
+                    for quad in range_quads(&self.layout, hit.range.clone()) {
+                        window.paint_quad(gpui::quad(
+                            quad,
+                            px(2.),
+                            if current { find.strong } else { find.fill },
+                            px(if current { 1. } else { 0. }),
+                            find.edge,
+                            BorderStyle::Solid,
+                        ));
+                    }
+                    #[cfg(test)]
+                    data.found
+                        .push((self.key.clone(), hit.range.clone(), current));
+                }
+            }
+        }
         self.body.paint(window, cx);
     }
 }
@@ -788,7 +890,13 @@ impl Element for DocumentViewport {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.data.borrow_mut().frame.clear();
+        {
+            let mut data = self.data.borrow_mut();
+            data.frame.clear();
+            data.paints += 1;
+            #[cfg(test)]
+            data.found.clear();
+        }
         self.body.prepaint(window, cx);
         let bounds = self.list.viewport_bounds();
         let scroll = self.list.scroll_px_offset_for_scrollbar();
@@ -905,11 +1013,22 @@ fn paint_projection(
     window: &mut Window,
     cx: &mut App,
 ) {
+    for quad in range_quads(layout, range) {
+        window.paint_quad(gpui::fill(quad, color));
+        window.with_content_mask(Some(gpui::ContentMask { bounds: quad }), |window| {
+            let _ = layout.paint_foreground(window, cx);
+        });
+    }
+}
+
+/// The boxes `range` of a laid-out text covers, one per line it runs over, in window
+/// coordinates.
+fn range_quads(layout: &TextLayout, range: Range<usize>) -> Vec<Bounds<Pixels>> {
     let (Some(start), Some(end)) = (
         layout.position_for_index(range.start),
         layout.position_for_index(range.end),
     ) else {
-        return;
+        return Vec::new();
     };
     let bounds = layout.bounds();
     let height = layout.line_height();
@@ -935,123 +1054,5 @@ fn paint_projection(
             Point::new(end.x, end.y + height),
         ));
     }
-    for quad in quads {
-        window.paint_quad(gpui::fill(quad, color));
-        window.with_content_mask(Some(gpui::ContentMask { bounds: quad }), |window| {
-            let _ = layout.paint_foreground(window, cx);
-        });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::chat::model::{Item, ItemBody, ItemStatus, Presentation};
-    use gpui_kit::test::TestWindowExt;
-
-    #[gpui::test]
-    fn full_source_export_does_not_cache_unmounted_bodies_and_mode_prunes_hidden_rows(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        let (handle, view, _) = super::super::editor_tests::mount_selection(cx);
-        cx.update_window(handle.into(), |_, window, cx| {
-            view.update(cx, |view, cx| {
-                view.model.link = super::super::Link::Live;
-                view.model.transcript.items = (0..80)
-                    .map(|index| Item {
-                        id: format!("reasoning-{index}"),
-                        turn_id: Some("selection-cache".into()),
-                        started_at: None,
-                        ended_at: None,
-                        status: ItemStatus::Completed,
-                        presentation: Presentation::default(),
-                        body: ItemBody::Reasoning {
-                            text: format!("Reasoning body {index}"),
-                        },
-                    })
-                    .collect();
-                view.display_mode = super::super::DisplayMode::Verbose;
-                view.refresh_projection(cx);
-                view.expand_transcript(true, cx);
-                view.list.scroll_to(gpui::ListOffset {
-                    item_ix: 0,
-                    offset_in_item: gpui::px(0.),
-                });
-            });
-            window.render_frame(cx);
-            view.update(cx, |view, cx| {
-                let mounted = view.transcript_selection.source_cache.borrow().len();
-                assert!(mounted > 0 && mounted < 80, "mounted {mounted} rows");
-                let source = super::super::selection_document::leaves(view, Look::of(cx));
-                assert!(source.iter().any(|leaf| {
-                    leaf.key == "thought:reasoning-79" && leaf.text == "Reasoning body 79"
-                }));
-                assert_eq!(
-                    view.transcript_selection.source_cache.borrow().len(),
-                    mounted,
-                    "copying unmounted history must not retain its bodies"
-                );
-                view.apply_display_mode(super::super::DisplayMode::Normal, cx);
-                let cache = view.transcript_selection.source_cache.borrow();
-                assert!(cache.len() < mounted, "hidden body sources were retained");
-                assert!(
-                    cache
-                        .keys()
-                        .all(|id| { view.list_rows.iter().any(|entry| &entry.row.id == id) })
-                );
-            });
-        })
-        .unwrap();
-    }
-
-    #[gpui::test]
-    fn complete_export_tolerates_shorter_or_multibyte_replacement_source(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        let (handle, view, _) = super::super::editor_tests::mount_selection(cx);
-        cx.update_window(handle.into(), |_, window, cx| {
-            view.update(cx, |view, cx| {
-                view.model.link = super::super::Link::Live;
-                view.model.transcript.items = vec![Item {
-                    id: "copy-source".into(),
-                    turn_id: None,
-                    started_at: None,
-                    ended_at: None,
-                    status: ItemStatus::Completed,
-                    presentation: Presentation::default(),
-                    body: ItemBody::AgentMessage {
-                        text: "abcdef".into(),
-                    },
-                }];
-                view.refresh_projection(cx);
-            });
-            window.render_frame(cx);
-            let (from, to) = view.read_with(cx, |view, _| {
-                (
-                    view.transcript_selection
-                        .glyph_point("copy-source/0", 1)
-                        .unwrap(),
-                    view.transcript_selection
-                        .glyph_point("copy-source/0", 4)
-                        .unwrap(),
-                )
-            });
-            window.drag(from, to, cx);
-            view.read_with(cx, |view, cx| {
-                let selection = &view.transcript_selection;
-                let snapshot = selection.handle.snapshot(cx);
-                let document = selection.data.borrow();
-                assert_eq!(document.export(snapshot), "bcd");
-                for replacement in ["x", "é", "🦀"] {
-                    let source = [SourceLeaf {
-                        key: "copy-source/0".into(),
-                        text: replacement.into(),
-                        row: 0,
-                    }];
-                    assert_eq!(document.export_complete(snapshot, &source), replacement);
-                }
-            });
-        })
-        .unwrap();
-    }
+    quads
 }

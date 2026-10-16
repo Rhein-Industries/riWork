@@ -199,6 +199,60 @@
       "state": "read",
       "total": 4
     },
+    "backends": {
+      "app": {
+        "build_at": 1799996400,
+        "freshness": "stale",
+        "running": 1,
+        "started_at": 1799992800,
+        "windows": 2
+      },
+      "chat_host": {
+        "build_at": 1799996400,
+        "freshness": "stale",
+        "pid": 4242,
+        "started_at": 1799827200,
+        "state": "running"
+      },
+      "providers": [
+        {
+          "chats": 1,
+          "cli": "found",
+          "oldest_start": 1799910000,
+          "provider": "codex",
+          "replaced_at": 1799913600,
+          "running": 4,
+          "shells": 3,
+          "stale": 1,
+          "unknown": 2,
+          "version": "0.47.0"
+        },
+        {
+          "chats": 2,
+          "cli": "found",
+          "oldest_start": 1799996400,
+          "provider": "claude",
+          "replaced_at": 1799998200,
+          "running": 3,
+          "shells": 1,
+          "stale": 1,
+          "unknown": 2,
+          "version": "2.1.301"
+        },
+        {
+          "chats": 1,
+          "cli": "found",
+          "provider": "muse",
+          "replaced_at": 1799400000,
+          "running": 1,
+          "shells": 0,
+          "stale": 0,
+          "unknown": 0
+        }
+      ],
+      "providers_total": 3,
+      "state": "read"
+    },
     "chats_known": true,
     "finished": [
       {
@@ -542,6 +596,54 @@
       "state": "read",
       "total": 4
     },
+    "backends": {
+      "app": {
+        "build_at": 1799996400,
+        "freshness": "stale",
+        "running": 1,
+        "started_at": 1799992800,
+        "windows": 2
+      },
+      "chat_host": {
+        "build_at": 1799996400,
+        "freshness": "stale",
+        "pid": 4242,
+        "started_at": 1799827200,
+        "state": "running"
+      },
+      "providers": [
+        {
+          "cli": "found",
+          "oldest_start": 1799910000,
+          "provider": "codex",
+          "replaced_at": 1799913600,
+          "shells": 3,
+          "stale": 1,
+          "unknown": 1,
+          "version": "0.47.0"
+        },
+        {
+          "cli": "found",
+          "oldest_start": 1799996400,
+          "provider": "claude",
+          "replaced_at": 1799998200,
+          "shells": 1,
+          "stale": 1,
+          "unknown": 0,
+          "version": "2.1.301"
+        },
+        {
+          "cli": "found",
+          "provider": "muse",
+          "replaced_at": 1799400000,
+          "shells": 0,
+          "stale": 0,
+          "unknown": 0
+        }
+      ],
+      "providers_total": 3,
+      "state": "read"
+    },
     "chats_known": false,
     "finished": [
       {
@@ -759,6 +861,18 @@
       "state": "read",
       "total": 0
     },
+    "backends": {
+      "app": {
+        "running": 0,
+        "windows": 0
+      },
+      "chat_host": {
+        "state": "stopped"
+      },
+      "providers": [],
+      "providers_total": 0,
+      "state": "read"
+    },
     "chats_known": true,
     "finished": [],
     "finished_total": 0,
@@ -799,6 +913,9 @@
     "attention": [],
     "attention_total": 0,
     "automations": {
+      "state": "not_read"
+    },
+    "backends": {
       "state": "not_read"
     },
     "chats_known": true,
@@ -1042,6 +1159,51 @@
     "automations": {
       "message": "Invalid schedule store: expected value at line 1 column 1",
       "state": "unreadable"
+    },
+    "backends": {
+      "app": {
+        "build_at": 1799996400,
+        "freshness": "stale",
+        "running": 1,
+        "started_at": 1799992800,
+        "windows": 2
+      },
+      "chat_host": {
+        "message": "run/chat.lock: Permission denied",
+        "state": "unreadable"
+      },
+      "providers": [
+        {
+          "cli": "found",
+          "oldest_start": 1799910000,
+          "provider": "codex",
+          "replaced_at": 1799913600,
+          "shells": 4,
+          "stale": 1,
+          "unknown": 2,
+          "version": "0.47.0"
+        },
+        {
+          "cli": "found",
+          "oldest_start": 1799996400,
+          "provider": "claude",
+          "replaced_at": 1799998200,
+          "shells": 1,
+          "stale": 1,
+          "unknown": 0,
+          "version": "2.1.301"
+        },
+        {
+          "cli": "found",
+          "provider": "muse",
+          "replaced_at": 1799400000,
+          "shells": 0,
+          "stale": 0,
+          "unknown": 0
+        }
+      ],
+      "providers_total": 3,
+      "state": "read"
     },
     "chats_known": true,
     "finished": [

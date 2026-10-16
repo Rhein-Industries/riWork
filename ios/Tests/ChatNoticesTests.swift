@@ -161,7 +161,7 @@ final class ChatUsageLimitsTests: XCTestCase {
 
 final class SnapshotToleranceTests: XCTestCase {
     /// A newer host's snapshot skips unknown controls and retains unknown item identities.
-    func testUnknownControlsAreSkippedAndUnknownItemBodiesAreRetained() throws {
+    func testUnknownControlsAndItemsAreSkippedNotTheSnapshot() throws {
         let chat = "11111111-1111-4111-8111-111111111111"
         let json = #"""
         {"v":1,"chat_id":"\#(chat)","cursor":"c","next":9,"before":1,"more":false,"future_field":true,

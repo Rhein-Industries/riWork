@@ -239,7 +239,7 @@ final class ChatTests: XCTestCase {
 
     // MARK: Leniency
 
-    func testUnknownEventsAndDeltasAreSkippedWhileUnknownItemBodiesSurvive() throws {
+    func testAnUnknownEventItemOrDeltaIsNotReadAndTheOthersAre() throws {
         for json in [
             #"{"event":"hologram","x":1}"#,
             #"{"event":"item_delta","item_id":"a","delta":{"kind":"smell","text":"x"}}"#,

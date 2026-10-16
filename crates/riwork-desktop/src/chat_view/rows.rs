@@ -40,6 +40,9 @@ const ROW_INSET_X: f32 = 20.0;
 const ROW_INSET_Y: f32 = 1.0;
 const COLUMN_WIDTH: f32 = 1040.0;
 
+/// A native worker/subagent result is constructed only when disclosed.
+type BodyMaker<'a> = dyn Fn(&ChatView, &mut Context<ChatView>) -> AnyElement + 'a;
+
 const HEADER_HOVER_DURATION: Duration = Duration::from_millis(100);
 
 #[derive(Clone)]
@@ -182,6 +185,7 @@ impl ChatView {
                     row.kind == RowKind::Activity && !row.artifacts.is_empty(),
                     |body| {
                         body.child(div().pl(row_space(12.0)).child(self.render_artifact_refs(
+                            &row.id,
                             &row.artifacts,
                             look,
                             cx,
@@ -242,6 +246,20 @@ impl ChatView {
                     _ => None,
                 }))
                 .into_any_element(),
+            RowKind::Worker | RowKind::Subagent
+                if item.is_some_and(|(_, item)| {
+                    crate::chat::workers::of(item).is_some()
+                        || crate::chat::subagents::in_transcript(
+                            item,
+                            &self.model.transcript,
+                            self.info().map(|info| info.provider),
+                        )
+                        .is_some()
+                }) =>
+            {
+                item.map(|(at, item)| self.item(at, item, look, cx))
+                    .unwrap_or_else(|| self.projected_header(row, None, look, cx))
+            }
             RowKind::User | RowKind::Final | RowKind::Compaction | RowKind::Notice => div()
                 .w_full()
                 .when(matches!(row.kind, RowKind::User | RowKind::Final), |body| {
@@ -332,7 +350,7 @@ impl ChatView {
                     body.child(
                         div()
                             .pl(row_space(12.0))
-                            .child(self.render_artifact_refs(&artifacts, look, cx)),
+                            .child(self.render_artifact_refs(&row.id, &artifacts, look, cx)),
                     )
                 },
             )
@@ -695,49 +713,120 @@ impl ChatView {
 
     fn item(&self, ix: usize, item: &Item, look: Look, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
+        if let Some(worker) = crate::chat::workers::of(item) {
+            return self.worker_card(ix, item, worker, look, cx);
+        }
+        if let Some(run) = crate::chat::subagents::in_transcript(
+            item,
+            &self.model.transcript,
+            self.info().map(|info| info.provider),
+        ) {
+            use crate::chat::subagents::RunStatus;
+            let head = Head {
+                title: format!("Subagent · {}", run.name),
+                subtitle: run.purpose.clone(),
+                badge: Some(cards::Badge {
+                    label: run.status.label().into(),
+                    tone: match run.status {
+                        RunStatus::Running => cards::Tone::Accent,
+                        RunStatus::Failed => cards::Tone::Error,
+                        RunStatus::Declined => cards::Tone::Warning,
+                        _ => cards::Tone::Muted,
+                    },
+                    live: run.status == RunStatus::Running,
+                }),
+                expandable: run.summary.is_some() || !run.children.is_empty(),
+            };
+            let summary = run.result_text();
+            let body = |view: &Self, cx: &mut Context<Self>| {
+                div()
+                    .id(id(format!("subagent-result:{}", item.id)))
+                    .px(ui_text::space(10.0))
+                    .py(ui_text::space(6.0))
+                    .child(view.selectable(
+                        &format!("subagent:{}", item.id),
+                        summary.clone(),
+                        Vec::new(),
+                        Vec::new(),
+                        look,
+                        cx,
+                    ))
+                    .test_support()
+                    .into_any_element()
+            };
+            return self.card(ix, item, &head, Some(&body), look, cx);
+        }
         match &item.body {
             // What you sent is a block across the reading column, in every design; Native's
             // is plain grey with its rounded corners, Hermes's a bordered panel, the colorful
             // themes' tinted in their accent.
-            ItemBody::UserMessage { text } => div()
-                .w_full()
-                .flex()
-                .child(
-                    div()
-                        .id(id(format!("user-message:{}", item.id)))
-                        .w_full()
-                        .min_w_0()
-                        .px(ui_text::space(12.0))
-                        .py(ui_text::space(8.0))
-                        .when(look.native, |block| {
-                            block
-                                .rounded(controls::radius(BUBBLE_RADIUS))
-                                .bg(rgb(colors.panel_active))
-                        })
-                        .when(look.hermes(), |block| {
-                            block
-                                .rounded(px(4.0))
-                                .border_1()
-                                .border_color(rgb(colors.divider))
-                                .bg(rgb(colors.panel))
-                        })
-                        .when(!look.native && !look.hermes(), |block| {
-                            block
-                                .rounded(px(6.0))
-                                .border_1()
-                                .border_color(rgb(look.tint(colors.cyan, 0.45)))
-                                .bg(rgb(look.tint(colors.cyan, 0.10)))
-                        })
-                        .child(self.prose(
-                            &self.parsed(item, text),
-                            &format!("user:{}", item.id),
-                            look,
-                            cx,
-                        ))
-                        .child(self.sent_attachment_strip(item, look, cx))
-                        .test_support(),
-                )
-                .into_any_element(),
+            ItemBody::UserMessage { text } => {
+                let sent = self.sent_attachments(item, look, cx);
+                let text = super::attachment_ui::shown_text(item, text);
+                div()
+                    .w_full()
+                    .flex()
+                    .child(
+                        div()
+                            .id(id(format!("user-message:{}", item.id)))
+                            .w_full()
+                            .min_w_0()
+                            .px(ui_text::space(12.0))
+                            .py(ui_text::space(8.0))
+                            .when(look.native, |block| {
+                                block
+                                    .rounded(controls::radius(BUBBLE_RADIUS))
+                                    .bg(rgb(colors.panel_active))
+                            })
+                            .when(look.hermes(), |block| {
+                                block
+                                    .rounded(px(4.0))
+                                    .border_1()
+                                    .border_color(rgb(colors.divider))
+                                    .bg(rgb(colors.panel))
+                            })
+                            .when(!look.native && !look.hermes(), |block| {
+                                block
+                                    .rounded(px(6.0))
+                                    .border_1()
+                                    .border_color(rgb(look.tint(colors.cyan, 0.45)))
+                                    .bg(rgb(look.tint(colors.cyan, 0.10)))
+                            })
+                            .when(sent.is_some(), |block| {
+                                block.flex().flex_col().gap(ui_text::space(8.0))
+                            })
+                            .children(sent)
+                            .children(text.map(|text| {
+                                self.prose(
+                                    &self.parsed(item, text),
+                                    &format!("user:{}", item.id),
+                                    look,
+                                    cx,
+                                )
+                            }))
+                            .children(
+                                item.presentation
+                                    .images
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, image)| {
+                                        !super::attachment_ui::covered(item, image)
+                                    })
+                                    .map(|(n, image)| {
+                                        self.image_card(
+                                            image,
+                                            &format!("{}:image:{n}", item.id),
+                                            Some(item),
+                                            None,
+                                            look,
+                                            cx,
+                                        )
+                                    }),
+                            )
+                            .test_support(),
+                    )
+                    .into_any_element()
+            }
             ItemBody::AgentMessage { text } => self.agent_message(ix, item, text, look, cx),
             ItemBody::Compaction => div()
                 .w_full()
@@ -804,6 +893,85 @@ impl ChatView {
                 .into_any_element(),
             _ => div().into_any_element(),
         }
+    }
+
+    /// A card: its head, always shown, and its body, shown while the card is open.
+    fn card(
+        &self,
+        ix: usize,
+        item: &Item,
+        head: &Head,
+        body: Option<&BodyMaker<'_>>,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = look.colors;
+        let open = self.open.contains(&item.id) && head.expandable;
+        let key = item.id.clone();
+        // A command is code; the subtitles are folders, paths, arguments and line counts.
+        let code_title = matches!(item.body, ItemBody::Command { .. });
+        let header = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(ui_text::space(6.0))
+            .px(ui_text::space(10.0))
+            .py(ui_text::space(6.0))
+            .text_size(ui_text::text(11.0))
+            .when(head.expandable, |header| {
+                header.cursor_pointer().hover(move |style| {
+                    controls::hovered(style, controls::row_hover(false, colors), |style| {
+                        style.bg(rgb(colors.panel_active))
+                    })
+                })
+            })
+            .child(chevron(open, head.expandable, colors.muted))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(rgb(colors.text))
+                    .when(code_title, |title| {
+                        title.font_family(ui_text::code_family())
+                    })
+                    .child(head.title.clone()),
+            )
+            .children(head.subtitle.clone().map(|subtitle| {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .font_family(ui_text::mono_family())
+                    .text_color(rgb(colors.muted))
+                    .child(subtitle)
+            }))
+            .when(head.subtitle.is_none(), |header| {
+                header.child(div().flex_1())
+            })
+            .children(
+                head.badge
+                    .as_ref()
+                    .map(|badge| widgets::badge(id(format!("badge:{}", item.id)), badge, look)),
+            );
+        let header = widgets::content_button(
+            id(format!("card:{}", item.id)),
+            head.title.clone(),
+            header,
+            look,
+        )
+        .disabled(!head.expandable)
+        .aria_expanded(open)
+        .on_click(cx.listener(move |view, _, _, cx| view.toggle(&key, Some(ix), cx)));
+        card_box(look)
+            .child(header)
+            // The body is made only for a card that is open.
+            .children(body.filter(|_| open).map(|body| {
+                div()
+                    .border_t_1()
+                    .border_color(rgb(colors.divider))
+                    .child(body(self, cx))
+            }))
+            .into_any_element()
     }
 
     fn agent_message(
@@ -2145,6 +2313,21 @@ pub(super) fn is_file_excerpt(item: &Item) -> bool {
         })
 }
 
+fn card_box(look: Look) -> gpui::Div {
+    let colors = look.colors;
+    div()
+        .w_full()
+        .rounded(if look.native {
+            controls::radius(controls::ROW_RADIUS)
+        } else {
+            px(4.0)
+        })
+        .border_1()
+        .border_color(rgb(colors.divider))
+        .bg(rgb(colors.panel))
+        .overflow_hidden()
+}
+
 /// The native symbol remains stable across providers; semantic metadata selects it.
 fn kind_symbol(kind: riwork_engine::chat::projection::RowKind) -> &'static str {
     use riwork_engine::chat::projection::RowKind::*;
@@ -2163,30 +2346,3 @@ fn kind_symbol(kind: riwork_engine::chat::projection::RowKind) -> &'static str {
         _ => "circle.grid.2x2",
     }
 }
-
-#[cfg(test)]
-mod density_tests {
-    use super::*;
-
-    #[test]
-    fn default_headers_are_24_points_for_each_face_and_accessibility_sizes_grow() {
-        for face in [
-            ui_text::Face::Menlo,
-            ui_text::Face::SystemMono,
-            ui_text::Face::Hermes,
-        ] {
-            let baseline = (ui_text::DEFAULT_POINTS + face.offset(false)) / ui_text::REFERENCE_SIZE;
-            let old = ui_text::set_for_tests(baseline, face);
-            assert_eq!(row_space(24.0), px(24.0));
-            assert_eq!(row_space(2.0), px(2.0));
-            assert_eq!(row_space(12.0), px(12.0));
-            ui_text::set_for_tests(baseline * 1.5, face);
-            assert_eq!(row_space(24.0), px(36.0));
-            ui_text::set_for_tests(old.0, old.1);
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "rows_container_tests.rs"]
-mod container_tests;

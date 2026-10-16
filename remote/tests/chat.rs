@@ -8,6 +8,12 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// What a chat's message box offers, pinned for the engine, the connector and the phone.
+const SUGGESTIONS_FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../ios/Tests/Fixtures/composer-suggestions.json"
+);
+
 fn new_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -169,9 +175,10 @@ fn warm(cli: &Path) {
 /// `[]`). `chat new` waits for `create.gate` (20 s at most) if `create.hold` exists, marks
 /// `create.ran`, then prints `create.json`. `chat events` waits `events.delay`
 /// and prints `events.json`. `chat command` and `chat stop` print the chat they
-/// were given. `chat models` prints `models.json`. Each of the `chat` calls fails with the
-/// line in its `.error` file (`list.error`, `create.error`, `events.error`, `command.error`,
-/// `stop.error`, `models.error`) if that exists.
+/// were given. `chat models` prints `models.json`, `chat suggestions` `suggestions.json`. Each
+/// of the `chat` calls fails with the line in its `.error` file (`list.error`, `create.error`,
+/// `events.error`, `command.error`, `stop.error`, `models.error`, `suggestions.error`) if that
+/// exists.
 fn stub_cli(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let cli = dir.join("fake-riwork");
@@ -205,6 +212,7 @@ fn stub_cli(dir: &Path) -> PathBuf {
              'chat command') fail command; printf '{{\"id\":\"%s\",\"status\":\"ok\"}}' \"$3\";;\n\
              'chat stop') fail stop; printf '{{\"id\":\"%s\",\"state\":\"stopped\"}}' \"$3\";;\n\
              'chat models') fail models; cat \"$d/models.json\";;\n\
+             'chat suggestions') fail suggestions; cat \"$d/suggestions.json\";;\n\
              esac\n",
             dir = dir.display()
         ),
@@ -2453,4 +2461,399 @@ async fn muse_chats_are_created_listed_switched_to_and_listed_by_models() {
     assert_eq!(response["result"]["provider"], "muse");
     let call = f.calls_of("chat", "models").pop().unwrap();
     assert_eq!(call[..4], ["chat", "models", "--provider", "muse"]);
+}
+
+/// The `reply` of the shared fixture: what `riwork chat suggestions --json` prints.
+fn shared_suggestions() -> Value {
+    let text = std::fs::read_to_string(SUGGESTIONS_FIXTURE).unwrap();
+    serde_json::from_str::<Value>(&text).unwrap()["reply"].take()
+}
+
+#[tokio::test]
+async fn chat_suggestions_passes_on_a_chats_commands_files_and_models_and_nothing_else() {
+    let f = Fixture::new();
+    let reply = shared_suggestions();
+    let chat = reply["chat_id"].as_str().unwrap().to_owned();
+    // A CLI without the command is not asked.
+    let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+    assert_eq!(code(&response), "cli_error", "{response}");
+    assert!(message(&response).contains("update RiWork"), "{response}");
+    assert!(f.calls_of("chat", "suggestions").is_empty());
+
+    f.says(
+        "capabilities.out",
+        &json!({"v":1,"chat":true,"chat_suggestions":true}),
+    );
+    // The fixture's reply passes as it is, without what is not ours.
+    let mut printed = reply.clone();
+    printed["secret"] = json!("x");
+    printed["commands"][0]["extra"] = json!(1);
+    printed["files"]["entries"][0]["mtime"] = json!(7);
+    printed["files"]["extra"] = json!(1);
+    printed["models"][0]["pricing"] = json!("x");
+    printed["mention_models"][0]["pricing"] = json!("x");
+    f.says("suggestions.json", &printed);
+    let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(response["result"], reply);
+
+    assert_eq!(
+        f.calls_of("chat", "suggestions"),
+        vec![words(&["chat", "suggestions", &chat, "--json"])]
+    );
+
+    assert!(
+        !reply["models"].as_array().unwrap().is_empty(),
+        "the fixture offers `&` models"
+    );
+    assert!(
+        reply["mention_models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|model| model["provider"] != reply["provider"]),
+        "and other providers' to mention"
+    );
+
+    // A CLI from before every provider's mentions prints no `mention_models`: the phone gets
+    // none, and offers its chat's provider's `models`.
+    let mut printed = reply.clone();
+    printed.as_object_mut().unwrap().remove("mention_models");
+    f.says("suggestions.json", &printed);
+    let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(response["result"]["mention_models"], json!([]));
+    assert_eq!(response["result"]["models"], reply["models"]);
+
+    // A CLI from before `&` prints no models: the phone gets none, and offers no `&` list.
+    let mut printed = reply.clone();
+    printed.as_object_mut().unwrap().remove("models");
+    printed.as_object_mut().unwrap().remove("mention_models");
+    f.says("suggestions.json", &printed);
+    let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(response["result"]["models"], json!([]));
+    assert_eq!(response["result"]["commands"], reply["commands"]);
+
+    // A malformed model is left out on its own; a description that is not one line is dropped
+    // rather than the model.
+    let model = |id: Value, name: Value| json!({"id":id,"name":name,"description":"d","is_default":false,"chats":1});
+    let mut printed = reply.clone();
+    printed["models"] = json!([
+        reply["models"][0],
+        model(json!(""), json!("Blank")),
+        model(json!("   "), json!("Blank")),
+        model(json!("x".repeat(101)), json!("Long")),
+        model(json!("two\nlines"), json!("Broken")),
+        model(json!("two words"), json!("Spaced")),
+        model(json!(7), json!("Number")),
+        model(json!("ok"), json!(7)),
+        model(json!("ok"), json!("a\u{1b}[31m")),
+        {"id":"no-name","description":"d","is_default":false,"chats":1},
+        {"id":"bad-count","name":"N","chats":-1},
+        {"id":"bad-default","name":"N","is_default":"yes"},
+        {"id":"multi","name":"Multi","description":"one\ntwo","is_default":false,"chats":2},
+        {"id":"odd","name":"Odd","description":7},
+        {"id":"bare","name":"Bare"},
+    ]);
+    f.says("suggestions.json", &printed);
+    let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(
+        response["result"]["models"],
+        json!([
+            reply["models"][0],
+            {"id":"multi","name":"Multi","description":"","is_default":false,"chats":2},
+            {"id":"odd","name":"Odd","description":"","is_default":false,"chats":0},
+            {"id":"bare","name":"Bare","description":"","is_default":false,"chats":0},
+        ])
+    );
+    // Every provider's models are checked as the chat's are, and each must name a provider
+    // RiWork knows; one in `models` never names one, as an older phone reads them.
+    let mut printed = reply.clone();
+    printed["models"] = json!([{"id":"opus","name":"Opus","provider":"claude"}]);
+    printed["mention_models"] = json!([
+        {"id":"opus","name":"Opus","provider":"claude","chats":3},
+        {"id":"gpt-6.1-sol","name":"GPT-6.1-Sol","provider":"codex","is_default":true},
+        {"id":"no-provider","name":"N"},
+        {"id":"other","name":"O","provider":"grok"},
+        {"id":"number","name":"N","provider":7},
+        {"id":"two words","name":"Spaced","provider":"muse"},
+    ]);
+    f.says("suggestions.json", &printed);
+    let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(
+        response["result"]["models"],
+        json!([{"id":"opus","name":"Opus","description":"","is_default":false,"chats":0}])
+    );
+    assert_eq!(
+        response["result"]["mention_models"],
+        json!([
+            {"id":"opus","name":"Opus","description":"","is_default":false,"chats":3,"provider":"claude"},
+            {"id":"gpt-6.1-sol","name":"GPT-6.1-Sol","description":"","is_default":true,"chats":0,"provider":"codex"},
+        ])
+    );
+    // Models that are not a list are not an answer.
+    for key in ["models", "mention_models"] {
+        let mut printed = reply.clone();
+        printed[key] = json!({"id":"x"});
+        f.says("suggestions.json", &printed);
+        let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+        assert_eq!(code(&response), "cli_error", "{key}: {response}");
+    }
+
+    // A malformed command or entry is left out on its own.
+    let command = |name: &str, argument: Value, handler: &str| json!({"name":name,"summary":"s","argument":argument,"sends":"t","handler":handler});
+    let mut printed = reply.clone();
+    printed["commands"] = json!([
+        reply["commands"][0],
+        command("two words", Value::Null, "provider"),
+        command("Compact", Value::Null, "provider"),
+        command("/compact", Value::Null, "provider"),
+        command("", Value::Null, "provider"),
+        command(&"x".repeat(41), Value::Null, "provider"),
+        command("memo", json!(7), "riwork"),
+        command("memo", Value::Null, "desktop"),
+        {"name":"memo","argument":null,"sends":"t","handler":"riwork"},
+        command("memo-2", json!("TEXT"), "riwork"),
+        {"name":"memo-3","summary":"s","sends":"t","handler":"riwork"},
+    ]);
+    printed["files"]["entries"] = json!([
+        {"path":"../outside","dir":false,"bytes":1},
+        {"path":"src/../../outside","dir":false,"bytes":1},
+        {"path":"src/..","dir":true,"bytes":null},
+        {"path":"/etc/passwd","dir":false,"bytes":1},
+        {"path":"","dir":true,"bytes":null},
+        {"path":"a\u{1b}[31m.txt","dir":false,"bytes":1},
+        {"path":"line\nbreak","dir":false,"bytes":1},
+        {"path":7,"dir":false,"bytes":1},
+        {"path":"a.txt","dir":"no","bytes":1},
+        {"path":"a.txt","bytes":1},
+        {"path":"a.txt","dir":false,"bytes":-1},
+        {"path":"a.txt","dir":false,"bytes":1.5},
+        {"path":"a.txt","dir":false,"bytes":"1"},
+        "README.md",
+        {"path":"..notes","dir":false,"bytes":3},
+        {"path":"src","dir":true},
+        {"path":"src/main.rs","dir":false,"bytes":900}
+    ]);
+    f.says("suggestions.json", &printed);
+    let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(
+        response["result"]["commands"],
+        json!([
+            reply["commands"][0],
+            command("memo-2", json!("TEXT"), "riwork"),
+            command("memo-3", Value::Null, "riwork"),
+        ])
+    );
+    assert_eq!(
+        response["result"]["files"],
+        json!({"entries":[
+            {"path":"..notes","dir":false,"bytes":3},
+            {"path":"src","dir":true,"bytes":null},
+            {"path":"src/main.rs","dir":false,"bytes":900}
+        ],"truncated":false})
+    );
+
+    // An answer for another chat, or one that is not a listing, does not reach the phone.
+    let response = f.call("chat.suggestions", json!({"chat_id":f.chat})).await;
+    assert_eq!(code(&response), "cli_error", "{response}");
+    for (field, value) in [
+        ("provider", json!("grok")),
+        ("root", Value::Null),
+        ("commands", json!({})),
+        ("files", json!([])),
+        ("file_bound", json!(-1)),
+    ] {
+        let mut printed = reply.clone();
+        printed[field] = value;
+        f.says("suggestions.json", &printed);
+        let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+        assert_eq!(code(&response), "cli_error", "{field}: {response}");
+    }
+    let mut printed = reply.clone();
+    printed["files"]["truncated"] = Value::Null;
+    f.says("suggestions.json", &printed);
+    let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+    assert_eq!(code(&response), "cli_error", "{response}");
+
+    // The CLI's own refusal of an unknown chat.
+    f.set("suggestions.error", &format!("Unknown chat {chat}"));
+    let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+    assert_eq!(code(&response), "not_found", "{response}");
+    f.unset("suggestions.error");
+
+    // Params are exactly a chat's full id, checked before any CLI runs.
+    let calls = f.calls_of("chat", "suggestions").len();
+    for bad in [
+        json!(null),
+        json!([]),
+        json!({}),
+        json!({"chat_id":null}),
+        json!({"chat_id":7}),
+        json!({"chat_id":"chat"}),
+        json!({"chat_id":&chat[..8]}),
+        json!({"chat_id":chat.to_uppercase()}),
+        json!({"chat_id":chat,"path":"src"}),
+        json!({"chat_id":chat,"query":""}),
+    ] {
+        let response = f.call("chat.suggestions", bad.clone()).await;
+        assert_eq!(code(&response), "invalid_request", "{bad}: {response}");
+    }
+    assert_eq!(f.calls_of("chat", "suggestions").len(), calls);
+}
+
+#[tokio::test]
+async fn chat_suggestions_cuts_a_big_listing_to_fit_one_frame() {
+    let f = Fixture::new();
+    f.says(
+        "capabilities.out",
+        &json!({"v":1,"chat":true,"chat_suggestions":true}),
+    );
+    let mut reply = shared_suggestions();
+    let chat = reply["chat_id"].as_str().unwrap().to_owned();
+    let listing = |path: &dyn Fn(usize) -> String| {
+        (0..5000)
+            .map(|i| json!({"path":path(i),"dir":false,"bytes":i}))
+            .collect::<Vec<_>>()
+    };
+    // A folder of 5000 ordinary paths: about 400 KB of JSON.
+    let entries = listing(&|i| format!("crates/module-{:03}/src/generated/file_{i:05}.rs", i / 50));
+    reply["files"]["entries"] = json!(entries);
+    f.says("suggestions.json", &reply);
+    assert!(reply.to_string().len() > 3 * MAX_PLAINTEXT);
+
+    // Plain JSON: the first entries that fit one frame, and truncated.
+    let plain = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+    assert_eq!(plain["ok"], true, "{plain}");
+    let kept = plain["result"]["files"]["entries"].as_array().unwrap();
+    assert!(
+        !kept.is_empty() && kept.len() < entries.len(),
+        "{}",
+        kept.len()
+    );
+    assert_eq!(kept[..], entries[..kept.len()]);
+    assert_eq!(plain["result"]["files"]["truncated"], true);
+    assert_eq!(plain["result"]["commands"], reply["commands"]);
+    assert_eq!(
+        plain["result"]["models"], reply["models"],
+        "only the listing is cut, never the models"
+    );
+    assert_eq!(plain["result"]["mention_models"], reply["mention_models"]);
+    link::encode_reply(&plain, std::time::Instant::now(), false, MAX_PLAINTEXT).unwrap();
+    // As many as fit: one more would not, with the room the connector keeps for `server_ms`.
+    let mut more = plain.clone();
+    more["result"]["files"]["entries"] = json!(entries[..kept.len() + 1]);
+    assert!(matches!(
+        link::encode_reply(&more, std::time::Instant::now(), false, MAX_PLAINTEXT - 64),
+        Err(link::EncodeError::TooLarge)
+    ));
+
+    // Deflated, the whole listing fits, as it is.
+    let deflated = f
+        .call_deflating("chat.suggestions", json!({"chat_id":chat}))
+        .await;
+    assert_eq!(deflated["result"], reply, "the whole listing");
+    let encoded =
+        link::encode_reply(&deflated, std::time::Instant::now(), true, MAX_PLAINTEXT).unwrap();
+    assert!(encoded.deflated && encoded.json_bytes > MAX_PLAINTEXT);
+
+    // Paths that do not deflate are cut there too.
+    let entries = listing(&|i| noise(80, i as u64 + 1).replace('/', "_"));
+    reply["files"]["entries"] = json!(entries);
+    f.says("suggestions.json", &reply);
+    let deflated = f
+        .call_deflating("chat.suggestions", json!({"chat_id":chat}))
+        .await;
+    assert_eq!(deflated["ok"], true, "{deflated}");
+    let kept = deflated["result"]["files"]["entries"].as_array().unwrap();
+    assert!(
+        !kept.is_empty() && kept.len() < entries.len(),
+        "{}",
+        kept.len()
+    );
+    assert_eq!(kept[..], entries[..kept.len()]);
+    assert_eq!(deflated["result"]["files"]["truncated"], true);
+    link::encode_reply(&deflated, std::time::Instant::now(), true, MAX_PLAINTEXT).unwrap();
+
+    // Model lists too long for a frame on their own: the first models of each that fit go, as
+    // many of one as of the other, and the commands still reach the phone.
+    let models: Vec<Value> = (0..200)
+        .map(|i| {
+            json!({"id": format!("m-{i:03}-{}", noise(80, i + 7)), "name": noise(400, i + 1),
+            "description": noise(400, i + 900), "is_default": false, "chats": i})
+        })
+        .collect();
+    let mention_models: Vec<Value> = models
+        .iter()
+        .map(|model| {
+            let mut model = model.clone();
+            model["provider"] = json!("codex");
+            model
+        })
+        .collect();
+    reply["files"]["entries"] = json!([]);
+    reply["models"] = json!(models);
+    reply["mention_models"] = json!(mention_models);
+    f.says("suggestions.json", &reply);
+    let plain = f.call("chat.suggestions", json!({"chat_id":chat})).await;
+    assert_eq!(plain["ok"], true, "{plain}");
+    let kept = plain["result"]["models"].as_array().unwrap();
+    assert!(
+        !kept.is_empty() && kept.len() < models.len(),
+        "{}",
+        kept.len()
+    );
+    assert_eq!(kept[..], models[..kept.len()]);
+    assert_eq!(
+        plain["result"]["mention_models"].as_array().unwrap()[..],
+        mention_models[..kept.len()]
+    );
+    assert_eq!(plain["result"]["commands"], reply["commands"]);
+    link::encode_reply(&plain, std::time::Instant::now(), false, MAX_PLAINTEXT).unwrap();
+}
+
+/// The biggest listing a CLI prints (`REPLY_BYTES`, cut by the CLI itself) is read whole and
+/// cut to one frame, plain or deflated: never refused as too large.
+#[tokio::test]
+async fn chat_suggestions_takes_the_biggest_listing_a_cli_prints() {
+    use riwork_engine::chat::suggest::{REPLY_BYTES, Reply};
+    let f = Fixture::new();
+    f.says(
+        "capabilities.out",
+        &json!({"v":1,"chat":true,"chat_suggestions":true}),
+    );
+    let mut reply = shared_suggestions();
+    let chat = reply["chat_id"].as_str().unwrap().to_owned();
+    reply["files"]["entries"] = (0..5000)
+        .map(|i| json!({"path":format!("{}{i:05}.rs", "deep/".repeat(150)),"dir":false,"bytes":i}))
+        .collect();
+    // As the CLI prints it: pretty, within its bound.
+    let printed = serde_json::from_value::<Reply>(reply)
+        .unwrap()
+        .within(REPLY_BYTES);
+    assert!(printed.files.truncated);
+    let text = serde_json::to_string_pretty(&printed).unwrap() + "\n";
+    assert!(text.len() > REPLY_BYTES - 4096 && text.len() <= REPLY_BYTES);
+    f.set("suggestions.json", &text);
+    let printed = serde_json::to_value(&printed).unwrap();
+    for deflate in [false, true] {
+        let response = if deflate {
+            f.call_deflating("chat.suggestions", json!({"chat_id":chat}))
+                .await
+        } else {
+            f.call("chat.suggestions", json!({"chat_id":chat})).await
+        };
+        assert_eq!(response["ok"], true, "{response}");
+        let kept = response["result"]["files"]["entries"].as_array().unwrap();
+        assert!(!kept.is_empty(), "deflate {deflate}");
+        assert_eq!(
+            kept[..],
+            printed["files"]["entries"].as_array().unwrap()[..kept.len()]
+        );
+        assert_eq!(response["result"]["files"]["truncated"], true);
+    }
 }

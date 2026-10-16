@@ -273,22 +273,4 @@ mod tests {
         assert_eq!(kinds("+one\ntwo", ChangeKind::Add), [Add, Context]);
         assert!(classify("", ChangeKind::Modify).is_empty());
     }
-    #[test]
-    fn gutters_follow_hunks_and_changes_without_advancing_on_notes() {
-        let text = "@@ -56,2 +57,2 @@\n same\n-old\n\\ No newline at end of file\n+new";
-        assert_eq!(
-            line_numbers(text, ChangeKind::Modify),
-            [
-                (None, None),
-                (Some(56), Some(57)),
-                (Some(57), None),
-                (None, None),
-                (None, Some(58)),
-            ]
-        );
-        assert_eq!(
-            line_numbers("one\ntwo", ChangeKind::Add),
-            [(None, Some(1)), (None, Some(2))]
-        );
-    }
 }

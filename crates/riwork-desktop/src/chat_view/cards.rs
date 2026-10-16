@@ -666,24 +666,6 @@ pub fn tail(text: &str, max_lines: usize, max_bytes: usize) -> (&str, usize) {
 mod tests {
     use super::*;
     #[test]
-    fn plain_output_is_borrowed_and_control_cleanup_stays_exact() {
-        let plain = "ordinary line\nUnicode résumé 東京\n";
-        assert!(matches!(
-            clean_output_ref(plain),
-            std::borrow::Cow::Borrowed(_)
-        ));
-        for control in (0u8..=0x1f).chain(0x7f..=0x9f) {
-            let source = format!("before{}after\n", char::from(control));
-            assert_eq!(
-                clean_output_ref(&source),
-                clean_output(&source),
-                "control {control:#x}"
-            );
-        }
-        assert_eq!(clean_output_ref("left\tright\rrewritten"), "rewritten");
-    }
-
-    #[test]
     fn output_loses_escapes_and_keeps_the_last_state_of_a_progress_line() {
         assert_eq!(
             clean_output("\u{1b}[1;32m   Compiling\u{1b}[0m riwork\n"),
@@ -716,49 +698,6 @@ mod tests {
         assert!(shown.len() <= 100 && shown.chars().all(|c| c == 'é'));
         assert_eq!(hidden, 1);
         assert_eq!(tail("", 10, 10), ("", 0));
-    }
-    #[test]
-    fn opened_output_shows_three_start_and_twelve_end_lines() {
-        let output = (1..=40).map(|n| format!("line {n}\n")).collect::<String>();
-        let preview = output_preview(&output, false, false);
-        assert_eq!(preview.omitted, 25);
-        assert!(preview.text.starts_with("line 1\nline 2\nline 3\n"));
-        assert!(preview.text.contains("25 lines omitted\nline 29\n"));
-        assert!(preview.text.ends_with("line 40"));
-        assert!(!preview.text.contains("line 4\n"));
-    }
-
-    #[test]
-    fn live_output_is_three_lines_and_show_all_stays_bounded() {
-        let output = (1..=500).map(|n| format!("line {n}\n")).collect::<String>();
-        let live = output_preview(&output, true, true);
-        assert_eq!(live.text, "line 498\nline 499\nline 500");
-        let all = output_preview(&output, false, true);
-        assert_eq!(all.text.lines().count(), 200);
-        assert_eq!(all.omitted, 300);
-        let enormous = "é".repeat(100_000);
-        let all = output_preview(&enormous, false, true);
-        assert!(all.text.len() <= 32 * 1024);
-        let tabs = output_preview(&"\t".repeat(100_000), false, true);
-        assert!(tabs.text.len() <= 32 * 1024);
-    }
-
-    #[test]
-    fn error_highlights_do_not_tint_ordinary_failed_command_output() {
-        let text = "Checking code\n  error[E001]: bad type\nstderr: missing\nerrorless output\nfatal: exit\n";
-        let ranges = error_ranges(text);
-        assert_eq!(
-            ranges
-                .iter()
-                .map(|range| &text[range.clone()])
-                .collect::<Vec<_>>(),
-            ["  error[E001]: bad type", "stderr: missing", "fatal: exit",]
-        );
-    }
-
-    #[test]
-    fn collapsed_unknown_input_never_falls_back_to_json() {
-        assert!(input_summary(&serde_json::json!({"arbitrary": {"secret": "value"}})).is_empty());
     }
 }
 

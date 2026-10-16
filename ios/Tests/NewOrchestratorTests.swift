@@ -192,7 +192,7 @@ final class NewOrchestratorTests: XCTestCase {
     private func target(branch: String = "main") -> NewTerminalTarget { .worktree(id: tree, projectID: project, projectName: "Alpha", branch: branch, isPrimary: true) }
 
     func testTheOrchestratorRowsAreOnlyOfferedWhereTheDesktopOpensThem() {
-        XCTAssertEqual(NewTerminalKind.allCases.count, 6, "the kinds that make a tab of their own: five terminals and one chat")
+        XCTAssertEqual(NewTerminalKind.allCases, [.shell, .codex, .claude, .grok, .muse, .chat], "the kinds that make a tab of their own: five terminals and one chat")
         XCTAssertEqual(NewTerminalKind.offered(chats: false), NewTerminalKind.terminalKinds)
         XCTAssertEqual(NewTerminalKind.offered(chats: true), NewTerminalKind.allCases)
         XCTAssertEqual(NewTerminalKind.offered(chats: false, orchestrators: true), NewTerminalKind.terminalKinds + [.projectOrchestrator, .globalOrchestrator])
