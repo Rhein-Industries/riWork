@@ -35,6 +35,7 @@ mod icons;
 mod memo_editor;
 mod metal_layer;
 mod notifications;
+mod nuke_shells;
 mod orchestrator_choice;
 mod orchestrator_wakes;
 mod orchestrators;
@@ -1333,6 +1334,14 @@ struct Workspace {
     handoff_dialog: Option<Entity<HandoffDialog>>,
     tab_close_dialog: Option<Entity<tab_close_dialog::TabCloseDialog>>,
     tab_close_target: Option<(String, Option<(PaneId, TabId)>)>,
+    /// The confirmation behind **Nuke all shells**, while it is open, and the shells it
+    /// counted: confirming exits those and no others.
+    nuke_dialog: Option<Entity<nuke_shells::NukeShellsDialog>>,
+    nuke_target: Option<Vec<String>>,
+    /// A nuke's exits are running; the button waits for them.
+    nuke_running: bool,
+    /// How Exit and Nuke all shells end a session (`exit_session`).
+    session_exit: SessionExit,
     /// Explicit launch choices; the chat does not exist before confirmation.
     new_chat_dialog: Option<Entity<chat_choice::ChatChoice>>,
     /// A hand off whose dialog was hidden while it works (see `HandoffEvent::Detached`);
@@ -2047,6 +2056,10 @@ impl Workspace {
             handoff_dialog: None,
             tab_close_dialog: None,
             tab_close_target: None,
+            nuke_dialog: None,
+            nuke_target: None,
+            nuke_running: false,
+            session_exit: Arc::new(exit_session),
             new_chat_dialog: None,
             handoff_running: None,
             remote_ended: HashSet::new(),
@@ -3659,6 +3672,7 @@ impl Workspace {
             || self.remote_prompt.is_some()
             || self.handoff_dialog.is_some()
             || self.tab_close_dialog.is_some()
+            || self.nuke_dialog.is_some()
             || self.shared_tab_menu.is_some()
             || self.new_chat_dialog.is_some()
     }
@@ -7439,20 +7453,10 @@ impl Workspace {
         self.apply_shared_tabs(window, cx);
         if choice == settings::TabCloseBehavior::Exit {
             let sessions = self.sessions.clone();
-            let work = cx.background_executor().spawn(async move {
-                let (kind, id) = key.split_once(':').ok_or("invalid session key")?;
-                if kind == "shell" {
-                    sessions.close(id)
-                } else {
-                    let socket = chat::client::socket_path(sessions.state_home());
-                    if !socket.exists() {
-                        return Ok(());
-                    }
-                    chat::client::Client::connect(&socket)?
-                        .command(id, chat::model::ChatCommand::Stop)
-                        .map(|_| ())
-                }
-            });
+            let exit = self.session_exit.clone();
+            let work = cx
+                .background_executor()
+                .spawn(async move { exit(&sessions, &key) });
             cx.spawn_in(window, async move |this, cx| {
                 let result = work.await;
                 let _ = this.update_in(cx, |workspace, _, cx| {
@@ -9705,6 +9709,8 @@ impl Workspace {
                 } else {
                     152.0
                 });
+        // One pane of the window carries Nuke all shells, beside its menu.
+        let show_nuke = self.nuke_button_pane() == Some(pane_id);
         let account_numbers = codex_account_numbers(&self.shells);
         let tab_can_close = user_close_refusal(pane_locked, UserClose::Tab).is_none();
         // A panel's tab says its name as the theme writes labels; a saved layout keeps
@@ -9746,7 +9752,7 @@ impl Workspace {
         // What the bar keeps beside its tabs: the buttons, the drag handle and the window
         // drag space after the last tab.
         let bar_reserved = |lock: bool, focus: bool| {
-            let buttons = [show_main, lock, focus, true]
+            let buttons = [show_main, lock, focus, show_nuke, true]
                 .into_iter()
                 .filter(|shown| *shown)
                 .count() as f32;
@@ -10114,6 +10120,7 @@ impl Workspace {
                     cx,
                 )
             }))
+            .children(show_nuke.then(|| self.render_nuke_button(cx)))
             .child(self.pane_button(
                 pane_id,
                 "menu",
@@ -12214,6 +12221,19 @@ impl Render for Workspace {
                     .occlude()
                     .child(dialog.clone())
             }))
+            .children(self.nuke_dialog.as_ref().map(|dialog| {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .size_full()
+                    .p(ui_text::space(16.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(gpui::rgba(0x00000099))
+                    .occlude()
+                    .child(dialog.clone())
+            }))
             .children(self.new_chat_dialog.as_ref().map(|dialog| {
                 behavior_controls::selection_scope(
                     div()
@@ -12534,6 +12554,27 @@ fn panel_tooltip(panel: PanelKind) -> &'static str {
         PanelKind::ProjectSettings => "Project Settings · ⌘⌥A",
         PanelKind::Schedules => "Automations · ⌘⇧S",
         PanelKind::Dashboard => "Global dashboard · ⌘⌥G",
+    }
+}
+
+/// How a session is ended for good (`exit_session`). Tests put a recording fake here.
+type SessionExit = Arc<dyn Fn(&SessionManager, &str) -> Result<(), String> + Send + Sync>;
+
+/// End session `key` (`shell:<id>` or `chat:<id>`) for good: what Exit does once the tab is
+/// closed, and what Nuke all shells does for each shell. A shell's tmux session is killed and
+/// its record and shared tab entry removed (`SessionManager::close`); a chat is told to stop.
+fn exit_session(sessions: &SessionManager, key: &str) -> Result<(), String> {
+    let (kind, id) = key.split_once(':').ok_or("invalid session key")?;
+    if kind == "shell" {
+        sessions.close(id)
+    } else {
+        let socket = chat::client::socket_path(sessions.state_home());
+        if !socket.exists() {
+            return Ok(());
+        }
+        chat::client::Client::connect(&socket)?
+            .command(id, chat::model::ChatCommand::Stop)
+            .map(|_| ())
     }
 }
 
