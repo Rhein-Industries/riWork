@@ -57,6 +57,7 @@ mod feed;
 mod find;
 #[cfg(test)]
 mod find_tests;
+mod header_line;
 mod host;
 mod image_scope;
 mod links;

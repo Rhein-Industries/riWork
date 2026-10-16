@@ -40,14 +40,6 @@ struct ChatActivityRows: View, Equatable {
     private var item: ChatItem? { items.item(row.id) }
     private var artifacts: [ChatFileEntry] { fileIndex.resolve(artifacts: row.artifacts) }
     private var ownedFiles: [ChatFileEntry] { fileIndex.byItem[row.id] ?? [] }
-    private var stripArtifacts: [ChatFileEntry] { Self.stripArtifacts(row: row, artifacts: artifacts, owned: ownedFiles) }
-
-    /// Flattened footers and nested rows must suppress exactly the images already drawn inline.
-    nonisolated static func stripArtifacts(row: ChatProjectionRow, artifacts: [ChatFileEntry], owned: [ChatFileEntry]) -> [ChatFileEntry] {
-        guard row.kind != .activity else { return artifacts }
-        let inlineIDs = row.open ? Set(owned.filter(\.isImage).map(\.id)) : Set(artifacts.first(where: \.isImage).map { [$0.id] } ?? [])
-        return artifacts.filter { !inlineIDs.contains($0.id) }
-    }
     private var isContainer: Bool { row.kind == .activity || row.kind == .group || row.kind == .subagent }
 
     var body: some View {
@@ -182,8 +174,9 @@ struct ChatActivityRows: View, Equatable {
             }
             // Normal artifacts live on the activity even while closed. They are suppressed on
             // its disclosed children, so opening a turn cannot duplicate its files or images.
-            if rendersDescendants, showArtifacts, !stripArtifacts.isEmpty {
-                ChatFileStrip(files: stripArtifacts).padding(.leading, 16)
+            // A call's own chips stay even when its image is already drawn (thumbnail or inline).
+            if rendersDescendants, showArtifacts, !artifacts.isEmpty {
+                ChatFileStrip(files: artifacts).padding(.leading, 16)
             }
             if rendersDescendants, showCommentary {
                 ForEach(row.comments) { comment in
@@ -225,25 +218,30 @@ struct ChatActivityFooter: View {
     let provider: ChatProvider
     var showsDetail = true
     var body: some View {
-        let strip = ChatActivityRows.stripArtifacts(row: row, artifacts: files, owned: ownedFiles)
         VStack(alignment: .leading, spacing: 0) {
             if showsDetail, row.open, row.kind == .subagent, !row.children.isEmpty, let item {
                 ChatActivityDetail(item: item, kind: row.kind, files: ownedFiles, provider: provider, childrenCaptured: true)
             }
-            if !strip.isEmpty { ChatFileStrip(files: strip) }
+            if !files.isEmpty { ChatFileStrip(files: files) }
         }.padding(.leading, 16)
     }
 }
 
-private enum ChatActivityHeaderRole: Sendable { case fixed, title, meta, spacer }
+private enum ChatActivityHeaderRole: Sendable { case fixed, title, meta, duration, spacer }
 private struct ChatActivityHeaderRoleKey: LayoutValueKey {
     static let defaultValue = ChatActivityHeaderRole.fixed
 }
 
 /// Reserve the meta's intrinsic width (up to the mockup's 24%) before laying out the title.
 /// A plain HStack gives a long title the meta's entire allocation, even at a lower priority.
+/// The runtime is never cut. A cut meta is placed at the width it draws, so the runtime after it
+/// ends on the trailing edge like every other cut row, and a meta too narrow to show more than
+/// its separator and an ellipsis is left out.
 private struct ChatActivityHeaderLayout: Layout {
     private let spacing: CGFloat = 6
+    /// Between the meta and its runtime: the space they shared when they were one string.
+    private let durationSpacing: CGFloat = 3
+    private let minimumMeta: CGFloat = 36
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         CGSize(width: proposal.width ?? subviews.reduce(0) { $0 + $1.sizeThatFits(.unspecified).width }
@@ -251,25 +249,32 @@ private struct ChatActivityHeaderLayout: Layout {
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var widths = subviews.map { $0.sizeThatFits(.unspecified).width }
-        var title: Int?, spacer: Int?
-        for index in subviews.indices {
-            switch subviews[index][ChatActivityHeaderRoleKey.self] {
-            case .title: title = index
-            case .meta: widths[index] = min(widths[index], bounds.width * 0.24)
-            case .spacer: spacer = index; widths[index] = 0
-            case .fixed: break
-            }
+        let roles = subviews.map { $0[ChatActivityHeaderRoleKey.self] }
+        var widths = subviews.indices.map { roles[$0] == .spacer ? 0 : subviews[$0].sizeThatFits(.unspecified).width }
+        func gap(_ index: Int) -> CGFloat {
+            if index == 0 || roles[index] == .spacer || (roles[index] == .meta && widths[index] == 0) { return 0 }
+            if roles[index] == .duration, roles[index - 1] == .meta, widths[index - 1] > 0 { return durationSpacing }
+            return spacing
         }
-        let gaps = CGFloat(max(0, subviews.count - 1)) * spacing
-        let remaining = bounds.width - gaps - widths.reduce(0, +)
-        if let title { widths[title] = max(0, widths[title] + min(0, remaining)) }
-        if let spacer { widths[spacer] = max(0, bounds.width - gaps - widths.reduce(0, +)) }
+        func used() -> CGFloat { subviews.indices.reduce(0) { $0 + widths[$1] + gap($1) } }
+        if let title = roles.firstIndex(of: .title), used() > bounds.width {
+            if let meta = roles.firstIndex(of: .meta) {
+                let room = bounds.width - (used() - widths[title] - widths[meta])
+                let slot = min(widths[meta], max(bounds.width * 0.24, room - widths[title]))
+                if slot < widths[meta] {
+                    widths[meta] = slot < minimumMeta ? 0
+                        : min(slot, subviews[meta].sizeThatFits(ProposedViewSize(width: slot, height: bounds.height)).width)
+                }
+            }
+            widths[title] = max(0, bounds.width - (used() - widths[title]))
+        }
+        if let spacer = roles.firstIndex(of: .spacer) { widths[spacer] = max(0, bounds.width - used()) }
         var x = bounds.minX
         for index in subviews.indices {
+            x += gap(index)
             subviews[index].place(at: CGPoint(x: x, y: bounds.midY), anchor: .leading,
                                  proposal: ProposedViewSize(width: widths[index], height: bounds.height))
-            x += widths[index] + spacing
+            x += widths[index]
         }
     }
 }
@@ -285,7 +290,7 @@ private struct ChatActivityHeader: View {
     let action: () -> Void
 
     var body: some View {
-        let meta = meta
+        let meta = meta, duration = duration
         Button(action: action) {
             ChatActivityHeaderLayout {
                 Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
@@ -310,11 +315,17 @@ private struct ChatActivityHeader: View {
                     Image(systemName: icon).font(.system(size: 12)).foregroundStyle(iconColor).frame(width: 16)
                     headerText.lineLimit(1).truncationMode(row.kind == .read || row.kind == .edit ? .middle : .tail)
                         .layoutValue(key: ChatActivityHeaderRoleKey.self, value: .title)
+                    // The role goes on last: the layout reads it from the outermost view (the probe wraps the text).
                     if !meta.isEmpty {
                         Text("· " + meta).font(.system(size: 11)).foregroundStyle(style.muted)
                             .lineLimit(1).truncationMode(.tail)
-                            .layoutValue(key: ChatActivityHeaderRoleKey.self, value: .meta)
                             .chatLayoutProbe("activity-meta-\(row.id)")
+                            .layoutValue(key: ChatActivityHeaderRoleKey.self, value: .meta)
+                    }
+                    if let duration {
+                        Text("· " + duration).font(.system(size: 11)).foregroundStyle(style.muted)
+                            .lineLimit(1).fixedSize()
+                            .layoutValue(key: ChatActivityHeaderRoleKey.self, value: .duration)
                     }
                     Spacer(minLength: 0).layoutValue(key: ChatActivityHeaderRoleKey.self, value: .spacer)
                     badge
@@ -328,7 +339,7 @@ private struct ChatActivityHeader: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibleLabel(meta: meta))
+        .accessibilityLabel(accessibleLabel(meta: [meta, duration ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")))
         .accessibilityValue(row.open ? "Expanded" : "Collapsed")
         .accessibilityHint(row.open ? "Hides details" : "Shows details")
         .accessibilityIdentifier("chat.activity.toggle.\(row.id)")
@@ -414,9 +425,11 @@ private struct ChatActivityHeader: View {
                 else if changes.count > 1 { parts.append("\(changes.count) files") }
             }
         }
-        if !row.running, let duration = row.durationMS { parts.append(Self.duration(duration)) }
         return parts.joined(separator: " · ")
     }
+
+    /// Apart from the meta, so cutting the meta never cuts it.
+    private var duration: String? { row.running ? nil : row.durationMS.map(Self.duration) }
 
     private func accessibleLabel(meta: String) -> String {
         [row.title, row.target, meta.isEmpty ? nil : meta,

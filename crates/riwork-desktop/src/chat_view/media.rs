@@ -1493,8 +1493,11 @@ impl ChatView {
         let icon = image
             .map(|image| {
                 let cache_key = key.strip_prefix("artifact:").unwrap_or(&key);
+                // Smaller than the 11 pt text line at every scale, so an image chip is
+                // exactly as tall as a file chip; a 24 px thumbnail made it 6 px taller.
                 div()
-                    .size(ui_text::space(24.0))
+                    .flex_none()
+                    .size(ui_text::text(16.0))
                     .child(self.render_thumbnail(
                         cache_key,
                         image,
@@ -1678,9 +1681,32 @@ impl ChatView {
     }
 }
 
+/// Whether a row lists `artifact` as a chip. Verbose lists every file a call produced,
+/// including an image the call already shows; only a Normal call row folds the chip
+/// of an image it shows inline. Messages and activity summaries list every chip.
+pub(super) fn artifact_chip_shown(
+    mode: super::display::DisplayMode,
+    kind: riwork_engine::chat::projection::RowKind,
+    artifact: &riwork_engine::chat::projection::ArtifactRef,
+    item: Option<&Item>,
+    open: bool,
+) -> bool {
+    use riwork_engine::chat::projection::RowKind;
+    mode == super::display::DisplayMode::Verbose
+        || matches!(
+            kind,
+            RowKind::User
+                | RowKind::Final
+                | RowKind::Commentary
+                | RowKind::Compaction
+                | RowKind::Notice
+        )
+        || item.is_none_or(|item| !artifact_shown_inline(artifact, item, open))
+}
+
 /// A collapsed header shows its first image; an open call shows every image.
-/// Extra images and files still need their chips. Activity summaries do not use this filter.
-pub(super) fn artifact_shown_inline(
+/// Extra images and files still need their chips.
+fn artifact_shown_inline(
     artifact: &riwork_engine::chat::projection::ArtifactRef,
     item: &Item,
     open: bool,

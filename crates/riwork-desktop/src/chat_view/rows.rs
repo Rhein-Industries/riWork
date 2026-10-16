@@ -10,7 +10,7 @@ use std::{
 
 use gpui::{
     Animation, AnimationExt, AnyElement, ClickEvent, Context, ElementId, MouseButton, SharedString,
-    StyledText, Window, canvas, div, prelude::*, px, rgb,
+    Window, canvas, div, prelude::*, px, rgb,
 };
 #[cfg(test)]
 use gpui_kit::base::ElementExt as _;
@@ -39,6 +39,8 @@ const OUTPUT_BYTES: usize = 32 * 1024;
 const ROW_INSET_X: f32 = 20.0;
 const ROW_INSET_Y: f32 = 1.0;
 const COLUMN_WIDTH: f32 = 1040.0;
+/// How much faster a header's grey details give way than its title in a full row.
+const DETAILS_SHRINK: f32 = 1000.0;
 
 /// A native worker/subagent result is constructed only when disclosed.
 type BodyMaker<'a> = dyn Fn(&ChatView, &mut Context<ChatView>) -> AnyElement + 'a;
@@ -163,16 +165,13 @@ impl ChatView {
             .artifacts
             .iter()
             .filter(|artifact| {
-                matches!(
+                super::media::artifact_chip_shown(
+                    self.display_mode,
                     row.kind,
-                    RowKind::User
-                        | RowKind::Final
-                        | RowKind::Commentary
-                        | RowKind::Compaction
-                        | RowKind::Notice
-                ) || item.is_none_or(|(_, item)| {
-                    !super::media::artifact_shown_inline(artifact, item, row.open)
-                })
+                    artifact,
+                    item.map(|(_, item)| item),
+                    row.open,
+                )
             })
             .cloned()
             .collect();
@@ -374,9 +373,12 @@ impl ChatView {
             .projected_item(&row.id)
             .map(|(_, item)| cards::metadata(item, head))
             .unwrap_or_default();
-        if !activity && let Some(duration) = row.duration_ms {
-            meta.push(cards::duration(duration));
-        }
+        // The runtime follows the text and is never cut: a full row cuts the text
+        // before it, so every cut row's runtime ends on the row's right edge.
+        let duration = (!activity)
+            .then_some(row.duration_ms)
+            .flatten()
+            .map(cards::duration);
         if group
             && row.running
             && let Some(label) = &row.current_label
@@ -455,10 +457,7 @@ impl ChatView {
                 ))
             })
             .child({
-                let title = div()
-                    .min_w_0()
-                    .truncate()
-                    .when(group, |title| title.font_weight(gpui::FontWeight::MEDIUM));
+                let title = div().min_w_0().h_full().flex().items_center();
                 #[cfg(test)]
                 let title = {
                     let geometry = self.header_bounds.clone();
@@ -467,17 +466,12 @@ impl ChatView {
                         geometry.borrow_mut().insert(key, bounds);
                     })
                 };
-                title.child(self.header_label(row))
+                title.child(self.header_label(row, group))
             })
-            .when(!meta.is_empty() && !activity, |header| {
-                header.child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(rgb(colors.muted))
-                        .child(format!("· {}", meta.join(" · "))),
-                )
-            })
+            .when(
+                !activity && (!meta.is_empty() || duration.is_some()),
+                |header| header.child(self.header_details(&meta, duration, colors.muted)),
+            )
             .child(div().flex_1())
             .when(activity && row.failed_count > 0, |header| {
                 header.child(
@@ -588,20 +582,64 @@ impl ChatView {
 
     /// Header content is decoration. Only the enclosing row owns hit testing,
     /// pointer styling, disclosure and keyboard focus.
-    fn header_label(&self, row: &super::display::Row) -> StyledText {
+    fn header_label(
+        &self,
+        row: &super::display::Row,
+        group: bool,
+    ) -> super::header_line::HeaderLine {
+        use super::header_line::{Span, header_line};
         let item = self.projected_item(&row.id).map(|(_, item)| item);
         let text = super::display::header_text(row, item);
         let target = super::display::header_target(row, item);
-        let range = target.and_then(|target| text.rfind(&target).map(|at| at..at + target.len()));
-        let styled = StyledText::new(text);
-        if let Some(range) = range {
+        let mut spans = vec![Span {
+            range: 0..text.len(),
+            weight: group.then_some(gpui::FontWeight::MEDIUM),
+            ..Span::default()
+        }];
+        if let Some(at) =
+            target.and_then(|target| text.rfind(&target).map(|at| at..at + target.len()))
+        {
             // Split the native text run before applying the command/path font.
-            styled
-                .with_highlights([(range.clone(), gpui::HighlightStyle::default())])
-                .with_font_family_overrides([(range, ui_text::code_family())])
-        } else {
-            styled
+            spans.push(Span {
+                range: at,
+                code: true,
+                ..Span::default()
+            });
         }
+        header_line(text, spans, 1.)
+    }
+
+    /// The grey `· details · runtime` after the title, as one run of text. A full row
+    /// cuts the details first, then the title; the runtime keeps its whole width.
+    fn header_details(&self, meta: &[String], duration: Option<String>, muted: u32) -> AnyElement {
+        // No `min_w_0`: its least width is the runtime's, which therefore never shrinks.
+        div()
+            .flex()
+            .items_center()
+            .text_color(rgb(muted))
+            // The title gives way only once the details are gone.
+            .map(|mut details| {
+                details.style().flex_shrink = Some(DETAILS_SHRINK);
+                details
+            })
+            .when(!meta.is_empty(), |details| {
+                details.child(super::header_line::header_line(
+                    format!("· {}", meta.join(" · ")),
+                    Vec::new(),
+                    1.,
+                ))
+            })
+            .children(duration.map(|duration| {
+                div()
+                    .flex_none()
+                    .whitespace_nowrap()
+                    .child(if meta.is_empty() {
+                        format!("· {duration}")
+                    } else {
+                        format!(" · {duration}")
+                    })
+            }))
+            .into_any_element()
     }
 
     /// Animate decoration only, preserving the Base button's focus identity.

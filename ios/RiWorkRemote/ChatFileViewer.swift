@@ -320,7 +320,12 @@ struct ChatFileChip: View {
     var body: some View {
         Button { openFile(file) } label: {
             HStack(spacing: 6) {
-                Image(systemName: file.isImage ? "photo" : "doc").foregroundStyle(.secondary)
+                // The row is as tall as its tallest glyph, and "doc" stands taller than "photo": every chip reserves
+                // the "doc" glyph's box, so image chips draw at the file chips' height.
+                ZStack {
+                    Image(systemName: "doc").hidden()
+                    Image(systemName: file.isImage ? "photo" : "doc").foregroundStyle(.secondary)
+                }
                 Text(file.displayName + (file.line.map { ":\($0)" } ?? "")).lineLimit(1).truncationMode(.middle)
                 if let size = file.sizeText { Text(size).foregroundStyle(.secondary).lineLimit(1) }
             }

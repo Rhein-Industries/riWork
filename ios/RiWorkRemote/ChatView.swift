@@ -762,7 +762,7 @@ private struct ChatTranscriptVisibleRow: Identifiable {
                          commentary: row.kind == .activity ? false : commentary)
                 }
                 let disclosureRow = ![ChatProjectionRowKind.user, .final, .commentary, .request, .compaction, .notice].contains(row.kind)
-                let strip = artifacts && disclosureRow ? ChatActivityRows.stripArtifacts(row: row, artifacts: files.resolve(artifacts: row.artifacts), owned: files.byItem[row.id] ?? []) : []
+                let strip = artifacts && disclosureRow ? files.resolve(artifacts: row.artifacts) : []
                 if !strip.isEmpty || (row.open && row.kind == .subagent && !row.children.isEmpty) {
                     result.append(Self(row: row, depth: depth, artifacts: artifacts, commentary: commentary, footer: true,
                                        worker: worker, subagent: subagent))

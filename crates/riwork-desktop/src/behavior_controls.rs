@@ -296,7 +296,11 @@ pub struct Control<B: Primitive> {
 impl<B: Primitive> Control<B> {
     fn new(base: B) -> Self {
         Self {
-            base,
+            // Controls own their press, even when their click stops mouse-up
+            // before Base's window selection layer can end a gesture.
+            base: base.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                base::GlobalState::suppress_text_selection(cx);
+            }),
             disabled: false,
         }
     }
