@@ -28,7 +28,7 @@ enum ConnectionState: Equatable {
     var touchedProjects: [String: UInt64] = [:]
     var worktrees: [RemoteWorktree] = []
     var sharedTabs: SharedTabsReply? { didSet { inventoryStamp &+= 1 } }
-    /// Counts installs of the project's lists (shells, chats, shared tabs): a quiet refresh whose reads started before a newer install
+    /// Counts installs of the project's lists (shells, chats, shared tabs): a refresh whose reads started before a newer install
     /// is older than what is on screen, and is dropped whole.
     @ObservationIgnored var inventoryStamp = 0
     /// The connection's capabilities (and, for a desktop that shares tabs, its first lists) are in: until then no close is offered.
@@ -717,19 +717,36 @@ enum ConnectionState: Equatable {
         noteReply(reply.timing)
         return reply.value
     }
-    private func refresh(token: UUID) async throws {
+    private func refresh(token: UUID, retryInitialInventory: Bool = true) async throws {
         loading = true
         defer { if generation == token { loading = false } }
         // One round trip for all of it, not four one after the other: the lists do not depend on each other, and the project whose tabs
         // are wanted is the one already chosen (the replies come back matched to their requests, so they may overlap on the wire).
-        let chosen = projectID
+        let chosen = projectID, stamp = inventoryStamp
+        let inventoryLoaded = chosen != nil && loadedProjectID == chosen
+        let previousChats = Dictionary(chats.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         async let projectsReply = rpc("projects.list")
         async let orchestratorsReply = rpc("orchestrators.list")
         async let chosenListing = fetchProject(ifChosen: chosen)
         let listed = try await projectsReply["projects"].decode([RemoteProject].self)
         let managers = try await orchestratorsReply["orchestrators"].decode([RemoteSession].self)
-        let early = try await chosenListing
+        var early = try await chosenListing
         guard generation == token else { return }
+        let staleTabs = projectID == chosen && early?.tabs?.supersedes(sharedTabs) == false
+        if inventoryStamp != stamp || staleTabs {
+            // An older refresh must not replace a newer inventory. During first load/reconnect there is no inventory to fall
+            // back to yet: retry once, then finish loading while keeping metadata that arrived from the live chat reader.
+            guard !inventoryLoaded else { return }
+            guard projectID == chosen else { return }
+            if retryInitialInventory { try await refresh(token: token, retryInitialInventory: false); return }
+            if staleTabs { early?.tabs = sharedTabs }
+            if let listedChats = early?.chats {
+                let changed = chats.filter { previousChats[$0.id] != $0 }
+                let fresh = Dictionary(changed.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                let listedIDs = Set(listedChats.map(\.id))
+                early?.chats = listedChats.map { fresh[$0.id] ?? $0 } + changed.filter { !listedIDs.contains($0.id) }
+            }
+        }
         projects = listed; orchestrators = managers
         noteListsRead()
         // The Global screen is up: its own selection follows the list it just read (a project's is left alone).
@@ -798,7 +815,7 @@ enum ConnectionState: Equatable {
     }
     private func install(_ listing: ProjectListing, project id: String, token: UUID) async throws {
         guard generation == token, projectID == id else { return }
-        if let tabs = listing.tabs { acceptSharedTabs(tabs) }
+        if let tabs = listing.tabs, !acceptSharedTabs(tabs) { return }
         worktrees = listing.worktrees; shells = listing.shells; loadedProjectID = id
         lastListRead[.sessions] = .now
         if let talks = listing.chats { installChats(talks, project: id) }

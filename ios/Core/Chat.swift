@@ -120,6 +120,29 @@ public struct ChatCarriedOver: Codable, Sendable, Equatable, Hashable {
     public init(document: String, from: String) { self.document = document; self.from = from }
 }
 
+public enum ChatOrchestratorScope: Codable, Sendable, Equatable, Hashable {
+    case global
+    case project(String)
+
+    private enum Keys: String, CodingKey { case scope, projectID = "project_id" }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        switch try c.decode(String.self, forKey: .scope) {
+        case "global": self = .global
+        case "project": self = .project(try c.decode(String.self, forKey: .projectID))
+        default: throw DecodingError.dataCorruptedError(forKey: .scope, in: c, debugDescription: "Unknown orchestrator scope")
+        }
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        switch self {
+        case .global: try c.encode("global", forKey: .scope)
+        case .project(let id): try c.encode("project", forKey: .scope); try c.encode(id, forKey: .projectID)
+        }
+    }
+    public var title: String { switch self { case .global: "Global orchestrator"; case .project: "Project orchestrator" } }
+}
+
 /// One chat, as the host knows it (`ChatInfo`).
 public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
     public var id: String
@@ -129,6 +152,13 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
     public var worktreeID: String?
     public var cwd: String
     public var title: String
+    public var userTitle: String?
+    public var providerTitle: String?
+    /// The desktop's short title derived from the first message, already summarized for a tab.
+    public var firstUserMessage: String?
+    public var orchestrator: ChatOrchestratorScope?
+    /// The authoritative shared tab name, applied locally and never sent back as chat metadata.
+    public var sharedTitle: String? = nil
     public var createdAtUnix: UInt64
     public var providerThreadID: String?
     public var model: String?
@@ -151,12 +181,14 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
     public init(id: String, provider: ChatProvider, parentID: String? = nil, projectID: String? = nil, worktreeID: String? = nil, cwd: String = "", title: String = "",
                 createdAtUnix: UInt64 = 0, providerThreadID: String? = nil, model: String? = nil, effort: String? = nil, fast: Bool = false,
                 contributorMode: ChatContributorMode = .off, contributorOptOut: Bool = false, approvalMode: ChatApprovalMode = .supervised,
-                codexAccountID: String? = nil, state: ChatState = .starting, carriedOver: ChatCarriedOver? = nil) {
+                codexAccountID: String? = nil, state: ChatState = .starting, carriedOver: ChatCarriedOver? = nil,
+                userTitle: String? = nil, providerTitle: String? = nil, firstUserMessage: String? = nil, orchestrator: ChatOrchestratorScope? = nil) {
         self.parentID = parentID
         self.id = id; self.provider = provider; self.projectID = projectID; self.worktreeID = worktreeID; self.cwd = cwd; self.title = title
         self.createdAtUnix = createdAtUnix; self.providerThreadID = providerThreadID; self.model = model; self.effort = effort; self.fast = fast
         self.contributorMode = contributorMode; self.contributorOptOut = contributorOptOut; self.approvalMode = approvalMode; self.codexAccountID = codexAccountID
         self.state = state; self.carriedOver = carriedOver
+        self.userTitle = userTitle; self.providerTitle = providerTitle; self.firstUserMessage = firstUserMessage; self.orchestrator = orchestrator
     }
 
     /// The contributor mode the chat's Muse runs with, as the desktop that reported the chat says (`reported_contributor_mode`): nil for a
@@ -174,6 +206,7 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
         case projectID = "project_id", worktreeID = "worktree_id", createdAtUnix = "created_at_unix", providerThreadID = "provider_thread_id"
         case approvalMode = "approval_mode", codexAccountID = "codex_account_id", carriedOver = "carried_over"
         case contributorMode = "contributor_mode", contributorOptOut = "contributor_opt_out"
+        case userTitle = "user_title", providerTitle = "provider_title", firstUserMessage = "first_user_message", orchestrator
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -184,6 +217,10 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
         worktreeID = try c.decodeIfPresent(String.self, forKey: .worktreeID)
         cwd = try c.decodeIfPresent(String.self, forKey: .cwd) ?? ""
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        userTitle = c.tolerant(String.self, forKey: .userTitle)
+        providerTitle = c.tolerant(String.self, forKey: .providerTitle)
+        firstUserMessage = c.tolerant(String.self, forKey: .firstUserMessage)
+        orchestrator = c.tolerant(ChatOrchestratorScope.self, forKey: .orchestrator)
         createdAtUnix = try c.decodeIfPresent(UInt64.self, forKey: .createdAtUnix) ?? 0
         providerThreadID = try c.decodeIfPresent(String.self, forKey: .providerThreadID)
         model = try c.decodeIfPresent(String.self, forKey: .model)
@@ -205,6 +242,10 @@ public struct ChatInfo: Codable, Sendable, Equatable, Hashable, Identifiable {
         try c.encodeIfPresent(worktreeID, forKey: .worktreeID)
         try c.encode(cwd, forKey: .cwd)
         try c.encode(title, forKey: .title)
+        try c.encodeIfPresent(userTitle, forKey: .userTitle)
+        try c.encodeIfPresent(providerTitle, forKey: .providerTitle)
+        try c.encodeIfPresent(firstUserMessage, forKey: .firstUserMessage)
+        try c.encodeIfPresent(orchestrator, forKey: .orchestrator)
         try c.encode(createdAtUnix, forKey: .createdAtUnix)
         try c.encodeIfPresent(providerThreadID, forKey: .providerThreadID)
         try c.encodeIfPresent(model, forKey: .model)

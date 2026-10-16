@@ -68,6 +68,7 @@ extension RemoteSession {
         var info = listed ?? ChatInfo(id: chatID, provider: provider ?? .claude, projectID: project_id, worktreeID: worktree_id, cwd: cwd,
                                       createdAtUnix: created_at_unix, state: Self.chatState(activity))
         info.title = title
+        info.sharedTitle = title
         return info
     }
     /// A chat's state from what an entry says its agent is doing: busy, waiting for a person, or at rest.
@@ -99,6 +100,9 @@ public enum ProjectTab: Sendable, Equatable, Identifiable {
         case .chat(let info), .orchestratorChat(_, let info): info.id
         }
     }
+    /// Shared keys keep chat and shell identities separate even when their UUIDs coincide.
+    public var key: String { (chatInfo == nil ? "shell:" : "chat:") + id }
+    public var title: String { chatInfo.map(ChatTabs.title) ?? session?.title ?? "" }
     /// The chat the tab opens, if it opens one.
     public var chatInfo: ChatInfo? {
         switch self {
