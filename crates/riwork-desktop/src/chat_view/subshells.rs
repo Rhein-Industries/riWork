@@ -25,17 +25,20 @@ pub enum ShellAction {
 pub(super) struct WorkerUi {
     /// What the inventory says now about this chat's workers, by session id.
     pub live: BTreeMap<String, LiveWorker>,
+    /// Bounded, generated status text, separate from the authoritative inventory state.
+    pub(super) summaries: BTreeMap<String, String>,
+    pub(super) shelf: super::worker_shelf::ShelfState,
     /// Why that may be old (a failed or paused check), shown on running cards.
-    stale: Option<String>,
+    pub(super) stale: Option<String>,
     /// Each session's latest marker by item index: only that card can be live.
-    latest: HashMap<String, usize>,
+    pub(super) latest: HashMap<String, usize>,
     /// Where each running card was last seen against the viewport (above, below), by
     /// item id: a card waiting to be measured again keeps its last known place.
     places: std::cell::RefCell<HashMap<String, (bool, bool)>>,
     /// The worker the bar above the message box writes to, and what it holds.
     pub(super) message: Option<(String, Entity<InputState>, Subscription)>,
     /// The send or stop on its way, and to which worker.
-    pending: Option<(String, ShellAction)>,
+    pub(super) pending: Option<(String, ShellAction)>,
     error: Option<String>,
 }
 
@@ -98,6 +101,7 @@ impl ChatView {
         self.workers.live = live;
         self.workers.stale = stale;
         self.remeasure_workers(&changed);
+        self.schedule_worker_summaries(cx);
         cx.notify();
     }
 
@@ -139,6 +143,7 @@ impl ChatView {
             .map(|(_, at)| *at)
             .collect();
         self.workers.latest = latest;
+        self.reindex_provider_workers();
         for at in superseded {
             if let Some(row) = self.visible.iter().position(
                 |row| matches!(row, display::Row::Item(i) | display::Row::Details(i) if *i == at),
@@ -259,7 +264,12 @@ impl ChatView {
         cx.notify();
     }
 
-    fn worker_action(&mut self, session_id: String, action: ShellAction, cx: &mut Context<Self>) {
+    pub(super) fn worker_action(
+        &mut self,
+        session_id: String,
+        action: ShellAction,
+        cx: &mut Context<Self>,
+    ) {
         let actionable = self
             .workers
             .live
@@ -283,7 +293,12 @@ impl ChatView {
         cx.notify();
     }
 
-    fn message_worker(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn message_worker(
+        &mut self,
+        id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.workers.pending.is_some() {
             return;
         }

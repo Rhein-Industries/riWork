@@ -9,6 +9,7 @@ pub use riwork_core::{
 pub mod activity;
 pub mod agent_hooks;
 pub mod anthropic_key;
+pub mod app_preview;
 pub mod chat;
 pub mod cli_agents;
 pub mod cua;
@@ -19,6 +20,7 @@ pub mod handoff;
 pub mod notifications;
 pub mod orchestrator_wakes;
 pub mod orchestrators;
+pub mod preview_control;
 pub mod project_sort;
 pub mod project_tabs;
 pub mod remote_cache;

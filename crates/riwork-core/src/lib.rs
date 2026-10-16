@@ -1,5 +1,6 @@
 //! Shared RiWork state, persistence, and configuration without UI dependencies.
 
+pub mod app_preview;
 pub mod appearance_file;
 pub mod codex_accounts;
 pub mod delegation;

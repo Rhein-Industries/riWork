@@ -14,6 +14,7 @@ mod chat;
 
 mod account_status;
 mod api_key;
+mod app_preview;
 mod appearance_sync;
 mod behavior_controls;
 mod chat_choice;
@@ -40,6 +41,7 @@ mod orchestrator_choice;
 mod orchestrator_wakes;
 mod orchestrators;
 mod panels;
+mod preview_host;
 mod project_creator;
 mod project_settings;
 mod remote_prompt;
@@ -74,6 +76,7 @@ use std::{
 
 use crate::text_input::{EnterBehavior, InputEvent, InputState};
 use activity::{ActivityTracker, AgentActivity, AgentState, ChatActivity};
+use app_preview::{AppPreviewEvent, AppPreviewView};
 use chat::model::{ChatInfo, NewChat, OrchestratorScope, Provider};
 use chat_view::{ChatView, ChatViewEvent, HostConfig, ToggleDictation};
 use file_explorer::{
@@ -105,6 +108,7 @@ use remote_prompt::{PromptKind, RemotePrompt, RemotePromptEvent};
 use remote_service::RemoteState;
 use remote_tree::{NewShellKind, RemoteShell};
 use riwork_core::global_window::GlobalView;
+use riwork_engine::app_preview::{PreviewMode, PreviewSpec};
 use sessions::{HarnessKind, SessionManager, SessionMetrics, ShellKind, ShellSession};
 use settings::{CuaSetupState, Settings, SettingsEvent, SettingsPanel, SettingsStore};
 use store::{Project, ProjectCodexAccount, SearchHit, State, Store};
@@ -144,6 +148,7 @@ actions!(
         OpenGrok,
         OpenMuse,
         OpenNewChat,
+        OpenAppPreview,
         CreateProject,
         ToggleFocusMode,
         OpenSettings,
@@ -171,6 +176,7 @@ enum PaneMenuAction {
     Harness(HarnessKind),
     /// Open the shared provider/model choice dialog.
     NewChat,
+    AppPreview,
     Orchestrator(bool),
     /// Pass the selected agent tab's conversation to a new shell or chat.
     Handoff,
@@ -275,6 +281,11 @@ enum TabContent {
         chat_id: String,
         view: Entity<ChatView>,
     },
+    AppPreview {
+        preview_id: String,
+        spec: PreviewSpec,
+        view: Entity<AppPreviewView>,
+    },
 }
 
 /// The bookkeeping every terminal tab has, whatever it attaches to.
@@ -309,7 +320,7 @@ impl TabContent {
                 error: attach_error,
                 failures: attach_failures,
             }),
-            Self::Panel(_) | Self::Chat { .. } => None,
+            Self::Panel(_) | Self::Chat { .. } | Self::AppPreview { .. } => None,
         }
     }
 }
@@ -332,6 +343,12 @@ impl Tab {
             },
             TabContent::Panel(panel) => SavedTab::Panel { panel: *panel },
             TabContent::Chat { chat_id, .. } => saved_chat(chat_id)?,
+            TabContent::AppPreview {
+                preview_id, spec, ..
+            } => SavedTab::AppPreview {
+                preview_id: preview_id.clone(),
+                spec: spec.clone(),
+            },
         })
     }
 
@@ -391,7 +408,7 @@ impl Tab {
             TabContent::Shell { terminal, .. } | TabContent::RemoteShell { terminal, .. } => {
                 terminal.as_ref()
             }
-            TabContent::Panel(_) | TabContent::Chat { .. } => None,
+            TabContent::Panel(_) | TabContent::Chat { .. } | TabContent::AppPreview { .. } => None,
         }
     }
 
@@ -411,6 +428,9 @@ impl Tab {
     fn set_visible(&self, visible: bool, cx: &mut Context<Workspace>) {
         if let Some(terminal) = self.terminal() {
             terminal.update(cx, |terminal, _| terminal.set_visible(visible));
+        }
+        if let TabContent::AppPreview { view, .. } = &self.content {
+            view.update(cx, |view, cx| view.set_visible(visible, cx));
         }
     }
 }
@@ -1326,6 +1346,7 @@ struct DashboardReads {
 const DASHBOARD_READ_EVERY: Duration = Duration::from_secs(10);
 
 struct Workspace {
+    preview_host: Option<preview_host::PreviewHost>,
     modal_selection_scope: gpui_kit::base::TextSelectionScopeId,
     menu_focus: FocusHandle,
     menu_return: behavior_controls::FocusReturn,
@@ -2049,7 +2070,9 @@ impl Workspace {
         .detach();
         let file_preview = cx.new(|cx| FilePreview::new(panel.clone(), cx));
         let file_explorer = panel;
+        let preview_host = preview_host::PreviewHost::open(sessions.state_home()).ok();
         let mut workspace = Self {
+            preview_host,
             modal_selection_scope: gpui_kit::base::TextSelectionScopeId::new(),
             menu_focus: cx.focus_handle(),
             menu_return: Default::default(),
@@ -2192,6 +2215,7 @@ impl Workspace {
             workspace.refresh_window_title(window, cx);
         }
         workspace.load_project(window, cx);
+        workspace.start_preview_host(window, cx);
         workspace.refresh_project_recency(cx);
         if cua::CuaManager::open_default()
             .and_then(|manager| manager.driver_path())
@@ -2685,7 +2709,9 @@ impl Workspace {
                             shell_id,
                             ..
                         } => AttachTarget::Remote(desktop_id.clone(), shell_id.clone()),
-                        TabContent::Panel(_) | TabContent::Chat { .. } => continue,
+                        TabContent::Panel(_)
+                        | TabContent::Chat { .. }
+                        | TabContent::AppPreview { .. } => continue,
                     };
                     let Some(AttachState { terminal, .. }) = tab.content.attach_state() else {
                         continue;
@@ -3171,6 +3197,17 @@ impl Workspace {
                 self.set_search(String::new(), None, window, cx);
             }
             PanelAction::RefreshSessions => self.refresh_native_sessions(true, cx),
+            PanelAction::NukeShells {
+                project,
+                generation,
+            } => {
+                if !self.is_remote()
+                    && project == self.project_id
+                    && generation == self.native_sessions_generation
+                {
+                    self.request_nuke_shells(window, cx);
+                }
+            }
             PanelAction::Search => self.focus_search_input(window, cx),
             // The panel keeps its own field's editor focused (see `panels::panel_search`).
             PanelAction::ClearSearch => self.set_search(String::new(), None, window, cx),
@@ -4103,7 +4140,8 @@ impl Workspace {
                     SavedTab::Shell { shell_id } => Some(shell_id.clone()),
                     SavedTab::Panel { .. }
                     | SavedTab::RemoteShell { .. }
-                    | SavedTab::Chat { .. } => None,
+                    | SavedTab::Chat { .. }
+                    | SavedTab::AppPreview { .. } => None,
                 })
             })
             .collect();
@@ -4263,6 +4301,18 @@ impl Workspace {
                             ),
                             SavedTab::Chat { chat_id } => {
                                 self.restore_chat_tab(*pane_id, chat_id.clone(), window, cx)
+                            }
+                            SavedTab::AppPreview { preview_id, spec } => {
+                                let tab = self.app_preview_tab(
+                                    preview_id.clone(),
+                                    spec.clone(),
+                                    window,
+                                    cx,
+                                );
+                                if let Some(pane) = self.panes.get_mut(pane_id) {
+                                    pane.tabs.push(tab);
+                                    pane.active = pane.tabs.len() - 1;
+                                }
                             }
                         }
                     }
@@ -5617,6 +5667,10 @@ impl Workspace {
         // The order of projects is for the eye: a window nobody can see catches up
         // on the first tick after it shows again.
         if self.window_visible {
+            panels::refresh_worktree_presence(
+                self.state.worktrees.iter().map(|tree| tree.path.as_path()),
+                cx,
+            );
             self.refresh_project_recency(cx);
         }
         self.refresh_window_title(window, cx);
@@ -5775,6 +5829,23 @@ impl Workspace {
             .iter()
             .filter_map(|key| key.strip_prefix("shell:").map(str::to_owned))
             .collect::<HashSet<_>>();
+        let worker_parents: HashSet<_> = self
+            .panes
+            .iter()
+            .filter(|(id, _)| !self.focus_mode || **id == self.active_pane)
+            .filter_map(|(_, pane)| pane.tabs.get(pane.active)?.chat_id().map(str::to_owned))
+            .collect();
+        let worker_chats: Vec<_> = self
+            .shared_chats
+            .iter()
+            .flatten()
+            .filter(|chat| {
+                chat.parent_id
+                    .as_ref()
+                    .is_some_and(|id| worker_parents.contains(id))
+            })
+            .cloned()
+            .collect();
         let work = cx.background_executor().spawn(async move {
             // Sessions of deleted worktrees end after a grace period, keeping
             // shells in tabs or attached terminals; at most one look a minute.
@@ -5791,7 +5862,12 @@ impl Workspace {
                 }
             };
             let outputs = if polled && capture_output {
-                subshells::capture_workers(&sessions, &sample.shells, &work_project_id)
+                subshells::capture_workers(
+                    &sessions,
+                    &sample.shells,
+                    &work_project_id,
+                    &worker_chats,
+                )
             } else {
                 BTreeMap::new()
             };
@@ -6666,6 +6742,104 @@ impl Workspace {
         self.save_layout();
     }
 
+    fn add_app_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.ensure_layout(window, cx) {
+            return;
+        }
+        if let Err(error) = self.local_only(cx) {
+            self.notice = Some(error);
+            cx.notify();
+            return;
+        }
+        let cwd = self
+            .selected_worktree_id
+            .as_ref()
+            .and_then(|id| self.state.worktrees.iter().find(|tree| &tree.id == id))
+            .map(|tree| tree.path.clone())
+            .unwrap_or_else(|| self.cwd.clone());
+        let spec = PreviewSpec {
+            command: String::new(),
+            cwd,
+            mode: PreviewMode::Cooperative,
+            ios: None,
+        };
+        let tab = self.app_preview_tab(uuid::Uuid::new_v4().to_string(), spec, window, cx);
+        if let Err(error) = self.place_new_tab(self.new_tab_pane(), tab, window, cx) {
+            self.notice = Some(error);
+        }
+        self.focus_active(window, cx);
+        self.save_layout();
+        cx.notify();
+    }
+
+    /// Build an idle preview. Only the view's Run action launches its command.
+    fn app_preview_tab(
+        &mut self,
+        preview_id: String,
+        spec: PreviewSpec,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Tab {
+        let mut preview_id = preview_host::instance_id(preview_id);
+        if let Some(host) = &self.preview_host {
+            if host.store.begin(&preview_id, &host.id).is_err() {
+                preview_id = uuid::Uuid::new_v4().to_string();
+                let _ = host.store.begin(&preview_id, &host.id);
+            }
+        }
+        let view = cx.new(|cx| AppPreviewView::new(spec.clone(), window, cx));
+        if let Some(host) = &self.preview_host {
+            view.update(cx, |view, _| {
+                view.bind_control(
+                    host.store.clone(),
+                    preview_id.clone(),
+                    host.id.clone(),
+                    self.project_id.clone(),
+                )
+            });
+        }
+        cx.subscribe(&view, |workspace, view, event: &AppPreviewEvent, cx| {
+            let AppPreviewEvent::Configured(spec) = event;
+            for tab in workspace.panes.values_mut().flat_map(|pane| &mut pane.tabs) {
+                if let TabContent::AppPreview {
+                    spec: saved,
+                    view: current,
+                    ..
+                } = &mut tab.content
+                    && current == &view
+                {
+                    *saved = spec.clone();
+                    tab.title = view.read(cx).title();
+                    workspace.save_layout();
+                    cx.notify();
+                    break;
+                }
+            }
+        })
+        .detach();
+        let tab = Tab {
+            id: self.next_tab_id,
+            title: view.read(cx).title(),
+            content: TabContent::AppPreview {
+                preview_id,
+                spec,
+                view,
+            },
+            hidden_since: None,
+        };
+        self.next_tab_id += 1;
+        tab
+    }
+
+    fn open_app_preview_action(
+        &mut self,
+        _: &OpenAppPreview,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.add_app_preview(window, cx);
+    }
+
     fn add_split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
         if self.focus_mode {
             self.set_focus_mode(false, window, cx);
@@ -6779,6 +6953,19 @@ impl Workspace {
         if let Some(view) = chat_active {
             self.search_focused = false;
 
+            view.update(cx, |view, cx| view.focus(window, cx));
+            return;
+        }
+        let app_preview = self
+            .panes
+            .get(&self.active_pane)
+            .and_then(|pane| pane.tabs.get(pane.active))
+            .and_then(|tab| match &tab.content {
+                TabContent::AppPreview { view, .. } => Some(view.clone()),
+                _ => None,
+            });
+        if let Some(view) = app_preview {
+            self.search_focused = false;
             view.update(cx, |view, cx| view.focus(window, cx));
             return;
         }
@@ -7739,8 +7926,7 @@ impl Workspace {
             path: self.cwd.clone(),
         }];
         locations.extend(
-            self.state
-                .worktrees_for(&self.project_id)
+            panels::visible_worktrees(&self.state, &self.project_id)
                 .into_iter()
                 .map(|tree| chat_choice::Location {
                     worktree_id: Some(tree.id.clone()),
@@ -7880,7 +8066,9 @@ impl Workspace {
                         .as_deref()
                         .is_some_and(|project| project != self.project_id)
             }),
-            SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } => false,
+            SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } | SavedTab::AppPreview { .. } => {
+                false
+            }
         }
     }
 
@@ -7895,7 +8083,9 @@ impl Workspace {
                     && shell.kind == ShellKind::Orchestrator
                     && shell.project_id.as_deref() == Some(self.project_id.as_str())
             }),
-            SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } => false,
+            SavedTab::Panel { .. } | SavedTab::RemoteShell { .. } | SavedTab::AppPreview { .. } => {
+                false
+            }
         }
     }
 
@@ -9720,8 +9910,6 @@ impl Workspace {
                 } else {
                     152.0
                 });
-        // One pane of the window carries Nuke all shells, beside its menu.
-        let show_nuke = self.nuke_button_pane() == Some(pane_id);
         let account_numbers = codex_account_numbers(&self.shells);
         let tab_can_close = user_close_refusal(pane_locked, UserClose::Tab).is_none();
         // A panel's tab says its name as the theme writes labels; a saved layout keeps
@@ -9763,7 +9951,7 @@ impl Workspace {
         // What the bar keeps beside its tabs: the buttons, the drag handle and the window
         // drag space after the last tab.
         let bar_reserved = |lock: bool, focus: bool| {
-            let buttons = [show_main, lock, focus, show_nuke, true]
+            let buttons = [show_main, lock, focus, true]
                 .into_iter()
                 .filter(|shown| *shown)
                 .count() as f32;
@@ -10131,7 +10319,6 @@ impl Workspace {
                     cx,
                 )
             }))
-            .children(show_nuke.then(|| self.render_nuke_button(cx)))
             .child(self.pane_button(
                 pane_id,
                 "menu",
@@ -10363,6 +10550,7 @@ impl Workspace {
                 }
             }
             Some(TabContent::Chat { view, .. }) => view.clone().into_any_element(),
+            Some(TabContent::AppPreview { view, .. }) => view.clone().into_any_element(),
             Some(TabContent::Panel(kind))
                 if remote_host_label.is_some()
                     && panels::remote_support(*kind) == panels::RemoteSupport::Unavailable =>
@@ -10418,6 +10606,7 @@ impl Workspace {
                     native_chats: self.native_sessions.chats(),
                     session_catalog_note: self.native_sessions.note(),
                     session_catalog_loading: self.native_sessions.loading(),
+                    nuke_running: self.nuke_running,
                     session_catalog_generation: self.native_sessions_generation,
                     session_filter: self.session_filter,
                     query: &self.search,
@@ -10695,6 +10884,12 @@ impl Workspace {
                                 "",
                                 None,
                                 PaneMenuAction::NewChat,
+                            )))
+                            .chain(std::iter::once((
+                                "App preview…",
+                                "",
+                                None,
+                                PaneMenuAction::AppPreview,
                             )))
                             .map(|(label, shortcut, icon, action)| {
                                 self.pane_menu_row(pane_id, label, shortcut, icon, action, cx)
@@ -11855,6 +12050,7 @@ impl Workspace {
                     PaneMenuAction::NewChat => {
                         workspace.begin_new_chat(None, false, window, cx);
                     }
+                    PaneMenuAction::AppPreview => workspace.add_app_preview(window, cx),
                     PaneMenuAction::Orchestrator(project_scoped) => {
                         let project_id = project_scoped.then(|| workspace.project_id.clone());
                         workspace.open_scoped_orchestrator(project_id, window, cx);
@@ -12019,6 +12215,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_grok_action))
             .on_action(cx.listener(Self::open_muse_action))
             .on_action(cx.listener(Self::open_new_chat_action))
+            .on_action(cx.listener(Self::open_app_preview_action))
             .on_action(cx.listener(Self::split_right_action))
             .on_action(cx.listener(Self::split_down_action))
             .on_action(cx.listener(Self::close_tab_action))
@@ -12690,7 +12887,7 @@ fn belongs_to_global_window(
         SavedTab::Shell { shell_id } => live_shells
             .get(shell_id)
             .is_some_and(is_global_orchestrator_shell),
-        SavedTab::RemoteShell { .. } => false,
+        SavedTab::RemoteShell { .. } | SavedTab::AppPreview { .. } => false,
     }
 }
 
@@ -13235,6 +13432,10 @@ fn exit_startup(error: String) -> ! {
 }
 
 fn main() {
+    #[cfg(feature = "app-preview-fixture")]
+    if app_preview::render_fixture_if_requested() {
+        return;
+    }
     let args = env::args().skip(1).collect::<Vec<_>>();
     match cli::run_cli(&args) {
         Ok(true) => return,
@@ -13450,6 +13651,7 @@ fn main() {
                 MenuItem::action("Global Chat", OpenOrchestrator),
                 MenuItem::separator(),
                 MenuItem::action("New chat…", OpenNewChat),
+                MenuItem::action("App preview…", OpenAppPreview),
                 MenuItem::action("Sessions", OpenSessions),
                 MenuItem::action("Default Layout", ApplyDefaultLayout),
                 MenuItem::action("Gather Tabs into Main Pane", GatherTabs),
@@ -15182,6 +15384,59 @@ mod main_pane_tests {
                 .unwrap()
                 .id
         })
+    }
+
+    #[gpui::test]
+    fn app_preview_routes_to_main_pane_and_saves_committed_settings(cx: &mut gpui::TestAppContext) {
+        let (handle, workspace, _, home, _) = strip_workspace(cx, 0);
+        let mut preview_view = None;
+        crate::form_input::test_turn(cx, handle, |window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.layout_ready = true;
+                workspace.panes.insert(2, pane(Vec::new(), 0));
+                workspace.layout = side(0.5, Layout::Pane(1), Layout::Pane(2));
+                workspace.active_pane = 2;
+                workspace.add_app_preview(window, cx);
+                assert_eq!(workspace.active_pane, 1);
+                assert!(workspace.panes[&2].tabs.is_empty());
+                let tab = &workspace.panes[&1].tabs[1];
+                let TabContent::AppPreview { view, spec, .. } = &tab.content else {
+                    panic!("new tab is an app preview")
+                };
+                assert!(spec.command.is_empty());
+                assert_eq!(spec.cwd, home);
+                assert_eq!(spec.mode, PreviewMode::Cooperative);
+                preview_view = Some(view.clone());
+            });
+        });
+        let view = preview_view.unwrap();
+        let committed = PreviewSpec {
+            command: "cargo run -p demo".into(),
+            cwd: home.join("nested folder"),
+            mode: PreviewMode::WindowCapture,
+            ios: None,
+        };
+        crate::form_input::test_turn(cx, handle, |_, cx| {
+            view.update(cx, |_, cx| {
+                cx.emit(AppPreviewEvent::Configured(committed.clone()))
+            });
+        });
+        workspace.read_with(cx, |workspace, _| {
+            let tab = &workspace.panes[&1].tabs[1];
+            assert!(
+                matches!(tab.saved(), Some(SavedTab::AppPreview { spec, .. }) if spec == committed)
+            );
+            let saved = workspace
+                .layouts
+                .load(&workspace.project_id)
+                .unwrap()
+                .unwrap();
+            assert!(
+                saved.panes[&1].tabs.iter().any(
+                    |tab| matches!(tab, SavedTab::AppPreview { spec, .. } if spec == &committed)
+                )
+            );
+        });
     }
 
     /// Whether the tab is drawn wholly inside its strip's visible scrolling area.

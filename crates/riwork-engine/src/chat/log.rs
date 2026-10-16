@@ -406,6 +406,17 @@ pub fn read_infos_checked(home: &Path) -> Result<Vec<ChatInfo>, String> {
 
 /// The transcript the log of chat `id` builds, read from the end of the file.
 pub fn read_transcript(home: &Path, id: &str) -> Result<super::model::Transcript, String> {
+    read_transcript_tail(home, id, TRANSCRIPT_TAIL)
+}
+
+/// Fold complete events from a bounded tail without contacting the chat host.
+/// A small observer such as the worker shelf need not replay a long conversation.
+pub fn read_transcript_tail(
+    home: &Path,
+    id: &str,
+    max_bytes: u64,
+) -> Result<super::model::Transcript, String> {
+    let max_bytes = max_bytes.min(TRANSCRIPT_TAIL);
     let dir = chat_dir(home, id).ok_or("invalid chat id")?;
     let path = dir.join(EVENTS);
     let mut file =
@@ -414,10 +425,10 @@ pub fn read_transcript(home: &Path, id: &str) -> Result<super::model::Transcript
         .metadata()
         .map_err(|error| format!("Cannot read {}: {error}", path.display()))?
         .len();
-    let start = length.saturating_sub(TRANSCRIPT_TAIL);
+    let start = length.saturating_sub(max_bytes);
     file.seek(SeekFrom::Start(start))
         .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
-    let mut reader = BufReader::new(file);
+    let mut reader = BufReader::new(file.take(max_bytes));
     let read = |error: io::Error| format!("Cannot read {}: {error}", path.display());
     if start > 0 {
         // The first line of the tail is cut in two.
@@ -1012,6 +1023,28 @@ mod tests {
             },
         };
         format!("{}\n", serde_json::to_string(&envelope).unwrap())
+    }
+
+    #[test]
+    fn a_small_transcript_tail_skips_old_partial_events_and_keeps_recent_output() {
+        let home = scratch();
+        let chat = info(&home);
+        let directory = chat_dir(&home, &chat.id).unwrap();
+        let log = ChatLog::create(&directory, &chat).unwrap();
+        log.append(user_line(1, &"old output ".repeat(1000)).as_bytes(), false)
+            .unwrap();
+        let recent = user_line(2, "fresh worker finding");
+        log.append(recent.as_bytes(), false).unwrap();
+        let transcript = read_transcript_tail(&home, &chat.id, recent.len() as u64 + 1).unwrap();
+        assert_eq!(transcript.items.len(), 1);
+        assert_eq!(transcript.items[0].id, "u2");
+        assert!(
+            read_transcript_tail(&home, &chat.id, 0)
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

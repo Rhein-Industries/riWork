@@ -26,7 +26,7 @@ use crate::{
     remote_tree::{FolderView, Link, Listing, ProjectView, RemoteShell, SelectedView, folder_key},
     session_catalog::{self, Filter},
     sessions::{SessionMetrics, ShellKind, ShellSession},
-    store::{State, TaskStatus},
+    store::{State, TaskStatus, Worktree},
     theme::{self, Palette},
     tooltip::{self, Look},
     ui_text,
@@ -68,6 +68,11 @@ pub enum PanelAction {
     },
     SessionFilter(Filter),
     RefreshSessions,
+    /// Confirm exiting this project's live shells from its Shells panel.
+    NukeShells {
+        project: String,
+        generation: u64,
+    },
     /// Open choices; rendering or filtering sessions never creates a chat.
     NewChat {
         project: String,
@@ -164,7 +169,7 @@ fn worktree_presence() -> std::sync::MutexGuard<'static, WorktreePresence> {
 
 /// Start background checks for worktree folders whose cached state is stale,
 /// and repaint if one turns out to have appeared or vanished.
-fn refresh_worktree_presence<'a, V: 'static>(
+pub(crate) fn refresh_worktree_presence<'a, V: 'static>(
     paths: impl Iterator<Item = &'a Path>,
     cx: &mut Context<V>,
 ) {
@@ -184,6 +189,19 @@ fn refresh_worktree_presence<'a, V: 'static>(
     }
 }
 
+/// Missing linked checkouts leave navigation and destination choices, while their
+/// records remain available to tasks and orphaned-session cleanup. Keep the project
+/// root visible even when its volume is unavailable, and recheck hidden paths so a
+/// restored checkout returns with the same identity.
+pub(crate) fn visible_worktrees<'a>(state: &'a State, project_id: &str) -> Vec<&'a Worktree> {
+    let presence = worktree_presence();
+    state
+        .worktrees_for(project_id)
+        .into_iter()
+        .filter(|worktree| worktree.is_primary || !presence.missing(&worktree.path))
+        .collect()
+}
+
 pub struct PanelData<'a> {
     pub state: &'a State,
     pub project_id: &'a str,
@@ -198,6 +216,7 @@ pub struct PanelData<'a> {
     pub native_chats: &'a [ChatInfo],
     pub session_catalog_note: Option<&'a str>,
     pub session_catalog_loading: bool,
+    pub nuke_running: bool,
     pub session_catalog_generation: u64,
     pub session_filter: Filter,
     pub query: &'a str,
@@ -564,6 +583,10 @@ pub fn render_panel<V: Render + 'static>(
     window: &mut Window,
     cx: &mut Context<V>,
 ) -> AnyElement {
+    refresh_worktree_presence(
+        data.state.worktrees.iter().map(|tree| tree.path.as_path()),
+        cx,
+    );
     if !data.project_sort_menu_open
         && let Some(ui) = data.project_sort_ui
     {
@@ -647,7 +670,7 @@ pub fn render_panel<V: Render + 'static>(
                     }
                     ProjectTreeRow::Project { index, depth } => {
                         let project = &data.state.projects[index];
-                        let worktrees = data.state.worktrees_for(&project.id).len();
+                        let worktrees = visible_worktrees(data.state, &project.id).len();
                         let tasks = data.state.tasks_for_project(&project.id);
                         let done = tasks
                             .iter()
@@ -794,8 +817,7 @@ pub fn render_panel<V: Render + 'static>(
             }
         }
         PanelKind::Worktrees => {
-            let worktrees = data.state.worktrees_for(data.project_id);
-            refresh_worktree_presence(worktrees.iter().map(|worktree| worktree.path.as_path()), cx);
+            let worktrees = visible_worktrees(data.state, data.project_id);
             for worktree in worktrees {
                 total += 1;
                 let path = worktree.path.to_string_lossy();
@@ -1167,6 +1189,8 @@ pub fn render_panel<V: Render + 'static>(
     let mut session_controls = Vec::new();
     if kind == PanelKind::Shells && data.selected_remote.is_none() {
         let mut toolbar = div()
+            .id("sessions-controls")
+            .test_support()
             .flex()
             .flex_wrap()
             .gap(ui_text::space(4.0))
@@ -1225,6 +1249,35 @@ pub fn render_panel<V: Render + 'static>(
                 handler(view, PanelAction::RefreshSessions, window, cx)
             })),
         );
+        let handler = on_action.clone();
+        let project = data.project_id.to_owned();
+        let disabled = data.nuke_running
+            || crate::nuke_shells::nuke_scope(data.shells, data.project_id).is_empty();
+        let nuke = behavior::button(
+            crate::nuke_shells::NUKE_BUTTON,
+            "Nuke all shells",
+            controls::Button::Secondary,
+            colors,
+        )
+        .disabled(disabled)
+        .when(!disabled, |button| {
+            button.text_color(rgb(theme::diff_colors(cx).removed))
+        })
+        .on_click(cx.listener(move |view, _, window, cx| {
+            handler(
+                view,
+                PanelAction::NukeShells {
+                    project: project.clone(),
+                    generation,
+                },
+                window,
+                cx,
+            )
+        }));
+        toolbar = toolbar.child(crate::form_input::control_element(
+            crate::nuke_shells::NUKE_BUTTON,
+            nuke,
+        ));
         session_controls.push(toolbar.flex_none().into_any_element());
         if let Some(note) = data.session_catalog_note {
             session_controls.push(
@@ -4469,6 +4522,7 @@ mod search_regression_tests {
                                     native_chats: &self.native_chats,
                                     session_catalog_note: None,
                                     session_catalog_loading: false,
+                                    nuke_running: false,
                                     session_catalog_generation: 7,
                                     session_filter: self.session_filter,
                                     query: &self.queries[id],
@@ -4619,6 +4673,83 @@ mod search_regression_tests {
         });
         test_turn(cx, handle, |window, _| window.activate_window());
         (handle, owner)
+    }
+
+    fn missing_worktrees_leave_navigation(cx: &mut TestAppContext, native: bool) {
+        let (handle, owner) = mount(cx, native);
+        let prefix = format!(
+            "/synthetic-only/worktree-visibility-{}",
+            uuid::Uuid::new_v4()
+        );
+        let trees: Vec<_> = ["root", "kept", "removed"]
+            .into_iter()
+            .map(|name| Worktree {
+                id: format!("{prefix}-{name}"),
+                project_id: "alpha-id".into(),
+                branch: name.into(),
+                path: PathBuf::from(format!("{prefix}/{name}")),
+                is_primary: name == "root",
+                repository_root: None,
+                created_at: 0,
+            })
+            .collect();
+        for tree in &trees {
+            worktree_presence().finish(tree.path.clone(), false, Instant::now());
+        }
+        test_turn(cx, handle, |_, app| {
+            owner.update(app, |owner, cx| {
+                owner.kind = PanelKind::Worktrees;
+                owner.two_panels = false;
+                owner.state.worktrees = trees.clone();
+                cx.notify();
+            });
+        });
+        test_turn(cx, handle, |window, _| {
+            for tree in &trees {
+                assert!(window.find(format!("worktree-{}", tree.id)).visible());
+            }
+        });
+        // A missing root stays discoverable; deleted linked worktrees disappear.
+        for tree in [&trees[0], &trees[2]] {
+            worktree_presence().finish(tree.path.clone(), true, Instant::now());
+        }
+        test_turn(cx, handle, |_, app| {
+            owner.update(app, |_, cx| cx.notify());
+        });
+        test_turn(cx, handle, |window, app| {
+            assert!(window.find(format!("worktree-{}", trees[0].id)).visible());
+            assert!(window.find(format!("worktree-{}", trees[1].id)).visible());
+            assert!(
+                window
+                    .try_find(format!("worktree-{}", trees[2].id))
+                    .is_none()
+            );
+            let state = &owner.read(app).state;
+            assert_eq!(visible_worktrees(state, "alpha-id").len(), 2);
+            assert_eq!(
+                state.worktrees, trees,
+                "task and shell references keep their records"
+            );
+        });
+        // Checks include hidden folders, so restoration reuses its existing UUID.
+        worktree_presence().finish(trees[2].path.clone(), false, Instant::now());
+        test_turn(cx, handle, |_, app| {
+            owner.update(app, |_, cx| cx.notify());
+        });
+        test_turn(cx, handle, |window, app| {
+            assert!(window.find(format!("worktree-{}", trees[2].id)).visible());
+            assert_eq!(owner.read(app).state.worktrees, trees);
+        });
+    }
+
+    #[gpui::test]
+    fn native_worktrees_hide_missing_checkouts_and_restore_their_rows(cx: &mut TestAppContext) {
+        missing_worktrees_leave_navigation(cx, true);
+    }
+
+    #[gpui::test]
+    fn colorful_worktrees_hide_missing_checkouts_and_restore_their_rows(cx: &mut TestAppContext) {
+        missing_worktrees_leave_navigation(cx, false);
     }
     fn history(id: u128, provider: &str, state: serde_json::Value, project: &str) -> ChatInfo {
         serde_json::from_value(serde_json::json!({

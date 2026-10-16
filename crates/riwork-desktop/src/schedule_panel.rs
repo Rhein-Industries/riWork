@@ -1214,12 +1214,11 @@ impl Render for SchedulePanel {
                 }
                 form = form.child(scopes);
                 if scope_index == 2 {
-                    let workspaces: Vec<_> = self
-                        .state
-                        .worktrees_for(&self.project_id)
-                        .into_iter()
-                        .cloned()
-                        .collect();
+                    let workspaces: Vec<_> =
+                        crate::panels::visible_worktrees(&self.state, &self.project_id)
+                            .into_iter()
+                            .cloned()
+                            .collect();
                     let mut choices = div().flex().flex_wrap().gap(ui_text::space(5.0));
                     for workspace in workspaces {
                         choices = choices.child(self.button(

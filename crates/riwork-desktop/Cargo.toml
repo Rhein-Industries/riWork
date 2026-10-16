@@ -3,6 +3,9 @@ name = "riwork-desktop"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+app-preview-fixture = ["dep:riwork-gpui-preview"]
+
 [[bin]]
 name = "riwork"
 path = "src/main.rs"
@@ -11,6 +14,7 @@ path = "src/main.rs"
 riwork-core = { path = "../riwork-core" }
 riwork-engine = { path = "../riwork-engine" }
 riwork-cli = { path = "../riwork-cli" }
+riwork-gpui-preview = { path = "../riwork-gpui-preview", optional = true }
 gpui = { package = "gpui-pre", version = "=0.3.8", default-features = false, features = ["font-kit"] }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit", "runtime_shaders"] }
 gpui-kit = { version = "=0.7.1", default-features = false }

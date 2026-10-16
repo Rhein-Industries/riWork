@@ -54,4 +54,5 @@ pub mod testing;
 mod testkit;
 pub mod text;
 pub mod wire;
+pub mod worker_summary;
 pub mod workers;

@@ -4499,19 +4499,35 @@ fn effective_path() -> std::ffi::OsString {
     env::join_paths(executable_dirs()).unwrap_or_else(|_| env::var_os("PATH").unwrap_or_default())
 }
 
+/// The runtime PATH a standalone harness gets, including version-manager runtimes
+/// from the login shell. Unlike a normal chat launch, this adds no RiWork Cua shims.
+pub(crate) fn unmanaged_harness_path() -> Result<std::ffi::OsString, String> {
+    joined_harness_path(login_shell_dirs().iter().cloned().chain(executable_dirs()))
+}
+
+fn joined_harness_path(
+    directories: impl IntoIterator<Item = PathBuf>,
+) -> Result<std::ffi::OsString, String> {
+    let mut unique = Vec::new();
+    for directory in directories {
+        if !unique.contains(&directory) {
+            unique.push(directory);
+        }
+    }
+    env::join_paths(unique).map_err(|error| format!("construct RiWork harness PATH: {error}"))
+}
+
 /// The RiWork shim directory comes first, then the login shell's directories in
 /// the user's order, then this process's own.
 fn path_with_harness_shims(
     shim_directory: &Path,
     login_directories: &[PathBuf],
 ) -> Result<std::ffi::OsString, String> {
-    let mut directories = vec![shim_directory.to_path_buf()];
-    for directory in login_directories.iter().cloned().chain(executable_dirs()) {
-        if !directories.contains(&directory) {
-            directories.push(directory);
-        }
-    }
-    env::join_paths(directories).map_err(|error| format!("construct RiWork harness PATH: {error}"))
+    joined_harness_path(
+        std::iter::once(shim_directory.to_path_buf())
+            .chain(login_directories.iter().cloned())
+            .chain(executable_dirs()),
+    )
 }
 
 /// The login shell's directories, once this process asked for them.
@@ -9586,6 +9602,30 @@ else:
         }
         let without = path_with_harness_shims(shim, &[]).unwrap();
         assert_eq!(env::split_paths(&without).next().unwrap(), shim);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unmanaged_harness_path_finds_login_runtime_for_env_shebangs_without_adding_shims() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("summary-runtime-path");
+        let login = root.join("version-manager/bin");
+        let app = root.join("app/bin");
+        fs::create_dir_all(&login).unwrap();
+        fs::create_dir_all(&app).unwrap();
+        let runtime = login.join("riwork-summary-test-runtime");
+        fs::write(&runtime, "#!/bin/sh\nprintf 'login runtime'").unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        let harness = root.join("harness");
+        fs::write(&harness, "#!/usr/bin/env riwork-summary-test-runtime\n").unwrap();
+        fs::set_permissions(&harness, fs::Permissions::from_mode(0o700)).unwrap();
+        let path = joined_harness_path([login.clone(), app.clone(), login.clone()]).unwrap();
+        let directories: Vec<_> = env::split_paths(&path).collect();
+        assert_eq!(directories, [login, app]);
+        let output = Command::new(&harness).env("PATH", path).output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"login runtime");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]

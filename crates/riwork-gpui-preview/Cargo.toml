@@ -1,0 +1,19 @@
+[package]
+name = "riwork-gpui-preview"
+version = "0.1.0"
+edition = "2024"
+description = "Windowless GPUI development previews inside RiWork"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+gpui = { package = "gpui-pre", version = "=0.3.8", default-features = false, features = ["font-kit", "test-support"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit", "runtime_shaders", "test-support"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+riwork-core = { path = "../riwork-core" }
+serde = "1"
+serde_json = "1"
+
+[[example]]
+name = "counter"
+path = "examples/counter.rs"

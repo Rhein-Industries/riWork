@@ -1,4 +1,4 @@
-//! **Nuke all shells**: one button in the window's top-right pane bar that exits every live
+//! **Nuke all shells**: a labeled button in the Shells panel that exits every live
 //! shell of the window's project, tabbed or detached, workers included, after one
 //! confirmation. Each shell ends through the single-tab Exit's own call (`exit_session`);
 //! a tab goes only once its shell has exited, so a shell that would not exit keeps its tab
@@ -9,7 +9,7 @@ use super::*;
 use crate::controls::Button;
 use gpui::{EventEmitter, FocusHandle, Render};
 
-/// The id of the button, one per window.
+/// The id of the button in each visible Shells panel.
 pub(crate) const NUKE_BUTTON: &str = "nuke-shells";
 
 /// The shells the button exits: this project's live terminals (`shared_shell_adoptable`),
@@ -187,74 +187,6 @@ impl Workspace {
             return Vec::new();
         }
         nuke_scope(&self.shells, &self.project_id)
-    }
-
-    /// The pane whose bar carries the button: the one in the window's top-right corner,
-    /// where a window keeps its own controls, so a window has one button however it is
-    /// split. Focus mode shows the active pane alone. None for a project on another Mac.
-    pub(crate) fn nuke_button_pane(&self) -> Option<PaneId> {
-        if self.is_remote() {
-            return None;
-        }
-        if self.focus_mode {
-            return Some(self.active_pane);
-        }
-        let mut layout = &self.layout;
-        loop {
-            match layout {
-                Layout::Pane(id) => return Some(*id),
-                Layout::Split {
-                    axis,
-                    first,
-                    second,
-                    ..
-                } => {
-                    layout = if *axis == Axis::SideBySide {
-                        second
-                    } else {
-                        first
-                    };
-                }
-            }
-        }
-    }
-
-    /// The button, disabled while the project has no shell to exit or a nuke is running.
-    pub(crate) fn render_nuke_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme::palette(cx);
-        let count = self.nuke_targets().len();
-        let disabled = count == 0 || self.nuke_running;
-        let ink = if disabled {
-            colors.muted
-        } else {
-            theme::diff_colors(cx).removed
-        };
-        let hint = if self.nuke_running {
-            "Exiting shells…".to_owned()
-        } else if count == 0 {
-            "Nuke all shells · no shells to exit in this project".to_owned()
-        } else {
-            format!(
-                "Nuke all shells · exit all {} in this project",
-                shells_word(count)
-            )
-        };
-        let button = behavior_controls::action(NUKE_BUTTON, "Nuke all shells", colors)
-            .disabled(disabled)
-            .h_full()
-            .w(ui_text::space(28.0))
-            .flex()
-            .flex_none()
-            .items_center()
-            .justify_center()
-            .hover(move |style| toolbar_hover(style, colors))
-            .map(|button| controls::native(button, |button| toolbar_button(button, ink)))
-            .child(icons::text_icon(Icon::Power, 10.0, ink))
-            .child(tooltip::anchor(hint, Look::Pane))
-            .on_click(cx.listener(|workspace, _, window, cx| {
-                workspace.request_nuke_shells(window, cx);
-            }));
-        crate::form_input::control_element(NUKE_BUTTON, button)
     }
 
     /// Open the confirmation for the shells there are now. Nothing ends until it is
@@ -549,7 +481,7 @@ mod tests {
     }
 
     /// A local project's window, laid out as if loaded so nothing asks tmux, with Exit
-    /// replaced by a recording fake. One pane holds Files, two of the project's shells, its
+    /// replaced by a recording fake. One pane holds Shells, two of the project's terminals, its
     /// orchestrator and a chat. With `shells` false the project has none of its own shells,
     /// only the sessions the button must leave alone.
     fn fixture(cx: &mut gpui::TestAppContext, shells: bool) -> Fixture {
@@ -635,8 +567,8 @@ mod tests {
         let mut tabs = vec![
             Tab {
                 id: 1,
-                title: "FILES".to_owned(),
-                content: TabContent::Panel(PanelKind::Files),
+                title: "SESSIONS".to_owned(),
+                content: TabContent::Panel(PanelKind::Shells),
                 hidden_since: None,
             },
             shell_tab(4, &ids.orchestrator, "P·ORCH"),
@@ -871,7 +803,7 @@ mod tests {
             "each shell once, through Exit, and nothing else"
         );
         let ids = &fixture.ids;
-        // The exited shells' tabs closed; Files, the orchestrator and the chat stay.
+        // The exited shells' tabs closed; the Shells panel, orchestrator and chat stay.
         assert_eq!(
             fixture.tab_keys(cx),
             vec![
@@ -881,7 +813,7 @@ mod tests {
         );
         fixture.read(cx, |workspace| {
             let pane = &workspace.panes[&1];
-            assert_eq!(pane.tabs[pane.active].id, 1, "Files stays selected");
+            assert_eq!(pane.tabs[pane.active].id, 1, "Shells stays selected");
             let keys = workspace
                 .shared_tab_entries()
                 .iter()
@@ -1016,20 +948,15 @@ mod tests {
     }
 
     #[gpui::test]
-    fn the_button_is_in_the_top_right_pane_alone(cx: &mut gpui::TestAppContext) {
+    fn the_labeled_button_stays_inside_shells_in_a_split_or_focused_pane(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let fixture = fixture(cx, true);
-        fixture.turn(cx, |window, cx| {
+        fixture.turn(cx, |_, cx| {
             fixture.workspace.update(cx, |workspace, cx| {
-                // Pane 1 on the left; 2 above 3 on the right.
+                // Shells remains in the left pane; the top-right pane has no Shells panel.
                 workspace.panes.insert(
                     2,
-                    Pane {
-                        tabs: Vec::new(),
-                        active: 0,
-                    },
-                );
-                workspace.panes.insert(
-                    3,
                     Pane {
                         tabs: Vec::new(),
                         active: 0,
@@ -1039,32 +966,81 @@ mod tests {
                     axis: Axis::SideBySide,
                     ratio: 0.5,
                     first: Box::new(Layout::Pane(1)),
-                    second: Box::new(Layout::Split {
-                        axis: Axis::Stacked,
-                        ratio: 0.5,
-                        first: Box::new(Layout::Pane(2)),
-                        second: Box::new(Layout::Pane(3)),
-                    }),
+                    second: Box::new(Layout::Pane(2)),
                 };
-                assert_eq!(workspace.nuke_button_pane(), Some(2));
                 cx.notify();
             });
-            let _ = window;
         });
         fixture.turn(cx, |window, cx| {
-            // Right before pane 2's menu button, on its bar.
-            let button = window.find(NUKE_BUTTON).bounds();
-            let menu = window.find("pane-2-menu").bounds();
+            let button = window.within("sessions-controls").find(NUKE_BUTTON);
+            assert_eq!(button.label().as_deref(), Some("Nuke all shells"));
+            let button = button.bounds();
+            let left_menu = window.find("pane-1-menu").bounds();
+            let right_menu = window.find("pane-2-menu").bounds();
+            let refresh = window.find("sessions-refresh").bounds();
             assert!(
-                (button.right() - menu.left()).abs() <= px(8.0)
-                    && (button.center().y - menu.center().y).abs() <= px(1.0),
-                "{button:?} beside {menu:?}"
+                button.top() > left_menu.bottom(),
+                "{button:?} below {left_menu:?}"
             );
-            fixture.workspace.update(cx, |workspace, _| {
+            assert!(
+                button.right() < right_menu.left(),
+                "{button:?} stays in Shells' left pane"
+            );
+            assert!(
+                button.top() >= refresh.top(),
+                "{button:?} belongs to the sessions toolbar"
+            );
+            fixture.workspace.update(cx, |workspace, cx| {
                 workspace.focus_mode = true;
-                workspace.active_pane = 3;
-                assert_eq!(workspace.nuke_button_pane(), Some(3));
+                workspace.active_pane = 1;
+                cx.notify();
             });
         });
+        fixture.turn(cx, |window, cx| {
+            let bounds = window.find("sessions-controls").bounds();
+            let button = window
+                .within("sessions-controls")
+                .find(NUKE_BUTTON)
+                .bounds();
+            assert!(
+                button.top() >= bounds.top() && button.bottom() <= bounds.bottom(),
+                "{button:?} remains inside the Shells toolbar {bounds:?} in focus mode"
+            );
+            window.click(NUKE_BUTTON, cx);
+        });
+        assert!(fixture.read(cx, |workspace| workspace.nuke_dialog.is_some()));
+        assert!(fixture.exits().is_empty());
+    }
+
+    #[gpui::test]
+    fn a_stale_shells_panel_cannot_nuke_another_project_or_generation(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let fixture = fixture(cx, true);
+        fixture.turn(cx, |window, cx| {
+            fixture.workspace.update(cx, |workspace, cx| {
+                for (project, generation) in [
+                    (
+                        "another-project".to_owned(),
+                        workspace.native_sessions_generation,
+                    ),
+                    (
+                        workspace.project_id.clone(),
+                        workspace.native_sessions_generation + 1,
+                    ),
+                ] {
+                    workspace.panel_action(
+                        PanelAction::NukeShells {
+                            project,
+                            generation,
+                        },
+                        window,
+                        cx,
+                    );
+                    assert!(workspace.nuke_dialog.is_none());
+                }
+            });
+        });
+        assert!(fixture.exits().is_empty());
     }
 }

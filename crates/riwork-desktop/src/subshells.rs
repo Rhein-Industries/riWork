@@ -14,6 +14,7 @@ use riwork_engine::subshells::{PollState, ShellCard, bounded_output};
 use std::{
     collections::{BTreeMap, HashSet},
     path::Path,
+    sync::{LazyLock, Mutex},
     time::Instant,
 };
 
@@ -241,8 +242,9 @@ pub(crate) fn capture_workers(
     sessions: &SessionManager,
     shells: &[ShellSession],
     project: &str,
+    chats: &[crate::chat::model::ChatInfo],
 ) -> BTreeMap<String, Result<String, String>> {
-    shells
+    let mut output: BTreeMap<_, _> = shells
         .iter()
         .filter(|s| s.alive && s.is_worker() && s.project_id.as_deref() == Some(project))
         .map(|s| {
@@ -253,7 +255,86 @@ pub(crate) fn capture_workers(
                     .map(|text| bounded_output(&text)),
             )
         })
-        .collect()
+        .collect();
+    for chat in sampled_chat_workers(chats, project) {
+        output.insert(
+            chat.id.clone(),
+            chat_output(sessions.state_home(), &chat.id),
+        );
+    }
+    output
+}
+
+fn sampled_chat_workers<'a>(
+    chats: &'a [crate::chat::model::ChatInfo],
+    project: &str,
+) -> Vec<&'a crate::chat::model::ChatInfo> {
+    let mut chats: Vec<_> = chats
+        .iter()
+        .filter(|chat| {
+            chat.parent_id.is_some()
+                && chat.project_id.as_deref() == Some(project)
+                && matches!(
+                    chat.state,
+                    crate::chat::model::ChatState::Starting
+                        | crate::chat::model::ChatState::Running
+                        | crate::chat::model::ChatState::Waiting
+                )
+        })
+        .collect();
+    chats.sort_by_key(|chat| std::cmp::Reverse(chat.created_at_unix));
+    chats.truncate(64);
+    chats
+}
+
+struct CachedChatOutput {
+    signature: (Option<std::time::SystemTime>, u64),
+    output: String,
+    used: Instant,
+}
+type ChatOutputCache = BTreeMap<std::path::PathBuf, CachedChatOutput>;
+static CHAT_OUTPUTS: LazyLock<Mutex<ChatOutputCache>> = LazyLock::new(Mutex::default);
+
+/// Called only by the background sampler. A shared fingerprint avoids replaying an
+/// unchanged worker log. Read only a small event tail, independent of chat length.
+fn chat_output(home: &Path, id: &str) -> Result<String, String> {
+    let directory = crate::chat::log::chat_dir(home, id).ok_or("Invalid worker chat id")?;
+    let path = directory.join("events.jsonl");
+    let metadata =
+        std::fs::metadata(&path).map_err(|error| format!("Cannot read worker output: {error}"))?;
+    let signature = (metadata.modified().ok(), metadata.len());
+    if let Some(cached) = CHAT_OUTPUTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_mut(&path)
+        && cached.signature == signature
+    {
+        cached.used = Instant::now();
+        return Ok(cached.output.clone());
+    }
+    let transcript = crate::chat::log::read_transcript_tail(home, id, 256 * 1024)?;
+    let output = bounded_output(&crate::chat::text::tail(&transcript, 12).join("\n"));
+    let mut cache = CHAT_OUTPUTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cache.len() >= 256 && !cache.contains_key(&path) {
+        if let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.used)
+            .map(|(path, _)| path.clone())
+        {
+            cache.remove(&oldest);
+        }
+    }
+    cache.insert(
+        path,
+        CachedChatOutput {
+            signature,
+            output: output.clone(),
+            used: Instant::now(),
+        },
+    );
+    Ok(output)
 }
 
 trait WorkerOperations {
@@ -397,6 +478,16 @@ impl Workspace {
                 .flat_map(|p| p.tabs.iter())
                 .filter_map(|tab| tab.shell_id())
                 .any(|id| self.shells.iter().any(|s| s.id == id && s.alive))
+            || self.shared_chats.iter().flatten().any(|chat| {
+                chat.parent_id.is_some()
+                    && chat.project_id.as_deref() == Some(self.project_id.as_str())
+                    && matches!(
+                        chat.state,
+                        crate::chat::model::ChatState::Starting
+                            | crate::chat::model::ChatState::Running
+                            | crate::chat::model::ChatState::Waiting
+                    )
+            })
     }
 
     pub(crate) fn finish_worker_sample(
@@ -472,8 +563,18 @@ impl Workspace {
                         status: LiveStatus::of_chat(&chat.state),
                         actionable: false,
                         model: chat.model.clone(),
-                        output: String::new(),
-                        output_error: None,
+                        output: self
+                            .subshells
+                            .last_output
+                            .get(&chat.id)
+                            .cloned()
+                            .unwrap_or_default(),
+                        output_error: self
+                            .subshells
+                            .outputs
+                            .get(&chat.id)
+                            .and_then(|result| result.as_ref().err())
+                            .cloned(),
                     },
                 ))
             });
@@ -481,12 +582,23 @@ impl Workspace {
     }
 
     pub(crate) fn publish_workers(&mut self, cx: &mut Context<Self>) {
-        self.subshells
-            .outputs
-            .retain(|id, _| self.shells.iter().any(|shell| &shell.id == id));
+        self.subshells.outputs.retain(|id, _| {
+            self.shells.iter().any(|shell| &shell.id == id)
+                || self
+                    .shared_chats
+                    .iter()
+                    .flatten()
+                    .any(|chat| &chat.id == id)
+        });
         // A worker that went keeps its last lines until its exit is recorded.
         self.subshells.last_output.retain(|id, _| {
-            self.shells.iter().any(|shell| &shell.id == id) || self.subshells.seen.contains_key(id)
+            self.shells.iter().any(|shell| &shell.id == id)
+                || self.subshells.seen.contains_key(id)
+                || self
+                    .shared_chats
+                    .iter()
+                    .flatten()
+                    .any(|chat| &chat.id == id)
         });
         let live = self.live_workers();
         let now = self.subshells.clock.elapsed().as_secs();
@@ -513,6 +625,12 @@ impl Workspace {
             label
         });
         let project = self.project_id.clone();
+        let shown_chats: HashSet<String> = self
+            .panes
+            .iter()
+            .filter(|(id, _)| !self.focus_mode || **id == self.active_pane)
+            .filter_map(|(_, pane)| pane.tabs.get(pane.active)?.chat_id().map(str::to_owned))
+            .collect();
         for (chat_id, view) in self
             .panes
             .values()
@@ -526,7 +644,12 @@ impl Workspace {
             } else {
                 BTreeMap::new()
             };
-            view.update(cx, |view, cx| view.set_subshells(mine, stale.clone(), cx));
+            let active =
+                self.window_visible && !self.subshells.paused && shown_chats.contains(&chat_id);
+            view.update(cx, |view, cx| {
+                view.set_worker_summaries_active(active, cx);
+                view.set_subshells(mine, stale.clone(), cx);
+            });
         }
     }
 
@@ -820,6 +943,92 @@ mod tests {
             ["also-mine", "mine"]
         );
         assert!(workers_of_chat(&live, "chat-c").is_empty());
+    }
+
+    #[test]
+    fn worker_chat_output_is_read_without_a_host_and_refreshes_after_the_log_changes() {
+        use crate::chat::model::{ChatEvent, Item, ItemBody, ItemStatus};
+        let home =
+            std::env::temp_dir().join(format!("riwork-worker-output-{}", uuid::Uuid::new_v4()));
+        let id = uuid::Uuid::new_v4().to_string();
+        let directory = crate::chat::log::chat_dir(&home, &id).unwrap();
+        std::fs::create_dir_all(&directory).unwrap();
+        let event = |seq: u64, text: &str| {
+            let envelope = crate::chat::wire::Envelope {
+                chat_id: id.clone(),
+                seq,
+                event: ChatEvent::ItemCompleted {
+                    item: Item {
+                        id: format!("message-{seq}"),
+                        turn_id: None,
+                        status: ItemStatus::Completed,
+                        body: ItemBody::AgentMessage { text: text.into() },
+                        presentation: Default::default(),
+                    },
+                },
+            };
+            format!("{}\n", serde_json::to_string(&envelope).unwrap())
+        };
+        let first = event(1, "Inspecting the polling backoff");
+        std::fs::write(directory.join("events.jsonl"), &first).unwrap();
+        let output = chat_output(&home, &id).unwrap();
+        assert!(output.contains("Inspecting the polling backoff"));
+        assert_eq!(chat_output(&home, &id).unwrap(), output);
+        std::fs::write(
+            directory.join("events.jsonl"),
+            format!("{first}{}", event(2, "Backoff tests passed")),
+        )
+        .unwrap();
+        assert!(
+            chat_output(&home, &id)
+                .unwrap()
+                .contains("Backoff tests passed")
+        );
+        assert!(!home.join("run/chat.sock").exists());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn chat_output_sampling_skips_history_foreign_projects_and_bounds_live_workers() {
+        use crate::chat::model::ChatState;
+        let mut chats: Vec<_> = (0..70)
+            .map(|at| {
+                let mut chat: crate::chat::model::ChatInfo =
+                    serde_json::from_value(serde_json::json!({
+                        "id":format!("worker-{at}"), "provider":"codex", "cwd":"/fixture",
+                        "title":"Worker", "created_at_unix":at
+                    }))
+                    .unwrap();
+                chat.project_id = Some("project".into());
+                chat.parent_id = Some("visible-parent".into());
+                chat.state = ChatState::Running;
+                chat.created_at_unix = at;
+                chat
+            })
+            .collect();
+        let mut historical = chats[0].clone();
+        historical.id = "historical".into();
+        historical.state = ChatState::Stopped;
+        historical.created_at_unix = 1000;
+        chats.push(historical);
+        let mut foreign = chats[0].clone();
+        foreign.id = "foreign".into();
+        foreign.project_id = Some("another".into());
+        foreign.created_at_unix = 1000;
+        chats.push(foreign);
+        let mut parent = chats[0].clone();
+        parent.id = "parent".into();
+        parent.parent_id = None;
+        parent.created_at_unix = 1000;
+        chats.push(parent);
+        let sampled = sampled_chat_workers(&chats, "project");
+        assert_eq!(sampled.len(), 64);
+        assert_eq!(sampled[0].created_at_unix, 69);
+        assert!(
+            sampled
+                .iter()
+                .all(|chat| chat.created_at_unix >= 6 && chat.created_at_unix <= 69)
+        );
     }
 
     #[test]

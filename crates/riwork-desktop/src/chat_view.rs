@@ -81,6 +81,9 @@ mod state;
 mod subshells;
 #[cfg(test)]
 mod subshells_tests;
+mod worker_shelf;
+#[cfg(test)]
+mod worker_shelf_tests;
 pub use subshells::ShellAction;
 #[cfg(test)]
 mod suggest_tests;
@@ -90,6 +93,7 @@ mod testing;
 mod toolbar;
 mod usage_chip;
 mod widgets;
+mod worker_summary;
 
 pub use display::DisplayMode;
 pub use host::HostConfig;
@@ -210,6 +214,7 @@ struct DrawnDiff {
 
 pub struct ChatView {
     workers: subshells::WorkerUi,
+    worker_summaries: worker_summary::SummaryState,
     config: HostConfig,
     window_handle: gpui::AnyWindowHandle,
     /// The host's id for the chat; none while a new chat is being made.
@@ -502,6 +507,7 @@ impl ChatView {
         Self {
             config,
             workers: Default::default(),
+            worker_summaries: Default::default(),
             window_handle: window.window_handle(),
             chat_id: None,
             creation: None,
@@ -804,6 +810,7 @@ impl ChatView {
         self.notices.observe(self.model.transcript.items.len());
         self.schedule_notice_expiry(cx);
         self.sync_list(&applied, cx);
+        self.schedule_worker_summaries(cx);
         self.forget_settled();
         self.ready_inputs(window, cx);
         self.announce(cx);

@@ -1,0 +1,14 @@
+RiWork's Simulator adapter is an original Objective-C implementation using
+private Apple framework interfaces. Its interface investigation was informed by:
+
+SimKit, https://github.com/subdiox/SimKit (Apache License 2.0), including its
+acknowledgement of tddworks/baguette. In particular, the native framebuffer
+callback API and the IOHID digitizer wrapper's routing/edge offsets were checked
+against SimKit's published implementation.
+
+Meta idb, https://github.com/facebook/idb (MIT License), copyright Meta Platforms,
+Inc. and affiliates. Its Simulator API documentation and Indigo constants were
+used to verify the persistent HID client's selectors and Home button target.
+
+These projects are not dependencies of the built helper. Apple private
+frameworks are loaded from the user's selected Xcode installation.

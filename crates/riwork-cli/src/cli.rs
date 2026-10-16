@@ -87,6 +87,8 @@ riwork task status TASK_ID todo|in_progress|done
 riwork search QUERY                     Search projects, worktrees, and tasks
 riwork dashboard [--json]               The global dashboard: what needs you, what works, every project
 riwork mcp                              Serve workspace tools over MCP stdio
+riwork preview open|list|status|screenshot|input|tap|text|key|close   Control development preview tabs
+riwork preview help                     Show iOS build/stream and agent testing options
 riwork version | --version              Print the RiWork version
 riwork remote pair|revoke|devices|start|relay   Encrypted mobile access (standalone binary)
 riwork remote --help                    Pairing, relay and connector command options
@@ -433,6 +435,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
             | "orchestrator"
             | "chat"
             | "tabs"
+            | "preview"
             | "handoff"
             | "schedule"
             | "automation"
@@ -530,6 +533,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
         "orchestrator" => orchestrator_command(args, json)?,
         "chat" => chat_command(args, json)?,
         "tabs" => tabs_command(args, json)?,
+        "preview" => preview_cli::command(args, json)?,
         "handoff" => handoff::command(args, json)?,
         "schedule" | "automation" => schedule_command(args, json)?,
         "search" => search_command(args, json)?,
@@ -1057,7 +1061,8 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
             "chat_models": true,
             "chat_suggestions": true,
             "dashboard": true,
-            "project_memo": true
+            "project_memo": true,
+            "preview": true
         }));
     }
     println!("verifies_shell yes");
@@ -1072,6 +1077,7 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     println!("chat_suggestions yes");
     println!("dashboard yes");
     println!("project_memo yes");
+    println!("preview yes");
     Ok(())
 }
 
@@ -4070,6 +4076,7 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 mod chat_remote;
 mod handoff;
 mod memo;
+pub(crate) mod preview_cli;
 mod settings_cli;
 use chat_remote::{
     effort_setting, model_setting, parse_events_arguments, take_verbatim_option, title_setting,

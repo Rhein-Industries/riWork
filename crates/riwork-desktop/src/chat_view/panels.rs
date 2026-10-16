@@ -441,6 +441,7 @@ impl ChatView {
             .children(self.banner(look, cx))
             .children(self.approval_bar(look, cx))
             .children(self.question_panel(look, window, cx))
+            .children(self.worker_shelf(look, cx))
             .children(self.worker_bar(look, window, cx))
             .child(self.composer_box(look, window, cx));
         div()

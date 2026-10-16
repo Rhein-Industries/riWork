@@ -223,6 +223,15 @@ fn call_tool(params: &Value) -> Result<Value, String> {
             Err(error) => schedule_tool_error(error),
         });
     }
+    if name.starts_with("riwork_preview_") {
+        return Ok(match execute_preview_tool(name, &args) {
+            Ok(value) => tool_result(value),
+            Err(error) => {
+                let text = json!({"error":error}).to_string();
+                json!({"content":[{"type":"text","text":text}],"isError":true})
+            }
+        });
+    }
     Ok(match execute_tool(name, &args) {
         Ok(value) => tool_result(value),
         Err(error) => tool_error(&error),
@@ -789,6 +798,62 @@ fn select_project_id(state: &State, selector: Option<&str>) -> Result<String, St
     }
 }
 
+fn execute_preview_tool(
+    name: &str,
+    arguments: &Value,
+) -> Result<Value, riwork_engine::preview_control::ControlError> {
+    use riwork_engine::preview_control::ControlError;
+    let invalid = |message: String| ControlError::new("invalid_request", message);
+    let operation = name.strip_prefix("riwork_preview_").unwrap_or_default();
+    let mut args = vec![operation.into()];
+    if !matches!(operation, "open" | "list") {
+        args.push(
+            required_str(arguments, "preview_id")
+                .map_err(invalid)?
+                .into(),
+        );
+    }
+    for (property, flag) in [
+        ("project_id", "--project"),
+        ("cwd", "--cwd"),
+        ("command", "--command"),
+        ("mode", "--mode"),
+        ("scheme", "--scheme"),
+        ("xcode_project", "--xcode-project"),
+        ("bundle_id", "--bundle-id"),
+        ("device_type", "--device-type"),
+        ("runtime", "--runtime"),
+        ("configuration", "--configuration"),
+        ("output", "--output"),
+    ] {
+        if let Some(value) = optional_str(arguments, property).map_err(invalid)? {
+            args.extend([flag.into(), value.into()]);
+        }
+    }
+    for (property, flag) in [
+        ("ios", "--ios"),
+        ("background", "--background"),
+        ("wait", "--wait"),
+    ] {
+        if optional_bool(arguments, property)
+            .map_err(invalid)?
+            .unwrap_or(false)
+        {
+            args.push(flag.into());
+        }
+    }
+    if let Some(value) = optional_usize(arguments, "timeout_seconds").map_err(invalid)? {
+        args.extend(["--timeout-seconds".into(), value.to_string()]);
+    }
+    if operation == "input" {
+        let input = arguments
+            .get("input")
+            .ok_or_else(|| invalid("input is required".into()))?;
+        args.extend(["--input-json".into(), input.to_string()]);
+    }
+    crate::cli::preview_cli::execute(args)
+}
+
 fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args.get(key)
         .and_then(Value::as_str)
@@ -846,6 +911,9 @@ fn destructive(name: &str) -> bool {
     matches!(
         name,
         "riwork_shell_create"
+            | "riwork_preview_open"
+            | "riwork_preview_input"
+            | "riwork_preview_close"
             | "riwork_shell_send_line"
             | "riwork_orchestrator_create"
             | "riwork_schedule_create"
@@ -1184,6 +1252,18 @@ fn tools() -> Vec<Value> {
         ),
     ];
     items.extend([
+        tool("riwork_preview_open", "Open development preview", "Explicitly run or reuse an identical development preview in an already open RiWork project window. Supports true windowless GPUI or an owned iOS simulator build/install/stream pipeline. wait=true returns only after an actual rendered frame. Does not activate the OS window. Saved tabs never auto-run.", json!({
+            "project_id":{"type":"string"},"cwd":{"type":"string"},"command":{"type":"string"},
+            "ios":{"type":"boolean"},"mode":{"type":"string","enum":["cooperative","window_capture"]},
+            "scheme":{"type":"string"},"xcode_project":{"type":"string"},"bundle_id":{"type":"string"},
+            "device_type":{"type":"string"},"runtime":{"type":"string"},"configuration":{"type":"string"},
+            "background":{"type":"boolean"},"wait":{"type":"boolean"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}
+        }), &[], false),
+        tool("riwork_preview_list", "List preview tabs", "Read current preview statuses, frames, owned simulator identity, and bounded build logs without starting anything.", json!({}), &[], true),
+        tool("riwork_preview_status", "Read preview status", "Read a preview's phase, actual-frame readiness, dimensions, simulator identity, and bounded build logs. A stale owner is reported as unavailable.", json!({"preview_id":{"type":"string","format":"uuid"}}), &["preview_id"], true),
+        tool("riwork_preview_screenshot", "Save fresh preview frame", "Briefly wake the exact preview and save a fresh PNG frame to an explicit local path. Does not use desktop capture or activate an OS window.", json!({"preview_id":{"type":"string","format":"uuid"},"output":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}}), &["preview_id","output"], false),
+        tool("riwork_preview_input", "Send preview input", "Queue one typed input event to the exact preview: kind click/pointer_down/pointer_move/pointer_up (logical x/y, button left), text (text), key/key_up (key), scroll (x/y/delta_x/delta_y), or resize (width/height). Follow with a fresh screenshot to verify the result. Input acknowledgement means queued.", json!({"preview_id":{"type":"string","format":"uuid"},"input":{"type":"object"}}), &["preview_id","input"], false),
+        tool("riwork_preview_close", "Close preview tab", "Close an exact preview tab and stop only its owned app/simulator. Layout remains idle on later restoration.", json!({"preview_id":{"type":"string","format":"uuid"}}), &["preview_id"], false),
         schedule_tool("riwork_schedule_list", "List schedules", "List schedules in the configured RIWORK_HOME ledger; omit scope for all, or filter by explicit app/project/workspace identity. No sessions are opened or dispatched.", &[], true),
         schedule_tool("riwork_schedule_show", "Show schedule", "Read one schedule by its full UUID, including current revision, pinned target and latest outcome.", &["schedule_id"], true),
         schedule_tool("riwork_schedule_create", "Create schedule", "Schedule a future prompt. destination=new_chat creates a new ordinary project chat per occurrence with supervised permission by default and pins root/account; shell_id must be omitted. Otherwise bind an existing live Codex/Claude session. For new chats target.shell_id is the destination identity used by revision-checked mutations; last_run.created_chat_id opens the result. RiWork later types that prompt into the agent session, only while the desktop app is open.", &["scope","shell_id","title","prompt","at"], false),
@@ -1478,6 +1558,8 @@ mod tests {
             "riwork_orchestrator_output",
             "riwork_schedule_list",
             "riwork_schedule_show",
+            "riwork_preview_list",
+            "riwork_preview_status",
         ];
         // Run a command, type into an agent now or on a schedule, or delete.
         let destructive = [
@@ -1488,6 +1570,9 @@ mod tests {
             "riwork_schedule_update",
             "riwork_schedule_resume",
             "riwork_schedule_delete",
+            "riwork_preview_open",
+            "riwork_preview_input",
+            "riwork_preview_close",
         ];
         for definition in tools() {
             let name = definition["name"].as_str().unwrap();

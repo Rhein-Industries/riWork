@@ -29,24 +29,24 @@ pub fn init(cx: &mut App) {
         gpui::KeyBinding::new(
             "tab",
             gpui::Unbind("root::Tab".into()),
-            Some("Root > (Terminal || Input)"),
+            Some("Root > (Terminal || AppPreview || Input)"),
         ),
         gpui::KeyBinding::new(
             "shift-tab",
             gpui::Unbind("root::TabPrev".into()),
-            Some("Root > (Terminal || Input)"),
+            Some("Root > (Terminal || AppPreview || Input)"),
         ),
         #[cfg(target_os = "macos")]
         gpui::KeyBinding::new(
             "cmd-c",
             gpui::Unbind("input::Copy".into()),
-            Some("(Root > Terminal) && !Input"),
+            Some("(Root > (Terminal || AppPreview)) && !Input"),
         ),
         #[cfg(not(target_os = "macos"))]
         gpui::KeyBinding::new(
             "ctrl-c",
             gpui::Unbind("input::Copy".into()),
-            Some("(Root > Terminal) && !Input"),
+            Some("(Root > (Terminal || AppPreview)) && !Input"),
         ),
     ]);
     cx.on_window_closed(|cx, id| {

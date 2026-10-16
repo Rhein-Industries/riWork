@@ -153,9 +153,11 @@ fn worker_appears_updates_and_collapses_without_taking_composer_focus(cx: &mut T
         let card = window.find("worker:worker:w");
         assert!(card.visible());
         assert!(in_transcript(&card), "the card is a row of the transcript");
+        let shelf = window.find("chat-workers");
+        assert!(shelf.visible(), "workers stay above the composer");
         assert!(
-            window.try_find("chat-workers").is_none(),
-            "no pinned section"
+            !in_transcript(&shelf),
+            "the shelf does not scroll with the chat"
         );
         let label = window
             .find("worker-details:worker:w")
