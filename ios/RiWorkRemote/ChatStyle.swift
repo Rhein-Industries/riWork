@@ -177,6 +177,7 @@ extension View {
     var frames: [String: CGRect] = [:]
     var visible: [String: Bool] = [:]
     var actions: [String: () -> Void] = [:]
+    var owners: [String: UUID] = [:]
 }
 private struct ChatLayoutInspectionKey: EnvironmentKey {
     static let defaultValue: ChatLayoutInspection? = nil
@@ -192,25 +193,87 @@ private struct ChatLayoutProbe: ViewModifier {
     let name: String
     let visible: Bool
     let action: (() -> Void)?
+    let revision: String
+    @State private var owner = UUID()
     func body(content: Content) -> some View {
         if let inspection {
             content.onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                inspection.owners[name] = owner
                 inspection.frames[name] = frame
                 inspection.actions[name] = action
             }
+            .onAppear { inspection.owners[name] = owner; inspection.actions[name] = action }
+            .onChange(of: revision) { _, _ in inspection.owners[name] = owner; inspection.actions[name] = action }
             .onChange(of: visible, initial: true) { _, value in inspection.visible[name] = value }
-            .onDisappear { inspection.frames[name] = nil; inspection.visible[name] = nil; inspection.actions[name] = nil }
+            .onDisappear {
+                guard inspection.owners[name] == owner else { return }
+                inspection.owners[name] = nil; inspection.frames[name] = nil; inspection.visible[name] = nil; inspection.actions[name] = nil
+            }
         } else { content }
     }
 }
 #endif
 extension View {
-    @ViewBuilder func chatLayoutProbe(_ name: String, visible: Bool = true, action: (() -> Void)? = nil) -> some View {
+    /// Chat and preview controls sit on the same compact surface and use the same separator policy.
+    func chatToolbarSurface() -> some View { modifier(ChatToolbarSurface()) }
+
+    @ViewBuilder func chatLayoutProbe(_ name: String, visible: Bool = true, revision: String = "", action: (() -> Void)? = nil) -> some View {
         #if DEBUG
-        modifier(ChatLayoutProbe(name: name, visible: visible, action: action))
+        modifier(ChatLayoutProbe(name: name, visible: visible, action: action, revision: revision))
         #else
         self
         #endif
+    }
+}
+
+private struct ChatToolbarSurface: ViewModifier {
+    @Environment(\.desktopStyle) private var style
+    func body(content: Content) -> some View {
+        content.padding(.horizontal, 8)
+            .frame(minHeight: style.target)
+            .background(style.background)
+            .overlay(alignment: .bottom) { if !style.glass { DesktopRule() } }
+    }
+}
+
+/// An expanded tool container's 28-point visual control with a 44-point touch target.
+struct ChatContainerIconAction: View {
+    let symbol: String
+    let label: String
+    var translucent = false
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) { Image(systemName: symbol) }
+            .buttonStyle(ChatContainerIconStyle(translucent: translucent))
+            .accessibilityLabel(label).help(label)
+    }
+}
+
+private struct ChatContainerIconStyle: ButtonStyle {
+    @Environment(\.desktopStyle) private var style
+    @Environment(\.isEnabled) private var enabled
+    var translucent: Bool
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(.system(size: 12)).foregroundStyle(style.muted)
+            .frame(width: 28, height: 28)
+            .background(configuration.isPressed ? style.active : style.panel.opacity(translucent ? 0.85 : 1), in: RoundedRectangle(cornerRadius: 4))
+            .contentShape(Rectangle().inset(by: -8))
+            .opacity(enabled ? 1 : 0.45)
+    }
+}
+
+extension View {
+    func chatContainerSurface() -> some View { modifier(ChatContainerSurface()) }
+}
+
+private struct ChatContainerSurface: ViewModifier {
+    @Environment(\.desktopStyle) private var style
+    func body(content: Content) -> some View {
+        content.padding(.vertical, 6).padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(style.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(style.divider, lineWidth: 0.5))
     }
 }
 

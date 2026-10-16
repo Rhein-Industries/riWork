@@ -160,8 +160,8 @@ final class ChatUsageLimitsTests: XCTestCase {
 }
 
 final class SnapshotToleranceTests: XCTestCase {
-    /// A newer host's snapshot: a control event and an item type this phone has never heard of are skipped, not the snapshot.
-    func testUnknownControlsAndItemsAreSkippedNotTheSnapshot() throws {
+    /// A newer host's snapshot skips unknown controls and retains unknown item identities.
+    func testUnknownControlsAreSkippedAndUnknownItemBodiesAreRetained() throws {
         let chat = "11111111-1111-4111-8111-111111111111"
         let json = #"""
         {"v":1,"chat_id":"\#(chat)","cursor":"c","next":9,"before":1,"more":false,"future_field":true,
@@ -171,12 +171,13 @@ final class SnapshotToleranceTests: XCTestCase {
                      {"event":"rate_limits","windows":[{"id":"five_hour","label":"5h","used_percent":80}]}]}
         """#
         let reply = try JSONDecoder().decode(ChatSnapshotReply.self, from: Data(json.utf8))
-        XCTAssertEqual(reply.items.map(\.item.id), ["a"])
+        XCTAssertEqual(reply.items.map(\.item.id), ["x", "a"])
+        XCTAssertEqual(reply.items.first?.item.body, .unknown("hologram"))
         XCTAssertEqual(reply.controls.count, 2, "state and rate_limits; the unknown control is left out")
-        XCTAssertEqual(reply.skipped, 2)
+        XCTAssertEqual(reply.skipped, 1)
         var feed = ChatFeed(); feed.install(reply)
         XCTAssertEqual(feed.transcript.rateLimits.map(\.id), ["five_hour"])
-        XCTAssertEqual(feed.transcript.items.map(\.id), ["a"])
+        XCTAssertEqual(feed.transcript.items.map(\.id), ["x", "a"])
         // A single unknown event in chat.events is skipped as before.
         let envelope = try JSONDecoder().decode(ChatEnvelope.self, from: Data(#"{"seq":3,"event":{"event":"brand_new_control"}}"#.utf8))
         XCTAssertNil(envelope.event)
@@ -206,7 +207,7 @@ extension SnapshotToleranceTests {
         """#.utf8))
         let transport = SnapshotTransport(page)
         let reply = try await transport.chatSnapshot(chatID: chat, cursor: "c0ffee", before: 60)
-        XCTAssertTrue(reply.items.isEmpty); XCTAssertEqual(reply.skipped, 2); XCTAssertEqual(reply.before, 40); XCTAssertTrue(reply.more)
+        XCTAssertEqual(reply.items.map(\.item.id), ["x1", "x2"]); XCTAssertEqual(reply.skipped, 0); XCTAssertEqual(reply.before, 40); XCTAssertTrue(reply.more)
         var feed = ChatFeed()
         feed.install(ChatSnapshotReply(chatID: chat, cursor: "c0ffee", next: 90, before: 60, more: true, items: [], controls: []))
         feed.prepend(reply, requestedBefore: 60)

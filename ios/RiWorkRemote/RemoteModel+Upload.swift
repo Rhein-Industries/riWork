@@ -107,6 +107,7 @@ extension RemoteModel {
                         // of its placeholder, so a file the Mac has is a card even if a later one fails or is cancelled.
                         let images = self.chatAttachmentImages, data = file.data, id = sent.upload
                         let pictured = kind == .image ? await Task.detached(priority: .userInitiated) { images.save(id, data: data) }.value : false
+                        if pictured { images.rememberRemotePath(sent.path, for: id) }
                         guard self.selectedDesktopID == desktopID, attachments.job == job else { throw CancellationError() }
                         self.stageInChat(chat, [StagedAttachment(id: id, kind: pictured ? .image : .file, name: file.name, size: file.data.count, path: sent.path, stagedAt: began)])
                         attachments.pending.removeAll { $0.id == Attachments.pendingID(job, offset) }

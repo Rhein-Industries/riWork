@@ -39,6 +39,7 @@ struct Document {
     origin: Point<Pixels>,
     scroll: Point<Pixels>,
     native: Option<bool>,
+    container_width: f32,
     participant: Option<gpui::EntityId>,
 }
 
@@ -85,6 +86,36 @@ impl Document {
             .collect::<Vec<_>>()
             .join("\n")
     }
+    fn export_complete(
+        &self,
+        snapshot: Option<TextSelectionSnapshot>,
+        source: &[SourceLeaf],
+    ) -> String {
+        let Some((a, b)) = snapshot.and_then(|s| self.endpoints(s)) else {
+            return String::new();
+        };
+        let Some(start) = source
+            .iter()
+            .position(|leaf| leaf.key == self.source[a.0].key)
+        else {
+            return String::new();
+        };
+        let Some(end) = source
+            .iter()
+            .position(|leaf| leaf.key == self.source[b.0].key)
+        else {
+            return String::new();
+        };
+        (start..=end)
+            .map(|at| {
+                let text = &source[at].text;
+                let from = if at == start { a.1 } else { 0 };
+                let to = if at == end { b.1 } else { text.len() };
+                text.get(from..to).unwrap_or(text)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
     fn rows(&self, snapshot: Option<TextSelectionSnapshot>) -> Vec<usize> {
         let Some((a, b)) = snapshot.and_then(|s| self.endpoints(s)) else {
             return Vec::new();
@@ -127,6 +158,9 @@ pub(super) struct TranscriptSelection {
     handle: TextSelectionHandle,
     data: Rc<RefCell<Document>>,
     dirty: Cell<bool>,
+    source_cache: RefCell<HashMap<String, (super::display::Row, Vec<SourceLeaf>)>>,
+    #[cfg(test)]
+    pub(super) source_builds: Cell<usize>,
     _refresh: Subscription,
 }
 impl TranscriptSelection {
@@ -151,14 +185,19 @@ impl TranscriptSelection {
                 let Some(owner) = owner.upgrade() else {
                     return String::new();
                 };
-                let selection = &owner.read(cx).transcript_selection;
+                let view = owner.read(cx);
+                let selection = &view.transcript_selection;
                 if selection.handle.entity_id() != participant {
                     return String::new();
                 }
+                let Some(snapshot) = selection.handle.snapshot(cx) else {
+                    return String::new();
+                };
+                let source = super::selection_document::leaves(view, Look::of(cx));
                 selection
                     .data
                     .borrow()
-                    .export(selection.handle.snapshot(cx))
+                    .export_complete(Some(snapshot), &source)
             },
             cx,
         );
@@ -175,11 +214,64 @@ impl TranscriptSelection {
             handle,
             data,
             dirty: Cell::new(true),
+            source_cache: RefCell::new(HashMap::new()),
+            #[cfg(test)]
+            source_builds: Cell::new(0),
             _refresh: refresh,
         }
     }
     pub fn changed(&self) {
         self.dirty.set(true);
+    }
+    pub(super) fn source_was_mounted(&self, id: &str) -> bool {
+        self.source_cache.borrow().contains_key(id)
+    }
+    pub(super) fn invalidate_source(&self, id: &str) {
+        self.source_cache.borrow_mut().remove(id);
+    }
+    pub(super) fn invalidate_sources(&self) {
+        self.source_cache.borrow_mut().clear();
+    }
+    pub(super) fn retain_sources(&self, rows: &[super::display::ListRow]) {
+        let visible: std::collections::HashSet<_> =
+            rows.iter().map(|entry| entry.row.id.as_str()).collect();
+        self.source_cache
+            .borrow_mut()
+            .retain(|id, _| visible.contains(id.as_str()));
+    }
+    fn has_cached_source(&self, row: &super::display::Row) -> bool {
+        self.source_cache
+            .borrow()
+            .get(&row.id)
+            .is_some_and(|(known, _)| known == row)
+    }
+    pub(super) fn cached_source(
+        &self,
+        row: &super::display::Row,
+        at: usize,
+    ) -> Option<Vec<SourceLeaf>> {
+        let cache = self.source_cache.borrow();
+        let (known, source) = cache.get(&row.id)?;
+        if known != row {
+            return None;
+        }
+        Some(
+            source
+                .iter()
+                .cloned()
+                .map(|mut leaf| {
+                    leaf.row = at;
+                    leaf
+                })
+                .collect(),
+        )
+    }
+    pub(super) fn cache_source(&self, row: &super::display::Row, source: &[SourceLeaf]) {
+        #[cfg(test)]
+        self.source_builds.set(self.source_builds.get() + 1);
+        self.source_cache
+            .borrow_mut()
+            .insert(row.id.clone(), (row.clone(), source.to_vec()));
     }
     pub fn selected_rows(&self, cx: &App) -> Vec<usize> {
         self.data.borrow().rows(self.handle.snapshot(cx))
@@ -273,13 +365,126 @@ impl TranscriptSelection {
 }
 
 impl ChatView {
+    pub(super) fn refresh_selection_rows(
+        &mut self,
+        rows: &[usize],
+        look: Look,
+        cx: &mut Context<Self>,
+    ) {
+        self.refresh_selection_rows_inner(rows, look, true, cx);
+    }
+
+    pub(super) fn ensure_selection_row(&mut self, at: usize, look: Look, cx: &mut Context<Self>) {
+        if self
+            .list_rows
+            .get(at)
+            .is_some_and(|entry| !self.transcript_selection.has_cached_source(&entry.row))
+        {
+            self.refresh_selection_rows_inner(&[at], look, false, cx);
+        }
+    }
+
+    fn refresh_selection_rows_inner(
+        &mut self,
+        rows: &[usize],
+        look: Look,
+        clear_changed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.transcript_selection.dirty.get() || rows.is_empty() {
+            return;
+        }
+        for &at in rows {
+            if let Some(entry) = self.list_rows.get(at) {
+                self.transcript_selection.invalidate_source(&entry.row.id);
+            }
+        }
+        let mut replacements: Vec<_> = rows
+            .iter()
+            .map(|&row| (row, super::selection_document::row_leaves(self, row, look)))
+            .collect();
+        let changed_selected = {
+            let data = self.transcript_selection.data.borrow();
+            let selected = data.rows(self.transcript_selection.handle.snapshot(cx));
+            replacements.iter().any(|(row, source)| {
+                selected.contains(row)
+                    && data
+                        .source
+                        .iter()
+                        .filter(|leaf| leaf.row == *row)
+                        .ne(source.iter())
+            })
+        };
+        if clear_changed && changed_selected {
+            self.transcript_selection.clear(self.window_handle, cx);
+        }
+        replacements.sort_by_key(|(row, _)| std::cmp::Reverse(*row));
+        let mut data = self.transcript_selection.data.borrow_mut();
+        for (row, source) in replacements {
+            for leaf in &source {
+                if !data.ids.contains_key(&leaf.key) {
+                    data.next_id = data
+                        .next_id
+                        .checked_add(1)
+                        .expect("transcript leaf identity exhausted");
+                    let id = data.next_id;
+                    data.ids.insert(leaf.key.clone(), id);
+                }
+            }
+            let start = data.source.partition_point(|leaf| leaf.row < row);
+            let end = data.source.partition_point(|leaf| leaf.row <= row);
+            data.source.splice(start..end, source);
+        }
+    }
+
+    /// Elapsed activity text is the only selectable text changed by a timer.
+    pub(super) fn refresh_selection_timing(&mut self, cx: &mut Context<Self>) {
+        if self.transcript_selection.dirty.get() {
+            return;
+        }
+        let updates: HashMap<_, _> = self
+            .visible
+            .iter()
+            .filter(|row| row.running && row.kind == super::display::RowKind::Activity)
+            .map(|row| (format!("header:{}", row.id), row.title.as_str()))
+            .collect();
+        let changed_selected = {
+            let data = self.transcript_selection.data.borrow();
+            let selected = data.rows(self.transcript_selection.handle.snapshot(cx));
+            data.source.iter().any(|leaf| {
+                selected.contains(&leaf.row)
+                    && updates
+                        .get(&leaf.key)
+                        .is_some_and(|text| leaf.text != *text)
+            })
+        };
+        if changed_selected {
+            self.transcript_selection.clear(self.window_handle, cx);
+        }
+        let mut data = self.transcript_selection.data.borrow_mut();
+        for leaf in &mut data.source {
+            if let Some(text) = updates.get(&leaf.key) {
+                if leaf.text != *text {
+                    leaf.text = (*text).to_owned();
+                }
+            }
+        }
+    }
+
     pub(super) fn refresh_selection_document(&mut self, look: Look, cx: &mut Context<Self>) {
         if !self.transcript_selection.dirty.replace(false)
             && self.transcript_selection.data.borrow().native == Some(look.native)
+            && self.transcript_selection.data.borrow().container_width == self.composer_width.get()
         {
             return;
         }
-        let source = super::selection_document::leaves(self, look);
+        if self.transcript_selection.data.borrow().native != Some(look.native)
+            || self.transcript_selection.data.borrow().container_width != self.composer_width.get()
+        {
+            self.transcript_selection.invalidate_sources();
+        }
+        let _timing = super::perf::Span::new("selection-document");
+        let source = super::selection_document::mounted_leaves(self);
         let changed_selected = {
             let old = self.transcript_selection.data.borrow();
             old.rows(self.transcript_selection.handle.snapshot(cx))
@@ -307,6 +512,7 @@ impl ChatView {
         }
         data.source = source;
         data.native = Some(look.native);
+        data.container_width = self.composer_width.get();
     }
     pub(super) fn copy_transcript(
         &mut self,
@@ -331,7 +537,16 @@ impl ChatView {
         // Query our source projection directly: Base's multi-participant
         // compositor filters whitespace-only contributions before Root Copy.
         let snapshot = self.transcript_selection.handle.snapshot(cx);
-        let text = self.transcript_selection.data.borrow().export(snapshot);
+        if snapshot.is_none() {
+            cx.propagate();
+            return;
+        }
+        let source = super::selection_document::leaves(self, Look::of(cx));
+        let text = self
+            .transcript_selection
+            .data
+            .borrow()
+            .export_complete(snapshot, &source);
         if text.is_empty() {
             cx.propagate();
         } else {
@@ -352,7 +567,10 @@ impl ChatView {
                 .iter()
                 .all(|(other, _)| other.end <= range.start || other.start >= range.end)
             {
-                if highlights.is_empty() {
+                if highlights
+                    .iter()
+                    .all(|(other, _)| other.end <= range.start || other.start >= range.end)
+                {
                     highlights.push((
                         range.clone(),
                         HighlightStyle {
@@ -377,6 +595,8 @@ impl ChatView {
                 .map(|(_, target)| target)
                 .collect::<Vec<_>>();
             let view = cx.weak_entity();
+            // The leaf's source item disambiguates repeated paths in different turns.
+            let owner = self.selection_owner(key).map(str::to_owned);
             let handle = self.transcript_selection.handle.clone();
             let data = self.transcript_selection.data.clone();
             InteractiveText::new(ElementId::Name(format!("links:{key}").into()), styled)
@@ -393,10 +613,8 @@ impl ChatView {
                         if crate::terminal_links::is_openable_url(target) {
                             cx.open_url(target);
                         } else {
-                            let _ = view.update(cx, |_, cx| {
-                                cx.emit(super::ChatViewEvent::OpenFile {
-                                    target: target.clone(),
-                                })
+                            let _ = view.update(cx, |view, cx| {
+                                view.preview_reference(target, owner.as_deref(), cx)
                             });
                         }
                     }
@@ -419,8 +637,44 @@ impl ChatView {
             .test_support()
             .into_any_element()
     }
+
+    /// Keys carry the owner's stable ID. Resolve bounded key prefixes through
+    /// the model index, rather than formatting every item ID on every frame.
+    fn selection_owner<'a>(&self, key: &'a str) -> Option<&'a str> {
+        [
+            "",
+            "user:",
+            "code:",
+            "code:user:",
+            "header:",
+            "thought:",
+            "command:",
+            "file-header:",
+            "output:",
+            "tool-input:",
+            "tool-output:",
+            "diff:",
+            "artifact:",
+            "attachment:",
+        ]
+        .into_iter()
+        .filter_map(|prefix| key.strip_prefix(prefix))
+        .filter_map(|candidate| {
+            if self.projected_item(candidate).is_some() {
+                return Some(candidate);
+            }
+            candidate
+                .char_indices()
+                .rev()
+                .filter(|(_, c)| matches!(c, '/' | '#' | ':'))
+                .map(|(at, _)| &candidate[..at])
+                .find(|id| self.projected_item(id).is_some())
+        })
+        .max_by_key(|id| id.len())
+    }
 }
 
+/// Preserve link/error styling while giving GPUI separate runs for a font span.
 struct LeafRenderer {
     body: AnyElement,
     key: String,
@@ -686,5 +940,118 @@ fn paint_projection(
         window.with_content_mask(Some(gpui::ContentMask { bounds: quad }), |window| {
             let _ = layout.paint_foreground(window, cx);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chat::model::{Item, ItemBody, ItemStatus, Presentation};
+    use gpui_kit::test::TestWindowExt;
+
+    #[gpui::test]
+    fn full_source_export_does_not_cache_unmounted_bodies_and_mode_prunes_hidden_rows(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (handle, view, _) = super::super::editor_tests::mount_selection(cx);
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.model.link = super::super::Link::Live;
+                view.model.transcript.items = (0..80)
+                    .map(|index| Item {
+                        id: format!("reasoning-{index}"),
+                        turn_id: Some("selection-cache".into()),
+                        started_at: None,
+                        ended_at: None,
+                        status: ItemStatus::Completed,
+                        presentation: Presentation::default(),
+                        body: ItemBody::Reasoning {
+                            text: format!("Reasoning body {index}"),
+                        },
+                    })
+                    .collect();
+                view.display_mode = super::super::DisplayMode::Verbose;
+                view.refresh_projection(cx);
+                view.expand_transcript(true, cx);
+                view.list.scroll_to(gpui::ListOffset {
+                    item_ix: 0,
+                    offset_in_item: gpui::px(0.),
+                });
+            });
+            window.render_frame(cx);
+            view.update(cx, |view, cx| {
+                let mounted = view.transcript_selection.source_cache.borrow().len();
+                assert!(mounted > 0 && mounted < 80, "mounted {mounted} rows");
+                let source = super::super::selection_document::leaves(view, Look::of(cx));
+                assert!(source.iter().any(|leaf| {
+                    leaf.key == "thought:reasoning-79" && leaf.text == "Reasoning body 79"
+                }));
+                assert_eq!(
+                    view.transcript_selection.source_cache.borrow().len(),
+                    mounted,
+                    "copying unmounted history must not retain its bodies"
+                );
+                view.apply_display_mode(super::super::DisplayMode::Normal, cx);
+                let cache = view.transcript_selection.source_cache.borrow();
+                assert!(cache.len() < mounted, "hidden body sources were retained");
+                assert!(
+                    cache
+                        .keys()
+                        .all(|id| { view.list_rows.iter().any(|entry| &entry.row.id == id) })
+                );
+            });
+        })
+        .unwrap();
+    }
+
+    #[gpui::test]
+    fn complete_export_tolerates_shorter_or_multibyte_replacement_source(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (handle, view, _) = super::super::editor_tests::mount_selection(cx);
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.model.link = super::super::Link::Live;
+                view.model.transcript.items = vec![Item {
+                    id: "copy-source".into(),
+                    turn_id: None,
+                    started_at: None,
+                    ended_at: None,
+                    status: ItemStatus::Completed,
+                    presentation: Presentation::default(),
+                    body: ItemBody::AgentMessage {
+                        text: "abcdef".into(),
+                    },
+                }];
+                view.refresh_projection(cx);
+            });
+            window.render_frame(cx);
+            let (from, to) = view.read_with(cx, |view, _| {
+                (
+                    view.transcript_selection
+                        .glyph_point("copy-source/0", 1)
+                        .unwrap(),
+                    view.transcript_selection
+                        .glyph_point("copy-source/0", 4)
+                        .unwrap(),
+                )
+            });
+            window.drag(from, to, cx);
+            view.read_with(cx, |view, cx| {
+                let selection = &view.transcript_selection;
+                let snapshot = selection.handle.snapshot(cx);
+                let document = selection.data.borrow();
+                assert_eq!(document.export(snapshot), "bcd");
+                for replacement in ["x", "é", "🦀"] {
+                    let source = [SourceLeaf {
+                        key: "copy-source/0".into(),
+                        text: replacement.into(),
+                        row: 0,
+                    }];
+                    assert_eq!(document.export_complete(snapshot, &source), replacement);
+                }
+            });
+        })
+        .unwrap();
     }
 }

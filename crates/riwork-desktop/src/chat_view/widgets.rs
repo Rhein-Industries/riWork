@@ -3,8 +3,8 @@
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, ElementId, Pixels, Point, ScrollHandle, SharedString,
-    div, prelude::*, pulsating_between, px, rgb,
+    Animation, AnimationExt, AnyElement, App, ElementId, PathBuilder, Pixels, Point, ScrollHandle,
+    SharedString, canvas, div, point, prelude::*, pulsating_between, px, rgb,
 };
 
 use crate::{
@@ -64,7 +64,6 @@ impl Look {
             Tone::Muted => self.colors.muted,
             Tone::Accent => self.colors.working,
             Tone::Warning => self.colors.gold,
-            Tone::Error if self.native => self.colors.gold,
             Tone::Error => self.diff.removed,
         }
     }
@@ -517,6 +516,36 @@ pub(super) fn copy_button(
     })
 }
 
+/// Consistent tool-container action, including colorful themes. The row owns reveal visibility.
+pub(super) fn tool_icon_action(
+    id: impl Into<ElementId>,
+    symbol: &'static str,
+    tooltip: impl Into<SharedString>,
+    enabled: bool,
+    look: Look,
+) -> behavior::Button {
+    let name = tooltip.into();
+    let colors = look.colors;
+    behavior::button_content(
+        id,
+        name.clone(),
+        icons::symbol(symbol, 11.0, Some(colors.muted)),
+    )
+    .disabled(!enabled)
+    .flex_none()
+    .size(px(20.0))
+    .p_0()
+    .flex()
+    .items_center()
+    .justify_center()
+    .rounded(px(4.0))
+    .text_color(rgb(colors.muted))
+    .cursor_pointer()
+    .hover(move |style| style.bg(rgb(colors.panel_active)))
+    .focus_visible(move |style| style.bg(rgb(colors.panel_active)).opacity(1.0))
+    .child(crate::tooltip::anchor(name, crate::tooltip::Look::Control))
+}
+
 /// Controlled Base toggle with the chat's existing button treatment.
 pub(super) fn toggle_button(
     id: impl Into<ElementId>,
@@ -654,6 +683,45 @@ pub(super) fn pulse(id: impl Into<ElementId>, color: u32) -> AnyElement {
             |dot, level| dot.opacity(level),
         )
         .into_any_element()
+}
+
+/// A native-style indeterminate spinner, drawn locally rather than embedded in a title.
+pub(super) fn spinner(id: impl Into<ElementId>, color: u32) -> AnyElement {
+    let phase = Rc::new(Cell::new(0.0f32));
+    let paint_phase = phase.clone();
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let side = f32::from(bounds.size.width);
+            let center = bounds.origin + point(px(side * 0.5), px(side * 0.5));
+            let step = (paint_phase.get() * 12.0).floor() as usize;
+            for spoke in 0..12 {
+                let angle = std::f32::consts::TAU * spoke as f32 / 12.0;
+                let direction = point(px(angle.sin()), px(-angle.cos()));
+                let mut path = PathBuilder::stroke(px(side * 0.09));
+                path.move_to(center + direction * (side * 0.23));
+                path.line_to(center + direction * (side * 0.46));
+                if let Ok(path) = path.build() {
+                    let distance = (spoke + 12 - step % 12) % 12;
+                    let opacity = 0.22 + 0.78 * (12 - distance) as f32 / 12.0;
+                    window.paint_path(path, rgb(color).opacity(opacity));
+                }
+            }
+        },
+    )
+    .size(ui_text::space(11.0))
+    .flex_shrink_0()
+    .with_animation(
+        id,
+        Animation::new(Duration::from_millis(900))
+            .repeat_synced()
+            .with_max_fps(20.0),
+        move |spinner, progress| {
+            phase.set(progress);
+            spinner
+        },
+    )
+    .into_any_element()
 }
 
 /// The arrow at the start of a card that opens and closes; Native's is its chevron symbol.

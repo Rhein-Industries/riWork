@@ -618,7 +618,7 @@ impl ChatView {
                         }),
                 )
                 .child(tooltip::anchor(
-                    "Normal shows results · Verbose shows all activity",
+                    "Normal: one activity line per turn · Verbose: grouped calls · ⌘⇧V",
                     TipLook::Control,
                 )),
         );
@@ -628,13 +628,18 @@ impl ChatView {
             Menu::Mode,
             cx,
         );
-        let compact = div().child(if idle {
-            button("chat-compact", "Compact", None, look)
-                .on_click(cx.listener(|view, _, _, cx| view.compact(cx)))
-                .into_any_element()
-        } else {
-            dimmed("chat-compact", "Compact", look).into_any_element()
-        });
+        let compact = div()
+            .child(if idle {
+                button("chat-compact", "Compact context", None, look)
+                    .on_click(cx.listener(|view, _, _, cx| view.compact(cx)))
+                    .into_any_element()
+            } else {
+                dimmed("chat-compact", "Compact context", look).into_any_element()
+            })
+            .child(tooltip::anchor(
+                "Summarize earlier messages to free context space",
+                TipLook::Control,
+            ));
         let thread = thread.map(|thread| {
             let key = "thread".to_owned();
             let copied = self.copied.as_deref() == Some("thread");
@@ -757,7 +762,7 @@ impl ChatView {
             (Fold::Model, false),
             (Fold::Effort, false),
             (Fold::Fast, false),
-            (Fold::Compact, true),
+            (Fold::Compact, false),
         ]
         .into_iter()
         .filter_map(|(fold, shown)| shown.then_some(fold))
@@ -783,7 +788,21 @@ impl ChatView {
             } else {
                 0.
             };
-        let beside_usage = row_width(foldable.len()) + gap + thread_room + more_room + billing_room;
+        let compact_width = last[Fold::Compact.slot()].max(space(105.0));
+        let compact_visible = inner <= 0.0
+            || inner
+                >= compact_width
+                    + gap * 3.0
+                    + thread_room
+                    + billing_room
+                    + self.usage_width(Detail::Ring, window).unwrap_or(0.0);
+        let compact_room = if compact_visible {
+            gap + compact_width
+        } else {
+            0.0
+        };
+        let beside_usage =
+            row_width(foldable.len()) + gap + thread_room + more_room + billing_room + compact_room;
         let usage_room = inner - beside_usage - gap;
         let one_line = inner <= 0.
             || match self.usage_width(Detail::NoCost, window) {
@@ -798,7 +817,10 @@ impl ChatView {
                 .find(|count| row_width(*count) + more_room <= inner + 0.5)
                 .unwrap_or(0)
         };
-        let folded = foldable[kept..].to_vec();
+        let mut folded = foldable[kept..].to_vec();
+        if !compact_visible {
+            folded.push(Fold::Compact);
+        }
         // A folded picker's menu opens from ⋯, as the rest of its menu does.
         let from_more = |menu: Menu| match menu {
             Menu::Mode => folded.contains(&Fold::Mode),
@@ -883,7 +905,7 @@ impl ChatView {
                     (Fold::Model, None),
                     (Fold::Effort, None),
                     (Fold::Fast, None),
-                    (Fold::Compact, Some(compact)),
+                    (Fold::Compact, None),
                 ]
                 .into_iter()
                 .filter(|(fold, _)| !folded.contains(fold))
@@ -896,7 +918,7 @@ impl ChatView {
                 if one_line {
                     (inner > 0.).then_some(usage_room + 0.5)
                 } else {
-                    Some(inner - thread_room - billing_room)
+                    Some(inner - thread_room - billing_room - compact_room - gap)
                 },
                 look,
                 window,
@@ -935,12 +957,17 @@ impl ChatView {
                         },
                     ),
                 )
-                .children(usage),
+                .children(usage)
+                .when(compact_visible, |group| {
+                    group.child(measured(Fold::Compact.slot(), compact.flex_none()))
+                }),
         );
         let thread = thread.map(|thread| measured(SLOT_THREAD, thread.flex_none()));
         let more = measured(SLOT_MORE, more);
 
         let bar = div()
+            .id("chat-toolbar")
+            .test_support()
             .debug_selector(|| "chat-header".into())
             .w_full()
             .px(ui_text::space(BAR_INSET))
@@ -1170,7 +1197,7 @@ impl ChatView {
                         })),
                         Fold::Compact => row(
                             "more-compact".into(),
-                            "Compact".into(),
+                            "Compact context".into(),
                             (!idle).then_some("Once the agent has finished"),
                             false,
                         )
@@ -1188,6 +1215,28 @@ impl ChatView {
                     rows.push(controls::menu_separator(colors));
                 }
                 rows.extend([
+                    row(
+                        "chat-display-default".into(),
+                        "Use as Default".into(),
+                        Some("Use this transcript mode for new chats"),
+                        false,
+                    )
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        let mode = view.display_mode;
+                        match crate::settings::SettingsStore::open_default()
+                            .and_then(|store| store.update(|settings| settings.chat_display = mode))
+                        {
+                            Ok(settings) => cx.set_global(settings),
+                            Err(error) => view.notices.set(
+                                super::notices::LocalKey::Settings,
+                                crate::chat::model::NoticeLevel::Error,
+                                error,
+                            ),
+                        }
+                        view.menu = None;
+                        cx.notify();
+                    }))
+                    .into_any_element(),
                     row(
                         "chat-notice-history".into(),
                         format!("Notices ({})", self.notices.count(&self.model.transcript)),
@@ -4324,6 +4373,7 @@ mod tests {
 
     fn question() -> Question {
         Question {
+            item_id: None,
             request_id: "q1".to_owned(),
             questions: vec![
                 prompt("Which part?", &["The list", "The footer"], false),

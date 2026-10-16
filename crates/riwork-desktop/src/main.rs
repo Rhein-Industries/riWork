@@ -13418,6 +13418,9 @@ fn main() {
             KeyBinding::new("cmd-alt-shift-c", OpenNewChat, None),
             KeyBinding::new("cmd-.", chat_view::InterruptChat, Some("ChatView")),
             KeyBinding::new("ctrl-alt-d", ToggleDictation, Some("ChatView")),
+            KeyBinding::new("cmd-shift-v", chat_view::ToggleTranscriptMode, Some("ChatView")),
+            KeyBinding::new("cmd-alt-right", chat_view::ExpandTranscript, Some("ChatView")),
+            KeyBinding::new("cmd-alt-left", chat_view::CollapseTranscript, Some("ChatView")),
         ]);
         cx.set_menus([
             Menu::new("RiWork").items([
@@ -13437,6 +13440,10 @@ fn main() {
                 MenuItem::action("Sessions", OpenSessions),
                 MenuItem::action("Default Layout", ApplyDefaultLayout),
                 MenuItem::action("Gather Tabs into Main Pane", GatherTabs),
+                MenuItem::separator(),
+                MenuItem::action("Toggle Normal / Verbose", chat_view::ToggleTranscriptMode),
+                MenuItem::action("Expand All Activity", chat_view::ExpandTranscript),
+                MenuItem::action("Collapse All Activity", chat_view::CollapseTranscript),
                 MenuItem::separator(),
                 MenuItem::action("Bigger Text", BiggerText),
                 MenuItem::action("Smaller Text", SmallerText),

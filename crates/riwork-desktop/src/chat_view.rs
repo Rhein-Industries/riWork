@@ -64,6 +64,7 @@ mod notice_tests;
 mod notice_ui;
 mod notices;
 mod panels;
+mod perf;
 mod prose;
 mod rows;
 mod select;
@@ -88,7 +89,16 @@ use feed::{Backoff, Feed, FeedMsg};
 use state::{Applied, ChatModel, provider_name};
 use widgets::Look;
 
-actions!(riwork_chat, [InterruptChat, ToggleDictation]);
+actions!(
+    riwork_chat,
+    [
+        InterruptChat,
+        ToggleDictation,
+        ToggleTranscriptMode,
+        ExpandTranscript,
+        CollapseTranscript
+    ]
+);
 
 /// What a chat tab tells the window.
 pub enum ChatViewEvent {
@@ -169,6 +179,16 @@ struct Caches {
     diffs: HashMap<String, (String, crate::chat::model::ChangeKind, Arc<DrawnDiff>)>,
     /// The boxes that scroll in the transcript, by name.
     scrollers: HashMap<String, widgets::Scroller>,
+    /// Open availability is checked once in the background for each item/target.
+    excerpt_open: HashMap<String, ExcerptOpenAvailability>,
+    excerpt_open_request: u64,
+}
+
+struct ExcerptOpenAvailability {
+    target: String,
+    status: crate::chat::model::ItemStatus,
+    request: u64,
+    available: Option<bool>,
 }
 
 /// The lines of one file's diff that are drawn, and how many more there are.
@@ -197,8 +217,27 @@ pub struct ChatView {
     /// How many of the list's rows are transcript items; the row after them is the footer.
     items_in_list: usize,
     visible: Vec<display::Row>,
+    list_rows: Vec<display::ListRow>,
+    /// Cached topology/header revision and the transcript revision it represents.
+    projection_stamp: Option<(u64, u64)>,
+    projection_cache: riwork_engine::chat::projection::ProjectionCache,
+    #[cfg(test)]
+    projection_runs: usize,
+    #[cfg(test)]
+    rendered_rows: std::cell::Cell<usize>,
+    header_bounds: std::rc::Rc<RefCell<HashMap<String, gpui::Bounds<gpui::Pixels>>>>,
     display_mode: DisplayMode,
     pending_display: Option<DisplayMode>,
+    /// Shared grouping-spec disclosure state; every call starts closed.
+    disclosure: riwork_engine::chat::projection::DisclosureState,
+    /// Keyboard focus names a stable projection row rather than a virtual-list index.
+    focused_row: Option<String>,
+    /// Only arrow navigation paints a transcript focus ring.
+    row_keyboard_focus: bool,
+    header_hover: rows::HeaderHoverState,
+    activity_tick: Option<Task<()>>,
+    #[cfg(debug_assertions)]
+    perf_control_started: bool,
     media: media::MediaState,
     /// Where the image cards may read local images from; set by the window.
     image_scope: ImageScope,
@@ -304,6 +343,7 @@ impl ChatView {
             return;
         }
         self.image_scope = scope;
+        self.caches.borrow_mut().excerpt_open.clear();
         self.rescope_images(cx);
     }
     pub fn image_scope(&self) -> &ImageScope {
@@ -468,11 +508,26 @@ impl ChatView {
             list,
             items_in_list: 0,
             visible: Vec::new(),
+            list_rows: Vec::new(),
+            projection_stamp: None,
+            projection_cache: Default::default(),
+            #[cfg(test)]
+            projection_runs: 0,
+            #[cfg(test)]
+            rendered_rows: std::cell::Cell::new(0),
+            header_bounds: Default::default(),
             display_mode: cx
                 .try_global::<crate::settings::Settings>()
                 .map(|s| s.chat_display)
                 .unwrap_or_default(),
             pending_display: None,
+            disclosure: Default::default(),
+            focused_row: None,
+            row_keyboard_focus: false,
+            header_hover: Default::default(),
+            activity_tick: None,
+            #[cfg(debug_assertions)]
+            perf_control_started: false,
             media: Default::default(),
             image_scope: ImageScope::default(),
             scale: ui_text::scale(),
@@ -761,70 +816,456 @@ impl ChatView {
     /// Tell the list about the rows that came or changed. Rows are measured when they are
     /// drawn, so a row that changed must be measured again.
     fn sync_list(&mut self, applied: &Applied, cx: &mut Context<Self>) {
-        self.transcript_selection.changed();
-        // Streaming content cannot leave an old copied projection. Unrelated
-        // tail updates preserve selection and participant/editor identities.
-        let selected_changed = self
-            .transcript_selection
-            .selected_rows(cx)
-            .into_iter()
-            .any(|row| match self.visible.get(row) {
-                Some(display::Row::Item(at) | display::Row::Details(at)) => {
-                    applied.touched.contains(at)
-                }
-                _ => false,
-            });
-        if selected_changed {
-            self.transcript_selection.clear(self.window_handle, cx);
+        let _timing = perf::Span::new("stream-event");
+        let touched_ids: HashSet<_> = applied
+            .touched
+            .iter()
+            .filter_map(|at| self.model.transcript.items.get(*at))
+            .map(|item| item.id.clone())
+            .collect();
+        let mounted_ids: HashSet<_> = touched_ids
+            .iter()
+            .filter(|id| self.transcript_selection.source_was_mounted(id))
+            .cloned()
+            .collect();
+        for id in &touched_ids {
+            self.transcript_selection.invalidate_source(id);
         }
-        if applied.projection_changed {
-            self.refresh_projection(cx);
+        if (applied.projection_changed || applied.appended > 0)
+            && self.projection_stamp
+                != Some((
+                    self.model.projection_revision,
+                    self.model.transcript.revision(),
+                ))
+        {
+            let invalidated = applied
+                .touched
+                .iter()
+                .copied()
+                .chain(
+                    self.model
+                        .transcript
+                        .items
+                        .len()
+                        .saturating_sub(applied.appended)
+                        ..self.model.transcript.items.len(),
+                )
+                .filter_map(|at| self.model.transcript.items.get(at))
+                .map(|item| {
+                    item.turn_id
+                        .clone()
+                        .unwrap_or_else(|| format!("legacy:{}", item.id))
+                })
+                .collect();
+            self.refresh_projection_for(&invalidated, cx);
         }
-        for (row, item) in self.visible.iter().enumerate() {
-            let touched = match item {
-                display::Row::Item(at) | display::Row::Details(at) => applied.touched.contains(at),
-                display::Row::Artifacts { items, .. } => {
-                    items.iter().any(|at| applied.touched.contains(at))
-                }
-                _ => false,
-            };
-            if touched {
-                self.list.remeasure_items(row..row + 1);
-            }
+        // Content revisions include same-ID whole-item replacements, even when
+        // their projected header compares equal. Invalidate their measurements
+        // independently of projection equality, after any regrouping splice.
+        let changed_rows: Vec<_> = self
+            .list_rows
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| touched_ids.contains(&entry.row.id))
+            .map(|(at, _)| at)
+            .collect();
+        let selection_rows: Vec<_> = changed_rows
+            .iter()
+            .copied()
+            .filter(|at| mounted_ids.contains(&self.list_rows[*at].row.id))
+            .collect();
+        self.refresh_selection_rows(&selection_rows, Look::of(cx), cx);
+        for row in changed_rows {
+            self.list.remeasure_items(row..row + 1);
         }
+        // Body-only deltas advance the cache's source revision without
+        // regrouping or cloning historical command output.
+        self.projection_stamp = Some((
+            self.model.projection_revision,
+            self.model.transcript.revision(),
+        ));
         self.list
             .remeasure_items(self.items_in_list..self.items_in_list + 1);
+        self.schedule_activity_clock(cx);
     }
 
     fn refresh_projection(&mut self, cx: &mut Context<Self>) {
+        // Explicit refreshes also support source-only fixtures and backfill.
+        self.projection_cache.clear();
+        self.transcript_selection.invalidate_sources();
+        self.refresh_projection_for(&HashSet::new(), cx);
+    }
+
+    fn refresh_projection_for(&mut self, invalidated: &HashSet<String>, cx: &mut Context<Self>) {
+        let _timing = perf::Span::new("projection");
+        #[cfg(test)]
+        {
+            self.projection_runs += 1;
+        }
+        use riwork_engine::chat::projection::remap_disclosures;
         self.transcript_selection.changed();
-        let rows = display::rows(
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|duration| duration.as_millis() as u64);
+        let mut rows = display::cached_rows(
+            &mut self.projection_cache,
             &self.model.transcript,
-            &self.model.completed,
             self.display_mode,
+            &self.disclosure,
+            now_ms,
+            invalidated,
         );
-        if rows != self.visible {
-            if !rows.starts_with(&self.visible) {
-                self.transcript_selection.retire(self.window_handle, cx);
+        let remapped = remap_disclosures(&self.disclosure, &self.visible, &rows);
+        if remapped.overrides != self.disclosure.overrides {
+            self.disclosure = remapped;
+            rows = display::cached_rows(
+                &mut self.projection_cache,
+                &self.model.transcript,
+                self.display_mode,
+                &self.disclosure,
+                now_ms,
+                &HashSet::new(),
+            );
+        }
+        // Keep the legacy body helpers' set in sync; auxiliary file/image keys survive.
+        fn ids(rows: &[display::Row], result: &mut HashSet<String>) {
+            for row in rows {
+                result.insert(row.id.clone());
+                ids(&row.children, result);
+                ids(&row.comments, result);
             }
-            let prefix = rows
+        }
+        let mut projected_ids = HashSet::new();
+        ids(&self.visible, &mut projected_ids);
+        ids(&rows, &mut projected_ids);
+        self.open.retain(|id| !projected_ids.contains(id));
+        let mut opened = Vec::new();
+        display::open_ids(&rows, &mut opened);
+        self.open.extend(opened);
+        if let Some(focused) = &self.focused_row {
+            let visible = display::focusable_rows(&rows);
+            let mapped = if visible.contains(focused) {
+                Some(focused.clone())
+            } else {
+                // A backfilled group's header stays focused on the remapped group,
+                // even when that group is open and its first call is visible.
+                let state = riwork_engine::chat::projection::DisclosureState {
+                    overrides: [(focused.clone(), false)].into_iter().collect(),
+                    bulk: None,
+                };
+                let remapped_focus = remap_disclosures(&state, &self.visible, &rows);
+                remapped_focus
+                    .overrides
+                    .keys()
+                    .find(|id| *id != focused && visible.contains(id))
+                    .cloned()
+                    .or_else(|| {
+                        let anchor = display::find(&self.visible, focused)
+                            .map(display::anchor_item)
+                            .unwrap_or(focused);
+                        riwork_engine::chat::projection::visible_anchor(&rows, anchor)
+                    })
+            };
+            self.focused_row =
+                mapped.filter(|id| display::find(&rows, id).is_some_and(display::disclosure));
+        }
+        if rows != self.visible {
+            let tail = self.list.is_following_tail();
+            let offset = self.list.logical_scroll_top();
+            let anchor = self.list_anchor(offset.item_ix);
+            let entries = display::list_rows(&rows);
+            let prefix = entries
                 .iter()
-                .zip(&self.visible)
+                .zip(&self.list_rows)
                 .take_while(|(a, b)| a == b)
                 .count();
-            let suffix = rows[prefix..]
+            let suffix = entries[prefix..]
                 .iter()
                 .rev()
-                .zip(self.visible[prefix..].iter().rev())
+                .zip(self.list_rows[prefix..].iter().rev())
                 .take_while(|(a, b)| a == b)
                 .count();
             self.list.splice(
-                prefix..self.visible.len() - suffix,
-                rows.len() - prefix - suffix,
+                prefix..self.list_rows.len() - suffix,
+                entries.len() - prefix - suffix,
             );
-            self.items_in_list = rows.len();
+            self.items_in_list = entries.len();
+            self.list_rows = entries;
             self.visible = rows;
+            if !tail
+                && let Some(anchor) = anchor
+                && let Some(at) = self.remap_list_anchor(&anchor)
+            {
+                self.list.scroll_to(gpui::ListOffset {
+                    item_ix: at,
+                    offset_in_item: if self.list_rows[at].row.id == anchor.id {
+                        offset.offset_in_item
+                    } else {
+                        px(0.)
+                    },
+                });
+            }
         }
+        self.projection_stamp = Some((
+            self.model.projection_revision,
+            self.model.transcript.revision(),
+        ));
+        self.transcript_selection.retain_sources(&self.list_rows);
+        let mut image_keys = HashSet::new();
+        fn image_demands(rows: &[display::Row], keys: &mut HashSet<String>, view: &ChatView) {
+            for row in rows {
+                if row.open {
+                    if let Some((_, item)) = view.projected_item(&row.id) {
+                        for n in 0..item.presentation.images.len() {
+                            keys.insert(format!("{}:image:{n}", item.id));
+                        }
+                    }
+                    image_demands(&row.children, keys, view);
+                }
+            }
+        }
+        image_demands(&self.visible, &mut image_keys, self);
+        self.retain_opened_images(&image_keys, cx);
+    }
+
+    fn tick_activity(&mut self, now_ms: Option<u64>, cx: &mut Context<Self>) {
+        let _timing = perf::Span::new("clock");
+        if riwork_engine::chat::projection::refresh_timing(
+            &mut self.visible,
+            &self.model.transcript,
+            now_ms,
+        ) {
+            for (at, entry) in self.list_rows.iter_mut().enumerate() {
+                if entry.row.running
+                    && let Some(row) = display::find(&self.visible, &entry.row.id)
+                {
+                    entry.row.title.clone_from(&row.title);
+                    entry.row.duration_ms = row.duration_ms;
+                    entry.row.current_label.clone_from(&row.current_label);
+                    self.list.remeasure_items(at..at + 1);
+                }
+            }
+            self.refresh_selection_timing(cx);
+            cx.notify();
+        }
+    }
+
+    /// Clock ticks update cached timing only; they never regroup rows or retire selection.
+    fn schedule_activity_clock(&mut self, cx: &mut Context<Self>) {
+        if self.model.transcript.turn_id.is_none() {
+            self.activity_tick = None;
+            return;
+        }
+        if self.activity_tick.is_some() {
+            return;
+        }
+        self.activity_tick = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let keep = this
+                    .update(cx, |view, cx| {
+                        if view.model.transcript.turn_id.is_none() {
+                            view.activity_tick = None;
+                            return false;
+                        }
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .map(|duration| duration.as_millis() as u64);
+                        view.tick_activity(now_ms, cx);
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn list_anchor(&self, at: usize) -> Option<display::Row> {
+        self.list_rows
+            .get(at)
+            .and_then(|entry| display::find(&self.visible, &entry.row.id))
+            .cloned()
+    }
+
+    fn remap_list_anchor(&self, anchor: &display::Row) -> Option<usize> {
+        let id = riwork_engine::chat::projection::visible_anchor(&self.visible, &anchor.id)
+            .or_else(|| {
+                riwork_engine::chat::projection::visible_anchor(
+                    &self.visible,
+                    display::anchor_item(anchor),
+                )
+            })?;
+        self.list_rows.iter().position(|entry| entry.row.id == id)
+    }
+
+    pub(super) fn projected_item(&self, id: &str) -> Option<(usize, &crate::chat::model::Item)> {
+        self.model.item(id)
+    }
+
+    pub(super) fn row_is_focused(&self, id: &str) -> bool {
+        self.row_keyboard_focus && self.focused_row.as_deref() == Some(id)
+    }
+
+    pub(super) fn toggle_projected(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(row) = display::find(&self.visible, id).filter(|row| display::disclosure(row))
+        else {
+            return;
+        };
+        self.disclosure.toggle(id, row.open);
+        self.focused_row = Some(id.into());
+        self.transcript_selection.clear(self.window_handle, cx);
+        self.refresh_disclosures(cx);
+        cx.notify();
+    }
+
+    /// Manual disclosure preserves the top visible item's offset, including when
+    /// the list had been following its tail before the pointer opened a call.
+    fn refresh_disclosures(&mut self, cx: &mut Context<Self>) {
+        let _timing = perf::Span::new("disclosure");
+        let offset = self.list.logical_scroll_top();
+        let anchor = self.list_anchor(offset.item_ix);
+        let collapse_offset = self
+            .focused_row
+            .as_deref()
+            .filter(|id| display::find(&self.visible, id).is_some_and(|row| row.open))
+            .and_then(|id| {
+                let bounds = self.header_bounds.borrow();
+                Some(
+                    (bounds.get(id)?.top() - bounds.get(&format!("top:{}", offset.item_ix))?.top())
+                        .max(px(0.)),
+                )
+            });
+        self.list.pause_following_tail();
+        self.refresh_projection_for(&HashSet::new(), cx);
+        if let Some(anchor) = anchor
+            && let Some(at) = self.remap_list_anchor(&anchor)
+        {
+            self.list.scroll_to(gpui::ListOffset {
+                item_ix: at,
+                offset_in_item: if self
+                    .list_rows
+                    .get(at)
+                    .is_some_and(|entry| entry.row.id == anchor.id)
+                {
+                    collapse_offset.map_or(offset.offset_in_item, |header| {
+                        offset.offset_in_item.min(header)
+                    })
+                } else {
+                    px(0.)
+                },
+            });
+        } else {
+            self.list.scroll_to(offset);
+        }
+    }
+
+    pub fn expand_transcript(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.disclosure.reset_bulk_for_rows(
+            open,
+            match self.display_mode {
+                DisplayMode::Normal => riwork_engine::chat::projection::DisplayMode::Normal,
+                DisplayMode::Verbose => riwork_engine::chat::projection::DisplayMode::Verbose,
+            },
+            &self.visible,
+        );
+        self.transcript_selection.clear(self.window_handle, cx);
+        self.refresh_disclosures(cx);
+        cx.notify();
+    }
+
+    pub(super) fn focus_transcript_row(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let rows = display::focusable_rows(&self.visible);
+        if rows.is_empty() {
+            self.focused_row = None;
+            return;
+        }
+        let index = self
+            .focused_row
+            .as_ref()
+            .and_then(|id| rows.iter().position(|row| row == id));
+        let next = match index {
+            Some(at) => (at as isize + delta).clamp(0, rows.len() as isize - 1) as usize,
+            None if delta < 0 => rows.len() - 1,
+            None => 0,
+        };
+        self.focused_row = Some(rows[next].clone());
+        self.row_keyboard_focus = true;
+        if let Some(at) = self
+            .list_rows
+            .iter()
+            .position(|entry| entry.row.id == rows[next])
+        {
+            let geometry = self.header_bounds.borrow();
+            let header = geometry.get(&rows[next]);
+            let top = geometry.get(&format!("top:{at}"));
+            if let (Some(header), Some(top)) = (header, top) {
+                let viewport = self.list.viewport_bounds();
+                let offset = header.top() - top.top();
+                let current_top = self
+                    .list
+                    .bounds_for_item(at)
+                    .map(|bounds| bounds.top() + offset);
+                if current_top.is_none_or(|y| {
+                    y < viewport.top() || y + header.size.height > viewport.bottom()
+                }) {
+                    self.list.scroll_to(gpui::ListOffset {
+                        item_ix: at,
+                        offset_in_item: (offset
+                            - (viewport.size.height - header.size.height).max(px(0.)) / 2.0)
+                            .max(px(0.)),
+                    });
+                }
+            } else {
+                self.list.scroll_to_reveal_item(at);
+            }
+        }
+        cx.notify();
+    }
+
+    pub(super) fn toggle_focused_row(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.focused_row.clone() {
+            self.row_keyboard_focus = true;
+            self.toggle_projected(&id, cx);
+        }
+    }
+
+    pub fn toggle_display_mode(&mut self, cx: &mut Context<Self>) {
+        self.choose_display(
+            match self.display_mode {
+                DisplayMode::Normal => DisplayMode::Verbose,
+                DisplayMode::Verbose => DisplayMode::Normal,
+            },
+            cx,
+        );
+    }
+
+    fn toggle_transcript_action(
+        &mut self,
+        _: &ToggleTranscriptMode,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_display_mode(cx);
+    }
+    fn expand_transcript_action(
+        &mut self,
+        _: &ExpandTranscript,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.expand_transcript(true, cx);
+    }
+    fn collapse_transcript_action(
+        &mut self,
+        _: &CollapseTranscript,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.expand_transcript(false, cx);
     }
 
     fn follow_display_setting(&mut self, cx: &mut Context<Self>) {
@@ -837,22 +1278,26 @@ impl ChatView {
 
     fn apply_display_mode(&mut self, mode: DisplayMode, cx: &mut Context<Self>) {
         if self.display_mode != mode {
+            let _timing = perf::Span::new("mode");
             let tail = self.list.is_following_tail();
             let offset = self.list.logical_scroll_top();
-            let anchor = self.visible.get(offset.item_ix).cloned();
+            let anchor = self.list_anchor(offset.item_ix);
             self.display_mode = mode;
+            self.disclosure.reset_mode();
+            self.focused_row = None;
             self.transcript_selection.retire(self.window_handle, cx);
-            self.refresh_projection(cx);
-            self.list.remeasure();
+            self.refresh_projection_for(&HashSet::new(), cx);
             if tail {
                 self.list.scroll_to_end();
             } else if let Some(anchor) = anchor {
-                if let Some(at) =
-                    display::remap_anchor(&anchor, &self.visible, &self.model.completed)
-                {
+                if let Some(at) = self.remap_list_anchor(&anchor) {
                     self.list.scroll_to(gpui::ListOffset {
                         item_ix: at,
-                        offset_in_item: if self.visible.get(at) == Some(&anchor) {
+                        offset_in_item: if self
+                            .list_rows
+                            .get(at)
+                            .is_some_and(|entry| entry.row.id == anchor.id)
+                        {
                             offset.offset_in_item
                         } else {
                             px(0.0)
@@ -861,7 +1306,7 @@ impl ChatView {
                 }
             } else {
                 self.list.scroll_to(gpui::ListOffset {
-                    item_ix: self.visible.len(),
+                    item_ix: self.list_rows.len(),
                     offset_in_item: offset.offset_in_item,
                 });
             }
@@ -1357,7 +1802,11 @@ impl ChatView {
             .map(|item| &item.body)
         {
             Some(ItemBody::AgentMessage { text }) => text.clone(),
-            Some(ItemBody::Command { output, .. }) => cards::clean_output(output),
+            Some(ItemBody::Command { output, .. })
+            | Some(ItemBody::ToolCall {
+                output: Some(output),
+                ..
+            }) => cards::clean_output(output),
             _ => return,
         };
         self.copy(format!("copy:{id}"), text, cx);
@@ -1375,6 +1824,10 @@ impl ChatView {
 
     fn copy(&mut self, key: String, text: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        self.mark_copied(key, cx);
+    }
+
+    fn mark_copied(&mut self, key: String, cx: &mut Context<Self>) {
         self.copied = Some(key);
         self.forget_copy = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
@@ -1389,21 +1842,27 @@ impl ChatView {
     }
 
     fn toggle(&mut self, key: &str, item: Option<usize>, cx: &mut Context<Self>) {
+        if display::find(&self.visible, key).is_some_and(display::disclosure) {
+            self.toggle_projected(key, cx);
+            return;
+        }
         self.transcript_selection.changed();
-        // Disclosed/hidden text must not survive as a clipboard selection.
+        if let Some(item) = item.and_then(|at| self.model.transcript.items.get(at)) {
+            self.transcript_selection.invalidate_source(&item.id);
+        }
         self.transcript_selection.clear(self.window_handle, cx);
         if !self.open.remove(key) {
             self.open.insert(key.to_owned());
         }
-        // The row changes height.
-        if let Some(at) = item {
-            if let Some(row) = self.visible.iter().position(|row| match row {
-                display::Row::Item(index) | display::Row::Details(index) => *index == at,
-                display::Row::Artifacts { items, .. } => items.contains(&at),
-                _ => false,
-            }) {
-                self.list.remeasure_items(row..row + 1);
-            }
+        if let Some(at) = item
+            .and_then(|at| self.model.transcript.items.get(at))
+            .and_then(|item| {
+                self.list_rows
+                    .iter()
+                    .position(|entry| entry.row.id == item.id)
+            })
+        {
+            self.list.remeasure_items(at..at + 1);
         }
         cx.notify();
     }
@@ -1513,8 +1972,43 @@ impl ChatView {
     // Keys
     // -----------------------------------------------------------------------------------
 
-    fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        // Editing, Enter, clipboard text, and cursor motion belong exclusively to Kit.
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Arrow and Space disclosure controls belong to transcript focus; editors keep
+        // their own cursor motion and whitespace handling.
+        let editing = self.composer.read(cx).focus_handle(cx).is_focused(window)
+            || self
+                .model_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+            || self
+                .answers
+                .values()
+                .any(|answer| answer.state.read(cx).focus_handle(cx).is_focused(window));
+        let modifiers = event.keystroke.modifiers;
+        if !editing
+            && self.menu.is_none()
+            && !modifiers.platform
+            && !modifiers.control
+            && !modifiers.alt
+            && !modifiers.shift
+        {
+            match event.keystroke.key.as_str() {
+                "up" => {
+                    self.focus_transcript_row(-1, cx);
+                    cx.stop_propagation();
+                }
+                "down" => {
+                    self.focus_transcript_row(1, cx);
+                    cx.stop_propagation();
+                }
+                "space" | " " if self.focused_row.is_some() => {
+                    self.toggle_focused_row(cx);
+                    cx.stop_propagation();
+                }
+                _ => {}
+            }
+        }
         if event.keystroke.modifiers.platform && event.keystroke.key == "." {
             self.interrupt(cx);
             cx.stop_propagation();
@@ -1590,6 +2084,8 @@ impl Creation {
 impl Render for ChatView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.activate(window, cx);
+        #[cfg(debug_assertions)]
+        self.start_perf_control(window, cx);
         let look = Look::of(cx);
         let colors = look.colors;
         if self.window_handle != window.window_handle() {
@@ -1632,6 +2128,9 @@ impl Render for ChatView {
             .on_key_down(cx.listener(Self::key_down))
             .on_action(cx.listener(Self::interrupt_action))
             .on_action(cx.listener(Self::dictation_action))
+            .on_action(cx.listener(Self::toggle_transcript_action))
+            .on_action(cx.listener(Self::expand_transcript_action))
+            .on_action(cx.listener(Self::collapse_transcript_action))
             .on_action(cx.listener(Self::copy_transcript))
             .on_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, _| {
                 view.menu_armed = true;

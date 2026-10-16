@@ -137,6 +137,47 @@ fn unstructured(diff: &str, change: ChangeKind) -> Vec<DiffLine<'_>> {
         .collect()
 }
 
+/// Gutter numbers follow actual unified hunk positions. Provider snippets without
+/// hunks use snippet-relative positions, never a guessed absolute file line.
+pub fn line_numbers(diff: &str, change: ChangeKind) -> Vec<(Option<usize>, Option<usize>)> {
+    let mut old = Some(1usize);
+    let mut new = Some(1usize);
+    display(diff, change)
+        .0
+        .iter()
+        .map(|line| {
+            if line.kind == LineKind::Hunk {
+                let mut parts = line.text.split_whitespace();
+                parts.next();
+                old = parts
+                    .next()
+                    .and_then(|s| s.strip_prefix('-'))
+                    .and_then(|s| s.split(',').next())
+                    .and_then(|s| s.parse().ok());
+                new = parts
+                    .next()
+                    .and_then(|s| s.strip_prefix('+'))
+                    .and_then(|s| s.split(',').next())
+                    .and_then(|s| s.parse().ok());
+                return (None, None);
+            }
+            let numbers = match line.kind {
+                LineKind::Add => (None, new),
+                LineKind::Remove => (old, None),
+                LineKind::Context => (old, new),
+                _ => (None, None),
+            };
+            if matches!(line.kind, LineKind::Remove | LineKind::Context) {
+                old = old.map(|n| n + 1);
+            }
+            if matches!(line.kind, LineKind::Add | LineKind::Context) {
+                new = new.map(|n| n + 1);
+            }
+            numbers
+        })
+        .collect()
+}
+
 /// Lines added and lines removed.
 pub fn stats(lines: &[DiffLine<'_>]) -> (usize, usize) {
     lines
@@ -231,5 +272,23 @@ mod tests {
         );
         assert_eq!(kinds("+one\ntwo", ChangeKind::Add), [Add, Context]);
         assert!(classify("", ChangeKind::Modify).is_empty());
+    }
+    #[test]
+    fn gutters_follow_hunks_and_changes_without_advancing_on_notes() {
+        let text = "@@ -56,2 +57,2 @@\n same\n-old\n\\ No newline at end of file\n+new";
+        assert_eq!(
+            line_numbers(text, ChangeKind::Modify),
+            [
+                (None, None),
+                (Some(56), Some(57)),
+                (Some(57), None),
+                (None, None),
+                (None, Some(58)),
+            ]
+        );
+        assert_eq!(
+            line_numbers("one\ntwo", ChangeKind::Add),
+            [(None, Some(1)), (None, Some(2))]
+        );
     }
 }

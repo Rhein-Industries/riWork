@@ -184,7 +184,7 @@ impl ChatLog {
                 any_history = true;
             }
             match envelope.event {
-                ChatEvent::TurnStarted { turn_id } => turn = Some(turn_id),
+                ChatEvent::TurnStarted { turn_id, .. } => turn = Some(turn_id),
                 ChatEvent::TurnCompleted { turn_id, .. } if turn.as_ref() == Some(&turn_id) => {
                     turn = None
                 }
@@ -287,7 +287,8 @@ fn open_events(dir: &Path) -> io::Result<File> {
         .open(dir.join(EVENTS))
 }
 
-/// Writes the log's lines `since + 1 ..= last` to `out`, as stored. The caller
+/// Writes the log's events `since + 1 ..= last` to `out`, enriching legacy metadata
+/// only in the response. Durable bytes and event sequence numbers never change. The caller
 /// knows `last` from the moment it registered for live events, so lines that
 /// are written afterwards are not part of the replay.
 pub fn replay(dir: &Path, since: u64, last: u64, out: &mut impl Write) -> io::Result<()> {
@@ -309,7 +310,14 @@ pub fn replay(dir: &Path, since: u64, last: u64, out: &mut impl Write) -> io::Re
         if reader.read_until(b'\n', &mut line)? == 0 {
             return Err(truncated());
         }
-        out.write_all(&line)?;
+        if let Ok(mut envelope) = serde_json::from_slice::<Envelope>(&line) {
+            envelope.enrich();
+            serde_json::to_writer(&mut *out, &envelope)?;
+            out.write_all(b"\n")?;
+        } else {
+            // Future event/body shapes remain forwardable to tolerant clients.
+            out.write_all(&line)?;
+        }
     }
     out.flush()
 }
@@ -432,7 +440,7 @@ pub fn read_transcript(home: &Path, id: &str) -> Result<super::model::Transcript
             break;
         }
         if let Ok(envelope) = serde_json::from_slice::<Envelope>(&line) {
-            transcript.apply(&envelope.event);
+            transcript.apply_sequenced(envelope.seq, &envelope.event);
         }
     }
     Ok(transcript)
@@ -472,7 +480,7 @@ pub fn notice_tail(dir: &Path, max: u64) -> super::model::Transcript {
             continue;
         }
         if let Ok(envelope) = serde_json::from_slice::<Envelope>(&line) {
-            transcript.apply(&envelope.event);
+            transcript.apply_sequenced(envelope.seq, &envelope.event);
         }
     }
     transcript
@@ -505,6 +513,17 @@ pub struct Snapshot {
     pub more: bool,
     pub items: Vec<SnapshotItem>,
     pub controls: Vec<super::model::ChatEvent>,
+    #[serde(default)]
+    pub requests: Vec<super::model::RequestRecord>,
+    /// Captured turn wall-clock times for the turns represented by this page.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub turn_timing: std::collections::HashMap<String, super::model::TurnTiming>,
+    /// First event sequence of each represented turn, for lossless page alignment.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub turn_starts: std::collections::HashMap<String, u64>,
+    /// A transport limit required a partial turn; clients remap anchors by item id.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub provisional: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dismissed_notices: Vec<String>,
 }
@@ -562,6 +581,7 @@ pub fn read_snapshot_with_features(
     let mut reader = BufReader::new(file.take(end));
     let mut transcript = super::model::Transcript::default();
     let mut orders = HashMap::new();
+    let mut turn_starts = HashMap::new();
     let (mut next, mut bytes, mut hash) = (0u64, 0u64, 0xcbf29ce484222325u64);
     let mut line = Vec::new();
     loop {
@@ -594,11 +614,17 @@ pub fn read_snapshot_with_features(
         }
         bytes += n as u64;
         next = envelope.seq;
+        if let ChatEvent::TurnStarted { turn_id, .. } = &envelope.event {
+            turn_starts.entry(turn_id.clone()).or_insert(next);
+        }
         if let ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } = &envelope.event
         {
             orders.entry(item.id.clone()).or_insert(next);
+            if let Some(turn_id) = &item.turn_id {
+                turn_starts.entry(turn_id.clone()).or_insert(next);
+            }
         }
-        transcript.apply(&envelope.event);
+        transcript.apply_sequenced(envelope.seq, &envelope.event);
     }
     let mark = format!("{bytes}-{next}-{hash:016x}");
     if cursor.is_some_and(|c| c != mark) {
@@ -613,7 +639,14 @@ pub fn read_snapshot_with_features(
             state: transcript.state.clone(),
         });
         if let Some(turn_id) = transcript.turn_id.clone() {
-            controls.push(ChatEvent::TurnStarted { turn_id });
+            let started_at = transcript
+                .turn_timing
+                .get(&turn_id)
+                .and_then(|t| t.started_at);
+            controls.push(ChatEvent::TurnStarted {
+                turn_id,
+                started_at,
+            });
         }
         for approval in &transcript.approvals {
             controls.push(ChatEvent::ApprovalRequested {
@@ -639,6 +672,12 @@ pub fn read_snapshot_with_features(
         // No `Account`: a phone reads the controls as one list and refuses a reply with
         // an event it does not know. It follows the live events, which skip one alone.
     }
+    let clipped_turns: std::collections::HashSet<_> = transcript
+        .items
+        .iter()
+        .filter(|item| orders[&item.id] >= before)
+        .filter_map(|item| item.turn_id.clone())
+        .collect();
     let mut items: Vec<_> = transcript
         .items
         .into_iter()
@@ -648,13 +687,44 @@ pub fn read_snapshot_with_features(
                 .then_some(SnapshotItem { order, item })
         })
         .collect();
-    let more = item_ids.is_empty() && items.len() > limit;
-    let cut = if item_ids.is_empty() {
+    let mut cut = if item_ids.is_empty() {
         items.len().saturating_sub(limit)
     } else {
         0
     };
+    let mut page_start = items
+        .get(cut)
+        .map_or(0, |row| snapshot_item_boundary(row, &turn_starts));
+    // Pages extend back to a turn boundary. Only the response byte limit below
+    // may produce a partial oversized turn, explicitly marked provisional.
+    if item_ids.is_empty() && cut < items.len() {
+        loop {
+            page_start = page_start.min(snapshot_item_boundary(&items[cut], &turn_starts));
+            let previous_cut = cut;
+            // A turn may contain notices without a turn id, or late rows from
+            // another turn. Every row at/after its boundary belongs on this page.
+            while cut > 0 && items[cut - 1].order >= page_start {
+                cut -= 1;
+            }
+            if cut == previous_cut {
+                break;
+            }
+        }
+    }
     items.drain(..cut);
+    let provisional = items
+        .iter()
+        .filter_map(|row| row.item.turn_id.as_ref())
+        .any(|turn| clipped_turns.contains(turn));
+    let requests = if item_ids.is_empty() {
+        transcript
+            .requests
+            .into_iter()
+            .filter(|record| record.requested_seq >= page_start && record.requested_seq < before)
+            .collect()
+    } else {
+        Vec::new()
+    };
     let dismissed_notices =
         super::notice_dismissals::snapshot_keys(home, transcript.info.as_ref())?;
     let mut snapshot = Snapshot {
@@ -662,12 +732,17 @@ pub fn read_snapshot_with_features(
         chat_id: id.into(),
         cursor: mark,
         next,
-        before: items.first().map_or(0, |i| i.order),
-        more,
+        before: page_start,
+        more: item_ids.is_empty() && cut > 0,
         items,
         controls,
+        requests,
+        turn_timing: transcript.turn_timing,
+        turn_starts,
+        provisional,
         dismissed_notices,
     };
+    retain_snapshot_turns(&mut snapshot);
     // Reduce by whole oldest items only. Oversized controls or one item are explicit errors.
     while serde_json::to_vec(&snapshot)
         .map_err(|e| e.to_string())?
@@ -677,11 +752,69 @@ pub fn read_snapshot_with_features(
         if !item_ids.is_empty() || snapshot.items.len() <= 1 {
             return Err("snapshot response limit exceeded".into());
         }
-        snapshot.items.remove(0);
-        snapshot.before = snapshot.items[0].order;
+        let removed = snapshot.items.remove(0);
+        let boundary = snapshot_item_boundary(&snapshot.items[0], &snapshot.turn_starts);
+        // If a byte cap cuts through a turn interval, item-exact pagination is
+        // required: an older page must still be able to recover every dropped row.
+        let partial_start = removed.order >= boundary;
+        snapshot.before = if partial_start {
+            snapshot.items[0].order
+        } else {
+            boundary
+        };
+        snapshot
+            .requests
+            .retain(|record| record.requested_seq >= snapshot.before);
+        snapshot.provisional |= partial_start
+            || snapshot.items.iter().any(|row| {
+                row.item.turn_id.as_ref().is_some_and(|turn| {
+                    snapshot
+                        .turn_starts
+                        .get(turn)
+                        .is_some_and(|start| *start <= removed.order)
+                })
+            });
         snapshot.more = true;
+        retain_snapshot_turns(&mut snapshot);
     }
     Ok(snapshot)
+}
+
+fn snapshot_item_boundary(
+    row: &SnapshotItem,
+    turn_starts: &std::collections::HashMap<String, u64>,
+) -> u64 {
+    row.item
+        .turn_id
+        .as_ref()
+        .and_then(|turn| turn_starts.get(turn))
+        .copied()
+        .unwrap_or(row.order)
+        .min(row.order)
+}
+
+fn retain_snapshot_turns(snapshot: &mut Snapshot) {
+    let turns: std::collections::HashSet<_> = snapshot
+        .items
+        .iter()
+        .filter_map(|row| row.item.turn_id.as_deref())
+        .chain(
+            snapshot
+                .requests
+                .iter()
+                .filter_map(|request| request.turn_id.as_deref()),
+        )
+        .chain(snapshot.controls.iter().filter_map(|event| match event {
+            ChatEvent::TurnStarted { turn_id, .. } => Some(turn_id.as_str()),
+            _ => None,
+        }))
+        .collect();
+    snapshot
+        .turn_timing
+        .retain(|turn, _| turns.contains(turn.as_str()));
+    snapshot
+        .turn_starts
+        .retain(|turn, _| turns.contains(turn.as_str()));
 }
 
 /// How long the log of chat `id` is, in bytes: a mark that `read_after` reads
@@ -711,7 +844,8 @@ pub fn read_after(home: &Path, id: &str, mark: u64) -> Result<(Vec<Envelope>, u6
             break;
         }
         next += line.len() as u64;
-        if let Ok(envelope) = serde_json::from_slice::<Envelope>(&line) {
+        if let Ok(mut envelope) = serde_json::from_slice::<Envelope>(&line) {
+            envelope.enrich();
             envelopes.push(envelope);
         }
     }
@@ -724,7 +858,10 @@ pub fn read_envelopes(dir: &Path) -> io::Result<Vec<Envelope>> {
     let mut envelopes = Vec::new();
     for line in reader.lines() {
         match serde_json::from_str::<Envelope>(&line?) {
-            Ok(envelope) if envelope.seq == envelopes.len() as u64 + 1 => envelopes.push(envelope),
+            Ok(mut envelope) if envelope.seq == envelopes.len() as u64 + 1 => {
+                envelope.enrich();
+                envelopes.push(envelope);
+            }
             _ => break,
         }
     }
@@ -1000,6 +1137,8 @@ mod tests {
             seq,
             event: ChatEvent::ItemCompleted {
                 item: crate::chat::model::Item {
+                    started_at: None,
+                    ended_at: None,
                     presentation: Default::default(),
                     id: format!("u{seq}"),
                     turn_id: None,
@@ -1106,6 +1245,312 @@ mod snapshot_tests {
             let _ = fs::remove_dir_all(&self.home);
         }
     }
+    #[test]
+    fn snapshot_pages_keep_whole_turns_and_their_request_boundaries() {
+        let mut f = Fixture::new();
+        for turn in ["first", "second"] {
+            f.event(json!({"event":"turn_started","turn_id":turn}));
+            f.event(json!({"event":"approval_requested","approval":{
+                "request_id":turn,"kind":"command","title":"npm test","choices":["accept"]
+            }}));
+            f.event(json!({"event":"approval_resolved","request_id":turn,"decision":"accept"}));
+            for suffix in ["a", "b"] {
+                f.event(json!({"event":"item_completed","item":{
+                    "id":format!("{turn}-{suffix}"),"turn_id":turn,"status":"completed",
+                    "body":{"type":"tool_call","tool":"Read","input":{"file_path":suffix}}
+                }}));
+            }
+            f.event(
+                json!({"event":"turn_completed","turn_id":turn,"outcome":{"outcome":"completed"}}),
+            );
+        }
+        let newest = f.read(None, u64::MAX, 1);
+        assert_eq!(
+            newest.items.len(),
+            2,
+            "one-item preference extends to turn start"
+        );
+        assert_eq!(newest.before, 7);
+        assert!(newest.more);
+        assert!(!newest.provisional);
+        assert_eq!(newest.requests.len(), 1);
+        assert_eq!(newest.requests[0].request_id, "second");
+        assert_eq!(newest.requests[0].requested_seq, 8);
+        assert_eq!(newest.requests[0].resolved_seq, Some(9));
+        assert_eq!(newest.requests[0].turn_id.as_deref(), Some("second"));
+        assert_eq!(
+            newest.items[0]
+                .item
+                .presentation
+                .semantics
+                .as_ref()
+                .unwrap()
+                .kind,
+            super::super::model::ToolKind::Read
+        );
+        let older = f.read(Some(&newest.cursor), newest.before, 1);
+        assert_eq!(older.items.len(), 2);
+        assert_eq!(older.before, 1);
+        assert!(!older.more);
+        assert_eq!(older.requests.len(), 1);
+        assert_eq!(older.requests[0].request_id, "first");
+    }
+
+    #[test]
+    fn snapshot_turn_pages_keep_interleaved_rows_with_and_without_turn_ids() {
+        for interleaved_turn in [None, Some("other")] {
+            let mut f = Fixture::new();
+            f.event(json!({"event":"turn_started","turn_id":"t","started_at":100}));
+            for (id, turn) in [
+                ("a1", Some("t")),
+                ("n", interleaved_turn),
+                ("a2", Some("t")),
+                ("a3", Some("t")),
+            ] {
+                f.event(json!({"event":"item_completed","item":{
+                    "id":id,"turn_id":turn,"status":"completed",
+                    "body":{"type":"agent_message","text":id}
+                }}));
+            }
+            f.event(
+                json!({"event":"turn_completed","turn_id":"t","ended_at":500,
+                "outcome":{"outcome":"completed"}}),
+            );
+            let newest = f.read(None, u64::MAX, 2);
+            assert_eq!(
+                newest
+                    .items
+                    .iter()
+                    .map(|row| row.item.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["a1", "n", "a2", "a3"],
+                "interleaved turn: {interleaved_turn:?}"
+            );
+            assert_eq!(newest.before, 1);
+            assert!(!newest.more);
+            assert_eq!(newest.turn_starts["t"], 1);
+            assert_eq!(newest.turn_timing["t"].started_at, Some(100));
+            assert_eq!(newest.turn_timing["t"].ended_at, Some(500));
+            let older = f.read(Some(&newest.cursor), newest.before, 2);
+            assert!(older.items.is_empty());
+            assert!(!older.more);
+        }
+    }
+
+    #[test]
+    fn snapshot_byte_limited_turn_pages_recover_every_interleaved_row() {
+        for interleaved_turn in [None, Some("other")] {
+            let mut f = Fixture::new();
+            f.row("older", "before the turn");
+            f.event(json!({"event":"turn_started","turn_id":"t"}));
+            for (id, turn) in [
+                ("a1", Some("t")),
+                ("n", interleaved_turn),
+                ("a2", Some("t")),
+                ("a3", Some("t")),
+            ] {
+                f.event(json!({"event":"item_completed","item":{
+                    "id":id,"turn_id":turn,"status":"completed",
+                    "body":{"type":"agent_message","text":"x".repeat(1500)}
+                }}));
+            }
+            f.event(
+                json!({"event":"turn_completed","turn_id":"t","outcome":{"outcome":"completed"}}),
+            );
+            let mut page = read_snapshot(&f.home, &f.id, None, u64::MAX, 2, 4096, &[]).unwrap();
+            assert!(page.provisional);
+            assert!(page.more);
+            let mut seen = std::collections::BTreeSet::new();
+            let mut pages = 0;
+            loop {
+                pages += 1;
+                assert!(pages <= 5, "pagination must make progress");
+                for row in &page.items {
+                    assert!(row.order >= page.before);
+                    assert!(
+                        seen.insert(row.item.id.clone()),
+                        "duplicate {}",
+                        row.item.id
+                    );
+                }
+                if !page.more {
+                    break;
+                }
+                let previous_before = page.before;
+                page = read_snapshot(
+                    &f.home,
+                    &f.id,
+                    Some(&page.cursor),
+                    page.before,
+                    2,
+                    4096,
+                    &[],
+                )
+                .unwrap();
+                assert!(page.before < previous_before);
+            }
+            assert_eq!(
+                seen,
+                ["older", "a1", "n", "a2", "a3"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect()
+            );
+        }
+    }
+
+    #[test]
+    fn streamed_legacy_output_metadata_agrees_in_every_read_path() {
+        let mut f = Fixture::new();
+        for (id, tool, input, completed_input, output) in [
+            (
+                "search",
+                "Grep",
+                json!({"pattern":"needle"}),
+                json!({"pattern":"needle"}),
+                "src/main.rs:1:needle\nsrc/lib.rs:2:needle",
+            ),
+            (
+                "read",
+                "Read",
+                json!({"file_path":"src/main.rs"}),
+                json!({}),
+                "file contents",
+            ),
+        ] {
+            f.event(json!({"event":"item_started","item":{
+                "id":id,"status":"in_progress","body":{"type":"tool_call","tool":tool,"input":input}
+            }}));
+            f.event(json!({"event":"item_completed","item":{
+                "id":id,"status":"completed","body":{"type":"tool_call","tool":tool,"input":completed_input,"output":output}
+            }}));
+        }
+        f.event(json!({"event":"item_started","item":{
+            "id":"web","status":"in_progress","body":{"type":"web_search","query":""}
+        }}));
+        f.event(json!({"event":"item_completed","item":{
+            "id":"web","status":"completed","body":{"type":"web_search","query":"rust serde"}
+        }}));
+        let offline = read_transcript(&f.home, &f.id).unwrap();
+        let snapshot = f.read(None, u64::MAX, 50);
+        let mut response = Vec::new();
+        replay(&f.dir, 0, f.seq, &mut response).unwrap();
+        let mut replayed = super::super::model::Transcript::default();
+        for line in response
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+        {
+            let envelope: Envelope = serde_json::from_slice(line).unwrap();
+            replayed.apply_sequenced(envelope.seq, &envelope.event);
+        }
+        let mut tailed = super::super::model::Transcript::default();
+        for envelope in read_after(&f.home, &f.id, 0).unwrap().0 {
+            tailed.apply_sequenced(envelope.seq, &envelope.event);
+        }
+        let mut envelopes = super::super::model::Transcript::default();
+        for envelope in read_envelopes(&f.dir).unwrap() {
+            envelopes.apply_sequenced(envelope.seq, &envelope.event);
+        }
+        for id in ["search", "read", "web"] {
+            let expected = &replayed.item(id).unwrap().presentation.semantics;
+            assert_eq!(&offline.item(id).unwrap().presentation.semantics, expected);
+            assert_eq!(&tailed.item(id).unwrap().presentation.semantics, expected);
+            assert_eq!(
+                &envelopes.item(id).unwrap().presentation.semantics,
+                expected
+            );
+            assert_eq!(
+                &snapshot
+                    .items
+                    .iter()
+                    .find(|row| row.item.id == id)
+                    .unwrap()
+                    .item
+                    .presentation
+                    .semantics,
+                expected
+            );
+        }
+        assert_eq!(
+            offline
+                .item("web")
+                .unwrap()
+                .presentation
+                .semantics
+                .as_ref()
+                .unwrap()
+                .target
+                .as_deref(),
+            Some("rust serde")
+        );
+        assert_eq!(
+            offline
+                .item("read")
+                .unwrap()
+                .presentation
+                .semantics
+                .as_ref()
+                .unwrap()
+                .target
+                .as_deref(),
+            Some("src/main.rs")
+        );
+        assert_eq!(
+            offline
+                .item("search")
+                .unwrap()
+                .presentation
+                .semantics
+                .as_ref()
+                .unwrap()
+                .match_count,
+            Some(2)
+        );
+        assert_eq!(
+            offline
+                .item("read")
+                .unwrap()
+                .presentation
+                .semantics
+                .as_ref()
+                .unwrap()
+                .excerpt
+                .as_deref(),
+            Some("file contents")
+        );
+    }
+
+    #[test]
+    fn legacy_replay_enriches_without_rewriting_log_or_sequence() {
+        let mut f = Fixture::new();
+        f.event(json!({"event":"item_completed","item":{
+            "id":"read","body":{"type":"tool_call","tool":"Read","input":{"file_path":"main.rs"}}
+        }}));
+        let original = fs::read(f.dir.join(EVENTS)).unwrap();
+        let mut response = Vec::new();
+        replay(&f.dir, 0, 1, &mut response).unwrap();
+        let envelope: Envelope = serde_json::from_slice(&response).unwrap();
+        assert_eq!(envelope.seq, 1);
+        let ChatEvent::ItemCompleted { item } = envelope.event else {
+            panic!("item")
+        };
+        assert_eq!(
+            item.presentation.semantics.unwrap().kind,
+            super::super::model::ToolKind::Read
+        );
+        assert_eq!(fs::read(f.dir.join(EVENTS)).unwrap(), original);
+        let offline = read_transcript(&f.home, &f.id).unwrap();
+        assert_eq!(offline.item_seq("read"), Some(1));
+        assert!(
+            offline
+                .item("read")
+                .unwrap()
+                .presentation
+                .semantics
+                .is_some()
+        );
+    }
+
     #[test]
     fn a_starting_driver_reads_only_the_notices_in_the_tail_of_a_large_log() {
         let mut f = Fixture::new();
@@ -1340,7 +1785,7 @@ pub(super) fn read_notice_transcript(dir: &Path) -> Result<super::model::Transcr
             continue;
         }
         let envelope: Envelope = serde_json::from_slice(&line).map_err(|e| e.to_string())?;
-        transcript.apply(&envelope.event);
+        transcript.apply_sequenced(envelope.seq, &envelope.event);
     }
     Ok(transcript)
 }
@@ -1357,6 +1802,8 @@ mod rate_snapshot_tests {
         }))
         .unwrap();
         assert!(snapshot.dismissed_notices.is_empty());
+        assert!(snapshot.turn_timing.is_empty());
+        assert!(snapshot.turn_starts.is_empty());
         let mut transcript = super::super::model::Transcript::default();
         for event in snapshot.controls {
             transcript.apply(&event);

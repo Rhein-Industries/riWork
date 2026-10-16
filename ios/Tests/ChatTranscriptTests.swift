@@ -551,3 +551,286 @@ extension LatestFirstFeedTests {
         XCTAssertTrue(hydrated.hasItem("tool-7"))
     }
 }
+
+
+final class ChatRequestHistoryTests: XCTestCase {
+    func testResolvedRequestsKeepOrderTurnAndActualSequence() {
+        var transcript = ChatTranscript()
+        transcript.apply(.turnStarted(turnID: "turn"), seq: 40)
+        transcript.apply(.approvalRequested(ChatApproval(requestID: "a", itemID: "command", kind: .command, title: "npm test", choices: [.accept])), seq: 42)
+        transcript.apply(.approvalResolved(requestID: "a", decision: .accept), seq: 43)
+        transcript.apply(.questionRequested(ChatQuestion(requestID: "q", questions: [ChatQuestionPrompt(question: "Which target?"), ChatQuestionPrompt(question: "Which mode?")])), seq: 47)
+        transcript.apply(.questionResolved(requestID: "q", answerSummary: "iOS; Debug"), seq: 49)
+        XCTAssertTrue(transcript.approvals.isEmpty); XCTAssertTrue(transcript.questions.isEmpty)
+        XCTAssertEqual(transcript.requests, [
+            ChatRequestRecord(requestID: "a", kind: .approval, title: "npm test", turnID: "turn", itemID: "command", requestedSeq: 42, resolvedSeq: 43, resolution: "accept"),
+            ChatRequestRecord(requestID: "q", kind: .question, title: "Which target?; Which mode?", turnID: "turn", requestedSeq: 47, resolvedSeq: 49, resolution: "answered", answerSummary: "iOS; Debug")
+        ])
+    }
+    func testSnapshotRequestsSurviveInstallAndLiveResolution() throws {
+        let raw = #"{"v":1,"chat_id":"chat","cursor":"frozen","next":50,"before":1,"more":false,"items":[],"controls":[{"event":"turn_started","turn_id":"turn"},{"event":"approval_requested","approval":{"request_id":"pending","kind":"command","title":"npm test","choices":["accept"]}}],"requests":[{"request_id":"old","kind":"question","title":"Target?","turn_id":"previous","requested_seq":3,"resolved_seq":4,"resolution":"answered","answer_summary":"iOS"},{"request_id":"pending","kind":"approval","title":"npm test","turn_id":"turn","requested_seq":45}]}"#
+        let snapshot = try JSONDecoder().decode(ChatSnapshotReply.self, from: Data(raw.utf8))
+        var feed = ChatFeed(); feed.install(snapshot)
+        XCTAssertEqual(feed.transcript.requests.map(\.requestedSeq), [3, 45])
+        feed.accept(ChatEventsReply(chatID: "chat", events: [ChatEnvelope(seq: 51, event: .approvalResolved(requestID: "pending", decision: .accept))], next: 51, more: false), since: 50)
+        XCTAssertEqual(feed.transcript.requests.last?.resolvedSeq, 51)
+        XCTAssertEqual(feed.transcript.requests.last?.resolution, "accept")
+        XCTAssertEqual(feed.transcript.requests.first?.answerSummary, "iOS")
+        XCTAssertTrue(feed.transcript.approvals.isEmpty)
+    }
+    func testTurnEndCancelsPendingHistoryWithoutDeletingIt() {
+        var transcript = ChatTranscript()
+        transcript.apply(.turnStarted(turnID: "t"))
+        transcript.apply(.questionRequested(ChatQuestion(requestID: "q", questions: [])))
+        transcript.apply(.turnCompleted(turnID: "t", outcome: .interrupted))
+        XCTAssertEqual(transcript.requests.first?.resolution, "cancel")
+        XCTAssertEqual(transcript.requests.first?.resolvedSeq, 3)
+        XCTAssertTrue(transcript.questions.isEmpty)
+    }
+    func testCompletionPreservesStartTimeAndHierarchy() {
+        var transcript = ChatTranscript()
+        transcript.apply(.itemStarted(ChatItem(id: "read", body: .compaction, presentation: ChatPresentation(semantics: ChatSemantics(kind: .read), parentID: "worker"), startedAt: 100)))
+        transcript.apply(.itemCompleted(ChatItem(id: "read", status: .completed, body: .compaction, endedAt: 200)))
+        XCTAssertEqual(transcript.items.first?.startedAt, 100); XCTAssertEqual(transcript.items.first?.endedAt, 200)
+        XCTAssertEqual(transcript.items.first?.presentation.parentID, "worker")
+        XCTAssertEqual(transcript.items.first?.presentation.semantics?.kind, .read)
+    }
+}
+
+
+extension ChatRequestHistoryTests {
+    func testElidedRequestsAndResolutionsRetainAndCloseHistoryWithoutInventingDecisions() {
+        for question in [false, true] {
+            var transcript = ChatTranscript()
+            transcript.apply(.turnStarted(turnID: "turn"), seq: 10)
+            transcript.apply(.elided(ChatElidedEvent(event: "control_elided", of: question ? "question_requested" : "approval_requested", requestID: "r")), seq: 12)
+            XCTAssertEqual(transcript.requests, [ChatRequestRecord(requestID: "r", kind: question ? .question : .approval,
+                                                                   turnID: "turn", requestedSeq: 12)])
+            XCTAssertEqual(transcript.elidedRequests.count, 1)
+            transcript.apply(.elided(ChatElidedEvent(event: "control_elided", of: question ? "question_resolved" : "approval_resolved", requestID: "r")), seq: 14)
+            transcript.apply(.turnCompleted(turnID: "turn", outcome: .completed), seq: 15)
+            XCTAssertTrue(transcript.elidedRequests.isEmpty)
+            XCTAssertEqual(transcript.requests.first?.resolvedSeq, 14)
+            XCTAssertEqual(transcript.requests.first?.resolution, question ? "answered" : nil)
+        }
+        var transcript = ChatTranscript()
+        transcript.apply(.approvalRequested(ChatApproval(requestID: "a", kind: .command, title: "npm test", choices: [.accept])), seq: 20)
+        transcript.apply(.elided(ChatElidedEvent(event: "approval_requested", requestID: "a")), seq: 20)
+        transcript.apply(.elided(ChatElidedEvent(event: "approval_resolved", requestID: "a")), seq: 21)
+        XCTAssertEqual(transcript.requests.first?.title, "npm test")
+        XCTAssertEqual(transcript.requests.first?.requestedSeq, 20)
+        XCTAssertEqual(transcript.requests.first?.resolvedSeq, 21)
+        XCTAssertNil(transcript.requests.first?.resolution)
+    }
+
+    func testElidedResolutionsAreDeferredUntilTheirHistoricalRequestArrives() {
+        for question in [false, true] {
+            var feed = ChatFeed(); feed.install(requestPage([], order: 90))
+            feed.accept(ChatEventsReply(chatID: "c", events: [ChatEnvelope(seq: 101, event: .elided(ChatElidedEvent(event: "control_elided", of: question ? "question_resolved" : "approval_resolved", requestID: "old")))], next: 101, more: false), since: 100)
+            let pending = ChatRequestRecord(requestID: "old", kind: question ? .question : .approval, title: "Request on Mac", turnID: "old-turn", requestedSeq: 30)
+            feed.prepend(requestPage([pending], order: 20, more: false), requestedBefore: 90)
+            XCTAssertEqual(feed.transcript.requests.first?.resolvedSeq, 101)
+            XCTAssertEqual(feed.transcript.requests.first?.resolution, question ? "answered" : nil)
+            XCTAssertEqual(feed.transcript.requests.first?.requestedSeq, 30)
+            XCTAssertEqual(feed.transcript.requests.first?.turnID, "old-turn")
+        }
+    }
+
+    private func requestPage(_ records: [ChatRequestRecord], order: UInt64, more: Bool = true, controls: [ChatEvent] = []) -> ChatSnapshotReply {
+        ChatSnapshotReply(chatID: "c", cursor: "requests", next: 100, before: order, more: more,
+                          items: [ChatSnapshotRow(order: order, item: ChatItem(id: "item-\(order)", status: .completed, body: .agentMessage("message")))],
+                          controls: controls, requests: records)
+    }
+    func testOlderPagesMergeRequestsInOrderAndKeepLiveResolutions() {
+        let current = ChatRequestRecord(requestID: "current", kind: .approval, title: "npm test", turnID: "current-turn", requestedSeq: 95)
+        var feed = ChatFeed(); feed.install(requestPage([current], order: 90))
+        feed.accept(ChatEventsReply(chatID: "c", events: [
+            ChatEnvelope(seq: 101, event: .approvalResolved(requestID: "current", decision: .accept)),
+            ChatEnvelope(seq: 102, event: .questionResolved(requestID: "old-pending", answerSummary: "iOS"))
+        ], next: 102, more: false), since: 100)
+        let older = ChatRequestRecord(requestID: "old", kind: .approval, title: "cat main.rs", turnID: "old-turn", requestedSeq: 10, resolvedSeq: 12, resolution: "accept")
+        let pending = ChatRequestRecord(requestID: "old-pending", kind: .question, title: "Target?", turnID: "old-turn", requestedSeq: 30)
+        feed.prepend(requestPage([older, pending, current], order: 1, more: false, controls: [.state(.waiting)]), requestedBefore: 90)
+        XCTAssertEqual(feed.transcript.requests.map(\.requestID), ["old", "old-pending", "current"])
+        XCTAssertEqual(feed.transcript.requests.map(\.resolvedSeq), [12, 102, 101])
+        XCTAssertEqual(feed.transcript.requests[1].answerSummary, "iOS")
+        XCTAssertEqual(feed.transcript.requests.last?.resolution, "accept")
+        XCTAssertEqual(feed.next, 102)
+        XCTAssertEqual(feed.transcript.state, .starting, "historical controls never replace live controls")
+    }
+    func testHydratedOldRequestStaysHiddenAndKeepsLiveResolutionWhenPrepended() {
+        var feed = ChatFeed(); feed.install(requestPage([], order: 90))
+        let pending = ChatRequestRecord(requestID: "old", kind: .approval, title: "npm test", turnID: "old-turn", requestedSeq: 30)
+        let old = requestPage([pending], order: 20, more: false)
+        feed.hydrate(old)
+        XCTAssertTrue(feed.transcript.requests.isEmpty)
+        feed.accept(ChatEventsReply(chatID: "c", events: [ChatEnvelope(seq: 101, event: .approvalResolved(requestID: "old", decision: .decline))], next: 101, more: false), since: 100)
+        feed.prepend(old, requestedBefore: 90)
+        XCTAssertEqual(feed.transcript.requests.first?.resolvedSeq, 101)
+        XCTAssertEqual(feed.transcript.requests.first?.resolution, "decline")
+    }
+    func testExceptionalReplayRebuildsOldRequestsAndProtectsCurrentRecords() {
+        let current = ChatRequestRecord(requestID: "current", kind: .approval, title: "npm test", turnID: "current-turn", requestedSeq: 95)
+        var feed = ChatFeed(); feed.install(requestPage([current], order: 90, controls: [.approvalRequested(ChatApproval(requestID: "current", kind: .command, title: "npm test", choices: [.accept]))]))
+        feed.beginDegradedReplay()
+        feed.accept(ChatEventsReply(chatID: "c", events: [
+            ChatEnvelope(seq: 1, event: .turnStarted(turnID: "old-turn")),
+            ChatEnvelope(seq: 2, event: .approvalRequested(ChatApproval(requestID: "old", kind: .command, title: "ls", choices: [.accept]))),
+            ChatEnvelope(seq: 3, event: .approvalResolved(requestID: "old", decision: .accept)),
+            ChatEnvelope(seq: 4, event: .approvalResolved(requestID: "current", decision: .decline))
+        ], next: 4, more: true), since: 0)
+        XCTAssertEqual(feed.transcript.requests.map(\.requestID), ["old", "current"])
+        XCTAssertEqual(feed.transcript.requests.first?.resolvedSeq, 3)
+        XCTAssertEqual(feed.transcript.requests.first?.resolution, "accept")
+        XCTAssertEqual(feed.transcript.requests.first?.turnID, "old-turn")
+        XCTAssertNil(feed.transcript.requests.last?.resolvedSeq)
+        XCTAssertEqual(feed.transcript.approvals.map(\.requestID), ["current"])
+    }
+    func testQuestionItemAssociationDecodesAndUsesTheItemsTurn() throws {
+        let raw = #"{"request_id":"q","item_id":"nested-tool","questions":[{"question":"Which target?"}]}"#
+        let question = try JSONDecoder().decode(ChatQuestion.self, from: Data(raw.utf8))
+        XCTAssertEqual(question.itemID, "nested-tool")
+        XCTAssertEqual(try JSONDecoder().decode(ChatQuestion.self, from: JSONEncoder().encode(question)), question)
+        var transcript = ChatTranscript()
+        transcript.apply(.turnStarted(turnID: "current"), seq: 1)
+        transcript.apply(.itemStarted(ChatItem(id: "nested-tool", turnID: "tool-turn", body: .toolCall(server: nil, tool: "AskUserQuestion", input: .null, output: nil))), seq: 2)
+        transcript.apply(.questionRequested(question), seq: 3)
+        XCTAssertEqual(transcript.requests.first?.itemID, "nested-tool")
+        XCTAssertEqual(transcript.requests.first?.turnID, "tool-turn")
+    }
+}
+
+
+extension ChatRequestHistoryTests {
+    func testSnapshotProvisionalFlagDefaultsSafelyAndEmptyHistoryRemainsAuthoritative() throws {
+        let prefix = #"{"v":1,"chat_id":"c","cursor":"requests","next":100,"before":90,"more":true,"items":[],"controls":[{"event":"approval_requested","approval":{"request_id":"older","kind":"command","title":"npm test"}}],"requests":[]"#
+        for (suffix, expected) in [("}", false), (#", "provisional":true}"#, true), (#", "provisional":"elided"}"#, false)] {
+            let page = try JSONDecoder().decode(ChatSnapshotReply.self, from: Data((prefix + suffix).utf8))
+            XCTAssertEqual(page.provisional, expected)
+            var feed = ChatFeed(); feed.install(page)
+            XCTAssertEqual(feed.transcript.approvals.map(\.requestID), ["older"])
+            XCTAssertTrue(feed.transcript.requests.isEmpty, "a current page never invents an older pending boundary from its dock controls")
+        }
+    }
+}
+
+
+extension ChatRequestHistoryTests {
+    func testRepeatedLiveRequestRecoversItsOriginalBoundaryFromAnOlderPage() {
+        var feed = ChatFeed(); feed.install(requestPage([], order: 90))
+        feed.accept(ChatEventsReply(chatID: "c", events: [ChatEnvelope(seq: 101, event: .approvalRequested(ChatApproval(requestID: "old", kind: .command, title: "npm test --verbose", choices: [.accept])))], next: 101, more: false), since: 100)
+        let original = ChatRequestRecord(requestID: "old", kind: .approval, title: "npm test", turnID: "old-turn", requestedSeq: 30)
+        feed.prepend(requestPage([original], order: 20, more: false), requestedBefore: 90)
+        XCTAssertEqual(feed.transcript.requests.count, 1)
+        XCTAssertEqual(feed.transcript.requests.first?.requestedSeq, 30)
+        XCTAssertEqual(feed.transcript.requests.first?.turnID, "old-turn")
+        XCTAssertEqual(feed.transcript.requests.first?.title, "npm test --verbose")
+        XCTAssertEqual(feed.transcript.approvals.map(\.requestID), ["old"])
+    }
+}
+
+
+final class ChatTurnTimingTests: XCTestCase {
+    func testProjectionUsesLiveAndSnapshotTurnClocksAndHonorsOverrides() {
+        let item = ChatItem(id: "cmd", turnID: "t", status: .completed,
+                            body: .command(command: "swift test", cwd: nil, output: "ok", exitCode: 0),
+                            startedAt: 2_000, endedAt: 3_000)
+        var transcript = ChatTranscript()
+        transcript.apply(.turnStarted(turnID: "t", startedAt: 1_000))
+        transcript.apply(.itemCompleted(item))
+        let running = ChatProjection.project(transcript: transcript, options: .init(nowMS: 9_000))
+        XCTAssertEqual(running.first?.durationMS, 8_000)
+        XCTAssertEqual(running.first?.title, "Working 8s")
+        transcript.apply(.turnCompleted(turnID: "t", outcome: .completed, endedAt: 73_000))
+        XCTAssertEqual(ChatProjection.project(transcript: transcript).first?.title, "Worked 1m 12s · 1 command")
+        let override = ChatProjectionOptions(turnTiming: ["t": .init(startedAt: 10_000, endedAt: 15_000)])
+        XCTAssertEqual(ChatProjection.project(transcript: transcript, options: override).first?.durationMS, 5_000)
+
+        var feed = ChatFeed()
+        feed.install(ChatSnapshotReply(chatID: "c", cursor: "wall-clock", next: 10, before: 1, more: false,
+                                       items: [.init(order: 2, item: item)], controls: [],
+                                       turnTiming: ["t": .init(startedAt: 1_000, endedAt: 73_000)], turnStarts: ["t": 1]))
+        XCTAssertEqual(ChatProjection.project(transcript: feed.transcript).first?.durationMS, 72_000)
+    }
+
+    func testPartialTurnAfterAnInterloperRemainsProvisionalWhenPaging() {
+        let current = ChatItem(id: "current", turnID: "t", status: .completed, body: .reasoning("newer"))
+        let orphan = ChatItem(id: "orphan", status: .completed, body: .reasoning("interleaved legacy work"))
+        let earlier = ChatItem(id: "earlier", turnID: "t", status: .completed, body: .reasoning("older"))
+        var feed = ChatFeed()
+        feed.install(ChatSnapshotReply(chatID: "c", cursor: "partial", next: 100, before: 90, more: true,
+                                       items: [.init(order: 90, item: current)], controls: [], provisional: true, turnStarts: ["t": 10]))
+        let page = ChatSnapshotReply(chatID: "c", cursor: "partial", next: 100, before: 40, more: true,
+                                     items: [.init(order: 40, item: orphan), .init(order: 50, item: earlier)], controls: [],
+                                     provisional: true, turnStarts: ["t": 10])
+        feed.prepend(page, requestedBefore: 90)
+        XCTAssertTrue(feed.provisional, "a no-turn first row cannot conceal a clipped represented turn")
+        XCTAssertEqual(feed.transcript.items.map(\.id), ["orphan", "earlier", "current"])
+        let wholePrefix = ChatSnapshotReply(chatID: "c", cursor: "partial", next: 100, before: 10, more: true,
+                                            items: [.init(order: 20, item: .init(id: "first", turnID: "t", status: .completed, body: .reasoning("start")))],
+                                            controls: [], provisional: true, turnStarts: ["t": 10])
+        feed.prepend(wholePrefix, requestedBefore: 40)
+        XCTAssertFalse(feed.provisional, "the partial newest edge merges into existing rows after recovering the turn start")
+    }
+
+    func testTurnEventsDecodeTimingAndOldOrMalformedFieldsRemainOptional() throws {
+        for (raw, expected) in [
+            (#"{"event":"turn_started","turn_id":"t","started_at":100}"#, ChatEvent.turnStarted(turnID: "t", startedAt: 100)),
+            (#"{"event":"turn_completed","turn_id":"t","outcome":{"outcome":"completed"},"ended_at":72100}"#, .turnCompleted(turnID: "t", outcome: .completed, endedAt: 72_100)),
+            (#"{"event":"turn_started","turn_id":"t"}"#, .turnStarted(turnID: "t")),
+            (#"{"event":"turn_completed","turn_id":"t","outcome":{"outcome":"completed"},"ended_at":"elided"}"#, .turnCompleted(turnID: "t", outcome: .completed))
+        ] {
+            let decoded = try JSONDecoder().decode(ChatEvent.self, from: Data(raw.utf8))
+            XCTAssertEqual(decoded, expected)
+            XCTAssertEqual(try JSONDecoder().decode(ChatEvent.self, from: JSONEncoder().encode(decoded)), expected)
+        }
+        var transcript = ChatTranscript()
+        transcript.apply(.turnStarted(turnID: "legacy"))
+        transcript.apply(.turnCompleted(turnID: "legacy", outcome: .completed))
+        transcript.apply(.turnStarted(turnID: "t", startedAt: 100))
+        transcript.apply(.turnStarted(turnID: "t"))
+        transcript.apply(.turnCompleted(turnID: "t", outcome: .completed, endedAt: 72_100))
+        XCTAssertEqual(transcript.turnTiming, ["legacy": ChatTurnTiming(), "t": ChatTurnTiming(startedAt: 100, endedAt: 72_100)])
+    }
+
+    func testSnapshotsDecodeEachTimingIndependentlyAndDefaultOldHosts() throws {
+        let base = #"{"v":1,"chat_id":"c","cursor":"timing","next":100,"before":90,"more":true,"items":[],"controls":[]"#
+        let older = try JSONDecoder().decode(ChatSnapshotReply.self, from: Data((base + "}").utf8))
+        XCTAssertTrue(older.turnTiming.isEmpty); XCTAssertTrue(older.turnStarts.isEmpty)
+        let raw = base + #", "turn_timing":{"t":{"started_at":100,"ended_at":72100},"partial":{"started_at":-1,"ended_at":400},"bad":false},"turn_starts":{"t":5,"bad":"elided"}}"#
+        let snapshot = try JSONDecoder().decode(ChatSnapshotReply.self, from: Data(raw.utf8))
+        XCTAssertEqual(snapshot.turnTiming, ["t": ChatTurnTiming(startedAt: 100, endedAt: 72_100), "partial": ChatTurnTiming(endedAt: 400)])
+        XCTAssertEqual(snapshot.turnStarts, ["t": 5])
+        XCTAssertEqual(try JSONDecoder().decode(ChatSnapshotReply.self, from: JSONEncoder().encode(snapshot)), snapshot)
+        var feed = ChatFeed(); feed.install(snapshot)
+        XCTAssertEqual(feed.transcript.turnTiming, snapshot.turnTiming)
+    }
+
+    func testHistoricalTimingMergesWithoutOverwritingLiveCompletion() {
+        var feed = ChatFeed()
+        feed.install(page(before: 90, more: true, timing: ["current": ChatTurnTiming(startedAt: 1_000)], controls: [.turnStarted(turnID: "current", startedAt: 1_000)]))
+        feed.accept(ChatEventsReply(chatID: "c", events: [ChatEnvelope(seq: 101, event: .turnCompleted(turnID: "current", outcome: .completed, endedAt: 2_000))], next: 101, more: false), since: 100)
+        let older = page(before: 20, more: false, timing: ["older": ChatTurnTiming(startedAt: 100, endedAt: 500), "current": ChatTurnTiming(startedAt: 1_000)])
+        feed.hydrate(older)
+        feed.prepend(older, requestedBefore: 90)
+        XCTAssertEqual(feed.transcript.turnTiming, ["older": ChatTurnTiming(startedAt: 100, endedAt: 500), "current": ChatTurnTiming(startedAt: 1_000, endedAt: 2_000)])
+        XCTAssertNil(feed.transcript.turnID)
+    }
+
+    func testDegradedReplayReconstructsHistoryAndPreservesCheckpointTiming() {
+        var feed = ChatFeed()
+        feed.install(page(before: 90, more: true, timing: ["current": ChatTurnTiming(startedAt: 1_000, endedAt: 2_000)]))
+        feed.beginDegradedReplay()
+        feed.accept(ChatEventsReply(chatID: "c", events: [
+            ChatEnvelope(seq: 1, event: .turnStarted(turnID: "older", startedAt: 100)),
+            ChatEnvelope(seq: 2, event: .turnCompleted(turnID: "older", outcome: .completed, endedAt: 500)),
+            ChatEnvelope(seq: 3, event: .turnStarted(turnID: "current", startedAt: 900)),
+            ChatEnvelope(seq: 4, event: .turnCompleted(turnID: "current", outcome: .completed, endedAt: 1_900))
+        ], next: 4, more: true), since: 0)
+        XCTAssertEqual(feed.transcript.turnTiming, ["older": ChatTurnTiming(startedAt: 100, endedAt: 500), "current": ChatTurnTiming(startedAt: 1_000, endedAt: 2_000)])
+    }
+
+    private func page(before: UInt64, more: Bool, timing: [String: ChatTurnTiming], controls: [ChatEvent] = []) -> ChatSnapshotReply {
+        ChatSnapshotReply(chatID: "c", cursor: "timing", next: 100, before: before, more: more, items: [], controls: controls, turnTiming: timing)
+    }
+}

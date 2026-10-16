@@ -415,6 +415,7 @@ fn a_question_is_asked_and_the_answers_go_back_keyed_by_question() {
     assert_eq!(question.request_id, "ask-1");
     assert_eq!(question.questions.len(), 2);
     assert_eq!(question.questions[0].header.as_deref(), Some("Library"));
+    assert_eq!(question.item_id.as_deref(), Some("toolu_q"));
     assert_eq!(question.questions[0].question, "Which date library?");
     assert_eq!(
         question.questions[0].options,
@@ -454,7 +455,8 @@ fn a_question_is_asked_and_the_answers_go_back_keyed_by_question() {
     rig.until_idle();
     assert!(rig.transcript().questions.is_empty());
     assert!(rig.seen.contains(&ChatEvent::QuestionResolved {
-        request_id: "ask-1".into()
+        request_id: "ask-1".into(),
+        answer_summary: Some("chrono; serde, clock".into()),
     }));
     assert!(!rig.fake.saw("mismatch"));
 }
@@ -2539,7 +2541,16 @@ fn messages_queued_for_a_restart_the_user_stops_keep_their_text() {
 
 #[test]
 fn a_prompt_the_interrupt_refused_is_not_answered_again() {
-    let mut rig = Rig::new(&["interrupt_late_approval"]);
+    // This fixture deliberately replies after 100 ms. It tests prompt identity,
+    // not watchdog escalation: leave room for a loaded test runner to read it.
+    let mut rig = Rig::with(
+        &["interrupt_late_approval"],
+        Tuning {
+            interrupt_grace: Duration::from_secs(5),
+            ..fast()
+        },
+        |_| {},
+    );
     rig.send("go");
     rig.until(is_approval);
     rig.command(ChatCommand::Interrupt);
@@ -2700,6 +2711,83 @@ fn subagent_synthetic_and_meta_user_frames_are_not_the_users_messages() {
         item(&fold(&seen), "toolu_sub").status,
         ItemStatus::Completed
     );
+    assert_eq!(
+        item(&fold(&seen), "toolu_sub")
+            .presentation
+            .parent_id
+            .as_deref(),
+        Some("toolu_task")
+    );
+}
+
+#[test]
+fn tool_conversion_captures_semantics_and_child_parentage_before_emission() {
+    use crate::chat::model::ToolKind;
+    let (sender, events) = mpsc::channel();
+    let mut core = Core::new(&bare_config(), sender, "session".into());
+    for (id, name, input, kind) in [
+        (
+            "read",
+            "Read",
+            json!({"file_path":"src/main.rs","offset":5,"limit":3}),
+            ToolKind::Read,
+        ),
+        (
+            "grep",
+            "Grep",
+            json!({"pattern":"needle","path":"src"}),
+            ToolKind::Search,
+        ),
+        ("glob", "Glob", json!({"pattern":"*.rs"}), ToolKind::List),
+        ("list", "LS", json!({"path":"src"}), ToolKind::List),
+        (
+            "fetch",
+            "WebFetch",
+            json!({"url":"https://example.test/page"}),
+            ToolKind::WebFetch,
+        ),
+        (
+            "search",
+            "WebSearch",
+            json!({"query":"tool UI"}),
+            ToolKind::WebSearch,
+        ),
+        (
+            "agent",
+            "Task",
+            json!({"subagent_type":"Explore","description":"Inspect contracts"}),
+            ToolKind::Subagent,
+        ),
+        (
+            "mcp",
+            "mcp__repo__inspect",
+            json!({"path":"src"}),
+            ToolKind::Mcp,
+        ),
+    ] {
+        core.on_assistant(&json!({"message":{"id":format!("message-{id}"),"content":[{"type":"tool_use","id":id,"name":name,"input":input}]},"parent_tool_use_id":"parent-task"}));
+        let captured = core.tools.get(id).unwrap();
+        assert_eq!(captured.presentation.semantics.as_ref().unwrap().kind, kind);
+        assert_eq!(
+            captured.presentation.parent_id.as_deref(),
+            Some("parent-task")
+        );
+    }
+    core.on_user(&json!({"message":{"content":[{"type":"tool_result","tool_use_id":"grep","content":"src/a.rs:2:needle\nsrc/b.rs:3:needle"}]},"parent_tool_use_id":"parent-task"}));
+    let transcript = fold(&events.try_iter().collect::<Vec<_>>());
+    let grep = item(&transcript, "grep");
+    assert_eq!(
+        grep.presentation.semantics.as_ref().unwrap().match_count,
+        Some(2)
+    );
+    assert_eq!(grep.presentation.parent_id.as_deref(), Some("parent-task"));
+    let read = item(&transcript, "read")
+        .presentation
+        .semantics
+        .as_ref()
+        .unwrap();
+    assert_eq!(read.range.as_ref().unwrap().start, 5);
+    assert_eq!(read.range.as_ref().unwrap().end, Some(7));
 }
 
 // What the CLI took, refused and reports of itself reaches the host through reporters.

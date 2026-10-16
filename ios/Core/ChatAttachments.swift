@@ -101,6 +101,28 @@ public struct ChatAttachmentImages: Sendable {
     public func thumbnailURL(_ id: String) -> URL { directory.appendingPathComponent(Self.safe(id) + "-thumb.jpg") }
     public func previewURL(_ id: String) -> URL { directory.appendingPathComponent(Self.safe(id) + ".jpg") }
 
+    /// An alias for an image already uploaded from this phone. Legacy sent messages contain only the host's path, not its upload id.
+    /// Keep the existing preview bytes addressable by that path after the draft's card has gone.
+    public func rememberRemotePath(_ path: String, for id: String) {
+        let source = previewURL(id), alias = remoteAliasURL(path)
+        guard FileManager.default.fileExists(atPath: source.path) else { return }
+        do {
+            if FileManager.default.fileExists(atPath: alias.path) { try FileManager.default.removeItem(at: alias) }
+            try FileManager.default.copyItem(at: source, to: alias)
+        } catch { }
+    }
+
+    public func remotePreviewURL(_ path: String) -> URL? {
+        let url = remoteAliasURL(path)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    private func remoteAliasURL(_ path: String) -> URL {
+        // A stable filename, with no host path components or dependencies on Swift's randomized Hasher.
+        let hash = path.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { ($0 ^ UInt64($1)) &* 1_099_511_628_211 }
+        return directory.appendingPathComponent("remote-" + String(hash, radix: 16) + ".jpg")
+    }
+
     /// Writes both pictures of `data`; false when it is not a picture ImageIO reads (the card then shows an icon).
     @discardableResult
     public func save(_ id: String, data: Data) -> Bool {

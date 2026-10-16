@@ -1,0 +1,604 @@
+{
+  "spec_version": 2,
+  "cases": [
+    {
+      "name": "Normal toggles persist until bulk or mode reset; bulk only opens activities",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "expected_rows": [
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Worked · 2 reads",
+          "children": [
+            {
+              "id": "g:t:a",
+              "kind": "group",
+              "title": "Read 2 files",
+              "children": [
+                {
+                  "id": "a",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "b",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                }
+              ],
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ],
+      "anchors": {
+        "b": "activity:t"
+      },
+      "actions": [
+        {
+          "action": "toggle",
+          "id": "activity:t",
+          "expected_open_ids": [
+            "activity:t"
+          ],
+          "anchors": {
+            "b": "g:t:a"
+          }
+        },
+        {
+          "action": "toggle",
+          "id": "g:t:a",
+          "expected_open_ids": [
+            "activity:t",
+            "g:t:a"
+          ],
+          "anchors": {
+            "b": "b"
+          }
+        },
+        {
+          "action": "toggle",
+          "id": "activity:t",
+          "expected_open_ids": [
+            "g:t:a"
+          ],
+          "anchors": {
+            "b": "activity:t"
+          }
+        },
+        {
+          "action": "toggle",
+          "id": "activity:t",
+          "expected_open_ids": [
+            "activity:t",
+            "g:t:a"
+          ]
+        },
+        {
+          "action": "bulk",
+          "open": true,
+          "expected_open_ids": [
+            "activity:t"
+          ],
+          "anchors": {
+            "b": "g:t:a"
+          }
+        },
+        {
+          "action": "mode",
+          "mode": "verbose",
+          "expected_open_ids": [],
+          "anchors": {
+            "b": "g:t:a"
+          }
+        },
+        {
+          "action": "bulk",
+          "open": true,
+          "expected_open_ids": [
+            "g:t:a",
+            "a",
+            "b"
+          ],
+          "anchors": {
+            "b": "b"
+          }
+        },
+        {
+          "action": "bulk",
+          "open": false,
+          "expected_open_ids": []
+        },
+        {
+          "action": "toggle",
+          "id": "g:t:a",
+          "expected_open_ids": [
+            "g:t:a"
+          ]
+        },
+        {
+          "action": "mode",
+          "mode": "normal",
+          "expected_open_ids": []
+        }
+      ]
+    },
+    {
+      "name": "Page extends back to turn start",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "c",
+          "turn_id": "t2",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:a",
+          "kind": "group",
+          "title": "Read 2 files",
+          "children": [
+            {
+              "id": "a",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "b",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ],
+      "page": {
+        "start": 1,
+        "end": 2,
+        "expected": {
+          "start": 0,
+          "end": 2,
+          "provisional": false
+        }
+      }
+    },
+    {
+      "name": "Hard cap marks partial oversized turn provisional",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose",
+        "provisional": true
+      },
+      "expected_rows": [
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ],
+      "page": {
+        "start": 1,
+        "end": 2,
+        "max_items": 1,
+        "expected": {
+          "start": 1,
+          "end": 2,
+          "provisional": true
+        }
+      }
+    },
+    {
+      "name": "Partial page anchor before older member backfill",
+      "items": [
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "c",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose",
+        "provisional": true
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:b",
+          "kind": "group",
+          "title": "Read 2 files",
+          "children": [
+            {
+              "id": "b",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "c",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "provisional": true,
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "elided": false
+        }
+      ],
+      "anchors": {
+        "c": "g:t:b"
+      },
+      "actions": [
+        {
+          "action": "toggle",
+          "id": "g:t:b",
+          "expected_open_ids": [
+            "g:t:b"
+          ]
+        },
+        {
+          "action": "backfill",
+          "items": [
+            {
+              "id": "a",
+              "turn_id": "t",
+              "status": "completed",
+              "body": {
+                "type": "tool_call",
+                "tool": "fixture"
+              },
+              "presentation": {
+                "semantics": {
+                  "kind": "read"
+                }
+              }
+            },
+            {
+              "id": "b",
+              "turn_id": "t",
+              "status": "completed",
+              "body": {
+                "type": "tool_call",
+                "tool": "fixture"
+              },
+              "presentation": {
+                "semantics": {
+                  "kind": "read"
+                }
+              }
+            },
+            {
+              "id": "c",
+              "turn_id": "t",
+              "status": "completed",
+              "body": {
+                "type": "tool_call",
+                "tool": "fixture"
+              },
+              "presentation": {
+                "semantics": {
+                  "kind": "read"
+                }
+              }
+            }
+          ],
+          "expected_open_ids": [
+            "g:t:a"
+          ],
+          "anchors": {
+            "c": "c"
+          },
+          "expected_rows": [
+            {
+              "id": "g:t:a",
+              "kind": "group",
+              "title": "Read 3 files",
+              "children": [
+                {
+                  "id": "a",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "b",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "c",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                }
+              ],
+              "open": true,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Backfilled group resolves same item anchor to new stable ID",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "c",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:a",
+          "kind": "group",
+          "title": "Read 3 files",
+          "children": [
+            {
+              "id": "a",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "b",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "c",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ],
+      "anchors": {
+        "c": "g:t:a"
+      }
+    }
+  ]
+}

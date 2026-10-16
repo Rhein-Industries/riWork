@@ -840,6 +840,7 @@ enum RequestKind {
     Question {
         ids: Vec<String>,
         questions: Vec<WireQuestion>,
+        answer_summary: Option<String>,
     },
 }
 
@@ -1307,6 +1308,8 @@ impl Session {
         self.notices += 1;
         let id = format!("notice-{}-{}", self.notice_prefix, self.notices);
         let item = Item {
+            started_at: None,
+            ended_at: None,
             presentation: Default::default(),
             id,
             turn_id: self.turn.clone(),
@@ -1427,6 +1430,7 @@ impl Session {
             self.interrupting = false;
             self.emit(ChatEvent::TurnStarted {
                 turn_id: turn_id.to_owned(),
+                started_at: None,
             });
         }
         if let (Some(session), Some(turn)) = (self.session_id.clone(), self.turn.clone()) {
@@ -1699,6 +1703,7 @@ impl Session {
         self.emit(ChatEvent::TurnCompleted {
             turn_id: turn_id.to_owned(),
             outcome,
+            ended_at: None,
         });
         // Messages that came too late to steer start the next turn.
         let queued = std::mem::take(&mut self.queued);
@@ -1719,6 +1724,7 @@ impl Session {
             self.emit(ChatEvent::TurnCompleted {
                 turn_id: turn,
                 outcome: TurnOutcome::Interrupted,
+                ended_at: None,
             });
         }
         if !matches!(self.state, ChatState::Failed { .. }) {
@@ -1738,6 +1744,7 @@ impl Session {
                 outcome: TurnOutcome::Failed {
                     message: message.clone(),
                 },
+                ended_at: None,
             });
         }
         self.set_state(ChatState::Failed { message });
@@ -2094,7 +2101,7 @@ impl Muse {
                 .iter()
                 .find(|open| open.request_id == request_id)
                 .ok_or_else(|| format!("no open request {request_id}"))?;
-            let RequestKind::Question { ids, questions } = &open.kind else {
+            let RequestKind::Question { ids, questions, .. } = &open.kind else {
                 return Err(format!("request {request_id} is not a question"));
             };
             let session_id = session
@@ -2115,6 +2122,16 @@ impl Muse {
         let user_input_id = request_id.to_owned();
         let frame = self.with(|session| {
             let id = user_input_id.clone();
+            session.set_answer_summary(
+                &id,
+                Some(
+                    answers
+                        .iter()
+                        .map(|answer| answer.join(", "))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                ),
+            );
             session.request(
                 "userInput/answer",
                 json!({
@@ -2125,15 +2142,18 @@ impl Muse {
                 }),
                 Box::new(move |muse, outcome| {
                     if let Err(error) = outcome {
-                        muse.with(|session| match error.kind.as_deref() {
-                            Some("userInputAlreadySettled") | Some("userInputNotFound") => {
-                                session.close_question(&id)
+                        muse.with(|session| {
+                            session.set_answer_summary(&id, None);
+                            match error.kind.as_deref() {
+                                Some("userInputAlreadySettled") | Some("userInputNotFound") => {
+                                    session.close_question(&id)
+                                }
+                                _ => session.notice(
+                                    NoticeLevel::Warning,
+                                    notice_kind::PROVIDER_WARNING,
+                                    format!("Muse did not take the answer: {}", error.message),
+                                ),
                             }
-                            _ => session.notice(
-                                NoticeLevel::Warning,
-                                notice_kind::PROVIDER_WARNING,
-                                format!("Muse did not take the answer: {}", error.message),
-                            ),
                         });
                     }
                 }),
@@ -2363,13 +2383,34 @@ impl Session {
     }
 
     fn close_question(&mut self, request_id: &str) {
+        let answer_summary = self.requests.iter().find_map(|open| {
+            if open.request_id != request_id {
+                return None;
+            }
+            match &open.kind {
+                RequestKind::Question { answer_summary, .. } => answer_summary.clone(),
+                _ => None,
+            }
+        });
         let before = self.requests.len();
         self.requests.retain(|open| open.request_id != request_id);
         if self.requests.len() != before {
             self.emit(ChatEvent::QuestionResolved {
                 request_id: request_id.to_owned(),
+                answer_summary,
             });
             self.refresh_state();
+        }
+    }
+
+    fn set_answer_summary(&mut self, request_id: &str, summary: Option<String>) {
+        if let Some(open) = self
+            .requests
+            .iter_mut()
+            .find(|open| open.request_id == request_id)
+            && let RequestKind::Question { answer_summary, .. } = &mut open.kind
+        {
+            *answer_summary = summary;
         }
     }
 
@@ -2572,12 +2613,17 @@ impl Session {
             kind: RequestKind::Question {
                 ids,
                 questions: wire,
+                answer_summary: None,
             },
             blocking: true,
         });
         self.emit(ChatEvent::QuestionRequested {
             question: Question {
                 request_id: user_input_id.clone(),
+                item_id: params["itemId"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_owned),
                 questions: prompts,
             },
         });
@@ -2825,6 +2871,8 @@ impl Session {
             .collect();
         self.emit(ChatEvent::ItemCompleted {
             item: Item {
+                started_at: None,
+                ended_at: None,
                 presentation: Default::default(),
                 id: "muse-todo".to_owned(),
                 turn_id: self.turn.clone(),
@@ -2900,6 +2948,7 @@ impl Session {
             body = ItemBody::UserMessage { text: shown.text };
             presentation = shown.presentation;
         }
+        presentation.semantics = muse_semantics(item, &body);
         let reasoning = matches!(body, ItemBody::Reasoning { .. });
         if !done {
             let entry = self.streamed.entry(id.clone()).or_default();
@@ -2913,6 +2962,8 @@ impl Session {
             entry.started = true;
             self.emit(ChatEvent::ItemStarted {
                 item: Item {
+                    started_at: None,
+                    ended_at: None,
                     presentation,
                     id,
                     turn_id: item["turnId"].as_str().map(str::to_owned),
@@ -2940,8 +2991,11 @@ impl Session {
                 _ => {}
             }
         }
+        presentation.semantics = muse_semantics(item, &body);
         self.emit(ChatEvent::ItemCompleted {
             item: Item {
+                started_at: None,
+                ended_at: None,
                 presentation,
                 id,
                 turn_id: item["turnId"].as_str().map(str::to_owned),
@@ -3017,6 +3071,8 @@ impl Session {
             };
             self.emit(ChatEvent::ItemStarted {
                 item: Item {
+                    started_at: None,
+                    ended_at: None,
                     presentation: Default::default(),
                     id: id.to_owned(),
                     turn_id: self.turn.clone(),
@@ -3396,6 +3452,26 @@ fn convert_item(item: &Value, done: bool) -> Option<(ItemBody, ItemStatus)> {
         },
     };
     Some((body, status))
+}
+
+/// `subagent` must be captured before its display role replaces the tool name.
+fn muse_semantics(item: &Value, body: &ItemBody) -> Option<super::model::Semantics> {
+    use super::model::{Semantics, ToolKind, Worker};
+    if item["kind"].as_str() == Some("subagent") {
+        let objective = item["objective"].as_str().map(str::to_owned);
+        Some(Semantics {
+            kind: ToolKind::Subagent,
+            target: objective.clone(),
+            worker: Some(Worker {
+                role: item["role"].as_str().map(str::to_owned),
+                objective,
+                child_count: item["childCount"].as_u64(),
+            }),
+            ..Default::default()
+        })
+    } else {
+        super::semantics::classify_body(body)
+    }
 }
 
 fn truncate_bytes(text: &mut String, limit: usize) {

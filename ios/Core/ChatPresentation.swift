@@ -368,6 +368,7 @@ extension ChatItemBody {
         case .compaction: "Context compacted"
         case .notice(_, let text, _, _, _, _): text
         case .elided: ChatElision(self)?.line ?? "Shown on your Mac"
+        case .unknown: "Activity on your Mac"
         }
     }
 }

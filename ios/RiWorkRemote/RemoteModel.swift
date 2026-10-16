@@ -369,11 +369,9 @@ enum ConnectionState: Equatable {
         self.defaults = defaults
         self.chatDrafts = ChatDraftStore(defaults: defaults)
         self.chatAttachmentImages = attachmentImages
-        // Pictures of cards sent or removed while the app was not there to tidy up.
-        // Pictures of cards sent or removed while the app was not there to tidy up; never one written after this moment, which belongs to
-        // a card staged since.
+        // Keep draft pictures and recent sent previews; expire unused cached pictures after 30 days.
         let staged = chatDrafts.attachmentIDs, started = Date.now
-        Task.detached(priority: .utility) { attachmentImages.prune(keeping: staged, writtenBefore: started) }
+        Task.detached(priority: .utility) { attachmentImages.prune(keeping: staged, writtenBefore: started.addingTimeInterval(-30 * 24 * 3600)) }
         self.tabCloseBehavior = TabCloseBehavior(rawValue: defaults.string(forKey: TabCloseBehavior.settingKey) ?? "") ?? .ask
         self.themeRefreshInterval = themeRefreshInterval
         self.themeMinimumGap = themeMinimumGap

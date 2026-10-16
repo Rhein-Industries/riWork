@@ -192,14 +192,14 @@ final class NewOrchestratorTests: XCTestCase {
     private func target(branch: String = "main") -> NewTerminalTarget { .worktree(id: tree, projectID: project, projectName: "Alpha", branch: branch, isPrimary: true) }
 
     func testTheOrchestratorRowsAreOnlyOfferedWhereTheDesktopOpensThem() {
-        XCTAssertEqual(NewTerminalKind.allCases.count, 5, "the kinds that make a tab of their own: four terminals and one chat")
+        XCTAssertEqual(NewTerminalKind.allCases.count, 6, "the kinds that make a tab of their own: five terminals and one chat")
         XCTAssertEqual(NewTerminalKind.offered(chats: false), NewTerminalKind.terminalKinds)
         XCTAssertEqual(NewTerminalKind.offered(chats: true), NewTerminalKind.allCases)
         XCTAssertEqual(NewTerminalKind.offered(chats: false, orchestrators: true), NewTerminalKind.terminalKinds + [.projectOrchestrator, .globalOrchestrator])
         XCTAssertEqual(NewTerminalKind.offered(chats: true, orchestrators: true).map(\.title),
                        ["Shell", "Codex", "Claude", "Grok", "Muse", "Chat", "Project orchestrator", "Global orchestrator"])
         XCTAssertEqual(NewTerminalKind.orchestratorKinds.map(\.isOrchestrator), [true, true])
-        XCTAssertEqual(NewTerminalKind.allCases.map(\.isOrchestrator), Array(repeating: false, count: 5))
+        XCTAssertEqual(NewTerminalKind.allCases.map(\.isOrchestrator), Array(repeating: false, count: 6))
     }
     func testAnOrchestratorHasNoUnrestrictedSwitchAndIsNeitherATerminalNorAChat() {
         for kind in NewTerminalKind.orchestratorKinds {

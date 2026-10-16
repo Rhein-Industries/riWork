@@ -268,3 +268,85 @@ final class ChatCardTextTests: XCTestCase {
         XCTAssertEqual([ChatItemStatus.inProgress, .completed, .failed, .declined, .interrupted].map(\.spoken), ["running", "done", "failed", "declined", "interrupted"])
     }
 }
+
+
+/// Phase 0 wire contracts: additive metadata is read independently from the required body.
+final class ChatToolMetadataTests: XCTestCase {
+    private func item(_ json: String) throws -> ChatItem {
+        try JSONDecoder().decode(ChatItem.self, from: Data(json.utf8))
+    }
+    func testOlderItemsHaveNoInventedMetadataOrTimes() throws {
+        let old = try item(#"{"id":"old","body":{"type":"command","command":"ls"}}"#)
+        XCTAssertTrue(old.presentation.isEmpty)
+        XCTAssertNil(old.startedAt); XCTAssertNil(old.endedAt)
+        let encoded = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(old))
+        XCTAssertEqual(encoded["presentation"], .null)
+        XCTAssertEqual(encoded["started_at"], .null)
+    }
+    func testCompletePresentationAndTimingReadWithoutLosingTheBody() throws {
+        let raw = #"{"id":"read","turn_id":"t","status":"completed","started_at":1790000000123,"ended_at":1790000000456,"body":{"type":"tool_call","tool":"Read"},"presentation":{"phase":"commentary","parent_id":"worker","semantics":{"kind":"read","target":"src/main.rs","range":{"start":12,"end":25},"match_count":3,"excerpt":"fn main()","produced":[{"path":"report.md","line":4}],"worker":{"role":"researcher","objective":"Inspect","child_count":2}},"images":[{"label":"screen.png","source":{"kind":"local","path":"/w/screen.png"}}],"attachments":[{"id":"a","name":"notes.txt","path":"/w/notes.txt","kind":{"kind":"text"},"bytes":10,"fingerprint":"abc","preview":{"kind":"text","excerpt":"hello"}}]}}"#
+        let value = try item(raw)
+        XCTAssertEqual(value.startedAt, 1_790_000_000_123); XCTAssertEqual(value.endedAt, 1_790_000_000_456)
+        XCTAssertEqual(value.presentation.phase, .commentary); XCTAssertEqual(value.presentation.parentID, "worker")
+        XCTAssertEqual(value.presentation.semantics, ChatSemantics(kind: .read, target: "src/main.rs", range: ChatLineRange(start: 12, end: 25),
+                        matchCount: 3, excerpt: "fn main()", produced: [ChatPathRef(path: "report.md", line: 4)],
+                        worker: ChatWorker(role: "researcher", objective: "Inspect", childCount: 2)))
+        XCTAssertEqual(value.presentation.images, [ChatImage(label: "screen.png", source: .local(path: "/w/screen.png"))])
+        XCTAssertEqual(value.presentation.attachments.first?.name, "notes.txt")
+        XCTAssertEqual(try JSONDecoder().decode(ChatItem.self, from: JSONEncoder().encode(value)), value)
+    }
+    func testUnknownKindsAndBodiesKeepTheItemAndPresentation() throws {
+        let value = try item(#"{"id":"future","body":{"type":"hologram","future":true},"presentation":{"parent_id":"worker","semantics":{"kind":"teleport","target":"x"}}}"#)
+        XCTAssertEqual(value.body, .unknown("hologram")); XCTAssertEqual(value.presentation.semantics?.kind, .other)
+        XCTAssertEqual(value.presentation.parentID, "worker"); XCTAssertEqual(value.presentation.semantics?.target, "x")
+        for kind in ChatToolKind.allCases {
+            XCTAssertEqual(try JSONDecoder().decode(ChatToolKind.self, from: JSONEncoder().encode(kind)), kind)
+        }
+        XCTAssertEqual(try JSONDecoder().decode(ChatToolKind.self, from: Data("17".utf8)), .other)
+    }
+    func testMalformedMetadataFallsBackPerField() throws {
+        let value = try item(#"{"id":"odd","started_at":"yesterday","ended_at":-1,"body":{"type":"reasoning","text":"thinking"},"presentation":{"phase":"later","parent_id":17,"images":[false,{"label":"x","source":{"kind":"unavailable","reason":"elided"}}],"attachments":false,"semantics":{"kind":42,"target":[],"range":false,"match_count":-3,"excerpt":{},"produced":[false,{"path":"good","line":"bad"}],"worker":{"role":[],"objective":"Inspect","child_count":-1}}}}"#)
+        XCTAssertEqual(value.body, .reasoning("thinking")); XCTAssertNil(value.startedAt); XCTAssertNil(value.endedAt)
+        XCTAssertNil(value.presentation.phase); XCTAssertNil(value.presentation.parentID)
+        XCTAssertEqual(value.presentation.images, [ChatImage(label: "x", source: .unavailable(reason: "elided"))])
+        XCTAssertEqual(value.presentation.semantics, ChatSemantics(produced: [ChatPathRef(path: "good")], worker: ChatWorker(objective: "Inspect")))
+        for metadata in ["null", "17", "false", #"{"semantics":"elided"}"#] {
+            let value = try item("{\"id\":\"elided\",\"body\":{\"type\":\"compaction\"},\"presentation\":\(metadata)}")
+            XCTAssertTrue(value.presentation.isEmpty)
+        }
+    }
+    func testElidedSnapshotBodyKeepsMetadata() throws {
+        let value = try item(#"{"id":"large","body":{"type":"agent_message","text":"Full output on Mac"},"elided":{"event":"item_elided","kind":"tool_call","bytes":12345},"presentation":{"parent_id":"worker","semantics":{"kind":"read","target":"main.rs"}},"started_at":100,"ended_at":200}"#)
+        XCTAssertEqual(value.body, .elided(kind: "tool_call", bytes: 12345))
+        XCTAssertEqual(value.presentation.semantics?.kind, .read); XCTAssertEqual(value.presentation.parentID, "worker")
+        XCTAssertEqual(value.startedAt, 100); XCTAssertEqual(value.endedAt, 200)
+    }
+}
+
+
+extension ChatToolMetadataTests {
+    func testElidedSemanticsAndWorkersAreMissingRatherThanDefaultMetadata() throws {
+        for semantics in [#"{"elided":true}"#, #"{"elided":true,"kind":"read","target":"main.rs"}"#] {
+            let value = try item("{\"id\":\"read\",\"body\":{\"type\":\"tool_call\",\"tool\":\"Read\"},\"presentation\":{\"semantics\":\(semantics)}}")
+            XCTAssertNil(value.presentation.semantics)
+            XCTAssertTrue(value.presentation.isEmpty)
+        }
+        let value = try item(#"{"id":"worker","body":{"type":"tool_call","tool":"Task"},"presentation":{"semantics":{"kind":"subagent","worker":{"elided":true,"role":"researcher","child_count":2}}}}"#)
+        XCTAssertEqual(value.presentation.semantics?.kind, .subagent)
+        XCTAssertNil(value.presentation.semantics?.worker)
+        let normal = try JSONDecoder().decode(ChatSemantics.self, from: Data(#"{"elided":false,"kind":"subagent","worker":{"elided":false,"role":"researcher"}}"#.utf8))
+        XCTAssertEqual(normal.worker?.role, "researcher")
+        XCTAssertEqual(try JSONDecoder().decode(ChatSemantics.self, from: JSONEncoder().encode(normal)), normal)
+    }
+
+    func testMissingOrMalformedRangeStartDoesNotInventLineZero() throws {
+        for range in ["{}", #"{"end":20}"#, #"{"start":"elided","end":20}"#, #"{"start":-1}"#] {
+            let decoded = try JSONDecoder().decode(ChatItem.self, from: Data("{\"id\":\"read\",\"body\":{\"type\":\"tool_call\",\"tool\":\"Read\"},\"presentation\":{\"semantics\":{\"kind\":\"read\",\"target\":\"main.rs\",\"range\":\(range)}}}".utf8))
+            XCTAssertEqual(decoded.presentation.semantics?.kind, .read)
+            XCTAssertEqual(decoded.presentation.semantics?.target, "main.rs")
+            XCTAssertNil(decoded.presentation.semantics?.range, range)
+        }
+        let paths = try JSONDecoder().decode(ChatSemantics.self, from: Data(#"{"kind":"read","produced":[{}, {"line":2}, {"path":17}, {"path":"report.md"}]}"#.utf8))
+        XCTAssertEqual(paths.produced, [ChatPathRef(path: "report.md")])
+    }
+}

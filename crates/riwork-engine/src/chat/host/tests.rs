@@ -1334,6 +1334,7 @@ fn a_chat_that_died_in_the_middle_of_a_turn_is_made_tidy_when_the_next_host_load
         },
         ChatEvent::TurnStarted {
             turn_id: "t1".into(),
+            started_at: None,
         },
         ChatEvent::ApprovalRequested {
             approval: Approval {
@@ -1388,7 +1389,7 @@ fn a_chat_that_died_in_the_middle_of_a_turn_is_made_tidy_when_the_next_host_load
     assert_gapless(&seen, 1);
     assert!(matches!(
         &seen[5].event,
-        ChatEvent::TurnCompleted { turn_id, outcome: TurnOutcome::Interrupted } if turn_id == "t1"
+        ChatEvent::TurnCompleted { turn_id, outcome: TurnOutcome::Interrupted, .. } if turn_id == "t1"
     ));
     assert_eq!(transcript.state, ChatState::Stopped);
     assert_eq!(transcript.turn_id, None);
@@ -1551,6 +1552,7 @@ fn events_of_a_run_that_was_replaced_are_dropped() {
     straggler
         .send(ChatEvent::TurnStarted {
             turn_id: "ghost".into(),
+            started_at: None,
         })
         .unwrap();
     std::thread::sleep(Duration::from_millis(100));
@@ -1713,6 +1715,7 @@ fn an_idle_host_exits_but_not_while_a_client_is_connected_or_a_chat_is_at_work()
     fake.emit(ChatEvent::TurnCompleted {
         turn_id: "turn-1".into(),
         outcome: TurnOutcome::Completed,
+        ended_at: None,
     });
     fake.emit(ChatEvent::State {
         state: ChatState::Idle,
@@ -1907,6 +1910,8 @@ fn outstanding_sticky_notices_exclude_resolved_and_superseded_items() {
         }
         transcript.apply(&ChatEvent::ItemCompleted {
             item: Item {
+                started_at: None,
+                ended_at: None,
                 presentation: Default::default(),
                 id: id.into(),
                 turn_id: None,
@@ -1932,6 +1937,8 @@ fn dismissal_notice(id: &str, kind: &str, reset: Option<u64>) -> Item {
         *resets_at = reset;
     }
     Item {
+        started_at: None,
+        ended_at: None,
         id: id.into(),
         turn_id: None,
         status: ItemStatus::Completed,
@@ -3518,6 +3525,8 @@ fn legacy_history_outside_the_notice_tail_still_guards_resume_and_bad_history_fa
         let events = [
             ChatEvent::ItemCompleted {
                 item: Item {
+                    started_at: None,
+                    ended_at: None,
                     id: "legacy-user".into(),
                     turn_id: None,
                     status: ItemStatus::Completed,
@@ -3529,6 +3538,8 @@ fn legacy_history_outside_the_notice_tail_still_guards_resume_and_bad_history_fa
             },
             ChatEvent::ItemCompleted {
                 item: Item {
+                    started_at: None,
+                    ended_at: None,
                     id: "long-notice".into(),
                     turn_id: None,
                     status: ItemStatus::Completed,
@@ -3792,24 +3803,20 @@ fn provider_observations_supersede_older_acknowledgements_and_reach_existing_inf
             }
         );
         let shape = serde_json::to_value(&live).unwrap();
-        assert_eq!(
-            shape
+        // Desktop dependencies enable serde_json's preserve_order feature. The
+        // wire contract constrains the fields, independently of map iteration.
+        let keys = |value: &serde_json::Value| {
+            let mut keys = value
                 .as_object()
                 .unwrap()
                 .keys()
                 .cloned()
-                .collect::<Vec<_>>(),
-            ["chat_id", "event", "seq"]
-        );
-        assert_eq!(
-            shape["event"]
-                .as_object()
-                .unwrap()
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>(),
-            ["event", "info"]
-        );
+                .collect::<Vec<_>>();
+            keys.sort_unstable();
+            keys
+        };
+        assert_eq!(keys(&shape), ["chat_id", "event", "seq"]);
+        assert_eq!(keys(&shape["event"]), ["event", "info"]);
         assert_eq!(shape["event"]["event"], "info");
         let disk = fs::read_to_string(host.home.join("chats").join(&chat.id).join("events.jsonl"))
             .unwrap();
@@ -4059,9 +4066,12 @@ fn identity_adoption_during_an_open_turn_keeps_its_history_but_an_idle_clear_res
     inner.publish_info();
     inner.append(ChatEvent::TurnStarted {
         turn_id: "first-turn".into(),
+        started_at: None,
     });
     inner.append(ChatEvent::ItemCompleted {
         item: Item {
+            started_at: None,
+            ended_at: None,
             id: "first-input".into(),
             turn_id: Some("first-turn".into()),
             status: ItemStatus::Completed,
@@ -4080,6 +4090,7 @@ fn identity_adoption_during_an_open_turn_keeps_its_history_but_an_idle_clear_res
     inner.append(ChatEvent::TurnCompleted {
         turn_id: "first-turn".into(),
         outcome: TurnOutcome::Completed,
+        ended_at: None,
     });
     inner.info.provider_thread_id = Some("cleared-idle-session".into());
     inner.publish_info();
@@ -4394,6 +4405,7 @@ fn a_billing_change_waits_for_a_quiet_claude_chat_restarts_it_on_its_session_and
         host.fake().emit(ChatEvent::TurnCompleted {
             turn_id: "turn-1-1".into(),
             outcome: TurnOutcome::Interrupted,
+            ended_at: None,
         });
         host.fake().emit(ChatEvent::State {
             state: ChatState::Idle,
@@ -4566,4 +4578,128 @@ fn starting_the_host_asks_the_keychain_nothing() {
     });
     let last = host.fake().starts.lock().unwrap().last().cloned().unwrap();
     assert_eq!(api_key_of(&last), HOST_KEY);
+}
+
+#[test]
+fn turn_lifecycle_is_stamped_and_repeated_starts_keep_the_first_timestamp() {
+    let fixture = NoticeHost::new();
+    let chat = fixture.create(Provider::Claude);
+    let mut inner = lock(&chat.inner);
+    inner.append(ChatEvent::TurnStarted {
+        turn_id: "timed".into(),
+        started_at: None,
+    });
+    let started_at = inner.open.turn_started_at;
+    assert!(started_at.is_some());
+    inner.append(ChatEvent::TurnStarted {
+        turn_id: "timed".into(),
+        started_at: Some(1),
+    });
+    assert_eq!(inner.open.turn_started_at, started_at);
+    inner.append(ChatEvent::TurnCompleted {
+        turn_id: "timed".into(),
+        outcome: TurnOutcome::Completed,
+        ended_at: None,
+    });
+    assert!(inner.open.turn_started_at.is_none());
+    let events = log::read_envelopes(&chat.dir).unwrap();
+    let mut transcript = Transcript::default();
+    for envelope in &events {
+        transcript.apply_sequenced(envelope.seq, &envelope.event);
+    }
+    let timing = transcript.turn_timing["timed"];
+    assert_eq!(timing.started_at, started_at);
+    assert!(timing.ended_at.is_some());
+    assert!(timing.ended_at >= timing.started_at);
+}
+
+#[test]
+fn host_completion_classifies_populated_arguments_before_start_fallback() {
+    let fixture = NoticeHost::new();
+    let chat = fixture.create(Provider::Codex);
+    let mut inner = lock(&chat.inner);
+    for (event, query) in [("item_started", ""), ("item_completed", "rust serde")] {
+        inner.append(
+            serde_json::from_value(serde_json::json!({
+                "event":event,"item":{"id":"web","body":{"type":"web_search","query":query}}
+            }))
+            .unwrap(),
+        );
+    }
+    let transcript = log::read_transcript(&fixture.home, &inner.info.id).unwrap();
+    assert_eq!(
+        transcript
+            .item("web")
+            .unwrap()
+            .presentation
+            .semantics
+            .as_ref()
+            .unwrap()
+            .target
+            .as_deref(),
+        Some("rust serde")
+    );
+}
+
+#[test]
+fn item_lifecycle_is_stamped_and_completion_keeps_start_metadata() {
+    let fixture = NoticeHost::new();
+    let chat = fixture.create(Provider::Claude);
+    let mut inner = lock(&chat.inner);
+    let start: Item = serde_json::from_value(serde_json::json!({
+        "id":"call", "turn_id":"turn", "status":"in_progress",
+        "body":{"type":"tool_call","tool":"Read","input":{"file_path":"src/main.rs"}},
+        "presentation":{"parent_id":"agent","semantics":{"kind":"read","target":"src/main.rs"}}
+    }))
+    .unwrap();
+    inner.append(ChatEvent::ItemStarted { item: start });
+    let original_start = inner.open.items["call"].started_at;
+    let repeat: Item = serde_json::from_value(serde_json::json!({
+        "id":"call", "turn_id":"turn", "started_at":1, "status":"in_progress",
+        "body":{"type":"tool_call","tool":"Read"}
+    }))
+    .unwrap();
+    inner.append(ChatEvent::ItemStarted { item: repeat });
+    assert_eq!(
+        inner.open.items["call"].started_at, original_start,
+        "repeated start updates keep the first host timestamp"
+    );
+    let complete: Item = serde_json::from_value(serde_json::json!({
+        "id":"call", "turn_id":"turn", "status":"completed",
+        "body":{"type":"tool_call","tool":"Read","output":"done"}
+    }))
+    .unwrap();
+    inner.append(ChatEvent::ItemCompleted { item: complete });
+    let events = log::read_envelopes(&chat.dir).unwrap();
+    let mut transcript = Transcript::default();
+    for envelope in &events {
+        transcript.apply_sequenced(envelope.seq, &envelope.event);
+    }
+    let item = transcript.item("call").unwrap();
+    assert!(item.started_at.is_some());
+    assert_eq!(item.started_at, original_start);
+    assert!(item.ended_at >= item.started_at);
+    assert_eq!(item.presentation.parent_id.as_deref(), Some("agent"));
+    assert_eq!(
+        item.presentation
+            .semantics
+            .as_ref()
+            .unwrap()
+            .target
+            .as_deref(),
+        Some("src/main.rs")
+    );
+    assert_eq!(
+        item.presentation
+            .semantics
+            .as_ref()
+            .unwrap()
+            .excerpt
+            .as_deref(),
+        Some("done")
+    );
+    assert!(
+        inner.open.items.is_empty(),
+        "completed calls release lifecycle metadata"
+    );
 }

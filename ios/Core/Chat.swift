@@ -5,7 +5,8 @@ import Foundation
 // `ChatDelta` `kind` (with its text under `text`), `ChatTurnOutcome` `outcome` and `ChatCommand` `command`; every enum word is snake_case.
 //
 // Reading is lenient, as it is for every optional field the desktop adds (`AgentActivity.swift`). A desktop newer than the phone may
-// send an event, an item or a delta the phone has never heard of: that one is skipped (`ChatEventsReply`), never the batch it came in.
+// send an event or a delta the phone has never heard of: that one is skipped (`ChatEventsReply`), never the batch it came in.
+// Unknown item bodies stay as `.unknown` so their identity, timing and presentation survive.
 // A word the phone does not know inside a thing it does know (a new approval mode, a new step status) is read as its nearest harmless
 // meaning instead, because dropping the event would drop what it carries (an approval that was answered, a state that changed).
 
@@ -367,6 +368,182 @@ public struct ChatStep: Codable, Sendable, Equatable, Hashable {
 
 public enum ChatNoticeLevel: String, Codable, Sendable, Hashable { case info, warning, error }
 
+/// Provider intent is separate from completion: commentary messages also complete.
+public enum ChatMessagePhase: String, Codable, Sendable, Hashable { case commentary, final }
+
+/// Semantic tool kinds, independent of the provider's tool name. New words safely become `other`.
+public enum ChatToolKind: String, Codable, Sendable, Hashable, CaseIterable {
+    case shell, read, search, list, webSearch = "web_search", webFetch = "web_fetch", mcp, subagent, other
+    public init(from decoder: any Decoder) throws {
+        self = (try? decoder.singleValueContainer().decode(String.self)).flatMap(Self.init(rawValue:)) ?? .other
+    }
+}
+
+public struct ChatLineRange: Codable, Sendable, Equatable, Hashable {
+    public var start: UInt64
+    public var end: UInt64?
+    public init(start: UInt64, end: UInt64? = nil) { self.start = start; self.end = end }
+    private enum CodingKeys: String, CodingKey { case start, end }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        start = try c.decode(UInt64.self, forKey: .start); end = c.tolerant(UInt64.self, forKey: .end)
+    }
+}
+
+public struct ChatPathRef: Codable, Sendable, Equatable, Hashable {
+    public var path: String
+    public var line: UInt64?
+    public init(path: String, line: UInt64? = nil) { self.path = path; self.line = line }
+    private enum CodingKeys: String, CodingKey { case path, line }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decode(String.self, forKey: .path); line = c.tolerant(UInt64.self, forKey: .line)
+    }
+}
+
+public struct ChatWorker: Codable, Sendable, Equatable, Hashable {
+    public var role: String?
+    public var objective: String?
+    public var childCount: UInt64?
+    public init(role: String? = nil, objective: String? = nil, childCount: UInt64? = nil) {
+        self.role = role; self.objective = objective; self.childCount = childCount
+    }
+    private enum CodingKeys: String, CodingKey { case role, objective, childCount = "child_count", elided }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if c.tolerant(Bool.self, forKey: .elided) == true {
+            throw DecodingError.dataCorruptedError(forKey: .elided, in: c, debugDescription: "Elided worker metadata")
+        }
+        role = c.tolerant(String.self, forKey: .role); objective = c.tolerant(String.self, forKey: .objective)
+        childCount = c.tolerant(UInt64.self, forKey: .childCount)
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(role, forKey: .role); try c.encodeIfPresent(objective, forKey: .objective)
+        try c.encodeIfPresent(childCount, forKey: .childCount)
+    }
+}
+
+public struct ChatSemantics: Codable, Sendable, Equatable, Hashable {
+    public var kind: ChatToolKind
+    public var target: String?
+    public var range: ChatLineRange?
+    public var matchCount: UInt64?
+    public var excerpt: String?
+    public var produced: [ChatPathRef]
+    public var worker: ChatWorker?
+    public init(kind: ChatToolKind = .other, target: String? = nil, range: ChatLineRange? = nil, matchCount: UInt64? = nil,
+                excerpt: String? = nil, produced: [ChatPathRef] = [], worker: ChatWorker? = nil) {
+        self.kind = kind; self.target = target; self.range = range; self.matchCount = matchCount
+        self.excerpt = excerpt; self.produced = produced; self.worker = worker
+    }
+    private enum CodingKeys: String, CodingKey { case kind, target, range, matchCount = "match_count", excerpt, produced, worker, elided }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if c.tolerant(Bool.self, forKey: .elided) == true {
+            throw DecodingError.dataCorruptedError(forKey: .elided, in: c, debugDescription: "Elided semantics metadata")
+        }
+        kind = c.tolerant(ChatToolKind.self, forKey: .kind) ?? .other; target = c.tolerant(String.self, forKey: .target)
+        range = c.tolerant(ChatLineRange.self, forKey: .range); matchCount = c.tolerant(UInt64.self, forKey: .matchCount)
+        excerpt = c.tolerant(String.self, forKey: .excerpt); produced = c.leniently([ChatPathRef].self, forKey: .produced)
+        worker = c.tolerant(ChatWorker.self, forKey: .worker)
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(kind, forKey: .kind); try c.encodeIfPresent(target, forKey: .target)
+        try c.encodeIfPresent(range, forKey: .range); try c.encodeIfPresent(matchCount, forKey: .matchCount)
+        try c.encodeIfPresent(excerpt, forKey: .excerpt); try c.encode(produced, forKey: .produced)
+        try c.encodeIfPresent(worker, forKey: .worker)
+    }
+}
+
+/// The existing closed image-source vocabulary; bytes and paths are owned by the host.
+public enum ChatImageSource: Codable, Sendable, Equatable {
+    case local(path: String), data(mime: String, base64: String), url(String), unavailable(reason: String)
+    private enum Keys: String, CodingKey { case kind, path, mime, base64, url, reason }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        switch c.tolerant(String.self, forKey: .kind) {
+        case "local": self = .local(path: try c.decode(String.self, forKey: .path))
+        case "data": self = .data(mime: try c.decode(String.self, forKey: .mime), base64: try c.decode(String.self, forKey: .base64))
+        case "url": self = .url(try c.decode(String.self, forKey: .url))
+        default: self = .unavailable(reason: c.tolerant(String.self, forKey: .reason) ?? "Unavailable")
+        }
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        switch self {
+        case .local(let path): try c.encode("local", forKey: .kind); try c.encode(path, forKey: .path)
+        case .data(let mime, let base64): try c.encode("data", forKey: .kind); try c.encode(mime, forKey: .mime); try c.encode(base64, forKey: .base64)
+        case .url(let url): try c.encode("url", forKey: .kind); try c.encode(url, forKey: .url)
+        case .unavailable(let reason): try c.encode("unavailable", forKey: .kind); try c.encode(reason, forKey: .reason)
+        }
+    }
+}
+
+public struct ChatImage: Codable, Sendable, Equatable {
+    public var label: String
+    public var source: ChatImageSource
+    public init(label: String = "", source: ChatImageSource) { self.label = label; self.source = source }
+    private enum CodingKeys: String, CodingKey { case label, source }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        label = c.tolerant(String.self, forKey: .label) ?? ""; source = try c.decode(ChatImageSource.self, forKey: .source)
+    }
+}
+
+/// An owned attachment snapshot already submitted with a message (distinct from a local draft's `StagedAttachment`).
+public struct ChatSubmittedAttachment: Codable, Sendable, Equatable {
+    public var id: String
+    public var name: String
+    public var path: String
+    /// The host's tagged `AttachmentKind` and `Preview` objects, retained for future media presentation.
+    public var kind: JSONValue
+    public var bytes: UInt64
+    public var fingerprint: String
+    public var preview: JSONValue
+    public init(id: String = "", name: String = "", path: String = "", kind: JSONValue = .null, bytes: UInt64 = 0,
+                fingerprint: String = "", preview: JSONValue = .null) {
+        self.id = id; self.name = name; self.path = path; self.kind = kind; self.bytes = bytes; self.fingerprint = fingerprint; self.preview = preview
+    }
+    private enum CodingKeys: String, CodingKey { case id, name, path, kind, bytes, fingerprint, preview }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = c.tolerant(String.self, forKey: .id) ?? ""; name = c.tolerant(String.self, forKey: .name) ?? ""
+        path = c.tolerant(String.self, forKey: .path) ?? ""; kind = c.tolerant(JSONValue.self, forKey: .kind) ?? .null
+        bytes = c.tolerant(UInt64.self, forKey: .bytes) ?? 0; fingerprint = c.tolerant(String.self, forKey: .fingerprint) ?? ""
+        preview = c.tolerant(JSONValue.self, forKey: .preview) ?? .null
+    }
+}
+
+/// Additive host presentation hints. Missing or malformed hints never discard a transcript item.
+public struct ChatPresentation: Codable, Sendable, Equatable {
+    public var phase: ChatMessagePhase?
+    public var images: [ChatImage]
+    public var attachments: [ChatSubmittedAttachment]
+    public var semantics: ChatSemantics?
+    public var parentID: String?
+    public init(phase: ChatMessagePhase? = nil, images: [ChatImage] = [], attachments: [ChatSubmittedAttachment] = [],
+                semantics: ChatSemantics? = nil, parentID: String? = nil) {
+        self.phase = phase; self.images = images; self.attachments = attachments; self.semantics = semantics; self.parentID = parentID
+    }
+    public var isEmpty: Bool { phase == nil && images.isEmpty && attachments.isEmpty && semantics == nil && parentID == nil }
+    private enum CodingKeys: String, CodingKey { case phase, images, attachments, semantics, parentID = "parent_id" }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        phase = c.tolerant(ChatMessagePhase.self, forKey: .phase); images = c.leniently([ChatImage].self, forKey: .images)
+        attachments = c.leniently([ChatSubmittedAttachment].self, forKey: .attachments)
+        semantics = c.tolerant(ChatSemantics.self, forKey: .semantics); parentID = c.tolerant(String.self, forKey: .parentID)
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(phase, forKey: .phase)
+        if !images.isEmpty { try c.encode(images, forKey: .images) }
+        if !attachments.isEmpty { try c.encode(attachments, forKey: .attachments) }
+        try c.encodeIfPresent(semantics, forKey: .semantics); try c.encodeIfPresent(parentID, forKey: .parentID)
+    }
+}
+
 /// The content of one transcript item (`ItemBody`, tagged `type`).
 public enum ChatItemBody: Sendable, Equatable, Codable {
     case userMessage(String)
@@ -380,6 +557,8 @@ public enum ChatItemBody: Sendable, Equatable, Codable {
     case webSearch(String)
     case todo([ChatStep])
     case compaction
+    /// A body introduced by a newer host. Its wire type survives without discarding the item.
+    case unknown(String)
     /// `kind` is the host's dedupe key ("rate_limit:seven_day", "api_retry", "reconnecting", …): notices of one kind are one line of
     /// the banner row. Older hosts send none. `resolved`: the cause went away; `resetsAt`: when the limit it is about resets (Unix
     /// seconds); `dismissed`: the host dismissed this sticky notice on some device (docs/chat-notices.md). All optional on the wire.
@@ -419,7 +598,7 @@ public enum ChatItemBody: Sendable, Equatable, Codable {
             self = .notice(level: c.lenient(ChatNoticeLevel.self, forKey: .level, default: .info), text: try c.decode(String.self, forKey: .text), kind: kind,
                            resolved: c.tolerant(Bool.self, forKey: .resolved) ?? false, resetsAt: resetsAt, dismissed: c.tolerant(Bool.self, forKey: .dismissed) ?? false)
         case "elided": self = .elided(kind: c.tolerant(String.self, forKey: .kind), bytes: c.tolerant(Int.self, forKey: .bytes), event: c.tolerant(String.self, forKey: .event))
-        default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "Unknown item type \(type)")
+        default: self = .unknown(type)
         }
     }
     public func encode(to encoder: any Encoder) throws {
@@ -440,6 +619,7 @@ public enum ChatItemBody: Sendable, Equatable, Codable {
         case .webSearch(let query): try c.encode("web_search", forKey: .type); try c.encode(query, forKey: .query)
         case .todo(let items): try c.encode("todo", forKey: .type); try c.encode(items, forKey: .items)
         case .compaction: try c.encode("compaction", forKey: .type)
+        case .unknown(let type): try c.encode(type, forKey: .type)
         case .notice(let level, let text, let kind, let resolved, let resetsAt, let dismissed):
             try c.encode("notice", forKey: .type); try c.encode(level, forKey: .level); try c.encode(text, forKey: .text); try c.encodeIfPresent(kind, forKey: .kind)
             if resolved { try c.encode(true, forKey: .resolved) }
@@ -459,15 +639,26 @@ public struct ChatItem: Codable, Sendable, Equatable, Identifiable {
     public var turnID: String?
     public var status: ChatItemStatus
     public var body: ChatItemBody
-    public init(id: String, turnID: String? = nil, status: ChatItemStatus = .inProgress, body: ChatItemBody) {
+    public var presentation: ChatPresentation
+    /// Milliseconds since the Unix epoch; absent for old logs or an item resumed after restart.
+    public var startedAt: UInt64?
+    public var endedAt: UInt64?
+    public init(id: String, turnID: String? = nil, status: ChatItemStatus = .inProgress, body: ChatItemBody,
+                presentation: ChatPresentation = ChatPresentation(), startedAt: UInt64? = nil, endedAt: UInt64? = nil) {
         self.id = id; self.turnID = turnID; self.status = status; self.body = body
+        self.presentation = presentation; self.startedAt = startedAt; self.endedAt = endedAt
     }
-    private enum Keys: String, CodingKey { case id, status, body, elided; case turnID = "turn_id" }
+    private enum Keys: String, CodingKey {
+        case id, status, body, elided, presentation
+        case turnID = "turn_id", startedAt = "started_at", endedAt = "ended_at"
+    }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         id = try c.decode(String.self, forKey: .id)
         turnID = try c.decodeIfPresent(String.self, forKey: .turnID)
         status = c.lenient(ChatItemStatus.self, forKey: .status, default: .completed)
+        presentation = c.tolerant(ChatPresentation.self, forKey: .presentation) ?? ChatPresentation()
+        startedAt = c.tolerant(UInt64.self, forKey: .startedAt); endedAt = c.tolerant(UInt64.self, forKey: .endedAt)
         // A snapshot row the relay elided keeps a note as its body, for older phones, and says what it was under `elided`: shown as
         // the compact row, as `item_elided` is.
         if let elided = c.tolerant(ChatElidedEvent.self, forKey: .elided) {
@@ -482,6 +673,8 @@ public struct ChatItem: Codable, Sendable, Equatable, Identifiable {
         try c.encodeIfPresent(turnID, forKey: .turnID)
         try c.encode(status, forKey: .status)
         try c.encode(body, forKey: .body)
+        if !presentation.isEmpty { try c.encode(presentation, forKey: .presentation) }
+        try c.encodeIfPresent(startedAt, forKey: .startedAt); try c.encodeIfPresent(endedAt, forKey: .endedAt)
     }
 }
 
@@ -606,18 +799,24 @@ public struct ChatQuestionPrompt: Codable, Sendable, Equatable, Hashable {
 /// A turn waits for the user to answer questions (`Question`).
 public struct ChatQuestion: Codable, Sendable, Equatable, Hashable, Identifiable {
     public var requestID: String
+    /// The item whose scope contains the question, when the provider reports it.
+    public var itemID: String?
     public var questions: [ChatQuestionPrompt]
     public var id: String { requestID }
-    public init(requestID: String, questions: [ChatQuestionPrompt]) { self.requestID = requestID; self.questions = questions }
-    private enum Keys: String, CodingKey { case questions; case requestID = "request_id" }
+    public init(requestID: String, itemID: String? = nil, questions: [ChatQuestionPrompt]) {
+        self.requestID = requestID; self.itemID = itemID; self.questions = questions
+    }
+    private enum Keys: String, CodingKey { case questions; case requestID = "request_id", itemID = "item_id" }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         requestID = try c.decode(String.self, forKey: .requestID)
+        itemID = c.tolerant(String.self, forKey: .itemID)
         questions = c.leniently([ChatQuestionPrompt].self, forKey: .questions)
     }
     public func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
         try c.encode(requestID, forKey: .requestID)
+        try c.encodeIfPresent(itemID, forKey: .itemID)
         try c.encode(questions, forKey: .questions)
     }
 }
@@ -660,6 +859,20 @@ public struct ChatUsage: Codable, Sendable, Equatable, Hashable {
     }
 }
 
+/// Host wall-clock timestamps in milliseconds for a turn (`TurnTiming`); older hosts leave either value out.
+public struct ChatTurnTiming: Codable, Sendable, Equatable {
+    public var startedAt: UInt64?
+    public var endedAt: UInt64?
+    public init(startedAt: UInt64? = nil, endedAt: UInt64? = nil) {
+        self.startedAt = startedAt; self.endedAt = endedAt
+    }
+    private enum CodingKeys: String, CodingKey { case startedAt = "started_at", endedAt = "ended_at" }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        startedAt = c.tolerant(UInt64.self, forKey: .startedAt); endedAt = c.tolerant(UInt64.self, forKey: .endedAt)
+    }
+}
+
 /// How a turn ended (`TurnOutcome`, tagged `outcome`).
 public enum ChatTurnOutcome: Sendable, Equatable, Hashable, Codable {
     case completed, interrupted
@@ -691,8 +904,8 @@ public enum ChatEvent: Sendable, Equatable, Codable {
     /// The chat's metadata changed (thread id learned, model, effort, Fast or mode changed).
     case info(ChatInfo)
     case state(ChatState)
-    case turnStarted(turnID: String)
-    case turnCompleted(turnID: String, outcome: ChatTurnOutcome)
+    case turnStarted(turnID: String, startedAt: UInt64? = nil)
+    case turnCompleted(turnID: String, outcome: ChatTurnOutcome, endedAt: UInt64? = nil)
     case itemStarted(ChatItem)
     case itemDelta(itemID: String, delta: ChatDelta)
     /// The item's final form; replaces what deltas built.
@@ -700,7 +913,7 @@ public enum ChatEvent: Sendable, Equatable, Codable {
     case approvalRequested(ChatApproval)
     case approvalResolved(requestID: String, decision: ChatDecision)
     case questionRequested(ChatQuestion)
-    case questionResolved(requestID: String)
+    case questionResolved(requestID: String, answerSummary: String? = nil)
     case usage(ChatUsage)
     /// The models the provider offers: sent once after the handshake and again if the list changes; each replaces the last.
     case models([ChatModelOption])
@@ -713,7 +926,8 @@ public enum ChatEvent: Sendable, Equatable, Codable {
 
     private enum Keys: String, CodingKey {
         case event, info, state, outcome, item, delta, approval, decision, question, usage, models, windows, elided
-        case turnID = "turn_id", itemID = "item_id", requestID = "request_id"
+        case turnID = "turn_id", itemID = "item_id", requestID = "request_id", answerSummary = "answer_summary"
+        case startedAt = "started_at", endedAt = "ended_at"
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -725,9 +939,9 @@ public enum ChatEvent: Sendable, Equatable, Codable {
         switch word {
         case "info": self = .info(try c.decode(ChatInfo.self, forKey: .info))
         case "state": self = .state(try c.decode(ChatState.self, forKey: .state))
-        case "turn_started": self = .turnStarted(turnID: try c.decode(String.self, forKey: .turnID))
+        case "turn_started": self = .turnStarted(turnID: try c.decode(String.self, forKey: .turnID), startedAt: c.tolerant(UInt64.self, forKey: .startedAt))
         case "turn_completed":
-            self = .turnCompleted(turnID: try c.decode(String.self, forKey: .turnID), outcome: try c.decode(ChatTurnOutcome.self, forKey: .outcome))
+            self = .turnCompleted(turnID: try c.decode(String.self, forKey: .turnID), outcome: try c.decode(ChatTurnOutcome.self, forKey: .outcome), endedAt: c.tolerant(UInt64.self, forKey: .endedAt))
         case "item_started": self = .itemStarted(try c.decode(ChatItem.self, forKey: .item))
         case "item_delta": self = .itemDelta(itemID: try c.decode(String.self, forKey: .itemID), delta: try c.decode(ChatDelta.self, forKey: .delta))
         case "item_completed": self = .itemCompleted(try c.decode(ChatItem.self, forKey: .item))
@@ -735,7 +949,7 @@ public enum ChatEvent: Sendable, Equatable, Codable {
         // Resolved is what takes a request off the screen, so a decision the phone has no word for must not lose the event.
         case "approval_resolved": self = .approvalResolved(requestID: try c.decode(String.self, forKey: .requestID), decision: c.lenient(ChatDecision.self, forKey: .decision, default: .decline))
         case "question_requested": self = .questionRequested(try c.decode(ChatQuestion.self, forKey: .question))
-        case "question_resolved": self = .questionResolved(requestID: try c.decode(String.self, forKey: .requestID))
+        case "question_resolved": self = .questionResolved(requestID: try c.decode(String.self, forKey: .requestID), answerSummary: c.tolerant(String.self, forKey: .answerSummary))
         case "usage": self = .usage(try c.decode(ChatUsage.self, forKey: .usage))
         // A list that is no array is no list: the event is skipped and the models held stay. A model the phone cannot read is left out.
         case "models": self = .models(try c.decode([Lenient<ChatModelOption>].self, forKey: .models).compactMap(\.value))
@@ -749,9 +963,11 @@ public enum ChatEvent: Sendable, Equatable, Codable {
         switch self {
         case .info(let info): try c.encode("info", forKey: .event); try c.encode(info, forKey: .info)
         case .state(let state): try c.encode("state", forKey: .event); try c.encode(state, forKey: .state)
-        case .turnStarted(let turnID): try c.encode("turn_started", forKey: .event); try c.encode(turnID, forKey: .turnID)
-        case .turnCompleted(let turnID, let outcome):
+        case .turnStarted(let turnID, let startedAt):
+            try c.encode("turn_started", forKey: .event); try c.encode(turnID, forKey: .turnID); try c.encodeIfPresent(startedAt, forKey: .startedAt)
+        case .turnCompleted(let turnID, let outcome, let endedAt):
             try c.encode("turn_completed", forKey: .event); try c.encode(turnID, forKey: .turnID); try c.encode(outcome, forKey: .outcome)
+            try c.encodeIfPresent(endedAt, forKey: .endedAt)
         case .itemStarted(let item): try c.encode("item_started", forKey: .event); try c.encode(item, forKey: .item)
         case .itemDelta(let itemID, let delta): try c.encode("item_delta", forKey: .event); try c.encode(itemID, forKey: .itemID); try c.encode(delta, forKey: .delta)
         case .itemCompleted(let item): try c.encode("item_completed", forKey: .event); try c.encode(item, forKey: .item)
@@ -759,7 +975,8 @@ public enum ChatEvent: Sendable, Equatable, Codable {
         case .approvalResolved(let requestID, let decision):
             try c.encode("approval_resolved", forKey: .event); try c.encode(requestID, forKey: .requestID); try c.encode(decision, forKey: .decision)
         case .questionRequested(let question): try c.encode("question_requested", forKey: .event); try c.encode(question, forKey: .question)
-        case .questionResolved(let requestID): try c.encode("question_resolved", forKey: .event); try c.encode(requestID, forKey: .requestID)
+        case .questionResolved(let requestID, let answerSummary):
+            try c.encode("question_resolved", forKey: .event); try c.encode(requestID, forKey: .requestID); try c.encodeIfPresent(answerSummary, forKey: .answerSummary)
         case .usage(let usage): try c.encode("usage", forKey: .event); try c.encode(usage, forKey: .usage)
         case .models(let models): try c.encode("models", forKey: .event); try c.encode(models, forKey: .models)
         case .rateLimits(let windows): try c.encode("rate_limits", forKey: .event); try c.encode(windows, forKey: .windows)
@@ -773,7 +990,10 @@ public enum ChatEvent: Sendable, Equatable, Codable {
     public func resolved(seq: UInt64) -> ChatEvent {
         guard case .elided(let elided) = self else { return self }
         if let itemID = elided.itemID, elided.isItem {
-            return .itemCompleted(ChatItem(id: itemID, status: elided.status ?? .completed, body: .elided(kind: elided.kind, bytes: elided.bytes)))
+            return .itemCompleted(ChatItem(id: itemID, turnID: elided.turnID, status: elided.status ?? .completed,
+                                           body: .elided(kind: elided.kind, bytes: elided.bytes),
+                                           presentation: ChatPresentation(semantics: elided.toolKind.map { ChatSemantics(kind: $0) }, parentID: elided.parentID),
+                                           startedAt: elided.startedAt, endedAt: elided.endedAt))
         }
         if elided.requestID != nil, elided.isRequest || elided.isResolution { return self }
         return .itemCompleted(ChatItem(id: "elided-\(seq)", status: .completed, body: .elided(kind: elided.kind, bytes: elided.bytes, event: elided.of)))
@@ -795,8 +1015,17 @@ public struct ChatElidedEvent: Sendable, Equatable, Codable {
     public var kind: String?
     public var bytes: Int?
     public var status: ChatItemStatus?
-    public init(event: String, of: String? = nil, itemID: String? = nil, requestID: String? = nil, kind: String? = nil, bytes: Int? = nil, status: ChatItemStatus? = nil) {
+    /// Small grouping and lifecycle hints survive even when the relay elides the body.
+    public var turnID: String?
+    public var parentID: String?
+    public var toolKind: ChatToolKind?
+    public var startedAt: UInt64?
+    public var endedAt: UInt64?
+    public init(event: String, of: String? = nil, itemID: String? = nil, requestID: String? = nil, kind: String? = nil, bytes: Int? = nil,
+                status: ChatItemStatus? = nil, turnID: String? = nil, parentID: String? = nil, toolKind: ChatToolKind? = nil,
+                startedAt: UInt64? = nil, endedAt: UInt64? = nil) {
         self.event = event; self.of = of ?? event; self.itemID = itemID; self.requestID = requestID; self.kind = kind; self.bytes = bytes; self.status = status
+        self.turnID = turnID; self.parentID = parentID; self.toolKind = toolKind; self.startedAt = startedAt; self.endedAt = endedAt
     }
     /// An item event, whose item keeps its place as a row. A delta's item is not replaced: a note stands for the lost delta.
     public var isItem: Bool { Self.itemEvents.contains(of) && of != "item_delta" }
@@ -806,6 +1035,7 @@ public struct ChatElidedEvent: Sendable, Equatable, Codable {
     private enum Keys: String, CodingKey {
         case event, of, kind, bytes, status, reason, elided, approval, question, item, delta
         case itemID = "item_id", requestID = "request_id", id
+        case turnID = "turn_id", parentID = "parent_id", toolKind = "tool_kind", startedAt = "started_at", endedAt = "ended_at"
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -822,6 +1052,9 @@ public struct ChatElidedEvent: Sendable, Equatable, Codable {
         // Size and status are only shown: one of the wrong type or out of range is none.
         bytes = c.tolerant(Int.self, forKey: .bytes) ?? c.tolerant(Double.self, forKey: .bytes).flatMap { $0 >= 0 && $0 < 1e15 ? Int($0) : nil }
         status = c.tolerant(String.self, forKey: .status).flatMap(ChatItemStatus.init(rawValue:))
+        turnID = c.tolerant(String.self, forKey: .turnID); parentID = c.tolerant(String.self, forKey: .parentID)
+        toolKind = c.tolerant(ChatToolKind.self, forKey: .toolKind)
+        startedAt = c.tolerant(UInt64.self, forKey: .startedAt); endedAt = c.tolerant(UInt64.self, forKey: .endedAt)
     }
     public func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
@@ -830,6 +1063,9 @@ public struct ChatElidedEvent: Sendable, Equatable, Codable {
         if of != event { try c.encode(of, forKey: .of) }
         try c.encodeIfPresent(itemID, forKey: .itemID); try c.encodeIfPresent(requestID, forKey: .requestID)
         try c.encodeIfPresent(kind, forKey: .kind); try c.encodeIfPresent(bytes, forKey: .bytes); try c.encodeIfPresent(status, forKey: .status)
+        try c.encodeIfPresent(turnID, forKey: .turnID); try c.encodeIfPresent(parentID, forKey: .parentID)
+        try c.encodeIfPresent(toolKind, forKey: .toolKind)
+        try c.encodeIfPresent(startedAt, forKey: .startedAt); try c.encodeIfPresent(endedAt, forKey: .endedAt)
         try c.encode("too_large", forKey: .reason)
     }
 }

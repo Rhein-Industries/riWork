@@ -429,8 +429,11 @@ impl Subscription {
             Ok(0) => Ok(Poll::Closed),
             Ok(_) if self.pending.last() == Some(&b'\n') => {
                 let line = std::mem::take(&mut self.pending);
-                serde_json::from_slice(&line)
-                    .map(Poll::Event)
+                serde_json::from_slice::<Envelope>(&line)
+                    .map(|mut envelope| {
+                        envelope.enrich();
+                        Poll::Event(envelope)
+                    })
                     .map_err(|error| format!("chat host sent an unreadable event: {error}"))
             }
             // The end of the stream cut a line short.

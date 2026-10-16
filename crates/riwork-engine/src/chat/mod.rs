@@ -40,8 +40,10 @@ pub mod media;
 pub mod model;
 pub mod muse;
 mod notice_dismissals;
+pub mod projection;
 mod rate_limits;
 pub mod remote_payload;
+pub mod semantics;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 #[cfg(test)]

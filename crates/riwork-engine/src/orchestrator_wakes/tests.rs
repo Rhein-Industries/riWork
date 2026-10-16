@@ -535,6 +535,7 @@ fn a_chat_is_woken_again_only_after_it_finished_a_turn() {
     fake_for(&chat.cwd).emit(ChatEvent::TurnCompleted {
         turn_id: "turn".into(),
         outcome: chat::model::TurnOutcome::Completed,
+        ended_at: None,
     });
     fixture
         .host

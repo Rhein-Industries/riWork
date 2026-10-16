@@ -36,6 +36,8 @@ fn edit(path: &str, change: &'static str) -> FileEdit {
 
 fn item(id: &str, status: ItemStatus, body: ItemBody) -> Item {
     Item {
+        started_at: None,
+        ended_at: None,
         presentation: Default::default(),
         id: id.into(),
         turn_id: Some("t1".into()),
@@ -69,6 +71,7 @@ fn a_chats_log_becomes_its_messages_and_short_accounts_of_its_tools() {
             ChatEvent::Info { info },
             ChatEvent::TurnStarted {
                 turn_id: "t1".into(),
+                started_at: None,
             },
             started(item(
                 "u1",

@@ -14,6 +14,33 @@ fn approval_modes_map_to_muse_words() {
     assert_eq!(policy(ApprovalMode::Plan), "denyUnmatched");
 }
 
+#[test]
+fn subagent_semantics_survives_role_named_tool_conversion() {
+    use crate::chat::model::ToolKind;
+    let fake = Fake::new(&[]);
+    let (sender, receiver) = mpsc::channel();
+    let mut session = Session::new(&fake.config(Provider::Muse), sender);
+    session.item(&json!({"itemId":"worker","kind":"subagent","role":"auditor","objective":"Audit contracts","result":{"summary":"Checked"},"turnId":"turn"}), true);
+    let transcript = fold(&receiver.try_iter().collect::<Vec<_>>());
+    let item = transcript
+        .items
+        .iter()
+        .find(|item| item.id == "worker")
+        .unwrap();
+    assert!(matches!(&item.body, ItemBody::ToolCall { tool, .. } if tool == "auditor"));
+    let metadata = item.presentation.semantics.as_ref().unwrap();
+    assert_eq!(metadata.kind, ToolKind::Subagent);
+    assert_eq!(
+        metadata.worker.as_ref().unwrap().role.as_deref(),
+        Some("auditor")
+    );
+    assert_eq!(
+        metadata.worker.as_ref().unwrap().objective.as_deref(),
+        Some("Audit contracts")
+    );
+    assert_eq!(metadata.worker.as_ref().unwrap().child_count, None);
+}
+
 fn choice(decision: &str, scope: &str, choice_id: &str) -> Choice {
     Choice {
         decision: decision.into(),
@@ -685,6 +712,7 @@ fn a_question_is_answered_by_label_and_closed_by_the_settle() {
         })
         .expect("a question");
     assert_eq!(question.request_id, "ui-1");
+    assert_eq!(question.item_id.as_deref(), Some("tc-1"));
     assert_eq!(question.questions.len(), 1);
     assert_eq!(question.questions[0].header.as_deref(), Some("Pick"));
     assert!(!question.questions[0].multi_select);
@@ -697,7 +725,7 @@ fn a_question_is_answered_by_label_and_closed_by_the_settle() {
     run.finish_turn();
     assert!(run.seen.iter().any(|event| matches!(
         event,
-        ChatEvent::QuestionResolved { request_id } if request_id == "ui-1"
+        ChatEvent::QuestionResolved { request_id, answer_summary } if request_id == "ui-1" && answer_summary.as_deref() == Some("B")
     )));
     run.end();
 }
@@ -803,7 +831,7 @@ fn a_queued_turn_is_adopted_when_it_starts() {
         run.seen
             .iter()
             .filter(
-                |event| matches!(event, ChatEvent::TurnStarted { turn_id } if turn_id == "turn-2")
+                |event| matches!(event, ChatEvent::TurnStarted { turn_id, .. } if turn_id == "turn-2")
             )
             .count(),
         1,
@@ -873,7 +901,7 @@ fn resume_adopts_the_running_turn_and_reapplies_the_mode() {
     assert!(
         run.seen.iter().any(|event| matches!(
             event,
-            ChatEvent::TurnStarted { turn_id } if turn_id == "turn-9"
+            ChatEvent::TurnStarted { turn_id, .. } if turn_id == "turn-9"
         )),
         "{:?}",
         run.seen
@@ -1137,7 +1165,9 @@ fn a_steer_refused_as_its_turn_ends_starts_the_next_turn_once() {
     run.send("one");
     run.until(is_turn_started);
     run.send("more");
-    run.until(|event| matches!(event, ChatEvent::TurnStarted { turn_id } if turn_id == "turn-2"));
+    run.until(
+        |event| matches!(event, ChatEvent::TurnStarted { turn_id, .. } if turn_id == "turn-2"),
+    );
     run.finish_turn();
     let starts = run.fake.received_method("turn/start");
     assert_eq!(starts.len(), 2);
@@ -1182,7 +1212,9 @@ fn a_withdrawn_queued_start_hands_on_its_context_and_waiting_message_without_a_s
     run.send("B");
     // Meant for "A", which never runs.
     run.driver.command(ChatCommand::Interrupt).unwrap();
-    run.until(|event| matches!(event, ChatEvent::TurnStarted { turn_id } if turn_id == "turn-3"));
+    run.until(
+        |event| matches!(event, ChatEvent::TurnStarted { turn_id, .. } if turn_id == "turn-3"),
+    );
     run.finish_turn();
     assert!(
         run.fake.received_method("turn/interrupt").is_empty(),

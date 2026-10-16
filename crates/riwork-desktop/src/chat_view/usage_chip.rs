@@ -127,6 +127,9 @@ impl ChatView {
                 .id("chat-usage-group")
                 .min_w_0()
                 .max_w_full()
+                .when_some(available, |group, available| {
+                    group.max_w(px(available.max(0.0)))
+                })
                 .overflow_hidden()
                 .flex()
                 .items_center()

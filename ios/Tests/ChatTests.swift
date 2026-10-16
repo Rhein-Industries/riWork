@@ -239,10 +239,9 @@ final class ChatTests: XCTestCase {
 
     // MARK: Leniency
 
-    func testAnUnknownEventItemOrDeltaIsNotReadAndTheOthersAre() throws {
+    func testUnknownEventsAndDeltasAreSkippedWhileUnknownItemBodiesSurvive() throws {
         for json in [
             #"{"event":"hologram","x":1}"#,
-            #"{"event":"item_started","item":{"id":"z","status":"completed","body":{"type":"hologram"}}}"#,
             #"{"event":"item_delta","item_id":"a","delta":{"kind":"smell","text":"x"}}"#,
             #"{"event":"state","state":"idle"}"#,
             #"{"nothing":true}"#
@@ -263,8 +262,8 @@ final class ChatTests: XCTestCase {
         """)
         let reply = try ChatEventsReply.parse(result, chatID: "c")
         XCTAssertEqual(reply.events.map(\.seq), [1, 2, 3, 4, 5, 6, 7], "an entry that is no {seq, event} at all is dropped; the rest keep their numbers")
-        XCTAssertEqual(reply.events.map { $0.event != nil }, [true, false, false, false, false, true, true])
-        XCTAssertEqual(reply.skipped, 4)
+        XCTAssertEqual(reply.events.map { $0.event != nil }, [true, false, true, false, false, true, true])
+        XCTAssertEqual(reply.skipped, 3)
         XCTAssertEqual(reply.next, 7)
     }
     func testAWordThePhoneDoesNotKnowInsideAKnownThingIsReadAsItsNearestHarmlessMeaning() throws {

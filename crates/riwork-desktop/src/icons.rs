@@ -334,7 +334,8 @@ fn device_square(bounds: Bounds<gpui::Pixels>, scale: f32) -> Bounds<gpui::Pixel
 /// beside it), centered in a box a little larger than the symbol so it never clips. `color`
 /// None takes the text color its element has at that moment, so a button that brightens its
 /// text on hover brightens the symbol with it. Controls in Native and Hermes request these
-/// explicitly; other designs, or a macOS without the symbol, leave the box empty.
+/// explicitly. These icons always use AppKit's system symbol renderer, so a terminal
+/// theme's monospaced font cannot substitute missing glyph squares.
 pub fn symbol(name: &'static str, points: f32, color: Option<u32>) -> AnyElement {
     symbol_with_limit(name, points, color, None)
 }
@@ -363,14 +364,11 @@ fn symbol_with_limit(
 ) -> AnyElement {
     let scale = ui_text::scale();
     let (points, side) = fitted_symbol_size(points, scale, limit);
-    let symbols = ui_text::is_native() || ui_text::face() == ui_text::Face::Hermes;
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
-            if symbols {
-                let tint = color.unwrap_or_else(|| text_color(window));
-                paint_symbol(name, points, Weight::Regular, tint, bounds, window);
-            }
+            let tint = color.unwrap_or_else(|| text_color(window));
+            paint_symbol(name, points, Weight::Regular, tint, bounds, window);
         },
     )
     .size(px(side))

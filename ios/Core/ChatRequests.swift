@@ -493,16 +493,25 @@ public struct ChatSnapshotReply: Sendable, Equatable, Codable {
     public let more: Bool
     public let items: [ChatSnapshotRow]
     public let controls: [ChatEvent]
+    /// Nil from an older host; an empty array explicitly contains no retained request records.
+    public let requests: [ChatRequestRecord]?
+    /// Host wall-clock turn timing, absent from older hosts.
+    public let turnTiming: [String: ChatTurnTiming]
+    /// Turn-start event sequence numbers used by the host to keep paging lossless.
+    public let turnStarts: [String: UInt64]
+    /// A transport limit clipped a turn; clients keep row anchors provisional until adjacent history is available.
+    public let provisional: Bool
     /// The host's active dismissals in this chat's account scope (`<provider>:<account>|<kind>@<resets>` or `…|<kind>#<item id>`);
     /// empty from an older host. The per-item `dismissed` flag stays authoritative; this covers a notice the flag has not reached yet.
     public let dismissedNotices: [String]
     /// Rows and controls the phone could not read (an item type or an event a newer host has, such as `rate_limits` for a phone
     /// before it): left out, never the whole snapshot. Not on the wire.
     public let skipped: Int
-    enum CodingKeys: String, CodingKey { case v, chatID = "chat_id", cursor, next, before, more, items, controls, dismissedNotices = "dismissed_notices" }
-    public init(chatID: String, cursor: String, next: UInt64, before: UInt64, more: Bool, items: [ChatSnapshotRow], controls: [ChatEvent], dismissedNotices: [String] = []) {
+    enum CodingKeys: String, CodingKey { case v, chatID = "chat_id", cursor, next, before, more, items, controls, requests, provisional, dismissedNotices = "dismissed_notices", turnTiming = "turn_timing", turnStarts = "turn_starts" }
+    public init(chatID: String, cursor: String, next: UInt64, before: UInt64, more: Bool, items: [ChatSnapshotRow], controls: [ChatEvent], dismissedNotices: [String] = [], requests: [ChatRequestRecord]? = nil, provisional: Bool = false, turnTiming: [String: ChatTurnTiming] = [:], turnStarts: [String: UInt64] = [:]) {
         v = 1; self.chatID = chatID; self.cursor = cursor; self.next = next; self.before = before; self.more = more; self.items = items; self.controls = controls
-        self.dismissedNotices = dismissedNotices; skipped = 0
+        self.dismissedNotices = dismissedNotices; self.requests = requests; self.provisional = provisional; skipped = 0
+        self.turnTiming = turnTiming; self.turnStarts = turnStarts
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -510,6 +519,10 @@ public struct ChatSnapshotReply: Sendable, Equatable, Codable {
         next = try c.decode(UInt64.self, forKey: .next); before = try c.decode(UInt64.self, forKey: .before); more = try c.decode(Bool.self, forKey: .more)
         let rows = try c.decode([Lenient<ChatSnapshotRow>].self, forKey: .items), events = try c.decode([Lenient<ChatEvent>].self, forKey: .controls)
         items = rows.compactMap(\.value); controls = events.compactMap(\.value)
+        requests = c.tolerant([Lenient<ChatRequestRecord>].self, forKey: .requests)?.compactMap(\.value)
+        turnTiming = c.tolerant([String: Lenient<ChatTurnTiming>].self, forKey: .turnTiming)?.compactMapValues(\.value) ?? [:]
+        turnStarts = c.tolerant([String: Lenient<UInt64>].self, forKey: .turnStarts)?.compactMapValues(\.value) ?? [:]
+        provisional = c.tolerant(Bool.self, forKey: .provisional) ?? false
         skipped = rows.count - items.count + events.count - controls.count
         dismissedNotices = (try? c.decodeIfPresent([String].self, forKey: .dismissedNotices)) ?? []
     }
@@ -524,13 +537,17 @@ extension RemoteTransport {
         let result = try await request(method: "chat.snapshot", params: params, id: UUID().uuidString.lowercased())
         let reply = try result.decode(ChatSnapshotReply.self)
         guard reply.v == 1, reply.chatID == chatID, reply.cursor.count <= 80, !reply.cursor.isEmpty,
-              reply.items.count <= (itemIDs.isEmpty ? 50 : 100), cursor == nil || reply.cursor == cursor,
+              // 50 is a preference: the host extends regular pages to whole
+              // turns, bounded by the relay's byte limit. ID hydration stays capped.
+              itemIDs.isEmpty || reply.items.count <= 100, cursor == nil || reply.cursor == cursor,
               cursor == nil || reply.controls.isEmpty,
               // A first row left out (unreadable) moves the first order on; `before` is the host's.
-              reply.before == reply.items.first?.order ?? 0 || reply.skipped > 0,
+              // Whole-turn pages point before the turn-start event, which may
+              // precede the first item (and its approval/question records).
+              reply.before <= (reply.items.first?.order ?? 0) || reply.skipped > 0,
               // A page of only unreadable rows is still a page: history goes on from the host's `before`.
               !reply.more || !reply.items.isEmpty || reply.skipped > 0,
-              before.map { reply.before < $0 } ?? true || !reply.more else { throw ChatControlError.unreadableReply }
+              (before.map { reply.before < $0 } ?? true) || !reply.more else { throw ChatControlError.unreadableReply }
         var last: UInt64 = 0
         var ids = Set<String>()
         for row in reply.items {

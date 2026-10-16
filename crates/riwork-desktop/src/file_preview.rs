@@ -869,3 +869,36 @@ mod tests {
         assert!(render_pdf(&bytes, 3).is_err());
     }
 }
+
+pub(crate) fn format_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{} KB", (bytes + 512) / 1024)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+pub(crate) fn middle_elide(text: &str, limit: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= limit {
+        return text.into();
+    }
+    let extension = text
+        .rfind('.')
+        .filter(|dot| text.rfind('/').is_none_or(|slash| *dot > slash))
+        .map(|dot| &text[dot..])
+        .unwrap_or_default();
+    let suffix: Vec<char> = extension.chars().collect();
+    let budget = limit.saturating_sub(suffix.len() + 1).max(2);
+    let head = (budget as f32 * 0.6).ceil() as usize;
+    let tail = budget - head;
+    let stem_len = chars.len() - suffix.len();
+    chars[..head.min(stem_len)]
+        .iter()
+        .chain(std::iter::once(&'…'))
+        .chain(chars[stem_len.saturating_sub(tail)..stem_len].iter())
+        .chain(suffix.iter())
+        .collect()
+}

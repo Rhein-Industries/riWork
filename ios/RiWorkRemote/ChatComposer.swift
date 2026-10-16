@@ -219,7 +219,10 @@ struct ChatComposer: View {
 
     private var canSend: Bool { connected && !conversation.sending && pending.isEmpty && conversation.hasMessage }
     private var keyContext: ChatKeyContext {
-        ChatKeyContext(composerIsEmpty: conversation.draft.isEmpty && conversation.attachments.isEmpty, approval: approval, busy: state.isBusy, canSend: connected && !conversation.sending && pending.isEmpty)
+        // UIKit may deliver another key before SwiftUI replaces its handler.
+        // Read the live request queue so an optimistic answer immediately moves
+        // the next key to the next request, including its offered decisions.
+        ChatKeyContext(composerIsEmpty: conversation.draft.isEmpty && conversation.attachments.isEmpty, approval: conversation.openApprovals.first, busy: state.isBusy, canSend: connected && !conversation.sending && pending.isEmpty)
     }
     private var actions: ComposerActions {
         ComposerActions(typed: conversation.hasMessage, busy: state.isBusy, mic: style.mic,

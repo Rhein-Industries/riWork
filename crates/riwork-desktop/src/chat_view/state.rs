@@ -67,6 +67,9 @@ impl Summary {
 
 pub struct ChatModel {
     pub transcript: Transcript,
+    /// Changes only when projection headers/topology can change. Body-only
+    /// deltas retain the cached rows while the transcript revision advances.
+    pub projection_revision: u64,
     pub link: Link,
     /// The last event applied; a new subscription starts after it.
     pub last_seq: u64,
@@ -81,6 +84,7 @@ impl ChatModel {
     pub fn new() -> Self {
         Self {
             transcript: Transcript::default(),
+            projection_revision: 0,
             link: Link::Connecting,
             last_seq: 0,
             turn_finished: false,
@@ -106,6 +110,9 @@ impl ChatModel {
                 envelope.event,
                 ChatEvent::ItemStarted { .. }
                     | ChatEvent::ItemCompleted { .. }
+                    | ChatEvent::TurnStarted { .. }
+                    | ChatEvent::ApprovalResolved { .. }
+                    | ChatEvent::QuestionResolved { .. }
                     | ChatEvent::TurnCompleted { .. }
                     | ChatEvent::State { .. }
                     | ChatEvent::QuestionRequested { .. }
@@ -122,7 +129,9 @@ impl ChatModel {
                         touched.insert(at);
                     }
                 }
-                ChatEvent::TurnCompleted { turn_id, outcome } => {
+                ChatEvent::TurnCompleted {
+                    turn_id, outcome, ..
+                } => {
                     self.completed.push((
                         turn_id.clone(),
                         outcome.clone(),
@@ -141,10 +150,14 @@ impl ChatModel {
                 }
                 _ => {}
             }
-            self.transcript.apply(&envelope.event);
+            self.transcript
+                .apply_sequenced(envelope.seq, &envelope.event);
             self.index_new_items();
         }
         touched.retain(|at| *at < before);
+        if projection_changed {
+            self.projection_revision = self.projection_revision.wrapping_add(1);
+        }
         Applied {
             appended: self.transcript.items.len() - before,
             touched,
@@ -163,6 +176,26 @@ impl ChatModel {
         {
             self.positions.insert(item.id.clone(), at);
         }
+    }
+
+    /// Stable item positions make projection rendering independent of history size.
+    pub fn item(&self, id: &str) -> Option<(usize, &crate::chat::model::Item)> {
+        self.positions
+            .get(id)
+            .and_then(|&at| self.transcript.items.get(at).map(|item| (at, item)))
+            .filter(|(_, item)| item.id == id)
+            .or_else(|| {
+                // Source-only view fixtures install transcripts without event folds.
+                #[cfg(test)]
+                return self
+                    .transcript
+                    .items
+                    .iter()
+                    .enumerate()
+                    .find(|(_, item)| item.id == id);
+                #[cfg(not(test))]
+                None
+            })
     }
 
     pub fn provider(&self) -> Option<Provider> {
@@ -248,6 +281,8 @@ mod tests {
     fn started(id: &str, body: ItemBody) -> ChatEvent {
         ChatEvent::ItemStarted {
             item: Item {
+                started_at: None,
+                ended_at: None,
                 presentation: Default::default(),
                 id: id.into(),
                 turn_id: Some("t1".into()),

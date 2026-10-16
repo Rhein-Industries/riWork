@@ -76,7 +76,7 @@ pub fn resolve(root: &Path, cwd: &Path, target: &str) -> Result<(PathBuf, Option
     let path = normalized;
     crate::file_preview::validated_live_editor_path(root, &path).map(|path| (path, line))
 }
-fn shaped(text: &str) -> bool {
+pub(super) fn shaped(text: &str) -> bool {
     if crate::terminal_links::is_openable_url(text) || text.contains("://") {
         return false;
     }
@@ -148,5 +148,18 @@ mod tests {
         std::os::unix::fs::symlink("/etc/hosts", root.join("link.txt")).unwrap();
         assert!(resolve(&root, &root, "link.txt").is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+impl super::ChatView {
+    pub(super) fn preview_reference(
+        &self,
+        target: &str,
+        _owner: Option<&str>,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        cx.emit(super::ChatViewEvent::OpenFile {
+            target: target.into(),
+        });
     }
 }

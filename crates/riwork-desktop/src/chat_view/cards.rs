@@ -3,7 +3,7 @@
 //! screen.
 
 use crate::chat::model::{
-    ChangeKind, FileChange, Item, ItemBody, ItemStatus, NoticeLevel, Step, StepStatus,
+    ChangeKind, FileChange, Item, ItemBody, ItemStatus, NoticeLevel, Step, StepStatus, ToolKind,
 };
 use serde_json::Value;
 
@@ -94,13 +94,13 @@ pub fn head(item: &Item, stats: Option<&FileStats>) -> Option<Head> {
             // The explanation is the first line of the card's body.
             subtitle: None,
             badge: None,
-            expandable: false,
+            expandable: true,
         },
         ItemBody::Todo { items } => Head {
             title: format!("Todo · {}", progress(items)),
             subtitle: None,
             badge: None,
-            expandable: false,
+            expandable: true,
         },
         ItemBody::WebSearch { query } => Head {
             title: format!("Web search · {}", first_line(query)),
@@ -127,9 +127,9 @@ pub fn head(item: &Item, stats: Option<&FileStats>) -> Option<Head> {
 
 fn command_badge(status: ItemStatus, exit_code: Option<i32>) -> Option<Badge> {
     match (status, exit_code) {
-        (ItemStatus::Completed, Some(0)) => Some(Badge::new("exit 0", Tone::Muted)),
+        (ItemStatus::Completed, Some(0)) => None,
         (ItemStatus::Completed | ItemStatus::Failed, Some(code)) if code != 0 => {
-            Some(Badge::new(format!("exit {code}"), Tone::Error))
+            Some(Badge::new(format!("Exit {code}"), Tone::Error))
         }
         _ => status_badge(status),
     }
@@ -139,15 +139,298 @@ fn command_badge(status: ItemStatus, exit_code: Option<i32>) -> Option<Badge> {
 pub fn status_badge(status: ItemStatus) -> Option<Badge> {
     match status {
         ItemStatus::InProgress => Some(Badge {
-            label: "running".into(),
+            label: "Running".into(),
             tone: Tone::Accent,
             live: true,
         }),
         ItemStatus::Completed => None,
-        ItemStatus::Failed => Some(Badge::new("failed", Tone::Error)),
-        ItemStatus::Declined => Some(Badge::new("declined", Tone::Warning)),
-        ItemStatus::Interrupted => Some(Badge::new("interrupted", Tone::Warning)),
+        ItemStatus::Failed => Some(Badge::new("Failed", Tone::Error)),
+        ItemStatus::Declined => Some(Badge::new("Declined", Tone::Warning)),
+        ItemStatus::Interrupted => Some(Badge::new("Interrupted", Tone::Muted)),
     }
+}
+
+/// Header details stay factual: absent metadata never turns into an invented count.
+pub fn metadata(item: &Item, head: Option<&Head>) -> Vec<String> {
+    let mut parts = Vec::new();
+    match &item.body {
+        ItemBody::Command { cwd: Some(cwd), .. } => parts.push(short_path(cwd)),
+        ItemBody::FileChange { .. } => {
+            if let Some(counts) = head.and_then(|head| head.subtitle.as_ref()) {
+                parts.push(counts.clone());
+            }
+        }
+        _ => {}
+    }
+    if let Some(semantics) = &item.presentation.semantics {
+        if let Some(range) = &semantics.range {
+            parts.push(match range.end {
+                Some(end) if end != range.start => format!("L{}–{end}", range.start),
+                _ => format!("L{}", range.start),
+            });
+        }
+        if let Some(count) = semantics.match_count {
+            parts.push(format!(
+                "{count} {}",
+                if count == 1 { "match" } else { "matches" }
+            ));
+        }
+        if semantics.kind == ToolKind::Subagent {
+            if let Some(worker) = &semantics.worker {
+                if let Some(role) = &worker.role {
+                    parts.push(role.clone());
+                }
+                if let Some(count) = worker.child_count {
+                    parts.push(format!("{count} tools"));
+                }
+            }
+        }
+    }
+    parts
+}
+
+pub fn duration(ms: u64) -> String {
+    let seconds = ms / 1000;
+    if seconds >= 60 {
+        format!("{}m {}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+/// The compact output is the first three and last twelve lines. A running row
+/// deliberately exposes only a three-line live tail after manual disclosure.
+#[derive(Debug, PartialEq, Eq)]
+pub struct OutputPreview {
+    pub text: String,
+    pub omitted: usize,
+    /// The synthetic head/tail separator, never part of a drag-copy payload.
+    pub omission_line: Option<usize>,
+}
+
+impl OutputPreview {
+    pub fn selectable_lines(&self) -> impl Iterator<Item = (usize, &str)> {
+        self.text
+            .split('\n')
+            .enumerate()
+            .filter(move |(line, _)| !self.text.is_empty() && Some(*line) != self.omission_line)
+    }
+}
+
+/// Adjacent ordinary output lines share one text layout. Explicit errors retain
+/// their full-width row tint, and the synthetic omission marker is not selectable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputRunKind {
+    Plain,
+    Error,
+    Omission,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct OutputRun {
+    pub first_line: usize,
+    pub text: String,
+    pub kind: OutputRunKind,
+}
+
+impl OutputRun {
+    pub fn selection_key(&self, base: &str) -> Option<String> {
+        match self.kind {
+            OutputRunKind::Plain => Some(format!("{base}:run:{}", self.first_line)),
+            OutputRunKind::Error => Some(format!("{base}:{}", self.first_line)),
+            OutputRunKind::Omission => None,
+        }
+    }
+}
+
+pub fn output_runs(preview: &OutputPreview) -> Vec<OutputRun> {
+    let mut runs: Vec<OutputRun> = Vec::new();
+    if preview.text.is_empty() {
+        return runs;
+    }
+    for (line, text) in preview.text.split('\n').enumerate() {
+        let kind = if preview.omission_line == Some(line) {
+            OutputRunKind::Omission
+        } else if output_line_is_error(text) {
+            OutputRunKind::Error
+        } else {
+            OutputRunKind::Plain
+        };
+        if kind == OutputRunKind::Plain
+            && let Some(previous) = runs.last_mut().filter(|run| run.kind == kind)
+        {
+            previous.text.push('\n');
+            previous.text.push_str(text);
+        } else {
+            runs.push(OutputRun {
+                first_line: line,
+                text: text.to_owned(),
+                kind,
+            });
+        }
+    }
+    runs
+}
+
+fn output_line_is_error(line: &str) -> bool {
+    let lower = line.trim_start().to_ascii_lowercase();
+    ["error", "stderr", "fatal", "panic", "panicked"]
+        .iter()
+        .any(|prefix| {
+            lower
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.is_empty() || !rest.starts_with(char::is_alphanumeric))
+        })
+}
+
+pub fn omission_label(count: usize, file: bool) -> String {
+    let plural = if count == 1 { "" } else { "s" };
+    if file {
+        format!("… {count} more line{plural}")
+    } else {
+        format!("… {count} line{plural} omitted")
+    }
+}
+
+pub fn output_preview(raw: &str, running: bool, show_all: bool) -> OutputPreview {
+    let clean = clean_output_ref(raw);
+    let raw = clean.as_ref();
+    const BYTES: usize = 32 * 1024;
+    if running || show_all {
+        let (shown, omitted) = tail(raw, if running { 3 } else { 200 }, BYTES);
+        return OutputPreview {
+            text: shown.to_owned(),
+            omitted,
+            omission_line: None,
+        };
+    }
+    let total = raw.trim_end_matches('\n').lines().count();
+    if total <= 15 {
+        let (shown, omitted) = tail(raw, 15, BYTES);
+        return OutputPreview {
+            text: shown.to_owned(),
+            omitted,
+            omission_line: None,
+        };
+    }
+    let first_end = raw
+        .match_indices('\n')
+        .nth(2)
+        .map_or(raw.len(), |(at, _)| at);
+    let mut end = first_end.min(BYTES / 2);
+    while !raw.is_char_boundary(end) {
+        end -= 1;
+    }
+    let first = raw[..end].trim_end_matches('\n');
+    let (last, _) = tail(raw, 12, BYTES / 2);
+    let omitted = total.saturating_sub(first.lines().count() + last.lines().count());
+    OutputPreview {
+        text: format!("{first}\n{}\n{}", omission_label(omitted, false), last),
+        omitted,
+        omission_line: Some(first.split('\n').count()),
+    }
+}
+
+/// A file excerpt keeps source order and derives its gutter only from recorded numbers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExcerptLine {
+    pub number: Option<usize>,
+    pub text: String,
+}
+
+pub fn numbered_excerpt(raw: &str, range_start: Option<usize>) -> Vec<ExcerptLine> {
+    raw.trim_end_matches('\n')
+        .lines()
+        .enumerate()
+        .map(|(index, line)| {
+            let trimmed = line.trim_start();
+            let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+            let prefix = &trimmed[..digits];
+            let rest = &trimmed[digits..];
+            let numbered = (digits > 0)
+                .then(|| prefix.parse::<usize>().ok())
+                .flatten()
+                .and_then(|number| {
+                    rest.strip_prefix('→')
+                        .or_else(|| rest.strip_prefix('\t'))
+                        .map(|text| (number, text))
+                });
+            let (number, text) = match numbered {
+                Some((number, text)) => (Some(number), text),
+                None => (range_start.map(|start| start.saturating_add(index)), line),
+            };
+            ExcerptLine {
+                number,
+                text: clean_output(text),
+            }
+        })
+        .collect()
+}
+
+/// Copy the complete stored excerpt, stripping provider gutter prefixes, never truncating.
+pub fn excerpt_copy(raw: &str) -> String {
+    let mut text = numbered_excerpt(raw, None)
+        .into_iter()
+        .map(|line| line.text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if raw.ends_with('\n') {
+        text.push('\n');
+    }
+    text
+}
+
+/// Files read top-down: a bounded head, rather than a shell's head-and-tail preview.
+pub fn file_output_preview(raw: &str, show_all: bool) -> OutputPreview {
+    let text = excerpt_copy(raw);
+    let lines: Vec<_> = text.trim_end_matches('\n').lines().collect();
+    let cap = if show_all { 200 } else { 15 };
+    let mut shown = String::new();
+    let mut count = 0;
+    for line in lines.iter().take(cap) {
+        let extra = usize::from(count > 0);
+        let available = (32 * 1024usize).saturating_sub(shown.len() + extra);
+        if available == 0 {
+            break;
+        }
+        if count > 0 {
+            shown.push('\n');
+        }
+        let mut end = line.len().min(available);
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        shown.push_str(&line[..end]);
+        count += 1;
+        if end < line.len() {
+            break;
+        }
+    }
+    let partial = count > 0
+        && lines.get(count - 1).is_some_and(|line| {
+            shown
+                .lines()
+                .last()
+                .is_some_and(|last| last.len() < line.len())
+        });
+    OutputPreview {
+        text: shown,
+        omitted: lines.len().saturating_sub(count) + usize::from(partial),
+        omission_line: None,
+    }
+}
+
+/// Terminal output has no stderr stream in stored history. Tint explicit error
+/// lines rather than suggesting all lines of a failed command are errors.
+pub fn error_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut offset = 0;
+    text.split_inclusive('\n')
+        .filter_map(|line| {
+            let start = offset;
+            offset += line.len();
+            output_line_is_error(line).then_some(start..start + line.trim_end_matches('\n').len())
+        })
+        .collect()
 }
 
 /// The tone of a notice line.
@@ -235,8 +518,8 @@ fn tool_name(server: Option<&str>, tool: &str) -> (Option<String>, String) {
     (server.map(str::to_owned), tool.to_owned())
 }
 
-/// The input of a tool call in a few words: the first of the usual arguments that is
-/// there, else the arguments as JSON.
+/// The first known semantic argument, when present. Unknown object fields stay
+/// absent from collapsed headers; their JSON is available only after disclosure.
 pub fn input_summary(input: &Value) -> String {
     const USUAL: [&str; 11] = [
         "command",
@@ -258,8 +541,8 @@ pub fn input_summary(input: &Value) -> String {
             .iter()
             .find_map(|key| fields.get(*key).and_then(Value::as_str))
             .map(str::to_owned)
-            .unwrap_or_else(|| input.to_string()),
-        other => other.to_string(),
+            .unwrap_or_default(),
+        _ => String::new(),
     };
     let line = first_line(&summary);
     if summary.trim().lines().count() > 1 {
@@ -302,6 +585,22 @@ fn short_path(path: &str) -> String {
 /// Command output as it is drawn: terminal escapes gone, a carriage return back to the
 /// start of its line as a terminal shows it (so a progress bar is its last state), tabs
 /// spread.
+/// Ordinary output already has display-safe bytes. Borrow it until the bounded
+/// preview is built rather than allocating and cleaning every historical line.
+fn clean_output_ref(raw: &str) -> std::borrow::Cow<'_, str> {
+    // C1 controls use the UTF-8 C2 prefix. Treat every C2 sequence as requiring
+    // cleanup so printable Unicode still follows exactly the existing filter.
+    if raw
+        .as_bytes()
+        .iter()
+        .any(|&byte| byte < b' ' && byte != b'\n' || byte == 0x7f || byte == 0xc2)
+    {
+        std::borrow::Cow::Owned(clean_output(raw))
+    } else {
+        std::borrow::Cow::Borrowed(raw)
+    }
+}
+
 pub fn clean_output(raw: &str) -> String {
     let mut lines = Vec::new();
     for line in raw.split('\n') {
@@ -367,6 +666,24 @@ pub fn tail(text: &str, max_lines: usize, max_bytes: usize) -> (&str, usize) {
 mod tests {
     use super::*;
     #[test]
+    fn plain_output_is_borrowed_and_control_cleanup_stays_exact() {
+        let plain = "ordinary line\nUnicode résumé 東京\n";
+        assert!(matches!(
+            clean_output_ref(plain),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        for control in (0u8..=0x1f).chain(0x7f..=0x9f) {
+            let source = format!("before{}after\n", char::from(control));
+            assert_eq!(
+                clean_output_ref(&source),
+                clean_output(&source),
+                "control {control:#x}"
+            );
+        }
+        assert_eq!(clean_output_ref("left\tright\rrewritten"), "rewritten");
+    }
+
+    #[test]
     fn output_loses_escapes_and_keeps_the_last_state_of_a_progress_line() {
         assert_eq!(
             clean_output("\u{1b}[1;32m   Compiling\u{1b}[0m riwork\n"),
@@ -400,4 +717,66 @@ mod tests {
         assert_eq!(hidden, 1);
         assert_eq!(tail("", 10, 10), ("", 0));
     }
+    #[test]
+    fn opened_output_shows_three_start_and_twelve_end_lines() {
+        let output = (1..=40).map(|n| format!("line {n}\n")).collect::<String>();
+        let preview = output_preview(&output, false, false);
+        assert_eq!(preview.omitted, 25);
+        assert!(preview.text.starts_with("line 1\nline 2\nline 3\n"));
+        assert!(preview.text.contains("25 lines omitted\nline 29\n"));
+        assert!(preview.text.ends_with("line 40"));
+        assert!(!preview.text.contains("line 4\n"));
+    }
+
+    #[test]
+    fn live_output_is_three_lines_and_show_all_stays_bounded() {
+        let output = (1..=500).map(|n| format!("line {n}\n")).collect::<String>();
+        let live = output_preview(&output, true, true);
+        assert_eq!(live.text, "line 498\nline 499\nline 500");
+        let all = output_preview(&output, false, true);
+        assert_eq!(all.text.lines().count(), 200);
+        assert_eq!(all.omitted, 300);
+        let enormous = "é".repeat(100_000);
+        let all = output_preview(&enormous, false, true);
+        assert!(all.text.len() <= 32 * 1024);
+        let tabs = output_preview(&"\t".repeat(100_000), false, true);
+        assert!(tabs.text.len() <= 32 * 1024);
+    }
+
+    #[test]
+    fn error_highlights_do_not_tint_ordinary_failed_command_output() {
+        let text = "Checking code\n  error[E001]: bad type\nstderr: missing\nerrorless output\nfatal: exit\n";
+        let ranges = error_ranges(text);
+        assert_eq!(
+            ranges
+                .iter()
+                .map(|range| &text[range.clone()])
+                .collect::<Vec<_>>(),
+            ["  error[E001]: bad type", "stderr: missing", "fatal: exit",]
+        );
+    }
+
+    #[test]
+    fn collapsed_unknown_input_never_falls_back_to_json() {
+        assert!(input_summary(&serde_json::json!({"arbitrary": {"secret": "value"}})).is_empty());
+    }
+}
+
+/// Provider placeholders add nothing when the actual image is already visible.
+/// Keep captions and their whitespace intact, dropping only dedicated marker lines.
+pub fn inline_image_output(output: &str, has_images: bool) -> std::borrow::Cow<'_, str> {
+    if !has_images
+        || !output
+            .lines()
+            .any(|line| line.trim().eq_ignore_ascii_case("[image]"))
+    {
+        return std::borrow::Cow::Borrowed(output);
+    }
+    std::borrow::Cow::Owned(
+        output
+            .lines()
+            .filter(|line| !line.trim().eq_ignore_ascii_case("[image]"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }

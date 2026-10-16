@@ -174,6 +174,7 @@ fn request_refresh_preserves_entities_and_failed_answers_new_request_does_not_in
 ) {
     let (handle, view, recording) = mount(cx);
     let question = Question {
+        item_id: None,
         request_id: "q1".into(),
         questions: vec![QuestionPrompt {
             header: None,

@@ -121,6 +121,8 @@ mod tests {
 
     fn item(id: &str, body: ItemBody) -> Item {
         Item {
+            started_at: None,
+            ended_at: None,
             presentation: Default::default(),
             id: id.into(),
             turn_id: Some("turn".into()),

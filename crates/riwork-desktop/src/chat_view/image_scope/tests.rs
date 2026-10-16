@@ -591,12 +591,16 @@ mod mounted {
     }
 
     #[gpui::test]
-    fn open_in_files_is_offered_only_for_images_files_can_show(cx: &mut TestAppContext) {
+    fn project_image_chips_open_the_chat_viewer_without_an_extra_disclosure(
+        cx: &mut TestAppContext,
+    ) {
         let fixture = Fixture::new();
         let (handle, view, _feed) = super::super::super::editor_tests::mount(cx);
         let info = fixture.chat(Some(ALPHA), Some("alpha-main"), &fixture.alpha, None);
         let snapshot = sent(&fixture.home, CHAT, &fixture.alpha.join("shot.png"));
         let item = Item {
+            started_at: None,
+            ended_at: None,
             // A final answer: Normal mode shows it, with its images.
             presentation: Presentation {
                 phase: Some(MessagePhase::Final),
@@ -639,29 +643,24 @@ mod mounted {
         })
         .unwrap();
         cx.run_until_parked();
-        for key in ["item-1:image:0", "item-1:image:1", "item-1:image:2"] {
-            cx.update_window(handle.into(), |_, window, cx| {
-                window.render_frame(cx);
-                window.click(format!("fold:{key}"), cx);
-            })
-            .unwrap();
-            cx.run_until_parked();
-        }
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
             assert_eq!(view.read(cx).image_slot("item-1:image:0"), Some(Ok(false)));
             assert_eq!(view.read(cx).image_slot("item-1:image:1"), Some(Ok(true)));
-            // The other worktree's image is viewed in the chat; its own opens in Files too.
-            assert!(window.try_find("view:item-1:image:0").is_some());
-            assert!(window.try_find("preview:item-1:image:0").is_none());
-            assert!(window.try_find("view:item-1:image:1").is_some());
-            assert!(window.try_find("preview:item-1:image:1").is_some());
-            // The chat's own uploaded snapshot is shown too, and is not a Files item.
             assert_eq!(view.read(cx).image_slot("item-1:image:2"), Some(Ok(false)));
-            assert!(window.try_find("view:item-1:image:2").is_some());
-            assert!(window.try_find("preview:item-1:image:2").is_none());
-            // The full viewer opens for the cross-worktree image.
-            window.click("view:item-1:image:0", cx);
+            for index in 0..3 {
+                assert!(
+                    window
+                        .try_find(format!("chip:artifact:item-1:image:{index}"))
+                        .is_some()
+                );
+                assert!(
+                    window
+                        .try_find(format!("fold:item-1:image:{index}"))
+                        .is_none()
+                );
+            }
+            window.click("chip:artifact:item-1:image:0", cx);
         })
         .unwrap();
         cx.run_until_parked();

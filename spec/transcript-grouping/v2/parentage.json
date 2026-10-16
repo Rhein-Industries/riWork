@@ -1,0 +1,643 @@
+{
+  "spec_version": 2,
+  "cases": [
+    {
+      "name": "Subagent children group within parent and count once in Normal",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "agent",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "subagent",
+              "target": "review"
+            }
+          }
+        },
+        {
+          "id": "child1",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read",
+              "target": "a.rs"
+            },
+            "parent_id": "agent"
+          }
+        },
+        {
+          "id": "child2",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "search",
+              "target": "word"
+            },
+            "parent_id": "agent"
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "agent",
+          "kind": "subagent",
+          "title": "Agent",
+          "target": "review",
+          "children": [
+            {
+              "id": "g:t:child1",
+              "kind": "group",
+              "title": "Read 1 file · Searched 1 pattern",
+              "children": [
+                {
+                  "id": "child1",
+                  "kind": "read",
+                  "title": "Read",
+                  "target": "a.rs",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "child2",
+                  "kind": "search",
+                  "title": "Searched",
+                  "target": "word",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                }
+              ],
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ],
+      "anchors": {
+        "child2": "agent"
+      }
+    },
+    {
+      "name": "Normal counts child work once and excludes parent call",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "agent",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "subagent",
+              "target": "review"
+            }
+          }
+        },
+        {
+          "id": "child1",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read",
+              "target": "a.rs"
+            },
+            "parent_id": "agent"
+          }
+        },
+        {
+          "id": "child2",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "search",
+              "target": "word"
+            },
+            "parent_id": "agent"
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "expected_rows": [
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Worked · 4 reads",
+          "children": [
+            {
+              "id": "a",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "agent",
+              "kind": "subagent",
+              "title": "Agent",
+              "target": "review",
+              "children": [
+                {
+                  "id": "g:t:child1",
+                  "kind": "group",
+                  "title": "Read 1 file · Searched 1 pattern",
+                  "children": [
+                    {
+                      "id": "child1",
+                      "kind": "read",
+                      "title": "Read",
+                      "target": "a.rs",
+                      "open": false,
+                      "failed_count": 0,
+                      "running": false,
+                      "provisional": false,
+                      "elided": false
+                    },
+                    {
+                      "id": "child2",
+                      "kind": "search",
+                      "title": "Searched",
+                      "target": "word",
+                      "open": false,
+                      "failed_count": 0,
+                      "running": false,
+                      "provisional": false,
+                      "elided": false
+                    }
+                  ],
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                }
+              ],
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "b",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Orphan and cyclic parent metadata do not lose items",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "subagent"
+            },
+            "parent_id": "b"
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "subagent"
+            },
+            "parent_id": "a"
+          }
+        },
+        {
+          "id": "c",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            },
+            "parent_id": "missing"
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "subagent",
+          "title": "Agent",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "subagent",
+          "title": "Agent",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "c",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "items": [
+        {
+          "id": "agent",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "Task"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "subagent"
+            }
+          }
+        },
+        {
+          "id": "child1",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "Read"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            },
+            "parent_id": "agent"
+          }
+        },
+        {
+          "id": "child2",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "Read"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            },
+            "parent_id": "agent"
+          }
+        }
+      ],
+      "item_sequences": {
+        "agent": 1,
+        "child1": 2,
+        "child2": 4
+      },
+      "requests": [
+        {
+          "request_id": "q",
+          "kind": "question",
+          "title": "Continue?",
+          "turn_id": "t",
+          "item_id": "child2",
+          "requested_seq": 3,
+          "resolved_seq": 5,
+          "resolution": "answered"
+        }
+      ],
+      "name": "A child question breaks the nested run at original sequence",
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "agent",
+          "kind": "subagent",
+          "title": "Agent",
+          "children": [
+            {
+              "id": "child1",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "request:q",
+              "kind": "request",
+              "title": "Answered: Continue?",
+              "request_id": "q",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "child2",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "items": [
+        {
+          "id": "agent",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "Task"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "subagent"
+            }
+          }
+        },
+        {
+          "id": "child1",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "Read"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            },
+            "parent_id": "agent"
+          }
+        },
+        {
+          "id": "child2",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "Read"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            },
+            "parent_id": "agent"
+          }
+        }
+      ],
+      "item_sequences": {
+        "agent": 1,
+        "child1": 2,
+        "child2": 4
+      },
+      "requests": [
+        {
+          "request_id": "q",
+          "kind": "question",
+          "title": "Continue?",
+          "turn_id": "t",
+          "item_id": "child2",
+          "requested_seq": 3,
+          "resolved_seq": 5,
+          "resolution": "answered"
+        }
+      ],
+      "name": "Normal lifts a nested request once and preserves its group boundary",
+      "expected_rows": [
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Worked · 2 reads",
+          "children": [
+            {
+              "id": "agent",
+              "kind": "subagent",
+              "title": "Agent",
+              "children": [
+                {
+                  "id": "child1",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "child2",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                }
+              ],
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "request:q",
+          "kind": "request",
+          "title": "Answered: Continue?",
+          "request_id": "q",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    }
+  ]
+}

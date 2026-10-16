@@ -495,20 +495,196 @@ pub enum MessagePhase {
     Final,
 }
 
+/// Stable tool categories. Unknown provider values remain renderable as `Other`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolKind {
+    Shell,
+    Read,
+    Search,
+    List,
+    WebSearch,
+    WebFetch,
+    Mcp,
+    Subagent,
+    #[default]
+    Other,
+}
+
+impl<'de> Deserialize<'de> for ToolKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            Some("shell") => Self::Shell,
+            Some("read") => Self::Read,
+            Some("search") => Self::Search,
+            Some("list") => Self::List,
+            Some("web_search") => Self::WebSearch,
+            Some("web_fetch") => Self::WebFetch,
+            Some("mcp") => Self::Mcp,
+            Some("subagent") => Self::Subagent,
+            _ => Self::Other,
+        })
+    }
+}
+
+// Presentation is best-effort metadata: malformed or relay-elided hints must not
+// make an otherwise readable item or durable event disappear.
+fn optional_metadata<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if value.get("elided").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Ok(None);
+    }
+    Ok(serde_json::from_value(value).ok())
+}
+
+fn default_metadata<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    Ok(optional_metadata(deserializer)?.unwrap_or_default())
+}
+
+fn metadata_list<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value.as_array().map_or_else(Vec::new, |values| {
+        values
+            .iter()
+            .filter_map(|value| serde_json::from_value(value.clone()).ok())
+            .collect()
+    }))
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineRange {
+    pub start: u64,
+    #[serde(
+        default,
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub end: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PathRef {
+    pub path: String,
+    #[serde(
+        default,
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub line: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Worker {
+    #[serde(
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub role: Option<String>,
+    #[serde(
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub objective: Option<String>,
+    #[serde(
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub child_count: Option<u64>,
+}
+
+/// Additive semantic hints, populated at provider conversion or by legacy fallback.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Semantics {
+    pub kind: ToolKind,
+    #[serde(
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub target: Option<String>,
+    #[serde(
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub range: Option<LineRange>,
+    #[serde(
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub match_count: Option<u64>,
+    #[serde(
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub excerpt: Option<String>,
+    #[serde(
+        deserialize_with = "metadata_list",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub produced: Vec<PathRef>,
+    #[serde(
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub worker: Option<Worker>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Presentation {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub semantics: Option<Semantics>,
+    #[serde(
+        default,
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_id: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub phase: Option<MessagePhase>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "metadata_list",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub images: Vec<ChatImage>,
     /// Owned, bounded submitted snapshots, including text files. Durable history
     /// can distinguish equal-length versions without inlining their payloads.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "metadata_list",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub attachments: Vec<super::attachments::Attachment>,
 }
 impl Presentation {
     pub fn is_empty(&self) -> bool {
-        self.phase.is_none() && self.images.is_empty() && self.attachments.is_empty()
+        self.phase.is_none()
+            && self.images.is_empty()
+            && self.attachments.is_empty()
+            && self.semantics.is_none()
+            && self.parent_id.is_none()
     }
 }
 
@@ -529,8 +705,25 @@ pub enum ImageSource {
 /// One entry of the transcript.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Item {
+    /// Host-captured lifecycle times in Unix milliseconds; absent in older logs.
+    #[serde(
+        default,
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub started_at: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ended_at: Option<u64>,
     /// Additive presentation hints; older logs and clients may omit/ignore them.
-    #[serde(default, skip_serializing_if = "Presentation::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "default_metadata",
+        skip_serializing_if = "Presentation::is_empty"
+    )]
     pub presentation: Presentation,
     /// Unique within the chat. Drivers use the provider's id when it has one.
     pub id: String,
@@ -612,6 +805,8 @@ pub struct QuestionPrompt {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Question {
     pub request_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
     pub questions: Vec<QuestionPrompt>,
 }
 
@@ -679,10 +874,22 @@ pub enum ChatEvent {
     },
     TurnStarted {
         turn_id: String,
+        #[serde(
+            default,
+            deserialize_with = "optional_metadata",
+            skip_serializing_if = "Option::is_none"
+        )]
+        started_at: Option<u64>,
     },
     TurnCompleted {
         turn_id: String,
         outcome: TurnOutcome,
+        #[serde(
+            default,
+            deserialize_with = "optional_metadata",
+            skip_serializing_if = "Option::is_none"
+        )]
+        ended_at: Option<u64>,
     },
     ItemStarted {
         item: Item,
@@ -707,6 +914,8 @@ pub enum ChatEvent {
     },
     QuestionResolved {
         request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answer_summary: Option<String>,
     },
     Usage {
         usage: Usage,
@@ -828,6 +1037,52 @@ impl ChatCommand {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestKind {
+    #[default]
+    Approval,
+    Question,
+}
+
+/// Durable request history, ordered by the original request event sequence.
+/// The pending dock continues to use `approvals` and `questions` separately.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RequestRecord {
+    pub request_id: String,
+    pub kind: RequestKind,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
+    pub requested_seq: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_seq: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer_summary: Option<String>,
+}
+
+/// Host wall-clock timestamps in milliseconds for a whole turn. Legacy logs
+/// have no timing; clients then fall back to summed known call durations.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TurnTiming {
+    #[serde(
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub started_at: Option<u64>,
+    #[serde(
+        deserialize_with = "optional_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ended_at: Option<u64>,
+}
+
 /// A chat's transcript as events build it: what a tab draws, and what the
 /// host replays to a tab that connects late.
 #[derive(Clone, Debug, Default)]
@@ -838,6 +1093,7 @@ pub struct Transcript {
     /// Requests still waiting for the user, in arrival order.
     pub approvals: Vec<Approval>,
     pub questions: Vec<Question>,
+    pub requests: Vec<RequestRecord>,
     pub usage: Option<Usage>,
     pub rate_limits: Vec<RateWindow>,
     /// The models the provider offers, empty until its driver has said (an
@@ -846,7 +1102,10 @@ pub struct Transcript {
     /// How the agent signed in, once its driver has said (an older driver never does).
     pub account: Option<Account>,
     pub turn_id: Option<String>,
+    pub turn_timing: HashMap<String, TurnTiming>,
     index: HashMap<String, usize>,
+    item_sequences: HashMap<String, u64>,
+    last_seq: u64,
     /// Bumped by every event applied, so what is derived from the transcript can be kept
     /// until it changes. Not part of what the transcript says.
     revision: u64,
@@ -860,15 +1119,51 @@ impl PartialEq for Transcript {
             && self.items == other.items
             && self.approvals == other.approvals
             && self.questions == other.questions
+            && self.requests == other.requests
             && self.usage == other.usage
             && self.rate_limits == other.rate_limits
             && self.models == other.models
             && self.turn_id == other.turn_id
+            && self.turn_timing == other.turn_timing
             && self.index == other.index
     }
 }
 
 impl Transcript {
+    fn record_request(&mut self, record: RequestRecord) {
+        // A repeated request updates the pending payload without moving its boundary.
+        if let Some(existing) = self
+            .requests
+            .iter_mut()
+            .find(|r| r.request_id == record.request_id)
+        {
+            existing.title = record.title;
+            existing.item_id = record.item_id.or_else(|| existing.item_id.clone());
+            existing.turn_id = record.turn_id.or_else(|| existing.turn_id.clone());
+        } else {
+            self.requests.push(record);
+            self.requests.sort_by_key(|record| record.requested_seq);
+        }
+    }
+
+    fn resolve_request(
+        &mut self,
+        request_id: &str,
+        seq: u64,
+        resolution: &str,
+        answer_summary: Option<String>,
+    ) {
+        if let Some(record) = self
+            .requests
+            .iter_mut()
+            .find(|r| r.request_id == request_id)
+        {
+            record.resolved_seq = Some(seq);
+            record.resolution = Some(resolution.into());
+            record.answer_summary = answer_summary;
+        }
+    }
+
     /// Changes whenever an event is applied.
     pub fn revision(&self) -> u64 {
         self.revision
@@ -883,7 +1178,19 @@ impl Transcript {
             .or_else(|| self.items.iter().find(|item| item.id == id))
     }
 
+    /// Sequence of the first event introducing this item.
+    pub fn item_seq(&self, id: &str) -> Option<u64> {
+        self.item_sequences.get(id).copied()
+    }
+
+    /// Fold an unsequenced synthetic event. Log and socket consumers should use
+    /// `apply_sequenced` to preserve request/item ordering across partial replay.
     pub fn apply(&mut self, event: &ChatEvent) {
+        self.apply_sequenced(self.last_seq.saturating_add(1), event);
+    }
+
+    pub fn apply_sequenced(&mut self, seq: u64, event: &ChatEvent) {
+        self.last_seq = self.last_seq.max(seq);
         self.revision = self.revision.wrapping_add(1);
         match event {
             ChatEvent::Info { info } => {
@@ -911,8 +1218,21 @@ impl Transcript {
                     info.state = state.clone();
                 }
             }
-            ChatEvent::TurnStarted { turn_id } => self.turn_id = Some(turn_id.clone()),
-            ChatEvent::TurnCompleted { turn_id, outcome } => {
+            ChatEvent::TurnStarted {
+                turn_id,
+                started_at,
+            } => {
+                self.turn_id = Some(turn_id.clone());
+                let timing = self.turn_timing.entry(turn_id.clone()).or_default();
+                timing.started_at = timing.started_at.or(*started_at);
+            }
+            ChatEvent::TurnCompleted {
+                turn_id,
+                outcome,
+                ended_at,
+            } => {
+                let timing = self.turn_timing.entry(turn_id.clone()).or_default();
+                timing.ended_at = ended_at.or(timing.ended_at);
                 if self.turn_id.as_ref() == Some(turn_id) {
                     self.turn_id = None;
                 }
@@ -929,15 +1249,39 @@ impl Transcript {
                         item.status = closed;
                     }
                 }
+                for record in &mut self.requests {
+                    if record.resolved_seq.is_none()
+                        && record.turn_id.as_ref().is_none_or(|id| id == turn_id)
+                    {
+                        record.resolved_seq = Some(seq);
+                        record.resolution = Some("cancel".into());
+                    }
+                }
                 self.approvals.clear();
                 self.questions.clear();
             }
             ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => {
+                let mut item = item.clone();
+                self.item_sequences.entry(item.id.clone()).or_insert(seq);
                 match self.index.get(&item.id) {
-                    Some(&at) => self.items[at] = item.clone(),
+                    Some(&at) => {
+                        item.started_at = item.started_at.or(self.items[at].started_at);
+                        item.presentation.parent_id = item
+                            .presentation
+                            .parent_id
+                            .or_else(|| self.items[at].presentation.parent_id.clone());
+                        super::semantics::enrich_inheriting(
+                            &mut item,
+                            self.items[at].presentation.semantics.as_ref(),
+                        );
+                        super::semantics::refresh_output(&mut item);
+                        self.items[at] = item;
+                    }
                     None => {
                         self.index.insert(item.id.clone(), self.items.len());
-                        self.items.push(item.clone());
+                        super::semantics::enrich(&mut item);
+                        super::semantics::refresh_output(&mut item);
+                        self.items.push(item);
                     }
                 }
             }
@@ -958,17 +1302,64 @@ impl Transcript {
                 self.approvals
                     .retain(|a| a.request_id != approval.request_id);
                 self.approvals.push(approval.clone());
+                self.record_request(RequestRecord {
+                    request_id: approval.request_id.clone(),
+                    kind: RequestKind::Approval,
+                    title: approval.title.clone(),
+                    turn_id: approval
+                        .item_id
+                        .as_deref()
+                        .and_then(|id| self.item(id))
+                        .and_then(|item| item.turn_id.clone())
+                        .or_else(|| self.turn_id.clone()),
+                    item_id: approval.item_id.clone(),
+                    requested_seq: seq,
+                    ..Default::default()
+                });
             }
-            ChatEvent::ApprovalResolved { request_id, .. } => {
-                self.approvals.retain(|a| &a.request_id != request_id)
+            ChatEvent::ApprovalResolved {
+                request_id,
+                decision,
+            } => {
+                self.approvals.retain(|a| &a.request_id != request_id);
+                let resolution = match decision {
+                    Decision::Accept => "accept",
+                    Decision::AcceptForSession => "accept_for_session",
+                    Decision::Decline => "decline",
+                    Decision::Cancel => "cancel",
+                };
+                self.resolve_request(request_id, seq, resolution, None);
             }
             ChatEvent::QuestionRequested { question } => {
                 self.questions
                     .retain(|q| q.request_id != question.request_id);
                 self.questions.push(question.clone());
+                self.record_request(RequestRecord {
+                    request_id: question.request_id.clone(),
+                    kind: RequestKind::Question,
+                    title: question
+                        .questions
+                        .iter()
+                        .map(|prompt| prompt.question.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                    turn_id: question
+                        .item_id
+                        .as_deref()
+                        .and_then(|id| self.item(id))
+                        .and_then(|item| item.turn_id.clone())
+                        .or_else(|| self.turn_id.clone()),
+                    item_id: question.item_id.clone(),
+                    requested_seq: seq,
+                    ..Default::default()
+                });
             }
-            ChatEvent::QuestionResolved { request_id } => {
-                self.questions.retain(|q| &q.request_id != request_id)
+            ChatEvent::QuestionResolved {
+                request_id,
+                answer_summary,
+            } => {
+                self.questions.retain(|q| &q.request_id != request_id);
+                self.resolve_request(request_id, seq, "answered", answer_summary.clone());
             }
             ChatEvent::Usage { usage } => self.usage = Some(usage.clone()),
             ChatEvent::Models { models } => self.models = models.clone(),
@@ -985,6 +1376,8 @@ mod tests {
 
     fn agent(id: &str, text: &str, status: ItemStatus) -> Item {
         Item {
+            started_at: None,
+            ended_at: None,
             presentation: Default::default(),
             id: id.into(),
             turn_id: Some("t1".into()),
@@ -998,6 +1391,7 @@ mod tests {
         let mut t = Transcript::default();
         t.apply(&ChatEvent::TurnStarted {
             turn_id: "t1".into(),
+            started_at: None,
         });
         t.apply(&ChatEvent::ItemStarted {
             item: agent("a", "", ItemStatus::InProgress),
@@ -1026,6 +1420,7 @@ mod tests {
         let mut t = Transcript::default();
         t.apply(&ChatEvent::TurnStarted {
             turn_id: "t1".into(),
+            started_at: None,
         });
         t.apply(&ChatEvent::ItemStarted {
             item: agent("a", "…", ItemStatus::InProgress),
@@ -1044,6 +1439,7 @@ mod tests {
         t.apply(&ChatEvent::TurnCompleted {
             turn_id: "t1".into(),
             outcome: TurnOutcome::Interrupted,
+            ended_at: None,
         });
         assert_eq!(t.items[0].status, ItemStatus::Interrupted);
         assert!(t.approvals.is_empty() && t.turn_id.is_none());
@@ -1123,6 +1519,8 @@ mod tests {
         let events = vec![
             ChatEvent::ItemStarted {
                 item: Item {
+                    started_at: None,
+                    ended_at: None,
                     presentation: Default::default(),
                     id: "c".into(),
                     turn_id: None,
@@ -1618,5 +2016,299 @@ mod rate_window_tests {
             windows: Vec::new(),
         });
         assert!(transcript.rate_limits.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tool_contract_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn old_items_and_unknown_or_malformed_hints_remain_readable() {
+        let legacy = json!({"id":"old","body":{"type":"tool_call","tool":"Read"}});
+        let item: Item = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(item.presentation.is_empty());
+        assert_eq!(item.started_at, None);
+        assert_eq!(item.ended_at, None);
+        assert!(
+            serde_json::to_value(item)
+                .unwrap()
+                .get("presentation")
+                .is_none()
+        );
+        let mut value = legacy;
+        value["started_at"] = json!("elided");
+        value["ended_at"] = json!(-1);
+        value["presentation"] = json!({"parent_id":43,"semantics":{
+            "kind":"future_tool", "target":false, "range":{"elided":true},
+            "match_count":"many", "excerpt":{"elided":true}, "worker":45,
+            "produced":[null,{"path":"report.md","line":3}]
+        }});
+        let item: Item = serde_json::from_value(value.clone()).unwrap();
+        let semantics = item.presentation.semantics.unwrap();
+        assert_eq!(semantics.kind, ToolKind::Other);
+        assert_eq!(semantics.target, None);
+        assert_eq!(semantics.range, None);
+        assert_eq!(semantics.match_count, None);
+        assert_eq!(semantics.excerpt, None);
+        assert_eq!(semantics.worker, None);
+        assert_eq!(
+            semantics.produced,
+            vec![PathRef {
+                path: "report.md".into(),
+                line: Some(3)
+            }]
+        );
+        value["presentation"] = json!({"elided":true});
+        assert!(
+            serde_json::from_value::<Item>(value.clone())
+                .unwrap()
+                .presentation
+                .is_empty()
+        );
+        value["presentation"] = json!("elided");
+        assert!(
+            serde_json::from_value::<Item>(value)
+                .unwrap()
+                .presentation
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn new_presentation_fields_keep_the_presentation_serialized() {
+        let presentation = Presentation {
+            parent_id: Some("worker".into()),
+            ..Default::default()
+        };
+        assert!(!presentation.is_empty());
+        let presentation = Presentation {
+            semantics: Some(Semantics {
+                kind: ToolKind::Read,
+                target: Some("main.rs".into()),
+                range: Some(LineRange {
+                    start: 10,
+                    end: Some(20),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!presentation.is_empty());
+        assert_eq!(
+            serde_json::from_value::<Presentation>(serde_json::to_value(&presentation).unwrap())
+                .unwrap(),
+            presentation
+        );
+    }
+
+    #[test]
+    fn turn_timing_is_optional_tolerant_and_retains_the_first_start() {
+        let mut transcript = Transcript::default();
+        for value in [
+            json!({"event":"turn_started","turn_id":"legacy"}),
+            json!({"event":"turn_completed","turn_id":"legacy","outcome":{"outcome":"completed"}}),
+            json!({"event":"turn_started","turn_id":"t","started_at":1000}),
+            json!({"event":"turn_started","turn_id":"t","started_at":2000}),
+            json!({"event":"turn_completed","turn_id":"t","outcome":{"outcome":"completed"},"ended_at":73000}),
+            json!({"event":"turn_started","turn_id":"elided","started_at":{"elided":true}}),
+            json!({"event":"turn_completed","turn_id":"elided","outcome":{"outcome":"completed"},"ended_at":"bad"}),
+        ] {
+            let event = serde_json::from_value(value).unwrap();
+            transcript.apply(&event);
+        }
+        assert_eq!(transcript.turn_timing["legacy"], TurnTiming::default());
+        assert_eq!(transcript.turn_timing["elided"], TurnTiming::default());
+        assert_eq!(
+            transcript.turn_timing["t"],
+            TurnTiming {
+                started_at: Some(1000),
+                ended_at: Some(73000)
+            }
+        );
+        let old: ChatEvent =
+            serde_json::from_value(json!({"event":"turn_started","turn_id":"old"})).unwrap();
+        assert_eq!(
+            serde_json::to_value(old).unwrap(),
+            json!({"event":"turn_started","turn_id":"old"})
+        );
+    }
+
+    #[test]
+    fn generic_legacy_completion_inherits_provider_kind_in_raw_and_replay_folds() {
+        let mut unknown: Item = serde_json::from_value(json!({
+            "id":"unknown", "body":{"type":"tool_call","tool":"unclassified"}
+        }))
+        .unwrap();
+        super::super::semantics::enrich_inheriting(&mut unknown, None);
+        assert!(
+            unknown.presentation.semantics.is_none(),
+            "an inferred Other is not a provider decision"
+        );
+        for completion_semantics in [None, Some(json!({"kind":"other"}))] {
+            let start = json!({
+                "event":"item_started", "item":{
+                    "id":"worker", "body":{"type":"tool_call","tool":"auditor"},
+                    "presentation":{"semantics":{"kind":"subagent","target":"Audit models"}}
+                }
+            });
+            let mut completed = json!({
+                "event":"item_completed", "item":{
+                    "id":"worker", "body":{"type":"tool_call","tool":"auditor","output":"done"}
+                }
+            });
+            if let Some(semantics) = completion_semantics.as_ref() {
+                completed["item"]["presentation"] = json!({"semantics":semantics});
+            }
+            let mut raw = Transcript::default();
+            let mut replay = Transcript::default();
+            for (index, event) in [start, completed].into_iter().enumerate() {
+                let event: ChatEvent = serde_json::from_value(event).unwrap();
+                raw.apply_sequenced(index as u64 + 1, &event);
+                let mut enriched = event;
+                if let ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } =
+                    &mut enriched
+                {
+                    super::super::semantics::enrich(item);
+                    super::super::semantics::refresh_output(item);
+                }
+                replay.apply_sequenced(index as u64 + 1, &enriched);
+            }
+            assert_eq!(raw, replay);
+            let semantics = raw
+                .item("worker")
+                .unwrap()
+                .presentation
+                .semantics
+                .as_ref()
+                .unwrap();
+            if completion_semantics.is_some() {
+                assert_eq!(semantics.kind, ToolKind::Other, "explicit Other wins");
+                assert_eq!(semantics.target, None);
+            } else {
+                assert_eq!(semantics.kind, ToolKind::Subagent);
+                assert_eq!(semantics.target.as_deref(), Some("Audit models"));
+            }
+        }
+    }
+
+    #[test]
+    fn completed_legacy_arguments_replace_empty_start_fallback() {
+        let mut transcript = Transcript::default();
+        for (event, query) in [("item_started", ""), ("item_completed", "rust serde")] {
+            transcript.apply(
+                &serde_json::from_value(json!({
+                    "event": event,
+                    "item": {"id":"web", "body":{"type":"web_search","query":query}}
+                }))
+                .unwrap(),
+            );
+        }
+        assert_eq!(
+            transcript
+                .item("web")
+                .unwrap()
+                .presentation
+                .semantics
+                .as_ref()
+                .unwrap()
+                .target
+                .as_deref(),
+            Some("rust serde")
+        );
+    }
+
+    #[test]
+    fn request_history_uses_real_sequences_and_keeps_resolution_in_order() {
+        let mut transcript = Transcript::default();
+        transcript.apply_sequenced(
+            100,
+            &ChatEvent::TurnStarted {
+                turn_id: "turn".into(),
+                started_at: None,
+            },
+        );
+        let event: ChatEvent = serde_json::from_value(json!({"event":"item_started","item":{
+            "id":"call","turn_id":"turn","body":{"type":"command","command":"npm test"}
+        }}))
+        .unwrap();
+        transcript.apply_sequenced(105, &event);
+        let request = ChatEvent::ApprovalRequested {
+            approval: Approval {
+                request_id: "approval".into(),
+                item_id: Some("call".into()),
+                kind: ApprovalKind::Command,
+                title: "npm test".into(),
+                detail: String::new(),
+                choices: vec![Decision::Accept],
+            },
+        };
+        transcript.apply_sequenced(110, &request);
+        transcript.apply_sequenced(111, &request); // repeated pending payload retains original place
+        transcript.apply_sequenced(
+            120,
+            &ChatEvent::ApprovalResolved {
+                request_id: "approval".into(),
+                decision: Decision::Accept,
+            },
+        );
+        transcript.apply_sequenced(
+            130,
+            &ChatEvent::QuestionRequested {
+                question: Question {
+                    request_id: "question".into(),
+                    item_id: None,
+                    questions: vec![QuestionPrompt {
+                        header: None,
+                        question: "Which suite?".into(),
+                        options: vec![],
+                        multi_select: false,
+                    }],
+                },
+            },
+        );
+        transcript.apply_sequenced(
+            140,
+            &ChatEvent::QuestionResolved {
+                request_id: "question".into(),
+                answer_summary: Some("Unit tests".into()),
+            },
+        );
+        transcript.apply_sequenced(
+            150,
+            &ChatEvent::TurnCompleted {
+                turn_id: "turn".into(),
+                outcome: TurnOutcome::Completed,
+                ended_at: None,
+            },
+        );
+        assert_eq!(transcript.item_seq("call"), Some(105));
+        assert!(transcript.approvals.is_empty() && transcript.questions.is_empty());
+        assert_eq!(
+            transcript
+                .requests
+                .iter()
+                .map(|r| r.requested_seq)
+                .collect::<Vec<_>>(),
+            vec![110, 130]
+        );
+        assert_eq!(transcript.requests[0].turn_id.as_deref(), Some("turn"));
+        assert_eq!(transcript.requests[0].resolved_seq, Some(120));
+        assert_eq!(transcript.requests[0].resolution.as_deref(), Some("accept"));
+        assert_eq!(
+            transcript.requests[1].answer_summary.as_deref(),
+            Some("Unit tests")
+        );
+        let legacy: ChatEvent =
+            serde_json::from_value(json!({"event":"question_resolved","request_id":"old"}))
+                .unwrap();
+        assert!(matches!(
+            legacy,
+            ChatEvent::QuestionResolved {
+                answer_summary: None,
+                ..
+            }
+        ));
     }
 }

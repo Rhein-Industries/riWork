@@ -66,3 +66,31 @@ extension ChatElisionCompatibilityTests {
         }
     }
 }
+
+
+extension ChatElisionCompatibilityTests {
+    func testLiveElidedToolKeepsGroupingHierarchyAndLifecycleHints() throws {
+        let raw = #"{"event":"item_elided","of":"item_completed","item_id":"read","turn_id":"turn","parent_id":"worker","tool_kind":"read","started_at":100,"ended_at":250,"status":"completed","kind":"tool_call","bytes":10000}"#
+        let event = try JSONDecoder().decode(ChatEvent.self, from: Data(raw.utf8))
+        XCTAssertEqual(try JSONDecoder().decode(ChatEvent.self, from: JSONEncoder().encode(event)), event)
+        var feed = ChatFeed()
+        feed.accept(ChatEventsReply(chatID: "c", events: [ChatEnvelope(seq: 5, event: event)], next: 5, more: false), since: 0)
+        let item = try XCTUnwrap(feed.transcript.item("read"))
+        XCTAssertEqual(item.turnID, "turn")
+        XCTAssertEqual(item.presentation.parentID, "worker")
+        XCTAssertEqual(item.presentation.semantics?.kind, .read)
+        XCTAssertEqual(item.startedAt, 100); XCTAssertEqual(item.endedAt, 250)
+        XCTAssertEqual(item.status, .completed)
+        XCTAssertEqual(item.body, .elided(kind: "tool_call", bytes: 10000))
+        XCTAssertEqual(feed.skipped, 0)
+    }
+    func testMalformedElidedHintsDoNotDropTheItemAndUnknownKindsBecomeOther() throws {
+        let raw = #"{"event":"item_elided","of":"item_started","item_id":"future","turn_id":17,"parent_id":false,"tool_kind":"future_kind","started_at":"elided","ended_at":-1,"status":"in_progress","kind":"tool_call"}"#
+        let event = try JSONDecoder().decode(ChatEvent.self, from: Data(raw.utf8))
+        guard case .itemCompleted(let item) = event.resolved(seq: 6) else { return XCTFail("elided item") }
+        XCTAssertEqual(item.id, "future"); XCTAssertEqual(item.status, .inProgress)
+        XCTAssertEqual(item.presentation.semantics?.kind, .other)
+        XCTAssertNil(item.turnID); XCTAssertNil(item.presentation.parentID)
+        XCTAssertNil(item.startedAt); XCTAssertNil(item.endedAt)
+    }
+}
