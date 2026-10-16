@@ -55,6 +55,9 @@ mod draft_tests;
 mod editor_tests;
 mod editors;
 mod feed;
+mod find;
+#[cfg(test)]
+mod find_tests;
 mod host;
 mod image_scope;
 mod links;
@@ -99,7 +102,16 @@ use feed::{Backoff, Feed, FeedMsg};
 use state::{Applied, ChatModel, provider_name};
 use widgets::Look;
 
-actions!(riwork_chat, [InterruptChat, ToggleDictation]);
+actions!(
+    riwork_chat,
+    [
+        InterruptChat,
+        ToggleDictation,
+        FindInChat,
+        FindNext,
+        FindPrevious
+    ]
+);
 
 /// What a chat tab tells the window.
 pub enum ChatViewEvent {
@@ -309,6 +321,8 @@ pub struct ChatView {
     memo_store: Option<crate::store::Store>,
     /// `/memo`'s preview above the message box, while it is open (`memo`).
     memo_preview: Option<memo::Preview>,
+    /// ⌘F's bar over the transcript (`find`).
+    find: find::Find,
 }
 
 /// What a usage limit's **Use API key** still has to do once the switch holds.
@@ -462,6 +476,7 @@ impl ChatView {
         let composer =
             text_input::multiline("", "Message", 1, 8, EnterBehavior::Submit, window, cx);
         let model_input = text_input::single_line("", "model name, then ⏎", window, cx);
+        let find = find::Find::new(window, cx);
         let focus = cx.focus_handle();
         let subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::composer_event),
@@ -471,6 +486,7 @@ impl ChatView {
                 view.sync_suggestions(window, cx)
             }),
             cx.subscribe_in(&model_input, window, Self::model_event),
+            cx.subscribe_in(&find.input, window, Self::find_event),
             // A key held as focus leaves comes up elsewhere (the new-chat chooser, another
             // tab), never in this view's key-up: forget it, or the next ⏎ here is taken for
             // its repeat and swallowed.
@@ -560,6 +576,7 @@ impl ChatView {
             suggestions: Default::default(),
             memo_store: None,
             memo_preview: None,
+            find,
         }
     }
 
@@ -1666,9 +1683,11 @@ impl Render for ChatView {
             self.transcript_selection =
                 select::TranscriptSelection::new(window.window_handle(), cx.weak_entity(), cx);
             self.window_handle = window.window_handle();
+            self.find.new_window();
         }
         self.follow_text_size(cx);
         self.refresh_selection_document(look, cx);
+        self.refresh_find(look, window, cx);
         self.ready_inputs(window, cx);
         self.sync_suggestions(window, cx);
         if self.focus_composer {
@@ -1700,6 +1719,9 @@ impl Render for ChatView {
             .on_action(cx.listener(Self::interrupt_action))
             .on_action(cx.listener(Self::dictation_action))
             .on_action(cx.listener(Self::copy_transcript))
+            .on_action(cx.listener(Self::find_action))
+            .on_action(cx.listener(Self::find_next_action))
+            .on_action(cx.listener(Self::find_previous_action))
             .on_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, _| {
                 view.menu_armed = true;
                 if matches!(event.keystroke.key.as_str(), "up" | "down") {

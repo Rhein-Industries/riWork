@@ -31,6 +31,8 @@ pub enum Icon {
     Check,
     /// A window with a navigation strip down its left side: the layout menu.
     Layout,
+    /// A power mark: Nuke all shells, which stops every shell of the project.
+    Power,
     /// The symbol a built-in panel tab shows instead of its label.
     Panel(PanelKind),
     /// The symbol a toolbar button shows instead of its label.
@@ -75,6 +77,7 @@ impl Icon {
             Self::Main => "star",
             Self::Check => "checkmark",
             Self::Layout => "sidebar.left",
+            Self::Power => "power",
             Self::Panel(panel) => match panel {
                 PanelKind::Projects => "rectangle.stack",
                 PanelKind::Worktrees => "arrow.triangle.branch",
@@ -279,6 +282,7 @@ fn paint_icon(kind: Icon, color: u32, text: Option<f32>) -> AnyElement {
                 Icon::Main => star_glyph(&mut path),
                 Icon::Check => check_glyph(&mut path),
                 Icon::Layout => layout_glyph(&mut path),
+                Icon::Power => power_glyph(&mut path),
                 Icon::Panel(panel) => panel_glyph(&mut path, panel),
                 Icon::Action(action) => action_glyph(&mut path, action),
                 Icon::Provider(provider) => provider_glyph(&mut path, provider),
@@ -699,6 +703,24 @@ fn folder(path: &mut PathBuilder) {
     );
 }
 
+/// A ring open at the top, with a stroke down into the gap.
+fn power_glyph(path: &mut PathBuilder) {
+    let (x, y, radius) = (7.0_f32, 7.6_f32, 4.6_f32);
+    // From the gap's right edge clockwise round to its left edge; y grows downwards.
+    let (from, to) = (-55.0_f32.to_radians(), 235.0_f32.to_radians());
+    let steps = 24;
+    for step in 0..=steps {
+        let angle = from + (to - from) * step as f32 / steps as f32;
+        let at = point(px(x + radius * angle.cos()), px(y + radius * angle.sin()));
+        if step == 0 {
+            path.move_to(at);
+        } else {
+            path.line_to(at);
+        }
+    }
+    line(path, (7.0, 1.8), (7.0, 7.2));
+}
+
 fn line(path: &mut PathBuilder, from: (f32, f32), to: (f32, f32)) {
     path.move_to(point(px(from.0), px(from.1)));
     path.line_to(point(px(to.0), px(to.1)));
@@ -833,6 +855,7 @@ mod tests {
             Icon::Main,
             Icon::Check,
             Icon::Layout,
+            Icon::Power,
         ];
         let all = fixed
             .into_iter()
