@@ -152,6 +152,7 @@ fn the_cua_server_is_riwork_cua_mcp_for_this_session_with_literal_values() {
         &config,
         Path::new("/Applications/RiWork.app/Contents/MacOS/riwork"),
         Some(Path::new("/opt/cua/driver")),
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -164,9 +165,15 @@ fn the_cua_server_is_riwork_cua_mcp_for_this_session_with_literal_values() {
             "mode": "required",
         }})
     );
+    // The opt-in that turns off the guard on input to RiWork's own windows, only when set.
+    let allowed = cua_servers(&config, Path::new("/x"), None, true).unwrap();
+    assert_eq!(
+        allowed["cua-driver"]["env"],
+        json!({"RIWORK_HOME": home, "RIWORK_CUA_ALLOW_RIWORK_INPUT": "1"})
+    );
     let mut bare = config.clone();
     bare.env.retain(|(name, _)| name != "RIWORK_HOME");
-    assert!(cua_servers(&bare, Path::new("/x"), None).is_none());
+    assert!(cua_servers(&bare, Path::new("/x"), None, false).is_none());
 }
 
 #[test]
@@ -1612,7 +1619,7 @@ impl Live {
         &self,
         config: DriverConfig,
     ) -> (Box<dyn Driver>, Receiver<ChatEvent>, Vec<ChatEvent>) {
-        let servers = cua_servers(&config, &self.fake_mcp, None);
+        let servers = cua_servers(&config, &self.fake_mcp, None, false);
         let (sender, events) = mpsc::channel();
         let driver =
             start_with(config, sender, servers).expect("the driver starts against real muse");

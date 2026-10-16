@@ -145,6 +145,7 @@ fn cua_servers(
     config: &DriverConfig,
     executable: &Path,
     custom_driver: Option<&Path>,
+    allow_riwork_input: bool,
 ) -> Option<Value> {
     let home = config
         .env
@@ -154,6 +155,10 @@ fn cua_servers(
     let mut env = json!({"RIWORK_HOME": home});
     if let Some(driver) = custom_driver {
         env["RIWORK_CUA_DRIVER"] = json!(driver.to_string_lossy());
+    }
+    // Turns off the proxy's guard on input to RiWork's own windows (`cua::guard`).
+    if allow_riwork_input {
+        env[crate::cua::ALLOW_RIWORK_INPUT] = json!("1");
     }
     Some(json!({"cua-driver": {
         "transport": "stdio",
@@ -170,6 +175,7 @@ pub fn start(config: DriverConfig, events: Sender<ChatEvent>) -> Result<Box<dyn 
             &config,
             &executable,
             crate::cua::driver_override_for_harness().as_deref(),
+            crate::cua::riwork_input_allowed(),
         )
     });
     start_with(config, events, servers)

@@ -32,6 +32,28 @@ fn mode(path: &Path) -> u32 {
 
 // ---- Create, list, command ----------------------------------------------------------
 
+/// The host serves every chat, orchestrators included, for as long as it runs, so it
+/// never carries the pane, chat or Cua guard opt-out of whoever started it.
+#[test]
+fn the_host_is_started_without_its_starters_pane_chat_or_cua_opt_out() {
+    let command = host_command(Path::new("/bin/riwork"), Path::new("/state"));
+    let environment: Vec<_> = command.get_envs().collect();
+    for removed in [
+        "RIWORK_SHELL_ID",
+        "RIWORK_CHAT_ID",
+        crate::cua::ALLOW_RIWORK_INPUT,
+    ] {
+        assert!(
+            environment.contains(&(std::ffi::OsStr::new(removed), None)),
+            "{removed}: {environment:?}"
+        );
+    }
+    assert!(environment.contains(&(
+        std::ffi::OsStr::new("RIWORK_HOME"),
+        Some(std::ffi::OsStr::new("/state"))
+    )));
+}
+
 #[test]
 fn creating_a_chat_saves_it_starts_its_driver_and_lists_it() {
     let host = TestHost::new();

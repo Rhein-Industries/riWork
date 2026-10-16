@@ -3165,6 +3165,24 @@ fn ensure_within(home: &Path, exe: &Path, wait: Duration) -> Result<PathBuf, Str
     }
 }
 
+/// `riwork chat serve` for `home`, with the environment a host may have.
+fn host_command(exe: &Path, home: &Path) -> Command {
+    let mut command = Command::new(exe);
+    command
+        .args(["chat", "serve"])
+        .env("RIWORK_HOME", home)
+        // The host is nobody's terminal: it must not carry this one's pane or
+        // account into the chats it starts, nor the chat that started it. Nor the
+        // opt-in out of the Cua guard on input to RiWork's windows: one host serves
+        // every chat, orchestrators included, for as long as it runs.
+        .env_remove("RIWORK_SHELL_ID")
+        .env_remove("RIWORK_CHAT_ID")
+        .env_remove(crate::cua::ALLOW_RIWORK_INPUT);
+    crate::codex_accounts::scrub_injected_environment(&mut command);
+    crate::anthropic_key::scrub_injected(&mut command);
+    command
+}
+
 /// `riwork chat serve`, detached, with its output in the run directory's log.
 fn spawn_host(exe: &Path, home: &Path, paths: &Paths) -> Result<std::process::Child, String> {
     let log = open_private(&paths.log, true)
@@ -3172,21 +3190,13 @@ fn spawn_host(exe: &Path, home: &Path, paths: &Paths) -> Result<std::process::Ch
     if log.metadata().is_ok_and(|meta| meta.len() > 256 * 1024) {
         let _ = log.set_len(0);
     }
-    let mut command = Command::new(exe);
+    let mut command = host_command(exe, home);
     command
-        .args(["chat", "serve"])
-        .env("RIWORK_HOME", home)
-        // The host is nobody's terminal: it must not carry this one's pane or
-        // account into the chats it starts, nor the chat that started it.
-        .env_remove("RIWORK_SHELL_ID")
-        .env_remove("RIWORK_CHAT_ID")
         .stdin(Stdio::null())
         .stdout(Stdio::from(
             log.try_clone().map_err(|error| error.to_string())?,
         ))
         .stderr(Stdio::from(log));
-    crate::codex_accounts::scrub_injected_environment(&mut command);
-    crate::anthropic_key::scrub_injected(&mut command);
     // SAFETY: setsid is async-signal-safe and touches no memory of ours. The
     // host gets a session and process group of its own, so the terminal or
     // app that started it can close without taking it along.

@@ -269,14 +269,7 @@ impl RuntimeManager {
         if let Some(directory) = env::var_os("RIWORK_RUNTIME_DIR") {
             return Self::at(PathBuf::from(directory));
         }
-        let home = PathBuf::from(
-            env::var_os("HOME").ok_or("HOME is unset; cannot locate RiWork runtime registry")?,
-        );
-        #[cfg(target_os = "macos")]
-        let directory = home.join("Library/Caches/riwork/runtime");
-        #[cfg(not(target_os = "macos"))]
-        let directory = home.join(".cache/riwork/runtime");
-        Self::at(directory)
+        Self::at(default_directory()?)
     }
     pub fn at(directory: PathBuf) -> Result<Self, String> {
         private_directory(&directory)?;
@@ -2114,6 +2107,40 @@ impl ProcessIdentity {
         }
     }
 }
+/// Where the GUIs of the user's own RiWork register when `RIWORK_RUNTIME_DIR` is unset. A
+/// fixture GUI started with its own `RIWORK_RUNTIME_DIR` registers elsewhere.
+pub(crate) fn default_directory() -> Result<PathBuf, String> {
+    let home = PathBuf::from(
+        env::var_os("HOME").ok_or("HOME is unset; cannot locate RiWork runtime registry")?,
+    );
+    #[cfg(target_os = "macos")]
+    let directory = home.join("Library/Caches/riwork/runtime");
+    #[cfg(not(target_os = "macos"))]
+    let directory = home.join(".cache/riwork/runtime");
+    Ok(directory)
+}
+
+/// The pids of the running GUIs registered in `directory`, by the fields every registration
+/// format has carried. It only reads: unlike `instances`, it takes no lock and creates,
+/// prunes or removes nothing, so any process may ask (the Cua MCP proxy does).
+pub(crate) fn live_gui_pids(directory: &Path) -> Vec<u32> {
+    let Ok(entries) = fs::read_dir(directory.join("instances")) else {
+        return vec![];
+    };
+    let mut pids: Vec<u32> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|path| read_json::<RegistrationIdentity>(&path).ok())
+        .filter(|identity| {
+            process_alive(identity.pid, identity.uid, &identity.started_token).unwrap_or(false)
+        })
+        .map(|identity| identity.pid)
+        .collect();
+    pids.sort_unstable();
+    pids.dedup();
+    pids
+}
 fn process_matches(instance: &RuntimeInstance) -> Result<bool, String> {
     process_alive(instance.pid, instance.uid, &instance.started_token)
 }
@@ -2255,6 +2282,34 @@ mod tests {
             kind: WindowKind::Project,
             global: None,
         }
+    }
+    /// The Cua guard's view of the registry: the pids of GUIs that are running, read without
+    /// the lock, and nothing pruned, even a registration of a process that has ended.
+    #[test]
+    fn live_gui_pids_lists_running_guis_and_changes_nothing() {
+        let fixture = Fixture::new();
+        let registry = fixture.path.join("registry");
+        assert!(live_gui_pids(&registry).is_empty());
+        assert!(live_gui_pids(&fixture.path.join("no-registry")).is_empty());
+        let _live = fixture.register("home");
+        let instances = registry.join("instances");
+        // This process again, as one that started at another time: an ended GUI whose pid
+        // was reused.
+        let ended = instances.join(format!("{}.json", Uuid::new_v4()));
+        write_json(
+            &ended,
+            &serde_json::json!({
+                "pid": std::process::id(),
+                "uid": current_uid(),
+                "started_token": "1",
+            }),
+        )
+        .unwrap();
+        let unreadable = instances.join(format!("{}.json", Uuid::new_v4()));
+        write_private_file(&unreadable, b"not json", false).unwrap();
+        assert_eq!(live_gui_pids(&registry), vec![std::process::id()]);
+        assert!(ended.exists() && unreadable.exists());
+        assert_eq!(fixture.manager.instances().unwrap().len(), 1);
     }
     #[test]
     fn installed_build_pointer_is_private_and_preserves_latest_executable() {

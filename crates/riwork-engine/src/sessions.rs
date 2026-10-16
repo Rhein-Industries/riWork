@@ -25,6 +25,14 @@ pub use watch::{PaneWatch, Woke};
 
 const HISTORY_LINES: usize = 100_000;
 const ORCHESTRATOR_SKILL: &str = include_str!("../skills/riwork-orchestrator/SKILL.md");
+/// The skill's Hard boundaries in brief, in every orchestrator startup and LOAD SKILL
+/// message, so a fresh or reloaded orchestrator hears them even before it reads the skill.
+pub(crate) const ORCHESTRATOR_BOUNDARIES: &str = "Hard boundaries (the skill's first section; they bind \
+    you for the whole session, after any context compaction too): never click, type or send \
+    any other input to your own or any live orchestrator window; never live-test close, kill, \
+    nuke, delete, update or restart against real project state, even if you would cancel; \
+    verify only by reading evidence from isolated runs, else mark it unverified; restart or \
+    update nothing that can interrupt sessions without the user's approval this turn naming it.";
 /// Additive session guidance shared by the supported coding harnesses.
 const CUA_GUIDANCE: &str = "RiWork provides Cua.ai Driver through the cua-driver MCP server. \
     Use this server for desktop screenshots, application inspection, and desktop interaction. \
@@ -33,6 +41,8 @@ const CUA_GUIDANCE: &str = "RiWork provides Cua.ai Driver through the cua-driver
     or reports missing macOS permissions, explain the reported problem and direct the user \
     to RiWork's Cua setup; do not silently switch to another computer-use provider. \
     Read the driver's tool descriptions and current state before interacting. \
+    RiWork's server refuses input to RiWork's own live windows and, while RiWork runs, \
+    input that names no target app, so pass the target's `pid` on every input call. \
     These instructions choose a desktop automation provider; they do not authorize new \
     tasks or change the user's permission policy.";
 
@@ -2325,6 +2335,13 @@ impl SessionManager {
             args.push("-e".to_owned());
             args.push(format!("RIWORK_CUA_DRIVER={}", driver.to_string_lossy()));
         }
+        // So is the opt-in that turns off the Cua guard on input to RiWork's own windows:
+        // it must come from this launch, never linger in the server from an earlier one.
+        let allow_riwork_input = crate::cua::riwork_input_allowed();
+        if allow_riwork_input {
+            args.push("-e".to_owned());
+            args.push(format!("{}=1", crate::cua::ALLOW_RIWORK_INPUT));
+        }
         // The tmux server does not inherit this client's environment, so Grok's
         // timeout has to be named on the pane. A value the user already set is
         // forwarded unchanged.
@@ -2354,6 +2371,9 @@ impl SessionManager {
         let mut absent = stale_profile_variables(&profile_locations);
         if cua_driver.is_none() {
             absent.push("RIWORK_CUA_DRIVER");
+        }
+        if !allow_riwork_input {
+            absent.push(crate::cua::ALLOW_RIWORK_INPUT);
         }
         // A server that a chat's agent started must not hand that chat's id to
         // every pane (`riwork handoff` reads it to tell whose conversation it is).
@@ -3550,16 +3570,20 @@ pub(crate) fn cua_harness_arguments(
         executable,
         state_home,
         crate::cua::driver_override_for_harness().as_deref(),
+        crate::cua::riwork_input_allowed(),
     )
 }
 
 /// The harnesses filter their MCP servers' environments, so a custom driver
-/// that the launcher accepted reaches `riwork cua mcp` only if named here.
+/// that the launcher accepted reaches `riwork cua mcp` only if named here, and so
+/// does `RIWORK_CUA_ALLOW_RIWORK_INPUT=1` when the launch has it (`allow_riwork_input`),
+/// which turns off the proxy's guard on input to RiWork's own windows.
 fn cua_harness_arguments_with(
     harness: HarnessKind,
     executable: &Path,
     state_home: &Path,
     custom_driver: Option<&Path>,
+    allow_riwork_input: bool,
 ) -> Vec<String> {
     match harness {
         HarnessKind::Codex => {
@@ -3580,6 +3604,12 @@ fn cua_harness_arguments_with(
                     toml_string(&driver.to_string_lossy())
                 ));
             }
+            if allow_riwork_input {
+                overrides.push(format!(
+                    "mcp_servers.cua-driver.env.{}=\"1\"",
+                    crate::cua::ALLOW_RIWORK_INPUT
+                ));
+            }
             overrides.extend([
                 "mcp_servers.cua-driver.enabled=true".to_owned(),
                 "mcp_servers.cua-driver.required=true".to_owned(),
@@ -3596,6 +3626,9 @@ fn cua_harness_arguments_with(
                 serde_json::json!({ "RIWORK_HOME": state_home.to_string_lossy() });
             if let Some(driver) = custom_driver {
                 environment["RIWORK_CUA_DRIVER"] = driver.to_string_lossy().into();
+            }
+            if allow_riwork_input {
+                environment[crate::cua::ALLOW_RIWORK_INPUT] = "1".into();
             }
             let config = serde_json::json!({
                 "mcpServers": {
@@ -3616,7 +3649,7 @@ fn cua_harness_arguments_with(
         }
         HarnessKind::Grok => vec![
             "--agent".to_owned(),
-            grok_agent_path(state_home, executable, custom_driver)
+            grok_agent_path(state_home, executable, custom_driver, allow_riwork_input)
                 .to_string_lossy()
                 .into_owned(),
         ],
@@ -3632,6 +3665,10 @@ fn cua_harness_arguments_with(
             if custom_driver.is_some() {
                 environment["RIWORK_CUA_DRIVER"] = "${RIWORK_CUA_DRIVER}".into();
             }
+            if allow_riwork_input {
+                environment[crate::cua::ALLOW_RIWORK_INPUT] =
+                    format!("${{{}}}", crate::cua::ALLOW_RIWORK_INPUT).into();
+            }
             let server = serde_json::json!({
                 "command": executable.to_string_lossy(),
                 "args": ["cua", "mcp"],
@@ -3642,12 +3679,22 @@ fn cua_harness_arguments_with(
     }
 }
 
-/// Launches with different custom drivers must not overwrite one another's definition.
-fn grok_agent_path(state_home: &Path, executable: &Path, custom_driver: Option<&Path>) -> PathBuf {
+/// Launches with different custom drivers, or with and without the guard on input to
+/// RiWork's windows, must not overwrite one another's definition.
+fn grok_agent_path(
+    state_home: &Path,
+    executable: &Path,
+    custom_driver: Option<&Path>,
+    allow_riwork_input: bool,
+) -> PathBuf {
     let mut identity = executable.to_string_lossy().into_owned();
     if let Some(driver) = custom_driver {
         identity.push('\0');
         identity.push_str(&driver.to_string_lossy());
+    }
+    if allow_riwork_input {
+        identity.push('\0');
+        identity.push_str(crate::cua::ALLOW_RIWORK_INPUT);
     }
     state_home.join(format!(
         "cua/grok-agent-{:016x}.md",
@@ -3667,8 +3714,9 @@ fn grok_agent_definition(
     executable: &Path,
     state_home: &Path,
     custom_driver: Option<&Path>,
+    allow_riwork_input: bool,
 ) -> String {
-    let custom_driver = custom_driver
+    let mut custom_driver = custom_driver
         .map(|driver| {
             format!(
                 "      RIWORK_CUA_DRIVER: {}\n",
@@ -3676,6 +3724,12 @@ fn grok_agent_definition(
             )
         })
         .unwrap_or_default();
+    if allow_riwork_input {
+        custom_driver.push_str(&format!(
+            "      {}: \"1\"\n",
+            crate::cua::ALLOW_RIWORK_INPUT
+        ));
+    }
     format!(
         concat!(
             "---\n",
@@ -3762,6 +3816,7 @@ fn ensure_grok_agent(state_home: &Path, executable: &Path) -> Result<(), String>
         state_home,
         executable,
         crate::cua::driver_override_for_harness().as_deref(),
+        crate::cua::riwork_input_allowed(),
         &|path, content| fs::write(path, content),
         GROK_AGENT_MAX_AGE,
     )
@@ -3777,14 +3832,15 @@ fn ensure_grok_agent_with(
     state_home: &Path,
     executable: &Path,
     custom_driver: Option<&Path>,
+    allow_riwork_input: bool,
     write: &dyn Fn(&Path, &str) -> std::io::Result<()>,
     max_age: Duration,
 ) -> Result<(), String> {
-    let path = grok_agent_path(state_home, executable, custom_driver);
+    let path = grok_agent_path(state_home, executable, custom_driver, allow_riwork_input);
     let directory = path.parent().expect("Grok agent has a parent directory");
     fs::create_dir_all(directory)
         .map_err(|error| format!("create Grok Cua agent directory: {error}"))?;
-    let content = grok_agent_definition(executable, state_home, custom_driver);
+    let content = grok_agent_definition(executable, state_home, custom_driver, allow_riwork_input);
     if fs::read_to_string(&path).ok().as_deref() == Some(&content) {
         touch(&path);
     } else {
@@ -4220,7 +4276,8 @@ fn without_project_environment(command: &str, shell: &Path) -> String {
 /// chat's first message) and that LOAD SKILL gives a running one. Beside its scope it
 /// carries `delegation`, the policy its scope resolves to now
 /// (`orchestrators::delegation`), in one sentence; a running orchestrator hears of a
-/// later change only through LOAD SKILL or when it is created again.
+/// later change only through LOAD SKILL or when it is created again. It also restates
+/// the skill's Hard boundaries in brief (`ORCHESTRATOR_BOUNDARIES`), whichever way it goes.
 ///
 /// `inline_skill` puts the whole skill in the message, which suits a message
 /// pasted into a running pane or sent to a chat. A launch must not: the message
@@ -4274,6 +4331,7 @@ pub(crate) fn orchestrator_prompt(
          This startup message only loads the skill. Do not inspect projects, create tasks, \
          modify repositories, delegate work, submit input to other harnesses, or create schedules. \
          After loading, briefly acknowledge readiness and wait for the user's objective.\n\n\
+         {ORCHESTRATOR_BOUNDARIES}\n\n\
          {skill}{}",
         quote_arg(&skill_path.to_string_lossy()),
         quote_arg(&executable.to_string_lossy()),
@@ -7529,7 +7587,7 @@ mod tests {
         let key = "mcp_servers.cua-driver.env.RIWORK_CUA_DRIVER=";
         let codex = |custom: Option<&Path>| {
             let arguments =
-                cua_harness_arguments_with(HarnessKind::Codex, executable, home, custom);
+                cua_harness_arguments_with(HarnessKind::Codex, executable, home, custom, false);
             arguments
                 .windows(2)
                 .filter(|pair| pair[0] == "-c")
@@ -7543,7 +7601,7 @@ mod tests {
 
         let claude = |custom: Option<&Path>| {
             let arguments =
-                cua_harness_arguments_with(HarnessKind::Claude, executable, home, custom);
+                cua_harness_arguments_with(HarnessKind::Claude, executable, home, custom, false);
             let index = arguments
                 .iter()
                 .position(|arg| arg == "--mcp-config")
@@ -7561,21 +7619,81 @@ mod tests {
         );
         assert!(claude(None).get("RIWORK_CUA_DRIVER").is_none());
 
-        let with_driver = grok_agent_definition(executable, home, Some(driver));
+        let with_driver = grok_agent_definition(executable, home, Some(driver), false);
         assert!(with_driver.contains(&format!(
             "      RIWORK_HOME: {}\n      RIWORK_CUA_DRIVER: {}\n---\n",
             toml_string(&home.to_string_lossy()),
             toml_string(&driver.to_string_lossy())
         )));
-        assert!(!grok_agent_definition(executable, home, None).contains("RIWORK_CUA_DRIVER"));
+        assert!(
+            !grok_agent_definition(executable, home, None, false).contains("RIWORK_CUA_DRIVER")
+        );
         // Launches with different drivers keep separate agent definitions.
         assert_ne!(
-            grok_agent_path(home, executable, Some(driver)),
-            grok_agent_path(home, executable, None)
+            grok_agent_path(home, executable, Some(driver), false),
+            grok_agent_path(home, executable, None, false)
         );
         assert_eq!(
-            cua_harness_arguments_with(HarnessKind::Grok, executable, home, Some(driver))[1],
-            grok_agent_path(home, executable, Some(driver)).to_string_lossy()
+            cua_harness_arguments_with(HarnessKind::Grok, executable, home, Some(driver), false)[1],
+            grok_agent_path(home, executable, Some(driver), false).to_string_lossy()
+        );
+    }
+
+    /// `RIWORK_CUA_ALLOW_RIWORK_INPUT=1` at launch, and only then, reaches each harness's
+    /// `riwork cua mcp`, whose environment the harness filters: it is the one way to turn the
+    /// proxy's guard on input to RiWork's own windows off for a session.
+    #[test]
+    fn the_riwork_input_opt_in_reaches_every_harness_mcp_server_only_when_set() {
+        let executable = Path::new("/Applications/RiWork/riwork");
+        let home = Path::new("/Users/test/RiWork State");
+        let key = "mcp_servers.cua-driver.env.RIWORK_CUA_ALLOW_RIWORK_INPUT=";
+        let codex = |allow: bool| {
+            cua_harness_arguments_with(HarnessKind::Codex, executable, home, None, allow)
+                .windows(2)
+                .filter(|pair| pair[0] == "-c")
+                .find_map(|pair| pair[1].strip_prefix(key).map(str::to_owned))
+        };
+        assert_eq!(codex(true).as_deref(), Some("\"1\""));
+        assert_eq!(codex(false), None);
+
+        let server_env = |harness: HarnessKind, allow: bool, flag: &str| {
+            let arguments = cua_harness_arguments_with(harness, executable, home, None, allow);
+            let index = arguments.iter().position(|arg| arg == flag).unwrap();
+            let value = &arguments[index + 1];
+            let json = value
+                .strip_prefix("mcpServers.cua-driver=")
+                .unwrap_or(value);
+            let config: serde_json::Value = serde_json::from_str(json).unwrap();
+            config
+                .pointer("/mcpServers/cua-driver/env")
+                .or_else(|| config.get("env"))
+                .cloned()
+                .unwrap()
+        };
+        let claude = server_env(HarnessKind::Claude, true, "--mcp-config");
+        assert_eq!(claude["RIWORK_CUA_ALLOW_RIWORK_INPUT"], "1");
+        let claude = server_env(HarnessKind::Claude, false, "--mcp-config");
+        assert!(claude.get("RIWORK_CUA_ALLOW_RIWORK_INPUT").is_none());
+        // Muse takes `${VAR}` references to its own environment only.
+        let muse = server_env(HarnessKind::Muse, true, "-c");
+        assert_eq!(
+            muse["RIWORK_CUA_ALLOW_RIWORK_INPUT"],
+            "${RIWORK_CUA_ALLOW_RIWORK_INPUT}"
+        );
+        let muse = server_env(HarnessKind::Muse, false, "-c");
+        assert!(muse.get("RIWORK_CUA_ALLOW_RIWORK_INPUT").is_none());
+
+        assert!(
+            grok_agent_definition(executable, home, None, true)
+                .contains("      RIWORK_CUA_ALLOW_RIWORK_INPUT: \"1\"\n---\n")
+        );
+        assert!(
+            !grok_agent_definition(executable, home, None, false)
+                .contains("RIWORK_CUA_ALLOW_RIWORK_INPUT")
+        );
+        assert_ne!(
+            grok_agent_path(home, executable, None, true),
+            grok_agent_path(home, executable, None, false)
         );
     }
 
@@ -7764,7 +7882,8 @@ mod tests {
                 grok_agent_path(
                     home,
                     executable,
-                    crate::cua::driver_override_for_harness().as_deref()
+                    crate::cua::driver_override_for_harness().as_deref(),
+                    crate::cua::riwork_input_allowed(),
                 )
                 .to_string_lossy()
             );
@@ -7773,7 +7892,7 @@ mod tests {
                 unrestricted
             );
         }
-        let definition = grok_agent_definition(executable, home, None);
+        let definition = grok_agent_definition(executable, home, None, false);
         assert!(definition.contains("mcpServers:\n  - name: cua-driver\n"));
         assert!(definition.contains(&format!(
             "    command: {}\n",
@@ -8641,6 +8760,7 @@ else:
         assert!(!prompt.contains("<riwork-orchestrator-skill>"));
         assert!(prompt.contains("read its installed SKILL.md in full"));
         assert!(prompt.contains(CUA_GUIDANCE));
+        assert!(prompt.contains(ORCHESTRATOR_BOUNDARIES));
         assert!(prompt.contains("wait for the user's objective"));
         assert!(prompt.contains(&quote_arg(&skill.to_string_lossy())));
         assert!(prompt.contains(&quote_arg(&executable.to_string_lossy())));
@@ -8662,6 +8782,7 @@ else:
         assert!(pasted.contains(ORCHESTRATOR_SKILL));
         assert!(pasted.contains("<riwork-orchestrator-skill>"));
         assert!(pasted.contains(CUA_GUIDANCE));
+        assert!(pasted.contains(ORCHESTRATOR_BOUNDARIES));
         assert!(pasted.contains("about 7 parallel worker shells"));
     }
 
@@ -8835,6 +8956,104 @@ else:
                 ORCHESTRATOR_SKILL.contains(needle),
                 "the skill lacks {needle:?}"
             );
+        }
+    }
+
+    /// Both scopes read the Hard boundaries first: before the delegation mandate and every
+    /// scope section. They forbid testing in an orchestrator window, live destructive or
+    /// session-interrupting tests, live verification and unapproved restarts, and no later
+    /// bullet still lets an orchestrator run acceptance checks itself.
+    #[test]
+    fn the_embedded_skill_opens_with_hard_boundaries_for_both_scopes() {
+        let first_section = ORCHESTRATOR_SKILL
+            .lines()
+            .find(|line| line.starts_with("## "))
+            .unwrap();
+        assert_eq!(first_section, "## Hard boundaries");
+        let boundaries = ORCHESTRATOR_SKILL.find("## Hard boundaries").unwrap();
+        let intro = ORCHESTRATOR_SKILL.find("RiWork has one global orchestrator");
+        let mandate = ORCHESTRATOR_SKILL.find("## Delegate; do not implement");
+        assert!(boundaries < intro.unwrap());
+        let section = &ORCHESTRATOR_SKILL[boundaries..mandate.unwrap()];
+        for needle in [
+            "These bind every orchestrator, global and project, for the whole session.",
+            "after a context compaction, read them again before acting",
+            "explicit approval in the same turn, naming the target",
+            "**Never test in an orchestrator window.**",
+            "Your own chat or terminal window, and any other live orchestrator window",
+            "no find-bar or dialog interaction, and no layout, focus or draft changes",
+            "never route around that refusal (the `cua-driver` CLI, another server, or a worker)",
+            "**Never live-test destructive or session-interrupting behavior**",
+            "close, kill, nuke, delete, update or restart",
+            "isolated private `RIWORK_HOME` with disposable data",
+            "even if you cancel before confirming",
+            "**Verify only by reading evidence:**",
+            "mark it `unverified` and ask the user to look; never improvise a live test",
+            "**Never restart or update what can interrupt sessions without approval.**",
+            "Installed is not restarted.",
+            "**Never accept evidence without its environment.**",
+            "`verification_environment`",
+            "Refuse acceptance evidence produced against live orchestrator or user state",
+        ] {
+            assert!(section.contains(needle), "Hard boundaries lack {needle:?}");
+        }
+        // The permission that let an orchestrator test live is gone.
+        assert!(!ORCHESTRATOR_SKILL.contains("run the acceptance checks"));
+        assert!(ORCHESTRATOR_SKILL.contains("as Hard boundaries limits verification"));
+        assert!(
+            ORCHESTRATOR_SKILL
+                .contains("Installing does not authorize a restart that interrupts sessions.")
+        );
+        // Assignments in both scopes name where verification runs.
+        assert_eq!(
+            ORCHESTRATOR_SKILL
+                .matches("verification environment and targets")
+                .count(),
+            4
+        );
+    }
+
+    /// Every orchestrator startup and LOAD SKILL message, in either scope, restates the Hard
+    /// boundaries in brief ahead of any inlined skill, and points at the skill's section.
+    #[test]
+    fn every_orchestrator_message_restates_the_hard_boundaries_in_brief() {
+        assert!(ORCHESTRATOR_BOUNDARIES.starts_with("Hard boundaries (the skill's first section;"));
+        assert!(
+            ORCHESTRATOR_BOUNDARIES.len() < 600,
+            "{}",
+            ORCHESTRATOR_BOUNDARIES.len()
+        );
+        for needle in [
+            "after any context compaction",
+            "your own or any live orchestrator window",
+            "close, kill, nuke, delete, update or restart",
+            "even if you would cancel",
+            "reading evidence from isolated runs, else mark it unverified",
+            "without the user's approval this turn naming it",
+        ] {
+            assert!(ORCHESTRATOR_BOUNDARIES.contains(needle), "{needle:?}");
+        }
+        let skill = Path::new("/state/orchestrator/.agents/skills/riwork-orchestrator/SKILL.md");
+        let root = Path::new("/projects/app");
+        for scope in [None, Some("11111111-1111-4111-8111-111111111111")] {
+            for inline in [false, true] {
+                let message = orchestrator_prompt(
+                    skill,
+                    Path::new("/bin/riwork"),
+                    scope,
+                    scope.map(|_| root),
+                    &Delegation::built_in(),
+                    inline,
+                );
+                let at = message
+                    .find(ORCHESTRATOR_BOUNDARIES)
+                    .unwrap_or_else(|| panic!("{scope:?} inline={inline}: {message}"));
+                assert_eq!(message.matches(ORCHESTRATOR_BOUNDARIES).count(), 1);
+                assert!(at < message.find(CUA_GUIDANCE).unwrap());
+                if inline {
+                    assert!(at < message.find("<riwork-orchestrator-skill>").unwrap());
+                }
+            }
         }
     }
 
@@ -9333,7 +9552,7 @@ else:
         let root = scratch("grok-agent");
         let executable = Path::new("/Applications/RiWork/riwork");
         let directory = root.join("cua");
-        let current = grok_agent_path(&root, executable, None);
+        let current = grok_agent_path(&root, executable, None, false);
         let names = |suffix: &str| -> Vec<String> {
             fs::read_dir(&directory)
                 .map(|entries| {
@@ -9346,7 +9565,7 @@ else:
                 .unwrap_or_default()
         };
         let install = |write: &dyn Fn(&Path, &str) -> std::io::Result<()>| {
-            ensure_grok_agent_with(&root, executable, None, write, GROK_AGENT_MAX_AGE)
+            ensure_grok_agent_with(&root, executable, None, false, write, GROK_AGENT_MAX_AGE)
         };
 
         // A write that fails after creating the file leaves nothing behind.
@@ -9507,7 +9726,50 @@ else:
     fn a_launch_without_a_custom_driver_clears_the_servers_copy() {
         const NAME: &str = "a_launch_without_a_custom_driver_clears_the_servers_copy";
         let fixture = AccountFixture::new();
-        if !fixture.run_in_child_with(NAME, &[("RIWORK_CUA_DRIVER", None)]) {
+        if !fixture.run_in_child_with(
+            NAME,
+            &[
+                ("RIWORK_CUA_DRIVER", None),
+                ("RIWORK_CUA_ALLOW_RIWORK_INPUT", None),
+            ],
+        ) {
+            return;
+        }
+        let state = fixture.selected("account-a");
+        let (manager, capture) = recording_launcher(&fixture, &state);
+        manager
+            .create(
+                Uuid::new_v4().to_string(),
+                None,
+                fixture.0.clone(),
+                Some("sleep 60".into()),
+            )
+            .unwrap();
+        let arguments = take_recorded(&capture);
+        // Nor may an opt-in out of the Cua guard that an earlier launch had.
+        for variable in ["RIWORK_CUA_DRIVER", "RIWORK_CUA_ALLOW_RIWORK_INPUT"] {
+            assert!(contains_sequence(
+                &arguments,
+                &[";", "set-environment", "-gu", variable]
+            ));
+            assert!(
+                !arguments
+                    .iter()
+                    .any(|argument| argument.starts_with(&format!("{variable}="))),
+                "{arguments:?}"
+            );
+        }
+    }
+
+    /// A launch with `RIWORK_CUA_ALLOW_RIWORK_INPUT=1` names it on its own pane, as the
+    /// server's environment is not this launch's, and does not clear it there.
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "slow: re-runs the test binary and launches through a fake tmux script"]
+    fn a_launch_with_the_riwork_input_opt_in_names_it_on_its_pane() {
+        const NAME: &str = "a_launch_with_the_riwork_input_opt_in_names_it_on_its_pane";
+        let fixture = AccountFixture::new();
+        if !fixture.run_in_child_with(NAME, &[("RIWORK_CUA_ALLOW_RIWORK_INPUT", Some("1"))]) {
             return;
         }
         let state = fixture.selected("account-a");
@@ -9523,14 +9785,17 @@ else:
         let arguments = take_recorded(&capture);
         assert!(contains_sequence(
             &arguments,
-            &[";", "set-environment", "-gu", "RIWORK_CUA_DRIVER"]
+            &["-e", "RIWORK_CUA_ALLOW_RIWORK_INPUT=1"]
         ));
-        assert!(
-            !arguments
-                .iter()
-                .any(|argument| argument.starts_with("RIWORK_CUA_DRIVER=")),
-            "{arguments:?}"
-        );
+        assert!(!contains_sequence(
+            &arguments,
+            &[
+                ";",
+                "set-environment",
+                "-gu",
+                "RIWORK_CUA_ALLOW_RIWORK_INPUT"
+            ]
+        ));
     }
 
     /// `RIWORK_HOME=` used to make the session manager (but not the store)

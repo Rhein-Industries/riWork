@@ -5,7 +5,7 @@ use super::*;
 use crate::chat::host::Providers;
 use crate::chat::model::ChatEvent;
 use crate::chat::testing::*;
-use crate::sessions::SessionManager;
+use crate::sessions::{ORCHESTRATOR_BOUNDARIES, SessionManager};
 use crate::store::Store;
 
 const PROJECT: &str = "11111111-1111-4111-8111-111111111111";
@@ -1076,6 +1076,7 @@ fn both_scopes_are_given_the_skill_with_model_routing_and_dashboard_briefs() {
         let installed = sessions.orchestrator_skill_path_scoped(scope).unwrap();
         assert_eq!(fs::read_to_string(&installed).unwrap(), skill);
         assert!(sent_texts(chat)[0].contains(&installed.to_string_lossy().into_owned()));
+        assert!(sent_texts(chat)[0].contains(ORCHESTRATOR_BOUNDARIES));
         assert!(chat_skill_is_current(&host.home, chat));
         // LOAD SKILL after an update sends this text, whole, to either scope.
         host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
@@ -1099,6 +1100,7 @@ fn both_scopes_are_given_the_skill_with_model_routing_and_dashboard_briefs() {
         let loaded = sent_texts(chat).last().unwrap().clone();
         assert!(loaded.contains("## Model routing") && loaded.contains("## Dashboard briefs"));
         assert!(loaded.contains(skill));
+        assert!(loaded.contains(ORCHESTRATOR_BOUNDARIES));
         assert!(chat_skill_is_current(&host.home, chat));
     }
 }
