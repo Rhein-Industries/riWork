@@ -10,7 +10,7 @@ enum DictationOwner: Hashable, Sendable {
     case chat(String)
 }
 
-/// Runs dictations: one engine at a time, the rules of `DictationMachine`, the silence that ends one by itself, and what stops one
+/// Runs dictations: one engine at a time, the rules of `DictationMachine`, and what stops one
 /// from outside (a call, the app going to the background).
 @MainActor @Observable final class DictationController {
     static let shared = DictationController()
@@ -33,16 +33,7 @@ enum DictationOwner: Hashable, Sendable {
     @ObservationIgnored private var engine: (any SpeechEngine)?
     @ObservationIgnored private var deliver: ((String) -> Void)?
     @ObservationIgnored private var live: ((String) -> Void)?
-    @ObservationIgnored private var lastChange = ContinuousClock.now
-    @ObservationIgnored private var silenceWatch: Task<Void, Never>?
     @ObservationIgnored private var observers: [any NSObjectProtocol] = []
-    @ObservationIgnored var silenceAfterSpeech: Duration
-    @ObservationIgnored var silenceBeforeSpeech: Duration
-
-    init(silenceAfterSpeech: Duration = DictationMachine.silenceAfterSpeech, silenceBeforeSpeech: Duration = DictationMachine.silenceBeforeSpeech) {
-        self.silenceAfterSpeech = silenceAfterSpeech
-        self.silenceBeforeSpeech = silenceBeforeSpeech
-    }
 
     /// The desktop's mic setting (`DesktopStyle.mic`), kept by the root view. Off, no dictation starts (and so neither the microphone nor
     /// speech recognition is asked for), and one in progress is cancelled the moment it turns off.
@@ -80,7 +71,6 @@ enum DictationOwner: Hashable, Sendable {
         case .idle, .failed: .idle
         }
         if stage != self.stage { self.stage = stage }
-        if case .heard = event { lastChange = .now }
         if before.text != phase.text, phase.isActive { live?(phase.text) }
         switch effect {
         case .none: break
@@ -100,16 +90,14 @@ enum DictationOwner: Hashable, Sendable {
             guard let self, let engine, self.engine === engine else { return }
             self.received(event)
         }
-        lastChange = .now
         observeInterruptions()
-        watchSilence()
         let vocabulary = vocabulary
         Task { await engine.start(vocabulary: vocabulary) }
     }
     private func received(_ event: SpeechEngineEvent) {
         switch event {
         case .note(let note): send(.note(note))
-        case .ready: lastChange = .now; send(.ready)
+        case .ready: send(.ready)
         case .heard(let text): if text != phase.text { send(.heard(text)) }
         case .finished(let text): send(.finished(text))
         case .failed(let problem): send(.failed(problem))
@@ -123,24 +111,10 @@ enum DictationOwner: Hashable, Sendable {
         deliver = nil
         live = nil
         level = 0
-        silenceWatch?.cancel(); silenceWatch = nil
         observers.forEach(NotificationCenter.default.removeObserver)
         observers = []
     }
 
-    /// Ends a dictation by itself after a pause once something was said, or after a long wait when nothing was.
-    private func watchSilence() {
-        silenceWatch?.cancel()
-        silenceWatch = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(250))
-                guard let self, !Task.isCancelled else { return }
-                guard case .listening(let text) = phase else { continue }
-                let quiet = ContinuousClock.now - lastChange
-                if quiet >= (text.isEmpty ? silenceBeforeSpeech : silenceAfterSpeech) { stop() }
-            }
-        }
-    }
     /// A call or Siri takes the microphone: what was said so far is kept. Leaving the app ends the dictation the same way as Stop.
     private func observeInterruptions() {
         guard observers.isEmpty else { return }
@@ -169,7 +143,7 @@ enum DictationOwner: Hashable, Sendable {
     var onEvent: ((SpeechEngineEvent) -> Void)?
     let words: [String]
     let interval: Duration
-    /// Stop after the last word without waiting for `finish` (as the silence would).
+    /// Stop after the last word without waiting for `finish` (simulated engine completion).
     let holdOpen: Bool
     private(set) var started = false, finished = false, cancelled = false
     private(set) var vocabulary: SpeechVocabulary?

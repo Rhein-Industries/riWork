@@ -13,10 +13,11 @@ use std::{
     process::Command,
 };
 
-const SOURCES: [&str; 3] = [
+const SOURCES: [&str; 4] = [
     "macos/speech/main.swift",
     "macos/speech/Engines.swift",
     "ios/Core/SpeechVocabulary.swift",
+    "ios/Core/SpeechSession.swift",
 ];
 const INFO_PLIST: &str = "macos/speech/Info.plist";
 

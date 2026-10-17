@@ -21,8 +21,8 @@ import RiWorkCore
     }
     private final class Received { var live: [String] = []; var delivered: [String] = [] }
 
-    private func makeController(_ engine: any SpeechEngine, silence: Duration = .seconds(60)) -> DictationController {
-        let controller = DictationController(silenceAfterSpeech: silence, silenceBeforeSpeech: .seconds(60))
+    private func makeController(_ engine: any SpeechEngine) -> DictationController {
+        let controller = DictationController()
         controller.makeEngine = { engine }
         controller.sessionSources = { SpeechVocabularySources(names: ["ios-speech-input"], text: "KeyBarView") }
         // The desktop's mic setting is on.
@@ -119,13 +119,37 @@ import RiWorkCore
         XCTAssertEqual(a.delivered, [])
         XCTAssertEqual(b.delivered, ["hello"])
     }
-    func testSilenceAfterSpeechStopsByItself() async {
-        let engine = ScriptedSpeechEngine(script: "git status", interval: .milliseconds(10))
-        let controller = makeController(engine, silence: .milliseconds(300))
+    func testSilenceBeforeAndAfterSpeechKeepsListeningUntilATap() async {
+        let engine = ManualEngine()
+        let controller = makeController(engine)
         let received = start(controller)
-        await wait(until: received.delivered == ["git status"], timeout: 5)
-        XCTAssertTrue(engine.finished, "the pause after speech stopped it, without a tap")
+        await wait(until: controller.phase == .listening(text: ""))
+        try? await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(controller.phase, .listening(text: ""))
+        engine.send(.heard("git status"))
+        try? await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(controller.phase, .listening(text: "git status"))
+        XCTAssertFalse(engine.finished)
+        XCTAssertEqual(received.delivered, [])
+        controller.stop()
+        engine.send(.finished("git status"))
         XCTAssertEqual(received.delivered, ["git status"])
+    }
+    func testEveryFailureKeepsLiveTextAndTearsDownTheEngine() async {
+        for problem: DictationProblem in [.interrupted, .failed("dead microphone"), .modelUnavailable] {
+            let engine = ManualEngine()
+            let controller = makeController(engine)
+            let received = start(controller)
+            await wait(until: controller.phase == .listening(text: ""))
+            engine.send(.heard("keep these words"))
+            engine.send(.failed(problem))
+            XCTAssertEqual(received.delivered, ["keep these words"])
+            XCTAssertEqual(received.live.last, "keep these words")
+            XCTAssertEqual(controller.phase, .failed(problem))
+            XCTAssertTrue(engine.cancelled)
+            engine.send(.finished("late duplicate"))
+            XCTAssertEqual(received.delivered, ["keep these words"])
+        }
     }
     func testACallKeepsWhatWasSaidBeforeIt() async {
         let engine = ManualEngine()

@@ -255,6 +255,7 @@
 		FF3313718A0946B01BC5E9C8 /* AttachmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B620C318695DAB885BC0F84C /* AttachmentTests.swift */; };
 		FF37502303E719419C61D622 /* KeyboardSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6A7FA7AFDF4729479D6BBB8 /* KeyboardSettings.swift */; };
 		FF4360CDECBBD7F89ECBAA0E /* SpeechVocabularyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D26A762F58B2703531A1E8CB /* SpeechVocabularyTests.swift */; };
+		E1EE67A4903B6D6CEE7DA0EE /* SpeechSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 354C9CD85A1A05C416D33C0E /* SpeechSession.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -571,6 +572,7 @@
 		FC76A77536A88AA078AF3DC1 /* ChatModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatModels.swift; sourceTree = "<group>"; };
 		FEB928105826C732C8F49403 /* RemoteModel+Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteModel+Theme.swift"; sourceTree = "<group>"; };
 		FF4CB316BF5C6D882BC4177A /* ProjectTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectTabs.swift; sourceTree = "<group>"; };
+		354C9CD85A1A05C416D33C0E /* SpeechSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechSession.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -716,6 +718,7 @@
 				DBB58DE07D23757B5555005A /* SessionCrypto.swift */,
 				A8D908B81111C5AD8EF54523 /* SharedTabs.swift */,
 				350A7673B13BBC5F1620A6A2 /* SharedTabStrip.swift */,
+				354C9CD85A1A05C416D33C0E /* SpeechSession.swift */,
 				014FE893E22A3438F7464EC0 /* SpeechVocabulary.swift */,
 				F50A3A2530BF4ED68C336A29 /* StyledScreen.swift */,
 				FA6F121414A560E60AA78761 /* SubshellCards.swift */,
@@ -1303,6 +1306,7 @@
 				36B32F622E0F89F229918BDA /* SessionCrypto.swift in Sources */,
 				BDAA390D1790133ADC4F26D2 /* SharedTabStrip.swift in Sources */,
 				AAD20D05256D983A7138C8ED /* SharedTabs.swift in Sources */,
+				E1EE67A4903B6D6CEE7DA0EE /* SpeechSession.swift in Sources */,
 				258B6DD599D66E8ADCF25582 /* SpeechVocabulary.swift in Sources */,
 				F55E794DBA2716548B168D57 /* StyledScreen.swift in Sources */,
 				3CA65B0B6D04BA7486EAA100 /* SubshellCards.swift in Sources */,

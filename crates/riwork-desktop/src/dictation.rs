@@ -18,7 +18,6 @@ use std::{
     ops::Range,
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
-    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -27,11 +26,6 @@ use crate::{
     chat::model::{Item, ItemBody},
     project_settings::Input,
 };
-
-/// Stop by itself once speech has been followed by this much quiet.
-pub const SILENCE_AFTER_SPEECH: Duration = Duration::from_millis(2_500);
-/// Stop by itself if nothing at all has been heard for this long.
-pub const SILENCE_BEFORE_SPEECH: Duration = Duration::from_secs(10);
 
 /// The shortcut that starts and stops dictation in a chat, as it is shown (main.rs binds it
 /// as `ctrl-alt-d`).
@@ -163,7 +157,7 @@ pub enum Event {
     Ready,
     /// What has been heard so far.
     Heard(String),
-    /// The person clicked stop, or the silence after speech was long enough.
+    /// The person clicked stop or pressed the shortcut.
     Stop,
     /// The recognizer has finished; this is all of it.
     Finished(String),
@@ -247,13 +241,10 @@ impl Machine {
                 self.phase = Phase::Idle;
                 Effect::CancelEngine
             }
-            // The microphone going away keeps what was said before it.
-            (
-                Phase::Listening { text } | Phase::Finishing { text },
-                Event::Failed(Problem::Interrupted),
-            ) => {
+            // Every failure keeps what was said before it.
+            (Phase::Listening { text } | Phase::Finishing { text }, Event::Failed(problem)) => {
                 let kept = text.trim().to_owned();
-                self.phase = Phase::Failed(Problem::Interrupted);
+                self.phase = Phase::Failed(problem);
                 if kept.is_empty() {
                     Effect::CancelEngine
                 } else {
@@ -659,6 +650,7 @@ fn read_events(reader: impl BufRead, sender: &async_channel::Sender<EngineEvent>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn run(events: Vec<Event>) -> (Machine, Vec<Effect>) {
         let mut machine = Machine::default();
@@ -817,28 +809,36 @@ mod tests {
     }
 
     #[test]
-    fn an_interruption_keeps_what_was_said() {
-        let (machine, effects) = run(vec![
-            Event::Start,
-            Event::Ready,
-            heard("deploy to staging"),
-            Event::Failed(Problem::Interrupted),
-        ]);
-        assert_eq!(
-            effects.last(),
-            Some(&Effect::Deliver("deploy to staging".to_owned()))
-        );
-        assert_eq!(machine.phase(), &Phase::Failed(Problem::Interrupted));
-        assert_eq!(
-            run(vec![
-                Event::Start,
-                Event::Ready,
-                Event::Failed(Problem::Interrupted)
-            ])
-            .1
-            .last(),
-            Some(&Effect::CancelEngine)
-        );
+    fn every_failure_keeps_what_was_said_even_while_finishing() {
+        for problem in [
+            Problem::Interrupted,
+            Problem::Failed("dead mic".into()),
+            Problem::ModelUnavailable,
+        ] {
+            for stopping in [false, true] {
+                let mut events = vec![Event::Start, Event::Ready, heard("deploy to staging")];
+                if stopping {
+                    events.push(Event::Stop);
+                }
+                events.push(Event::Failed(problem.clone()));
+                let (machine, effects) = run(events);
+                assert_eq!(
+                    effects.last(),
+                    Some(&Effect::Deliver("deploy to staging".into()))
+                );
+                assert_eq!(machine.phase(), &Phase::Failed(problem.clone()));
+                assert_eq!(
+                    run(vec![
+                        Event::Start,
+                        Event::Ready,
+                        Event::Failed(problem.clone())
+                    ])
+                    .1
+                    .last(),
+                    Some(&Effect::CancelEngine)
+                );
+            }
+        }
     }
 
     #[test]
