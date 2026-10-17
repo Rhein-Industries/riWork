@@ -6,6 +6,11 @@ import RiWorkCore
 /// The history download setting, the link meter as the model feeds it, flags that flap, and what the desktop announces: against the scripted
 /// desktop over a simulated link.
 @MainActor final class LinkSettingsTests: ScrollTestCase {
+    // The link is measured by the iPhone terminal's history pages; the iPad terminal never pages history (`scrollsThroughBuffer`).
+    override func setUpWithError() throws {
+        let tablet = MainActor.assumeIsolated { UIDevice.current.userInterfaceIdiom == .pad }
+        try XCTSkipIf(tablet, "the iPhone terminal")
+    }
     private func historyCount(_ transport: FixtureTransport) async -> Int { await transport.historyRequests().count }
     private func compressing() -> DesktopFeatures {
         var features = DesktopFeatures()
