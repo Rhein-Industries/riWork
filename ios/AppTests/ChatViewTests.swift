@@ -2362,7 +2362,9 @@ import RiWorkCore
         conversation.showUsageDetail()
         await eventually("the usage detail is up") { rig.host.presentedViewController != nil }
         rig.host.presentedViewController?.dismiss(animated: false)
-        try await Task.sleep(for: .milliseconds(300))
+        await eventually("the detail is gone and the banner is drawn again") {
+            rig.host.presentedViewController == nil && rig.layout.frames["banner-notice-kind:rate_limit:five_hour"] != nil
+        }
         XCTAssertTrue(try renderedText(rig, in: XCTUnwrap(rig.layout.frames["banner-notice-kind:rate_limit:five_hour"], "the limit's banner")).contains("resets"), "says when it resets")
         // Live windows come by `chat.events` too, which opts in as the snapshot did (the fixture withholds them otherwise).
         await rig.transport.append(chatID, [.rateLimits([ChatRateWindow(id: "seven_day", label: "weekly", usedPercent: 91, resetsAt: resets + 86400)])])

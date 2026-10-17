@@ -6,6 +6,11 @@ import RiWorkCore
 /// Scrolling: deep history paging, the lines held under stable indexes, the sticky bottom, the alternate screen. Against the fake
 /// desktop with a scripted scrollback (`ScriptedScrollback`), so what the phone holds can be checked against what the desktop has.
 @MainActor final class ScrollingTests: ScrollTestCase {
+    // The iPad terminal does not scroll through a buffer of its own (`scrollsThroughBuffer`): it never pages history.
+    override func setUpWithError() throws {
+        let tablet = MainActor.assumeIsolated { UIDevice.current.userInterfaceIdiom == .pad }
+        try XCTSkipIf(tablet, "the iPhone terminal")
+    }
     private func loadPage(_ model: RemoteModel, file: StaticString = #filePath, line: UInt = #line) async {
         model.loadOlderHistory()
         let end = Date().addingTimeInterval(4)

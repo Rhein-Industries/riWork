@@ -6,6 +6,11 @@ import RiWorkCore
 /// Fetching history in the background, against the scripted desktop over a simulated link: how it starts, how it paces itself, when it
 /// holds back, and what it does when the desktop draws its history again.
 @MainActor final class PrefetchTests: ScrollTestCase {
+    // The iPad terminal does not scroll through a buffer of its own (`scrollsThroughBuffer`): it never pages history.
+    override func setUpWithError() throws {
+        let tablet = MainActor.assumeIsolated { UIDevice.current.userInterfaceIdiom == .pad }
+        try XCTSkipIf(tablet, "the iPhone terminal")
+    }
     private func requestsFor(_ transport: FixtureTransport, shell id: String) async -> [[String: JSONValue]] {
         await transport.historyRequests().filter { $0["shell_id"]?.string == id }
     }
