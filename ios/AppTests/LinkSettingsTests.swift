@@ -296,6 +296,7 @@ import RiWorkCore
         await eventually("measured", timeout: 8) { model.linkMeter.tier != .unknown }
         let lines = model.linkLines
         XCTAssertEqual(lines.count, 3)
+        guard lines.count == 3 else { return await model.disconnect() }
         XCTAssertTrue(lines[0].hasPrefix("link "), lines[0])
         XCTAssertTrue(lines[0].contains("MB/s") || lines[0].contains("KB/s"), lines[0])
         XCTAssertTrue(lines[1].hasPrefix("desk "), lines[1])

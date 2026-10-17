@@ -214,8 +214,8 @@ import RiWorkCore
         await loadPage(model)
         let requests = await transport.historyRequests()
         XCTAssertEqual(requests.count, 2)
-        XCTAssertEqual(requests[0]["styled"], .bool(true))
-        XCTAssertNil(requests[1]["styled"])
+        XCTAssertEqual(requests.first?["styled"], .bool(true))
+        XCTAssertNil(requests.dropFirst().first?["styled"])
         XCTAssertEqual(model.terminal.heldHistory, 800)
         XCTAssertEqual(model.historySupport, .supported)
         await loadPage(model)
@@ -230,7 +230,7 @@ import RiWorkCore
         XCTAssertEqual(model.historySupport, .unknown, "an error about the request is not the desktop lacking the method")
         let requests = await transport.historyRequests()
         XCTAssertEqual(requests.count, 1, "and `styled` was not dropped for it")
-        XCTAssertEqual(requests[0]["styled"], .bool(true))
+        XCTAssertEqual(requests.first?["styled"], .bool(true))
         await transport.setHistoryMode(.ok)
         model.retryHistory()
         await eventually("works again") { !model.historyFailed && model.terminal.heldHistory == 800 }
@@ -311,7 +311,7 @@ import RiWorkCore
         await loadPage(model)
         let requests = await transport.historyRequests()
         XCTAssertEqual(requests.count, 1)
-        if case .number(let lines)? = requests[0]["lines"], case .number(let end)? = requests[0]["end"] {
+        if case .number(let lines)? = requests.first?["lines"], case .number(let end)? = requests.first?["end"] {
             XCTAssertEqual(Int(lines), 300 + HistoryLimits.verifyLines)
             XCTAssertEqual(Int(end), 509 - HistoryLimits.verifyLines)
         }

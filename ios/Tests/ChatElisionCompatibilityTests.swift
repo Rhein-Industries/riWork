@@ -11,6 +11,7 @@ final class ChatElisionCompatibilityTests: XCTestCase {
         let page = try request.parse(value)
         XCTAssertEqual(page.next, 2)
         XCTAssertEqual(page.events.count, 2)
+        guard page.events.count == 2 else { return }
         XCTAssertEqual(page.events[0].seq, 1)
         XCTAssertEqual(page.events[0].event, .elided(ChatElidedEvent(event: "item_elided", of: "item_completed", itemID: "tool", kind: "tool_call", bytes: 2097301, status: .completed)))
         XCTAssertEqual(page.skipped, 0)
@@ -27,6 +28,7 @@ final class ChatElisionCompatibilityTests: XCTestCase {
         let page = try JSONDecoder().decode(ChatSnapshotReply.self, from: Data(raw.utf8))
         XCTAssertEqual(page.next, 99)
         XCTAssertEqual(page.items.count, 1)
+        guard page.items.count == 1 else { return }
         XCTAssertEqual(page.items[0].item.id, "tool")
         XCTAssertEqual(page.items[0].item.turnID, "turn")
         XCTAssertEqual(page.skipped, 0)

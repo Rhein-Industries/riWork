@@ -136,6 +136,7 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual([approval.requestID, approval.itemID, approval.title, approval.detail, approval.kind.rawValue], ["r1", "c", "rm -rf build", "why", "command"])
         guard case .questionRequested(let question) = events[34] else { return XCTFail("a question") }
         XCTAssertEqual(question.questions.count, 2)
+        guard question.questions.count == 2 else { return }
         XCTAssertEqual(question.questions[0].options, [ChatQuestionOption(label: "A", description: "first"), ChatQuestionOption(label: "B")])
         XCTAssertTrue(question.questions[0].multiSelect); XCTAssertEqual(question.questions[0].header, "Pick")
         XCTAssertNil(question.questions[1].header); XCTAssertFalse(question.questions[1].multiSelect)

@@ -258,6 +258,7 @@ final class ChatDiffTests: XCTestCase {
     func testALongLineIsCutWithAnEllipsis() {
         let diff = ChatDiff.parse("+" + String(repeating: "x", count: 5000))
         XCTAssertEqual(diff.lines.count, 1)
+        guard diff.lines.count == 1 else { return }
         XCTAssertEqual(diff.lines[0].text, String(repeating: "x", count: 4000) + "…")
         XCTAssertEqual(diff.lines[0].kind, .added)
     }
@@ -302,6 +303,7 @@ final class ChatDiffTests: XCTestCase {
         XCTAssertEqual(diff.added, hunkLines)
         XCTAssertEqual(diff.removed, hunkLines)
         XCTAssertEqual(diff.hiddenLines, 1 + hunkLines * 3 - 2000)
+        guard diff.lines.count == 2000 else { return }
         XCTAssertEqual(diff.lines[0].kind, .hunk)
         XCTAssertEqual(diff.lines[1], removed("old line of text that goes on for a while", 1))
         XCTAssertEqual(diff.lines[2], added("new line of text that goes on for a while", 1))
@@ -311,7 +313,7 @@ final class ChatDiffTests: XCTestCase {
         let line = "+" + String(repeating: "m", count: 5_000_000)
         XCTAssertLessThan(seconds { diff = ChatDiff.parse(line) }, 2.0)
         XCTAssertEqual(diff.lines.count, 1)
-        XCTAssertEqual(diff.lines[0].text.count, 4001)
+        XCTAssertEqual(diff.lines.first?.text.count, 4001)
         XCTAssertLessThan(seconds { diff = ChatDiff.parse(String(repeating: "\n", count: 1_000_000)) }, 2.0)
         XCTAssertEqual(diff.lines.count, 2000)
         XCTAssertEqual(diff.hiddenLines, 1_000_000 - 2000)

@@ -28,7 +28,7 @@ import RiWorkCore
         XCTAssertEqual(number(first, "end"), 500)
         let sizes = requests.map { number($0, "lines") }
         XCTAssertGreaterThan(sizes.count, 3)
-        XCTAssertGreaterThan(sizes[2], sizes[1], "pages grow while the link keeps up")
+        XCTAssertGreaterThan(sizes.dropFirst(2).first ?? 0, sizes.dropFirst().first ?? 0, "pages grow while the link keeps up")
         XCTAssertLessThanOrEqual(sizes.max() ?? 0, HistoryLimits.maximumPageLines)
         let peak = await transport.peakInFlight("shell.history")
         XCTAssertEqual(peak, 1, "one history request in flight, ever")
@@ -100,7 +100,9 @@ import RiWorkCore
         let moment = ContinuousClock.now
         await eventually("a page comes at once", timeout: 3) { await transport.historyRequests().count > before }
         let times = await transport.historyRequestTimes()
-        XCTAssertLessThan((times[before] - moment).timeInterval, 0.5, "not after the rest of the pause")
+        if let asked = times.dropFirst(before).first {
+            XCTAssertLessThan((asked - moment).timeInterval, 0.5, "not after the rest of the pause")
+        }
         await model.disconnect()
     }
 

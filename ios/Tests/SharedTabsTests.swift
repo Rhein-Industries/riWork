@@ -34,8 +34,8 @@ import XCTest
         var hidden = base; hidden["hidden"] = .bool(true)
         var dead = base; dead["kind"] = .string("shell"); dead["status"] = .string("stopped")
         let reply = try JSONValue.object(["entries": .array([.object(parent), .object(hidden), .object(dead)])]).decode(SharedTabsReply.self)
-        XCTAssertEqual(reply.allEntries.count, 4); XCTAssertEqual(reply.visible.count, 2); XCTAssertEqual(reply.visible[0].children[0].status, .waiting)
-        XCTAssertEqual(reply.visible[0].childCount, 1); XCTAssertEqual(reply.visible[0].sessionID, session)
+        XCTAssertEqual(reply.allEntries.count, 4); XCTAssertEqual(reply.visible.count, 2); XCTAssertEqual(reply.visible.first?.children.first?.status, .waiting)
+        XCTAssertEqual(reply.visible.first?.childCount, 1); XCTAssertEqual(reply.visible.first?.sessionID, session)
     }
     func testUnknownEnumsKeepTheReplyAndRenameCanBeClearedButCannotSpoofDirection() throws {
         let id = UUID().uuidString.lowercased()
