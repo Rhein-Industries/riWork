@@ -49,6 +49,17 @@ import RiWorkCore
         if let onPasteFiles, PasteboardAttachments.available, onPasteFiles() { return }
         super.paste(sender)
     }
+
+    var onDropItems: (([NSItemProvider], Bool, @escaping @MainActor (String) -> Void) -> Bool)?
+    var dropHandler: ChatDropHandler?
+    private lazy var chatDropInteraction = UIDropInteraction(delegate: self)
+    func configureDrop(_ handler: ChatDropHandler?) {
+        dropHandler = handler
+        onDropItems = handler.map { handler in { providers, local, insert in handler.perform(providers, local: local, insert: insert) } }
+        // UITextView would otherwise paste a Files URL or a text file's contents, and reject images.
+        if let textDropInteraction { removeInteraction(textDropInteraction) }
+        if !interactions.contains(where: { $0 === chatDropInteraction }) { addInteraction(chatDropInteraction) }
+    }
     private lazy var typingCommands: [UIKeyCommand] = [
         Self.command("\r", [], action: #selector(fired(_:))),
         Self.command("\r", .shift, action: #selector(fired(_:)))
@@ -160,6 +171,7 @@ struct ChatComposerField: UIViewRepresentable {
         view.returnKeyType = .default
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         view.accessibilityIdentifier = "chat-composer"
+        view.configureDrop(context.environment.chatDropHandler)
         return view
     }
     func updateUIView(_ view: ChatComposerTextView, context: Context) {
@@ -191,6 +203,7 @@ struct ChatComposerField: UIViewRepresentable {
         view.suggesting = suggesting
         insertion?.view = view
         view.onPasteFiles = onPasteFiles
+        view.configureDrop(context.environment.chatDropHandler)
         if coordinator.lastFocusToken != focusToken {
             coordinator.lastFocusToken = focusToken
             if isEnabled { view.requestFocusWhenAttached() }
@@ -235,6 +248,7 @@ struct ChatComposerField: UIViewRepresentable {
 /// 44-point target that reaches out over the margin to the screen's edge.
 struct ChatComposer: View {
     @Environment(\.desktopStyle) private var style
+    @Environment(\.chatDropHandler) private var dropHandler
     @Environment(\.dynamicTypeSize) private var typeSize
     let conversation: ChatConversation
     let provider: ChatProvider
@@ -316,7 +330,7 @@ struct ChatComposer: View {
                 if actions.send { sendButton }
             }
             .padding(.leading, attach == nil ? style.pt(4) : 0).padding(.trailing, 0)
-            .modifier(ComposerFieldSurface(focused: focused))
+            .modifier(ComposerFieldSurface(focused: focused, targeted: dropHandler?.composerTargeted == true))
             .animation(.easeInOut(duration: 0.12), value: actions)
             .chatLayoutProbe("composer")
             .padding(.horizontal, Self.fieldMargin)
@@ -427,14 +441,25 @@ private struct ComposerPaperclip: View, Equatable {
 private struct ComposerFieldSurface: ViewModifier {
     @Environment(\.desktopStyle) private var style
     let focused: Bool
+    let targeted: Bool
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: style.pt(23), style: .continuous)
         if style.glass {
             content.nativeGlass(style, in: shape, interactive: false)
+                .overlay { if targeted { shape.stroke(style.accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4])) } }
         } else if style.native {
-            content.background(style.background, in: shape).overlay(shape.stroke(focused ? style.accent : style.divider, lineWidth: 1))
+            content.background(style.background, in: shape)
+                .overlay {
+                    if targeted { shape.stroke(style.accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4])) }
+                    else { shape.stroke(focused ? style.accent : style.divider, lineWidth: 1) }
+                }
         } else {
-            content.background(style.background).overlay(RoundedRectangle(cornerRadius: 3).stroke(focused ? style.accent : style.divider, lineWidth: 1))
+            content.background(style.background)
+                .overlay {
+                    let border = RoundedRectangle(cornerRadius: 3)
+                    if targeted { border.stroke(style.accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4])) }
+                    else { border.stroke(focused ? style.accent : style.divider, lineWidth: 1) }
+                }
         }
     }
 }
