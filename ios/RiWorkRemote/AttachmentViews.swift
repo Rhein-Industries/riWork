@@ -16,6 +16,8 @@ enum AttachmentSource: @unchecked Sendable {
     case camera(Data)
     /// What a paste found on the pasteboard.
     case pasted(NSItemProvider)
+    /// A sandbox copy supplied by a drop, bounded before its bytes are read.
+    case dropped(DroppedAttachment)
 
     /// What its card shows before the file is read: a photo is a picture; a file from Files or the pasteboard has its name.
     var placeholder: (kind: StagedAttachment.Kind, name: String) {
@@ -24,6 +26,8 @@ enum AttachmentSource: @unchecked Sendable {
         case .file(let url): (StagedAttachment.kind(mediaType: nil, name: url.lastPathComponent), url.lastPathComponent)
         case .pasted(let provider):
             (PasteboardAttachments.fileType(of: provider)?.conforms(to: .image) == true ? .image : .file, provider.suggestedName ?? "Pasted item")
+        case .dropped(let item):
+            (item.type.conforms(to: .image) ? .image : .file, item.name)
         }
     }
 
@@ -55,6 +59,14 @@ enum AttachmentSource: @unchecked Sendable {
             var name = provider.suggestedName ?? fallback
             if (name as NSString).pathExtension.isEmpty, let ext = type.preferredFilenameExtension { name += "." + ext }
             return PhotoPreparation.prepare(data, name: name, typeIdentifier: type.identifier, reencode: type.conforms(to: .image))
+        case .dropped(let item):
+            let url = try await item.file.value()
+            defer { item.removeCopy() }
+            try Task.checkCancellation()
+            let data = try await Task.detached { try Data(contentsOf: url) }.value
+            try Task.checkCancellation()
+            guard data.count <= item.maximumBytes else { throw UploadError.tooLarge(name: item.name, limit: item.maximumBytes) }
+            return PhotoPreparation.prepare(data, name: url.lastPathComponent, typeIdentifier: item.type.identifier, reencode: item.reencode)
         }
     }
 }

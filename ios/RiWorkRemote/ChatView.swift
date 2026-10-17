@@ -134,6 +134,7 @@ struct ChatScreen: View {
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0; squeeze = 0 }
         .attachmentPicker($picking, onDone: requestFocus) { model.attach($0, to: .chat(chat.id)) }
+        .chatDropTarget(model: model, chat: chat)
         .task(id: chat.id) { await model.followChat(chat.id) }
         .onAppear { requestFocus() }
         .onChange(of: chat.id) { _, _ in requestFocus() }
@@ -704,12 +705,20 @@ private struct WorkerVisibility: ViewModifier {
 /// Capture the concrete scrolling ancestor from a materialized row. List's
 /// ScrollPosition does not perform absolute Y corrections on every supported OS.
 private struct TranscriptScrollCapture: UIViewRepresentable {
+    @Environment(\.chatDropHandler) private var dropHandler
     let viewport: ChatHistoryViewport
-    func makeUIView(context: Context) -> Installer { Installer(viewport: viewport) }
-    func updateUIView(_ view: Installer, context: Context) { view.viewport = viewport; view.capture() }
+    func makeUIView(context: Context) -> Installer {
+        let view = Installer(viewport: viewport)
+        view.dropPassThrough = dropHandler?.transcript
+        return view
+    }
+    func updateUIView(_ view: Installer, context: Context) {
+        view.viewport = viewport; view.dropPassThrough = dropHandler?.transcript; view.capture()
+    }
 
     final class Installer: UIView {
         weak var viewport: ChatHistoryViewport?
+        weak var dropPassThrough: TranscriptDropPassThrough?
         init(viewport: ChatHistoryViewport) {
             self.viewport = viewport
             super.init(frame: .zero)
@@ -723,6 +732,7 @@ private struct TranscriptScrollCapture: UIViewRepresentable {
             while let current = ancestor, !(current is UIScrollView) { ancestor = current.superview }
             guard let scroll = ancestor as? UIScrollView, let viewport else { return }
             viewport.nativeScrollView = scroll
+            dropPassThrough?.capture(scroll)
             if viewport.keyboardTap.view !== scroll {
                 viewport.keyboardTap.view?.removeGestureRecognizer(viewport.keyboardTap)
                 scroll.addGestureRecognizer(viewport.keyboardTap)
