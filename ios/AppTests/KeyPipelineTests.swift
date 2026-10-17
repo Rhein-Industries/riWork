@@ -133,6 +133,7 @@ import RiWorkCore
         typeText(model, "\n")
         await eventually("retry and follow-up delivered") { await transport.calls().count >= 3 }
         let calls = await transport.calls()
+        guard calls.count >= 3 else { return await model.disconnect() }
         XCTAssertEqual(calls[0].batch, calls[1].batch, "a retry reuses the batch UUID")
         XCTAssertNotEqual(calls[0].request, calls[1].request, "and gets a new request id")
         XCTAssertNotEqual(calls[2].batch, calls[0].batch, "keys typed meanwhile form a new batch behind it")
@@ -193,7 +194,7 @@ import RiWorkCore
         typeText(model, "d")
         await eventually("buffer delivered in order") { await transport.delivered(shell: self.shell) == "abcd" }
         let calls = await transport.calls()
-        XCTAssertEqual(calls[1].batch, calls[0].batch, "the refused batch is retried unchanged")
+        XCTAssertEqual(calls.dropFirst().first?.batch, calls.first?.batch, "the refused batch is retried unchanged")
         await model.disconnect()
     }
     func testNotFoundKeepsTheBufferAndSaysTheTerminalIsGone() async throws {

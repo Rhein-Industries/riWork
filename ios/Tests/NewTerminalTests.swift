@@ -230,6 +230,7 @@ final class NewTerminalTests: XCTestCase {
         XCTAssertEqual(created.shellID, shell)
         let sent = await ok.sent()
         XCTAssertEqual(sent.count, 1)
+        guard sent.count == 1 else { return }
         XCTAssertEqual(sent[0].method, "shell.create")
         XCTAssertEqual(sent[0].params, ["kind": .string("claude"), "worktree_id": .string(tree)])
 

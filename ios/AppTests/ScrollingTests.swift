@@ -6,6 +6,11 @@ import RiWorkCore
 /// Scrolling: deep history paging, the lines held under stable indexes, the sticky bottom, the alternate screen. Against the fake
 /// desktop with a scripted scrollback (`ScriptedScrollback`), so what the phone holds can be checked against what the desktop has.
 @MainActor final class ScrollingTests: ScrollTestCase {
+    // The iPad terminal does not scroll through a buffer of its own (`scrollsThroughBuffer`): it never pages history.
+    override func setUpWithError() throws {
+        let tablet = MainActor.assumeIsolated { UIDevice.current.userInterfaceIdiom == .pad }
+        try XCTSkipIf(tablet, "the iPhone terminal")
+    }
     private func loadPage(_ model: RemoteModel, file: StaticString = #filePath, line: UInt = #line) async {
         model.loadOlderHistory()
         let end = Date().addingTimeInterval(4)
@@ -214,8 +219,8 @@ import RiWorkCore
         await loadPage(model)
         let requests = await transport.historyRequests()
         XCTAssertEqual(requests.count, 2)
-        XCTAssertEqual(requests[0]["styled"], .bool(true))
-        XCTAssertNil(requests[1]["styled"])
+        XCTAssertEqual(requests.first?["styled"], .bool(true))
+        XCTAssertNil(requests.dropFirst().first?["styled"])
         XCTAssertEqual(model.terminal.heldHistory, 800)
         XCTAssertEqual(model.historySupport, .supported)
         await loadPage(model)
@@ -230,7 +235,7 @@ import RiWorkCore
         XCTAssertEqual(model.historySupport, .unknown, "an error about the request is not the desktop lacking the method")
         let requests = await transport.historyRequests()
         XCTAssertEqual(requests.count, 1, "and `styled` was not dropped for it")
-        XCTAssertEqual(requests[0]["styled"], .bool(true))
+        XCTAssertEqual(requests.first?["styled"], .bool(true))
         await transport.setHistoryMode(.ok)
         model.retryHistory()
         await eventually("works again") { !model.historyFailed && model.terminal.heldHistory == 800 }
@@ -311,7 +316,7 @@ import RiWorkCore
         await loadPage(model)
         let requests = await transport.historyRequests()
         XCTAssertEqual(requests.count, 1)
-        if case .number(let lines)? = requests[0]["lines"], case .number(let end)? = requests[0]["end"] {
+        if case .number(let lines)? = requests.first?["lines"], case .number(let end)? = requests.first?["end"] {
             XCTAssertEqual(Int(lines), 300 + HistoryLimits.verifyLines)
             XCTAssertEqual(Int(end), 509 - HistoryLimits.verifyLines)
         }

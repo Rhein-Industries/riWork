@@ -310,6 +310,7 @@ private struct ThemedTerminal: View {
         let times = Array(await transport.outputTimes().suffix(5))
         let gaps = Array(zip(times, times.dropFirst()).map { ($1 - $0).timeInterval }.prefix(3))
         XCTAssertEqual(gaps.count, 3)
+        guard gaps.count == 3 else { return await model.disconnect() }
         XCTAssertGreaterThanOrEqual(gaps[0], 0.2, "\(gaps)")
         XCTAssertGreaterThanOrEqual(gaps[1], 0.4, "\(gaps)")
         XCTAssertGreaterThanOrEqual(gaps[2], 0.9, "\(gaps)")

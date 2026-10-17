@@ -1413,7 +1413,7 @@ import RiWorkCore
         let field = try await openChat(rig)
         let conversation = rig.model.conversation(chatID)
         XCTAssertEqual(conversation.attachments.count, 1, "kept, so the person sees what happened")
-        XCTAssertTrue(conversation.attachments[0].isExpired())
+        XCTAssertTrue(conversation.attachments.first?.isExpired() == true)
         XCTAssertTrue(conversation.notice?.contains("expired on the Mac") == true, conversation.notice ?? "no notice")
         XCTAssertFalse(conversation.hasMessage, "an expired card alone is nothing to send")
         await rig.model.sendChatDraft(chatID)
@@ -1673,7 +1673,7 @@ import RiWorkCore
     func testTheRowDrawsTheSharedListInItsOrderWithoutHiddenWorkers() async throws {
         let rig = try await sharedRig()
         XCTAssertEqual(rig.model.tabs.map(\.id), [chatID, userChatID, ChatTransport.shell], "shared order; the hidden worker is not a tab")
-        XCTAssertEqual(rig.model.tabs[1].chatInfo?.title, "Shared title", "the shared title")
+        XCTAssertEqual(rig.model.tabs.dropFirst().first?.chatInfo?.title, "Shared title", "the shared title")
         await eventually("the row is drawn with drag targets") { rig.layout.frames["tab-chat:\(self.chatID)"] != nil && rig.layout.frames["tab-shell:\(ChatTransport.shell)"] != nil }
         let first = try XCTUnwrap(rig.layout.frames["tab-chat:\(chatID)"]), last = try XCTUnwrap(rig.layout.frames["tab-shell:\(ChatTransport.shell)"])
         XCTAssertLessThan(first.minX, last.minX)
@@ -2188,7 +2188,7 @@ import RiWorkCore
                 XCTAssertGreaterThanOrEqual(activity.minX, 8)
                 XCTAssertLessThanOrEqual(mode.maxX, width - 8 + 1)
                 XCTAssertGreaterThan(mode.maxX, width - 20, "\(what): the mode at the row's end")
-                XCTAssertEqual(ChatUsageMeter(conversation.transcript.usage!).percentText, "56%")
+                XCTAssertEqual(conversation.transcript.usage.map { ChatUsageMeter($0).percentText }, "56%")
                 await finish(rig)
             }
         }
@@ -2363,8 +2363,10 @@ import RiWorkCore
         conversation.showUsageDetail()
         await eventually("the usage detail is up") { rig.host.presentedViewController != nil }
         rig.host.presentedViewController?.dismiss(animated: false)
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertTrue(try renderedText(rig, in: rig.layout.frames["banner-notice-kind:rate_limit:five_hour"]!).contains("resets"), "says when it resets")
+        await eventually("the detail is gone and the banner is drawn again") {
+            rig.host.presentedViewController == nil && rig.layout.frames["banner-notice-kind:rate_limit:five_hour"] != nil
+        }
+        XCTAssertTrue(try renderedText(rig, in: XCTUnwrap(rig.layout.frames["banner-notice-kind:rate_limit:five_hour"], "the limit's banner")).contains("resets"), "says when it resets")
         // Live windows come by `chat.events` too, which opts in as the snapshot did (the fixture withholds them otherwise).
         await rig.transport.append(chatID, [.rateLimits([ChatRateWindow(id: "seven_day", label: "weekly", usedPercent: 91, resetsAt: resets + 86400)])])
         await eventually("the live windows") { conversation.transcript.rateLimits.map(\.id) == ["seven_day"] }
@@ -3108,7 +3110,7 @@ import RiWorkCore
         XCTAssertEqual(rig.model.tabs.map(\.id), [chatID, ChatTransport.shell], "its tab sits in the strip, first")
         XCTAssertFalse(descendants(KeyCaptureView.self, in: rig.host.view).isEmpty)
         await rig.transport.append(chatID, [.state(.running), .itemStarted(ChatItem(id: "a", turnID: "t1", status: .completed, body: .agentMessage("Three workers are running; the build is green.")))])
-        rig.model.chooseOrchestrator(rig.model.tabs[0])
+        rig.model.chooseOrchestrator(try XCTUnwrap(rig.model.tabs.first))
         await eventually("the chat screen is up for the chat id") { self.composer(rig) != nil && rig.model.conversation(self.chatID).following }
         XCTAssertTrue(descendants(KeyCaptureView.self, in: rig.host.view).isEmpty, "no terminal behind it")
         XCTAssertFalse(rig.model.terminalVisible)
@@ -3126,7 +3128,7 @@ import RiWorkCore
     }
     func testAChatOrchestratorOnAnOlderMacShowsNeitherAChatNorATerminal() async throws {
         let rig = try await makeRig(chats: [], orchestrators: [chatOrchestrator], chatFeature: false)
-        rig.model.chooseOrchestrator(rig.model.tabs[0])
+        rig.model.chooseOrchestrator(try XCTUnwrap(rig.model.tabs.first))
         await eventually("the terminal is released") { self.descendants(KeyCaptureView.self, in: rig.host.view).isEmpty && !rig.model.terminalVisible }
         XCTAssertNil(composer(rig), "and there is no chat to type into")
         XCTAssertNotNil(rig.model.selectedBlocked)
@@ -3449,7 +3451,7 @@ import RiWorkCore
         for look in Look.allCases {
             var rig = try await makeRig(chats: [], orchestrators: [chatOrchestrator], orchestratorCreate: true, look: look)
             await rig.transport.append(chatID, [.state(.running), .itemStarted(ChatItem(id: "a", turnID: "t1", status: .completed, body: .agentMessage("Three workers are running; the build is green.")))])
-            rig.model.chooseOrchestrator(rig.model.tabs[0])
+            rig.model.chooseOrchestrator(try XCTUnwrap(rig.model.tabs.first))
             await eventually("the chat screen is up for the chat id") { self.composer(rig) != nil }
             // Asking for the project's orchestrator again says it is already there, in the note under the tabs.
             _ = await rig.model.createOrchestrator(try NewOrchestratorRequest(projectID: project))
@@ -3460,7 +3462,7 @@ import RiWorkCore
             try await hold(named("tabs-menu", look))
             await finish(rig)
             rig = try await makeRig(chats: [], orchestrators: [chatOrchestrator], chatFeature: false, look: look)
-            rig.model.chooseOrchestrator(rig.model.tabs[0])
+            rig.model.chooseOrchestrator(try XCTUnwrap(rig.model.tabs.first))
             await eventually("the notice") { rig.model.selectedBlocked != nil }
             try await Task.sleep(for: .milliseconds(400))
             try snapshot(rig, name: named("chat-orchestrator-update-the-mac", look))

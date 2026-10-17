@@ -243,6 +243,7 @@ final class NewProjectTests: XCTestCase {
         XCTAssertEqual(created.project.id, project)
         let sent = await ok.sent()
         XCTAssertEqual(sent.count, 1)
+        guard sent.count == 1 else { return }
         XCTAssertEqual(sent[0].method, "project.create")
         XCTAssertEqual(sent[0].params, ["name": .string("My App"), "git": .bool(false)])
 
