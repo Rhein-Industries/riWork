@@ -113,6 +113,8 @@ struct Entry {
     project_id: String,
     scope: WakeScope,
     event_id: String,
+    #[serde(default)]
+    outcome: crate::notifications::CompletionOutcome,
     created_at: u64,
     state: WakeState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,12 +136,31 @@ struct Guard {
 /// (`notifications::record_completion`). Only a worker harness shell of a
 /// project whose wakes are on queues any; a replayed event queues none. The
 /// number of wakes queued.
+#[cfg(test)]
 pub(crate) fn record_at(
     home: &Path,
     shell_id: &str,
     event_id: &str,
     provider: HarnessKind,
     time: u64,
+) -> Result<usize, String> {
+    record_outcome_at(
+        home,
+        shell_id,
+        event_id,
+        provider,
+        time,
+        crate::notifications::CompletionOutcome::Completed,
+    )
+}
+
+pub(crate) fn record_outcome_at(
+    home: &Path,
+    shell_id: &str,
+    event_id: &str,
+    provider: HarnessKind,
+    time: u64,
+    outcome: crate::notifications::CompletionOutcome,
 ) -> Result<usize, String> {
     if !valid_completion(shell_id, event_id) {
         return Err("Invalid agent completion identity".into());
@@ -181,6 +202,7 @@ pub(crate) fn record_at(
             project_id: project_id.into(),
             scope,
             event_id: event_id.into(),
+            outcome,
             created_at: time,
             state: WakeState::Pending,
             orchestrator_id: None,
@@ -553,10 +575,11 @@ fn message(state: &State, entry: &Entry, shell: &ShellSession) -> String {
         ),
     };
     format!(
-        "RiWork check-in: worker shell {shell} ({harness}) finished a turn in project {project} ({project_id}){place}. \
+        "RiWork check-in: worker shell {shell} ({harness}) {outcome} in project {project} ({project_id}){place}. \
          Read its output with `riwork shell output {shell} --lines 120` and its task state with `{tasks}`, then decide its next step.",
         shell = entry.shell_id,
         harness = entry.provider.program(),
+        outcome = entry.outcome.description(),
         project_id = entry.project_id,
     )
 }

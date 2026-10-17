@@ -1554,14 +1554,35 @@ fn frozen_codex_usage_home(shell: &ShellSession) -> Result<&std::path::Path, Str
 /// Delivery is optional: every input, I/O, and queue failure must stay silent
 /// and successful so notifications cannot alter the agent's work.
 fn agent_hook_command(args: Vec<String>, input: impl io::Read) -> Result<(), String> {
-    if args.len() != 3 || args[0] != "claude" {
+    if args.len() != 3 || !matches!(args[0].as_str(), "claude" | "codex" | "grok") {
         return Ok(());
     }
     let mut body = String::new();
     if input.take(1_048_577).read_to_string(&mut body).is_err() || body.len() > 1_048_576 {
         return Ok(());
     }
-    let _ = crate::agent_hooks::record_claude_hook(std::path::Path::new(&args[1]), &args[2], &body);
+    match args[0].as_str() {
+        "claude" => {
+            let _ = crate::agent_hooks::record_claude_hook(
+                std::path::Path::new(&args[1]),
+                &args[2],
+                &body,
+            );
+        }
+        provider => {
+            let provider = if provider == "codex" {
+                HarnessKind::Codex
+            } else {
+                HarnessKind::Grok
+            };
+            let _ = crate::agent_hooks::record_harness_hook(
+                std::path::Path::new(&args[1]),
+                &args[2],
+                provider,
+                &body,
+            );
+        }
+    }
     Ok(())
 }
 

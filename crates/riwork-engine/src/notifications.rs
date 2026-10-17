@@ -114,6 +114,25 @@ impl CompletionNotice {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionOutcome {
+    #[default]
+    Completed,
+    Failed,
+    Interrupted,
+}
+
+impl CompletionOutcome {
+    pub(crate) fn description(self) -> &'static str {
+        match self {
+            Self::Completed => "finished a turn",
+            Self::Failed => "failed a turn",
+            Self::Interrupted => "was interrupted during a turn",
+        }
+    }
+}
+
 /// Enqueue a verified completion from a hook or an exact lifecycle binding: an
 /// alert when the project's bell is on, and orchestrator wakes when a worker's
 /// project has them on. Disabled and unscoped sessions do not create a ledger.
@@ -125,9 +144,27 @@ pub fn record_completion(
     event_id: &str,
     provider: HarnessKind,
 ) -> Result<bool, String> {
+    record_completion_outcome(
+        home,
+        shell_id,
+        event_id,
+        provider,
+        CompletionOutcome::Completed,
+    )
+}
+
+pub fn record_completion_outcome(
+    home: &Path,
+    shell_id: &str,
+    event_id: &str,
+    provider: HarnessKind,
+    outcome: CompletionOutcome,
+) -> Result<bool, String> {
     let time = now();
     let alerted = record_at(home, shell_id, event_id, provider, time);
-    let woken = crate::orchestrator_wakes::record_at(home, shell_id, event_id, provider, time);
+    let woken = crate::orchestrator_wakes::record_outcome_at(
+        home, shell_id, event_id, provider, time, outcome,
+    );
     match (alerted, woken) {
         (Err(error), _) | (Ok(_), Err(error)) => Err(error),
         (Ok(alerted), Ok(_)) => Ok(alerted),

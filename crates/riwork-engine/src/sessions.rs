@@ -888,14 +888,16 @@ impl SessionManager {
         }
         self.write_registry(&registry)?;
         if !resumed {
-            let path = self.home.join("agent-activity").join(format!("{id}.json"));
-            match fs::remove_file(path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(format!(
-                        "Cannot reset activity for the new Codex launch: {error}"
-                    ));
+            for directory in ["agent-activity", "agent-hooks/codex"] {
+                let path = self.home.join(directory).join(format!("{id}.json"));
+                match fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(format!(
+                            "Cannot reset activity for the new Codex launch: {error}"
+                        ));
+                    }
                 }
             }
         }
@@ -2232,6 +2234,19 @@ impl SessionManager {
                     // so it finishes before Grok is created.
                     cua.prepare_for_grok()?;
                     ensure_grok_agent(&self.home, &executable)?;
+                    let hooks = crate::agent_hooks::grok_hooks(&executable, &self.home, &id);
+                    let base = grok_agent_definition(
+                        &executable,
+                        &self.home,
+                        crate::cua::driver_override_for_harness().as_deref(),
+                        crate::cua::riwork_input_allowed(),
+                    );
+                    let definition =
+                        base.replacen("\n---\n", &format!("\nhooks: {hooks}\n---\n"), 1);
+                    let path = grok_shell_agent_path(&self.home, &id);
+                    fs::create_dir_all(path.parent().unwrap())
+                        .map_err(|error| error.to_string())?;
+                    fs::write(path, definition).map_err(|error| error.to_string())?;
                 } else {
                     cua.driver_path()?;
                 }
@@ -3322,8 +3337,6 @@ fn harness_command(
                 executable,
                 state_home,
                 Some(shell_id),
-                &[],
-                codex_home,
             ));
             if let Some(home) = codex_home {
                 arguments.extend(codex_account_environment_arguments(home));
@@ -3376,6 +3389,13 @@ fn harness_command(
             arguments.extend(choices.prompt.clone());
         }
         HarnessKind::Grok => {
+            // The active agent's frontmatter is per invocation. Keep hooks
+            // beside RiWork state, never in ~/.grok or the project checkout.
+            if let Some(index) = arguments.iter().position(|arg| arg == "--agent") {
+                arguments[index + 1] = grok_shell_agent_path(state_home, shell_id)
+                    .to_string_lossy()
+                    .into_owned();
+            }
             if unrestricted {
                 arguments.push("--always-approve".to_owned());
             }
@@ -3703,6 +3723,10 @@ fn grok_agent_path(
     ))
 }
 
+fn grok_shell_agent_path(home: &Path, shell: &str) -> PathBuf {
+    home.join("agent-hooks/grok").join(format!("{shell}.md"))
+}
+
 /// Grok's active agent can supply an MCP server for this session. An agent
 /// definition in RiWork state avoids modifying the user's Grok config or the
 /// project repository, while its ordinary config and login remain available.
@@ -3925,110 +3949,10 @@ fn codex_activity_arguments(
     executable: &Path,
     state_home: &Path,
     shell_id: Option<&str>,
-    arguments: &[String],
-    explicit_home: Option<&Path>,
 ) -> Vec<String> {
-    let log_home = explicit_home.map(Path::to_path_buf).or_else(|| {
-        env::var_os("CODEX_HOME")
-            .map(PathBuf::from)
-            .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
-    });
-    let system_configs = [
-        PathBuf::from("/etc/codex/config.toml"),
-        PathBuf::from("/Library/Managed Preferences/com.openai.codex.plist"),
-        PathBuf::from("/Library/Preferences/com.openai.codex.plist"),
-    ];
-    log_home
-        .map(|home| {
-            codex_activity_arguments_at(
-                executable,
-                state_home,
-                shell_id,
-                arguments,
-                &home,
-                &system_configs,
-            )
-        })
+    shell_id
+        .map(|id| crate::agent_hooks::codex_arguments(executable, state_home, id))
         .unwrap_or_default()
-}
-
-fn codex_activity_arguments_at(
-    executable: &Path,
-    state_home: &Path,
-    shell_id: Option<&str>,
-    arguments: &[String],
-    log_home: &Path,
-    system_configs: &[PathBuf],
-) -> Vec<String> {
-    let Some(shell_id) =
-        shell_id.filter(|id| Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id))
-    else {
-        return Vec::new();
-    };
-    // Conservatively defer to any existing notification configuration. The
-    // pane's exact resume binding still supplies activity when a user hook exists.
-    if arguments.iter().any(|argument| argument.contains("notify")) {
-        return Vec::new();
-    }
-    let mut configs = vec![log_home.join("config.toml")];
-    configs.extend_from_slice(system_configs);
-    match fs::read_dir(log_home) {
-        Ok(entries) => {
-            for (index, entry) in entries.enumerate() {
-                if index >= 512 {
-                    return Vec::new();
-                }
-                let Ok(entry) = entry else {
-                    return Vec::new();
-                };
-                if entry
-                    .file_name()
-                    .to_string_lossy()
-                    .ends_with(".config.toml")
-                {
-                    configs.push(entry.path());
-                }
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Vec::new(),
-    }
-    for config in configs {
-        match fs::metadata(&config) {
-            Ok(metadata) if metadata.len() > 1024 * 1024 => return Vec::new(),
-            // Managed plist encodings vary; do not override an unknown managed
-            // notification policy merely because its binary keys are unreadable.
-            Ok(_)
-                if config
-                    .extension()
-                    .is_some_and(|extension| extension == "plist") =>
-            {
-                return Vec::new();
-            }
-            Ok(_) => match fs::read(&config) {
-                Ok(contents)
-                    if !contents
-                        .windows(b"notify".len())
-                        .any(|part| part == b"notify") => {}
-                _ => return Vec::new(),
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Vec::new(),
-        }
-    }
-    let command = [
-        executable.to_string_lossy().into_owned(),
-        "agent-notify".to_owned(),
-        state_home.to_string_lossy().into_owned(),
-        shell_id.to_owned(),
-    ];
-    vec![
-        "-c".to_owned(),
-        format!(
-            "notify={}",
-            serde_json::to_string(&command).expect("serializing argv cannot fail")
-        ),
-    ]
 }
 
 /// The columns `live_session_activity` asks for.
@@ -4408,8 +4332,6 @@ fn orchestrator_command(
         executable,
         state_home,
         Some(shell_id),
-        &[],
-        codex_home,
     ));
     if let Some(home) = codex_home {
         arguments.extend(codex_account_environment_arguments(home));
@@ -5000,9 +4922,6 @@ fn cua_proxy_arguments(
     let mut additions = cua_harness_arguments(harness, executable, home);
     if harness == HarnessKind::Codex {
         additions.extend(codex_shell_environment_arguments(home, shell_id));
-        additions.extend(codex_activity_arguments(
-            executable, home, shell_id, arguments, codex_home,
-        ));
         if let Some(home) = codex_home {
             additions.extend(codex_account_environment_arguments(home));
         }
@@ -5018,7 +4937,10 @@ fn cua_proxy_arguments(
                 .iter()
                 .position(|argument| argument == "--")
                 .unwrap_or(arguments.len());
-            let mut result = arguments[..separator].to_vec();
+            // Preserve explicit user hooks in the session-flags layer. RiWork's
+            // hook table goes first; Cua transport overrides remain innermost.
+            let mut result = codex_activity_arguments(executable, home, shell_id);
+            result.extend_from_slice(&arguments[..separator]);
             result.extend(additions);
             result.extend_from_slice(&arguments[separator..]);
             result
@@ -7076,71 +6998,17 @@ mod tests {
     }
 
     #[test]
-    fn activity_notification_preserves_user_profile_and_command_line_hooks() {
-        let temporary = env::temp_dir().join(format!("riwork-notify-test-{}", Uuid::new_v4()));
-        fs::create_dir_all(&temporary).unwrap();
-        let shell_id = Uuid::new_v4().to_string();
-        let executable = Path::new("/Applications/RiWork's App/riwork");
-        let home = temporary.join("state");
-        let arguments =
-            codex_activity_arguments_at(executable, &home, Some(&shell_id), &[], &temporary, &[]);
-        assert_eq!(arguments[0], "-c");
-        let notification: Vec<String> =
-            serde_json::from_str(arguments[1].strip_prefix("notify=").unwrap()).unwrap();
-        assert_eq!(
-            notification,
-            [
-                executable.to_string_lossy().into_owned(),
-                "agent-notify".into(),
-                home.to_string_lossy().into_owned(),
-                shell_id.clone()
-            ]
-        );
-        let configured = vec!["-c".to_owned(), "notify=[\"user-hook\"]".to_owned()];
+    fn activity_hooks_do_not_depend_on_or_replace_user_notify() {
+        let shell = Uuid::new_v4().to_string();
+        let args =
+            codex_activity_arguments(Path::new("/riwork"), Path::new("/state"), Some(&shell));
+        assert_eq!(args[0], "-c");
+        assert!(args[1].starts_with("hooks="));
+        assert!(!args[1].contains("notify="));
+        assert!(!args[1].contains("bypass"));
         assert!(
-            codex_activity_arguments_at(
-                executable,
-                &home,
-                Some(&shell_id),
-                &configured,
-                &temporary,
-                &[]
-            )
-            .is_empty()
+            codex_activity_arguments(Path::new("/riwork"), Path::new("/state"), None).is_empty()
         );
-        let global = temporary.join("config.toml");
-        fs::write(&global, "notify = [\"user-global-hook\"]\n").unwrap();
-        let before = fs::read(&global).unwrap();
-        assert!(
-            codex_activity_arguments_at(executable, &home, Some(&shell_id), &[], &temporary, &[])
-                .is_empty()
-        );
-        assert_eq!(fs::read(&global).unwrap(), before);
-        fs::remove_file(global).unwrap();
-        let profile = temporary.join("work.config.toml");
-        fs::write(&profile, "notify = [\"user-profile-hook\"]\n").unwrap();
-        assert!(
-            codex_activity_arguments_at(executable, &home, Some(&shell_id), &[], &temporary, &[])
-                .is_empty()
-        );
-        fs::remove_file(profile).unwrap();
-        let managed = temporary.join("managed.plist");
-        fs::write(&managed, b"binary-managed-settings").unwrap();
-        assert!(
-            codex_activity_arguments_at(
-                executable,
-                &home,
-                Some(&shell_id),
-                &[],
-                &temporary,
-                &[managed]
-            )
-            .is_empty()
-        );
-        assert!(
-            codex_activity_arguments_at(executable, &home, None, &[], &temporary, &[]).is_empty()
-        );
-        fs::remove_dir_all(temporary).unwrap();
     }
 
     fn shell_arguments(command: &str) -> Vec<String> {
@@ -7937,13 +7805,7 @@ mod tests {
             assert_eq!(arguments[1], "--agent");
             assert_eq!(
                 arguments[2],
-                grok_agent_path(
-                    home,
-                    executable,
-                    crate::cua::driver_override_for_harness().as_deref(),
-                    crate::cua::riwork_input_allowed(),
-                )
-                .to_string_lossy()
+                grok_shell_agent_path(home, "shell-id").to_string_lossy()
             );
             assert_eq!(
                 arguments.contains(&"--always-approve".to_owned()),
