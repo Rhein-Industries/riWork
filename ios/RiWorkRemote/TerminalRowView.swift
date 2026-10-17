@@ -163,7 +163,8 @@ import RiWorkCore
         Perf.count("rowPaint")
         let signpost = Perf.signposter.beginInterval("RowPaint")
         defer { Perf.signposter.endInterval("RowPaint", signpost) }
-        let scale = Double(window?.screen.scale ?? traitCollection.displayScale)
+        // The window's own scale first: a Stage Manager window can be on a display other than the iPad's.
+        let scale = Double(traitCollection.displayScale > 0 ? traitCollection.displayScale : (window?.screen.scale ?? 0))
         TerminalRowPainter.draw(line, cursorColumn: cursorColumn, links: links, settings: settings, fontSize: fontSize, in: context, scale: scale > 0 ? scale : TerminalFont.pixelsPerPoint)
     }
 }

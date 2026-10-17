@@ -394,12 +394,24 @@ A desktop that says `ready.features.chat` (the `riwork` CLI reports `"chat": tru
 |---|---|---|
 | ⏎ | send (nothing on an empty composer) | **Allow** |
 | ⇧⏎ | new line | **Allow for session** |
+| ⌘⏎ | send, also while the `/` or `@` list is open (it closes); never a new line | send what is typed (nothing when nothing is) |
 | ⎋ | nothing | **Deny** (Stop if Deny is not offered) |
 | ⌘⌫ | the text view's own | **Deny**, for a keyboard without Escape (the Clicks keyboard has none) |
 | ⌘. | **Interrupt** while a turn runs, wherever the keyboard is (a SwiftUI shortcut on the screen) | the same |
 | ⌘M | the **model picker**, wherever the keyboard is (a SwiftUI shortcut on the screen, live when the link is up) | the same |
 
-Typing anything gives ⏎ ⇧⏎ ⎋ ⌘⌫ back to the text; a decision the provider does not offer is never made on a key (⏎ does not pick Deny for you); while a word is being composed (marked text) the input method keeps Return. None of these is one the terminal uses: `ShortcutMap` has no action for any of them (⌘M included: the hotkey menu, the help and the Clicks template do not use it), and ⌘K ⌘, ⌘/ ⌘N ⌘⇧N ⌘O and the Clicks template's letters stay as they are (⌘N still opens the New terminal sheet from a chat).
+Typing anything gives ⏎ ⇧⏎ ⎋ ⌘⌫ back to the text (⌘⏎ is always Send); a decision the provider does not offer is never made on a key (⏎ does not pick Deny for you); while a word is being composed (marked text) the input method keeps Return. None of these is one the terminal uses: `ShortcutMap` has no action for any of them (⌘M included: the hotkey menu, the help and the Clicks template do not use it), and ⌘K ⌘, ⌘/ ⌘N ⌘⇧N ⌘O and the Clicks template's letters stay as they are (⌘N still opens the New terminal sheet from a chat).
+
+**iPad windows and keyboard** (`Core/KeyboardDocking.swift`, `KeyboardSettings.swift`). The app runs in any window iPadOS gives it
+(Stage Manager, tiled windows, Slide Over, every orientation) and lays out by the window's width: the chat keeps its 760-pt column, and
+nothing reads the screen's size. In a resizable window (iPadOS 26) the top rows leave the window's own close, minimize and tile controls
+clear (`clearsWindowControls`, from SwiftUI's `containerCornerInsets`). The composer stands up only for a software keyboard **docked**
+at the bottom of the screen: `SoftwareKeyboardMonitor.isDocked`, from the keyboard's notifications (at least 120 pt tall and reaching the
+screen's bottom), kept for the life of the app so a chat that opens with the keyboard up knows at once. Only then does the chat let
+SwiftUI make room for the keyboard, with the keyboard's motion. A floating, split or undocked keyboard and a hardware keyboard leave the
+composer at the bottom of the window; with a hardware keyboard attached the composer drops the iPad's shortcut bar (its assistant item has
+no groups), which would otherwise cover Send. Moving the window to a display of another scale keeps the terminal's rows whole pixels
+(`TerminalFont.pixelsPerPoint` follows the window's `displayScale`).
 
 **Keyboard in the model picker** (it holds the keyboard while it is up, like the New terminal sheet; the ring shows from the start with a hardware keyboard): ↑ ↓ (or ⇥ ⇧⇥, ^P ^N) move the ring down the models, then the efforts, then Fast, and wrap; ← → move along the efforts; **⏎ or space chooses** what the ring is on (one `configure`), and ⏎ on what is chosen already closes the sheet (space never does); **⎋, ⌘. and ⌘M close it** (the Clicks keyboard has no Escape). Moving sends nothing. When it closes the composer takes the keyboard back. `ChatModelCursor` is the state machine, tested.
 

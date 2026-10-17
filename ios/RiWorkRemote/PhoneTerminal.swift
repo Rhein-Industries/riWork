@@ -106,6 +106,7 @@ struct PhoneTerminal: View {
 /// room kept for the chip above the keyboard, the request to go to the bottom), and nothing else is rebuilt for those.
 private struct ScrollbackSurface: View {
     @Environment(\.desktopStyle) private var style
+    @Environment(\.displayScale) private var displayScale
     let model: RemoteModel
     let settings: TerminalRenderer.Settings
     let fontSize: Double
@@ -114,7 +115,8 @@ private struct ScrollbackSurface: View {
     var body: some View {
         let _ = Perf.count("body.ScrollbackSurface")
         let floatingInset = model.floatingInset(style: style)
-        let look = TerminalSurfaceView.Look(settings: settings, fontSize: fontSize, padding: padding, floatingInset: floatingInset, headerSize: 10 * style.scale)
+        let look = TerminalSurfaceView.Look(settings: settings, fontSize: fontSize, padding: padding, floatingInset: floatingInset, headerSize: 10 * style.scale,
+                                              pixelScale: displayScale > 0 ? Double(displayScale) : TerminalFont.pixelsPerPoint)
         TerminalSurface(model: model, look: look, header: model.historyHeader, jumpToken: model.typedCount &+ model.jumpRequests)
             .overlay(alignment: .bottomTrailing) { LivePill(model: model, floatingInset: floatingInset) }
     }
