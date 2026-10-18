@@ -284,7 +284,11 @@ import RiWorkCore
         let view = try await openChat(rig)
         await rig.transport.append(chatID, [approval("r1")])
         await eventually("a request waits") { rig.model.conversation(self.chatID).openApprovals.count == 1 }
-        XCTAssertNotNil(command(view, UIKeyCommand.inputEscape))
+        let commandStart = ContinuousClock.now
+        await eventually("the composer claims Escape for the request") { self.command(view, UIKeyCommand.inputEscape) != nil }
+        let commandDelay = commandStart.duration(to: .now)
+        print("COMPOSER_APPROVAL_KEY_DELAY \(commandDelay)")
+        XCTAssertLessThan(commandDelay, .seconds(1), "key registration should need only the existing UIKit update, not a new delay")
         view.insertText("wait, ")
         XCTAssertNil(command(view, UIKeyCommand.inputEscape), "Escape does not deny while a message is being written")
         XCTAssertNil(command(view, "\u{8}", .command), "and ⌘⌫ is the text view's")
@@ -294,6 +298,24 @@ import RiWorkCore
         let sent = await sentCommands(rig)
         XCTAssertEqual(sent, [.object(["command": .string("send"), "text": .string("wait, ")])])
         XCTAssertEqual(rig.model.conversation(chatID).openApprovals.count, 1, "the request still waits")
+        await finish(rig)
+    }
+    func testRecordingReturnAndSendRepeatsReachTheModelOnce() async throws {
+        let rig = try await makeRig(mic: true)
+        let view = try await openChat(rig)
+        let controller = DictationController.shared
+        defer { controller.finishNow(); controller.makeEngine = { DictationController.defaultEngine() } }
+        controller.makeEngine = { ScriptedSpeechEngine(script: "send these words", interval: .milliseconds(1)) }
+        try XCTUnwrap(rig.layout.actions["dictation-target"])()
+        await eventually("the full partial is visible") { view.text == "send these words" }
+        press(view, "\r")
+        press(view, "\r")
+        try XCTUnwrap(rig.layout.actions["send"])()
+        await eventually("one message reaches the model") { await self.sentCommands(rig).count == 1 }
+        // Flush the engine callback and both scheduled model requests before asserting the count.
+        await eventually("recording and sending have ended") { !controller.phase.isActive && !rig.model.conversation(self.chatID).sending }
+        let commands = await sentCommands(rig)
+        XCTAssertEqual(commands, [.object(["command": .string("send"), "text": .string("send these words")])])
         await finish(rig)
     }
     func testADecisionTheProviderDoesNotOfferIsNotMadeOnAKey() async throws {
@@ -2669,7 +2691,7 @@ import RiWorkCore
         rig.host.traitOverrides.preferredContentSizeCategory = .accessibilityExtraLarge
         await eventually("composer font follows accessibility text size") { (field.font?.pointSize ?? 0) > initialFont }
         XCTAssertEqual(field.text, "A draft that must survive text scaling.")
-        XCTAssertEqual(field.keyCommands?.count, 2, "Return routing is unchanged by layout")
+        XCTAssertEqual(field.keyCommands?.count, 3, "Return routing is unchanged by layout")
         let frame = field.convert(field.bounds, to: rig.window)
         XCTAssertGreaterThanOrEqual(frame.minX, 0)
         XCTAssertLessThanOrEqual(frame.maxX, rig.window.bounds.width)
@@ -3279,15 +3301,15 @@ import RiWorkCore
             XCTAssertNotNil(rig.layout.frames["send"], "\(look): Send, greyed, holds the field's action slot")
             try snapshot(rig, name: named("chat-composer-mic-off", look))
             await setMic(rig, true, look: look, updated: 1_790_000_100)
-            // With nothing typed the mic takes Send's slot: the field keeps its width.
-            await eventually("\(look): the mic is there") { rig.layout.frames["mic"] != nil && rig.layout.frames["send"] == nil }
-            XCTAssertEqual(try XCTUnwrap(width(of: ChatComposerTextView.self, in: rig)), off, accuracy: 1, "\(look): in the same slot")
+            // Mic and Send reserve their columns throughout recording and typing.
+            await eventually("\(look): the mic is there") { rig.layout.frames["mic"] != nil && rig.layout.frames["send"] != nil && abs((self.width(of: ChatComposerTextView.self, in: rig) ?? 0) - (off - max(rig.model.theme.style.target, ChatComposer.buttonColumn(rig.model.theme.style)))) < 1 }
+            XCTAssertEqual(try XCTUnwrap(width(of: ChatComposerTextView.self, in: rig)), off - max(rig.model.theme.style.target, ChatComposer.buttonColumn(rig.model.theme.style)), accuracy: 1, "\(look): reserved mic column")
             // The buttons' column: the 30-point circle and 8 pt to the field's end, the field's height tall.
             // A full target: 44 points at least, from the buttons' 38-point column out over the margin to the screen's edge.
             XCTAssertGreaterThanOrEqual(rig.layout.frames["dictation-target"]?.width ?? 0, 44, "\(look): a full target")
             XCTAssertGreaterThanOrEqual(rig.layout.frames["dictation-target"]?.height ?? 0, 44, "\(look): a full target")
             rig.model.conversation(chatID).draft = "typed"
-            await eventually("\(look): typing brings Send back in its place") { rig.layout.frames["mic"] == nil && rig.layout.frames["send"] != nil }
+            await eventually("\(look): typing keeps both action columns") { rig.layout.frames["mic"] != nil && rig.layout.frames["send"] != nil }
             rig.model.conversation(chatID).draft = ""
             try await Task.sleep(for: .milliseconds(300))
             try snapshot(rig, name: named("chat-composer-mic-on", look))
@@ -3303,14 +3325,14 @@ import RiWorkCore
             let actions = ComposerActions(typed: typed, busy: busy, mic: mic, dictating: dictating)
             return [actions.stop ? "stop" : nil, actions.mic ? "mic" : nil, actions.send ? "send" : nil].compactMap { $0 }
         }
-        XCTAssertEqual(slot(typed: false, busy: false, mic: true), ["mic"])
+        XCTAssertEqual(slot(typed: false, busy: false, mic: true), ["mic", "send"])
         XCTAssertEqual(slot(typed: false, busy: false, mic: false), ["send"], "greyed, holding the slot")
-        XCTAssertEqual(slot(typed: true, busy: false, mic: true), ["send"])
-        XCTAssertEqual(slot(typed: false, busy: true, mic: true), ["stop"])
-        XCTAssertEqual(slot(typed: true, busy: true, mic: true), ["stop", "send"], "Interrupt stays beside Send")
-        XCTAssertEqual(slot(typed: true, busy: false, mic: true, dictating: true), ["mic"], "the mic stays while it listens, whatever is heard")
-        XCTAssertEqual(slot(typed: false, busy: true, mic: true, dictating: true), ["stop", "mic"])
-        XCTAssertEqual(slot(typed: false, busy: false, mic: false, dictating: true), ["mic"], "a dictation the setting has not ended yet keeps its button")
+        XCTAssertEqual(slot(typed: true, busy: false, mic: true), ["mic", "send"])
+        XCTAssertEqual(slot(typed: false, busy: true, mic: true), ["stop", "mic", "send"])
+        XCTAssertEqual(slot(typed: true, busy: true, mic: true), ["stop", "mic", "send"], "Interrupt stays beside Send")
+        XCTAssertEqual(slot(typed: true, busy: false, mic: true, dictating: true), ["mic", "send"], "the mic stays while it listens, whatever is heard")
+        XCTAssertEqual(slot(typed: false, busy: true, mic: true, dictating: true), ["stop", "mic", "send"])
+        XCTAssertEqual(slot(typed: false, busy: false, mic: false, dictating: true), ["mic", "send"], "a dictation the setting has not ended yet keeps its button")
     }
     func testTurningTheSettingOffCancelsAChatDictationInProgress() async throws {
         let rig = try await makeRig(look: .nativeLight, mic: true)

@@ -68,7 +68,7 @@ public enum ChatBanner: Sendable, Equatable {
 
 /// The keys of a hardware keyboard that the composer reads.
 public enum ChatKey: Sendable, Equatable, CaseIterable {
-    case `return`, shiftReturn, escape
+    case `return`, commandReturn, shiftReturn, escape
     /// ⌘⌫ : Escape for a keyboard without one (the Clicks keyboard has none), where Escape means Deny.
     case commandDelete
     /// ⌘. : interrupt.
@@ -84,6 +84,7 @@ public enum ChatKeyBindings {
     public static func chord(_ key: ChatKey) -> KeyChord {
         switch key {
         case .return: KeyChord(keyCode: HIDKey.returnKey)
+        case .commandReturn: KeyChord(keyCode: HIDKey.returnKey, modifiers: .command)
         case .shiftReturn: KeyChord(keyCode: HIDKey.returnKey, modifiers: .shift)
         case .escape: KeyChord(keyCode: HIDKey.escape)
         case .commandDelete: KeyChord(keyCode: HIDKey.backspace, modifiers: .command)
@@ -139,10 +140,12 @@ public enum ChatKeyRouter {
             case .up: return .moveSuggestion(.up)
             case .down: return .moveSuggestion(.down)
             case .escape: return .closeSuggestions
-            case .shiftReturn, .commandDelete, .commandPeriod: break
+            case .commandReturn, .shiftReturn, .commandDelete, .commandPeriod: break
             }
         }
         switch key {
+        case .commandReturn:
+            return !context.composerIsEmpty && context.canSend ? .send : .none
         case .return:
             if context.answersApproval { return context.approval?.offers(.accept) == true ? .decide(.accept) : .none }
             return !context.composerIsEmpty && context.canSend ? .send : .none

@@ -36,6 +36,11 @@ final class DictationMachineTests: XCTestCase {
         XCTAssertEqual(effects.last, DictationMachine.Effect.none)
         XCTAssertEqual(machine.phase, .idle)
     }
+    func testEmptyFinalOrPartialCannotEraseVolatileWordsWhileStopping() {
+        let (machine, effects) = run([.start, .ready, .heard("keep the last words"), .stop, .heard(""), .finished("")])
+        XCTAssertEqual(effects.last, .deliver("keep the last words"))
+        XCTAssertEqual(machine.phase, .idle)
+    }
     func testTheRecognizerMayFinishByItself() {
         XCTAssertEqual(run([.start, .ready, .heard("ls"), .finished("ls")]).1.last, .deliver("ls"))
     }

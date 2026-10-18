@@ -56,6 +56,7 @@ public enum DictationPhase: Sendable, Equatable {
 /// The rules of one dictation, apart from audio and recognizers so they can be tested: tap to start, tap to stop, cancel at any time,
 /// and the text is handed over exactly once, when it is final.
 public struct DictationMachine: Sendable, Equatable {
+    public static let stoppingDeadline: Duration = .seconds(5)
     public enum Event: Sendable, Equatable {
         case start
         /// Getting ready takes a while for a reason worth saying.
@@ -87,6 +88,8 @@ public struct DictationMachine: Sendable, Equatable {
     public init() {}
 
     public mutating func handle(_ event: Event) -> Effect {
+        // Empty terminal hypotheses do not erase the last volatile words.
+        if case .heard(let text) = event, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !phase.text.isEmpty { return .none }
         switch (phase, event) {
         case (.idle, .start), (.failed, .start):
             phase = .preparing(note: nil); return .beginEngine
@@ -104,9 +107,11 @@ public struct DictationMachine: Sendable, Equatable {
         case (.listening(let text), .stop):
             phase = .finishing(text: text); return .finishEngine
         case (.preparing, .finished(let text)), (.listening, .finished(let text)), (.finishing, .finished(let text)):
+            let kept = phase.text
             phase = .idle
             let final = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return final.isEmpty ? .none : .deliver(final)
+            let result = final.isEmpty ? kept.trimmingCharacters(in: .whitespacesAndNewlines) : final
+            return result.isEmpty ? .none : .deliver(result)
         case (_, .cancel) where phase.isActive:
             phase = .idle; return .cancelEngine
         case (.listening(let text), .failed(let problem)), (.finishing(let text), .failed(let problem)):

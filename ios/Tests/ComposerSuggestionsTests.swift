@@ -569,11 +569,12 @@ final class ComposerSuggestionsTests: XCTestCase {
         XCTAssertEqual(mention.accepted()?.caret, 16, "after the space that was there")
         mention.update(text: "see src/main.rs please", caret: 16, catalog: .ready(catalog()))
         XCTAssertFalse(mention.isShown)
-        // While the list is open, ⏎ and Tab put the row in; nothing on the keyboard sends.
+        // While the list is open, ⏎ and Tab put the row in; only the explicit Cmd+Return send chord sends.
         let open = ChatKeyContext(composerIsEmpty: false, suggesting: true)
         XCTAssertEqual(ChatKeyRouter.action(for: .return, in: open), .acceptSuggestion)
         XCTAssertEqual(ChatKeyRouter.action(for: .tab, in: open), .acceptSuggestion)
-        XCTAssertFalse(ChatKey.allCases.contains { ChatKeyRouter.action(for: $0, in: open) == .send }, "no key sends while the list is open")
+        XCTAssertFalse(ChatKey.allCases.filter { $0 != .commandReturn }.contains { ChatKeyRouter.action(for: $0, in: open) == .send })
+        XCTAssertEqual(ChatKeyRouter.action(for: .commandReturn, in: open), .send)
     }
     func testATapHighlightsARowAndASecondTapPutsItIn() {
         var list = list("/", .ready(catalog()))

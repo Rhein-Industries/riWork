@@ -390,7 +390,7 @@ private final class AnalyzerAudioSink: @unchecked Sendable {
         meter.stop()
         microphone.stop()
         stopping = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(5))
+            try? await Task.sleep(for: DictationMachine.stoppingDeadline)
             guard !Task.isCancelled else { return }
             self?.complete()
         }
@@ -423,8 +423,9 @@ private final class AnalyzerAudioSink: @unchecked Sendable {
             for try await result in transcriber.results {
                 guard !cancelled, !ended, generation == current else { return }
                 let heard = String(result.text.characters)
-                if result.isFinal { text.settle(heard); open = "" }
-                else { open = heard; latency.partial(heard, capture: microphone) }
+                let empty = heard.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                if result.isFinal { text.settle(empty ? open : heard); open = "" }
+                else if !empty { open = heard; latency.partial(heard, capture: microphone) }
                 latest = text.text(open: open)
                 report(.heard(latest))
             }
@@ -592,7 +593,7 @@ private final class RecognitionSink: @unchecked Sendable {
         microphone.stop()
         sink.replace(nil)
         stopping = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(5))
+            try? await Task.sleep(for: DictationMachine.stoppingDeadline)
             guard !Task.isCancelled else { return }
             self?.complete()
         }
