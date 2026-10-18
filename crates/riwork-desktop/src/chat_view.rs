@@ -2284,7 +2284,8 @@ impl Render for ChatView {
                     view.escape_down = false;
                 }
             }))
-            // Suggestions precede menus and the composer.
+            // Suggestions precede menus and the composer, including during dictation.
+            .capture_action(cx.listener(Self::refused_dictation_enter))
             .capture_action(cx.listener(Self::suggestion_escape))
             .capture_action(cx.listener(Self::suggestion_up))
             .capture_action(cx.listener(Self::suggestion_down))

@@ -617,7 +617,7 @@ impl ChatView {
             .into_any_element()
     }
     pub(super) fn submission_cards(&self, look: Look, cx: &mut Context<Self>) -> AnyElement {
-        div().w_full().flex().flex_col().gap(ui_text::space(4.)).children(self.submissions.iter().map(|saved| {
+        div().w_full().flex().flex_col().gap(ui_text::space(4.)).children(self.submissions.iter().filter(|s| self.dictation.show_submission(s)).map(|saved| {
             let id = saved.id;
             let label = match &saved.status { Status::Pending => "Submitting; draft retained.".into(), Status::Submitted => "Submitted".into(), Status::Refused(e) => format!("Refused: {e}"), Status::Uncertain(e) => format!("Outcome uncertain: {e}. Inspect the transcript before explicitly resending.") };
             let review_key = format!("submission:{id}"); let expanded = self.open.contains(&review_key);
