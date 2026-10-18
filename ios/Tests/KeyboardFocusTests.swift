@@ -2,6 +2,17 @@ import XCTest
 @testable import RiWorkCore
 
 final class KeyboardFocusTests: XCTestCase {
+    func testKeyboardProfileDetectionIsConservativeAndCanBeOverridden() {
+        XCTAssertFalse(HardwareKeyboardLayout.automatic.usesClicks(attached: true, vendorName: nil))
+        XCTAssertFalse(HardwareKeyboardLayout.automatic.usesClicks(attached: true, vendorName: "Keyboard"))
+        XCTAssertFalse(HardwareKeyboardLayout.automatic.usesClicks(attached: true, vendorName: "Clickstream"))
+        XCTAssertTrue(HardwareKeyboardLayout.automatic.usesClicks(attached: true, vendorName: "Clicks Technology Ltd"))
+        XCTAssertTrue(HardwareKeyboardLayout.automatic.usesClicks(attached: true, vendorName: "CLICKS Keyboard"))
+        XCTAssertFalse(HardwareKeyboardLayout.automatic.usesClicks(attached: false, vendorName: "Clicks"))
+        XCTAssertTrue(HardwareKeyboardLayout.clicks.usesClicks(attached: true, vendorName: "Keyboard"))
+        XCTAssertFalse(HardwareKeyboardLayout.standard.usesClicks(attached: true, vendorName: "Clicks"))
+        XCTAssertEqual(HardwareKeyboardLayout(stored: "unknown"), .automatic)
+    }
     private func decide(_ setting: KeyboardFocusSetting, hardware: Bool, obscured: Bool = false, focused: Bool = false, dismissed: Bool = false, canType: Bool = true) -> KeyboardFocusDecision {
         KeyboardFocusPolicy.decide(setting: setting, context: KeyboardFocusContext(hardwareKeyboard: hardware, obscured: obscured, alreadyFocused: focused, dismissedHere: dismissed, canType: canType))
     }

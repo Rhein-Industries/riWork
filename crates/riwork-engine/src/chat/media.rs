@@ -153,6 +153,12 @@ fn collect(value: &Value, depth: usize, images: &mut Vec<ChatImage>, bytes: &mut
 /// Replace image payloads before serializing provider metadata as tool output/input.
 pub fn without_payloads(value: &Value) -> Value {
     match value {
+        // Image references can carry the same bitmap as `image.data`, including
+        // imageView.imageUrl and nested image_url.url provider shapes. Keep the
+        // bitmap only in Presentation, not a second copy in serialized tool text.
+        Value::String(text) if text.starts_with("data:image/") && text.contains(";base64,") => {
+            Value::String("[image retained in presentation]".into())
+        }
         Value::Array(items) => Value::Array(items.iter().map(without_payloads).collect()),
         Value::Object(fields) => {
             let image = matches!(value["type"].as_str(), Some("image" | "imageGeneration"));

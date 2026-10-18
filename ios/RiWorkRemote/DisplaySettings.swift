@@ -95,11 +95,25 @@ struct DisplaySettingsSheet: View {
                 .listRowBackground(style.surface).listRowSeparatorTint(style.divider)
 
                 Section {
+                    Picker("Hardware keyboard", selection: Binding(get: { model.keyboard.layout }, set: { model.keyboard.setLayout($0) })) {
+                        ForEach(HardwareKeyboardLayout.allCases) { Text($0.title).tag($0) }
+                    }.pickerStyle(.menu).frame(minHeight: style.pt(44)).accessibilityIdentifier("hardware-keyboard-layout")
+                    HStack {
+                        Text(model.keyboard.hardware.isAttached ? "Connected" : "No hardware keyboard connected")
+                        Spacer(minLength: 8)
+                        if model.keyboard.hardware.isAttached {
+                            Text(model.keyboard.hardware.vendorName ?? "Keyboard").foregroundStyle(style.muted)
+                        }
+                    }.font(style.system(.caption))
+                    if model.keyboard.usesClicks {
+                        Text("⌘E Esc · ⌘T Tab · ⌘W/A/S/D arrows\n⌘K key menu · ⌘1–9 tabs · ⌘⇧[ / ] switch tabs")
+                            .font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted)
+                    }
                     Picker("Focus keyboard when a shell opens", selection: Binding(get: { model.keyboard.focusSetting }, set: { model.keyboard.setFocusSetting($0) })) {
                         ForEach(KeyboardFocusSetting.allCases) { Text($0.title).tag($0) }
                     }.pickerStyle(.menu).frame(minHeight: style.pt(44))
                 } header: { Text(style.cased("Keyboard")).font(style.system(.caption)) } footer: {
-                    Text("Typing goes straight into a shell once it is ready. “Always” brings up the on-screen keyboard when there is no hardware keyboard; a keyboard you hid in a shell stays hidden there until you tap the terminal. ⌘K opens the hotkey menu.")
+                    Text("With a physical keyboard, tabs move to the bottom and the key bar keeps essential keys within reach. Automatic recognizes Clicks when iOS supplies its name; choose Clicks if it reports a generic keyboard. Clicks shortcuts also navigate the key menu, New terminal and chat suggestions. Showing the on-screen keyboard restores the touch layout. “Always” focuses the keyboard without waiting for a hardware keyboard.")
                         .font(style.system(.caption))
                 }
                 .listRowBackground(style.surface).listRowSeparatorTint(style.divider)

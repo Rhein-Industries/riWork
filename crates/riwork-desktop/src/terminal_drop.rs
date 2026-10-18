@@ -39,10 +39,10 @@ use crate::{
     theme,
 };
 
-use riwork_engine::terminal_drop::foreground_names;
 pub use riwork_engine::terminal_drop::{
     Copied, Program, paste_input, path_input, program, shell_escape,
 };
+use riwork_engine::terminal_drop::{foreground_names, validate_paths};
 
 /// How thick the outline around the terminal under a drag is, in points.
 const OUTLINE: f64 = 2.0;
@@ -151,6 +151,11 @@ impl Workspace {
         let Some(shell_id) = self.local_shell_id(pane_id, tab_id) else {
             return;
         };
+        if let Err(error) = validate_paths(paths.paths()) {
+            self.notice = Some(error);
+            cx.notify();
+            return;
+        }
         self.select_pane(pane_id, window, cx);
         let paths = paths.paths().to_vec();
         self.give_shell(shell_id, "dropped paths", move |program| {
@@ -174,6 +179,13 @@ impl Workspace {
             cx.propagate();
             return;
         };
+        if let Copied::Files(paths) = &copied
+            && let Err(error) = validate_paths(paths)
+        {
+            self.notice = Some(error);
+            cx.notify();
+            return;
+        }
         self.give_shell(shell_id, "pasted files", move |program| {
             paste_input(&copied, program).unwrap_or_default()
         });

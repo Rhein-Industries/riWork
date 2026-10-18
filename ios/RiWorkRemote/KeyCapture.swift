@@ -57,7 +57,7 @@ enum TerminalFont {
     private var usedPresses: Set<Int> = []
     let bar = KeyBarView()
     /// All the hotkeys the person added; the built-in ones are always there. The bar shows those that want a button.
-    var hotkeys: [Hotkey] = [] { didSet { guard hotkeys != oldValue else { return }; bar.hotkeys = hotkeys.filter(\.showsOnBar); refreshShortcuts() } }
+    var hotkeys: [Hotkey] = [] { didSet { guard hotkeys != oldValue else { return }; bar.hotkeys = hotkeys.filter(\.showsOnBar); bar.keyboardShortcuts = hotkeys; refreshShortcuts() } }
     /// The extra shortcuts that open the hotkey menu.
     var shortcutSettings = ShortcutSettings() { didSet { if shortcutSettings != oldValue { refreshShortcuts() } } }
     private(set) var shortcuts = ShortcutMap(hotkeys: [])
@@ -76,6 +76,7 @@ enum TerminalFont {
     var onEditHotkey: ((Hotkey) -> Void)?
     /// Every key event that reaches the view, for the readout.
     var onKeyEvent: ((KeyEventRecord) -> Void)?
+    var tabShortcuts: TabShortcutController?
     var isEnabled = true { didSet { if !isEnabled, isFirstResponder { _ = resignFirstResponder() } } }
     private var tapDetector = ModifierTapDetector()
 
@@ -117,7 +118,7 @@ enum TerminalFont {
     }
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
-        if resigned { mapper.disarmModifiers(); palette.close(); help.close(); tapDetector.reset(); onActiveChange?(false) }
+        if resigned { mapper.disarmModifiers(); palette.close(); help.close(); tapDetector.reset(); tabShortcuts?.cancelPrefix(); onActiveChange?(false) }
         return resigned
     }
 
@@ -429,7 +430,9 @@ enum TerminalFont {
     private lazy var helpCommands: [UIKeyCommand] = [Self.command(".", .command, "Close the hotkey help")]
     /// Commands for the shortcuts of hotkeys, the menu and the help: the keys a `UIKeyCommand` can name, with priority over the system.
     private var chordCommands: [UIKeyCommand] = []
-    override var keyCommands: [UIKeyCommand]? { commands + (palette.isOpen ? paletteCommands : []) + (help.isOpen ? helpCommands : []) + chordCommands }
+    override var keyCommands: [UIKeyCommand]? {
+        TabShortcutInput.withoutPrefix(commands + (palette.isOpen ? paletteCommands : []) + (help.isOpen ? helpCommands : []) + chordCommands, tabShortcuts)
+    }
 
     private func refreshShortcuts() {
         shortcuts = ShortcutMap(hotkeys: hotkeys, settings: shortcutSettings)
@@ -448,7 +451,9 @@ enum TerminalFont {
         tapDetector.spoil()
         let flags = command.modifierFlags
         let code = Self.keyCode(forCommandInput: input)
-        onKeyEvent?(KeyEventRecord(phase: .command, keyCode: code, modifiers: Self.modifiers(flags), rawModifiers: Int(flags.rawValue), characters: input, charactersIgnoringModifiers: input))
+        let event = KeyEventRecord(phase: .command, keyCode: code, modifiers: Self.modifiers(flags), rawModifiers: Int(flags.rawValue), characters: input, charactersIgnoringModifiers: input)
+        onKeyEvent?(event)
+        if tabShortcuts?.handle(event, perform: performTabShortcut) == true { return }
         // A shortcut of the person's comes before the built-in meaning of the same keys (Ctrl-E, say).
         if let code, let action = shortcuts.action(for: KeyChord(keyCode: code, modifiers: Self.modifiers(flags))) { perform(action); return }
         // The help closes on Esc and ⌘.; every other key (arrows included) is the shell's as ever.
@@ -499,6 +504,11 @@ enum TerminalFont {
     /// One key event: reported to the readout, then used if it is a shortcut. True when it was used up.
     func handle(_ event: KeyEventRecord) -> Bool {
         onKeyEvent?(event)
+        if tabShortcuts?.handle(event, perform: performTabShortcut) == true {
+            // A key the prefix took was still pressed while a modifier was down (Tab, then Ctrl-C): that modifier was not tapped alone.
+            if event.phase == .down { tapDetector.spoil() }
+            return true
+        }
         guard let code = event.keyCode else { return false }
         switch event.phase {
         case .down:
@@ -517,6 +527,23 @@ enum TerminalFont {
             if event.phase == .cancelled { usedPresses.remove(code) }
             return false
         }
+    }
+    /// Leader keys bypass custom chords and modifier latches: Tab,Q always means a plain Tab.
+    private func performTabShortcut(_ action: TabShortcutAction) -> Bool {
+        let key: TerminalKey
+        switch action {
+        case .literalTab: key = .tab
+        case .escape: key = .escape
+        case .up: key = .up
+        case .left: key = .left
+        case .down: key = .down
+        case .right: key = .right
+        case .keyMenu: togglePalette(); return true
+        default: return false
+        }
+        if palette.isOpen { if let move = Self.paletteMove(for: key) { movePalette(move) }; return true }
+        if help.isOpen, key == .escape { help.close(); return true }
+        emit([.key(key)]); return true
     }
     /// Forward Delete, and Backspace with Ctrl or Alt held, which the text system would turn into a plain delete or nothing at all
     /// (the view's document is one space with the caret at its end). Matched by their key codes: no `UIKeyCommand` input names
@@ -620,11 +647,14 @@ enum TerminalFont {
 }
 
 struct KeyCapture: UIViewRepresentable {
+    @Environment(\.tabShortcuts) private var tabShortcuts
     let focus: KeyFocus
     var isEnabled: Bool
     var label: String
     /// Focus mode draws the bar as a pill when it is alone at the bottom edge (hardware keyboard).
     var hotkeys: [Hotkey] = []
+    var hardwareKeyboard = false
+    var usesClicks = false
     var shortcuts = ShortcutSettings()
     var palette: PaletteController?
     var help: HelpController?
@@ -647,11 +677,13 @@ struct KeyCapture: UIViewRepresentable {
     }
     func updateUIView(_ view: KeyCaptureView, context: Context) {
         view.onItems = onItems
+        view.tabShortcuts = tabShortcuts
         view.isEnabled = isEnabled
         view.accessibilityLabel = label
         // New colors reach the bar in place: the view, its focus and the keyboard are not rebuilt, so typing goes on.
         let previousScale = view.bar.style.scale
         view.bar.style = context.environment.desktopStyle
+        view.bar.mode = hardwareKeyboard ? (usesClicks ? .clicks : .hardware) : .touch
         // A bar that is on screen tells iOS its new height; the keyboard is asked to lay it out again.
         if view.bar.style.scale != previousScale, view.isFirstResponder { view.reloadInputViews() }
         if let palette, view.palette !== palette { view.palette = palette }

@@ -869,7 +869,7 @@ fn resume_thread(shell: &ShellSession) -> Option<String> {
     ids.next().is_none().then_some(id)
 }
 
-fn find_rollout(home: &Path, thread_id: &str) -> Option<PathBuf> {
+pub(crate) fn find_rollout(home: &Path, thread_id: &str) -> Option<PathBuf> {
     if !valid_uuid(thread_id) {
         return None;
     }

@@ -7,6 +7,32 @@ import RiWorkCore
 
 /// The terminal taking the keyboard by itself once a shell is ready, and giving it up to sheets, other fields and the person.
 @MainActor final class KeyboardFocusFlowTests: XCTestCase {
+    func testHardwareProfileTracksReconnectAndSoftwareKeyboardWithoutGuessingGenericNames() {
+        let name = "com.riwork.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        var attached = true, vendor = "Keyboard"
+        let hardware = HardwareKeyboardMonitor(probe: { attached }, nameProbe: { vendor })
+        let prefs = KeyboardPrefs(defaults: defaults, hardware: hardware)
+        XCTAssertFalse(prefs.usesClicks)
+        XCTAssertTrue(prefs.usesHardwareLayout)
+        vendor = "Clicks Keyboard"; hardware.refresh()
+        XCTAssertTrue(prefs.usesClicks)
+        prefs.setLayout(.standard)
+        XCTAssertFalse(prefs.usesClicks)
+        prefs.setLayout(.clicks)
+        XCTAssertTrue(KeyboardPrefs(defaults: defaults, hardware: hardware).usesClicks)
+        let screen = UIScreen.main.bounds
+        prefs.software.update(hiding: false, end: CGRect(x: 0, y: screen.maxY - 300, width: screen.width, height: 300))
+        XCTAssertFalse(prefs.usesHardwareLayout, "the visible software keyboard restores touch chrome")
+        prefs.software.update(hiding: true, end: .zero)
+        XCTAssertTrue(prefs.usesHardwareLayout)
+        attached = false; hardware.refresh()
+        XCTAssertNil(hardware.vendorName)
+        XCTAssertFalse(prefs.usesHardwareLayout)
+        prefs.setLayout(.automatic)
+        XCTAssertFalse(prefs.usesClicks)
+    }
     private var windows: [UIWindow] = []
     private func eventually(_ what: String, timeout: Double = 4, _ condition: () async -> Bool) async {
         let end = Date().addingTimeInterval(timeout)

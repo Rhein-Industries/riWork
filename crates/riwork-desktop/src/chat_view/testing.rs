@@ -219,6 +219,7 @@ fn serve(stream: UnixStream, shared: &Shared) {
                 id,
                 chat_id,
                 command,
+                ..
             } => {
                 if known(&chat_id) {
                     shared.commands.lock().unwrap().push((chat_id, command));
@@ -248,6 +249,8 @@ fn serve(stream: UnixStream, shared: &Shared) {
                 reply(&mut writer, ok(id, None))
             }
             Request::StageAttachment { id, .. }
+            | Request::CommandReceipt { id, .. }
+            | Request::GuardedCommand { id, .. }
             | Request::Create { id, .. }
             | Request::NoteWorker { id, .. }
             | Request::Capabilities { id } => reply(&mut writer, refused(id)),

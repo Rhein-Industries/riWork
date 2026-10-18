@@ -128,8 +128,16 @@ pub fn codex_refresh_interval(has_snapshot: bool, failures: u32) -> u64 {
 /// Blocking and bounded: call from a worker, never GPUI's render thread.
 /// No thread, turn, model, login, or shell input request is sent to Codex.
 pub fn read_codex_usage_at(home: &Path) -> Result<ProviderUsage, String> {
+    read_codex_usage_at_timeout(home, CODEX_TIMEOUT)
+}
+
+/// The same public account read under a shared launch deadline.
+pub(crate) fn read_codex_usage_at_timeout(
+    home: &Path,
+    timeout: Duration,
+) -> Result<ProviderUsage, String> {
     let executable = find_codex().ok_or("Codex is not installed or is not on PATH")?;
-    read_codex_usage_with(&executable, Some(home), CODEX_TIMEOUT)
+    read_codex_usage_with(&executable, Some(home), timeout.min(CODEX_TIMEOUT))
 }
 
 fn read_codex_usage_with(
@@ -137,8 +145,8 @@ fn read_codex_usage_with(
     home: Option<&Path>,
     timeout: Duration,
 ) -> Result<ProviderUsage, String> {
-    let mut server = CodexServer::start(executable, home)?;
     let deadline = Instant::now() + timeout;
+    let mut server = CodexServer::start(executable, home)?;
     server.send(json!({
         "id": 1,
         "method": "initialize",

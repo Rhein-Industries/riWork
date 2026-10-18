@@ -6,6 +6,38 @@ import RiWorkCore
 
 /// The UIKit input surface: traits, event mapping, the key bar, hardware key commands and focus.
 @MainActor final class KeyCaptureTests: XCTestCase {
+    func testHardwareBarPrioritizesEssentialKeysAndShowsActualShortcuts() throws {
+        let (view, got) = makeView()
+        view.hotkeys = HotkeyTemplate.clicks.hotkeys
+        view.bar.mode = .clicks
+        view.bar.frame = CGRect(x: 0, y: 0, width: 393, height: KeyBarView.height)
+        view.bar.layoutIfNeeded()
+        let esc = try XCTUnwrap(view.bar.buttons[.key(.escape)])
+        let menu = try XCTUnwrap(view.bar.buttons[.palette])
+        let interrupt = try XCTUnwrap(view.bar.buttons[.key(.control("c"))])
+        XCTAssertLessThan(esc.frame.minX, menu.frame.minX)
+        XCTAssertLessThan(menu.frame.minX, interrupt.frame.minX)
+        XCTAssertLessThan(interrupt.frame.maxX, 300, "menu and interrupt are reachable without scrolling")
+        XCTAssertEqual(esc.accessibilityHint, "Keyboard shortcut ⌘E")
+        XCTAssertNil(view.bar.buttons[.text("|")], "physical keyboard already has symbols")
+        if let directory = ProcessInfo.processInfo.environment["RIWORK_COMPACT_CHAT_SNAPSHOTS"] {
+            let window = try XCTUnwrap(windows.last)
+            window.rootViewController?.view.addSubview(view.bar)
+            view.bar.frame = CGRect(x: 0, y: 180, width: 393, height: KeyBarView.height)
+            view.bar.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: view.bar.bounds).image { _ in
+                view.bar.drawHierarchy(in: view.bar.bounds, afterScreenUpdates: true)
+            }
+            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+            try XCTUnwrap(image.pngData()).write(to: URL(fileURLWithPath: directory).appendingPathComponent("clicks-key-bar.png"))
+        }
+        interrupt.sendActions(for: .touchUpInside)
+        XCTAssertEqual(got.items, [.key(.control("c"))])
+        view.bar.mode = .touch
+        XCTAssertNotNil(view.bar.buttons[.text("|")], "the full row returns with the software keyboard")
+        XCTAssertNotNil(view.bar.buttons[.key(.enter)])
+        XCTAssertNil(view.bar.buttons[.key(.escape)]?.accessibilityHint)
+    }
     private var windows: [UIWindow] = []
     private func makeView(accept: Bool = true) -> (KeyCaptureView, Received) {
         let received = Received()

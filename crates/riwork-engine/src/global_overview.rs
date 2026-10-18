@@ -28,6 +28,7 @@ use crate::{
 };
 
 mod backends;
+pub mod observed;
 mod wire;
 pub use backends::{
     AppOverview, BackendSample, Backends, BackendsOverview, Binary, ChatHostOverview, CliSample,
@@ -37,7 +38,7 @@ pub use backends::{
 pub use wire::{
     WIRE_MAX_ATTENTION, WIRE_MAX_AUTOMATIONS, WIRE_MAX_FINISHED, WIRE_MAX_MESSAGE_CHARS,
     WIRE_MAX_NAME_CHARS, WIRE_MAX_PROJECTS, WIRE_MAX_PROVIDERS, WIRE_MAX_TASKS_IN_PROGRESS,
-    WIRE_MAX_WORKING, WIRE_VERSION, wire,
+    WIRE_MAX_WORKING, WIRE_VERSION, wire, wire_with_observations,
 };
 
 /// An agent that finished its turn this recently is listed under recent work.

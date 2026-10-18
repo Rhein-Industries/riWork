@@ -1124,19 +1124,21 @@ async fn a_desktop_is_told_streams_exist_opens_one_and_drives_it_over_the_encryp
 
     // Park a read, and send three requests at once: they are answered in the
     // order they were sent, by the connection loop, while the read is still parked.
-    let parked = client
-        .send("pty.read", json!({"stream":stream,"wait_ms":25000}))
-        .await;
-    let first = client.answer(&parked).await;
-    assert_eq!(first["result"]["seq"], 0);
-    let text = String::from_utf8(
-        URL_SAFE_NO_PAD
-            .decode(first["result"]["data"].as_str().unwrap())
-            .unwrap(),
-    )
-    .unwrap();
-    assert!(text.contains("30 100"), "{text:?}");
-    let mut seen = text.len() as u64;
+    // The first output can arrive in pieces: a cursor mode, then the size.
+    let mut text = String::new();
+    let mut seen = 0;
+    while !text.contains("30 100") {
+        let parked = client
+            .send("pty.read", json!({"stream":stream,"wait_ms":25000}))
+            .await;
+        let answer = client.answer(&parked).await;
+        assert_eq!(answer["result"]["seq"], seen, "{answer}");
+        let bytes = URL_SAFE_NO_PAD
+            .decode(answer["result"]["data"].as_str().unwrap())
+            .unwrap();
+        seen += bytes.len() as u64;
+        text.push_str(&String::from_utf8_lossy(&bytes));
+    }
 
     let parked = client
         .send("pty.read", json!({"stream":stream,"wait_ms":25000}))

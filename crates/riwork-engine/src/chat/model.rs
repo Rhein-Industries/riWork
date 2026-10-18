@@ -497,6 +497,13 @@ pub enum MessagePhase {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Presentation {
+    /// Optional normalized tool view; unknown future views retain the raw tool body.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::tool_output::lenient"
+    )]
+    pub tool: Option<super::tool_output::ToolOutput>,
     /// Exact provider-reported delegation, additive for older transcript readers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent: Option<super::subagents::Subagent>,
@@ -519,7 +526,8 @@ pub struct Presentation {
 }
 impl Presentation {
     pub fn is_empty(&self) -> bool {
-        self.subagent.is_none()
+        self.tool.is_none()
+            && self.subagent.is_none()
             && self.worker.is_none()
             && self.phase.is_none()
             && self.images.is_empty()

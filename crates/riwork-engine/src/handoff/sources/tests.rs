@@ -525,6 +525,53 @@ fn a_file_of_records_is_read_in_order_and_a_damaged_line_is_skipped() {
     fs::remove_dir_all(home).unwrap();
 }
 
+#[test]
+fn a_bounded_transcript_keeps_records_at_the_tail_boundary_and_rejects_oversized_lines() {
+    let home = short_home();
+    let path = home.join("log.jsonl");
+    fs::write(&path, "{\"n\":1}\n{\"n\":2}\n{\"n\":3}").unwrap();
+    let numbers = |max_read, max_line| {
+        let mut seen = Vec::new();
+        let skipped = read_records_within(&path, max_read, max_line, |record| {
+            seen.push(record["n"].as_i64().unwrap());
+        })
+        .unwrap();
+        (skipped, seen)
+    };
+    // The budget starts exactly after the first newline: both whole records fit.
+    assert_eq!(numbers(15, usize::MAX), (8, vec![2, 3]));
+    // Starting one byte later discards only the partial second record.
+    assert_eq!(numbers(14, usize::MAX), (9, vec![3]));
+    // A newline is still a byte of its record; only the final seven-byte line fits.
+    assert_eq!(numbers(u64::MAX, 7), (0, vec![3]));
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn a_transcript_read_stops_at_its_initial_length_when_the_provider_appends() {
+    use std::io::Write;
+
+    let home = short_home();
+    let path = home.join("log.jsonl");
+    fs::write(&path, "{\"n\":1}\n").unwrap();
+    let mut seen = Vec::new();
+    read_records_within(&path, 1024, 1024, |record| {
+        let n = record["n"].as_i64().unwrap();
+        seen.push(n);
+        if n == 1 {
+            fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap()
+                .write_all(b"{\"n\":2}\n")
+                .unwrap();
+        }
+    })
+    .unwrap();
+    assert_eq!(seen, vec![1]);
+    fs::remove_dir_all(home).unwrap();
+}
+
 // ---- A terminal's scrollback ----------------------------------------------------------------------
 
 #[test]

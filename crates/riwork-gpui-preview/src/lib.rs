@@ -318,7 +318,7 @@ pub fn run_with_assets<V: Render + 'static>(
         }
     });
 
-    let mut previous_frame = Vec::new();
+    let mut previous_frame = None;
     let mut previous_tick = Instant::now();
     let mut next_frame = Instant::now();
     let mut visible = true;
@@ -331,13 +331,13 @@ pub fn run_with_assets<V: Render + 'static>(
                 match message? {
                     Some(PreviewHostMessage::Input { input }) => {
                         if matches!(input, PreviewInput::Refresh) {
-                            previous_frame.clear();
+                            previous_frame = None;
                         }
                         preview.dispatch(input)?;
                     }
                     Some(PreviewHostMessage::Visibility { visible: value }) => {
                         visible = value;
-                        previous_frame.clear();
+                        previous_frame = None;
                     }
                     Some(PreviewHostMessage::Shutdown) | None => return Ok(()),
                     Some(PreviewHostMessage::Ready { .. }) => {}
@@ -348,24 +348,8 @@ pub fn run_with_assets<V: Render + 'static>(
             previous_tick = now;
             if visible && now >= next_frame {
                 let image = preview.frame()?;
-                if image.as_raw() != &previous_frame {
-                    let mut png = Vec::new();
-                    image::codecs::png::PngEncoder::new(&mut png).write_image(
-                        image.as_raw(),
-                        image.width(),
-                        image.height(),
-                        image::ExtendedColorType::Rgba8,
-                    )?;
-                    let message = PreviewClientMessage::Frame {
-                        png: STANDARD.encode(png),
-                        width: image.width(),
-                        height: image.height(),
-                    };
-                    match frames_tx.try_send(message) {
-                        Ok(()) => previous_frame = image.into_raw(),
-                        Err(mpsc::TrySendError::Full(_)) => {}
-                        Err(mpsc::TrySendError::Disconnected(_)) => return Ok(()),
-                    }
+                if !queue_frame(image, &mut previous_frame, &frames_tx)? {
+                    return Ok(());
                 }
                 next_frame = now + FRAME_INTERVAL;
             }
@@ -374,6 +358,37 @@ pub fn run_with_assets<V: Render + 'static>(
     })();
     let _ = stream.shutdown(std::net::Shutdown::Both);
     result
+}
+
+/// Keep the last accepted frame, including its dimensions. Equal-area resizes
+/// can leave the pixel bytes unchanged, but the host still needs the new size.
+/// A full queue leaves the previous frame intact so the next tick retries it.
+fn queue_frame(
+    image: RgbaImage,
+    previous: &mut Option<RgbaImage>,
+    frames: &mpsc::SyncSender<PreviewClientMessage>,
+) -> Result<bool> {
+    if previous.as_ref() == Some(&image) {
+        return Ok(true);
+    }
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png).write_image(
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        image::ExtendedColorType::Rgba8,
+    )?;
+    let message = PreviewClientMessage::Frame {
+        png: STANDARD.encode(png),
+        width: image.width(),
+        height: image.height(),
+    };
+    match frames.try_send(message) {
+        Ok(()) => *previous = Some(image),
+        Err(mpsc::TrySendError::Full(_)) => {}
+        Err(mpsc::TrySendError::Disconnected(_)) => return Ok(false),
+    }
+    Ok(true)
 }
 
 fn write_message(stream: &mut impl Write, message: &PreviewClientMessage) -> Result<()> {
@@ -406,6 +421,67 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<PreviewHostMessage>>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_queue_delivers_equal_area_resizes_and_suppresses_only_identical_frames() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let mut previous = None;
+        let first = RgbaImage::new(3, 2);
+        let resized = RgbaImage::new(2, 3);
+        assert_eq!(first.as_raw(), resized.as_raw());
+
+        assert!(queue_frame(first.clone(), &mut previous, &sender).unwrap());
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            PreviewClientMessage::Frame {
+                width: 3,
+                height: 2,
+                ..
+            }
+        ));
+        assert!(queue_frame(first, &mut previous, &sender).unwrap());
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        assert!(queue_frame(resized, &mut previous, &sender).unwrap());
+        let PreviewClientMessage::Frame { png, width, height } = receiver.try_recv().unwrap()
+        else {
+            panic!("expected the resized frame");
+        };
+        assert_eq!((width, height), (2, 3));
+        let png = STANDARD.decode(png).unwrap();
+        assert_eq!(
+            image::load_from_memory(&png)
+                .unwrap()
+                .into_rgba8()
+                .dimensions(),
+            (2, 3)
+        );
+    }
+
+    #[test]
+    fn a_full_frame_queue_retries_the_latest_image_after_the_writer_catches_up() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let mut previous = None;
+        let first = RgbaImage::new(3, 2);
+        let resized = RgbaImage::new(2, 3);
+        assert!(queue_frame(first.clone(), &mut previous, &sender).unwrap());
+        assert!(queue_frame(resized.clone(), &mut previous, &sender).unwrap());
+        assert_eq!(previous.as_ref(), Some(&first));
+        receiver.try_recv().unwrap();
+        assert!(queue_frame(resized.clone(), &mut previous, &sender).unwrap());
+        assert_eq!(previous.as_ref(), Some(&resized));
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            PreviewClientMessage::Frame {
+                width: 2,
+                height: 3,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn decoder_handles_split_reads_eof_and_truncation() {

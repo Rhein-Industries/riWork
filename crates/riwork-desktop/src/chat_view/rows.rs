@@ -77,6 +77,46 @@ impl ChatView {
                     })
                     .into_any_element()
             }
+            Some(super::display::Row::Activity { turn_id, items }) => {
+                let key = super::display::activity_key(turn_id);
+                let expanded = self.open.contains(&key);
+                widgets::button(
+                    SharedString::from(key.clone()),
+                    format!(
+                        "{} Activity from this turn · {}",
+                        if expanded { "▾" } else { "▸" },
+                        items.len()
+                    ),
+                    None,
+                    look,
+                )
+                .aria_expanded(expanded)
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    let offset = view.list.logical_scroll_top();
+                    let anchor = view.visible.get(offset.item_ix).cloned();
+                    view.list.pause_following_tail();
+                    view.toggle(&key, None, cx);
+                    view.refresh_projection(cx);
+                    view.list.remeasure();
+                    if let Some(anchor) = anchor
+                        && let Some(at) = super::display::remap_anchor(
+                            &anchor,
+                            &view.visible,
+                            &view.model.completed,
+                        )
+                    {
+                        view.list.scroll_to(gpui::ListOffset {
+                            item_ix: at,
+                            offset_in_item: if view.visible.get(at) == Some(&anchor) {
+                                offset.offset_in_item
+                            } else {
+                                px(0.)
+                            },
+                        });
+                    }
+                }))
+                .into_any_element()
+            }
             Some(super::display::Row::Artifacts { turn_id, items }) => {
                 let key = format!("artifacts:{turn_id}");
                 let open = self.open.contains(&key);
@@ -371,7 +411,39 @@ impl ChatView {
             }
             ItemBody::Plan { explanation, steps } => {
                 let head = cards::head(item, None).expect("a plan has a head");
-                let body = checklist(self, &item.id, steps, explanation.as_deref(), look, cx);
+                let body = if steps.is_empty()
+                    && let Some(source) = explanation
+                        .as_deref()
+                        .filter(|text| !text.trim().is_empty())
+                {
+                    let key = format!("plan:{}:document", item.id);
+                    let copy_key = format!("copy-plan:{}", item.id);
+                    let markdown = source.to_owned();
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .p(ui_text::space(10.))
+                        .child(self.prose(&self.parsed(item, source), &key, look, cx))
+                        .child(
+                            div().mt(ui_text::space(8.)).flex().justify_end().child(
+                                widgets::copy_button(
+                                    SharedString::from(copy_key.clone()),
+                                    self.copied.as_deref() == Some(copy_key.as_str()),
+                                    "Copy plan",
+                                    "Copy plan Markdown",
+                                    look,
+                                )
+                                .on_click(cx.listener(
+                                    move |view, _, _, cx| {
+                                        view.copy(copy_key.clone(), markdown.clone(), cx)
+                                    },
+                                )),
+                            ),
+                        )
+                        .into_any_element()
+                } else {
+                    checklist(self, &item.id, steps, explanation.as_deref(), look, cx)
+                };
                 self.always_open(ix, &head, body, look)
             }
             ItemBody::Todo { items } => {
@@ -384,8 +456,30 @@ impl ChatView {
                 )
             }
             ItemBody::WebSearch { .. } => {
-                let head = cards::head(item, None).expect("a search has a head");
-                self.card(ix, item, &head, None, look, cx)
+                let mut head = cards::head(item, None).expect("a search has a head");
+                let output = self.tool_output(item);
+                head.expandable = output.is_some();
+                let body = |view: &Self, cx: &mut Context<Self>| {
+                    let raw = match output.as_deref() {
+                        Some(crate::chat::tool_output::ToolOutput::WebSearch { raw, .. }) => {
+                            Some(raw.as_str())
+                        }
+                        _ => None,
+                    };
+                    let input = match &item.body {
+                        ItemBody::WebSearch { query } => serde_json::json!({"query":query}),
+                        _ => serde_json::Value::Null,
+                    };
+                    view.tool_body(item, &input, raw, look, cx)
+                };
+                self.card(
+                    ix,
+                    item,
+                    &head,
+                    output.as_ref().map(|_| &body as &BodyMaker<'_>),
+                    look,
+                    cx,
+                )
             }
             ItemBody::Compaction => div()
                 .w_full()
@@ -474,6 +568,7 @@ impl ChatView {
             .w_full()
             .min_w_0()
             .child(self.prose(&blocks, &item.id, look, cx))
+            .children(self.answer_review(item, look, cx))
             .child(
                 div()
                     .absolute()
@@ -895,6 +990,49 @@ impl ChatView {
         look: Look,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let rich = self.tool_output(item);
+        let raw_key = super::tool_views::raw_key(item);
+        if let Some(rich) = rich.as_deref() {
+            let show_raw = self.open.contains(&raw_key);
+            return div()
+                .w_full()
+                .min_w_0()
+                .child(self.rich_tool_body(item, rich, look, cx))
+                .child(
+                    div().px(ui_text::space(10.)).py(ui_text::space(5.)).child(
+                        widgets::button(
+                            SharedString::from(raw_key.clone()),
+                            if show_raw {
+                                "Hide raw input/output"
+                            } else {
+                                "Show raw input/output"
+                            },
+                            None,
+                            look,
+                        )
+                        .aria_expanded(show_raw)
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.toggle(&raw_key, None, cx);
+                            view.list.remeasure();
+                        })),
+                    ),
+                )
+                .when(show_raw, |body| {
+                    body.child(self.raw_tool_body(item, input, output, look, cx))
+                })
+                .into_any_element();
+        }
+        self.raw_tool_body(item, input, output, look, cx)
+    }
+
+    fn raw_tool_body(
+        &self,
+        item: &Item,
+        input: &serde_json::Value,
+        output: Option<&str>,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = look.colors;
         let pretty = cards::input_pretty(input);
         let mut part = |label: &'static str, text: String, at: usize| {
@@ -1173,7 +1311,7 @@ fn checklist(
 impl ChatView {
     /// The lines of one file's diff, added and removed ones tinted. `key` names the file's
     /// box; text/kind changes invalidate the renderer even at the same byte length.
-    fn diff_lines(
+    pub(super) fn diff_lines(
         &self,
         key: &str,
         text: &str,
@@ -1197,6 +1335,7 @@ impl ChatView {
                             .iter()
                             .map(|line| (line.kind, line.text.replace('\t', "    ")))
                             .collect(),
+                        numbers: diff::line_numbers(&lines, kind),
                         hidden,
                     });
                     caches
@@ -1207,9 +1346,44 @@ impl ChatView {
             }
         };
         let name = format!("diff:{key}");
+        let wrap_key = format!("wrap-diff:{key}");
+        let wrapped = self.open.contains(&wrap_key);
+        let copy_key = format!("copy-diff:{key}");
+        let patch = text.to_owned();
         div()
             .border_t_1()
             .border_color(rgb(colors.divider))
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(ui_text::space(5.))
+                    .px(ui_text::space(8.))
+                    .py(ui_text::space(3.))
+                    .child(
+                        widgets::button(
+                            SharedString::from(wrap_key.clone()),
+                            if wrapped { "Unwrap" } else { "Wrap" },
+                            None,
+                            look,
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.toggle_output_layout(&wrap_key, cx)
+                        })),
+                    )
+                    .child(
+                        widgets::copy_button(
+                            SharedString::from(copy_key.clone()),
+                            self.copied.as_deref() == Some(copy_key.as_str()),
+                            "Copy patch",
+                            "Copy the complete patch",
+                            look,
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.copy(copy_key.clone(), patch.clone(), cx)
+                        })),
+                    ),
+            )
             .child(
                 self.scroller(&name).attach(
                     div()
@@ -1225,7 +1399,8 @@ impl ChatView {
                         .font_family(ui_text::code_family())
                         .child(
                             div()
-                                .flex_none()
+                                .when(!wrapped, |body| body.flex_none())
+                                .when(wrapped, |body| body.flex_1().min_w_0())
                                 .min_w_full()
                                 .flex()
                                 .flex_col()
@@ -1247,6 +1422,9 @@ impl ChatView {
                                         div()
                                             .min_w_full()
                                             .flex_none()
+                                            .flex()
+                                            .items_start()
+                                            .gap(ui_text::space(8.))
                                             .px(ui_text::space(10.0))
                                             .text_color(rgb(ink))
                                             .when_some(tint, |row, tint| {
@@ -1259,19 +1437,42 @@ impl ChatView {
                                                     },
                                                 )))
                                             })
-                                            .whitespace_nowrap()
-                                            .child(self.selectable(
-                                                &format!("diff:{key}:{at}"),
-                                                if shown.is_empty() {
-                                                    " ".to_owned()
-                                                } else {
-                                                    shown.clone()
-                                                },
-                                                Vec::new(),
-                                                Vec::new(),
-                                                look,
-                                                cx,
-                                            ))
+                                            .child(
+                                                div()
+                                                    .flex_none()
+                                                    .w(ui_text::space(76.))
+                                                    .text_color(rgb(colors.muted))
+                                                    .text_right()
+                                                    .child(format!(
+                                                        "{:>5} {:>5}",
+                                                        drawn.numbers[at]
+                                                            .0
+                                                            .map(|n| n.to_string())
+                                                            .unwrap_or_default(),
+                                                        drawn.numbers[at]
+                                                            .1
+                                                            .map(|n| n.to_string())
+                                                            .unwrap_or_default()
+                                                    )),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .when(!wrapped, |line| line.whitespace_nowrap())
+                                                    .child(self.selectable(
+                                                        &format!("diff:{key}:{at}"),
+                                                        if shown.is_empty() {
+                                                            " ".to_owned()
+                                                        } else {
+                                                            shown.clone()
+                                                        },
+                                                        Vec::new(),
+                                                        Vec::new(),
+                                                        look,
+                                                        cx,
+                                                    )),
+                                            )
                                     },
                                 ))
                                 .children((drawn.hidden > 0).then(|| {

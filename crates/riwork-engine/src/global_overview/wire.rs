@@ -32,6 +32,11 @@ pub const WIRE_MAX_TASKS_IN_PROGRESS: usize = 50;
 pub const WIRE_MAX_AUTOMATIONS: usize = 30;
 /// `backends.providers`: every provider RiWork knows fits.
 pub const WIRE_MAX_PROVIDERS: usize = 8;
+/// JSON bytes of decision cards a reply carries; the rest are counted in `decisions_total`.
+pub const WIRE_DECISION_BYTES: usize = 64 * 1024;
+/// JSON bytes of a whole reply before `intelligence` (at most about 32 KiB) is added: the
+/// connector refuses an uncompressed reply over 128 KiB, so observations are cut first.
+pub const WIRE_REPLY_BYTES: usize = 88 * 1024;
 /// Titles, names, branches and folders: at most this many Unicode scalar values.
 pub const WIRE_MAX_NAME_CHARS: usize = 120;
 /// Failure and automation messages: at most this many Unicode scalar values.
@@ -66,6 +71,95 @@ pub fn wire(overview: &Overview, generated_at: u64) -> Value {
     root.set("automations", automations(&overview.automations))
         .set("backends", backends(&overview.backends))
         .done()
+}
+
+/// Add observed provider requests without changing version 1's existing rows. Older
+/// clients ignore these keys. Model enrichment can refer to these exact event sources,
+/// but only these provider observations may supply an answerable decision.
+pub fn wire_with_observations(
+    overview: &Overview,
+    generated_at: u64,
+    observations: &super::observed::Observations,
+) -> Value {
+    use super::observed::{MAX_DECISIONS, MAX_RECENT, Request};
+    let mut result = wire(overview, generated_at);
+    let state = if !overview.chats_known {
+        "unavailable"
+    } else if observations.chats_complete == observations.chats_total {
+        "read"
+    } else {
+        "partial"
+    };
+    result["decision_sources"] = Object::new()
+        .set("state", state)
+        .set("sampled_at", observations.sampled_at)
+        .set("chats_read", observations.chats_read)
+        .set("chats_complete", observations.chats_complete)
+        .set("chats_total", observations.chats_total)
+        .done();
+    result["decisions_total"] = observations.decisions.len().into();
+    result["recent_activity_total"] = observations.recent_activity.len().into();
+    // Approvals can carry whole diffs and plans: a reply without compression must still fit
+    // the connector's 128 KiB, so cards past this budget are left to `decisions_total`, and
+    // activity takes only what the version 1 rows and the cards leave of the reply's.
+    let base = serde_json::to_vec(&result).map_or(usize::MAX, |bytes| bytes.len());
+    let mut reply = WIRE_REPLY_BYTES.saturating_sub(base);
+    let decision_budget = WIRE_DECISION_BYTES.min(reply);
+    let mut budget = decision_budget;
+    result["decisions"] = observations
+        .decisions
+        .iter()
+        .take(MAX_DECISIONS)
+        .map(|decision| {
+            let row = Object::new()
+                .set("id", decision.id.as_str())
+                .set("chat_id", decision.chat_id.as_str())
+                .set("request_id", decision.request_id.as_str())
+                .set("session", session(&decision.session))
+                .set("observed_at", decision.observed_at)
+                .set("source", serde_json::to_value(&decision.source).unwrap());
+            match &decision.request {
+                Request::Approval { approval } => row
+                    .set("kind", "approval")
+                    .set("approval", serde_json::to_value(approval).unwrap()),
+                Request::Question { question } => row
+                    .set("kind", "question")
+                    .set("question", serde_json::to_value(question).unwrap()),
+            }
+            .done()
+        })
+        .take_while(|row: &Value| fits(row, &mut budget))
+        .collect::<Vec<_>>()
+        .into();
+    reply -= decision_budget - budget;
+    result["recent_activity"] = observations
+        .recent_activity
+        .iter()
+        .take(MAX_RECENT)
+        .map(|activity| {
+            Object::new()
+                .set("session", session(&activity.session))
+                .set("source", serde_json::to_value(&activity.source).unwrap())
+                .set("observed_at", activity.observed_at)
+                .set("kind", activity.kind.as_str())
+                .set("log_updated_at", activity.log_updated_at)
+                .set("text", activity.text.as_str())
+                .set("status", activity.status.as_str())
+                .done()
+        })
+        .take_while(|row: &Value| fits(row, &mut reply))
+        .collect::<Vec<_>>()
+        .into();
+    result
+}
+
+/// Whether `row`, and the comma before it, fit in `budget`; if so it is spent.
+fn fits(row: &Value, budget: &mut usize) -> bool {
+    let size = serde_json::to_vec(row).map_or(usize::MAX, |bytes| bytes.len().saturating_add(1));
+    budget
+        .checked_sub(size)
+        .inspect(|left| *budget = *left)
+        .is_some()
 }
 
 /// `text` cut to at most `max` Unicode scalar values.

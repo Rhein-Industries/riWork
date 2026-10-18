@@ -543,6 +543,8 @@ fn a_muse_chat_starts_off_unless_turned_on_and_keeps_its_mode_through_resumes_re
     assert_eq!(saved_info(&host, &chat.id).contributor_mode, On);
     send(&mut host.client(), &chat.id, "after a restart");
     host.wait_for_log(&chat.id, |log| turns_completed(log) == 2);
+    // Completion and Idle are separate provider events. Switching requires both.
+    host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
     let starts = host.fake().starts.lock().unwrap().clone();
     assert_eq!(starts.len(), 3);
     assert_eq!(starts[0].resume, None);

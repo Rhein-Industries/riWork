@@ -1399,6 +1399,74 @@ fn provider_phase_and_real_image_payload_reach_the_log_without_raw_bitmap_text()
     );
 }
 
+#[test]
+fn normalized_tool_results_survive_codex_completion_and_replay() {
+    let fake = Fake::new(&[]);
+    let (sender, receiver) = mpsc::channel();
+    let mut core = Session::new(&fake.config(Provider::Codex), sender);
+    core.item(&json!({"id":"grep","type":"mcpToolCall","status":"completed","server":"files","tool":"grep","arguments":{"pattern":"hello"},"result":{"content":[{"type":"text","text":"src/main.rs:7:hello"}]}}), Some("turn".into()), true);
+    core.item(&json!({"id":"web","type":"webSearch","query":"rust","results":[{"title":"Rust","url":"https://www.rust-lang.org/","snippet":"Language"}]}), Some("turn".into()), true);
+    let transcript = fold(&receiver.try_iter().collect::<Vec<_>>());
+    assert!(
+        matches!(&transcript.items[0].presentation.tool, Some(crate::chat::tool_output::ToolOutput::FileSearch {hits, ..}) if hits[0].target() == "src/main.rs:7")
+    );
+    assert!(
+        matches!(&transcript.items[1].presentation.tool, Some(crate::chat::tool_output::ToolOutput::WebSearch {hits, ..}) if hits[0].snippet == "Language")
+    );
+    let encoded = serde_json::to_vec(&transcript.items).unwrap();
+    let decoded: Vec<Item> = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded, transcript.items);
+}
+
+#[test]
+fn encoded_image_references_are_retained_without_duplicating_payloads_in_tool_text() {
+    use crate::chat::model::ImageSource;
+
+    let fake = Fake::new(&[]);
+    let (sender, receiver) = mpsc::channel();
+    let mut core = Session::new(&fake.config(Provider::Codex), sender);
+    let encoded = "aGVsbG8=";
+    let url = format!("data:image/png;base64,{encoded}");
+    for (index, image) in [
+        json!({"type":"image","url":url}),
+        json!({"type":"inputImage","imageUrl":url}),
+        json!({"type":"image_url","image_url":{"url":url}}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        core.item(
+            &json!({"id":format!("mcp-{index}"),"type":"mcpToolCall","status":"completed",
+                "server":"images","tool":"view","arguments":{},"result":{"content":[image]}}),
+            Some("turn".into()),
+            true,
+        );
+    }
+    core.item(
+        &json!({"id":"view","type":"imageView","imageUrl":url}),
+        Some("turn".into()),
+        true,
+    );
+    let transcript = fold(&receiver.try_iter().collect::<Vec<_>>());
+    assert_eq!(transcript.items.len(), 4);
+    for item in &transcript.items {
+        assert!(matches!(
+            &item.presentation.images[0].source,
+            ImageSource::Data { base64, .. } if base64 == encoded
+        ));
+        assert!(
+            !serde_json::to_string(&item.body).unwrap().contains(encoded),
+            "bitmap was duplicated into tool text: {:?}",
+            item.body
+        );
+    }
+    assert_eq!(
+        super::super::media::without_payloads(&json!({"url":"https://example.com/image.png",
+            "path":"/tmp/image.png","text":"ordinary text"})),
+        json!({"url":"https://example.com/image.png","path":"/tmp/image.png","text":"ordinary text"})
+    );
+}
+
 fn completed_notices(events: &[ChatEvent]) -> Vec<Item> {
     events
         .iter()

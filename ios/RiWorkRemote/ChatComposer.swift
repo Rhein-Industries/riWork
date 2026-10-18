@@ -39,6 +39,9 @@ import RiWorkCore
     var answersApproval = false
     /// The `/` or `@` list is open: the arrows, Tab, Return and Escape are its.
     var suggesting = false
+    /// Missing-key aliases are active only while navigating suggestions or answering a request.
+    var usesClicks = false
+    var tabShortcuts: TabShortcutController?
     /// A paste that finds files or a lone picture sends them to the Mac (`PasteboardAttachments`); true when it took the paste.
     var onPasteFiles: (() -> Bool)?
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
@@ -71,13 +74,24 @@ import RiWorkCore
     override var keyCommands: [UIKeyCommand]? {
         // A word being composed is the input method's: its Return is not ours.
         guard markedTextRange == nil else { return nil }
-        if suggesting { return typingCommands + suggestionCommands }
-        return answersApproval && text.isEmpty ? typingCommands + requestCommands : typingCommands
+        let commands = suggesting ? typingCommands + suggestionCommands : (answersApproval && text.isEmpty ? typingCommands + requestCommands : typingCommands)
+        let available = TabShortcutInput.withoutPrefix(commands, tabShortcuts)
+        guard usesClicks else { return available }
+        // From every command, the filtered Tab included: with Tab as the prefix, ⌘T is how a suggestion list gets its Tab.
+        return available + commands.compactMap { command in
+            guard let binding = ClicksNavigation.alias(input: command.input, modifiers: command.modifierFlags) else { return nil }
+            return Self.command(binding.alias, binding.aliasModifiers, action: #selector(fired(_:)))
+        }
     }
     /// A Return that put a suggestion in, while it may still be held: its repeats must not send the draft it completed.
     private var heldReturn = HeldReturn()
     @objc func fired(_ command: UIKeyCommand) {
-        guard let key = Self.key(input: command.input, flags: command.modifierFlags) else { return }
+        if let input = command.input, let code = KeyCaptureView.keyCode(forCommandInput: input),
+           handleTabShortcut(KeyEventRecord(phase: .command, keyCode: code, modifiers: KeyCaptureView.modifiers(command.modifierFlags), characters: input, charactersIgnoringModifiers: input)) { return }
+        // Recheck the current commands: a held alias from a list that just closed must not act on ordinary text editing.
+        guard keyCommands?.contains(where: { $0.input == command.input && $0.modifierFlags == command.modifierFlags }) == true else { return }
+        let original = usesClicks ? ClicksNavigation.original(input: command.input, modifiers: command.modifierFlags) : nil
+        guard let key = Self.key(input: original?.input ?? command.input, flags: original?.modifiers ?? command.modifierFlags) else { return }
         if key == .return, heldReturn.isRepeat(at: .now) { return }
         let action = onKey(key)
         if key == .return, action == .acceptSuggestion { heldReturn.accepted(at: .now) }
@@ -85,14 +99,42 @@ import RiWorkCore
     }
     /// The Return key came up: the next Return is a press of its own.
     func returnReleased() { heldReturn.released() }
+    func handleTabShortcut(_ event: KeyEventRecord) -> Bool {
+        tabShortcuts?.handle(event, markedText: markedTextRange != nil, perform: performTabShortcut) ?? false
+    }
+    private func performTabShortcut(_ action: TabShortcutAction) -> Bool {
+        switch action {
+        case .literalTab:
+            // An open suggestion list takes its normal Tab (the row goes in); otherwise the draft gets one.
+            if suggesting { _ = onKey(.tab) } else { insertText("\t") }
+        case .escape:
+            _ = onKey(.escape)
+        case .up, .left, .down, .right:
+            if suggesting, action == .up || action == .down { _ = onKey(action == .up ? .up : .down); return true }
+            let direction: UITextLayoutDirection = switch action { case .up: .up; case .down: .down; case .left: .left; default: .right }
+            if let selectedTextRange, let next = position(from: selectedTextRange.end, in: direction, offset: 1) {
+                self.selectedTextRange = textRange(from: next, to: next)
+            }
+        case .keyMenu: return true // A chat has no terminal key menu.
+        default: return false
+        }
+        return true
+    }
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let rest = presses.filter { press in TabShortcutInput.record(press, phase: .down).map { !handleTabShortcut($0) } ?? true }
+        if !rest.isEmpty { super.pressesBegan(Set(rest), with: event) }
+    }
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         if presses.contains(where: { $0.key?.keyCode == .keyboardReturnOrEnter }) { returnReleased() }
-        super.pressesEnded(presses, with: event)
+        let rest = presses.filter { press in TabShortcutInput.record(press, phase: .up).map { !handleTabShortcut($0) } ?? true }
+        if !rest.isEmpty { super.pressesEnded(Set(rest), with: event) }
     }
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         if presses.contains(where: { $0.key?.keyCode == .keyboardReturnOrEnter }) { returnReleased() }
+        tabShortcuts?.cancel()
         super.pressesCancelled(presses, with: event)
     }
+    override func resignFirstResponder() -> Bool { let resigned = super.resignFirstResponder(); if resigned { tabShortcuts?.cancelPrefix() }; return resigned }
     /// The key a command stands for.
     static func key(input: String?, flags: UIKeyModifierFlags) -> ChatKey? {
         switch (input, flags.intersection([.shift, .command, .alternate, .control])) {
@@ -110,6 +152,7 @@ import RiWorkCore
 
 /// The composer's text view in SwiftUI. It grows with its text up to `maxLines`, then scrolls.
 struct ChatComposerField: UIViewRepresentable {
+    @Environment(\.tabShortcuts) private var tabShortcuts
     @Binding var text: String
     var placeholderLabel: String
     var isEnabled: Bool
@@ -124,6 +167,7 @@ struct ChatComposerField: UIViewRepresentable {
     var onPasteFiles: (() -> Bool)?
     /// The `/` or `@` list is open, and where the caret is with each change to the text or the selection (for the list).
     var suggesting = false
+    var usesClicks = false
     var onSelection: ((String, NSRange) -> Void)?
 
     /// Space above and below the text inside the field.
@@ -189,6 +233,8 @@ struct ChatComposerField: UIViewRepresentable {
         view.onKey = onKey
         view.answersApproval = answersApproval
         view.suggesting = suggesting
+        view.usesClicks = usesClicks
+        view.tabShortcuts = tabShortcuts
         insertion?.view = view
         view.onPasteFiles = onPasteFiles
         if coordinator.lastFocusToken != focusToken {
@@ -263,6 +309,7 @@ struct ChatComposer: View {
     var wantSuggestions: (() -> Void)?
     /// The model the chat is set to (nil: its provider's default), which the `&` list marks.
     var chosenModel: String?
+    var usesClicks = false
     @State private var focused = false
     @State private var insertion = TextInsertion()
     /// The list and where the caret is (nil while text is selected); see ComposerSuggestionViews.swift.
@@ -302,7 +349,7 @@ struct ChatComposer: View {
                 }
                 ChatComposerField(text: Binding(get: { conversation.draft }, set: { conversation.draft = $0 }), placeholderLabel: "Message to \(provider.title)",
                                   isEnabled: true, answersApproval: approval != nil, focusToken: focusToken, maxLines: typeSize.isAccessibilitySize ? 3 : 6, onKey: handle, onFocusChange: { focused = $0 },
-                                  insertion: insertion, onPasteFiles: pasteFiles, suggesting: showsSuggestions, onSelection: suggestionCaretMoved)
+                                  insertion: insertion, onPasteFiles: pasteFiles, suggesting: showsSuggestions, usesClicks: usesClicks, onSelection: suggestionCaretMoved)
                     .alignmentGuide(.composerLine) { [band = ChatComposerField.lineBand(style, typeSize)] d in d.height - band / 2 }
                     .chatLayoutProbe("composer-field")
                 // The last button's target reaches out over the margin to the screen's edge.

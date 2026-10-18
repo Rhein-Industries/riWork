@@ -60,7 +60,7 @@ use super::model::{
     Decision, Item, ItemBody, ItemStatus, NewChat, NoticeLevel, ORCHESTRATOR_EXISTS,
     OrchestratorScope, Provider, Transcript, TurnOutcome, notice_kind,
 };
-use super::wire::{Envelope, Request, Response};
+use super::wire::{CommandGuard, Envelope, Request, Response};
 use super::workers::{self, WorkerKind, WorkerNote};
 use fs2::FileExt;
 use std::collections::HashMap;
@@ -288,6 +288,8 @@ struct Run {
     generation: u64,
     settings_revisions: SettingsRevisions,
     configurations: u64,
+    inputs: u64,
+    last_input_operation: Option<String>,
     /// A successful guarded start must still own this historical session.
     guarded_resume: Option<String>,
     /// Do not publish settings/identity from a start that may still fail.
@@ -309,6 +311,8 @@ impl Run {
             generation,
             settings_revisions: SettingsRevisions::default(),
             configurations: 0,
+            inputs: 0,
+            last_input_operation: None,
             guarded_resume: None,
             startup_reports: Vec::new(),
             driver: None,
@@ -412,6 +416,10 @@ struct Inner {
     subscribers: Vec<Subscriber>,
     run: Option<Run>,
     generations: u64,
+    /// Only a freshly created chat with no admitted input may receive an
+    /// assignment. Run counters reset on resume; this fence does not. Recovered
+    /// chats fail closed even if their last input never emitted a turn event.
+    delegation_pristine: bool,
     deleted: bool,
     /// The log cannot be written: the chat is over.
     broken: bool,
@@ -454,6 +462,7 @@ impl Inner {
             subscribers: Vec::new(),
             run: None,
             generations: 0,
+            delegation_pristine: last_seq == 0,
             deleted: false,
             broken: false,
             stop_wanted: false,
@@ -546,6 +555,9 @@ impl Inner {
     fn append(&mut self, mut event: ChatEvent) {
         if self.broken || self.deleted {
             return;
+        }
+        if matches!(event, ChatEvent::TurnStarted { .. }) {
+            self.delegation_pristine = false;
         }
         // No pruning here: it reads every saved chat, and this runs for every item.
         // Expired entries never match; startup and dismissals prune them.
@@ -1368,12 +1380,56 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
             id,
             chat_id,
             command,
+            operation_id,
+            require_running,
+        } => match operation_id {
+            Some(operation_id) => answer(
+                id,
+                run_identified_command(
+                    shared,
+                    &chat_id,
+                    &operation_id,
+                    command,
+                    require_running,
+                    None,
+                ),
+            ),
+            None if require_running => failure(id, "require_running needs an operation_id".into()),
+            None => answer(
+                id,
+                shared
+                    .find(&chat_id)
+                    .and_then(|chat| run_command(shared, &chat, command)),
+            ),
+        },
+        Request::CommandReceipt {
+            id,
+            chat_id,
+            operation_id,
         } => answer(
             id,
-            shared
-                .find(&chat_id)
-                .and_then(|chat| run_command(shared, &chat, command)),
+            super::receipts::read(&shared.home, &chat_id, &operation_id),
         ),
+        Request::GuardedCommand {
+            id,
+            chat_id,
+            operation_id,
+            command,
+            guard,
+        } => {
+            let require_running = matches!(guard, CommandGuard::DelegatedSend { .. });
+            answer(
+                id,
+                run_identified_command(
+                    shared,
+                    &chat_id,
+                    &operation_id,
+                    command,
+                    require_running,
+                    Some(guard),
+                ),
+            )
+        }
         Request::Close { id, chat_id } => answer(id, shared.find(&chat_id).map(|chat| stop(&chat))),
         Request::Delete { id, chat_id } => answer(id, delete(shared, &chat_id)),
         Request::NoteWorker { id, chat_id, note } => {
@@ -1669,13 +1725,23 @@ fn create_identified(
     mut new: NewChat,
     requested_id: Option<String>,
 ) -> Result<ChatInfo, String> {
-    // Serialize caller-owned IDs as well as orchestrators. Never overwrite an
-    // existing chat, including one saved by an interrupted host.
-    let creation = lock(&shared.orchestrator_creation);
     let id = requested_id.unwrap_or_else(|| Uuid::new_v4().to_string());
     if !Uuid::parse_str(&id).is_ok_and(|uuid| uuid.to_string() == id) {
         return Err("invalid chat id".into());
     }
+    // Before the lock: subscription balancing may read Codex quota for seconds, and every
+    // other chat creation waits on it. A scope's existing orchestrator is named without
+    // reading quota; the locked check below still decides.
+    refuse_second_orchestrator(shared, &new)?;
+    let account = (shared.providers.account)(
+        &shared.home,
+        new.provider,
+        new.project_id.as_deref(),
+        new.codex_account_id.as_deref(),
+    )?;
+    // Serialize caller-owned IDs as well as orchestrators. Never overwrite an
+    // existing chat, including one saved by an interrupted host.
+    let creation = lock(&shared.orchestrator_creation);
     if shared.find(&id).is_ok() || log::chat_dir(&shared.home, &id).is_some_and(|dir| dir.exists())
     {
         return Err("chat identity already exists; review it without retrying".into());
@@ -1706,11 +1772,21 @@ fn create_identified(
     if contributor_refused {
         new.contributor_mode = ContributorMode::Off;
     }
-    new.parent_id = crate::project_tabs::same_project_parent(
-        &shared.home,
-        new.project_id.as_deref(),
-        new.parent_id,
-    );
+    // Global native supervisors have no project, but their children still need
+    // verified lineage. Never carry that parent into a project (or vice versa).
+    let global_parent = new.project_id.is_none()
+        && new.parent_id.as_deref().is_some_and(|parent| {
+            shared
+                .find(parent)
+                .is_ok_and(|chat| chat.info().project_id.is_none())
+        });
+    if !global_parent {
+        new.parent_id = crate::project_tabs::same_project_parent(
+            &shared.home,
+            new.project_id.as_deref(),
+            new.parent_id,
+        );
+    }
     if !new.cwd.is_absolute() || !new.cwd.is_dir() {
         return Err(format!(
             "the working directory {} is not an existing absolute directory",
@@ -1721,23 +1797,7 @@ fn create_identified(
         return Err("the chat host is shutting down".into());
     }
     // Held until the chat is listed: see `Shared::orchestrator_creation`.
-    if let Some(scope) = &new.orchestrator {
-        check_orchestrator_scope(&new, scope)?;
-        if let Some(existing) = shared
-            .all()
-            .iter()
-            .map(|chat| chat.info())
-            .find(|info| info.orchestrator.as_ref() == Some(scope))
-        {
-            return Err(format!("{ORCHESTRATOR_EXISTS} {}", existing.id));
-        }
-    }
-    let account = (shared.providers.account)(
-        &shared.home,
-        new.provider,
-        new.project_id.as_deref(),
-        new.codex_account_id.as_deref(),
-    )?;
+    refuse_second_orchestrator(shared, &new)?;
     let title = new
         .title
         .as_deref()
@@ -1884,6 +1944,24 @@ fn provider_name(provider: Provider) -> &'static str {
 
 /// An orchestrator chat belongs to its scope: the global orchestrator has no
 /// project or worktree, a project's has that project and no worktree.
+/// `ORCHESTRATOR_EXISTS` and that chat's id when `new` is an orchestrator of a scope that
+/// already has one.
+fn refuse_second_orchestrator(shared: &Shared, new: &NewChat) -> Result<(), String> {
+    let Some(scope) = &new.orchestrator else {
+        return Ok(());
+    };
+    check_orchestrator_scope(new, scope)?;
+    match shared
+        .all()
+        .iter()
+        .map(|chat| chat.info())
+        .find(|info| info.orchestrator.as_ref() == Some(scope))
+    {
+        Some(existing) => Err(format!("{ORCHESTRATOR_EXISTS} {}", existing.id)),
+        None => Ok(()),
+    }
+}
+
 fn check_orchestrator_scope(new: &NewChat, scope: &OrchestratorScope) -> Result<(), String> {
     let fits = new.worktree_id.is_none()
         && match scope {
@@ -2408,17 +2486,22 @@ fn live_driver(chat: &Chat) -> Option<(u64, DriverHandle)> {
 /// Routes a user command to the chat's driver, starting (resuming) the driver
 /// first for a command that needs a process.
 fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Result<(), String> {
+    run_command_with_resume(shared, chat, command, true, None, None, &mut false)
+}
+
+fn run_command_with_resume(
+    shared: &Shared,
+    chat: &Arc<Chat>,
+    command: ChatCommand,
+    allow_resume: bool,
+    operation_id: Option<&str>,
+    guard: Option<&CommandGuard>,
+    dispatched: &mut bool,
+) -> Result<(), String> {
     if let ChatCommand::DismissNotice { item_id } = &command {
         return dismiss_notice(shared, chat, item_id);
     }
-    if let ChatCommand::SendAttachments { text, attachments } = &command {
-        if text.len() > super::attachments::TEXT_BYTES {
-            return Err("attachment message text exceeds 1 MiB".into());
-        }
-        super::attachments::validate_owned(&chat.dir, attachments)?;
-        // Encoding bounds apply before a stopped chat can start a provider, too.
-        super::attachments::inputs(text, attachments, chat.info().provider == Provider::Claude)?;
-    }
+    validate_attachments(chat, &command)?;
     if matches!(command, ChatCommand::Stop) {
         stop(chat);
         return Ok(());
@@ -2438,23 +2521,20 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
         }
         _ => {}
     }
-    if matches!(
-        command,
-        ChatCommand::Send { .. } | ChatCommand::SendAttachments { .. } | ChatCommand::Compact
-    ) {
+    if allow_resume
+        && matches!(
+            command,
+            ChatCommand::Send { .. } | ChatCommand::SendAttachments { .. } | ChatCommand::Compact
+        )
+    {
         ensure_running(shared, chat)?;
     }
     let Some((generation, driver)) = live_driver(chat) else {
         return Err("the chat is stopped; send a message to resume it".into());
     };
     let mut driver = lock(&driver);
-    if !lock(&chat.inner)
-        .run
-        .as_ref()
-        .is_some_and(|run| run.generation == generation && run.live())
-    {
-        return Err("the chat was stopped before the command reached its provider".into());
-    }
+    admit_input(shared, chat, generation, &command, operation_id, guard)?;
+    *dispatched = true;
     driver.command(command.clone())?;
     drop(driver);
     if let ChatCommand::Send { text } | ChatCommand::SendAttachments { text, .. } = &command {
@@ -2473,6 +2553,258 @@ fn run_command(shared: &Shared, chat: &Arc<Chat>, command: ChatCommand) -> Resul
         }
     }
     Ok(())
+}
+
+fn validate_attachments(chat: &Chat, command: &ChatCommand) -> Result<(), String> {
+    if let ChatCommand::SendAttachments { text, attachments } = command {
+        if text.len() > super::attachments::TEXT_BYTES {
+            return Err("attachment message text exceeds 1 MiB".into());
+        }
+        super::attachments::validate_owned(&chat.dir, attachments)?;
+        // Encoding bounds apply before a stopped chat can start a provider, too.
+        super::attachments::inputs(text, attachments, chat.info().provider == Provider::Claude)?;
+    }
+    Ok(())
+}
+
+/// Input admission is the linearization point for delegated authorization.
+/// Parent policy/turn and child scope are checked under their metadata locks,
+/// and child input ownership is recorded before releasing them. No parent lock
+/// survives into provider I/O: a later parent Stop or downgrade cannot deadlock
+/// behind a child write, and does not retroactively revoke an admitted input.
+fn admit_input(
+    shared: &Shared,
+    chat: &Arc<Chat>,
+    generation: u64,
+    command: &ChatCommand,
+    operation_id: Option<&str>,
+    guard: Option<&CommandGuard>,
+) -> Result<(), String> {
+    let commit = |inner: &mut Inner, first_input: bool| -> Result<(), String> {
+        let Some(run) = inner
+            .run
+            .as_mut()
+            .filter(|run| run.generation == generation && run.live())
+        else {
+            return Err("the chat was stopped before the command reached its provider".into());
+        };
+        if first_input
+            && (!inner.delegation_pristine || run.inputs != 0 || inner.open.turn.is_some())
+        {
+            return Err(
+                "the child already received another input; the assignment was not sent".into(),
+            );
+        }
+        if matches!(
+            command,
+            ChatCommand::Send { .. } | ChatCommand::SendAttachments { .. } | ChatCommand::Compact
+        ) {
+            inner.delegation_pristine = false;
+            run.inputs = run.inputs.saturating_add(1);
+            run.last_input_operation = operation_id.map(str::to_owned);
+        }
+        Ok(())
+    };
+    if let Some(CommandGuard::DelegatedSend {
+        parent_chat_id,
+        parent_turn_id,
+    }) = guard
+    {
+        let parent = shared.find(parent_chat_id)?;
+        if Arc::ptr_eq(&parent, chat) {
+            return Err("a delegated child cannot be its own parent".into());
+        }
+        let parent = lock(&parent.inner);
+        let mut child = lock(&chat.inner);
+        if !parent.live()
+            || !matches!(parent.info.state, ChatState::Running | ChatState::Waiting)
+            || parent.open.turn.as_deref() != Some(parent_turn_id.as_str())
+        {
+            return Err("the parent no longer owns the required active turn".into());
+        }
+        if child.info.parent_id.as_deref() != Some(parent_chat_id.as_str())
+            || child.info.project_id != parent.info.project_id
+            || child.info.worktree_id != parent.info.worktree_id
+            || child.info.cwd != parent.info.cwd
+        {
+            return Err("the delegated child no longer has its parent's scope".into());
+        }
+        let rank = |mode| match mode {
+            super::model::ApprovalMode::Plan => 0,
+            super::model::ApprovalMode::Supervised => 1,
+            super::model::ApprovalMode::AutoEdit => 2,
+            super::model::ApprovalMode::Full => 3,
+        };
+        if rank(child.info.approval_mode) > rank(parent.info.approval_mode) {
+            return Err(
+                "the child's permissions exceed the parent's current permission ceiling".into(),
+            );
+        }
+        commit(&mut child, true)
+    } else {
+        commit(&mut lock(&chat.inner), false)
+    }
+}
+
+/// Atomically fence the task-owned input before cancellation, then cancel I/O
+/// before waiting for lifecycle. If a subsequent start wins that lock, never
+/// stop its new generation. A later legacy Send also changes input ownership
+/// before its provider events arrive, so it cannot masquerade as this task.
+fn stop_delegated(chat: &Chat, guard: &CommandGuard, dispatched: &mut bool) -> Result<(), String> {
+    let CommandGuard::DelegatedCancel {
+        parent_chat_id,
+        send_operation_id,
+        turn_id,
+        allow_unstarted,
+    } = guard
+    else {
+        return Err("invalid cancellation guard".into());
+    };
+    let (generation, cancel) = {
+        let mut inner = lock(&chat.inner);
+        if inner.info.parent_id.as_deref() != Some(parent_chat_id.as_str()) {
+            return Err("the child no longer belongs to the calling parent".into());
+        }
+        if turn_id
+            .as_ref()
+            .is_some_and(|turn| inner.open.turn.as_ref() != Some(turn))
+        {
+            return Err(
+                "the task's turn already ended or changed; no later turn was stopped".into(),
+            );
+        }
+        let pristine = inner.delegation_pristine && inner.open.turn.is_none();
+        let Some(run) = inner.run.as_mut() else {
+            return Ok(());
+        };
+        if run.last_input_operation.as_deref() != Some(send_operation_id.as_str())
+            && !(*allow_unstarted && run.inputs == 0 && pristine)
+        {
+            return Err("the child received another input; no later work was stopped".into());
+        }
+        run.stopping = true;
+        *dispatched = true;
+        (run.generation, run.cancel_io.clone())
+    };
+    if let Some(cancel) = cancel {
+        cancel();
+    }
+    let _lifecycle = lock(&chat.lifecycle);
+    if lock(&chat.inner)
+        .run
+        .as_ref()
+        .is_some_and(|run| run.generation != generation)
+    {
+        return Err(
+            "the child's generation changed during cancellation; the new provider was not stopped"
+                .into(),
+        );
+    }
+    stop_locked(chat);
+    Ok(())
+}
+
+/// The receipt is durable before a provider can observe this operation. A
+/// duplicate (including an in-flight command or an interrupted host) only reads
+/// it. Do not hold a receipt lock while dispatching: Stop may need to cancel I/O.
+fn run_identified_command(
+    shared: &Shared,
+    chat_id: &str,
+    operation_id: &str,
+    command: ChatCommand,
+    require_running: bool,
+    guard: Option<CommandGuard>,
+) -> Result<super::receipts::CommandReceipt, String> {
+    use super::receipts::{self, CommandStatus, Reservation};
+    let reserved = match receipts::reserve_guarded(
+        &shared.home,
+        chat_id,
+        operation_id,
+        &command,
+        require_running,
+        guard.as_ref(),
+    )? {
+        Reservation::Existing(receipt) => return Ok(receipt),
+        Reservation::New(receipt) => receipt,
+    };
+    let validated = shared.find(chat_id).and_then(|chat| {
+        let info = {
+            let inner = lock(&chat.inner);
+            if inner.deleted || inner.broken {
+                return Err("this chat cannot accept commands".into());
+            }
+            inner.info.clone()
+        };
+        validate_attachments(&chat, &command)?;
+        match &guard {
+            Some(CommandGuard::DelegatedSend { .. })
+                if !matches!(
+                    command,
+                    ChatCommand::Send { .. } | ChatCommand::SendAttachments { .. }
+                ) =>
+            {
+                return Err("delegated send guard only supports sending an assignment".into());
+            }
+            Some(CommandGuard::DelegatedCancel { .. }) if command != ChatCommand::Stop => {
+                return Err("delegated cancellation only supports Stop".into());
+            }
+            _ => {}
+        }
+        if require_running {
+            if !matches!(
+                command,
+                ChatCommand::Send { .. }
+                    | ChatCommand::SendAttachments { .. }
+                    | ChatCommand::Compact
+            ) {
+                return Err("require_running is supported only for send and compact".into());
+            }
+            if live_driver(&chat).is_none() {
+                return Err("the chat is stopped; this operation cannot resume it".into());
+            }
+        }
+        if matches!(command, ChatCommand::Configure { .. }) {
+            muse_refusal(&info, &command)?;
+            contributor_refusal(&info, &command, command.requested_contributor_mode()?)?;
+            billing_refusal(&info, &command)?;
+        }
+        Ok(chat)
+    });
+    let mut dispatched = false;
+    let outcome = match validated {
+        Err(error) => reserved.outcome(CommandStatus::Rejected, Some(error)),
+        Ok(chat) => match match &guard {
+            Some(CommandGuard::DelegatedCancel { .. }) => {
+                stop_delegated(&chat, guard.as_ref().unwrap(), &mut dispatched)
+            }
+            _ => run_command_with_resume(
+                shared,
+                &chat,
+                command,
+                !require_running,
+                Some(operation_id),
+                guard.as_ref(),
+                &mut dispatched,
+            ),
+        } {
+            Ok(()) => reserved.outcome(CommandStatus::Accepted, None),
+            Err(error) if guard.is_some() && !dispatched => {
+                reserved.outcome(CommandStatus::Rejected, Some(error))
+            }
+            // Drivers have String errors, including failures after writes. Until
+            // they can prove non-delivery, a dispatch error must remain uncertain.
+            Err(error) => reserved.outcome(CommandStatus::Uncertain, Some(error)),
+        },
+    };
+    if let Err(error) = receipts::settle(&shared.home, &outcome) {
+        return Ok(reserved.outcome(
+            CommandStatus::Uncertain,
+            Some(format!(
+                "Command outcome could not be durably saved: {error}"
+            )),
+        ));
+    }
+    Ok(outcome)
 }
 
 fn configure_command_locked(
@@ -3247,6 +3579,10 @@ fn ensure_host_with(exe: &Path, home: &Path) -> Result<PathBuf, String> {
     Ok(Paths::new(home)?.socket)
 }
 
+#[cfg(test)]
+mod guard_tests;
+#[cfg(test)]
+mod receipt_tests;
 #[cfg(test)]
 mod tests;
 

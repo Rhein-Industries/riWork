@@ -222,4 +222,32 @@ fn a_surface_too_small_for_its_grid_has_no_cells() {
     );
 }
 
+#[test]
+fn oversized_configured_padding_never_wraps_into_a_clickable_grid() {
+    for padding in [
+        GhosttyPadding {
+            x: (u32::MAX, 1),
+            ..DEFAULT_PADDING
+        },
+        GhosttyPadding {
+            y: (u32::MAX, 1),
+            ..DEFAULT_PADDING
+        },
+    ] {
+        for scale in [1.0, 2.0] {
+            assert!(
+                cell_under_pointer(
+                    (1000.0, 600.0),
+                    (10.0, 10.0),
+                    scale,
+                    (80, 24),
+                    &padding,
+                    &mut CellHint::default(),
+                )
+                .is_none()
+            );
+        }
+    }
+}
+
 // ---- tokens -----------------------------------------------------------------------------

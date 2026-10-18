@@ -484,6 +484,13 @@ pub(crate) struct GlobalWindow {
     /// read, older than what the window knows, is let go instead of taken.
     sample_generation: u64,
     dashboard: DashboardReads,
+    observations: Option<global_overview::observed::Observations>,
+    intelligence: Option<serde_json::Value>,
+    /// Dashboard reads begun, and the one whose summary `intelligence` is: a summary can
+    /// wait seconds on the API, and an older read's that ends later is let go.
+    intelligence_reads: u64,
+    intelligence_read: u64,
+    decision_review: Option<Entity<dashboard::decision_review::DecisionReview>>,
     shown: Shown,
     /// The global orchestrator is being found or made, after an explicit request.
     starting: bool,
@@ -573,6 +580,11 @@ impl GlobalWindow {
             sample_pending: false,
             sample_generation: 0,
             dashboard: DashboardReads::default(),
+            observations: None,
+            intelligence: None,
+            intelligence_reads: 0,
+            intelligence_read: 0,
+            decision_review: None,
             shown: Shown::Nothing,
             starting: false,
             chat_tabs: chat_tabs::Coordinator::new(),
@@ -928,24 +940,58 @@ impl GlobalWindow {
     /// Read the automations, the times of failed or waiting chats, and the app, the chat host
     /// and the providers' CLIs (the Backends section), off the window. Nothing is started.
     fn refresh_dashboard(&mut self, force: bool, cx: &mut Context<Self>) {
-        if !self.services || !self.dashboard.due(force) {
+        if !self.services {
+            return;
+        }
+        if !self.dashboard.due(force) {
+            // Not lost while a read runs: an answered card must not stay up until the next.
+            self.dashboard.again |= force && self.dashboard.pending;
             return;
         }
         self.dashboard.pending = true;
+        self.intelligence_reads += 1;
+        let read = self.intelligence_reads;
         let home = self.sessions.state_home().to_path_buf();
         let chats = timed_chats(self.chats.as_deref());
+        let all_chats = self.chats.clone();
+        let state = self.state.clone();
+        let overview = self.overview();
         let shells = self.shells.clone();
         let processes = self.shell_processes.clone();
+        let summary_home = home.clone();
         let work = cx.background_executor().spawn(async move {
             let (schedules, written) = read_extras(&home, chats);
             let backends = global_overview::read_backends(&home, &shells, &processes);
-            (schedules, written, backends)
+            let now = activity::unix_now();
+            let observations =
+                global_overview::observed::read(&home, &state, all_chats.as_deref(), now);
+            let wire = global_overview::wire_with_observations(&overview, now, &observations);
+            (schedules, written, backends, observations, wire)
         });
         cx.spawn(async move |this, cx| {
-            let (schedules, written, backends) = work.await;
+            let (schedules, written, backends, observations, mut wire) = work.await;
             let _ = this.update(cx, |global, cx| {
-                let changed = global.dashboard.finish(schedules, written);
-                if changed | global.dashboard.take_backends(backends) {
+                global.dashboard.finish(schedules, written);
+                global.observations = Some(observations);
+                global.dashboard.take_backends(backends);
+                if std::mem::take(&mut global.dashboard.again) {
+                    global.refresh_dashboard(true, cx);
+                }
+                cx.notify();
+            });
+            // The optional summary can wait on the API (up to its 8 s deadline): the inbox, and
+            // the refresh after an answer, never wait for it.
+            let intelligence = cx
+                .background_executor()
+                .spawn(async move {
+                    riwork_engine::dashboard_intelligence::enrich(&summary_home, &mut wire);
+                    wire.get("intelligence").cloned()
+                })
+                .await;
+            let _ = this.update(cx, |global, cx| {
+                if read > global.intelligence_read {
+                    global.intelligence_read = read;
+                    global.intelligence = intelligence;
                     cx.notify();
                 }
             });
@@ -1285,6 +1331,43 @@ impl GlobalWindow {
         cx: &mut Context<Self>,
     ) {
         match action {
+            DashboardAction::ReviewDecision(id) => {
+                // One review at a time: replacing a busy one would lose its outcome.
+                if self.decision_review.is_some() {
+                    return;
+                }
+                let decision = self
+                    .observations
+                    .as_ref()
+                    .and_then(|observations| {
+                        observations
+                            .decisions
+                            .iter()
+                            .find(|decision| decision.id == id)
+                    })
+                    .cloned();
+                if let Some(decision) = decision {
+                    let home = self.sessions.state_home().to_path_buf();
+                    let dialog = cx.new(|cx| {
+                        dashboard::decision_review::DecisionReview::new(home, decision, window, cx)
+                    });
+                    dialog.update(cx, |dialog, cx| dialog.focus(window, cx));
+                    cx.subscribe_in(&dialog, window, |global, _, _, window, cx| {
+                        global.decision_review = None;
+                        global.refresh_dashboard(true, cx);
+                        global.focus_view(window, cx);
+                        cx.notify();
+                    })
+                    .detach();
+                    self.decision_review = Some(dialog);
+                    cx.notify();
+                } else {
+                    self.notice = Some(
+                        "This request is no longer in the inbox. Refresh the dashboard.".into(),
+                    );
+                    cx.notify();
+                }
+            }
             DashboardAction::Refresh => {
                 self.refresh_dashboard(true, cx);
                 if self.services {
@@ -1534,6 +1617,8 @@ impl GlobalWindow {
         dashboard::render(
             DashboardData {
                 overview: &overview,
+                observations: self.observations.as_ref(),
+                intelligence: self.intelligence.as_ref(),
                 now: activity::unix_now(),
                 sampled_at: self.sampled_at,
                 sample_error: self.sample_error.as_deref(),
@@ -1702,6 +1787,19 @@ impl Render for GlobalWindow {
             .child(self.render_bar(window, cx))
             .child(div().flex_1().min_h_0().child(body))
             .children(self.render_notice(cx))
+            .children(self.decision_review.as_ref().map(|dialog| {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .size_full()
+                    .p(ui_text::space(16.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(gpui::rgba(0x00000099))
+                    .occlude()
+                    .child(dialog.clone())
+            }))
             .children(window_controls_visible(window).then(|| window_controls_island(cx)))
     }
 }

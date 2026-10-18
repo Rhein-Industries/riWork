@@ -1,7 +1,7 @@
 # RiWork for iPhone and iPad
 
-Choose a paired RiWork desktop to see its dashboard (what needs you and what is working across every project, the global orchestrator,
-and every project), then a project, and switch between tabs for its
+Start with **All hosts** to see work and decisions across your paired RiWork desktops. Choose a desktop to see its own dashboard
+(what needs you and what is working across every project, the global orchestrator, and every project), then a project, and switch between tabs for its
 open terminals and chats, or open a new shell, agent or chat on the desktop with ＋. One terminal
 fills the screen at a time. The app never splits or replaces a desktop session; it
 creates one only when asked (＋ or ⌘N, then Create), and closes one only after a
@@ -9,6 +9,31 @@ confirmation. It creates a project only when asked too (＋ or ⌘⇧N on the pr
 Reconnecting and switching tabs never create or close anything, and neither do looking at the dashboard or reading it again.
 
 ## Dashboard and the global orchestrator
+
+**All hosts.** The landing screen combines the dashboards of this phone's paired desktops. Its **All**, **Needs you**, **Working**
+and **Projects** filters keep the host's name on every row. Working agents, attention, projects and open tasks show how many hosts
+contributed known figures; a missing figure is unknown rather than zero. A host that goes offline keeps its last successful read,
+marked as saved with its age, while other hosts continue updating. Choosing a host or a project opens that exact host.
+
+The overview refreshes about every 15 seconds while visible and active, with at most three temporary host connections at once.
+Leaving it or backgrounding the app closes those connections. The host already connected for interactive work uses that existing
+connection's dashboard; the overview does not take its terminal viewport or open a second mobile connection for the same pairing.
+A new pairing must finish its first explicit connection before the overview can use it. Pairing keys remain in Keychain.
+
+**Decisions.** Per-host dashboards and All hosts show original approval requests and questions from waiting Claude, Codex and Muse
+chats. Tap **Review** to read the request and choose an offered approval or answer. Before sending, the app connects to the card's
+exact host and checks a fresh chat snapshot for the same pending request and choices. A resolved or changed request is rejected;
+viewing a card does not answer it. Responses are sent only after your explicit choice and are never automatically retried after
+an uncertain delivery. Coverage can be partial when a host could not read every chat log; terminal agents keep their existing
+attention rows rather than acquiring invented approval controls.
+
+**Haiku overview.** On each desktop, save an Anthropic API key in Settings and enable **Haiku dashboard summaries** beside that key.
+The setting is off by default. It makes separately billed requests to `claude-haiku-5-5` on that desktop; the phone displays the
+result rather than making its own model requests. Summaries compress observed activity into a short overview, highlights and
+suggested followups, with references to observed event IDs. The desktop reuses unchanged evidence, waits at least 60 seconds between
+requests and permits at most 120 requests per host per day. A changed source or failed request marks the retained summary as saved;
+missing keys and API errors leave the raw dashboard available. A summary supplies no approval controls and cannot answer requests.
+See [the dashboard contract](../docs/dashboard-decisions.md) for observation and source limits.
 
 Choosing a desktop opens its **Dashboard**, outside every project (`DashboardViews.swift`, `RemoteModel+Dashboard.swift`,
 `Core/GlobalDashboard.swift`, tested). A desktop that says `ready.features.dashboard` answers `dashboard.get {}` with its own global
@@ -320,7 +345,7 @@ template's ⌘ and ⌘⇧ letters, none of which is N) is not on screen, so it c
 
 **Keyboard** (a Clicks or any hardware keyboard; nothing needs a tap first): type the name; ↩ creates (from the name, the switch or
 Create), ⎋ cancels, ⇥ / ⇧⇥ (and ↑ ↓) move the focus ring name → Git switch → Create, ← → move it while the switch or Create has it, Space
-flips the switch or presses Create when it has the ring. A keyboard without Tab or Esc (the Clicks keyboard has neither) has **⌘G**, which
+flips the switch or presses Create when it has the ring. A keyboard without dedicated navigation keys has **⌘G**, which
 flips the Git switch from anywhere, also while typing, **⌘↩** for create and **⌘.** for cancel. Mechanism: the name is a `UITextField`
 subclass whose `keyCommands` carry tab, shift-tab, ↑ ↓, escape, ⌘., ⌘↩ and ⌘G with priority over the system, and whose delegate turns
 Return into create; while the switch or Create has the ring a small invisible key view takes the keyboard instead (it is not a text
@@ -477,6 +502,44 @@ become Enter, tabs become Tab, other control characters are dropped.
 
 **Keyboard first.** The next paragraphs are for typing on a hardware keyboard (the Clicks keyboard case, a Bluetooth keyboard)
 without touching the screen: focus, the hotkey menu, shortcuts, the editor and the Clicks template.
+
+**Physical keyboard layout.** While a hardware keyboard is connected and the software keyboard is hidden, the project's tab strip,
+Back and More sit at the bottom, below the chat composer and just above the terminal key bar. Focus mode still hides navigation.
+The hardware key bar starts with Esc, Tab, the key menu, Ctrl-C and arrows; the full symbol/modifier row returns with the software
+keyboard. **⌘1–9** selects tabs in their visible order; **⌘⇧[ / ]** switches to the previous/next tab, **⌘⇧P** goes Back,
+**⌘⇧,** opens Display, and **⌘⇧O** opens the worker/shell picker. A custom terminal hotkey on one of these chords retains priority.
+
+Display → Keyboard → **Hardware keyboard** offers *Automatic*, *Standard* and *Clicks*. Automatic uses `GCKeyboard.coalesced` for
+connection state and enables Clicks shortcuts only when the optional vendor name contains the whole word “Clicks” in any case
+(“Clickstream” does not count). iOS can report a generic name, so this is a best-effort hint, not guaranteed model identification;
+choose Clicks explicitly for an unnamed case. This profile adds the Clicks template live, honoring existing hotkey/menu/help
+shortcuts and leaving saved hotkeys untouched when switched off.
+**⌘E** is Esc, **⌘T / ⌘⇧T** Tab/Shift-Tab and **⌘W/A/S/D** arrows in terminals, the key menu, New terminal, the model picker and the hotkey editor.
+Chat suggestion lists use the same up/down/Tab/Esc aliases; **⌘E** can deny an empty pending approval, while normal editing and IME
+composition retain their own keys. The hotkey form uses **⌘⇧N** for Add text in Clicks mode because ⌘T moves between fields.
+
+**Tab shortcuts on Clicks.** With the Clicks profile active, a physical keyboard connected and the software keyboard hidden,
+press **Tab**, then a key below. Tapping Tab arms the prefix without sending anything to the shell or draft; holding the physical
+Tab key for one second opens the full shortcut guide. **Tab H** or **Tab ?** opens it immediately. Releasing a held Tab leaves the
+guide open so you can choose a shortcut. In a project on iPhone, the tab strip stays at the bottom above the compact key bar.
+
+| After Tab | Action |
+| --- | --- |
+| Q | Send a normal Tab; in menus, use the menu's normal Tab navigation |
+| E | Escape |
+| W / A / S / D | Up / left / down / right; navigate a menu or move in the terminal or draft |
+| K | Open or close the terminal key menu |
+| 1–9 | Select a project's visible tab in that position |
+| N | Open New terminal; creating one still requires Create |
+| P | Projects / Back, according to the current screen |
+| M | Open the current chat's model picker |
+| H / ? | Show the shortcut guide |
+
+An unknown second key is kept out of the terminal and draft and shows the guide. **Esc or ⌘E cancels the prefix** without sending
+Escape; **Tab E** deliberately sends Escape to the current screen. Held repeats cannot fire the same action repeatedly. Changing
+screens, losing focus, disconnecting the keyboard or showing the software keyboard clears the prefix. IME marked text stays with
+the input method. Actions depend on the screen: a chat has no terminal key menu, for example. The Standard profile, software typing
+and the touch key bar's **Tab** retain their usual behavior; the touch Tab button always sends a normal Tab.
 
 **Focus when a shell is ready.** A shell is *ready* when it is connected and its first live screen is shown. Whenever a shell becomes
 ready (first open, another tab, a reconnect, back from the background) the key capture view takes the keyboard, so typing goes straight

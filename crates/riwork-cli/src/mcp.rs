@@ -424,6 +424,12 @@ fn execute_schedule_tool(name: &str, args: &Value) -> Result<Value, ScheduleErro
 
 fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
     match name {
+        "riwork_delegate_task"
+        | "riwork_delegated_task_status"
+        | "riwork_delegated_task_cancel" => {
+            let service = crate::chat::delegation::DelegationService::open_default()?;
+            execute_delegation_tool(&service, name, args)
+        }
         "riwork_project_list" => {
             let state = Store::open_default()?.snapshot()?;
             Ok(json!({"active_project_id":state.active_project_id,"items":state.projects}))
@@ -861,6 +867,36 @@ fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("'{key}' must be a nonempty string"))
 }
 
+fn execute_delegation_tool(
+    service: &crate::chat::delegation::DelegationService,
+    name: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let wait = optional_usize(args, "wait_ms")?.unwrap_or(0);
+    if wait > crate::chat::delegation::MAX_WAIT.as_millis() as usize {
+        return Err("wait_ms must be between 0 and 30000".into());
+    }
+    let task = match name {
+        "riwork_delegate_task" => {
+            let mut request = args.clone();
+            request
+                .as_object_mut()
+                .ok_or("arguments must be an object")?
+                .remove("wait_ms");
+            let request: crate::chat::delegation::DelegateRequest = serde_json::from_value(request)
+                .map_err(|error| format!("Invalid delegation arguments: {error}"))?;
+            service.delegate(request, std::time::Duration::from_millis(wait as u64))?
+        }
+        "riwork_delegated_task_status" => service.wait(
+            required_str(args, "task_id")?,
+            std::time::Duration::from_millis(wait as u64),
+        )?,
+        "riwork_delegated_task_cancel" => service.cancel(required_str(args, "task_id")?)?,
+        _ => return Err("Unknown delegation tool".into()),
+    };
+    Ok(json!({"task": task}))
+}
+
 fn optional_str<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
     match args.get(key) {
         Some(Value::String(value)) => Ok(Some(value)),
@@ -911,6 +947,8 @@ fn destructive(name: &str) -> bool {
     matches!(
         name,
         "riwork_shell_create"
+            | "riwork_delegate_task"
+            | "riwork_delegated_task_cancel"
             | "riwork_preview_open"
             | "riwork_preview_input"
             | "riwork_preview_close"
@@ -1074,6 +1112,30 @@ fn schedule_tool(
 
 fn tools() -> Vec<Value> {
     let mut items = vec![
+        tool(
+            "riwork_delegate_task",
+            "Delegate a task",
+            "Assign work once to a native child chat of the calling active RiWork chat. Persist and reuse request_id for retries; changed assignments need a new ID. Inherits the parent's workspace and permission ceiling. Uncertain outcomes are observed, never resent or restarted. Optionally wait up to 30000 ms for a result.",
+            json!({"request_id":{"type":"string","minLength":1,"maxLength":256},"prompt":{"type":"string","minLength":1},"title":{"type":"string"},"provider":{"type":"string","enum":["codex","claude","muse"]},"model":{"type":"string"},"effort":{"type":"string"},"approval_mode":{"type":"string","enum":["plan","supervised","auto_edit","full"]},"wait_ms":{"type":"integer","minimum":0,"maximum":30000}}),
+            &["request_id", "prompt"],
+            false,
+        ),
+        tool(
+            "riwork_delegated_task_status",
+            "Read delegated task",
+            "Read a task owned by the calling parent chat, including its recorded result and completion identity. Optionally wait up to 30000 ms. Does not start a host or provider; an uncertain task is not retried.",
+            json!({"task_id":{"type":"string"},"wait_ms":{"type":"integer","minimum":0,"maximum":30000}}),
+            &["task_id"],
+            true,
+        ),
+        tool(
+            "riwork_delegated_task_cancel",
+            "Cancel delegated task",
+            "Request cancellation of the calling parent's child task. Completed tasks are unchanged. Cancellation is recorded if the host is unavailable; it never starts a host or provider. Query the task to confirm the outcome.",
+            json!({"task_id":{"type":"string"}}),
+            &["task_id"],
+            false,
+        ),
         tool(
             "riwork_project_list",
             "List projects",
@@ -1278,6 +1340,62 @@ fn tools() -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delegation_tools_have_scoped_inputs_and_bounded_waits() {
+        let definitions = tools();
+        let delegate = definitions
+            .iter()
+            .find(|tool| tool["name"] == "riwork_delegate_task")
+            .unwrap();
+        assert_eq!(
+            delegate["inputSchema"]["required"],
+            json!(["request_id", "prompt"])
+        );
+        assert_eq!(
+            delegate["inputSchema"]["properties"]["wait_ms"]["maximum"],
+            30000
+        );
+        assert!(
+            delegate["inputSchema"]["properties"]
+                .get("parent_id")
+                .is_none()
+        );
+        assert!(delegate["inputSchema"]["properties"].get("cwd").is_none());
+        let result = call_tool(&json!({"name":"riwork_delegate_task","arguments":{"request_id":"key","prompt":"work","parent_id":"spoofed"}})).unwrap();
+        assert_eq!(result["isError"], true);
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("not accepted")
+        );
+        let home = crate::chat::testing::short_home();
+        let service = crate::chat::delegation::DelegationService::at(
+            &home,
+            "11111111-1111-4111-8111-111111111111",
+        )
+        .unwrap();
+        assert!(
+            execute_delegation_tool(
+                &service,
+                "riwork_delegated_task_status",
+                &json!({"task_id":"unused","wait_ms":30001})
+            )
+            .unwrap_err()
+            .contains("30000")
+        );
+        assert!(
+            execute_delegation_tool(
+                &service,
+                "riwork_delegate_task",
+                &json!({"request_id":"key","prompt":"work","approval_mode":"imaginary"})
+            )
+            .unwrap_err()
+            .contains("Invalid delegation")
+        );
+        std::fs::remove_dir_all(home).unwrap();
+    }
 
     fn ping(id: u64) -> Value {
         json!({"jsonrpc":"2.0","id":id,"method":"ping"})
@@ -1546,6 +1664,7 @@ mod tests {
     #[test]
     fn hints_do_not_understate_what_a_tool_can_do() {
         let read_only = [
+            "riwork_delegated_task_status",
             "riwork_project_list",
             "riwork_project_inspect",
             "riwork_task_list",
@@ -1563,6 +1682,8 @@ mod tests {
         ];
         // Run a command, type into an agent now or on a schedule, or delete.
         let destructive = [
+            "riwork_delegate_task",
+            "riwork_delegated_task_cancel",
             "riwork_shell_create",
             "riwork_shell_send_line",
             "riwork_orchestrator_create",

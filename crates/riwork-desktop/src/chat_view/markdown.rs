@@ -32,6 +32,27 @@ pub enum Align {
     Right,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CalloutKind {
+    Note,
+    Tip,
+    Important,
+    Warning,
+    Caution,
+}
+
+impl CalloutKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Note => "Note",
+            Self::Tip => "Tip",
+            Self::Important => "Important",
+            Self::Warning => "Warning",
+            Self::Caution => "Caution",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Block {
     Heading {
@@ -41,7 +62,13 @@ pub enum Block {
     Paragraph(Vec<Span>),
     Code {
         language: Option<String>,
+        title: Option<String>,
         text: String,
+    },
+    /// The first paragraph of a task-list item; the list owns its read-only marker.
+    Task {
+        checked: bool,
+        spans: Vec<Span>,
     },
     /// `start` is the first number of a numbered list.
     List {
@@ -49,6 +76,10 @@ pub enum Block {
         items: Vec<Vec<Block>>,
     },
     Quote(Vec<Block>),
+    Callout {
+        kind: CalloutKind,
+        blocks: Vec<Block>,
+    },
     Table {
         align: Vec<Align>,
         header: Vec<Vec<Span>>,
@@ -108,6 +139,7 @@ fn blocks(lines: &[String], depth: usize) -> Vec<Block> {
             i += 1;
             out.push(Block::Code {
                 language: fence.language,
+                title: fence.title,
                 text: code.join("\n"),
             });
             continue;
@@ -144,7 +176,21 @@ fn blocks(lines: &[String], depth: usize) -> Vec<Block> {
                 }
                 i += 1;
             }
-            out.push(Block::Quote(blocks(&inner, depth + 1)));
+            let callout = inner.first().and_then(|line| match line.trim() {
+                "[!NOTE]" => Some(CalloutKind::Note),
+                "[!TIP]" => Some(CalloutKind::Tip),
+                "[!IMPORTANT]" => Some(CalloutKind::Important),
+                "[!WARNING]" => Some(CalloutKind::Warning),
+                "[!CAUTION]" => Some(CalloutKind::Caution),
+                _ => None,
+            });
+            out.push(match callout {
+                Some(kind) => Block::Callout {
+                    kind,
+                    blocks: blocks(&inner[1..], depth + 1),
+                },
+                None => Block::Quote(blocks(&inner, depth + 1)),
+            });
             continue;
         }
         if paragraph.is_empty()
@@ -204,6 +250,51 @@ struct Fence {
     mark: char,
     length: usize,
     language: Option<String>,
+    title: Option<String>,
+}
+
+/// Only the small, conventional fence header is metadata; never interpret arbitrary HTML.
+fn fence_info(info: &str) -> (Option<String>, Option<String>) {
+    let mut tokens = Vec::new();
+    let mut rest = info;
+    while !rest.is_empty() && tokens.len() < 16 {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        let mut quoted = None;
+        let end = rest
+            .char_indices()
+            .find_map(|(at, c)| {
+                match (quoted, c) {
+                    (Some(quote), c) if quote == c => quoted = None,
+                    (None, '\'' | '"') => quoted = Some(c),
+                    (None, c) if c.is_whitespace() => return Some(at),
+                    _ => {}
+                }
+                None
+            })
+            .unwrap_or(rest.len());
+        tokens.push(&rest[..end]);
+        rest = &rest[end..];
+    }
+    let language = tokens
+        .first()
+        .filter(|token| !token.contains('='))
+        .map(|token| token.to_string());
+    let title = tokens.iter().find_map(|token| {
+        let value = if let Some((key, value)) = token.split_once('=') {
+            matches!(key, "title" | "file" | "filename").then_some(value)?
+        } else if Some(*token) != tokens.first().copied() && token.contains('.') {
+            token
+        } else {
+            return None;
+        };
+        let value = value.trim_matches(['\'', '"']);
+        (!value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control))
+            .then(|| value.to_owned())
+    });
+    (language, title)
 }
 
 fn fence_open(line: &str) -> Option<Fence> {
@@ -222,16 +313,13 @@ fn fence_open(line: &str) -> Option<Fence> {
     if mark == '`' && info.contains('`') {
         return None;
     }
-    let language = info
-        .split_whitespace()
-        .next()
-        .map(str::to_owned)
-        .filter(|language| !language.is_empty());
+    let (language, title) = fence_info(info);
     Some(Fence {
         indent,
         mark,
         length,
         language,
+        title,
     })
 }
 
@@ -383,7 +471,33 @@ fn list(lines: &[String], start: usize, depth: usize) -> (Block, usize) {
                 i += 1;
             }
         }
-        items.push(blocks(&body, depth + 1));
+        let checked = body.first().and_then(|line| {
+            let checked = match line.get(..3) {
+                Some("[ ]") => false,
+                Some("[x]" | "[X]") => true,
+                _ => return None,
+            };
+            (line.len() == 3 || line[3..].starts_with(char::is_whitespace)).then_some(checked)
+        });
+        if checked.is_some() {
+            body[0] = body[0][3..].trim_start().to_owned();
+        }
+        let mut parsed = blocks(&body, depth + 1);
+        if let Some(checked) = checked {
+            if let Some(Block::Paragraph(spans)) = parsed.first_mut() {
+                let spans = std::mem::take(spans);
+                parsed[0] = Block::Task { checked, spans };
+            } else {
+                parsed.insert(
+                    0,
+                    Block::Task {
+                        checked,
+                        spans: Vec::new(),
+                    },
+                );
+            }
+        }
+        items.push(parsed);
         // Blank lines between items do not end the list.
         let mut next = i;
         while next < lines.len() && lines[next].trim().is_empty() {
@@ -577,6 +691,7 @@ fn push(spans: &mut Vec<Span>, text: &str, style: Style, link: Option<&str>) {
         return;
     }
     if let Some(last) = spans.last_mut()
+        && !last.image
         && last.style == style
         && last.link.as_deref() == link
     {
@@ -637,22 +752,6 @@ fn inline_into(text: &str, style: Style, link: Option<&str>, out: &mut Vec<Span>
                     None => {
                         plain.push_str(&rest[..run]);
                         i += run;
-                    }
-                }
-            }
-            '!' if rest[1..].starts_with('[') && depth < MAX_DEPTH => {
-                // An image is its description, as a link to the image.
-                match bracketed_link(&rest[1..]) {
-                    Some((label, destination, used)) => {
-                        push(out, &plain, style, link);
-                        plain.clear();
-                        let label = if label.is_empty() { "image" } else { label };
-                        inline_into(label, style, Some(destination), out, depth + 1);
-                        i += 1 + used;
-                    }
-                    None => {
-                        plain.push(c);
-                        i += width;
                     }
                 }
             }
@@ -958,6 +1057,35 @@ mod tests {
     };
 
     #[test]
+    fn explicit_images_keep_image_semantics_for_remote_data_and_local_targets() {
+        for target in [
+            "https://example.com/chart.png",
+            "https://example.com/image?id=1",
+            "data:image/png;base64,AAAA",
+            "/tmp/chart.png",
+        ] {
+            let spans = inline(&format!("Before ![A chart]({target}) after"));
+            assert_eq!(spans.len(), 3, "{target}: {spans:?}");
+            assert_eq!(spans[1].text, "A chart");
+            assert_eq!(spans[1].link.as_deref(), Some(target));
+            assert!(spans[1].image, "{target}");
+            assert!(!spans[0].image && !spans[2].image);
+        }
+    }
+
+    #[test]
+    fn an_image_does_not_absorb_an_adjacent_link_to_the_same_target() {
+        let spans =
+            inline("![Chart](https://example.com/chart)[Source](https://example.com/chart)");
+        assert_eq!(spans.len(), 2);
+        assert!(spans[0].image);
+        assert_eq!(spans[0].text, "Chart");
+        assert!(!spans[1].image);
+        assert_eq!(spans[1].text, "Source");
+        assert_eq!(spans[0].link, spans[1].link);
+    }
+
+    #[test]
     fn headings_paragraphs_and_rules() {
         let blocks = parse("# One\n\nSome text\nover two lines.\n\n### Three ###\n---\n");
         assert_eq!(blocks.len(), 4);
@@ -981,6 +1109,7 @@ mod tests {
             blocks[1],
             Block::Code {
                 language: Some("rust".into()),
+                title: None,
                 text: "fn main() {\n    # not a heading\n}".into(),
             }
         );
@@ -991,6 +1120,7 @@ mod tests {
             parse("```\nlet x = 1;\nlet y"),
             [Block::Code {
                 language: None,
+                title: None,
                 text: "let x = 1;\nlet y".into()
             }]
         );
@@ -999,6 +1129,7 @@ mod tests {
             parse("````md\n```\ninner\n```\n````"),
             [Block::Code {
                 language: Some("md".into()),
+                title: None,
                 text: "```\ninner\n```".into()
             }]
         );
@@ -1007,6 +1138,64 @@ mod tests {
         assert!(matches!(
             &parse("```not a fence```")[0],
             Block::Paragraph(_)
+        ));
+    }
+
+    #[test]
+    fn fences_keep_quoted_filename_metadata_separate_from_code() {
+        for info in [
+            "rust title=\"src/my file.rs\"",
+            "rust filename='src/my file.rs'",
+        ] {
+            let source = format!("```{info}\nfn main() {{}}\n```");
+            let Block::Code {
+                language,
+                title,
+                text,
+            } = parse(&source).remove(0)
+            else {
+                panic!()
+            };
+            assert_eq!(language.as_deref(), Some("rust"));
+            assert_eq!(title.as_deref(), Some("src/my file.rs"));
+            assert_eq!(text, "fn main() {}");
+        }
+        assert_eq!(fence_info("title=main.rs"), (None, Some("main.rs".into())));
+        assert_eq!(
+            fence_info("rust src/main.rs"),
+            (Some("rust".into()), Some("src/main.rs".into()))
+        );
+        assert!(
+            fence_info(&format!("rust title={}", "x".repeat(257)))
+                .1
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn task_lists_and_callouts_preserve_nested_content() {
+        let Block::List { items, .. } =
+            parse("- [x] **Done**\n- [ ] Next\n  - nested\n- [x]word").remove(0)
+        else {
+            panic!()
+        };
+        assert!(
+            matches!(&items[0][0], Block::Task { checked: true, spans } if spans[0].style.bold)
+        );
+        assert!(matches!(&items[1][0], Block::Task { checked: false, .. }));
+        assert!(matches!(&items[1][1], Block::List { .. }));
+        assert!(matches!(&items[2][0], Block::Paragraph(_)));
+        let Block::Callout { kind, blocks } =
+            parse("> [!WARNING]\n> Keep **this**.\n>\n> - Detail").remove(0)
+        else {
+            panic!()
+        };
+        assert_eq!(kind, CalloutKind::Warning);
+        assert_eq!(text(&blocks[0]), "Keep this.");
+        assert!(matches!(&blocks[1], Block::List { .. }));
+        assert!(matches!(
+            &parse("> [!UNKNOWN]\n> ordinary quote")[0],
+            Block::Quote(_)
         ));
     }
 

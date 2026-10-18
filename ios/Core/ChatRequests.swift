@@ -565,10 +565,15 @@ public struct ChatSnapshotReply: Sendable, Equatable, Codable {
     /// Rows and controls the phone could not read (an item type or an event a newer host has, such as `rate_limits` for a phone
     /// before it): left out, never the whole snapshot. Not on the wire.
     public let skipped: Int
+    /// Requests whose controls this snapshot does not carry in full: a control the phone could not read that names one, or a question
+    /// with a prompt or option left out (answers go by position, so a partial read would shift them). Not on the wire.
+    public let partialRequestIDs: Set<String>
+    /// A control about a request was left out without a readable request id: no request here can be vouched for. Not on the wire.
+    public let unattributedRequestControl: Bool
     enum CodingKeys: String, CodingKey { case v, chatID = "chat_id", cursor, next, before, more, items, controls, dismissedNotices = "dismissed_notices" }
     public init(chatID: String, cursor: String, next: UInt64, before: UInt64, more: Bool, items: [ChatSnapshotRow], controls: [ChatEvent], dismissedNotices: [String] = []) {
         v = 1; self.chatID = chatID; self.cursor = cursor; self.next = next; self.before = before; self.more = more; self.items = items; self.controls = controls
-        self.dismissedNotices = dismissedNotices; skipped = 0
+        self.dismissedNotices = dismissedNotices; skipped = 0; partialRequestIDs = []; unattributedRequestControl = false
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -578,6 +583,28 @@ public struct ChatSnapshotReply: Sendable, Equatable, Codable {
         items = rows.compactMap(\.value); controls = events.compactMap(\.value)
         skipped = rows.count - items.count + events.count - controls.count
         dismissedNotices = (try? c.decodeIfPresent([String].self, forKey: .dismissedNotices)) ?? []
+        let partial = Self.partialRequests(raw: (try? c.decode([JSONValue].self, forKey: .controls)) ?? [], read: events.map(\.value))
+        partialRequestIDs = partial.ids; unattributedRequestControl = partial.unattributed
+    }
+    private static let requestEvents: Set<String> = ["approval_requested", "approval_resolved", "question_requested", "question_resolved", "control_elided"]
+    private static func partialRequests(raw: [JSONValue], read: [ChatEvent?]) -> (ids: Set<String>, unattributed: Bool) {
+        guard raw.count == read.count else { return ([], !read.isEmpty) }
+        var ids: Set<String> = [], unattributed = false
+        for (value, event) in zip(raw, read) {
+            switch event {
+            case nil:
+                // Ids stay at their original paths: top level, or inside the approval or question.
+                if let id = value["request_id"].string ?? value["approval"]["request_id"].string ?? value["question"]["request_id"].string { ids.insert(id) }
+                else if requestEvents.contains(value["event"].string ?? "") || value["elided"] == .bool(true) { unattributed = true }
+            case .questionRequested(let question)?:
+                let prompts = value["question"]["questions"].array
+                if prompts.count != question.questions.count || zip(prompts, question.questions).contains(where: { $0["options"].array.count != $1.options.count }) {
+                    ids.insert(question.requestID)
+                }
+            default: break
+            }
+        }
+        return (ids, unattributed)
     }
 }
 extension RemoteTransport {

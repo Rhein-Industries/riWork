@@ -426,13 +426,18 @@ pub fn read_transcript_tail(
         .map_err(|error| format!("Cannot read {}: {error}", path.display()))?
         .len();
     let start = length.saturating_sub(max_bytes);
-    file.seek(SeekFrom::Start(start))
+    let from = start.saturating_sub(1);
+    file.seek(SeekFrom::Start(from))
         .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
-    let mut reader = BufReader::new(file.take(max_bytes));
+    let mut reader = BufReader::new(file.take(length - from));
     let read = |error: io::Error| format!("Cannot read {}: {error}", path.display());
     if start > 0 {
-        // The first line of the tail is cut in two.
-        reader.skip_until(b'\n').map_err(read)?;
+        // Only discard a fragment: the byte before the tail may end a whole record.
+        let mut previous = [0];
+        reader.read_exact(&mut previous).map_err(read)?;
+        if previous[0] != b'\n' {
+            reader.skip_until(b'\n').map_err(read)?;
+        }
     }
     let mut transcript = super::model::Transcript::default();
     let mut line = Vec::new();
@@ -467,13 +472,19 @@ pub fn notice_tail(dir: &Path, max: u64) -> super::model::Transcript {
         return transcript;
     };
     let start = length.saturating_sub(max);
-    if file.seek(SeekFrom::Start(start)).is_err() {
+    let from = start.saturating_sub(1);
+    if file.seek(SeekFrom::Start(from)).is_err() {
         return transcript;
     }
-    let mut reader = BufReader::new(file.take(max));
+    let mut reader = BufReader::new(file.take(length - from));
     let mut line = Vec::new();
-    if start > 0 && reader.skip_until(b'\n').is_err() {
-        return transcript;
+    if start > 0 {
+        let mut previous = [0];
+        if reader.read_exact(&mut previous).is_err()
+            || (previous[0] != b'\n' && reader.skip_until(b'\n').is_err())
+        {
+            return transcript;
+        }
     }
     loop {
         line.clear();
@@ -1038,6 +1049,13 @@ mod tests {
         let transcript = read_transcript_tail(&home, &chat.id, recent.len() as u64 + 1).unwrap();
         assert_eq!(transcript.items.len(), 1);
         assert_eq!(transcript.items[0].id, "u2");
+        let aligned = read_transcript_tail(&home, &chat.id, recent.len() as u64).unwrap();
+        assert_eq!(
+            aligned.items.len(),
+            1,
+            "an exactly aligned tail keeps its first record"
+        );
+        assert_eq!(aligned.items[0].id, "u2");
         assert!(
             read_transcript_tail(&home, &chat.id, 0)
                 .unwrap()
@@ -1142,6 +1160,23 @@ mod snapshot_tests {
             let _ = fs::remove_dir_all(&self.home);
         }
     }
+    #[test]
+    fn a_notice_at_the_exact_tail_boundary_is_kept() {
+        let mut f = Fixture::new();
+        f.row("old", "before the tail");
+        let start = fs::metadata(f.dir.join(EVENTS)).unwrap().len();
+        f.event(
+            json!({"event":"item_completed","item":{"id":"notice","status":"completed","body":{
+            "type":"notice","level":"error","text":"needs attention","kind":"auth_required"}}}),
+        );
+        let length = fs::metadata(f.dir.join(EVENTS)).unwrap().len() - start;
+        let tail = notice_tail(&f.dir, length);
+        assert_eq!(tail.items.len(), 1);
+        assert_eq!(tail.items[0].id, "notice");
+        assert!(notice_tail(&f.dir, length - 1).items.is_empty());
+        assert!(notice_tail(&f.dir, 0).items.is_empty());
+    }
+
     #[test]
     fn a_starting_driver_reads_only_the_notices_in_the_tail_of_a_large_log() {
         let mut f = Fixture::new();

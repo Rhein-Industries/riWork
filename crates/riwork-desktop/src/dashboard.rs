@@ -17,6 +17,8 @@
 
 use std::cmp::Reverse;
 
+pub(crate) mod decision_review;
+
 use gpui::{
     AnyElement, Context, Div, Entity, Focusable, FontWeight, IntoElement, MouseButton, Pixels,
     Window, div, prelude::*, rgb,
@@ -70,6 +72,7 @@ const PROJECT_MIN: f32 = 180.0;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DashboardAction {
     Open(Target),
+    ReviewDecision(String),
     /// Open one of a project's panels (Tasks, Sessions) in that project.
     ProjectPanel {
         project_id: String,
@@ -103,6 +106,8 @@ pub enum Region {
 /// Everything the dashboard draws, from the window's latest samples and its own state.
 pub struct DashboardData<'a> {
     pub overview: &'a Overview,
+    pub observations: Option<&'a crate::global_overview::observed::Observations>,
+    pub intelligence: Option<&'a serde_json::Value>,
     pub now: u64,
     /// When the sessions were last read; `None` before the first read finished.
     pub sampled_at: Option<u64>,
@@ -1072,13 +1077,14 @@ fn body<V: 'static>(
     let colors = theme::palette(cx);
     let lists = Lists::new(data);
     let activity = |cx: &mut Context<V>| {
-        vec![
-            attention_section(data, &lists, on_action.clone(), cx),
-            work_section(data, &lists, on_action.clone(), cx),
-        ]
-        .into_iter()
-        .chain(finished_section(data, &lists, on_action.clone(), cx))
-        .collect::<Vec<_>>()
+        let mut sections = Vec::new();
+        sections.extend(decision_section(data, on_action.clone(), cx));
+        sections.extend(intelligence_section(data, cx));
+        sections.push(attention_section(data, &lists, on_action.clone(), cx));
+        sections.push(work_section(data, &lists, on_action.clone(), cx));
+        sections.extend(recent_section(data, on_action.clone(), cx));
+        sections.extend(finished_section(data, &lists, on_action.clone(), cx));
+        sections
     };
     let work = |cx: &mut Context<V>| {
         vec![
@@ -1107,12 +1113,16 @@ fn body<V: 'static>(
         Arrangement::Normal => {
             // The pressing first: what needs the user and what works, then the tasks and
             // the automations, what finished, and the backends last of all.
-            let mut sections = vec![
+            let mut sections = Vec::new();
+            sections.extend(decision_section(data, on_action.clone(), cx));
+            sections.extend(intelligence_section(data, cx));
+            sections.extend([
                 attention_section(data, &lists, on_action.clone(), cx),
                 work_section(data, &lists, on_action.clone(), cx),
                 tasks_section(data, &lists, on_action.clone(), cx),
                 automations_section(data, &lists, on_action.clone(), cx),
-            ];
+            ]);
+            sections.extend(recent_section(data, on_action.clone(), cx));
             sections.extend(finished_section(data, &lists, on_action.clone(), cx));
             sections.push(backends_section(data, &lists, cx));
             main.child(projects_region(data, &lists, layout, on_action.clone(), cx))
@@ -2347,6 +2357,209 @@ fn row<V: 'static>(
 
 fn more(count: usize, colors: Palette) -> Option<AnyElement> {
     (count > LIST_LIMIT).then(|| note(format!("{} more", count - LIST_LIMIT), colors.muted))
+}
+
+fn decision_section<V: 'static>(
+    data: &DashboardData<'_>,
+    on_action: impl Fn(&mut V, DashboardAction, &mut Window, &mut Context<V>) + Clone + 'static,
+    cx: &mut Context<V>,
+) -> Option<AnyElement> {
+    use crate::global_overview::observed::Request;
+    let observed = data.observations?;
+    let colors = theme::palette(cx);
+    let shown: Vec<_> = observed
+        .decisions
+        .iter()
+        .enumerate()
+        // A request can carry a whole diff: it is serialized only for a search.
+        .filter(|(_, decision)| {
+            data.query.trim().is_empty()
+                || matches(
+                    data.query,
+                    &[
+                        &serde_json::to_string(&decision.request).unwrap_or_default(),
+                        &session_name(&decision.session),
+                        &session_place(&decision.session),
+                    ],
+                )
+        })
+        .collect();
+    let mut panel = section(
+        "dashboard-decisions",
+        "Decisions",
+        Some(count_of(shown.len(), observed.decisions.len())),
+        colors,
+    );
+    let complete = data.overview.chats_known && observed.chats_complete == observed.chats_total;
+    let coverage = if !data.overview.chats_known {
+        "Chats could not be listed · requests unknown".to_owned()
+    } else if complete {
+        format!(
+            "Checked {} · provider requests",
+            age(data.now, Some(observed.sampled_at)).unwrap_or_default()
+        )
+    } else {
+        format!(
+            "Partial coverage · {} of {} chat logs complete",
+            observed.chats_complete, observed.chats_total
+        )
+    };
+    panel = panel.child(note(
+        coverage,
+        if complete { colors.muted } else { colors.gold },
+    ));
+    if observed.decisions.is_empty() {
+        panel = panel.child(note(
+            if complete {
+                "No pending approvals or questions."
+            } else {
+                "No requests found in the available events. Open Needs you sessions for more."
+            },
+            colors.muted,
+        ));
+    }
+    for &(index, decision) in shown.iter().take(LIST_LIMIT) {
+        let title = match &decision.request {
+            Request::Approval { approval } => approval.title.clone(),
+            Request::Question { question } => question
+                .questions
+                .first()
+                .map(|prompt| prompt.question.clone())
+                .unwrap_or_else(|| "Answer a question".into()),
+        };
+        let detail = format!(
+            "{} · {} · review to answer · event {}",
+            session_name(&decision.session),
+            session_place(&decision.session),
+            decision.source.event_seq
+        );
+        panel = panel.child(row(
+            Row {
+                id: format!("dashboard-decision-{index}"),
+                name: format!("{title}, {detail}"),
+                mark: Some(("?", colors.gold)),
+                title: one_line(&title),
+                detail: Some(detail),
+                action: DashboardAction::ReviewDecision(decision.id.clone()),
+            },
+            on_action.clone(),
+            cx,
+        ));
+    }
+    panel = panel.children(more(shown.len(), colors));
+    Some(panel.into_any_element())
+}
+
+fn recent_section<V: 'static>(
+    data: &DashboardData<'_>,
+    on_action: impl Fn(&mut V, DashboardAction, &mut Window, &mut Context<V>) + Clone + 'static,
+    cx: &mut Context<V>,
+) -> Option<AnyElement> {
+    let observed = data.observations?;
+    if observed.recent_activity.is_empty() {
+        return None;
+    }
+    let colors = theme::palette(cx);
+    let mut panel = section("dashboard-recent-events", "Recent activity", None, colors);
+    let query = data.query.trim().to_lowercase();
+    for (index, activity) in observed
+        .recent_activity
+        .iter()
+        .enumerate()
+        .filter(|(_, activity)| {
+            query.is_empty()
+                || activity.text.to_lowercase().contains(&query)
+                || session_name(&activity.session)
+                    .to_lowercase()
+                    .contains(&query)
+        })
+        .take(6)
+    {
+        let detail = format!(
+            "{} · {} · {} · event {}",
+            session_name(&activity.session),
+            activity.status.replace('_', " "),
+            age(data.now, Some(activity.log_updated_at)).unwrap_or_default(),
+            activity.source.event_seq
+        );
+        panel = panel.child(row(
+            Row {
+                id: format!("dashboard-recent-event-{index}"),
+                name: format!("{}, {detail}; opens chat", activity.text),
+                mark: None,
+                title: activity.text.clone(),
+                detail: Some(detail),
+                action: DashboardAction::Open(activity.session.target.clone()),
+            },
+            on_action.clone(),
+            cx,
+        ));
+    }
+    Some(panel.into_any_element())
+}
+
+fn intelligence_section<V: 'static>(
+    data: &DashboardData<'_>,
+    cx: &mut Context<V>,
+) -> Option<AnyElement> {
+    let intelligence = data.intelligence?;
+    let state = intelligence["state"].as_str().unwrap_or("unavailable");
+    // Enabled without a usable key still says what to do, as the phone does.
+    if matches!(state, "disabled" | "no_evidence") {
+        return None;
+    }
+    let colors = theme::palette(cx);
+    let mut panel = section(
+        "dashboard-intelligence",
+        "Overview",
+        Some("Haiku".into()),
+        colors,
+    );
+    if let Some(summary) = intelligence["summary"]
+        .as_str()
+        .filter(|summary| !summary.is_empty())
+    {
+        panel = panel.child(note(summary.to_owned(), colors.text));
+    }
+    for item in intelligence["highlights"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(4)
+    {
+        if let Some(text) = item["text"].as_str() {
+            let sources = item["source_event_ids"].as_array().map_or(0, Vec::len);
+            panel = panel.child(note(
+                format!("{text} · {sources} source events"),
+                colors.muted,
+            ));
+        }
+    }
+    let updated = intelligence["generated_at"]
+        .as_u64()
+        .and_then(|at| age(data.now, Some(at)));
+    let status = match (intelligence["stale"].as_bool() == Some(true), state) {
+        (true, "refreshing") => "Saved summary · updating",
+        (true, _) => "Saved summary · newer activity is available",
+        (_, "ready") => "From observed events",
+        (_, "refreshing") => "Updating summary…",
+        (_, "rate_limited") => "Waiting for the next summary refresh",
+        _ => "Summary unavailable",
+    };
+    panel = panel.child(note(
+        format!(
+            "{status}{}",
+            updated.map(|age| format!(" · {age}")).unwrap_or_default()
+        ),
+        colors.muted,
+    ));
+    if let Some(error) = intelligence["error"]
+        .as_str()
+        .filter(|error| !error.is_empty() && matches!(state, "not_configured" | "unavailable"))
+    {
+        panel = panel.child(note(error.to_owned(), colors.gold));
+    }
+    Some(panel.into_any_element())
 }
 
 fn attention_section<V: 'static>(

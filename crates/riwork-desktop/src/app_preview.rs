@@ -552,6 +552,7 @@ impl AppPreviewView {
     }
 
     fn reset_frame(&mut self, cx: &mut Context<Self>) {
+        self.error = None;
         self.generation = self.generation.wrapping_add(1);
         if let Some(binding) = &self.control_binding {
             if let Err(error) = binding.store.begin_run(
@@ -567,7 +568,6 @@ impl AppPreviewView {
         self.decode = None;
         self.clear_image(cx);
         self.state = None;
-        self.error = None;
         self.last_resize = None;
     }
 

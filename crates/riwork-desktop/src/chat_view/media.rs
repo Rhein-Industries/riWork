@@ -12,7 +12,11 @@ use crate::{
     ui_text,
 };
 use base64::Engine;
-use gpui::{AnyElement, Context, RenderImage, SharedString, div, img, prelude::*, rgb};
+use gpui::{
+    AnyElement, Context, MouseButton, Pixels, Point, RenderImage, ScrollHandle, SharedString, div,
+    img, point, prelude::*, px, rgb,
+};
+use gpui_kit::base::TestSupportExt as _;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::Read,
@@ -32,6 +36,31 @@ pub(super) const ARTIFACT_PAGE: usize = 32;
 pub(super) fn artifact_range(count: usize, page: usize) -> std::ops::Range<usize> {
     let start = page.min(count.saturating_sub(1) / ARTIFACT_PAGE) * ARTIFACT_PAGE;
     start..count.min(start.saturating_add(ARTIFACT_PAGE))
+}
+
+fn image_key_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let mut a = a.split(['/', ':']);
+    let mut b = b.split(['/', ':']);
+    loop {
+        let order = match (a.next(), b.next()) {
+            (Some(a), Some(b)) => match (a.parse::<usize>(), b.parse::<usize>()) {
+                (Ok(a), Ok(b)) => a.cmp(&b),
+                _ => a.cmp(b),
+            },
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, _) => return std::cmp::Ordering::Less,
+            (_, None) => return std::cmp::Ordering::Greater,
+        };
+        if order != std::cmp::Ordering::Equal {
+            return order;
+        }
+    }
+}
+
+fn fitted_scale(width: f32, height: f32, viewport: gpui::Size<Pixels>) -> f32 {
+    (viewport.width.as_f32().max(1.0) / width.max(1.0))
+        .min(viewport.height.as_f32().max(1.0) / height.max(1.0))
+        .min(1.0)
 }
 
 fn readable_label(label: &str) -> Option<String> {
@@ -162,6 +191,10 @@ pub(super) struct MediaState {
     active: usize,
     generation: u64,
     pub viewer: Option<String>,
+    /// None means fit; numeric zoom is relative to the image's natural pixel dimensions.
+    viewer_zoom: Option<f32>,
+    viewer_scroll: ScrollHandle,
+    viewer_drag: Option<(Point<Pixels>, Point<Pixels>)>,
     /// The thumbnails of the files users sent, by the keys `attachment_ui::thumbnails` gives.
     thumbs: HashMap<String, Thumb>,
 }
@@ -176,6 +209,43 @@ struct Thumb {
 }
 
 impl MediaState {
+    fn show(&mut self, key: String) {
+        self.viewer = Some(key);
+        self.viewer_zoom = None;
+        self.viewer_drag = None;
+        self.viewer_scroll.set_offset(Point::default());
+    }
+
+    /// Only decoded images from this turn participate. Navigation never starts a read or
+    /// evicts another card, and order follows transcript items then numeric image keys.
+    fn gallery(&self, items: &[Item], current: &str) -> Vec<String> {
+        let owner = |key: &str| {
+            items.iter().position(|item| {
+                key.starts_with(&format!("{}:image:", item.id))
+                    || key.starts_with(&format!("{}/", item.id))
+                    || key.starts_with(&format!("user:{}/", item.id))
+            })
+        };
+        let Some(current_item) = owner(current) else {
+            return vec![current.to_owned()];
+        };
+        let turn = items[current_item].turn_id.as_deref();
+        let mut keys: Vec<_> = self
+            .slots
+            .iter()
+            .filter_map(|(key, slot)| {
+                let index = owner(key)?;
+                let same_turn = turn.map_or(index == current_item, |turn| {
+                    items[index].turn_id.as_deref() == Some(turn)
+                });
+                (same_turn && matches!(slot.content, Some(Ok(PreviewContent::Image { .. }))))
+                    .then(|| (index, key.clone()))
+            })
+            .collect();
+        keys.sort_by(|(left, a), (right, b)| left.cmp(right).then_with(|| image_key_cmp(a, b)));
+        keys.into_iter().map(|(_, key)| key).collect()
+    }
+
     /// Explicitly collapsing a disclosure folds its images on every page.
     /// Removing slots invalidates in-flight generations; active workers still
     /// drain normally and release their results without reviving hidden cards.
@@ -257,6 +327,134 @@ impl MediaState {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    fn decoded(width: u32, height: u32) -> PreviewContent {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(width, height)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        file_preview::decode_image(png.get_ref()).unwrap()
+    }
+
+    fn gallery_item(id: &str, turn: &str) -> Item {
+        Item {
+            id: id.into(),
+            turn_id: Some(turn.into()),
+            status: crate::chat::model::ItemStatus::Completed,
+            presentation: crate::chat::model::Presentation {
+                phase: Some(MessagePhase::Final),
+                ..Default::default()
+            },
+            body: ItemBody::AgentMessage {
+                text: "Image results".into(),
+            },
+        }
+    }
+
+    fn loaded_slot() -> Slot {
+        Slot {
+            generation: 1,
+            source: ImageSource::Url {
+                url: "https://example.invalid/test.png".into(),
+            },
+            content: Some(Ok(decoded(4, 3))),
+            in_files: false,
+        }
+    }
+
+    #[test]
+    fn gallery_orders_loaded_images_numerically_and_stays_in_its_turn() {
+        let items = vec![
+            gallery_item("first", "turn"),
+            gallery_item("second", "turn"),
+            gallery_item("other", "elsewhere"),
+        ];
+        let mut media = MediaState::default();
+        for key in [
+            "first:image:10",
+            "first:image:2",
+            "second:image:0",
+            "other:image:0",
+        ] {
+            media.slots.insert(key.into(), loaded_slot());
+        }
+        media.slots.insert(
+            "first:image:1".into(),
+            Slot {
+                content: None,
+                ..loaded_slot()
+            },
+        );
+        assert_eq!(
+            media.gallery(&items, "first:image:10"),
+            ["first:image:2", "first:image:10", "second:image:0"]
+        );
+        media.viewer_zoom = Some(2.0);
+        media.viewer_scroll.set_offset(point(px(-20.0), px(-30.0)));
+        media.show("second:image:0".into());
+        assert_eq!(media.viewer_zoom, None);
+        assert_eq!(media.viewer_scroll.offset(), Point::default());
+    }
+
+    #[test]
+    fn fit_preserves_aspect_and_does_not_upscale_small_images() {
+        assert_eq!(
+            fitted_scale(1200.0, 600.0, gpui::size(px(600.0), px(600.0))),
+            0.5
+        );
+        assert_eq!(
+            fitted_scale(100.0, 200.0, gpui::size(px(600.0), px(600.0))),
+            1.0
+        );
+    }
+
+    #[gpui::test]
+    fn image_controls_zoom_pan_and_navigate_without_loading(cx: &mut gpui::TestAppContext) {
+        use gpui_kit::test::TestWindowExt;
+        let (handle, view, recording) = super::super::editor_tests::mount_selection(cx);
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.model.link = super::super::Link::Live;
+                view.model.transcript.items = vec![
+                    gallery_item("first", "turn"),
+                    gallery_item("second", "turn"),
+                ];
+                for key in ["first:image:0", "second:image:0"] {
+                    view.media.slots.insert(
+                        key.into(),
+                        Slot {
+                            content: Some(Ok(decoded(1200, 900))),
+                            ..loaded_slot()
+                        },
+                    );
+                }
+                view.media.show("first:image:0".into());
+                view.refresh_projection(cx);
+                cx.notify();
+            });
+            window.render_frame(cx);
+            window.click("actual-size-chat-image", cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).media.viewer_zoom, Some(1.0));
+            let bounds = window.find("chat-image-viewport").bounds();
+            let center = bounds.center();
+            window.drag(center, point(center.x - px(100.0), center.y - px(80.0)), cx);
+            assert!(view.read(cx).media.viewer_scroll.offset().x < px(0.0));
+            window.click("zoom-in-chat-image", cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).media.viewer_zoom, Some(1.5));
+            window.click("next-chat-image", cx);
+            window.render_frame(cx);
+            assert_eq!(
+                view.read(cx).media.viewer.as_deref(),
+                Some("second:image:0")
+            );
+            assert_eq!(view.read(cx).media.viewer_zoom, None);
+            assert!(view.read(cx).media.queue.is_empty());
+        })
+        .unwrap();
+        assert!(recording.try_recv().is_err());
+    }
 
     #[test]
     fn collapsing_group_frees_hidden_expansions_and_rejects_late_results_after_reopening() {
@@ -729,7 +927,7 @@ impl ChatView {
                             })
                             .on_click(cx.listener(
                                 move |view, _, _, cx| {
-                                    view.media.viewer = Some(viewer_key.clone());
+                                    view.media.show(viewer_key.clone());
                                     cx.notify();
                                 },
                             )),
@@ -898,14 +1096,87 @@ impl ChatView {
             );
         }
     }
+    fn set_image_zoom(&mut self, zoom: Option<f32>, cx: &mut Context<Self>) {
+        self.media.viewer_zoom = zoom.map(|value| value.clamp(0.01, 8.0));
+        self.media.viewer_drag = None;
+        self.media.viewer_scroll.set_offset(Point::default());
+        cx.notify();
+    }
+
+    fn navigate_image(&mut self, direction: isize, cx: &mut Context<Self>) {
+        let Some(current) = self.media.viewer.as_deref() else {
+            return;
+        };
+        let gallery = self.media.gallery(&self.model.transcript.items, current);
+        let Some(at) = gallery.iter().position(|key| key == current) else {
+            return;
+        };
+        if let Some(next) = at
+            .checked_add_signed(direction)
+            .and_then(|next| gallery.get(next))
+        {
+            self.media.show(next.clone());
+            cx.notify();
+        }
+    }
+
     pub(super) fn image_viewer(&self, look: Look, cx: &mut Context<Self>) -> Option<AnyElement> {
         let key = self.media.viewer.as_ref()?;
         let slot = self.media.slots.get(key)?;
-        let Some(Ok(PreviewContent::Image { image, .. })) = &slot.content else {
+        let Some(Ok(PreviewContent::Image { image, description })) = &slot.content else {
             return None;
+        };
+        let size = image.size(0);
+        let (width, height) = (size.width.0 as f32, size.height.0 as f32);
+        let gallery = self.media.gallery(&self.model.transcript.items, key);
+        let at = gallery
+            .iter()
+            .position(|candidate| candidate == key)
+            .unwrap_or(0);
+        let zoom = self.media.viewer_zoom;
+        let handle = self.media.viewer_scroll.clone();
+        let zoom_in = cx.listener(move |view: &mut Self, _, _, cx| {
+            let current = view.media.viewer_zoom.unwrap_or_else(|| {
+                fitted_scale(width, height, view.media.viewer_scroll.bounds().size)
+            });
+            view.set_image_zoom(Some(current * 1.5), cx);
+        });
+        let zoom_out = cx.listener(move |view: &mut Self, _, _, cx| {
+            let current = view.media.viewer_zoom.unwrap_or_else(|| {
+                fitted_scale(width, height, view.media.viewer_scroll.bounds().size)
+            });
+            view.set_image_zoom(Some(current / 1.5), cx);
+        });
+        let content = match zoom {
+            None => div()
+                .absolute()
+                .inset_0()
+                .child(
+                    img(Arc::clone(image))
+                        .size_full()
+                        .object_fit(gpui::ObjectFit::ScaleDown),
+                )
+                .into_any_element(),
+            Some(zoom) => div()
+                .w(px(width * zoom))
+                .h(px(height * zoom))
+                .min_w_full()
+                .min_h_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_none()
+                .child(
+                    img(Arc::clone(image))
+                        .flex_none()
+                        .w(px(width * zoom))
+                        .h(px(height * zoom)),
+                )
+                .into_any_element(),
         };
         Some(
             div()
+                .id("chat-image-viewer")
                 .absolute()
                 .inset_0()
                 .occlude()
@@ -913,28 +1184,112 @@ impl ChatView {
                 .p(ui_text::space(16.0))
                 .flex()
                 .flex_col()
+                .gap(ui_text::space(8.0))
                 .child(
-                    button("close-chat-image", "Close image", None, look).on_click(cx.listener(
-                        |view, _, _, cx| {
-                            view.media.viewer = None;
-                            cx.notify();
-                        },
-                    )),
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(ui_text::space(6.0))
+                        .child(
+                            button("previous-chat-image", "Previous", None, look)
+                                .disabled(at == 0)
+                                .on_click(
+                                    cx.listener(|view, _, _, cx| view.navigate_image(-1, cx)),
+                                ),
+                        )
+                        .child(div().text_size(ui_text::text(11.0)).child(format!(
+                            "{} / {}",
+                            at + 1,
+                            gallery.len().max(1)
+                        )))
+                        .child(
+                            button("next-chat-image", "Next", None, look)
+                                .disabled(at + 1 >= gallery.len())
+                                .on_click(cx.listener(|view, _, _, cx| view.navigate_image(1, cx))),
+                        )
+                        .child(div().flex_1())
+                        .child(button("zoom-out-chat-image", "−", None, look).on_click(zoom_out))
+                        .child(div().text_size(ui_text::text(11.0)).child(
+                            zoom.map_or_else(
+                                || "Fit".into(),
+                                |zoom| format!("{:.0}%", zoom * 100.0),
+                            ),
+                        ))
+                        .child(button("zoom-in-chat-image", "+", None, look).on_click(zoom_in))
+                        .child(
+                            button("fit-chat-image", "Fit", None, look).on_click(
+                                cx.listener(|view, _, _, cx| view.set_image_zoom(None, cx)),
+                            ),
+                        )
+                        .child(
+                            button("actual-size-chat-image", "100%", None, look).on_click(
+                                cx.listener(|view, _, _, cx| view.set_image_zoom(Some(1.0), cx)),
+                            ),
+                        )
+                        .child(button("close-chat-image", "Close", None, look).on_click(
+                            cx.listener(|view, _, _, cx| {
+                                view.media.viewer = None;
+                                view.media.viewer_drag = None;
+                                cx.notify();
+                            }),
+                        )),
                 )
                 .child(
                     div()
+                        .id("chat-image-viewport")
                         .flex_1()
                         .min_h_0()
                         .w_full()
                         .relative()
-                        .overflow_hidden()
-                        .child(
-                            img(Arc::clone(image))
-                                .absolute()
-                                .inset_0()
-                                .size_full()
-                                .aspect_square(),
-                        ),
+                        .overflow_scroll()
+                        .track_scroll(&handle)
+                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, event: &gpui::MouseDownEvent, _, cx| {
+                                if view.media.viewer_zoom.is_some() {
+                                    view.media.viewer_drag =
+                                        Some((event.position, view.media.viewer_scroll.offset()));
+                                    cx.stop_propagation();
+                                }
+                            }),
+                        )
+                        .on_mouse_move(cx.listener(|view, event: &gpui::MouseMoveEvent, _, cx| {
+                            if event.pressed_button != Some(MouseButton::Left) {
+                                view.media.viewer_drag = None;
+                                return;
+                            }
+                            if let Some((start, offset)) = view.media.viewer_drag {
+                                let next = offset + event.position - start;
+                                let max = view.media.viewer_scroll.max_offset();
+                                view.media.viewer_scroll.set_offset(point(
+                                    next.x.clamp(-max.x, px(0.0)),
+                                    next.y.clamp(-max.y, px(0.0)),
+                                ));
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|view, _, _, _| view.media.viewer_drag = None),
+                        )
+                        .on_mouse_up_out(
+                            MouseButton::Left,
+                            cx.listener(|view, _, _, _| view.media.viewer_drag = None),
+                        )
+                        .child(content)
+                        .test_support(),
+                )
+                .child(
+                    div()
+                        .text_size(ui_text::text(10.0))
+                        .text_color(rgb(look.colors.muted))
+                        .child(format!(
+                            "{description} · Scroll or drag to pan · {} loaded images in this turn",
+                            gallery.len().max(1)
+                        )),
                 )
                 .into_any_element(),
         )

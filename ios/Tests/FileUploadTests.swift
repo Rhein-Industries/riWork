@@ -127,6 +127,62 @@ final class FileUploadTests: XCTestCase {
         XCTAssertEqual(stored, file(200).data)
     }
 
+    /// A broken peer must not keep an upload looping or let the phone attach a file it has not fully acknowledged.
+    private actor ReplyDesktop: RemoteTransport {
+        var replies: [JSONValue]
+        var calls = 0
+        init(_ replies: [JSONValue]) { self.replies = replies }
+        func connect(pairing: Pairing, allowLocalDevelopment: Bool) async throws -> Pairing { pairing }
+        func disconnect() async {}
+        func isConnected() async -> Bool { true }
+        func request(method: String, params: [String: JSONValue], id: String) async throws -> JSONValue {
+            calls += 1
+            guard !replies.isEmpty else { throw RemoteError.protocolViolation("Unexpected extra upload request.") }
+            return replies.removeFirst()
+        }
+    }
+
+    private func reply(_ upload: String, received: Int, status: String = "partial") -> JSONValue {
+        .object(["upload": .string(upload), "received": .number(Double(received)), "status": .string(status), "path": .string("/uploads/file.png")])
+    }
+
+    func testAChunkMustAcknowledgeAllOfItsBytesBeforeAnotherRequest() async {
+        let upload = "33333333-3333-4333-8333-333333333333"
+        // Start with a resumed upload: a stale, backwards or short acknowledgement must fail immediately.
+        for received in [0, 64, 100] {
+            let desktop = ReplyDesktop([reply(upload, received: 64), reply(upload, received: received), reply(upload, received: 150, status: "complete")])
+            do {
+                _ = try await FileTransfer.send(file(150), to: .shell(shell), feature: feature, over: desktop, upload: upload)
+                XCTFail("Accepted a chunk acknowledgement of \(received) instead of at least 128 bytes")
+            } catch {
+                guard case RemoteError.protocolViolation = error else { return XCTFail("Unexpected error: \(error)") }
+            }
+            let calls = await desktop.calls
+            XCTAssertEqual(calls, 2, "A bad acknowledgement must not cause another chunk or finish request")
+        }
+    }
+
+    func testUploadRepliesMustIdentifyTheFileAndItsCompleteSize() async {
+        let upload = "33333333-3333-4333-8333-333333333333"
+        let wrongUpload = "44444444-4444-4444-8444-444444444444"
+        let invalid = [reply(upload, received: 1, status: "complete"), reply(wrongUpload, received: 10, status: "complete"),
+                       reply(upload, received: 10, status: "cancelled")]
+        for answer in invalid {
+            // Validate both a resumed begin response and the response from upload.finish.
+            for prefix in [[], [reply(upload, received: 0), reply(upload, received: 10)]] {
+                let desktop = ReplyDesktop(prefix + [answer])
+                do {
+                    _ = try await FileTransfer.send(file(10), to: .shell(shell), feature: feature, over: desktop, upload: upload)
+                    XCTFail("Accepted an invalid upload reply: \(answer)")
+                } catch {
+                    guard case RemoteError.protocolViolation = error else { return XCTFail("Unexpected error: \(error)") }
+                }
+                let calls = await desktop.calls
+                XCTAssertEqual(calls, prefix.count + 1)
+            }
+        }
+    }
+
     func testAPasteAskedAgainUsesTheSameBatchAndNeverPastesTwice() async throws {
         let desktop = Desktop()
         await desktop.set(dropAt: 1)

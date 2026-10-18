@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 /// The characters Ghostty puts a backslash before in a dropped path (`Ghostty.Shell.escape`).
 const ESCAPED: &str = "\\ ()[]{}<>\"'`!#$&;|*?\t";
 
-/// `text` with a backslash before every character a shell would read specially.
+/// Control-free `text` with a backslash before every character a shell would read specially.
+/// File paths must pass `validate_paths` before being escaped for terminal input.
 pub fn shell_escape(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for character in text.chars() {
@@ -18,10 +19,27 @@ pub fn shell_escape(text: &str) -> String {
     escaped
 }
 
+/// Refuse an entire file batch before any terminal input. Bracketed paste is optional,
+/// and tmux converts line feeds to Return: a filename must never become a key or command.
+pub fn validate_paths(paths: &[PathBuf]) -> Result<(), String> {
+    if paths.iter().any(|path| {
+        path.to_string_lossy()
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+    }) {
+        return Err(
+            "File paths containing control characters or line separators cannot be pasted into a terminal."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// What a drop of `paths` types: each path escaped, separated by spaces, with nothing after the
-/// last, as Ghostty does. `None` for no paths.
+/// last, as Ghostty does. `None` for no paths or an unsafe path; callers use `validate_paths`
+/// to report the reason before attempting a paste.
 pub fn dropped_text(paths: &[PathBuf]) -> Option<String> {
-    (!paths.is_empty()).then(|| {
+    (!paths.is_empty() && validate_paths(paths).is_ok()).then(|| {
         paths
             .iter()
             .map(|path| shell_escape(&path.to_string_lossy()))
@@ -129,6 +147,9 @@ fn picture(path: &Path) -> bool {
 /// The pastes that put `paths` into `program`: the text Ghostty would paste, or for Codex one
 /// paste per path (see the module comment).
 pub fn path_input(program: Program, paths: &[PathBuf]) -> Vec<Input> {
+    if validate_paths(paths).is_err() {
+        return Vec::new();
+    }
     if program != Program::Codex {
         return dropped_text(paths).map(Input::Paste).into_iter().collect();
     }
@@ -186,6 +207,39 @@ mod tests {
             "/a/b-c_d.e,f=g~h%i^j+k@l:m"
         );
         assert_eq!(shell_escape("/tmp/Bild ü.png"), "/tmp/Bild\\ ü.png");
+    }
+
+    #[test]
+    fn control_character_paths_refuse_the_whole_batch_without_terminal_input() {
+        for control in [
+            '\n', '\r', '\t', '\u{1b}', '\u{7f}', '\u{85}', '\u{2028}', '\u{2029}',
+        ] {
+            let paths = [
+                PathBuf::from("/tmp/ordinary file.png"),
+                PathBuf::from(format!("/tmp/path{control}false")),
+            ];
+            let error = validate_paths(&paths).unwrap_err();
+            assert!(
+                !error.contains(control),
+                "unsafe filename leaked into the error"
+            );
+            assert!(dropped_text(&paths).is_none());
+            for program in [
+                Program::Shell,
+                Program::Claude,
+                Program::Codex,
+                Program::Grok,
+                Program::Muse,
+            ] {
+                assert!(path_input(program, &paths).is_empty());
+                assert_eq!(
+                    paste_input(&Copied::Files(paths.to_vec()), program),
+                    Some(Vec::new()),
+                    "unsafe clipboard paths must not fall through to a native text paste"
+                );
+            }
+        }
+        assert!(validate_paths(&[PathBuf::from("/tmp/Bild ü 'quoted'.png")]).is_ok());
     }
 
     #[test]

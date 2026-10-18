@@ -4006,6 +4006,11 @@ mod tests {
                 // A click on the picker right after must open it again, not be swallowed.
                 update_info(cx, handle, &view, |view| view.menu_closed = None);
             }
+            // That click outside saved this chat's display mode, and a settings change brings
+            // the interface scale back to the configured one (`ui_text::init`): at 13 pt the
+            // model menu is wider than the room left of its picker and slides inward. The
+            // geometry below is designed at 1.0.
+            ui_text::set_for_tests(1.0, face);
 
             // The model menu: the search field keeps the keys; ↓ steps from the first row
             // through this provider's models to the other's, ⏎ chooses.
@@ -4017,8 +4022,11 @@ mod tests {
             cx.update_window(handle.into(), |_, window, cx| {
                 let picker = window.find("chat-model").bounds();
                 let menu = window.find("chat-choices-popover").bounds();
-                assert!(menu.bottom() <= picker.top());
-                assert!((menu.right() - picker.right()).abs() < px(1.0));
+                assert!(menu.bottom() <= picker.top(), "{menu:?} over {picker:?}");
+                assert!(
+                    (menu.right() - picker.right()).abs() < px(1.0),
+                    "{menu:?} over {picker:?}"
+                );
                 assert_eq!(
                     window.find("switch-codex-default").label(),
                     Some("Codex default")

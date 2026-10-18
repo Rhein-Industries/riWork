@@ -3,6 +3,46 @@ use riwork_remote::{
     crypto::decode,
     relay::{Relay, Routes},
 };
+
+#[test]
+fn empty_data_home_uses_the_same_default_as_the_main_cli() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_riwork-remote"))
+        .arg("devices")
+        .env("RIWORK_HOME", "")
+        .env("HOME", home.path())
+        .current_dir(cwd.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(home.path().join(".local/share/riwork/remote").is_dir());
+    assert_eq!(std::fs::read_dir(cwd.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn empty_data_home_and_missing_user_home_never_use_the_working_directory() {
+    let cwd = tempfile::tempdir().unwrap();
+    for home in [None, Some("")] {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_riwork-remote"));
+        command
+            .arg("devices")
+            .env("RIWORK_HOME", "")
+            .env_remove("HOME")
+            .current_dir(cwd.path());
+        if let Some(home) = home {
+            command.env("HOME", home);
+        }
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert_eq!(std::fs::read_dir(cwd.path()).unwrap().count(), 0);
+    }
+}
+
 #[test]
 fn pairing_is_random_private_separate_from_relay_secrets_and_revocable() {
     let dir = tempfile::tempdir().unwrap();

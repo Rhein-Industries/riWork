@@ -4,7 +4,8 @@
 # The tests leave <name>.ready while a state is on screen; this takes <name>.png and the tests move on.
 set -uo pipefail
 dir=$1; udid=$2
-mkdir -p "$dir"
+mkdir -p "$dir" || exit 1
+dir=$(cd "$dir" && pwd -P) || exit 1
 cd "$(dirname "$0")/.."
 TEST_RUNNER_RIWORK_SPEECH_SCREENSHOTS="$dir" xcodebuild -project RiWorkRemote.xcodeproj -scheme RiWorkRemote -destination "platform=iOS Simulator,id=$udid" -derivedDataPath .derivedData \
   CODE_SIGN_IDENTITY=- -only-testing:RiWorkAppTests/DictationScreenshots test-without-building > "$dir/xcodebuild.log" 2>&1 &

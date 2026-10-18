@@ -1339,6 +1339,8 @@ struct DashboardReads {
     /// Only the global window reads them; a project window's menu does not show them.
     backends: Option<global_overview::BackendSample>,
     pending: bool,
+    /// A forced read was asked for while one ran (the refresh after an answer): it follows.
+    again: bool,
     read_at: Option<Instant>,
 }
 
@@ -7820,6 +7822,64 @@ impl Workspace {
             })
             .map(|worktree| worktree.path.clone())
             .unwrap_or_else(|| self.cwd.clone());
+        if harness == HarnessKind::Codex {
+            // The shared launch path reloads Settings, which can be newer than
+            // this window's polled copy. Always keep possible quota reads off GPUI.
+            let sessions = self.sessions.for_user();
+            let project_id = self.project_id.clone();
+            let launch_project = project_id.clone();
+            let pane = self.new_tab_pane();
+            let work = cx.background_executor().spawn(async move {
+                sessions.create_harness(launch_project, worktree_id, cwd, harness, unrestricted)
+            });
+            let starting = if self.settings.codex_subscription_balancing {
+                "Checking Codex subscriptions…"
+            } else {
+                "Starting Codex…"
+            };
+            self.notice = Some(starting.into());
+            cx.spawn_in(window, async move |this, cx| {
+                let result = work.await;
+                let _ = this.update_in(cx, |workspace, window, cx| {
+                    // The new session belongs to its original project even if the
+                    // person changed projects while its account was being checked.
+                    if workspace.project_id != project_id || workspace.is_remote() {
+                        if workspace.notice.as_deref() == Some(starting) {
+                            workspace.notice = None;
+                            cx.notify();
+                        }
+                        return;
+                    }
+                    match result {
+                        Ok(shell) => {
+                            let destination = if workspace.panes.contains_key(&pane) {
+                                pane
+                            } else {
+                                workspace.new_tab_pane()
+                            };
+                            match workspace.attach_session(destination, shell, window, cx) {
+                                Ok(_) if workspace.notice.as_deref() == Some(starting) => {
+                                    workspace.notice = None;
+                                }
+                                Ok(_) => {}
+                                Err(error) => workspace.notice = Some(error),
+                            }
+                        }
+                        Err(error) => workspace.notice = Some(error),
+                    }
+                    if let Ok(shells) = workspace.sessions.list() {
+                        workspace.shells = shells;
+                    }
+                    workspace.focus_active(window, cx);
+                    workspace.save_layout();
+                    request_codex_usage(false, cx);
+                    cx.notify();
+                });
+            })
+            .detach();
+            cx.notify();
+            return;
+        }
         let result = self
             .sessions
             .for_user()
@@ -13048,9 +13108,18 @@ fn request_codex_usage_at(home: PathBuf, force: bool, cx: &mut App) {
         cache.last_attempt = now;
     }
     let read_home = home.clone();
-    let task = cx
-        .background_executor()
-        .spawn(async move { usage::read_codex_usage_at(&read_home) });
+    let state_home = paths::riwork_home().ok();
+    let task = cx.background_executor().spawn(async move {
+        let result = usage::read_codex_usage_at(&read_home);
+        if let Some(state_home) = state_home {
+            let _ = riwork_engine::codex_balancing::record_result(
+                &state_home,
+                &read_home,
+                result.as_ref().ok(),
+            );
+        }
+        result
+    });
     cx.spawn(async move |cx| {
         let result = task.await;
         let _ = cx.update(|cx| {

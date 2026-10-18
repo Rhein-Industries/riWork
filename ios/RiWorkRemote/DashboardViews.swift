@@ -19,6 +19,7 @@ struct DashboardView: View {
     var openProject: (RemoteProject) -> Void
     /// The Global screen.
     var openGlobal: () -> Void
+    var reviewDecision: (DashboardDecision) -> Void = { _ in }
     @State private var starting = false
 
     var body: some View {
@@ -38,11 +39,38 @@ struct DashboardView: View {
                 globalSection
                 if let dashboard = model.dashboard, model.dashboardSupport != .unsupported {
                     totalsSection(dashboard)
+                    if dashboard.intelligence.state != "disabled" {
+                        Section("Overview") { DashboardIntelligenceCard(intelligence: dashboard.intelligence).listRowBackground(style.background) }
+                    }
+                    if !dashboard.decisions.rows.isEmpty {
+                        Section("Decisions") {
+                            ForEach(dashboard.decisions.rows) { decision in
+                                Button { reviewDecision(decision) } label: {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(decision.session.name).font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(style.gold)
+                                        Text(decision.title).font(style.face(14, relativeTo: .body)).foregroundStyle(style.text).lineLimit(3)
+                                        Text("Review and answer").font(style.system(.caption)).foregroundStyle(style.accent)
+                                    }.padding(.vertical, 6).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                }.buttonStyle(.plain).listRowBackground(style.background)
+                            }
+                        }
+                    }
                     attentionSection(dashboard)
                     workingSection(dashboard)
                     if !dashboard.finished.rows.isEmpty { finishedSection(dashboard) }
                     tasksSection(dashboard)
                     automationsSection(dashboard)
+                    if !dashboard.recentActivity.rows.isEmpty {
+                        Section("Recent activity") {
+                            ForEach(dashboard.recentActivity.rows.prefix(12)) { event in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text([event.session.name, event.session.place].filter { !$0.isEmpty }.joined(separator: " · "))
+                                        .font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(style.muted)
+                                    Text(event.text).font(style.face(13, relativeTo: .body)).lineLimit(4)
+                                }.padding(.vertical, 4).listRowBackground(style.background)
+                            }
+                        }
+                    }
                 }
                 projectsSection
             }

@@ -43,6 +43,7 @@ mod attachment_draft;
 mod attachment_ui;
 pub(crate) use attachment_ui::init as init_attachments;
 mod cards;
+mod code_highlight;
 mod composer;
 mod dictate;
 mod diff;
@@ -70,6 +71,7 @@ mod memo_tests;
 mod notice_tests;
 mod notice_ui;
 mod notices;
+mod output_table;
 mod panels;
 mod prose;
 mod rows;
@@ -81,6 +83,8 @@ mod state;
 mod subshells;
 #[cfg(test)]
 mod subshells_tests;
+mod tool_views;
+mod turn_review;
 mod worker_shelf;
 #[cfg(test)]
 mod worker_shelf_tests;
@@ -196,6 +200,7 @@ struct Draft {
 /// Work done on the way to drawing, kept while its input is the same.
 #[derive(Default)]
 struct Caches {
+    tool_outputs: HashMap<String, (u64, Option<Arc<crate::chat::tool_output::ToolOutput>>)>,
     /// Parsed messages by item id, with a hash of the text they were parsed from.
     markdown: HashMap<String, (u64, Arc<Vec<markdown::Block>>)>,
     /// Counts invalidated by exact changes, including same-length replacements.
@@ -209,6 +214,7 @@ struct Caches {
 /// The lines of one file's diff that are drawn, and how many more there are.
 struct DrawnDiff {
     lines: Vec<(diff::LineKind, String)>,
+    numbers: Vec<(Option<usize>, Option<usize>)>,
     hidden: usize,
 }
 
@@ -859,7 +865,7 @@ impl ChatView {
             .into_iter()
             .any(|row| match self.visible.get(row) {
                 Some(display::Row::Item(at) | display::Row::Details(at)) => {
-                    applied.touched.contains(at)
+                    applied.touched.contains(at) || self.review_depends_on(*at, &applied.touched)
                 }
                 _ => false,
             });
@@ -871,8 +877,10 @@ impl ChatView {
         }
         for (row, item) in self.visible.iter().enumerate() {
             let touched = match item {
-                display::Row::Item(at) | display::Row::Details(at) => applied.touched.contains(at),
-                display::Row::Artifacts { items, .. } => {
+                display::Row::Item(at) | display::Row::Details(at) => {
+                    applied.touched.contains(at) || self.review_depends_on(*at, &applied.touched)
+                }
+                display::Row::Artifacts { items, .. } | display::Row::Activity { items, .. } => {
                     items.iter().any(|at| applied.touched.contains(at))
                 }
                 _ => false,
@@ -887,10 +895,11 @@ impl ChatView {
 
     fn refresh_projection(&mut self, cx: &mut Context<Self>) {
         self.transcript_selection.changed();
-        let rows = display::rows(
+        let rows = display::rows_with_activity(
             &self.model.transcript,
             &self.model.completed,
             self.display_mode,
+            &self.open,
         );
         if rows != self.visible {
             if !rows.starts_with(&self.visible) {

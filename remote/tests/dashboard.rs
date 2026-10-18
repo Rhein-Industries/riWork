@@ -253,6 +253,17 @@ async fn the_reply_keeps_only_the_contract_and_each_list_within_its_limit() {
     cli["root"] = json!("/Users/me/secret");
     cli["model"] = json!("gpt-secret");
     cli["debug"] = json!({"argv": ["riwork"]});
+    cli["decisions"] = json!((0..45).map(|n| json!({"id":n})).collect::<Vec<_>>());
+    cli["decisions_total"] = json!(45);
+    cli["decision_sources"] =
+        json!({"state":"partial","sampled_at":7,"chats_read":1,"chats_complete":0,"chats_total":1});
+    cli["recent_activity"] = json!(
+        (0..42)
+            .map(|n| json!({"source":{"event_seq":n}}))
+            .collect::<Vec<_>>()
+    );
+    cli["recent_activity_total"] = json!(42);
+    cli["intelligence"] = json!({"state":"ready","summary":"Observed work","highlights":[],"followups":[],"stale":false});
     f.cli_says(&cli);
 
     let response = f.get(json!({})).await;
@@ -276,6 +287,10 @@ async fn the_reply_keeps_only_the_contract_and_each_list_within_its_limit() {
     );
     assert_eq!(result["automations"]["items_total"], 35);
     assert_eq!(result["finished"], json!([]));
+    assert_eq!(result["decisions"].as_array().unwrap().len(), 40);
+    assert_eq!(result["decisions_total"], 45);
+    assert_eq!(result["recent_activity"].as_array().unwrap().len(), 40);
+    assert_eq!(result["decision_sources"], cli["decision_sources"]);
     assert_eq!(
         result["backends"]["providers"],
         json!(vec![
@@ -394,13 +409,31 @@ fn the_connectors_limits_and_keys_are_the_engines() {
             ("projects", engine::WIRE_MAX_PROJECTS),
             ("tasks_in_progress", engine::WIRE_MAX_TASKS_IN_PROGRESS),
             ("backends.providers", engine::WIRE_MAX_PROVIDERS),
+            ("decisions", engine::observed::MAX_DECISIONS),
+            ("recent_activity", engine::observed::MAX_RECENT),
         ]
     );
     assert_eq!(DASHBOARD_AUTOMATIONS_MAX, engine::WIRE_MAX_AUTOMATIONS);
     for (name, case) in shared_cases() {
         let mut keys: Vec<String> = case.as_object().unwrap().keys().cloned().collect();
         keys.sort_unstable();
-        let mut contract: Vec<String> = DASHBOARD_KEYS.iter().map(|k| (*k).to_owned()).collect();
+        // Shared fixtures deliberately retain the original v1 shape: the new fields are
+        // additive and an older CLI is still accepted unchanged.
+        let mut contract: Vec<String> = DASHBOARD_KEYS
+            .iter()
+            .filter(|key| {
+                ![
+                    "decisions",
+                    "decisions_total",
+                    "decision_sources",
+                    "recent_activity",
+                    "recent_activity_total",
+                    "intelligence",
+                ]
+                .contains(key)
+            })
+            .map(|k| (*k).to_owned())
+            .collect();
         contract.sort_unstable();
         assert_eq!(keys, contract, "{name}");
         assert_eq!(case["v"], engine::WIRE_VERSION, "{name}");

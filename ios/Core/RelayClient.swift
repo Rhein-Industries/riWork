@@ -31,6 +31,7 @@ public enum RequestValidation {
         case "chats.list": required = []; optional = ["project_id"]
         case "chat.create": required = ["provider"]; optional = ["project_id", "worktree_id", "approval_mode", "model", "effort", "fast", "contributor_mode", "contributor_opt_out", "title"]
         case "chat.snapshot": required = ["chat_id"]; optional = ["cursor", "before", "limit", "item_ids", "features"]
+        case "chat.asset.read": required = ["chat_id", "cursor", "item_id", "reference", "offset"]; optional = []
         case "chat.events": required = ["chat_id", "since", "wait_ms"]; optional = ["max_events", "complete", "bounded", "features"]
         case "chat.command": required = ["chat_id", "command"]; optional = []
         case "chat.stop": required = ["chat_id"]; optional = []
@@ -74,6 +75,7 @@ public enum RequestValidation {
         }
         do {
             switch method {
+            case "chat.asset.read": try ChatAssetTransfer.validate(params)
             case "chats.list": _ = try ChatListRequest(params: params)
             case "chat.create": _ = try ChatCreateRequest(params: params)
             case "chat.snapshot":
@@ -170,6 +172,8 @@ public actor RelayClient: RemoteTransport {
         case "chat.create": return max(base, .seconds(90))
         case "chat.command": return max(base, .seconds(60))
         case "chat.stop": return max(base, .seconds(30))
+        // First preview pins an item, resolves its workspace and reads a bounded file. Later chunks are cached.
+        case "chat.asset.read": return params["offset"] == .number(0) ? max(base, .seconds(90)) : base
         // A file for a shell first asks the CLI and the shell list; finishing hashes the whole file; a paste waits for the shell's lock.
         case "upload.begin", "upload.finish", "shell.paste": return max(base, .seconds(30))
         // The connector gives the CLI 15 s for a save; a timeout here would tear the whole connection down first.

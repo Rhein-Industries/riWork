@@ -111,6 +111,14 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     var gone = false
     /// A reader is following it now (the chat is on screen). Nothing is asked of the desktop for a chat that is not.
     private(set) var following = false
+    /// A connected transport does not prove this chat has received all missed events.
+    private(set) var catchingUp = true
+    @ObservationIgnored private var catchUpGeneration: UUID?
+    @ObservationIgnored private(set) var catchUpEpoch = UUID()
+    func markCatchingUp() { catchingUp = true; catchUpEpoch = UUID() }
+    func followGeneration(_ generation: UUID) {
+        if catchUpGeneration != generation { catchUpGeneration = generation; markCatchingUp() }
+    }
     @ObservationIgnored var follower: UUID?
     @ObservationIgnored var lastUsed = ContinuousClock.now
     @ObservationIgnored var modeExpiry: Task<Void, Never>?
@@ -120,10 +128,13 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
 
     /// Takes in an answer to a request made with `since`. A mode that was asked for and has now arrived is no longer pending.
     @discardableResult
-    func accept(_ reply: ChatEventsReply, since: UInt64) -> ChatFeed.Outcome {
+    func accept(_ reply: ChatEventsReply, since: UInt64, catchUpEpoch readEpoch: UUID? = nil) -> ChatFeed.Outcome {
         let previousNext = feed.next
         let provider = transcript.info?.provider
         let outcome = feed.accept(reply, since: since)
+        if outcome == .restarted { markCatchingUp() }
+        else if reply.more { catchingUp = true }
+        else if readEpoch == nil || readEpoch == catchUpEpoch { catchingUp = false }
         if outcome == .restarted { contributorState = ChatContributorState() }
         else {
             for envelope in reply.events where envelope.seq > previousNext {
@@ -150,8 +161,9 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
         answered.formIntersection(waiting)
         return outcome
     }
-    func setFollowing(_ on: Bool) { if following != on { following = on } }
+    func setFollowing(_ on: Bool) { if following != on { following = on; if on { markCatchingUp() } } }
     func reset() {
+        markCatchingUp()
         let degraded = feed.degradedReplay
         feed = ChatFeed()
         contributorState = ChatContributorState()
@@ -406,10 +418,12 @@ extension RemoteModel {
         following: while !Task.isCancelled, conversation.follower == token {
             if conversation.resourceBlockedGeneration == generation { return }
             guard chatFollowWanted, !conversation.gone else {
+                conversation.markCatchingUp()
                 if conversation.gone { return }
                 try? await Task.sleep(for: chatIdleInterval)
                 continue
             }
+            conversation.followGeneration(generation)
             if !conversation.feed.loaded, conversation.snapshotUnavailableGeneration != generation {
                 let connection = generation
                 do {
@@ -443,8 +457,8 @@ extension RemoteModel {
                 }
             }
             let connection = generation
-            let canWait = waitSlots.canWait(at: ProcessInfo.processInfo.systemUptime)
-            let since = conversation.feed.next, pin = conversation.feed.historyCursor
+            let canWait = !conversation.catchingUp && waitSlots.canWait(at: ProcessInfo.processInfo.systemUptime)
+            let since = conversation.feed.next, pin = conversation.feed.historyCursor, readEpoch = conversation.catchUpEpoch
             // A contributor mode an older host listed before this read is asked for stays shown until a read like it reaches the end.
             let listing = conversation.contributorState.listing
             let request: ChatEventsRequest
@@ -477,7 +491,7 @@ extension RemoteModel {
                 conversation.readError = nil
                 backoff.success()
                 if !reply.events.isEmpty { conversation.oversizeCap = nil }
-                conversation.accept(reply, since: since)
+                conversation.accept(reply, since: since, catchUpEpoch: readEpoch)
                 if !reply.more {
                     if listing != nil { conversation.contributorState.caughtUp(after: listing) }
                     // The older desktop's history is in: the note about loading it has done its work.
@@ -756,5 +770,18 @@ extension RemoteModel {
             await noteLinkLossIfNeeded()
             return failure
         }
+    }
+}
+
+
+extension RemoteModel {
+    func loadChatAsset(chatID: String, itemID: String, reference: String) async throws -> ChatAsset {
+        guard state == .connected, let desktop, let cursor = chatConversations[chatID]?.feed.historyCursor else {
+            throw RemoteError.remote("Connect and let this chat finish loading before opening its files.")
+        }
+        let token = generation, host = desktop.id
+        let asset = try await ChatAssetTransfer.receive(chatID: chatID, cursor: cursor, itemID: itemID, reference: reference, over: client, boundTo: UploadConnectionIdentity(pairing: desktop.pairing))
+        guard generation == token, selectedDesktopID == host else { throw CancellationError() }
+        return asset
     }
 }

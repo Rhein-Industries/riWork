@@ -32,6 +32,48 @@ pub struct DiffLine<'a> {
 /// Lines drawn at most for one file; the rest is counted, not drawn.
 pub const MAX_LINES: usize = 400;
 
+/// Old/new source coordinates, independent of presentation and copied patch text.
+pub fn line_numbers(
+    lines: &[DiffLine<'_>],
+    change: ChangeKind,
+) -> Vec<(Option<usize>, Option<usize>)> {
+    let structured = lines.iter().any(|line| line.kind == LineKind::Hunk);
+    let mut old = (!structured && change == ChangeKind::Delete).then_some(1usize);
+    let mut new = (!structured && change == ChangeKind::Add).then_some(1usize);
+    lines
+        .iter()
+        .map(|line| {
+            if line.kind == LineKind::Hunk {
+                let mut parts = line.text.split_whitespace().skip(1);
+                let start = |part: Option<&str>, sign| {
+                    part?
+                        .strip_prefix(sign)?
+                        .split(',')
+                        .next()?
+                        .parse::<usize>()
+                        .ok()
+                };
+                old = start(parts.next(), '-');
+                new = start(parts.next(), '+');
+                return (None, None);
+            }
+            let result = match line.kind {
+                LineKind::Add => (None, new),
+                LineKind::Remove => (old, None),
+                LineKind::Context => (old, new),
+                _ => (None, None),
+            };
+            if matches!(line.kind, LineKind::Remove | LineKind::Context) {
+                old = old.and_then(|n| n.checked_add(1));
+            }
+            if matches!(line.kind, LineKind::Add | LineKind::Context) {
+                new = new.and_then(|n| n.checked_add(1));
+            }
+            result
+        })
+        .collect()
+}
+
 pub fn classify(diff: &str, change: ChangeKind) -> Vec<DiffLine<'_>> {
     let has_structure = diff.lines().any(|line| {
         line.starts_with("@@") || line.starts_with("diff ") || line.starts_with("--- ")
@@ -175,6 +217,41 @@ mod tests {
     }
 
     use LineKind::*;
+
+    #[test]
+    fn source_coordinates_follow_both_sides_and_reset_at_each_hunk() {
+        let lines = classify(
+            "@@ -8,2 +10,2 @@\n same\n-old\n+new\n\\ No newline at end of file\n@@ -40 +50 @@\n-a\n+b",
+            ChangeKind::Modify,
+        );
+        assert_eq!(
+            line_numbers(&lines, ChangeKind::Modify),
+            vec![
+                (None, None),
+                (Some(8), Some(10)),
+                (Some(9), None),
+                (None, Some(11)),
+                (None, None),
+                (None, None),
+                (Some(40), None),
+                (None, Some(50)),
+            ]
+        );
+    }
+
+    #[test]
+    fn source_coordinates_do_not_invent_positions_for_an_unlocated_patch() {
+        let lines = classify("-old\n+new", ChangeKind::Modify);
+        assert_eq!(
+            line_numbers(&lines, ChangeKind::Modify),
+            vec![(None, None); 2]
+        );
+        let lines = classify("first\nsecond", ChangeKind::Add);
+        assert_eq!(
+            line_numbers(&lines, ChangeKind::Add),
+            vec![(None, Some(1)), (None, Some(2))]
+        );
+    }
 
     #[test]
     fn a_unified_diff_is_split_into_headers_hunks_and_changes() {

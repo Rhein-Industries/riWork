@@ -8,6 +8,11 @@ pub(super) enum Row {
     Item(usize),
     /// An actionable technical item whose images are in the turn disclosure.
     Details(usize),
+    /// Successful technical items remain available without expanding the whole transcript.
+    Activity {
+        turn_id: String,
+        items: Vec<usize>,
+    },
     Artifacts {
         turn_id: String,
         items: Vec<usize>,
@@ -57,7 +62,7 @@ pub(super) fn remap_anchor(
     }
     let index = match anchor {
         Row::Item(at) | Row::Details(at) => *at,
-        Row::Artifacts { items, .. } => *items.first()?,
+        Row::Artifacts { items, .. } | Row::Activity { items, .. } => *items.first()?,
         // Verbose has no synthetic outcome row. Stay at the end of that turn,
         // rather than retaining a row number that now belongs to another turn.
         Row::Outcome(turn, _) => completed
@@ -68,7 +73,7 @@ pub(super) fn remap_anchor(
     };
     if let Some(at) = rows.iter().position(|row| match row {
         Row::Item(at) | Row::Details(at) => *at == index,
-        Row::Artifacts { items, .. } => items.contains(&index),
+        Row::Artifacts { items, .. } | Row::Activity { items, .. } => items.contains(&index),
         _ => false,
     }) {
         return Some(at);
@@ -87,7 +92,9 @@ pub(super) fn remap_anchor(
         .enumerate()
         .filter_map(|(row, entry)| match entry {
             Row::Item(at) | Row::Details(at) => Some((row, *at)),
-            Row::Artifacts { items, .. } => items.first().map(|at| (row, *at)),
+            Row::Artifacts { items, .. } | Row::Activity { items, .. } => {
+                items.first().map(|at| (row, *at))
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -196,8 +203,19 @@ pub(super) fn rows(
             || finals.contains(&at)
     };
     let mut groups: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut activity: HashMap<&str, Vec<usize>> = HashMap::new();
     let mut grouped = HashSet::new();
     for (at, item) in transcript.items.iter().enumerate() {
+        if (technical(item) || matches!(item.body, ItemBody::Plan { .. } | ItemBody::Todo { .. }))
+            && item.status == ItemStatus::Completed
+            && !visible(at, item)
+            && let Some(turn) = item
+                .turn_id
+                .as_deref()
+                .filter(|turn| finished.contains(turn))
+        {
+            activity.entry(turn).or_default().push(at);
+        }
         if !item.presentation.images.is_empty()
             && !matches!(item.body, ItemBody::UserMessage { .. })
             && item.presentation.phase != Some(MessagePhase::Final)
@@ -219,6 +237,12 @@ pub(super) fn rows(
         while let Some((turn, outcome, end)) = outcomes.peek() {
             if *end > at {
                 break;
+            }
+            if let Some(items) = activity.remove(turn.as_str()) {
+                out.push(Row::Activity {
+                    turn_id: turn.clone(),
+                    items,
+                });
             }
             if let Some(items) = groups.remove(turn.as_str()) {
                 out.push(Row::Artifacts {
@@ -244,6 +268,38 @@ pub(super) fn rows(
         }
     }
     out
+}
+
+pub(super) fn activity_key(turn: &str) -> String {
+    format!("activity:{turn}")
+}
+
+/// Expanded activity uses normal virtualized item rows, so every card keeps its
+/// selection, find, copy and scroll identity. Images stay in the image disclosure.
+pub(super) fn rows_with_activity(
+    transcript: &Transcript,
+    completed: &[(String, TurnOutcome, usize)],
+    mode: DisplayMode,
+    open: &HashSet<String>,
+) -> Vec<Row> {
+    let mut result = Vec::new();
+    for row in rows(transcript, completed, mode) {
+        let expanded = match &row {
+            Row::Activity { turn_id, items } if open.contains(&activity_key(turn_id)) => {
+                items.clone()
+            }
+            _ => Vec::new(),
+        };
+        result.push(row);
+        result.extend(expanded.into_iter().map(|at| {
+            if transcript.items[at].presentation.images.is_empty() {
+                Row::Item(at)
+            } else {
+                Row::Details(at)
+            }
+        }));
+    }
+    result
 }
 
 #[cfg(test)]
@@ -549,6 +605,10 @@ mod tests {
         let normal = vec![
             Row::Item(0),
             Row::Item(2),
+            Row::Activity {
+                turn_id: "turn".into(),
+                items: vec![1],
+            },
             Row::Artifacts {
                 turn_id: "turn".into(),
                 items: vec![1],
@@ -616,9 +676,136 @@ mod tests {
                 &[("turn".into(), TurnOutcome::Completed, 3)],
                 DisplayMode::Normal
             ),
-            vec![Row::Outcome("turn".into(), TurnOutcome::Completed)]
+            vec![
+                Row::Activity {
+                    turn_id: "turn".into(),
+                    items: vec![2]
+                },
+                Row::Outcome("turn".into(), TurnOutcome::Completed)
+            ]
         );
         t.items[2].status = ItemStatus::Failed;
         assert!(rows(&t, &completed, DisplayMode::Normal).contains(&Row::Item(2)));
+    }
+
+    #[test]
+    fn activity_expands_to_individual_rows_without_duplicate_images_or_other_turns() {
+        let mut t = Transcript::default();
+        let mut command = with_image(failed_command("done"));
+        command.status = ItemStatus::Completed;
+        t.items = vec![
+            command,
+            text("answer", Some(MessagePhase::Final)),
+            item(
+                "search",
+                None,
+                ItemBody::WebSearch {
+                    query: "query".into(),
+                },
+            ),
+            text("second-answer", Some(MessagePhase::Final)),
+        ];
+        for item in &mut t.items[2..] {
+            item.turn_id = Some("second".into());
+        }
+        let completed = vec![
+            ("turn".into(), TurnOutcome::Completed, 2),
+            ("second".into(), TurnOutcome::Completed, 4),
+        ];
+        let collapsed = rows(&t, &completed, DisplayMode::Normal);
+        let open = HashSet::from([activity_key("turn")]);
+        let expanded = rows_with_activity(&t, &completed, DisplayMode::Normal, &open);
+        assert!(expanded.contains(&Row::Details(0)));
+        assert!(
+            !expanded.contains(&Row::Item(0)),
+            "images remain in their disclosure"
+        );
+        assert!(
+            !expanded.contains(&Row::Item(2)),
+            "other turn stays collapsed"
+        );
+        assert_eq!(expanded.len(), collapsed.len() + 1);
+        assert_eq!(
+            remap_anchor(&Row::Details(0), &collapsed, &completed),
+            Some(1)
+        );
+        assert_eq!(
+            rows_with_activity(&t, &completed, DisplayMode::Verbose, &open),
+            (0..4).map(Row::Item).collect::<Vec<_>>()
+        );
+        assert!(
+            rows(&t, &[], DisplayMode::Normal)
+                .iter()
+                .all(|row| !matches!(row, Row::Activity { .. }))
+        );
+    }
+
+    #[gpui::test]
+    fn activity_disclosure_keeps_card_selection_and_markdown_plan_copy(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::AppContext;
+        use gpui_kit::test::TestWindowExt;
+        let (handle, view, recording) = super::super::editor_tests::mount_selection(cx);
+        let source = "# Shipping plan\n\n- [x] Review\n\n```rust\nlet ready = true;\n```";
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |view, cx| {
+                let mut command = failed_command("done");
+                command.status = ItemStatus::Completed;
+                view.model.link = super::super::Link::Live;
+                view.model.transcript.items = vec![
+                    command,
+                    item(
+                        "plan",
+                        None,
+                        ItemBody::Plan {
+                            explanation: Some(source.into()),
+                            steps: vec![],
+                        },
+                    ),
+                    text("answer", Some(MessagePhase::Final)),
+                ];
+                view.model.completed = vec![("turn".into(), TurnOutcome::Completed, 3)];
+                view.refresh_projection(cx);
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(window.try_find("card:done").is_none());
+            window.click("activity:turn", cx);
+            window.render_frame(cx);
+            assert!(view.read(cx).visible.contains(&Row::Item(0)));
+            window.click("card:done", cx);
+            window.render_frame(cx);
+            let leaves = super::super::selection_document::leaves(
+                view.read(cx),
+                super::super::widgets::Look::of(cx),
+            );
+            assert!(
+                leaves
+                    .iter()
+                    .any(|leaf| leaf.key == "output:done" && leaf.text == "No matches")
+            );
+            assert!(
+                leaves
+                    .iter()
+                    .any(|leaf| leaf.key == "plan:plan:document/0" && leaf.text == "Shipping plan")
+            );
+            window.click("copy-plan:plan", cx);
+            assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), source);
+            window.click("activity:turn", cx);
+            window.render_frame(cx);
+            let leaves = super::super::selection_document::leaves(
+                view.read(cx),
+                super::super::widgets::Look::of(cx),
+            );
+            assert!(
+                leaves
+                    .iter()
+                    .all(|leaf| leaf.key != "output:done" && !leaf.key.contains("plan:plan:"))
+            );
+            assert_eq!(view.read(cx).visible.len(), 2);
+        })
+        .unwrap();
+        assert!(recording.try_recv().is_err());
     }
 }

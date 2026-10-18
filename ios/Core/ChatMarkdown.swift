@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 // Markdown for agent chat messages. The chat view draws paragraphs, headings and list items with SwiftUI `Text(AttributedString)`,
 // so this file does the BLOCK structure (headings, code, lists, quotes, tables, rules) and leaves inline syntax (emphasis, code
@@ -500,5 +501,95 @@ private enum MarkdownBlocks {
         if pipes > 0, let first = pieces.first, isBlank(first) { pieces.removeFirst() }
         if pipes > 0, let last = pieces.last, isBlank(last) { pieces.removeLast() }
         return (pieces.map { String(trimmed(Substring($0))) }, pipes)
+    }
+}
+
+// MARK: Authenticated chat output previews
+
+public struct ChatAssetReference: Sendable, Equatable, Identifiable {
+    public let label: String
+    public let path: String
+    public let isImage: Bool
+    public var id: String { path }
+    public init(label: String, path: String, isImage: Bool) { self.label = label; self.path = path; self.isImage = isImage }
+    public static func isLocal(_ path: String) -> Bool {
+        !path.isEmpty && path.utf8.count <= 4096 && !path.contains(":") && !path.hasPrefix("//")
+            && !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+            && !path.split(separator: "/").contains("..")
+    }
+}
+
+extension ChatMarkdown {
+    /// Local destinations only. Web links retain normal link behavior and never cause automatic image/network fetches.
+    /// Called on prose blocks, so examples inside fenced code do not become preview cards.
+    public static func assetReferences(_ source: String) -> [ChatAssetReference] {
+        guard let pattern = try? NSRegularExpression(pattern: #"(!?)\[([^\]\n]*)\]\(([^)\n]+)\)"#) else { return [] }
+        let ns = source as NSString
+        var result: [ChatAssetReference] = [], seen = Set<String>()
+        pattern.enumerateMatches(in: source, range: NSRange(location: 0, length: ns.length)) { match, _, stop in
+            guard let match else { return }
+            var path = ns.substring(with: match.range(at: 3))
+            if path.hasPrefix("<"), path.hasSuffix(">") { path = String(path.dropFirst().dropLast()) }
+            guard ChatAssetReference.isLocal(path), seen.insert(path).inserted else { return }
+            let title = ns.substring(with: match.range(at: 2))
+            result.append(ChatAssetReference(label: title.isEmpty ? (path as NSString).lastPathComponent : title, path: path, isImage: match.range(at: 1).length > 0))
+            if result.count == 8 { stop.pointee = true }
+        }
+        return result
+    }
+
+    /// Tab-separated rows preserve the table's useful structure in spreadsheets and text editors.
+    public static func tableCopy(header: [String], rows: [[String]]) -> String {
+        ([header] + rows).map { row in
+            row.map { String(inline($0).characters).replacingOccurrences(of: "\t", with: " ").replacingOccurrences(of: "\n", with: " ") }.joined(separator: "\t")
+        }.joined(separator: "\n")
+    }
+}
+
+public struct ChatAsset: Sendable, Equatable {
+    public let data: Data
+    public let name: String
+    public let mediaType: String
+}
+
+public enum ChatAssetTransfer {
+    public static let maximumBytes = 8 * 1024 * 1024
+    public static let chunkBytes = 64 * 1024
+    public static func validate(_ params: [String: JSONValue]) throws {
+        guard let chat = params["chat_id"]?.string, UUID(uuidString: chat)?.uuidString.lowercased() == chat,
+              let cursor = params["cursor"]?.string, !cursor.isEmpty, cursor.utf8.count <= 80,
+              cursor.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) || $0 == 45 }),
+              let item = params["item_id"]?.string, !item.isEmpty, item.utf8.count <= 512,
+              let reference = params["reference"]?.string, ChatAssetReference.isLocal(reference),
+              case .number(let offset)? = params["offset"], offset.isFinite, offset >= 0, offset <= Double(maximumBytes), offset.truncatingRemainder(dividingBy: Double(chunkBytes)) == 0
+        else { throw RemoteError.protocolViolation("Invalid chat preview request.") }
+    }
+
+    /// The transport checks the paired desktop identity before sealing every chunk request.
+    public static func receive(chatID: String, cursor: String, itemID: String, reference: String, over transport: any RemoteTransport,
+                               boundTo identity: UploadConnectionIdentity) async throws -> ChatAsset {
+        var data = Data(), expectedTotal: Int?, expectedHash: String?, name: String?, mediaType: String?
+        repeat {
+            try Task.checkCancellation()
+            let params: [String: JSONValue] = ["chat_id": .string(chatID), "cursor": .string(cursor), "item_id": .string(itemID), "reference": .string(reference), "offset": .number(Double(data.count))]
+            try validate(params)
+            let reply = try await transport.request(method: "chat.asset.read", params: params, id: UUID().uuidString.lowercased(), boundTo: identity)
+            guard reply["chat_id"].string == chatID, reply["item_id"].string == itemID, reply["reference"].string == reference,
+                  reply["offset"] == .number(Double(data.count)), case .number(let total) = reply["total"], total.isFinite, total >= 0, total <= Double(maximumBytes), total.rounded() == total,
+                  let hash = reply["sha256"].string, hash.utf8.count == 64, hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+                  let fileName = reply["name"].string, !fileName.isEmpty, fileName.utf8.count <= 255, fileName != ".", fileName != "..", !fileName.contains("/"), !fileName.contains("\\"), !fileName.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+                  let type = reply["media_type"].string, ["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf", "text/plain"].contains(type),
+                  let encoded = reply["data"].string, encoded.utf8.count <= (chunkBytes + 2) / 3 * 4
+            else { throw RemoteError.protocolViolation("Invalid chat preview reply.") }
+            let chunk = try Base64URL.decode(encoded)
+            guard chunk.count == min(chunkBytes, Int(total) - min(Int(total), data.count)), data.count <= Int(total),
+                  expectedTotal == nil || expectedTotal == Int(total), expectedHash == nil || expectedHash == hash,
+                  name == nil || name == fileName, mediaType == nil || mediaType == type
+            else { throw RemoteError.protocolViolation("Chat preview changed during download.") }
+            expectedTotal = Int(total); expectedHash = hash; name = fileName; mediaType = type
+            data.append(chunk)
+        } while data.count < (expectedTotal ?? 0)
+        guard SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == expectedHash else { throw RemoteError.protocolViolation("Chat preview checksum did not match.") }
+        return ChatAsset(data: data, name: name!, mediaType: mediaType!)
     }
 }

@@ -1966,6 +1966,33 @@ fn result_marks_only_authoritative_text_final_and_tool_images_survive() {
     );
 }
 
+#[test]
+fn normalized_tool_results_keep_clickable_hits_and_original_output() {
+    let (sender, receiver) = mpsc::channel();
+    let mut core = Core::new(&bare_config(), sender, "session".into());
+    core.on_assistant(&json!({"message":{"id":"tools","content":[
+        {"type":"tool_use","id":"grep","name":"Grep","input":{"pattern":"hello"}},
+        {"type":"tool_use","id":"web","name":"WebSearch","input":{"query":"rust"}}
+    ]},"parent_tool_use_id":null}));
+    let raw = "src/日本語.rs:42:hello";
+    core.on_user(&json!({"message":{"content":[
+        {"type":"tool_result","tool_use_id":"grep","content":raw},
+        {"type":"tool_result","tool_use_id":"web","content":"Links: [{\"title\":\"Rust\",\"url\":\"https://www.rust-lang.org/\"}]"}
+    ]}}));
+    let transcript = fold(&receiver.try_iter().collect::<Vec<_>>());
+    let grep = item(&transcript, "grep");
+    assert!(matches!(&grep.body, ItemBody::ToolCall {output: Some(text), ..} if text == raw));
+    assert!(
+        matches!(&grep.presentation.tool, Some(crate::chat::tool_output::ToolOutput::FileSearch {hits, ..}) if hits[0].target() == "src/日本語.rs:42")
+    );
+    assert!(
+        matches!(&item(&transcript, "web").presentation.tool, Some(crate::chat::tool_output::ToolOutput::WebSearch {hits, raw, ..}) if hits[0].title == "Rust" && raw.contains("Links:"))
+    );
+    let encoded = serde_json::to_vec(&transcript.items).unwrap();
+    let decoded: Vec<Item> = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded, transcript.items);
+}
+
 fn completed_notices(events: &[ChatEvent]) -> Vec<Item> {
     events
         .iter()

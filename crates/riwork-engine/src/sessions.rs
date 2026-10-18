@@ -332,6 +332,10 @@ impl SessionManager {
                 harness.program()
             ));
         }
+        let binding = match &choices.binding {
+            Some(binding) => Some(binding.clone()),
+            None => codex_binding_unlocked(&self.home, Some(harness), Some(&project_id))?,
+        };
         let _lock = self.lock_registry()?;
         let mut registry = self.read_registry()?;
         let session = self.new_tmux_session_with(NewSession {
@@ -343,7 +347,7 @@ impl SessionManager {
             command: None,
             harness: Some(harness),
             unrestricted: choices.mode == Some(crate::chat::model::ApprovalMode::Full),
-            binding: choices.binding.clone(),
+            binding,
             choices,
         })?;
         registry.sessions.push(session.clone());
@@ -394,20 +398,23 @@ impl SessionManager {
         cwd: PathBuf,
         command: Option<String>,
     ) -> Result<ShellSession, String> {
-        let lock = self.lock_registry()?;
-        let mut registry = self.read_registry()?;
-        if let Some(existing) = registry
-            .sessions
-            .iter()
-            .find(|session| matches_orchestrator_scope(session, project_id.as_deref()))
-        {
-            // A tmux error is not "dead": dropping this row would start a second
-            // orchestrator beside one that is still running unregistered.
-            if self.is_alive(&existing.id)? {
-                let mut existing = existing.clone();
-                existing.alive = true;
+        let default_codex = command.is_none();
+        // Balancing may read quota for seconds: never under `lock_registry`, and not at all
+        // for a scope whose orchestrator already runs. The locked check below still decides.
+        let binding = if default_codex {
+            if let Some(existing) =
+                self.live_orchestrator(&self.read_registry()?, project_id.as_deref())?
+            {
                 return Ok(existing);
             }
+            Some(new_codex_binding(&self.home, project_id.as_deref())?)
+        } else {
+            None
+        };
+        let lock = self.lock_registry()?;
+        let mut registry = self.read_registry()?;
+        if let Some(existing) = self.live_orchestrator(&registry, project_id.as_deref())? {
+            return Ok(existing);
         }
         registry
             .sessions
@@ -432,14 +439,8 @@ impl SessionManager {
             })
             .transpose()?;
         let id = Uuid::new_v4().to_string();
-        let default_codex = command.is_none();
         let delegation = crate::orchestrators::delegation(&self.home, project_id.as_deref());
         let unrestricted = default_codex && project_id.is_some();
-        let binding = if default_codex {
-            Some(selected_codex_binding(&self.home, project_id.as_deref())?)
-        } else {
-            None
-        };
         let (cwd, command) = if default_codex {
             let cua = crate::cua::CuaManager::at(self.home.clone())?;
             cua.driver_path()?;
@@ -507,6 +508,29 @@ impl SessionManager {
             }
         }
         Ok(session)
+    }
+
+    /// The scope's terminal orchestrator in `registry`, if its session still runs.
+    fn live_orchestrator(
+        &self,
+        registry: &Registry,
+        project_id: Option<&str>,
+    ) -> Result<Option<ShellSession>, String> {
+        let Some(existing) = registry
+            .sessions
+            .iter()
+            .find(|session| matches_orchestrator_scope(session, project_id))
+        else {
+            return Ok(None);
+        };
+        // A tmux error is not "dead": dropping this row would start a second
+        // orchestrator beside one that is still running unregistered.
+        if !self.is_alive(&existing.id)? {
+            return Ok(None);
+        }
+        let mut existing = existing.clone();
+        existing.alive = true;
+        Ok(Some(existing))
     }
 
     /// Forgets the saved row of the scope's terminal orchestrator when its
@@ -1852,6 +1876,8 @@ impl SessionManager {
     /// may have pasted part of it. Used by `riwork shell paste` for files sent from a phone.
     pub fn paste_files(&self, id: &str, paths: &[PathBuf]) -> Result<(), String> {
         use crate::session_keys::{INPUT_UNAVAILABLE, INVALID_REQUEST, NOT_FOUND, NOT_SENT};
+        crate::terminal_drop::validate_paths(paths)
+            .map_err(|error| format!("{INVALID_REQUEST}{error}"))?;
         if paths.is_empty() {
             return Err(format!("{INVALID_REQUEST}no file to paste"));
         }
@@ -2082,6 +2108,7 @@ impl SessionManager {
         unrestricted: bool,
         editor_path: Option<PathBuf>,
     ) -> Result<ShellSession, String> {
+        let binding = codex_binding_unlocked(&self.home, harness, project_id.as_deref())?;
         let _lock = self.lock_registry()?;
         let mut registry = self.read_registry()?;
         let mut session = self.new_tmux_session(
@@ -2093,7 +2120,7 @@ impl SessionManager {
             command,
             harness,
             unrestricted,
-            None,
+            binding,
         )?;
         session.editor_path = editor_path;
         registry.sessions.push(session.clone());
@@ -2151,7 +2178,7 @@ impl SessionManager {
         let binding = match binding {
             Some(binding) => Some(binding),
             None if harness == Some(HarnessKind::Codex) => {
-                Some(selected_codex_binding(&self.home, project_id.as_deref())?)
+                Some(new_codex_binding(&self.home, project_id.as_deref())?)
             }
             None => None,
         };
@@ -3113,11 +3140,27 @@ pub(crate) fn selected_codex_binding(
     home: &Path,
     project_id: Option<&str>,
 ) -> Result<crate::codex_accounts::CodexAccountBinding, String> {
-    if let Some(project_id) = project_id {
-        return crate::codex_accounts::resolve_project_launch_binding(home, project_id);
+    crate::codex_balancing::cached_binding(home, project_id)
+}
+
+pub(crate) fn new_codex_binding(
+    home: &Path,
+    project_id: Option<&str>,
+) -> Result<crate::codex_accounts::CodexAccountBinding, String> {
+    crate::codex_balancing::new_binding(home, project_id)
+}
+
+/// A new Codex session's account, chosen before `lock_registry`: balancing may read quota
+/// for seconds, and every other create, close and launch record waits on that lock.
+fn codex_binding_unlocked(
+    home: &Path,
+    harness: Option<HarnessKind>,
+    project_id: Option<&str>,
+) -> Result<Option<crate::codex_accounts::CodexAccountBinding>, String> {
+    match harness {
+        Some(HarnessKind::Codex) => new_codex_binding(home, project_id).map(Some),
+        _ => Ok(None),
     }
-    let settings = crate::settings::SettingsStore::open(home)?.load()?;
-    crate::codex_accounts::resolve_launch_binding(home, settings.selected_codex_account.as_deref())
 }
 
 /// Keep the profile on the command as well as tmux's session environment:
@@ -5134,6 +5177,42 @@ fn codex_resumes_existing(arguments: &[String]) -> bool {
     }
 }
 
+/// The thread a `resume` or `fork` names by id; `--last` and the picker name none.
+fn codex_resumed_thread(arguments: &[String]) -> Option<&str> {
+    match codex_first_command(arguments) {
+        Some(("resume" | "fork", remaining)) => remaining
+            .iter()
+            .take_while(|argument| argument.as_str() != "--")
+            .find(|argument| Uuid::parse_str(argument).is_ok())
+            .map(String::as_str),
+        Some(("exec" | "e", remaining)) => codex_resumed_thread(remaining),
+        _ => None,
+    }
+}
+
+/// The one saved account whose Codex home holds `thread`, when `last_home` does not. A
+/// plain shell's launches may each have been balanced onto another account, and its saved
+/// home is only the latest one's.
+fn thread_account(
+    state_home: &Path,
+    last_home: Option<&Path>,
+    thread: &str,
+) -> Option<crate::codex_accounts::CodexAccountBinding> {
+    if last_home.is_some_and(|home| crate::activity::find_rollout(home, thread).is_some()) {
+        return None;
+    }
+    let mut holders = crate::codex_accounts::cached_accounts(state_home)
+        .ok()?
+        .into_iter()
+        .filter(|account| account.available && Some(account.home.as_path()) != last_home)
+        .filter(|account| crate::activity::find_rollout(&account.home, thread).is_some());
+    let account = holders.next()?;
+    if holders.next().is_some() {
+        return None;
+    }
+    crate::codex_accounts::resolve_launch_binding(state_home, Some(&account.id)).ok()
+}
+
 /// A managed agent and its tool/delegated children always retain their account.
 /// A plain shell's next new Codex invocation follows the current preference.
 fn proxy_uses_frozen_account(arguments: &[String], pinned_home: Option<&Path>) -> bool {
@@ -5155,6 +5234,14 @@ fn codex_proxy_binding(
     saved: Option<&ShellSession>,
 ) -> Result<crate::codex_accounts::CodexAccountBinding, String> {
     if proxy_uses_frozen_account(arguments, pinned_home) {
+        if pinned_home.is_none()
+            && let Some(binding) = codex_resumed_thread(arguments).and_then(|thread| {
+                let last_home = saved.and_then(|session| session.codex_home.as_deref());
+                thread_account(state_home, last_home, thread)
+            })
+        {
+            return Ok(binding);
+        }
         let home = pinned_home
             .map(Path::to_path_buf)
             .or_else(|| saved.and_then(|session| session.codex_home.clone()));
@@ -5170,7 +5257,7 @@ fn codex_proxy_binding(
         // Legacy resume requests retain their explicit or inherited environment.
         return crate::codex_accounts::resolve_launch_binding(state_home, None);
     }
-    selected_codex_binding(
+    new_codex_binding(
         state_home,
         saved.and_then(|session| session.project_id.as_deref()),
     )
@@ -6845,6 +6932,102 @@ mod tests {
             "resume".into(),
             "--last".into()
         ]));
+    }
+
+    #[test]
+    fn subscription_balancing_changes_new_proxy_launches_but_never_pinned_children_or_resumes() {
+        let fixture = AccountFixture::new();
+        if !fixture.run_in_child("subscription_balancing_changes_new_proxy_launches_but_never_pinned_children_or_resumes") {
+            return;
+        }
+        let state = fixture.selected("account-a");
+        crate::settings::SettingsStore::open(&state)
+            .unwrap()
+            .update(|settings| {
+                settings.codex_subscription_balancing = true;
+            })
+            .unwrap();
+        let a = crate::codex_accounts::resolve_launch_binding(&state, Some("account-a")).unwrap();
+        let b = crate::codex_accounts::resolve_launch_binding(&state, Some("account-b")).unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for (binding, used) in [(&a, 95.0), (&b, 5.0)] {
+            let usage: crate::usage::ProviderUsage = serde_json::from_value(serde_json::json!({
+                "provider":"codex","updated_at_unix":now,
+                "windows":[{"label":"5h","used_percent":used,"resets_at":now+5000},{"label":"7d","used_percent":used,"resets_at":now+9000}]
+            })).unwrap();
+            crate::codex_balancing::record_result(&state, &binding.home, Some(&usage)).unwrap();
+        }
+        let mut saved = scope_session(ShellKind::Project, None);
+        saved.codex_account_id = a.id.clone();
+        saved.codex_account_label = a.label.clone();
+        saved.codex_account_email = a.email.clone();
+        saved.codex_home = Some(a.home.clone());
+        assert_eq!(
+            codex_proxy_binding(&state, &[], None, Some(&saved)).unwrap(),
+            b
+        );
+        assert_eq!(
+            codex_proxy_binding(&state, &[], Some(&a.home), Some(&saved)).unwrap(),
+            a
+        );
+        for command in ["resume", "fork"] {
+            assert_eq!(
+                codex_proxy_binding(
+                    &state,
+                    &[command.into(), "--last".into()],
+                    None,
+                    Some(&saved)
+                )
+                .unwrap(),
+                a
+            );
+        }
+        // A thread named by id resumes where it is: the shell's earlier launch may have been
+        // balanced onto another account than its latest.
+        let rollout = |home: &Path, thread: &str| {
+            let day = home.join("sessions").join("2026").join("10").join("17");
+            fs::create_dir_all(&day).unwrap();
+            fs::write(
+                day.join(format!("rollout-2026-10-17T00-00-00-{thread}.jsonl")),
+                "",
+            )
+            .unwrap();
+        };
+        let on_b = Uuid::new_v4().to_string();
+        let on_a = Uuid::new_v4().to_string();
+        rollout(&b.home, &on_b);
+        rollout(&a.home, &on_a);
+        for (thread, expected) in [(&on_b, &b), (&on_a, &a)] {
+            for command in ["resume", "fork"] {
+                assert_eq!(
+                    &codex_proxy_binding(
+                        &state,
+                        &[command.into(), thread.clone()],
+                        None,
+                        Some(&saved)
+                    )
+                    .unwrap(),
+                    expected
+                );
+            }
+        }
+        // A pinned child keeps its home whatever it resumes.
+        assert_eq!(
+            codex_proxy_binding(
+                &state,
+                &["resume".into(), on_b],
+                Some(&a.home),
+                Some(&saved)
+            )
+            .unwrap()
+            .home,
+            a.home
+        );
+        assert_eq!(saved.codex_account_id.as_deref(), Some("account-a"));
+        assert_eq!(saved.codex_home.as_ref(), Some(&a.home));
     }
 
     #[test]

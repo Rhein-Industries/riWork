@@ -615,10 +615,29 @@ impl ChatView {
     fn scroll_box_to(&self, key: &str, rect: Bounds<Pixels>) -> bool {
         let handle = {
             let caches = self.caches.borrow();
-            let scroller = caches.scrollers.get(key).or_else(|| {
-                let file = key.strip_prefix("diff:")?.rsplit_once(':')?.0;
-                caches.scrollers.get(&format!("diff:{file}"))
-            });
+            let scroller = caches
+                .scrollers
+                .get(key)
+                .or_else(|| {
+                    let file = key.strip_prefix("diff:")?.rsplit_once(':')?.0;
+                    caches.scrollers.get(&format!("diff:{file}"))
+                })
+                .or_else(|| {
+                    let item = key.strip_prefix("tool-view:")?.rsplit_once(':')?.0;
+                    caches.scrollers.get(&format!("tool-rich:{item}"))
+                })
+                .or_else(|| {
+                    // Cells (and image-adjacent spans in cells) inherit their table's
+                    // horizontal scroller. Walk block ancestors, not unrelated cached rows.
+                    let mut ancestor = key;
+                    while let Some((parent, _)) = ancestor.rsplit_once('/') {
+                        if let Some(scroller) = caches.scrollers.get(&format!("table:{parent}")) {
+                            return Some(scroller);
+                        }
+                        ancestor = parent;
+                    }
+                    None
+                });
             let Some(scroller) = scroller else {
                 return false;
             };

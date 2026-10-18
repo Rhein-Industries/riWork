@@ -20,6 +20,7 @@ private struct PairingRequest: Identifiable {
 
 struct RemoteRootView: View {
     @Environment(\.desktopStyle) private var style
+    @Environment(\.scenePhase) private var scenePhase
     @Bindable var model: RemoteModel
     @State private var path: [RemoteRoute] = []
     @State private var pairingRequest: PairingRequest?
@@ -27,6 +28,16 @@ struct RemoteRootView: View {
     @State private var renaming: SavedDesktop?
     @State private var removing: SavedDesktop?
     @State private var newProject: NewProjectSheetModel?
+    @State private var hostDashboards = HostDashboardStore()
+    @State private var openingHostID: String?
+    @State private var dashboardDecision: HostedDashboardDecision?
+    /// Responses this phone sent or may have sent, and when: the card cannot go out again until a read after that no longer lists it.
+    @State private var sentDecisions: [SentDecision: Date] = [:]
+    @State private var tabShortcutOwner = UUID()
+    private struct SentDecision: Hashable {
+        let hostID, chatID, requestID: String
+        init(_ item: HostedDashboardDecision) { hostID = item.hostID; chatID = item.decision.chatID; requestID = item.decision.requestID }
+    }
     // A double Back tap during the pop animation would otherwise pop an empty stack and trap.
     private func pop() { if !path.isEmpty { path.removeLast() } }
     /// The "New project" sheet. A project it creates is selected: its terminal screen opens, and with it the "New terminal" sheet, as
@@ -43,61 +54,9 @@ struct RemoteRootView: View {
         }
         newProject = sheet
     }
-    var body: some View {
+    private var navigationContent: some View {
         NavigationStack(path: $path) {
-            VStack(spacing: 0) {
-                WorkspaceBar(title: style.cased("RiWork")) {
-                    Button("Display settings", systemImage: "textformat.size") { showingDisplay = true }.labelStyle(.iconOnly)
-                    Button("Add desktop", systemImage: "plus") { pairingRequest = PairingRequest(text: "") }.labelStyle(.iconOnly).disabled(model.loadFailed)
-                }
-                if model.loadFailed {
-                    LibraryFailureView(model: model)
-                } else if model.desktops.isEmpty {
-                    EmptyDesktopOverlay { pairingRequest = PairingRequest(text: "") }
-                } else {
-                    List {
-                        Section("Desktops") {
-                            ForEach(model.desktops) { desktop in
-                                HStack(spacing: 0) {
-                                    Button {
-                                        path.append(.dashboard(desktop.id))
-                                        Task { await model.activate(desktop.id) }
-                                    } label: {
-                                        HStack(spacing: 8) {
-                                            Image(systemName: "desktopcomputer").font(.system(size: style.pt(14))).foregroundStyle(style.accent)
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text(desktop.name).font(style.face(13, bold: true, relativeTo: .headline)).foregroundStyle(style.text)
-                                                Text(desktop.pairing.relayHost).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted)
-                                            }
-                                            Spacer(minLength: 4)
-                                            Image(systemName: "chevron.right").font(style.system(.caption)).foregroundStyle(style.muted)
-                                        }.frame(minHeight: style.pt(44)).contentShape(Rectangle())
-                                    }.buttonStyle(.plain).accessibilityHint("Open this desktop's dashboard and projects")
-                                    Menu {
-                                        Button("Rename", systemImage: "pencil") { renaming = desktop }
-                                        Button("Remove from this device", systemImage: "trash", role: .destructive) { removing = desktop }
-                                    } label: { Label("Desktop options for \(desktop.name)", systemImage: "ellipsis") }.labelStyle(.iconOnly)
-                                }
-                                .listRowBackground(style.background)
-                                .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 8))
-                                .listRowSeparatorTint(style.divider)
-                                .contextMenu {
-                                    Button("Rename", systemImage: "pencil") { renaming = desktop }
-                                    Button("Remove from this device", systemImage: "trash", role: .destructive) { removing = desktop }
-                                }
-                                .swipeActions {
-                                    Button("Remove", role: .destructive) { removing = desktop }
-                                    Button("Rename") { renaming = desktop }.tint(style.accent)
-                                }
-                            }
-                            Button("Pair a desktop", systemImage: "plus.circle") { pairingRequest = PairingRequest(text: "") }.listRowBackground(style.background)
-                        }
-                        Section { Label("Pairing keys stay in Keychain.", systemImage: "lock.shield").font(style.system(.caption)).foregroundStyle(style.muted).listRowBackground(style.background) }
-                    }
-                    .listStyle(.plain).scrollContentBackground(.hidden)
-                    .environment(\.defaultMinListRowHeight, style.pt(44))
-                }
-            }
+            landingContent
             .background(style.background)
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: RemoteRoute.self) { route in
@@ -108,7 +67,8 @@ struct RemoteRootView: View {
                             Button("Projects", systemImage: "folder") { path.append(.projects(desktopID)) }.labelStyle(.iconOnly)
                                 .accessibilityHint("Find, sort and create projects")
                         }
-                        DashboardView(model: model, openProject: { path.append(.terminals($0)) }, openGlobal: { path.append(.global(desktopID)) })
+                        DashboardView(model: model, openProject: { path.append(.terminals($0)) }, openGlobal: { path.append(.global(desktopID)) },
+                                      reviewDecision: { dashboardDecision = HostedDashboardDecision(hostID: desktopID, hostName: model.desktop?.name ?? "Host", decision: $0) })
                     }.background(style.background).id(desktopID).toolbar(.hidden, for: .navigationBar).edgeSwipeBack()
                 case .global:
                     GlobalOrchestratorScreen(model: model, onBack: pop)
@@ -129,20 +89,35 @@ struct RemoteRootView: View {
                                              shortcutsActive: path.last == .projects(desktopID) && newProject == nil)
                     }.background(style.background).id(desktopID).toolbar(.hidden, for: .navigationBar).edgeSwipeBack()
                 case .terminals(let project):
-                    TerminalTabsView(model: model, project: project, onBack: pop)
+                    TerminalTabsView(model: model, project: project, onBack: pop, onProjects: {
+                        if let id = model.selectedDesktopID { path = [.dashboard(id), .projects(id)] }
+                    })
                         .toolbar(.hidden, for: .navigationBar).edgeSwipeBack()
                 }
             }
         }
+    }
+    private var presentedNavigation: some View {
+        navigationContent
         .background(style.background.ignoresSafeArea())
+        .environment(\.tabShortcuts, model.keyboard.tabShortcuts)
+        .background {
+            KeyCommandHost(active: rootTabHostActive, actions: [], avoidTextInput: true)
+                .environment(\.tabShortcuts, model.keyboard.tabShortcuts)
+                .frame(width: 1, height: 1).accessibilityHidden(true)
+        }
+        .overlay { if !projectTabsOnTop { TabShortcutGuide(controller: model.keyboard.tabShortcuts) } }
         .sheet(item: $pairingRequest) { request in
             PairDesktopSheet(model: model, initialText: request.text, fromLink: request.fromLink, onAdded: { id in
-                path = [.dashboard(id)]
-                Task { await model.activate(id) }
+                openHost(id)
             }).desktopThemed(model.theme.style)
         }
         .sheet(isPresented: $showingDisplay) { DisplaySettingsSheet(model: model).desktopThemed(model.theme.style) }
         .sheet(item: $newProject) { NewProjectSheet(sheet: $0).desktopThemed(model.theme.style) }
+        .sheet(item: $dashboardDecision) { item in
+            DashboardDecisionSheet(item: item, answered: sentDecisions[SentDecision(item)] != nil) { command in try await respondToDecision(item, command: command) }
+                .desktopThemed(model.theme.style)
+        }
         // Renaming belongs to that one desktop, so it wears that desktop's colors even while another one is shown.
         .sheet(item: $renaming) { RenameDesktopSheet(model: model, desktop: $0).desktopThemed(model.theme.style(for: $0.id)) }
         .alert("Remove pairing?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing) { desktop in
@@ -153,12 +128,229 @@ struct RemoteRootView: View {
             Button("Cancel", role: .cancel) { removing = nil }
         } message: { desktop in Text("Removes \(desktop.name)’s local pairing keys. Desktop sessions keep running. Revoke this device on the desktop to deny future access.") }
         .onOpenURL { url in pairingRequest = PairingRequest(text: url.absoluteString, fromLink: true) }
+    }
+    var body: some View {
+        // Two parts, not one expression: as one, the compiler gives up type-checking it.
+        observedNavigation
+        .onChange(of: model.dashboard) { _, _ in mirrorActiveDashboard() }
+        .onChange(of: hostDashboards.hosts) { _, _ in pruneSentDecisions() }
+        .task(id: path.isEmpty && scenePhase == .active) {
+            installRootTabHandler()
+            syncHostDashboards()
+            guard path.isEmpty, scenePhase == .active else { return }
+            while !Task.isCancelled {
+                if model.state == .connected { await model.refreshDashboardQuietly(); mirrorActiveDashboard() }
+                do { try await Task.sleep(for: .seconds(15)) } catch { break }
+            }
+        }
+    }
+    private var observedNavigation: some View {
+        presentedNavigation
         // The global orchestrator opened or started from a project (its menu, the New terminal sheet): the dashboard's Global screen,
         // out of the project, so Back leads to the dashboard and never into a project.
         .onChange(of: model.globalScreenRequests) { _, _ in
             guard let id = model.selectedDesktopID else { return }
             path = [.dashboard(id), .global(id)]
         }
+        .onChange(of: path) { _, _ in model.keyboard.tabShortcuts.cancelPrefix(); installRootTabHandler(); syncHostDashboards() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { model.keyboard.tabShortcuts.cancel() }
+            syncHostDashboards()
+        }
+        .onChange(of: model.desktops.map { "\($0.id):\($0.name)" }) { _, _ in syncHostDashboards() }
+        .onChange(of: model.state) { _, _ in syncHostDashboards() }
+        .onChange(of: model.keyboard.hardware.isAttached) { _, _ in model.keyboard.tabShortcuts.cancel() }
+        .onChange(of: model.keyboard.software.isShown) { _, _ in model.keyboard.tabShortcuts.cancel() }
+        .onChange(of: model.keyboard.layout) { _, _ in model.keyboard.tabShortcuts.cancel() }
+    }
+    private var landingContent: some View {
+        VStack(spacing: 0) {
+            WorkspaceBar(title: style.cased("RiWork")) {
+                Button("Display settings", systemImage: "textformat.size") { showingDisplay = true }.labelStyle(.iconOnly)
+                Button("Add desktop", systemImage: "plus") { pairingRequest = PairingRequest(text: "") }.labelStyle(.iconOnly).disabled(model.loadFailed)
+            }
+            if model.loadFailed {
+                LibraryFailureView(model: model)
+            } else if model.desktops.isEmpty {
+                EmptyDesktopOverlay { pairingRequest = PairingRequest(text: "") }
+            } else {
+                List {
+                    HostDashboardSections(store: hostDashboards, openHost: { openHost($0) },
+                                          openTarget: { openHost($0, target: $1) }, review: { dashboardDecision = $0 })
+                    Section("Desktops") {
+                        ForEach(model.desktops) { desktop in
+                            HStack(spacing: 0) {
+                                Button {
+                                    openHost(desktop.id)
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "desktopcomputer").font(.system(size: style.pt(14))).foregroundStyle(style.accent)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(desktop.name).font(style.face(13, bold: true, relativeTo: .headline)).foregroundStyle(style.text)
+                                            Text(desktop.pairing.relayHost).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted)
+                                            if let host = hostDashboards.hosts.first(where: { $0.id == desktop.id }) {
+                                                Text(host.freshness().text).font(style.face(10, relativeTo: .caption2))
+                                                    .foregroundStyle(host.freshness().stale ? style.warning : style.muted).lineLimit(2)
+                                            }
+                                        }
+                                        Spacer(minLength: 4)
+                                        Image(systemName: "chevron.right").font(style.system(.caption)).foregroundStyle(style.muted)
+                                    }.frame(minHeight: style.pt(44)).contentShape(Rectangle())
+                                }.buttonStyle(.plain).accessibilityHint("Open this desktop's dashboard and projects")
+                                Menu {
+                                    Button("Rename", systemImage: "pencil") { renaming = desktop }
+                                    Button("Remove from this device", systemImage: "trash", role: .destructive) { removing = desktop }
+                                } label: { Label("Desktop options for \(desktop.name)", systemImage: "ellipsis") }.labelStyle(.iconOnly)
+                            }
+                            .listRowBackground(style.background)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 8))
+                            .listRowSeparatorTint(style.divider)
+                            .contextMenu {
+                                Button("Rename", systemImage: "pencil") { renaming = desktop }
+                                Button("Remove from this device", systemImage: "trash", role: .destructive) { removing = desktop }
+                            }
+                            .swipeActions {
+                                Button("Remove", role: .destructive) { removing = desktop }
+                                Button("Rename") { renaming = desktop }.tint(style.accent)
+                            }
+                        }
+                        Button("Pair a desktop", systemImage: "plus.circle") { pairingRequest = PairingRequest(text: "") }.listRowBackground(style.background)
+                    }
+                    Section { Label("Pairing keys stay in Keychain.", systemImage: "lock.shield").font(style.system(.caption)).foregroundStyle(style.muted).listRowBackground(style.background) }
+                }
+                .listStyle(.plain).scrollContentBackground(.hidden)
+                .environment(\.defaultMinListRowHeight, style.pt(44))
+                .refreshable { await refreshHostDashboards() }
+            }
+        }
+    }
+    private func installRootTabHandler() {
+        if let route = path.last {
+            switch route { case .terminals, .projects: return; default: break }
+        }
+        model.keyboard.tabShortcuts.setAppHandler(owner: tabShortcutOwner) { action in
+            // All hosts belongs to no host: its Tab actions would reach whichever host was chosen last, past `openHost`. Only a host's
+            // own screens act, and on that host.
+            guard let route = path.last, let id = model.selectedDesktopID else { return }
+            switch route {
+            case .dashboard(let routeID), .global(let routeID): guard routeID == id else { return }
+            default: return
+            }
+            switch action {
+            case .projects: path = [.dashboard(id), .projects(id)]
+            case .newTerminal:
+                if let projectID = model.projectID, let project = model.project(withID: projectID) {
+                    model.newTerminalRequestedProject = projectID
+                    path = [.dashboard(id), .terminals(project)]
+                }
+            case .modelPicker: if model.selectedChat != nil { model.keyboard.requestModelPicker() }
+            default: break
+            }
+        }
+    }
+    private var projectTabsOnTop: Bool {
+        if let route = path.last, case .terminals = route { return true }
+        return false
+    }
+    private var rootTabHostActive: Bool {
+        guard scenePhase == .active, model.keyboard.usesClicks, model.keyboard.usesHardwareLayout,
+              pairingRequest == nil, !showingDisplay, renaming == nil, removing == nil, newProject == nil,
+              dashboardDecision == nil, openingHostID == nil else { return false }
+        guard let route = path.last else { return true }
+        if case .dashboard = route { return true }
+        return false
+    }
+    /// The host whose one mobile socket belongs to the interactive model. A failed connection that will not retry by itself (no queued
+    /// keys, no reconnect on its way) holds none, so the overview reads that host like any other.
+    private var activeOverviewHostID: String? {
+        guard let id = model.selectedDesktopID else { return nil }
+        switch model.state {
+        case .connected, .connecting, .suspended: return id
+        case .failed: return model.reconnectTask != nil || model.hasPendingKeys(forDesktop: id) ? id : nil
+        case .disconnected: return model.wantsConnection ? id : nil
+        }
+    }
+    private func syncHostDashboards() {
+        hostDashboards.compressTraffic = { [model] in model.compressTraffic }
+        hostDashboards.setVisible(path.isEmpty && openingHostID == nil && !model.loadFailed,
+                                  desktops: model.desktops, sceneActive: scenePhase == .active, activeHostID: activeOverviewHostID)
+        mirrorActiveDashboard()
+    }
+    private func mirrorActiveDashboard() {
+        guard let id = activeOverviewHostID, let desktop = model.desktops.first(where: { $0.id == id }) else { return }
+        let state: HostDashboardEntry.State = model.dashboardSupport == .unsupported ? .unsupported
+            : (model.state == .connected ? .ready : (model.state == .connecting ? .refreshing : .offline))
+        hostDashboards.updateActiveHost(HostDashboardEntry(id: id, name: desktop.name, snapshot: model.dashboard,
+                                                         readAt: model.dashboardReadAt, state: state, failure: model.dashboardFailure))
+    }
+    private func refreshHostDashboards() async {
+        if model.state == .connected { await model.refreshDashboardQuietly(); mirrorActiveDashboard() }
+        await hostDashboards.refresh()
+    }
+    /// Close the overview's temporary mobile socket before handing this exact pairing to the interactive model. The overview stays
+    /// paused (and other hosts wait) until the activation is done: it must not register the pairing while the model does.
+    private func openHost(_ id: String, target: DashboardTarget? = nil) {
+        guard openingHostID == nil, model.desktops.contains(where: { $0.id == id }) else { return }
+        openingHostID = id
+        Task {
+            defer { openingHostID = nil; syncHostDashboards() }
+            await hostDashboards.stop()
+            // The host's own screen comes up at once and shows the connection's progress there.
+            path = [.dashboard(id)]
+            await model.activate(id)
+            guard model.selectedDesktopID == id else { if path == [.dashboard(id)] { path = [] }; return }
+            if let target, model.state == .connected {
+                await model.refreshDashboardQuietly()
+                // The person may have gone Back or on while this connected: never push onto a stack they have left.
+                guard path == [.dashboard(id)], model.selectedDesktopID == id else { return }
+                let attention = model.dashboard?.attention.rows.first { $0.target == target }
+                let session = attention?.session ?? model.dashboard?.working.rows.first { $0.session.target == target }?.session
+                    ?? model.dashboard?.finished.rows.first { $0.session.target == target }?.session
+                var projectID = attention?.projectID ?? session?.projectID
+                if case .task(let taskID) = target { projectID = model.dashboard?.tasksInProgress.rows.first { $0.id == taskID }?.projectID }
+                switch model.dashboardDestination(target, session: session, projectID: projectID) {
+                case .global: path.append(.global(id))
+                case .project(let projectID, let tabKey):
+                    if let project = model.project(withID: projectID) { model.requestProjectTab(projectID, key: tabKey); path.append(.terminals(project)) }
+                default: break
+                }
+            }
+        }
+    }
+    /// The interactive host answers over its own connection; any other host over a temporary one, so answering a card never switches,
+    /// disconnects or clears the host in use. Either way the same checks run (`DashboardResponder`).
+    private func respondToDecision(_ item: HostedDashboardDecision, command: ChatCommand) async throws {
+        let key = SentDecision(item)
+        guard sentDecisions[key] == nil else { throw DashboardResponseError.alreadySent }
+        guard openingHostID == nil, let desktop = model.desktops.first(where: { $0.id == item.hostID }) else { throw DashboardResponseError.hostUnavailable }
+        openingHostID = item.hostID
+        defer { openingHostID = nil; syncHostDashboards() }
+        // Every overview socket closes first: the response may need this host's one mobile socket.
+        await hostDashboards.stop()
+        let interactive = activeOverviewHostID == item.hostID
+        do {
+            if interactive {
+                if model.state != .connected { await model.activate(item.hostID) }
+                try await model.respondToDashboardDecision(item.decision, hostID: item.hostID, command: command)
+            } else {
+                try await hostDashboards.respond(to: item.decision, on: desktop, command: command)
+            }
+        } catch {
+            if (error as? ChatControlError)?.outcomeIsUncertain == true { sentDecisions[key] = .now }
+            throw error
+        }
+        sentDecisions[key] = .now
+        if interactive { await model.refreshDashboardQuietly(); mirrorActiveDashboard() }
+    }
+    /// A response is forgotten once a read made after it no longer lists its request (or its host is gone).
+    private func pruneSentDecisions() {
+        guard !sentDecisions.isEmpty else { return }
+        let kept = sentDecisions.filter { key, sentAt in
+            guard let host = hostDashboards.hosts.first(where: { $0.id == key.hostID }) else { return false }
+            guard let readAt = host.readAt, readAt > sentAt, let snapshot = host.snapshot else { return true }
+            return snapshot.decisions.rows.contains { $0.chatID == key.chatID && $0.requestID == key.requestID }
+        }
+        if kept.count != sentDecisions.count { sentDecisions = kept }
     }
 }
 
@@ -235,13 +427,26 @@ struct ProjectSelectionView: View {
     /// This list is the screen on top and no sheet is over it: only then is ⌘⇧N live.
     var shortcutsActive = true
     @State private var search = ""
+    @State private var keyboardProjectID: String?
+    @State private var tabShortcutOwner = UUID()
+    @FocusState private var searchFocused: Bool
+    private var visibleProjects: [RemoteProject] { model.visibleProjects(matching: search) }
+    private var highlightedProject: RemoteProject? {
+        let projects = visibleProjects
+        return projects.first(where: { $0.id == keyboardProjectID }) ?? projects.first
+    }
+    private var navigationActive: Bool { shortcutsActive && model.keyboard.usesHardwareLayout && !searchFocused }
     var body: some View {
+        let projects = visibleProjects
+        let highlightedID = model.keyboard.usesHardwareLayout ? highlightedProject?.id : nil
         VStack(spacing: 0) {
             ConnectionPanel(model: model)
             DesktopRule()
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(style.muted)
                 TextField("Find a project", text: $search).textFieldStyle(.plain).autocorrectionDisabled()
+                    .focused($searchFocused).accessibilityIdentifier("projects-search")
+                    .onSubmit { searchFocused = false }
                 if !search.isEmpty { Button("Clear filter", systemImage: "xmark") { search = "" }.labelStyle(.iconOnly) }
                 if model.projects.count > 1 { ProjectSortMenu(model: model) }
             }.padding(.horizontal, 12).frame(minHeight: style.pt(44))
@@ -250,9 +455,10 @@ struct ProjectSelectionView: View {
                 Label("Saved projects · reconnect to refresh", systemImage: "clock.badge.exclamationmark")
                     .font(style.system(.caption)).foregroundStyle(style.warning).padding(8)
             }
+            ScrollViewReader { proxy in
             List {
-                ForEach(model.visibleProjects(matching: search)) { project in
-                    Button { onSelect(project) } label: {
+                ForEach(projects) { project in
+                    Button { keyboardProjectID = project.id; onSelect(project) } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "folder").font(.system(size: style.pt(14))).foregroundStyle(style.accent)
                             VStack(alignment: .leading, spacing: 2) {
@@ -265,7 +471,10 @@ struct ProjectSelectionView: View {
                         }.frame(minHeight: style.pt(40)).contentShape(Rectangle())
                     }.buttonStyle(.plain).accessibilityHint("Open tabs for this project’s existing terminals")
                         .accessibilityValue(project.agents?.spoken ?? "")
-                        .listRowBackground(style.background).listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
+                        .accessibilityAddTraits(highlightedID == project.id ? .isSelected : [])
+                        .accessibilityIdentifier("project-\(project.id)").id(project.id)
+                        .listRowBackground(highlightedID == project.id ? style.accent.opacity(0.14) : style.background)
+                        .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
                         .listRowSeparatorTint(style.divider)
                         .swipeActions(edge: .leading) {
                             if let onNewTerminal { Button("New terminal", systemImage: "plus") { onNewTerminal(project) }.tint(style.accent) }
@@ -284,14 +493,33 @@ struct ProjectSelectionView: View {
                 }
             }.listStyle(.plain).scrollContentBackground(.hidden).environment(\.defaultMinListRowHeight, style.pt(44))
                 .refreshable { await model.refresh() }
+                .onChange(of: highlightedProject?.id) { _, id in
+                    if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
+                }
+            }
         }.background(style.background)
             // Agent counts change while this list is looked at: read it again every few seconds, only while it is on screen.
             .task { await model.keepFresh(.projects) }
+            .onAppear { reconcileProjectSelection(); installProjectTabHandler() }
+            .onChange(of: projects.map(\.id)) { _, _ in reconcileProjectSelection() }
+            .onDisappear { model.keyboard.tabShortcuts.clearAppHandler(owner: tabShortcutOwner) }
+            .onChange(of: shortcutsActive) { _, active in
+                if active { installProjectTabHandler() }
+                else { model.keyboard.tabShortcuts.clearAppHandler(owner: tabShortcutOwner) }
+            }
+            .onChange(of: model.keyboard.usesHardwareLayout) { _, _ in
+                if shortcutsActive { installProjectTabHandler() }
+            }
             // ⌘⇧N. ⌘N is "New terminal" on the terminal screen, so this is the same thing for a project. It is registered only while
             // this list is the screen on top, and nothing on screen here claims it: the terminal's key view (KeyCapture) holds ⌘K and
             // ⌘, and, while the hotkey menu is open, ⌘N and ⌘. ; a person's hotkey shortcuts and the Clicks template (⌘ and ⌘⇧ with
             // E T W A S D B F C Z R L, never N) are matched there too, and that view is on the terminal screen, not here.
             .background {
+                KeyCommandHost(active: navigationActive, actions: projectNavigationActions, avoidTextInput: true)
+                    .frame(width: 0, height: 0)
+                Button("Find a project") { searchFocused = true }
+                    .keyboardShortcut("f", modifiers: .command).disabled(!shortcutsActive)
+                    .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
                 if let onNewProject {
                     Button("New project", action: onNewProject)
                         .keyboardShortcut("n", modifiers: [.command, .shift])
@@ -306,6 +534,44 @@ struct ProjectSelectionView: View {
                     .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
             }
     }
+    private func reconcileProjectSelection() {
+        let projects = visibleProjects
+        if !projects.contains(where: { $0.id == keyboardProjectID }) { keyboardProjectID = projects.first?.id }
+    }
+    private func moveProject(_ direction: Int) {
+        guard navigationActive, !visibleProjects.isEmpty else { return }
+        let projects = visibleProjects
+        let current = projects.firstIndex(where: { $0.id == highlightedProject?.id }) ?? 0
+        keyboardProjectID = projects[(current + direction + projects.count) % projects.count].id
+    }
+    private var projectNavigationActions: [KeyAction] {
+        guard navigationActive else { return [] }
+        return ClicksNavigation.actions([
+            KeyAction(input: "f", modifiers: .command, title: "Find a project") { searchFocused = true },
+            KeyAction(input: UIKeyCommand.inputUpArrow, title: "Previous project") { moveProject(-1) },
+            KeyAction(input: UIKeyCommand.inputDownArrow, title: "Next project") { moveProject(1) },
+            KeyAction(input: "\t", title: "Next project") { moveProject(1) },
+            KeyAction(input: "\t", modifiers: .shift, title: "Previous project") { moveProject(-1) },
+            KeyAction(input: "\r", title: "Open selected project") {
+                if navigationActive, let project = highlightedProject { onSelect(project) }
+            },
+            KeyAction(input: UIKeyCommand.inputEscape, title: "Clear project filter") { search = "" }
+        ], enabled: model.keyboard.usesClicks)
+    }
+    private func installProjectTabHandler() {
+        guard shortcutsActive else { return }
+        model.keyboard.tabShortcuts.setAppHandler(owner: tabShortcutOwner) { action in
+            guard navigationActive else { return }
+            switch action {
+            case .newTerminal:
+                if model.state == .connected, let project = highlightedProject { onNewTerminal?(project) }
+            // These belong to a terminal/chat screen. The project list already is Projects;
+            // never forward them to an old selected project's handler.
+            case .projects, .selectTab, .modelPicker, .keyMenu: break
+            default: break
+            }
+        }
+    }
 }
 
 struct TerminalTabsView: View {
@@ -313,6 +579,8 @@ struct TerminalTabsView: View {
     @Bindable var model: RemoteModel
     let project: RemoteProject
     var onBack: () -> Void
+    var onProjects: (() -> Void)? = nil
+    @State private var tabShortcutOwner = UUID()
     @State private var sessionInfo: SessionInfo?
     @State private var showingDisplay = false
     @State private var followOutput = true
@@ -339,9 +607,12 @@ struct TerminalTabsView: View {
         if model.selectedBlocked != nil { return .unavailable }
         return model.sessionID != nil && !model.terminalCovered ? .terminal : .none
     }
-    /// The top of the screen: one row for every kind of tab, so switching between a shell and a chat moves nothing.
+    /// One row for every kind of tab, so switching between a shell and a chat moves nothing.
     private var chrome: TabScreenChrome { TabScreenChrome.decide(content: content, focusMode: model.focusMode) }
     private var focused: Bool { chrome.header == .hidden }
+    /// A physical keyboard leaves the whole screen available: keep the tab strip within reach of its keys. Showing the software
+    /// keyboard returns to the touch layout, which keeps the strip clear of the composer's smaller working area.
+    private var navigationAtBottom: Bool { model.keyboard.usesHardwareLayout }
     var body: some View {
         let _ = Perf.count("body.TerminalTabsView")
         // Three parts, not one expression: as one, the Release build gives up type-checking it.
@@ -357,7 +628,7 @@ struct TerminalTabsView: View {
                 Spacer(minLength: 0)
             } else {
             // Focus mode drops all of this: only the shell (and its keyboard) stays.
-            if chrome.header == .navigationRow {
+            if chrome.header == .navigationRow && !navigationAtBottom {
                 navigationRow(chrome)
                 if let note = model.orchestratorNotice { NoteLine(text: note) { model.clearOrchestratorNotice() } }
             }
@@ -377,9 +648,23 @@ struct TerminalTabsView: View {
                     ConnectionPanel(model: model).padding()
                 }
             } else { SessionConsole(model: model, followOutput: $followOutput) }
+            if chrome.header == .navigationRow && navigationAtBottom {
+                if let note = model.orchestratorNotice { NoteLine(text: note) { model.clearOrchestratorNotice() } }
+                navigationRow(chrome)
+                    .overlay(alignment: .top) { if !style.glass { DesktopRule() } }
+            }
             }
         }
         .background((focused ? style.terminalBackground : style.background).ignoresSafeArea())
+        .overlay(alignment: .topTrailing) {
+            if focused && UIDevice.current.userInterfaceIdiom == .phone {
+                Text(project.name).font(style.face(9, relativeTo: .caption2)).lineLimit(1)
+                    .foregroundStyle(style.terminalForeground).padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(.ultraThinMaterial, in: Capsule()).frame(maxWidth: 180, alignment: .trailing).padding(6)
+                    .allowsHitTesting(false).accessibilityLabel("Current project: \(project.name)")
+                    .accessibilityIdentifier("current-project-focus").chatLayoutProbe("current-project-focus")
+            }
+        }
         .statusBarHidden(chrome.statusBarHidden)
         .onChange(of: model.sessionID) { _, _ in sessionInfo = nil; followOutput = true }
         .onChange(of: model.focusMode) { _, _ in model.updateKeepAwake() }
@@ -435,6 +720,8 @@ struct TerminalTabsView: View {
     /// ⌘N, and what runs while this screen is up.
     private func lifecycle(_ content: some View) -> some View {
         content
+        .environment(\.tabShortcuts, model.keyboard.tabShortcuts)
+        .overlay { TabShortcutGuide(controller: model.keyboard.tabShortcuts) }
         // ⌘N, wherever the keyboard is (also in focus mode, where the header is gone). SwiftUI turns it into a UIKeyCommand on the
         // hosting controller, which the terminal's key view passes on: it claims no ⌘ combination.
         .background {
@@ -443,14 +730,22 @@ struct TerminalTabsView: View {
                 .disabled(!model.canOpenNewTerminal || model.projectID != project.id || newTerminal != nil)
                 .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
         }
+        .background { projectKeyboardShortcuts }
+        // A project with no open tab, or one the phone cannot open, has no terminal or composer to take the Tab prefix: this does.
+        .background {
+            KeyCommandHost(active: tabKeyHostActive, actions: [], avoidTextInput: true)
+                .environment(\.tabShortcuts, model.keyboard.tabShortcuts)
+                .frame(width: 1, height: 1).accessibilityHidden(true)
+        }
         .task(id: project.id) { await model.chooseProject(project.id) }
         // Each tab's state changes while the strip is looked at: read the tabs again every few seconds. Focus mode hides the strip, and
         // the reading goes on: it runs for as long as this screen is up, whatever is on it. A chat on it takes its live worker cards'
         // states from these same lists (`WorkerTimeline`), so they stay fresh while the chat is shown.
         .task(id: project.id) { await model.keepFresh(.sessions) }
         // The terminal is released (its long poll, its pinned size) the moment a chat takes the screen, and picked up again when a terminal tab does.
-        .onAppear { onScreen = true; syncTerminalVisible(); openRequestedNewTerminal() }
+        .onAppear { onScreen = true; syncTerminalVisible(); openRequestedNewTerminal(); installTabHandler() }
         .onDisappear {
+            model.keyboard.tabShortcuts.clearAppHandler(owner: tabShortcutOwner)
             onScreen = false; syncTerminalVisible()
             if model.newTerminalRequestedProject == project.id { model.newTerminalRequestedProject = nil }
             // A tab a dashboard row asked for belongs to this visit (Back during the load): it is not put up on a later one.
@@ -460,6 +755,77 @@ struct TerminalTabsView: View {
         .onChange(of: model.newTerminalRequestedProject) { _, _ in openRequestedNewTerminal() }
         .onChange(of: model.projectID) { _, _ in openRequestedNewTerminal() }
         .onChange(of: model.state) { _, _ in openRequestedNewTerminal() }
+    }
+    private func installTabHandler() {
+        model.keyboard.tabShortcuts.setAppHandler(owner: tabShortcutOwner) { action in
+            guard projectShortcutsActive else { return }
+            switch action {
+            case .selectTab(let number): selectTab(at: number - 1)
+            case .newTerminal: openNewTerminal()
+            case .projects: (onProjects ?? onBack)()
+            case .modelPicker: if model.selectedChat != nil { model.keyboard.requestModelPicker() }
+            default: break
+            }
+        }
+    }
+    /// These stay available in both keyboard layouts, including focus mode. Custom terminal hotkeys keep their existing ownership:
+    /// while a shell is taking direct input, a binding the person assigned is left to its key view.
+    private var projectShortcutsActive: Bool {
+        onScreen && model.scope == .project && model.projectID == project.id && newTerminal == nil && sessionInfo == nil
+            && !showingDisplay && !showingWorkers && !showingEditTabs && closing == nil && closingTab == nil && renamingTab == nil
+            && model.memoEditor == nil
+    }
+    private var tabKeyHostActive: Bool {
+        (content == .none || content == .unavailable) && projectShortcutsActive && model.keyboard.usesClicks && model.keyboard.usesHardwareLayout
+    }
+    private func terminalOwnsShortcut(_ input: String, shift: Bool = false) -> Bool {
+        guard content == .terminal, model.directTyping, let code = HIDKey.code(forCharacter: input) else { return false }
+        let chord = KeyChord(keyCode: code, modifiers: shift ? [.command, .shift] : .command)
+        return model.hotkeys.shortcutMap.action(for: chord) != nil
+    }
+    private var projectKeyboardShortcuts: some View {
+        Group {
+            ForEach(1...9, id: \.self) { number in
+                Button("Select tab \(number)") { selectTab(at: number - 1) }
+                    .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
+                    .disabled(!projectShortcutsActive || model.tabs.count < number || terminalOwnsShortcut(String(number)))
+            }
+            Button("Previous tab") { cycleTab(-1) }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+                .disabled(!projectShortcutsActive || model.tabs.count < 2 || terminalOwnsShortcut("[", shift: true))
+            Button("Next tab") { cycleTab(1) }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+                .disabled(!projectShortcutsActive || model.tabs.count < 2 || terminalOwnsShortcut("]", shift: true))
+            Button("Back", action: onBack)
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+                .disabled(!projectShortcutsActive || terminalOwnsShortcut("p", shift: true))
+            Button("Display settings") { showingDisplay = true }
+                .keyboardShortcut(",", modifiers: [.command, .shift])
+                .disabled(!projectShortcutsActive || terminalOwnsShortcut(",", shift: true))
+            Button("Open a worker or shell") { showingWorkers = true }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                .disabled(!projectShortcutsActive || !model.desktopFeatures.tabs || model.sharedTabs == nil || model.state != .connected
+                          || terminalOwnsShortcut("o", shift: true))
+        }
+        .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+    }
+    private var selectedTabKey: String? {
+        model.selectedChatID.map { "chat:\($0)" } ?? model.selectedBlockedID.map { "shell:\($0)" }
+            ?? (model.terminalCovered ? nil : model.sessionID.map { "shell:\($0)" })
+    }
+    private func selectTab(at index: Int) {
+        guard projectShortcutsActive, model.tabs.indices.contains(index) else { return }
+        switch model.tabs[index] {
+        case .terminal(let session): Task { await model.chooseSession(session) }
+        case .chat(let chat): model.selectChat(chat.id)
+        case .orchestratorChat, .unavailable: model.chooseOrchestrator(model.tabs[index])
+        }
+    }
+    private func cycleTab(_ step: Int) {
+        let tabs = model.tabs
+        guard !tabs.isEmpty else { return }
+        let index = tabs.firstIndex(where: { $0.key == selectedTabKey }) ?? (step > 0 ? tabs.count - 1 : 0)
+        selectTab(at: (index + step + tabs.count) % tabs.count)
     }
     /// Back, the tab strip and the menu: the same row, at the same height, over a terminal and over a chat. With no tab open the
     /// project’s name stands where the strip would be. New terminal and Open a worker or shell… are in the menu's Tab section.
@@ -487,6 +853,7 @@ struct TerminalTabsView: View {
         .accessibilityElement(children: .contain)
         .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
         .chatLayoutProbe("navigation")
+        .chatLayoutProbe("navigation-bottom", visible: navigationAtBottom)
         // Hosted tests and the screenshot harness open what a person reaches through menus (inert outside DEBUG).
         .background {
             Color.clear
@@ -695,6 +1062,14 @@ struct TerminalTabsView: View {
         return true
     }
     /// A terminal's tab: a shell, an agent, or an orchestrator that runs in a terminal.
+    @ViewBuilder private func projectCaption(selected: Bool) -> some View {
+        if selected && UIDevice.current.userInterfaceIdiom == .phone {
+            Text(project.name + (model.desktops.count > 1 ? " · \(model.desktop?.name ?? "")" : ""))
+                .font(style.face(9, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
+                .accessibilityLabel("Current project: \(project.name)")
+                .accessibilityIdentifier("current-project").chatLayoutProbe("current-project")
+        }
+    }
     private func terminalTab(_ session: RemoteSession, entry: SharedTab? = nil) -> some View {
         let selected = !model.terminalCovered && model.sessionID == session.id
         return Button { Task { await model.chooseSession(session) } } label: {
@@ -713,6 +1088,7 @@ struct TerminalTabsView: View {
                         ActivityIndicator(activity: session.shownActivity, subagents: session.subagents_working)
                     }
                 }
+                projectCaption(selected: selected)
             }
             .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
             .tabChrome(selected: selected, waiting: entry.map { $0.status == .waiting } ?? (session.shownActivity == .waiting))
@@ -756,6 +1132,7 @@ struct TerminalTabsView: View {
                     ActivityIndicator(activity: activity)
                     if case .failed = state { Image(systemName: "exclamationmark.triangle.fill").font(style.system(.caption2)).foregroundStyle(style.error).accessibilityHidden(true) }
                 }
+                projectCaption(selected: selected)
             }
             .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
             .tabChrome(selected: selected, waiting: activity == .waiting)
@@ -780,6 +1157,7 @@ struct TerminalTabsView: View {
                 Label { Text(session.title) } icon: {
                     Image(systemName: session.provider?.glyph ?? "point.3.connected.trianglepath.dotted").foregroundStyle(style.magenta)
                 }.font(style.face(12, relativeTo: .subheadline)).lineLimit(1)
+                projectCaption(selected: selected)
             }
             .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
             .tabChrome(selected: selected, waiting: false)
@@ -994,8 +1372,9 @@ struct SessionConsole: View {
                     if model.directTyping {
                         KeyCapture(focus: keyFocus, isEnabled: model.session?.alive == true,
                                    label: "Terminal input for \(model.session?.title ?? "session") \(model.session?.shortID ?? "")",
-                                   hotkeys: model.hotkeys.custom,
-                                   shortcuts: model.hotkeys.shortcuts, palette: palette, help: help,
+                                   hotkeys: model.hotkeys.resolvedHotkeys(usingClicks: model.keyboard.usesClicks),
+                                   hardwareKeyboard: model.keyboard.usesHardwareLayout, usesClicks: model.keyboard.usesClicks,
+                                   shortcuts: model.hotkeys.resolvedShortcuts(usingClicks: model.keyboard.usesClicks), palette: palette, help: help,
                                    onEditHotkeys: { openEditor(.list) }, onNewHotkey: { openEditor(.new) }, onEditHotkey: { openEditor(.edit($0)) },
                                    onKeyEvent: { model.keyboard.events.record($0) },
                                    dictation: DictationController.shared.barState(for: .terminal), onDictate: dictate,

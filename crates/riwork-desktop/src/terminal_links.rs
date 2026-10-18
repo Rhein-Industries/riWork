@@ -163,8 +163,10 @@ pub fn grid_geometry(
     if cols == 0 || rows == 0 {
         return None;
     }
-    let available_width = screen.0.checked_sub(explicit.left + explicit.right)?;
-    let available_height = screen.1.checked_sub(explicit.top + explicit.bottom)?;
+    let horizontal_padding = explicit.left.checked_add(explicit.right)?;
+    let vertical_padding = explicit.top.checked_add(explicit.bottom)?;
+    let available_width = screen.0.checked_sub(horizontal_padding)?;
+    let available_height = screen.1.checked_sub(vertical_padding)?;
     if available_width < cols || available_height < rows {
         return None;
     }
@@ -180,7 +182,7 @@ pub fn grid_geometry(
         if balance == PaddingBalance::True {
             // The top padding is capped at the horizontal padding plus half a cell, and the
             // rest goes to the bottom.
-            let most = (f64::from(explicit.left + explicit.right) + cell_width) / 2.0;
+            let most = (f64::from(horizontal_padding) + cell_width) / 2.0;
             origin_y = origin_y.min(most.floor());
         }
     }

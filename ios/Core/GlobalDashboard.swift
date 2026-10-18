@@ -129,6 +129,156 @@ public enum DashboardAttentionKind: Sendable, Equatable {
     case other(String)
 }
 
+/// Exact provider controls, kept separate from descriptive attention or AI summaries.
+public struct DashboardDecision: Sendable, Equatable, Identifiable {
+    public enum Content: Sendable, Equatable {
+        case approval(ChatApproval), question(ChatQuestion)
+    }
+    public let id: String
+    public let chatID: String
+    public let requestID: String
+    public let session: DashboardSession
+    public let observedAt: UInt64?
+    public let source: DashboardEventSource
+    public let content: Content
+    public var title: String {
+        switch content { case .approval(let approval): approval.title; case .question(let question): question.questions.first?.question ?? "Question" }
+    }
+    init?(wire value: JSONValue) {
+        // An identifier is answered exactly as the provider sent it: never trimmed or cut like display text.
+        guard let chatID = DashboardWire.uuid(value["chat_id"]), let requestID = value["request_id"].string, !requestID.isEmpty,
+              requestID.utf8.count <= 512, let session = DashboardSession(wire: value["session"]),
+              case .chat(let targetID, _, _) = session.target, targetID == chatID,
+              let source = DashboardEventSource(wire: value["source"]), source.chatID == chatID else { return nil }
+        let content: Content
+        switch value["kind"].string {
+        case "approval":
+            guard let approval = try? value["approval"].decode(ChatApproval.self), approval.requestID == requestID else { return nil }
+            content = .approval(approval)
+        case "question":
+            // Answers go by position: a prompt or option this phone cannot read would shift or hide them, so the card is left out whole.
+            let prompts = value["question"]["questions"].array
+            guard let question = try? value["question"].decode(ChatQuestion.self), question.requestID == requestID,
+                  !question.questions.isEmpty, question.questions.count <= 16, prompts.count == question.questions.count,
+                  zip(prompts, question.questions).allSatisfy({ $0["options"].array.count == $1.options.count }) else { return nil }
+            content = .question(question)
+        default: return nil
+        }
+        self.chatID = chatID; self.requestID = requestID; self.session = session; self.source = source; self.content = content
+        self.id = "\(chatID):\(value["kind"].string ?? ""):\(requestID)"
+        observedAt = LenientNumber.seconds(value["observed_at"])
+    }
+    public enum Check: Sendable, Equatable {
+        /// The same request, still pending with the same body and choices.
+        case current
+        /// Resolved, changed, another chat, or not a response this card offers.
+        case changed
+        /// The host's controls for this request could not be read in full: nothing can vouch for it from here.
+        case unreadable
+    }
+    /// Recheck the complete current control set immediately before an explicit response. Cached cards cannot authorize a changed
+    /// request, another chat, or a choice the provider never offered. Descriptive/AI-generated rows never reach this path. Only this
+    /// request's own controls count: an unrelated row or request the phone cannot read leaves it answerable.
+    public func check(_ command: ChatCommand, snapshot: ChatSnapshotReply) -> Check {
+        guard snapshot.v == 1, snapshot.chatID == chatID else { return .changed }
+        if snapshot.unattributedRequestControl || snapshot.partialRequestIDs.contains(requestID) { return .unreadable }
+        var transcript = ChatTranscript()
+        snapshot.controls.forEach { transcript.apply($0) }
+        if transcript.elidedRequests.contains(where: { $0.requestID == requestID }) { return .unreadable }
+        guard transcript.state == .waiting else { return .changed }
+        let current: Bool
+        switch (content, command) {
+        case (.approval(let approval), .approve(let id, let choice)):
+            current = id == requestID && !approval.choices.isEmpty && approval.choices.contains(choice)
+                && transcript.approvals.first(where: { $0.requestID == requestID }) == approval
+        case (.question(let question), .answer(let id, let answers)):
+            current = id == requestID && transcript.questions.first(where: { $0.requestID == requestID }) == question && answers.count == question.questions.count
+                && answers.allSatisfy { !$0.isEmpty && $0.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } }
+        default: current = false
+        }
+        return current ? .current : .changed
+    }
+    public func validates(_ command: ChatCommand, snapshot: ChatSnapshotReply) -> Bool { check(command, snapshot: snapshot) == .current }
+}
+
+public struct DashboardEventSource: Sendable, Equatable {
+    public let chatID: String
+    public let eventSequence: UInt64
+    public let eventID: String
+    init?(wire value: JSONValue) {
+        guard let chatID = DashboardWire.uuid(value["chat_id"]), let sequence = LenientNumber.seconds(value["event_seq"]),
+              value["event_id"].string == "chat:\(chatID):seq:\(sequence)" else { return nil }
+        self.chatID = chatID; eventSequence = sequence; eventID = "chat:\(chatID):seq:\(sequence)"
+    }
+}
+
+public struct DashboardDecisionSources: Sendable, Equatable {
+    public let state: String
+    public let sampledAt: UInt64?
+    public let chatsRead: Int?
+    public let chatsComplete: Int?
+    public let chatsTotal: Int?
+    public var complete: Bool { state == "read" }
+    init(wire value: JSONValue) {
+        state = value["state"].string ?? "unavailable"
+        sampledAt = LenientNumber.seconds(value["sampled_at"])
+        chatsRead = LenientNumber.count(value["chats_read"]); chatsComplete = LenientNumber.count(value["chats_complete"])
+        chatsTotal = LenientNumber.count(value["chats_total"])
+    }
+}
+
+public struct DashboardRecentActivity: Sendable, Equatable, Identifiable {
+    public let session: DashboardSession
+    public let source: DashboardEventSource
+    public let observedAt: UInt64?
+    public let kind: String
+    public let text: String
+    public let status: String?
+    public var id: String { source.eventID }
+    init?(wire value: JSONValue) {
+        guard let session = DashboardSession(wire: value["session"]), let source = DashboardEventSource(wire: value["source"]),
+              let text = DashboardWire.text(value["text"]) else { return nil }
+        self.session = session; self.source = source; self.text = text
+        observedAt = LenientNumber.seconds(value["observed_at"]); kind = value["kind"].string ?? "activity"
+        status = DashboardWire.text(value["status"])
+    }
+}
+
+public struct DashboardIntelligence: Sendable, Equatable {
+    public struct Insight: Sendable, Equatable, Identifiable {
+        /// Its place in its list: the same text from the same events can come twice, and each is a row of its own.
+        public let id: Int
+        public let text: String
+        public let sourceEventIDs: [String]
+    }
+    public let state: String
+    public let model: String?
+    public let generatedAt: UInt64?
+    public let summary: String?
+    public let highlights: [Insight]
+    public let followups: [Insight]
+    public let error: String?
+    public let stale: Bool
+    init(wire value: JSONValue) {
+        state = value["state"].string ?? "disabled"
+        model = DashboardWire.text(value["model"])
+        generatedAt = LenientNumber.seconds(value["generated_at"])
+        summary = DashboardWire.text(value["summary"], limit: 600)
+        error = DashboardWire.text(value["error"]).map { String($0.prefix(300)) }
+        stale = value["stale"] == .bool(true)
+        func insights(_ value: JSONValue) -> [Insight] {
+            let rows = value.array.prefix(8).compactMap { row -> (text: String, sources: [String])? in
+                guard let text = DashboardWire.text(row["text"]) else { return nil }
+                let sources = row["source_event_ids"].array.prefix(8).compactMap(\.string)
+                guard !sources.isEmpty, sources.allSatisfy({ $0.hasPrefix("chat:") && $0.utf8.count <= 512 }) else { return nil }
+                return (String(text.prefix(300)), Array(sources))
+            }
+            return rows.enumerated().map { Insight(id: $0.offset, text: $0.element.text, sourceEventIDs: $0.element.sources) }
+        }
+        highlights = insights(value["highlights"]); followups = insights(value["followups"])
+    }
+}
+
 public struct DashboardAttention: Sendable, Equatable {
     public let kind: DashboardAttentionKind
     public let target: DashboardTarget
@@ -327,6 +477,10 @@ public struct DashboardTotals: Sendable, Equatable {
 
 /// One answer to `dashboard.get`.
 public struct DashboardSnapshot: Sendable, Equatable {
+    public let intelligence: DashboardIntelligence
+    public let decisions: DashboardList<DashboardDecision>
+    public let decisionSources: DashboardDecisionSources
+    public let recentActivity: DashboardList<DashboardRecentActivity>
     /// When the desktop sampled it (Unix seconds); nil when it did not say.
     public let generatedAt: UInt64?
     /// Whether the desktop had read its chats: until it has, chat figures are unknown (nil), not zero. Nil when it did not say.
@@ -359,6 +513,10 @@ public struct DashboardSnapshot: Sendable, Equatable {
         guard case .object = value else { throw ReadError.unreadable }
         guard value["v"] == .number(1) else { throw value["v"] == .null ? ReadError.unreadable : ReadError.unsupportedVersion }
         generatedAt = LenientNumber.seconds(value["generated_at"])
+        intelligence = DashboardIntelligence(wire: value["intelligence"])
+        decisions = DashboardList(value["decisions"], total: value["decisions_total"], arrange: { $0 }, read: DashboardDecision.init(wire:))
+        decisionSources = DashboardDecisionSources(wire: value["decision_sources"])
+        recentActivity = DashboardList(value["recent_activity"], total: value["recent_activity_total"], arrange: { $0 }, read: DashboardRecentActivity.init(wire:))
         chatsKnown = { if case .bool(let known) = value["chats_known"] { return known }; return nil }()
         totals = DashboardTotals(wire: value["totals"], chatsKnown: chatsKnown)
         global = DashboardGlobal(wire: value["global"])
@@ -556,11 +714,11 @@ enum DashboardWire {
         return uuid.uuidString.lowercased()
     }
     /// Text that says something: trimmed, not empty, with control characters taken out, and no longer than a row can use.
-    static func text(_ value: JSONValue) -> String? {
+    static func text(_ value: JSONValue, limit: Int = 300) -> String? {
         guard let raw = value.string else { return nil }
         let cleaned = String(String.UnicodeScalarView(raw.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return nil }
-        return cleaned.count > 300 ? String(cleaned.prefix(300)) : cleaned
+        return cleaned.count > limit ? String(cleaned.prefix(limit)) : cleaned
     }
     static func provider(_ value: JSONValue) -> ChatProvider? {
         value.string.flatMap { ChatProvider(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }

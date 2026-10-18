@@ -1,5 +1,67 @@
 # Local acceptance evidence
 
+## Review fixes for dashboards, balancing and Tab shortcuts, 2026-10-17
+
+- `cargo test --no-fail-fast -p riwork-engine -p riwork-core -p riwork-cli -p riwork-remote`: **1,921 passed, zero failed,
+  208 ignored** (1,910 before these fixes). Covers the whole-reply byte budget, unreadable-log caching, request order and re-asked
+  ids, the Haiku fingerprint shared by app and CLI, failure backoff, the cache-only phone read and its refresh process, hidden-text
+  refusal, deadline-cut quota reads, per-account exclusion reasons and resume-by-thread-id across balanced accounts.
+- `cargo test -p riwork-desktop` (Zig 0.16): **599 passed, zero failed, six ignored**, unfiltered. The composer-menu test that
+  failed at `HEAD` (`chat_view::panels::tests::the_composer_menus_open_over_their_picker_and_follow_the_pointer_and_keys`) had its
+  own click outside save the chat's display mode; the settings observer then restored the configured 13 pt scale (1.18), so the
+  300 px model menu measured 355 px and was clamped into the window. The test sets its 1.0 design scale again after that click.
+- `swift test --package-path ios`: **1,219 core tests, zero failures**.
+- Xcode 26.0.1, iPhone 17 Pro / iOS 26.0, ad-hoc signing, 17 focused app test classes: **396 run, 392 passed, four skipped, zero
+  failed**. The two keyboard-layout tests in `ChatViewTests` failed at `HEAD` because this simulator connects the Mac's keyboard,
+  so iOS presents no software keyboard; they now clear the input modes' hardware layout for the test (restored afterwards), and
+  skip, rather than fail, if iOS still shows none while a hardware keyboard is attached.
+
+Not verified in this pass: a physical Clicks keyboard (including that UIKit begins each physical press once, which the claim
+reset relies on), several live hosts, a live Haiku response, and a live Codex quota read.
+
+## Dashboard decisions, multiple hosts and Clicks Tab shortcuts, 2026-10-16
+
+- `swift test --package-path ios`: **1,211 core tests, zero failures**, including multi-host aggregation and Tab-prefix state.
+  The latest Tab-prefix rerun passed **nine tests**, including Command-E cancellation. Logs:
+  `/tmp/riwork-dashboard-core-final.log`, `/tmp/riwork-tab-core-final.log`.
+- Desktop checks: **595 tests passed, six ignored, one existing composer-menu geometry test filtered out**. The filtered test is
+  `chat_view::panels::tests::the_composer_menus_open_over_their_picker_and_follow_the_pointer_and_keys`;
+  this is not an unfiltered suite pass. Log: `/tmp/riwork-dashboard-desktop-final.log`.
+- Haiku engine: **10 isolated tests passed** and `cargo check -p riwork-engine` passed. The tests use an in-memory key store and
+  stub responses: no Keychain access or paid API request. Logs: `/tmp/riwork-dashboard-intelligence-tests.log` and
+  `/tmp/riwork-dashboard-intelligence-check.log`.
+- Xcode 26.0.1, iPhone 17 Pro / iOS 26.0, ad-hoc signing: **187 focused app tests, zero failures**.
+  Covers multiple-host connection lifecycles and colliding IDs, exact-host/current-request decision validation, explicit approval
+  and question submission, uncertain delivery without retry, physical-only Tab routing and its real hold timer, held-key repeats
+  across terminal/composer/menu focus changes, project search/navigation, bottom tabs, project identity and existing keyboard forms.
+  Log: `/tmp/riwork-dashboard-ios-final3.log`; hosted light/dark UI renders: `/tmp/riwork-hosts-ui/`.
+
+The current phone implementation combines paired hosts without merging their project/chat identities, keeps partial totals and
+last successful reads, and closes temporary overview connections offscreen or in the background. Decision cards retain original
+provider requests and recheck the exact host, chat and pending request before an explicit response. Haiku summaries are opt-in,
+separately billed, source-linked advisory text; they cannot supply controls or answer requests.
+
+The Clicks profile uses physical Tab as a prefix only with an attached keyboard and the software keyboard hidden. Tab Q sends a
+literal Tab, Tab E sends Escape, and holding Tab for one second shows the guide. Esc or Command-E cancels the prefix without
+forwarding Escape. Standard keyboards and the touch Tab button keep their normal behavior. Current project tabs on iPhone sit at
+the bottom in the physical-keyboard layout.
+
+A physical Clicks case, its actual reported vendor name and firmware mappings, the new overview against multiple live hosts, and
+a live Haiku API response have **not** been verified in this pass. The dated records below retain their original scope and counts;
+current behavior and setup are described in [README.md](README.md).
+
+## Physical keyboard / Clicks layout, 2026-10-16
+
+- `swift test --package-path ios`: **1,194 tests, zero failures**.
+- Xcode 26.0.1, iPhone 17 Pro / iOS 26.0, ad-hoc signing: **136 focused app tests, zero failures**.
+  Covers profile persistence, conservative vendor matching, disconnect/reconnect, software-keyboard fallback, reversible Clicks
+  defaults with custom binding conflicts and a full library, essential key-bar order, bottom tabs, responder-chain tab switching,
+  draft/focus preservation, New Terminal, model picker, hotkey navigation, chat suggestions and marked-text handling.
+- Hosted UI snapshots: `/tmp/riwork-clicks-ui/`; test logs: `/tmp/riwork-clicks-core-tests.log`, `/tmp/riwork-clicks-app-final.log`.
+- Hardware presence is injected and the simulator uses an empty input view to represent the missing software keyboard. A physical
+  Clicks case was not available: its actual `GCKeyboard.vendorName`, firmware mappings and connection behavior need a device check.
+  Automatic naming is best effort; the explicit Clicks profile handles a generic or missing name.
+
 Verified 2026-09-27 with Xcode 26.0.1 / Swift 6.2. App and smoke share
 `RiWorkCore`; no third-party dependencies or external AI calls.
 

@@ -325,6 +325,8 @@ impl Render for Fixture {
         let dashboard = render(
             DashboardData {
                 overview: &self.overview,
+                observations: None,
+                intelligence: None,
                 now: NOW,
                 sampled_at: self.sampled_at,
                 sample_error: self.sample_error.as_deref(),
@@ -571,6 +573,8 @@ fn the_toolbar_says_how_old_the_figures_are_and_why_they_may_be() {
     let overview = overview(GlobalOrchestrator::Unknown);
     let data = |sampled_at: Option<u64>, error: Option<&'static str>| DashboardData {
         overview: &overview,
+        observations: None,
+        intelligence: None,
         now: NOW,
         sampled_at,
         sample_error: error,

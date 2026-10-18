@@ -261,6 +261,8 @@ impl Client {
             id: new_id(),
             chat_id: chat_id.into(),
             command,
+            operation_id: None,
+            require_running: false,
         })?;
         match (contributor, billing) {
             (Some(mode), _) => self.confirm_contributor(chat_id, mode, stopped),
@@ -340,8 +342,123 @@ impl Client {
             id: new_id(),
             chat_id: chat_id.into(),
             command,
+            operation_id: None,
+            require_running: false,
         })
         .map(drop)
+    }
+
+    /// Read an operation's durable outcome without starting a provider. `None`
+    /// means this host supports receipts but has not reserved this operation.
+    /// Refusal on an older host must never be followed by an unidentified send.
+    pub fn command_receipt(
+        &mut self,
+        chat_id: &str,
+        operation_id: &str,
+    ) -> Result<Option<super::receipts::CommandReceipt>, CallError> {
+        let result = self.exchange(Request::CommandReceipt {
+            id: new_id(),
+            chat_id: chat_id.into(),
+            operation_id: operation_id.into(),
+        })?;
+        let receipt: Option<super::receipts::CommandReceipt> =
+            decode(result).map_err(CallError::Broken)?;
+        if receipt.as_ref().is_some_and(|receipt| {
+            receipt.operation_id != operation_id || receipt.chat_id != chat_id
+        }) {
+            return Err(CallError::Broken(
+                "chat host answered with another command receipt".into(),
+            ));
+        }
+        Ok(receipt)
+    }
+
+    /// Submit once under a caller-persisted operation ID. Retrying the same ID
+    /// and command only returns its receipt; it never dispatches twice. Rejected
+    /// and uncertain outcomes are returned as receipts, not transport errors.
+    /// `Accepted` confirms dispatch, not turn completion or effective settings.
+    /// On a broken exchange, reconnect and query/retry this same ID. Never use a
+    /// fresh ID to retry an uncertain command: its provider may already have it.
+    pub fn command_identified(
+        &mut self,
+        chat_id: &str,
+        operation_id: &str,
+        command: ChatCommand,
+    ) -> Result<super::receipts::CommandReceipt, CallError> {
+        self.identified_command(chat_id, operation_id, command, false)
+    }
+
+    /// A send/compact that must reach an already-running provider. Unlike an
+    /// ordinary Send, it will never resume a child stopped by the user or task
+    /// cancellation, even when Stop races with dispatch.
+    pub fn command_identified_running(
+        &mut self,
+        chat_id: &str,
+        operation_id: &str,
+        command: ChatCommand,
+    ) -> Result<super::receipts::CommandReceipt, CallError> {
+        self.identified_command(chat_id, operation_id, command, true)
+    }
+
+    fn identified_command(
+        &mut self,
+        chat_id: &str,
+        operation_id: &str,
+        command: ChatCommand,
+        require_running: bool,
+    ) -> Result<super::receipts::CommandReceipt, CallError> {
+        // An old host ignores unknown fields on Command. Probe the distinct
+        // read-only operation on this connection before sending operation_id.
+        self.command_receipt(chat_id, operation_id)?;
+        let digest = super::receipts::command_digest(&command, require_running)
+            .map_err(CallError::Refused)?;
+        let result = self.exchange(Request::Command {
+            id: new_id(),
+            chat_id: chat_id.into(),
+            command,
+            operation_id: Some(operation_id.into()),
+            require_running,
+        })?;
+        let receipt: super::receipts::CommandReceipt = decode(result).map_err(CallError::Broken)?;
+        if receipt.operation_id != operation_id
+            || receipt.chat_id != chat_id
+            || receipt.command_sha256 != digest
+        {
+            return Err(CallError::Broken(
+                "chat host answered with another command receipt".into(),
+            ));
+        }
+        Ok(receipt)
+    }
+
+    pub(crate) fn command_identified_guarded(
+        &mut self,
+        chat_id: &str,
+        operation_id: &str,
+        command: ChatCommand,
+        guard: super::wire::CommandGuard,
+    ) -> Result<super::receipts::CommandReceipt, CallError> {
+        let require_running = matches!(guard, super::wire::CommandGuard::DelegatedSend { .. });
+        let digest =
+            super::receipts::command_digest_guarded(&command, require_running, Some(&guard))
+                .map_err(CallError::Refused)?;
+        let result = self.exchange(Request::GuardedCommand {
+            id: new_id(),
+            chat_id: chat_id.into(),
+            operation_id: operation_id.into(),
+            command,
+            guard,
+        })?;
+        let receipt: super::receipts::CommandReceipt = decode(result).map_err(CallError::Broken)?;
+        if receipt.operation_id != operation_id
+            || receipt.chat_id != chat_id
+            || receipt.command_sha256 != digest
+        {
+            return Err(CallError::Broken(
+                "chat host answered with another command receipt".into(),
+            ));
+        }
+        Ok(receipt)
     }
 
     pub fn close(&mut self, chat_id: &str) -> Result<(), String> {
@@ -529,6 +646,8 @@ fn request_id(request: &Request) -> &str {
         | Request::Create { id, .. }
         | Request::List { id }
         | Request::Command { id, .. }
+        | Request::CommandReceipt { id, .. }
+        | Request::GuardedCommand { id, .. }
         | Request::Subscribe { id, .. }
         | Request::Close { id, .. }
         | Request::Delete { id, .. }
@@ -1267,6 +1386,91 @@ mod tests {
             assert!(!error.to_string().contains("Update or refresh"));
         }
         serving.join().unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn identified_command_never_falls_back_when_a_legacy_host_refuses_receipt_queries() {
+        let home = crate::chat::testing::private_socket_fixture_home();
+        let socket = home.join("legacy-receipts.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let mut stream = crate::chat::testing::bounded_fixture_accept(&listener);
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["op"], "command_receipt");
+            let response = serde_json::json!({
+                "id": request["id"], "ok": false,
+                "error": "unreadable request: unknown variant command_receipt"
+            });
+            writeln!(stream, "{response}").unwrap();
+            line.clear();
+            assert_eq!(
+                reader.read_line(&mut line).unwrap(),
+                0,
+                "no command may follow the failed probe"
+            );
+        });
+        let mut client = Client::connect(&socket).unwrap();
+        assert!(matches!(
+            client.command_identified(
+                "chat-a",
+                "one-send",
+                ChatCommand::Send {
+                    text: "once".into()
+                }
+            ),
+            Err(CallError::Refused(_))
+        ));
+        drop(client);
+        server.join().unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn guarded_command_never_falls_back_when_a_receipts_host_does_not_support_guards() {
+        let home = crate::chat::testing::private_socket_fixture_home();
+        let socket = home.join("legacy-guards.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let mut stream = crate::chat::testing::bounded_fixture_accept(&listener);
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["op"], "guarded_command");
+            assert_eq!(request["guard"]["kind"], "delegated_send");
+            let response = serde_json::json!({
+                "id": request["id"], "ok": false,
+                "error": "unreadable request: unknown variant guarded_command"
+            });
+            writeln!(stream, "{response}").unwrap();
+            line.clear();
+            assert_eq!(
+                reader.read_line(&mut line).unwrap(),
+                0,
+                "a guarded command must never fall back to an unguarded operation"
+            );
+        });
+        let mut client = Client::connect(&socket).unwrap();
+        assert!(matches!(
+            client.command_identified_guarded(
+                "child-chat",
+                "guarded-send",
+                ChatCommand::Send {
+                    text: "once".into()
+                },
+                crate::chat::wire::CommandGuard::DelegatedSend {
+                    parent_chat_id: "parent-chat".into(),
+                    parent_turn_id: "parent-turn".into()
+                }
+            ),
+            Err(CallError::Refused(_))
+        ));
+        drop(client);
+        server.join().unwrap();
         std::fs::remove_dir_all(home).unwrap();
     }
 }

@@ -46,7 +46,11 @@ struct ChatItemRow: View, Equatable {
     /// The transcript's text margin: where its messages begin (and the composer's cards).
     static let horizontalInset: CGFloat = 16
     var body: some View {
-        content
+        VStack(alignment: .leading, spacing: 8) {
+            content
+            ForEach(item.outputImages) { ChatOutputAssetCard(reference: $0) }
+        }
+            .environment(\.chatAssetItemID, item.id)
             .padding(.horizontal, Self.horizontalInset).padding(.vertical, rowSpacing)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -540,8 +544,8 @@ private struct FileRow: View {
     }
 }
 
-/// A unified diff in monospace: added lines green, removed red, hunk headers muted. Lines do not wrap (the whole diff scrolls sideways),
-/// so a line is a line. In a card it is `flush`: edge to edge under the header, on the content's background, with no frame of its own
+/// A unified diff in monospace: added lines green, removed red, hunk headers muted. Lines wrap on a narrow screen, with an explicit
+/// horizontal-scroll option for preserving columns. In a card it is `flush`: edge to edge under the header, on the content's background, with no frame of its own
 /// (the card's rounding is the only one); elsewhere (the approval bar) it is a framed block. Copy is the card's (or a long press).
 struct DiffView: View {
     @Environment(\.desktopStyle) private var style
@@ -549,12 +553,18 @@ struct DiffView: View {
     var flush = false
     /// The width of the frame the diff sits in, so that the bands of added and removed lines reach across it, not just across their text.
     @State private var width: CGFloat = 0
+    @State private var wraps = true
     var body: some View {
         let diff = DiffCache.parse(text)
         VStack(alignment: .leading, spacing: 0) {
-            let lines = ScrollView(.horizontal, showsIndicators: false) {
+            HStack {
+                Spacer()
+                Button(wraps ? "Horizontal scroll" : "Wrap lines", systemImage: wraps ? "arrow.left.and.right" : "text.word.spacing") { wraps.toggle() }
+                    .font(style.system(.caption)).buttonStyle(.plain).padding(8)
+            }.foregroundStyle(style.muted)
+            let lines = ScrollView(wraps ? [] : .horizontal, showsIndicators: !wraps) {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(diff.lines.indices, id: \.self) { index in DiffLineView(line: diff.lines[index]) }
+                    ForEach(diff.lines.indices, id: \.self) { index in DiffLineView(line: diff.lines[index], wraps: wraps) }
                 }
                 .padding(.vertical, 4)
                 .frame(minWidth: width, alignment: .leading)
@@ -574,6 +584,7 @@ struct DiffView: View {
 private struct DiffLineView: View {
     @Environment(\.desktopStyle) private var style
     let line: ChatDiffLine
+    var wraps = false
     private var marker: String {
         switch line.kind {
         case .added: "+"
@@ -594,7 +605,7 @@ private struct DiffLineView: View {
         HStack(spacing: 0) {
             Text(marker).foregroundStyle(markerColor).frame(width: style.pt(14))
             Text(verbatim: line.text.isEmpty ? " " : line.text).foregroundStyle(line.kind == .hunk || line.kind == .meta ? style.muted : style.text)
-                .fixedSize(horizontal: true, vertical: false)
+                .fixedSize(horizontal: !wraps, vertical: wraps)
             Spacer(minLength: 0)
         }
         .font(style.codeSmall).textSelection(.enabled)

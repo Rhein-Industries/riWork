@@ -199,6 +199,8 @@ pub enum SettingsEvent {
 /// The on/off rows of the panel. Each owns one boolean setting and one focus handle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Toggle {
+    CodexSubscriptionBalancing,
+    DashboardHaikuSummaries,
     TerminalColors,
     PanelTabIcons,
     PreviewOnSelect,
@@ -214,6 +216,8 @@ enum Toggle {
 impl Toggle {
     fn id(self) -> &'static str {
         match self {
+            Self::CodexSubscriptionBalancing => "codex-subscription-balancing",
+            Self::DashboardHaikuSummaries => "dashboard-haiku-summaries",
             Self::TerminalColors => "terminal-colors",
             Self::PanelTabIcons => "panel-tab-icons",
             Self::PreviewOnSelect => "open-preview-on-select",
@@ -227,6 +231,8 @@ impl Toggle {
 
     fn flip(self, settings: &mut Settings) {
         let value = match self {
+            Self::CodexSubscriptionBalancing => &mut settings.codex_subscription_balancing,
+            Self::DashboardHaikuSummaries => &mut settings.dashboard_haiku_summaries,
             Self::TerminalColors if settings.theme == ThemeChoice::Native => {
                 &mut settings.native_terminal_colors
             }
@@ -246,6 +252,8 @@ impl Toggle {
     }
     fn set(self, settings: &mut Settings, checked: bool) {
         let value = match self {
+            Self::CodexSubscriptionBalancing => &mut settings.codex_subscription_balancing,
+            Self::DashboardHaikuSummaries => &mut settings.dashboard_haiku_summaries,
             Self::TerminalColors if settings.theme == ThemeChoice::Native => {
                 &mut settings.native_terminal_colors
             }
@@ -283,6 +291,8 @@ pub struct SettingsPanel {
     cua_focus: FocusHandle,
     cua_check_focus: FocusHandle,
     account_refresh_focus: FocusHandle,
+    account_balancing_focus: FocusHandle,
+    dashboard_haiku_focus: FocusHandle,
     account_focus: BTreeMap<String, FocusHandle>,
     theme_focus: Vec<FocusHandle>,
     close_focus: FocusHandle,
@@ -895,6 +905,8 @@ impl SettingsPanel {
             cua_focus: cx.focus_handle(),
             cua_check_focus: cx.focus_handle(),
             account_refresh_focus: cx.focus_handle(),
+            account_balancing_focus: cx.focus_handle(),
+            dashboard_haiku_focus: cx.focus_handle(),
             account_focus: account_ids
                 .into_iter()
                 .map(|id| (id, cx.focus_handle()))
@@ -981,6 +993,7 @@ impl SettingsPanel {
 
     fn focus_order(&self, settings: &Settings) -> Vec<FocusHandle> {
         let mut handles = vec![self.cua_focus.clone(), self.cua_check_focus.clone()];
+        handles.push(self.account_balancing_focus.clone());
         handles.push(self.account_refresh_focus.clone());
         handles.extend(self.account_focus.values().cloned());
         handles.extend(self.theme_focus.iter().cloned());
@@ -1004,6 +1017,7 @@ impl SettingsPanel {
         );
         handles.push(self.api_key_save_focus.clone());
         handles.push(self.api_key_remove_focus.clone());
+        handles.push(self.dashboard_haiku_focus.clone());
         handles.push(self.orchestrator_mode_focus.clone());
         if settings.orchestrator_mode == OrchestratorMode::Chat {
             handles.push(self.orchestrator_provider_focus.clone());
@@ -1314,6 +1328,13 @@ impl SettingsPanel {
             .unwrap_or_default();
         let narrow = layout == SettingsLayout::Narrow;
         row_list()
+            .child(self.toggle_row(
+                Toggle::CodexSubscriptionBalancing,
+                "Balance Codex subscriptions",
+                "New automatic Codex sessions use the saved account with the most quota left across its limits. Explicit accounts, project account choices and existing sessions stay fixed. Quota is checked before launch; missing, stale or exhausted accounts are excluded. If none qualify, choose an account explicitly or turn this off.",
+                cx.global::<Settings>().codex_subscription_balancing,
+                cx,
+            ))
             .child(
                 div()
                     .flex()
@@ -1326,7 +1347,7 @@ impl SettingsPanel {
                             .text_color(rgb(colors.muted))
                             .when(narrow, |note| note.w_full())
                             .when(!narrow, |note| note.flex_1().min_w_0())
-                            .child("Choose the account for new Codex sessions. Running sessions keep their account. A project can override this in Project Settings."),
+                            .child("Choose the account for new Codex sessions when subscription balancing is off, or the preferred account when balanced quotas tie. Running sessions keep their account. A project can override this in Project Settings."),
                     )
                     .child(
                         behavior::button_content("refresh-codex-accounts", "Refresh accounts", ui_text::cased(if state.pending { "Checking accounts…" } else { "Refresh accounts" })).disabled(state.pending).track_focus(&self.account_refresh_focus)
@@ -2269,6 +2290,8 @@ impl SettingsPanel {
     ) -> AnyElement {
         let colors = palette(cx);
         let focus = match toggle {
+            Toggle::CodexSubscriptionBalancing => &self.account_balancing_focus,
+            Toggle::DashboardHaikuSummaries => &self.dashboard_haiku_focus,
             Toggle::TerminalColors => &self.terminal_focus,
             Toggle::PanelTabIcons => &self.tab_icons_focus,
             Toggle::PreviewOnSelect => &self.preview_focus,
@@ -2393,6 +2416,13 @@ impl SettingsPanel {
                 cx,
             ))
             .child(self.api_key_row(window, cx))
+            .child(self.toggle_row(
+                Toggle::DashboardHaikuSummaries,
+                "Haiku dashboard summaries",
+                "Summarizes observed work for the dashboard using the saved Anthropic API key. Recent commands, file paths and messages from every provider's chats are sent to Anthropic. API usage is billed separately; decisions remain provider requests.",
+                settings.dashboard_haiku_summaries,
+                cx,
+            ))
             .child(self.choice_row(
                 "orchestrator-mode",
                 &self.orchestrator_mode_focus,
@@ -4402,6 +4432,11 @@ mod tests {
     fn each_toggle_changes_only_its_own_setting() {
         let base = Settings::default();
         for (toggle, expected) in [
+            (
+                Toggle::CodexSubscriptionBalancing,
+                "codex_subscription_balancing",
+            ),
+            (Toggle::DashboardHaikuSummaries, "dashboard_haiku_summaries"),
             (Toggle::TerminalColors, "use_riwork_colors"),
             (Toggle::PanelTabIcons, "panel_tab_icons"),
             (Toggle::PreviewOnSelect, "open_preview_on_select"),
@@ -4434,6 +4469,8 @@ mod tests {
             assert_eq!(flipped, base);
         }
         let toggles = [
+            Toggle::CodexSubscriptionBalancing,
+            Toggle::DashboardHaikuSummaries,
             Toggle::TerminalColors,
             Toggle::PanelTabIcons,
             Toggle::PreviewOnSelect,

@@ -10,7 +10,7 @@
 use super::*;
 
 /// The top-level keys of a reply. Anything else the CLI writes is left out.
-pub const DASHBOARD_KEYS: [&str; 17] = [
+pub const DASHBOARD_KEYS: [&str; 23] = [
     "v",
     "generated_at",
     "chats_known",
@@ -28,17 +28,25 @@ pub const DASHBOARD_KEYS: [&str; 17] = [
     "tasks_in_progress_total",
     "automations",
     "backends",
+    "decisions",
+    "decisions_total",
+    "decision_sources",
+    "recent_activity",
+    "recent_activity_total",
+    "intelligence",
 ];
 /// Each list of a reply and the most rows the phone is sent of it, the CLI's own limits
 /// (`riwork_engine::global_overview::WIRE_MAX_*`). A CLI that wrote more has the tail cut;
 /// `<list>_total` still says how many there are. A dotted name addresses a nested list.
-pub const DASHBOARD_LISTS: [(&str, usize); 6] = [
+pub const DASHBOARD_LISTS: [(&str, usize); 8] = [
     ("attention", 40),
     ("working", 40),
     ("finished", 20),
     ("projects", 150),
     ("tasks_in_progress", 50),
     ("backends.providers", 8),
+    ("decisions", 40),
+    ("recent_activity", 40),
 ];
 /// The most `automations.items` the phone is sent.
 pub const DASHBOARD_AUTOMATIONS_MAX: usize = 30;

@@ -3,6 +3,33 @@ import RiWorkCore
 @testable import RiWorkRemote
 
 @MainActor final class HotkeyStoreTests: XCTestCase {
+    func testClicksProfileIsReversibleAndHonorsCustomShortcutOwnership() throws {
+        let defaults = scratchDefaults()
+        let store = HotkeyStore(defaults: defaults)
+        let custom = Hotkey(id: "mine", label: "Mine", steps: [.text("my action")], chord: chord("e"))
+        try store.add(custom)
+        try store.addHelpChord(chord("t"))
+        let resolved = store.resolvedHotkeys(usingClicks: true)
+        let map = ShortcutMap(hotkeys: resolved, settings: store.resolvedShortcuts(usingClicks: true))
+        XCTAssertEqual(map.action(for: chord("e")), .hotkey(custom))
+        XCTAssertEqual(map.action(for: chord("t")), .openHelp)
+        XCTAssertEqual(resolved.first { $0.id == "builtin.profile.template.clicks.up" }?.items, [.key(.up)])
+        XCTAssertTrue(resolved.filter { $0.id != custom.id }.allSatisfy(\.isBuiltIn), "profile defaults cannot edit nonexistent saved entries")
+        XCTAssertEqual(map.action(for: KeyChord(keyCode: HIDKey.leftControl)), .openPalette)
+        XCTAssertEqual(store.resolvedHotkeys(usingClicks: false), [custom])
+        XCTAssertEqual(HotkeyStore(defaults: defaults).custom, [custom], "resolving the profile never installs or edits library entries")
+        XCTAssertEqual(store.resolvedShortcuts(usingClicks: false).paletteChords, [])
+    }
+    func testClicksProfileWorksWithAFullCustomLibrary() throws {
+        let store = HotkeyStore(defaults: scratchDefaults())
+        for index in 0..<HotkeyLibrary.maxHotkeys {
+            try store.add(Hotkey(id: "custom-\(index)", label: "Key \(index)", steps: [.text("\(index)")]))
+        }
+        let resolved = store.resolvedHotkeys(usingClicks: true)
+        XCTAssertEqual(resolved.count, HotkeyLibrary.maxHotkeys + HotkeyTemplate.clicks.hotkeys.count)
+        XCTAssertEqual(resolved.last?.items, [.key(.control("l"))])
+        XCTAssertEqual(store.custom.count, HotkeyLibrary.maxHotkeys)
+    }
     private func scratchDefaults() -> UserDefaults {
         let name = "com.riwork.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!

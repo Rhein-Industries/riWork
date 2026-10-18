@@ -23,3 +23,5 @@ unicode-normalization = "0.1"
 security-framework = "3"
 # Already in the lockfile (globwalk); `.gitignore` rules for the composer's file suggestions.
 ignore = "0.4"
+ureq = "3"
+sha2 = "0.10"

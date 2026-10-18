@@ -2401,8 +2401,28 @@ impl Session {
             }
             _ => {}
         }
+        let mut presentation = super::media::presentation(item);
+        presentation.tool = match &body {
+            ItemBody::ToolCall {
+                tool,
+                input,
+                output: Some(output),
+                ..
+            } => super::tool_output::parse(tool, input, output),
+            ItemBody::WebSearch { query } => {
+                let results = item.get("results").or_else(|| item.get("sources"));
+                results.and_then(|results| {
+                    super::tool_output::parse(
+                        "web_search",
+                        &json!({"query": query}),
+                        &results.to_string(),
+                    )
+                })
+            }
+            _ => None,
+        };
         let item = Item {
-            presentation: super::media::presentation(item),
+            presentation,
             id: id.to_owned(),
             turn_id,
             status,

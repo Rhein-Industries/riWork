@@ -2035,6 +2035,15 @@ impl Core {
                 is_error,
                 frame.get("tool_use_result"),
             );
+            item.presentation.tool = match &item.body {
+                ItemBody::ToolCall { tool, input, .. } => {
+                    super::tool_output::parse(tool, input, &text)
+                }
+                ItemBody::WebSearch { query } => {
+                    super::tool_output::parse("web_search", &json!({"query": query}), &text)
+                }
+                _ => None,
+            };
             self.emit(ChatEvent::ItemCompleted { item });
         }
     }

@@ -15,8 +15,8 @@ use crate::{controls, ui_text};
 
 use super::{
     ChatView,
-    markdown::{Align, Block, Span, plain_text},
-    widgets::{Look, copy_button},
+    markdown::{Align, Block, CalloutKind, Span, plain_text},
+    widgets::{Look, button, copy_button},
 };
 
 impl ChatView {
@@ -119,7 +119,9 @@ impl ChatView {
         let colors = look.colors;
         let hermes = look.hermes();
         match block {
-            Block::Paragraph(spans) => self.text(spans, key, look, None, cx),
+            Block::Paragraph(spans) | Block::Task { spans, .. } => {
+                self.text(spans, key, look, None, cx)
+            }
             Block::Heading { level, spans } => {
                 let size = match level {
                     1 => 1.35,
@@ -146,9 +148,11 @@ impl ChatView {
                     .child(self.text(spans, key, look, Some(weight), cx))
                     .into_any_element()
             }
-            Block::Code { language, text } => {
-                self.code_block(language.as_deref(), text, key, look, cx)
-            }
+            Block::Code {
+                language,
+                title,
+                text,
+            } => self.code_block(language.as_deref(), title.as_deref(), text, key, look, cx),
             Block::List { start, items } => div()
                 .w_full()
                 .flex()
@@ -156,9 +160,14 @@ impl ChatView {
                 .min_w_0()
                 .gap(ui_text::space(8.0))
                 .children(items.iter().enumerate().map(|(at, item)| {
-                    let marker = match start {
-                        Some(first) => format!("{}.", first + at as u64),
-                        None => "•".to_owned(),
+                    let marker = match item.first() {
+                        Some(Block::Task { checked, .. }) => {
+                            if *checked { "☑" } else { "☐" }.to_owned()
+                        }
+                        _ => match start {
+                            Some(first) => format!("{}.", first + at as u64),
+                            None => "•".to_owned(),
+                        },
                     };
                     div()
                         .w_full()
@@ -203,6 +212,43 @@ impl ChatView {
                         .map(|(at, block)| self.block(block, &format!("{key}/{at}"), look, cx)),
                 )
                 .into_any_element(),
+            Block::Callout { kind, blocks } => {
+                let accent = match kind {
+                    CalloutKind::Warning | CalloutKind::Caution => colors.gold,
+                    CalloutKind::Tip => look.diff.added,
+                    CalloutKind::Important => colors.magenta,
+                    CalloutKind::Note => colors.cyan,
+                };
+                div()
+                    .w_full()
+                    .pl(ui_text::space(12.0))
+                    .py(ui_text::space(6.0))
+                    .border_l_2()
+                    .border_color(rgb(accent))
+                    .flex()
+                    .flex_col()
+                    .gap(ui_text::space(8.0))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(rgb(accent))
+                            .child(self.selectable(
+                                &format!("callout:{key}"),
+                                kind.label().to_owned(),
+                                Vec::new(),
+                                Vec::new(),
+                                look,
+                                cx,
+                            )),
+                    )
+                    .children(
+                        blocks
+                            .iter()
+                            .enumerate()
+                            .map(|(at, block)| self.block(block, &format!("{key}/{at}"), look, cx)),
+                    )
+                    .into_any_element()
+            }
             Block::Table {
                 align,
                 header,
@@ -220,6 +266,7 @@ impl ChatView {
     fn code_block(
         &self,
         language: Option<&str>,
+        title: Option<&str>,
         code: &str,
         key: &str,
         look: Look,
@@ -229,6 +276,15 @@ impl ChatView {
         let copy_key = format!("copy:{key}");
         let copied = self.copied.as_deref() == Some(copy_key.as_str());
         let owned = code.to_owned();
+        let wrap_key = format!("wrap-code:{key}");
+        let wrapped = self.open.contains(&wrap_key);
+        let shown = code.replace('\t', "    ");
+        let highlights = super::code_highlight::highlight(language, title, &shown, colors.bg);
+        let caption = match (title, language) {
+            (Some(title), Some(language)) => format!("{title} · {language}"),
+            (Some(title), None) => title.to_owned(),
+            (None, language) => language.unwrap_or("code").to_owned(),
+        };
         div()
             .w_full()
             .rounded(if look.native {
@@ -255,23 +311,43 @@ impl ChatView {
                     .border_color(rgb(colors.divider))
                     .text_size(ui_text::text(10.0))
                     .text_color(rgb(colors.muted))
-                    .child(language.unwrap_or("code").to_owned())
+                    .child(div().flex_1().min_w_0().truncate().child(caption))
                     .child(
-                        copy_button(
-                            SharedString::from(copy_key.clone()),
-                            copied,
-                            "copy",
-                            "Copy code",
-                            look,
-                        )
-                        .when(!look.native, |button| {
-                            button
-                                .border_color(rgb(colors.panel_active))
-                                .bg(rgb(colors.panel_active))
-                        })
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.copy(copy_key.clone(), owned.clone(), cx);
-                        })),
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap(ui_text::space(4.0))
+                            .child(
+                                button(
+                                    SharedString::from(wrap_key.clone()),
+                                    if wrapped { "Unwrap" } else { "Wrap" },
+                                    None,
+                                    look,
+                                )
+                                .on_click(cx.listener(
+                                    move |view, _, _, cx| view.toggle_output_layout(&wrap_key, cx),
+                                )),
+                            )
+                            .child(
+                                copy_button(
+                                    SharedString::from(copy_key.clone()),
+                                    copied,
+                                    "copy",
+                                    "Copy code",
+                                    look,
+                                )
+                                .when(!look.native, |button| {
+                                    button
+                                        .border_color(rgb(colors.panel_active))
+                                        .bg(rgb(colors.panel_active))
+                                })
+                                .on_click(cx.listener(
+                                    move |view, _, _, cx| {
+                                        view.copy(copy_key.clone(), owned.clone(), cx);
+                                    },
+                                )),
+                            ),
                     ),
             )
             .child(
@@ -282,24 +358,39 @@ impl ChatView {
                         // A row whose child does not shrink to it: a long line scrolls sideways.
                         .flex()
                         .items_start()
-                        .overflow_x_scroll()
+                        .when(!wrapped, |block| block.overflow_x_scroll())
                         // A vertical wheel turn belongs to the transcript, not to this box.
                         .restrict_scroll_to_axis()
                         .px(ui_text::space(10.0))
                         .py(ui_text::space(8.0))
                         .text_size(ui_text::text(11.0))
                         .font_family(ui_text::code_family())
-                        .child(div().flex_none().whitespace_nowrap().child(self.selectable(
-                            &format!("code:{key}"),
-                            code.replace('\t', "    "),
-                            Vec::new(),
-                            Vec::new(),
-                            look,
-                            cx,
-                        ))),
+                        .child(
+                            div()
+                                .when(!wrapped, |block| block.flex_none().whitespace_nowrap())
+                                .when(wrapped, |block| block.w_full().min_w_0())
+                                .child(self.selectable(
+                                    &format!("code:{key}"),
+                                    shown,
+                                    highlights,
+                                    Vec::new(),
+                                    look,
+                                    cx,
+                                )),
+                        ),
                 ),
             )
             .into_any_element()
+    }
+
+    /// Wrapping changes geometry, not the selected source text or its stable keys.
+    pub(super) fn toggle_output_layout(&mut self, key: &str, cx: &mut Context<Self>) {
+        if !self.open.remove(key) {
+            self.open.insert(key.to_owned());
+        }
+        self.transcript_selection.changed();
+        self.list.remeasure_items(0..self.visible.len());
+        cx.notify();
     }
 
     /// A run of styled text; links in it open in the browser, and it can be selected.
@@ -422,9 +513,13 @@ impl ChatView {
         } else {
             FontWeight::BOLD
         };
+        let wrap_key = format!("unwrap-table:{key}");
+        let wrapped = !self.open.contains(&wrap_key);
+        let widths = super::output_table::widths(header, rows, wrapped);
+        let total = widths.iter().sum::<f32>();
         let mut row = |cells: &[Vec<Span>], at: usize, head: bool| {
             div()
-                .w_full()
+                .min_w_full()
                 .flex()
                 .border_b_1()
                 .border_color(rgb(colors.divider))
@@ -433,18 +528,19 @@ impl ChatView {
                 })
                 .children(cells.iter().enumerate().map(|(column, cell)| {
                     div()
-                        .flex_1()
-                        .min_w_0()
+                        .flex_none()
+                        .w(ui_text::space(widths.get(column).copied().unwrap_or(100.0)))
                         .px(ui_text::space(8.0))
-                        .py(ui_text::space(4.0))
+                        .py(ui_text::space(5.0))
+                        .when(!wrapped, |cell| cell.whitespace_nowrap().overflow_hidden())
                         .when(column + 1 < cells.len(), |cell| {
                             cell.border_r_1().border_color(rgb(colors.divider))
                         })
                         .when(align.get(column) == Some(&Align::Right), |cell| {
-                            cell.flex().justify_end()
+                            cell.text_right()
                         })
                         .when(align.get(column) == Some(&Align::Center), |cell| {
-                            cell.flex().justify_center()
+                            cell.text_center()
                         })
                         .child(self.text(
                             cell,
@@ -461,20 +557,192 @@ impl ChatView {
             .enumerate()
             .map(|(at, cells)| row(cells, at + 1, false))
             .collect();
+        let markdown_key = format!("copy-table-markdown:{key}");
+        let csv_key = format!("copy-table-csv:{key}");
+        let copied_markdown = self.copied.as_deref() == Some(markdown_key.as_str());
+        let copied_csv = self.copied.as_deref() == Some(csv_key.as_str());
+        let markdown = super::output_table::markdown(align, header, rows);
+        let csv = super::output_table::csv(header, rows);
         div()
             .w_full()
-            .border_t_1()
-            .border_l_1()
-            .border_r_1()
-            .border_color(rgb(colors.divider))
-            .rounded(if look.native {
-                controls::radius(controls::ROW_RADIUS)
-            } else {
-                px(3.0)
-            })
-            .overflow_hidden()
-            .child(head)
-            .children(body)
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(ui_text::space(4.0))
+            .child(
+                self.scroller(&format!("table:{key}")).attach(
+                    div()
+                        .id(ElementId::Name(SharedString::from(format!("table:{key}"))))
+                        .w_full()
+                        .min_w_0()
+                        .overflow_x_scroll()
+                        .restrict_scroll_to_axis()
+                        .border_t_1()
+                        .border_l_1()
+                        .border_r_1()
+                        .border_color(rgb(colors.divider))
+                        .rounded(if look.native {
+                            controls::radius(controls::ROW_RADIUS)
+                        } else {
+                            px(3.0)
+                        })
+                        .child(
+                            div()
+                                .w(ui_text::space(total))
+                                .min_w_full()
+                                .child(head)
+                                .children(body),
+                        ),
+                ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(6.0))
+                    .child(
+                        button(
+                            SharedString::from(wrap_key.clone()),
+                            if wrapped {
+                                "Unwrap cells"
+                            } else {
+                                "Wrap cells"
+                            },
+                            None,
+                            look,
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.toggle_output_layout(&wrap_key, cx)
+                        })),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        copy_button(
+                            SharedString::from(markdown_key.clone()),
+                            copied_markdown,
+                            "Markdown",
+                            "Copy table as Markdown",
+                            look,
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.copy(markdown_key.clone(), markdown.clone(), cx)
+                        })),
+                    )
+                    .child(
+                        copy_button(
+                            SharedString::from(csv_key.clone()),
+                            copied_csv,
+                            "CSV",
+                            "Copy table as CSV",
+                            look,
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            view.copy(csv_key.clone(), csv.clone(), cx)
+                        })),
+                    ),
+            )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chat::model::{Item, ItemBody, ItemStatus, MessagePhase, Presentation};
+    use gpui::TestAppContext;
+    use gpui_kit::test::TestWindowExt;
+
+    fn install(
+        view: &gpui::Entity<ChatView>,
+        text: &str,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) {
+        view.update(cx, |view, cx| {
+            view.model.link = super::super::Link::Live;
+            view.model.transcript.items = vec![Item {
+                id: "output".into(),
+                turn_id: Some("turn".into()),
+                status: ItemStatus::Completed,
+                presentation: Presentation {
+                    phase: Some(MessagePhase::Final),
+                    ..Presentation::default()
+                },
+                body: ItemBody::AgentMessage { text: text.into() },
+            }];
+            view.refresh_projection(cx);
+            view.list.remeasure();
+            cx.notify();
+        });
+        window.render_frame(cx);
+    }
+
+    #[gpui::test]
+    fn native_code_wrap_reflows_without_changing_copied_source(cx: &mut TestAppContext) {
+        let (handle, view, recording) = super::super::editor_tests::mount_selection(cx);
+        let code = format!("let text = \"{}\";", "hello ".repeat(35));
+        cx.update_window(handle.into(), |_, window, cx| {
+            install(
+                &view,
+                &format!("```rust title=main.rs\n{code}\n```"),
+                window,
+                cx,
+            );
+            let before = window.find("transcript:code:output/0").bounds().size.height;
+            window.click("wrap-code:output/0", cx);
+            window.render_frame(cx);
+            let after = window.find("transcript:code:output/0").bounds().size.height;
+            assert!(after > before, "wrapped code must gain lines");
+            window.click("copy:output/0", cx);
+            assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), code);
+        })
+        .unwrap();
+        assert!(recording.try_recv().is_err());
+    }
+
+    #[gpui::test]
+    fn native_table_copy_and_semantic_markdown_reach_the_transcript(cx: &mut TestAppContext) {
+        let (handle, view, recording) = super::super::editor_tests::mount_selection(cx);
+        cx.update_window(handle.into(), |_, window, cx| {
+            install(
+                &view,
+                "| Name | Status |\n| --- | --- |\n| alpha | done |",
+                window,
+                cx,
+            );
+            window.click("copy-table-csv:output/0", cx);
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                "Name,Status\r\nalpha,done"
+            );
+            window.click("copy-table-markdown:output/0", cx);
+            assert!(
+                cx.read_from_clipboard()
+                    .unwrap()
+                    .text()
+                    .unwrap()
+                    .contains("| alpha | done |")
+            );
+            install(
+                &view,
+                "> [!NOTE]\n> A **useful** note.\n\n- [x] Ready",
+                window,
+                cx,
+            );
+            assert_eq!(
+                window.find("transcript:callout:output/0").label(),
+                Some("Note")
+            );
+            assert_eq!(
+                window.find("transcript:output/0/0").label(),
+                Some("A useful note.")
+            );
+            assert_eq!(
+                window.find("transcript:output/1/0/0").label(),
+                Some("Ready")
+            );
+        })
+        .unwrap();
+        assert!(recording.try_recv().is_err());
     }
 }

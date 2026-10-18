@@ -1,4 +1,5 @@
 import XCTest
+import CryptoKit
 @testable import RiWorkCore
 
 /// A message with every kind of block, each separated from the next by a blank line so that its chunks parse on their own.
@@ -651,5 +652,91 @@ final class ChatMarkdownTests: XCTestCase {
         XCTAssertEqual(plain(ChatMarkdown.inline(header[0])), "a")
         XCTAssertEqual(links(ChatMarkdown.inline(header[1])), [])
         XCTAssertEqual(links(ChatMarkdown.inline(rows[0][1])), ["https://example.com"])
+    }
+}
+
+@MainActor final class ChatAssetTransferTests: XCTestCase {
+    private let chat = "11111111-1111-4111-8111-111111111111"
+    private var identity: UploadConnectionIdentity {
+        UploadConnectionIdentity(pairing: Pairing(v: 1, relay_url: "wss://example.com/v1/ws", desktop_id: chat, device_id: chat, route_id: chat, device_name: "Phone", pairing_secret: "", relay_token: ""))
+    }
+    private actor Desktop: RemoteTransport {
+        let bytes: Data
+        let mode: String
+        var offsets: [Int] = []
+        init(bytes: Data, mode: String = "valid") { self.bytes = bytes; self.mode = mode }
+        func connect(pairing: Pairing, allowLocalDevelopment: Bool) async throws -> Pairing { pairing }
+        func disconnect() async {}
+        func isConnected() async -> Bool { true }
+        func request(method: String, params: [String: JSONValue], id: String) async throws -> JSONValue { throw RemoteError.remote("Unbound request") }
+        func request(method: String, params: [String: JSONValue], id: String, boundTo identity: UploadConnectionIdentity) async throws -> JSONValue {
+            try RequestValidation.validate(method: method, params: params, id: id)
+            guard case .number(let number)? = params["offset"] else { throw RemoteError.remote("offset") }
+            let offset = Int(number); offsets.append(offset)
+            let data = bytes.subdata(in: offset..<min(offset + ChatAssetTransfer.chunkBytes, bytes.count))
+            var result = params
+            result["total"] = .number(Double(bytes.count)); result["name"] = .string("plot.png"); result["media_type"] = .string("image/png")
+            result["data"] = .string(Base64URL.encode(data)); result["sha256"] = .string(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+            switch mode {
+            case "wrong-host": result["chat_id"] = .string("22222222-2222-4222-8222-222222222222")
+            case "empty-chunk": result["data"] = .string("")
+            case "changed": if offset > 0 { result["sha256"] = .string(String(repeating: "0", count: 64)) }
+            case "corrupt": result["sha256"] = .string(String(repeating: "0", count: 64))
+            case "path": result["name"] = .string("../plot.png")
+            case "oversized": result["total"] = .number(Double(ChatAssetTransfer.maximumBytes + 1))
+            default: break
+            }
+            return .object(result)
+        }
+    }
+    func testDownloadUsesBoundedIdentityBoundChunksAndVerifiesDigest() async throws {
+        let data = Data(repeating: 73, count: ChatAssetTransfer.chunkBytes + 7)
+        let desktop = Desktop(bytes: data)
+        let result = try await ChatAssetTransfer.receive(chatID: chat, cursor: "abcd-1234", itemID: "item", reference: "plot.png", over: desktop, boundTo: identity)
+        XCTAssertEqual(result.data, data)
+        let offsets = await desktop.offsets
+        XCTAssertEqual(offsets, [0, ChatAssetTransfer.chunkBytes])
+    }
+    func testEmptyFileFinishesInOneValidatedChunk() async throws {
+        let result = try await ChatAssetTransfer.receive(chatID: chat, cursor: "abcd", itemID: "item", reference: "plot.png", over: Desktop(bytes: Data()), boundTo: identity)
+        XCTAssertTrue(result.data.isEmpty)
+    }
+    func testChangedCorruptUnboundedAndMisdirectedRepliesAreRefused() async {
+        for mode in ["wrong-host", "empty-chunk", "changed", "corrupt", "path", "oversized"] {
+            do {
+                _ = try await ChatAssetTransfer.receive(chatID: chat, cursor: "abcd", itemID: "item", reference: "plot.png", over: Desktop(bytes: Data(repeating: 1, count: ChatAssetTransfer.chunkBytes + 1), mode: mode), boundTo: identity)
+                XCTFail("Accepted \(mode)")
+            } catch {}
+        }
+    }
+    func testOnlyCompleteBoundedLocalReferencesBecomePreviewCards() {
+        let refs = ChatMarkdown.assetReferences("![Plot](plots/a.png) [Report](<out/final report.pdf>) [Web](https://example.com/x.png) ![File](file:///secret.png) [Escape](../secret.txt) ![Plot again](plots/a.png) [half](out/a")
+        XCTAssertEqual(refs.map(\.path), ["plots/a.png", "out/final report.pdf"])
+        XCTAssertEqual(refs.map(\.isImage), [true, false])
+        XCTAssertEqual(ChatMarkdown.assetReferences((0..<30).map { "[\($0)](file\($0).txt)" }.joined(separator: " ")).count, 8)
+    }
+    func testTableCopyRetainsRowsColumnsAndPlainText() {
+        XCTAssertEqual(ChatMarkdown.tableCopy(header: ["**Name**", "Value"], rows: [["a", "`b`"], ["c\td", "e\nf"]]), "Name\tValue\na\tb\nc d\te f")
+    }
+}
+
+extension ChatAssetTransferTests {
+    func testProviderLocalImagesSurviveTheMobileProjection() throws {
+        let item = try JSONDecoder().decode(ChatItem.self, from: Data(#"{"id":"image-tool","status":"completed","body":{"type":"agent_message","text":"Done"},"presentation":{"images":[{"label":"Plot","source":{"kind":"local","path":"plots/a.png"}},{"label":"Remote","source":{"kind":"url","url":"https://example.com/a.png"}},{"label":"Escape","source":{"kind":"local","path":"../private.png"}}]}}"#.utf8))
+        XCTAssertEqual(item.outputImages, [ChatAssetReference(label: "Plot", path: "plots/a.png", isImage: true)])
+        XCTAssertEqual(try JSONDecoder().decode(ChatItem.self, from: JSONEncoder().encode(item)), item)
+    }
+    func testOnlyTheFirstPreviewChunkNeedsTheLongPreparationTimeout() {
+        XCTAssertEqual(RelayClient.timeout(for: "chat.asset.read", params: ["offset": .number(0)], default: .seconds(15)), .seconds(90))
+        XCTAssertEqual(RelayClient.timeout(for: "chat.asset.read", params: ["offset": .number(65536)], default: .seconds(15)), .seconds(15))
+    }
+}
+
+
+extension ChatAssetTransferTests {
+    func testFutureToolPresentationKeepsTheRawToolBody() throws {
+        let item = try JSONDecoder().decode(ChatItem.self, from: Data(#"{"id":"tool","status":"completed","body":{"type":"tool_call","tool":"read_file","input":{"path":"a.txt"},"output":"the file"},"presentation":{"tool":{"kind":"future-shape","arbitrary":{"items":[1,2,3]}}}}"#.utf8))
+        guard case .toolCall(_, let tool, _, let output) = item.body else { return XCTFail("Lost raw tool fallback") }
+        XCTAssertEqual(tool, "read_file"); XCTAssertEqual(output, "the file")
     }
 }

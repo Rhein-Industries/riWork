@@ -226,7 +226,12 @@ impl Target {
             home,
             fresh.provider,
             Some(project_id),
-            fresh.codex_account_id.as_deref(),
+            // Even None means a pinned system-default identity here, not a new
+            // automatic launch that may balance onto another subscription.
+            fresh.codex_account_id.as_deref().or_else(|| {
+                (fresh.provider == Provider::Codex)
+                    .then_some(crate::codex_accounts::SYSTEM_DEFAULT_ID)
+            }),
         )?;
         let binding = if fresh.provider == Provider::Codex {
             Some(crate::codex_accounts::resolve_launch_binding(home, account.as_deref())?.home)

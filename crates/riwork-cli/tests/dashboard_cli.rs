@@ -306,12 +306,18 @@ fn the_dashboard_reports_the_store_and_the_saved_chats_and_starts_nothing() {
             "automations",
             "backends",
             "chats_known",
+            "decision_sources",
+            "decisions",
+            "decisions_total",
             "finished",
             "finished_total",
             "generated_at",
             "global",
+            "intelligence",
             "projects",
             "projects_total",
+            "recent_activity",
+            "recent_activity_total",
             "tasks_in_progress",
             "tasks_in_progress_total",
             "totals",
@@ -321,7 +327,14 @@ fn the_dashboard_reports_the_store_and_the_saved_chats_and_starts_nothing() {
         ]
     );
     let mut all = Vec::new();
-    keys(&dashboard, &mut all);
+    let mut provider_rows = dashboard.clone();
+    // The additive intelligence object names its configured summarizer model. The
+    // underlying dashboard still omits private provider routing and project roots.
+    provider_rows
+        .as_object_mut()
+        .unwrap()
+        .remove("intelligence");
+    keys(&provider_rows, &mut all);
     assert!(
         !all.iter().any(|key| key == "model" || key == "root"),
         "{all:?}"
@@ -393,8 +406,8 @@ fn the_dashboard_reports_the_store_and_the_saved_chats_and_starts_nothing() {
     );
 
     // Nothing was started or written: no chat host (no socket, no lock, no run directory),
-    // no chat, no shell registry, no tmux server. The automations' lock file is the only
-    // file a read may leave, as the desktop's reads do.
+    // no chat, no shell registry, no tmux server. Automations and settings may leave their
+    // read locks, as the desktop's reads do; no preferences or session state are changed.
     let after = home.files();
     assert!(!home.state().join("run").exists());
     assert!(!home.state().join("sessions.json").exists());
@@ -406,7 +419,7 @@ fn the_dashboard_reports_the_store_and_the_saved_chats_and_starts_nothing() {
     assert!(
         added
             .iter()
-            .all(|path| *path == Path::new("schedules.lock")),
+            .all(|path| *path == Path::new("schedules.lock") || *path == Path::new("settings.lock")),
         "{added:?}"
     );
     for (path, bytes) in &before {

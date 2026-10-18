@@ -16,6 +16,30 @@ import RiWorkCore
     /// What each shortcut does.
     var shortcutMap: ShortcutMap { ShortcutMap(hotkeys: library.hotkeys, settings: shortcuts) }
 
+    /// A profile is a live overlay: switching it off does not leave template hotkeys installed in someone's library.
+    /// Existing hotkeys and menu/help bindings win every collision.
+    func resolvedHotkeys(usingClicks: Bool) -> [Hotkey] {
+        guard usingClicks else { return custom }
+        var resolved = custom
+        let taken = Set(shortcuts.paletteChords + shortcuts.helpChords)
+        for hotkey in HotkeyTemplate.clicks.hotkeys {
+            guard !custom.contains(where: { $0.id == hotkey.id }),
+                  !resolved.contains(where: { $0.chord == hotkey.chord }),
+                  hotkey.chord.map({ !taken.contains($0) }) == true else { continue }
+            // These are read-only profile defaults, outside the persisted library's size limit. Installed template copies
+            // remain editable; an ephemeral default must never open an editor that would try to update a nonexistent record.
+            resolved.append(Hotkey(id: "builtin.profile.\(hotkey.id)", label: hotkey.label, steps: hotkey.steps,
+                                   chord: hotkey.chord, showsOnBar: false))
+        }
+        return resolved
+    }
+    func resolvedShortcuts(usingClicks: Bool) -> ShortcutSettings {
+        guard usingClicks else { return shortcuts }
+        var resolved = shortcuts
+        resolved.merge(.clicks, library: HotkeyLibrary(hotkeys: resolvedHotkeys(usingClicks: true)))
+        return resolved
+    }
+
     init(defaults: UserDefaults) {
         self.defaults = defaults
         library = HotkeyLibrary(encoded: defaults.string(forKey: Self.key))

@@ -1,5 +1,25 @@
 import Foundation
 
+/// A physical keyboard can be reported without its make. Automatic uses a Clicks name only when iOS supplies one;
+/// the explicit choices let a person correct a generic or misleading device name.
+public enum HardwareKeyboardLayout: String, CaseIterable, Sendable, Identifiable {
+    case automatic, standard, clicks
+    public var id: String { rawValue }
+    public var title: String {
+        switch self { case .automatic: "Automatic"; case .standard: "Standard"; case .clicks: "Clicks" }
+    }
+    public init(stored: String?) { self = stored.flatMap(Self.init(rawValue:)) ?? .automatic }
+    public func usesClicks(attached: Bool, vendorName: String?) -> Bool {
+        switch self {
+        case .clicks: return true
+        case .standard: return false
+        case .automatic:
+            guard attached, let vendorName else { return false }
+            return vendorName.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).contains("clicks")
+        }
+    }
+}
+
 /// "Focus keyboard when a shell opens": whether the terminal takes the keyboard by itself once a shell is ready.
 public enum KeyboardFocusSetting: String, CaseIterable, Sendable, Identifiable {
     /// Always, which brings up the software keyboard when there is no hardware one.

@@ -345,7 +345,8 @@ impl ChatChoice {
             project_id: Some(self.project.clone()),
             worktree_id: location.worktree_id.clone(),
             cwd: location.path.clone(),
-            codex_account_id: (self.provider == Provider::Codex).then(|| {
+            // A balanced account is only a preview: the host chooses with fresh quota.
+            codex_account_id: (self.provider == Provider::Codex && !models.balanced).then(|| {
                 models
                     .account
                     .clone()
@@ -748,7 +749,11 @@ impl Render for ChatChoice {
                     .map(|label| {
                         div()
                             .text_color(rgb(colors.muted))
-                            .child(format!("Codex account · {label}"))
+                            .child(if self.models[index].balanced {
+                                format!("Codex account · balanced at start (now {label})")
+                            } else {
+                                format!("Codex account · {label}")
+                            })
                     }),
             )
             .child(form_input::frame(
@@ -1013,6 +1018,36 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].provider, Provider::Codex);
         assert_eq!(requests[0].contributor_mode, ContributorMode::Off);
+    }
+
+    #[gpui::test]
+    fn a_balanced_codex_account_is_only_a_preview_the_host_chooses_again(cx: &mut TestAppContext) {
+        let (handle, choice) = fixture(cx);
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let observed = requests.clone();
+        let _subscription = cx.update(|app| {
+            app.subscribe(&choice, move |_, event: &ChoiceEvent, _| {
+                if let ChoiceEvent::Confirmed(request) = event {
+                    observed.borrow_mut().push(request.clone());
+                }
+            })
+        });
+        test_turn(cx, handle, |_, app| {
+            choice.update(app, |choice, cx| {
+                let mut models = choice.models.clone();
+                models[0].account = Some("fixture-account".into());
+                models[0].account_label = Some("Fixture account".into());
+                models[0].balanced = true;
+                choice.apply_models(models, cx);
+            });
+        });
+        test_turn(cx, handle, |window, app| {
+            window.click("new-chat-confirm", app)
+        });
+        let requests = requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].provider, Provider::Codex);
+        assert_eq!(requests[0].codex_account_id, None);
     }
 
     #[gpui::test]

@@ -24,7 +24,10 @@ private struct MarkdownBlocks: View {
     }
 }
 
-private extension EnvironmentValues {
+extension EnvironmentValues {
+    @Entry var chatAssetLoader: (@MainActor @Sendable (String, String) async throws -> ChatAsset)? = nil
+    @Entry var chatAssetItemID = ""
+
     /// Inside a quote the text is the muted one.
     @Entry var markdownMuted = false
 }
@@ -42,8 +45,11 @@ private struct MarkdownBlockView: View {
                 .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityAddTraits(.isHeader).accessibilityHeading(level <= 1 ? .h1 : level == 2 ? .h2 : .h3)
         case .paragraph(let text):
-            Text(ChatMarkdown.inline(text)).chatProse().lineSpacing(3).foregroundStyle(muted ? style.muted : style.text).tint(style.link)
-                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(ChatMarkdown.inline(text)).chatProse().lineSpacing(3).foregroundStyle(muted ? style.muted : style.text).tint(style.link)
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                ForEach(ChatMarkdown.assetReferences(text)) { ChatOutputAssetCard(reference: $0) }
+            }
         case .code(let language, let text, _):
             CodeBlock(language: language, text: text)
         case .list(let ordered, let start, let items):
@@ -100,6 +106,7 @@ private struct ListRow: View {
 }
 
 private struct CodeBlock: View {
+    @State private var wraps = true
     @Environment(\.desktopStyle) private var style
     let language: String?
     let text: String
@@ -108,12 +115,19 @@ private struct CodeBlock: View {
             HStack(spacing: 4) {
                 Text(language ?? "code").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted).lineLimit(1)
                 Spacer(minLength: 4)
+                Button { wraps.toggle() } label: { Image(systemName: wraps ? "text.word.spacing" : "arrow.left.and.right") }
+                    .buttonStyle(.plain).frame(width: 36, height: 36).accessibilityLabel(wraps ? "Scroll code horizontally" : "Wrap code lines")
                 CopyButton(title: "Copy code", text: { text })
             }
             .padding(.leading, 12).background(style.cardHeader)
-            ScrollView(.horizontal, showsIndicators: false) {
+            if wraps {
                 Text(verbatim: text).font(style.code).foregroundStyle(style.text).textSelection(.enabled)
-                    .fixedSize(horizontal: true, vertical: true).padding(12)
+                    .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            } else {
+                ScrollView(.horizontal, showsIndicators: true) {
+                    Text(verbatim: text).font(style.code).foregroundStyle(style.text).textSelection(.enabled)
+                        .fixedSize(horizontal: true, vertical: true).padding(12)
+                }
             }
         }
         .background(style.panel).clipShape(style.block(14))
@@ -128,15 +142,22 @@ private struct TableBlock: View {
     let header: [String]
     let rows: [[String]]
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
-                GridRow { ForEach(header.indices, id: \.self) { Text(ChatMarkdown.inline(header[$0])).font(style.system(.footnote, weight: .bold)) } }
-                Divider().gridCellUnsizedAxes(.horizontal)
-                ForEach(rows.indices, id: \.self) { row in
-                    GridRow { ForEach(rows[row].indices, id: \.self) { Text(ChatMarkdown.inline(rows[row][$0])).font(style.system(.footnote)) } }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Table · swipe to see columns").font(style.system(.caption2)).foregroundStyle(style.muted)
+                Spacer(minLength: 4)
+                CopyButton(title: "Copy table", text: { ChatMarkdown.tableCopy(header: header, rows: rows) })
+            }.padding(.leading, 8).background(style.cardHeader)
+            ScrollView(.horizontal, showsIndicators: true) {
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+                    GridRow { ForEach(header.indices, id: \.self) { Text(ChatMarkdown.inline(header[$0])).font(style.system(.footnote, weight: .bold)).frame(minWidth: 90, maxWidth: 240, alignment: .leading).fixedSize(horizontal: false, vertical: true) } }
+                    Divider().gridCellUnsizedAxes(.horizontal)
+                    ForEach(rows.indices, id: \.self) { row in
+                        GridRow { ForEach(rows[row].indices, id: \.self) { Text(ChatMarkdown.inline(rows[row][$0])).font(style.system(.footnote)).frame(minWidth: 90, maxWidth: 240, alignment: .leading).fixedSize(horizontal: false, vertical: true) } }
+                    }
                 }
+                .foregroundStyle(style.text).textSelection(.enabled).padding(8)
             }
-            .foregroundStyle(style.text).textSelection(.enabled).padding(8)
         }
         .background(style.panel).clipShape(style.block(14))
         .overlay { if !style.native { Rectangle().stroke(style.divider, lineWidth: 1) } }

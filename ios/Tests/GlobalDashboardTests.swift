@@ -1,6 +1,131 @@
 import XCTest
 @testable import RiWorkCore
 
+final class DashboardDecisionTests: XCTestCase {
+    private let chatID = "cccccccc-0001-4000-8000-000000000001"
+    private func wire(_ body: JSONValue, kind: String = "approval", requestID: String = "request-1") -> JSONValue {
+        .object(["v": .number(1), "decisions": .array([.object([
+            "chat_id": .string(chatID), "request_id": .string(requestID), "kind": .string(kind),
+            "session": .object(["target": .object(["type": .string("chat"), "id": .string(chatID)]), "agent": .string("Claude"), "is_chat": .bool(true)]),
+            "source": .object(["chat_id": .string(chatID), "event_seq": .number(7), "event_id": .string("chat:\(chatID):seq:7")]),
+            kind: body
+        ])])])
+    }
+    private func decision(_ approval: ChatApproval) throws -> DashboardDecision {
+        try XCTUnwrap(DashboardSnapshot(wire: wire(try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(approval)))).decisions.rows.first)
+    }
+    private func snapshot(_ controls: [ChatEvent], chat: String? = nil) -> ChatSnapshotReply {
+        ChatSnapshotReply(chatID: chat ?? chatID, cursor: "fixture", next: 8, before: 0, more: false, items: [], controls: [.state(.waiting)] + controls)
+    }
+    func testOnlyAnExactStillPendingRequestAndOfferedChoiceCanBeAnswered() throws {
+        let approval = ChatApproval(requestID: "request-1", kind: .command, title: "Run tests", detail: "cargo test", choices: [.accept, .decline])
+        let row = try decision(approval)
+        let command = ChatCommand.approve(requestID: "request-1", decision: .accept)
+        XCTAssertTrue(row.validates(command, snapshot: snapshot([.approvalRequested(approval)])))
+        XCTAssertFalse(row.validates(command, snapshot: snapshot([.approvalRequested(approval), .approvalResolved(requestID: "request-1", decision: .decline)])))
+        var changed = approval; changed.detail = "A different command"
+        XCTAssertFalse(row.validates(command, snapshot: snapshot([.approvalRequested(changed)])))
+        XCTAssertFalse(row.validates(.approve(requestID: "request-1", decision: .acceptForSession), snapshot: snapshot([.approvalRequested(approval)])))
+        XCTAssertFalse(row.validates(command, snapshot: snapshot([.approvalRequested(approval)], chat: "cccccccc-0002-4000-8000-000000000002")))
+        XCTAssertFalse(row.validates(command, snapshot: snapshot([.approvalRequested(approval), .state(.stopped)])))
+    }
+    func testUnknownChoicesNeverBecomeFallbackAllowButtons() throws {
+        let body: JSONValue = .object(["request_id": .string("request-1"), "kind": .string("tool"), "title": .string("New choice"),
+                                       "choices": .array([.string("new_future_choice")])])
+        let row = try XCTUnwrap(DashboardSnapshot(wire: wire(body)).decisions.rows.first)
+        let approval = ChatApproval(requestID: "request-1", kind: .tool, title: "New choice", choices: [])
+        XCTAssertFalse(row.validates(.approve(requestID: "request-1", decision: .accept), snapshot: snapshot([.approvalRequested(approval)])))
+    }
+    func testQuestionRequiresItsExactPromptAndAnAnswerForEachQuestion() throws {
+        let question = ChatQuestion(requestID: "request-1", questions: [.init(question: "Which option?", options: [.init(label: "A"), .init(label: "B")])])
+        let body = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(question))
+        let row = try XCTUnwrap(DashboardSnapshot(wire: wire(body, kind: "question")).decisions.rows.first)
+        XCTAssertTrue(row.validates(.answer(requestID: "request-1", answers: [["B"]]), snapshot: snapshot([.questionRequested(question)])))
+        XCTAssertFalse(row.validates(.answer(requestID: "request-1", answers: [[]]), snapshot: snapshot([.questionRequested(question)])))
+        XCTAssertFalse(row.validates(.answer(requestID: "request-1", answers: [["B"]]), snapshot: snapshot([.questionRequested(question), .questionResolved(requestID: "request-1")])))
+    }
+    private func json<T: Encodable>(_ value: T) throws -> JSONValue { try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(value)) }
+    private func reply(_ controls: [JSONValue], items: [JSONValue] = []) throws -> ChatSnapshotReply {
+        try JSONValue.object(["v": .number(1), "chat_id": .string(chatID), "cursor": .string("fixture"), "next": .number(8), "before": .number(0),
+                              "more": .bool(false), "items": .array(items), "controls": .array(controls)]).decode(ChatSnapshotReply.self)
+    }
+    func testOnlyThisRequestsOwnControlsDecideWhetherItCanBeAnswered() throws {
+        let approval = ChatApproval(requestID: "request-1", kind: .command, title: "Run tests", detail: "cargo test", choices: [.accept, .decline])
+        let row = try decision(approval)
+        let command = ChatCommand.approve(requestID: "request-1", decision: .accept)
+        let waiting = try json(ChatEvent.state(.waiting)), requested = try json(ChatEvent.approvalRequested(approval))
+        // A row the phone cannot read, an event from a newer host and another request elided: none of them is this request.
+        let unrelated = try reply([waiting, requested, .object(["event": .string("future_event")]),
+                                   .object(["event": .string("control_elided"), "of": .string("question_requested"), "request_id": .string("other")])],
+                                  items: [.object(["order": .number(1), "item": .object(["kind": .string("future_item")])])])
+        XCTAssertEqual(unrelated.skipped, 2)
+        XCTAssertEqual(row.check(command, snapshot: unrelated), .current)
+        // This request's own control unreadable, a request control that names none, or this request elided: nothing vouches for it.
+        let own = try reply([waiting, requested, .object(["event": .string("approval_requested"), "approval": .object(["request_id": .string("request-1"), "title": .number(7)])])])
+        XCTAssertEqual(own.partialRequestIDs, ["request-1"])
+        XCTAssertEqual(row.check(command, snapshot: own), .unreadable)
+        let unnamed = try reply([waiting, requested, .object(["event": .string("question_resolved")])])
+        XCTAssertTrue(unnamed.unattributedRequestControl)
+        XCTAssertEqual(row.check(command, snapshot: unnamed), .unreadable)
+        let elided = try reply([waiting, requested, .object(["event": .string("control_elided"), "of": .string("approval_requested"), "request_id": .string("request-1")])])
+        XCTAssertEqual(row.check(command, snapshot: elided), .unreadable)
+        // Resolved stays a change, not an unreadable request.
+        let resolved = try reply([waiting, requested, try json(ChatEvent.approvalResolved(requestID: "request-1", decision: .decline))])
+        XCTAssertEqual(row.check(command, snapshot: resolved), .changed)
+    }
+    func testAQuestionWithAPromptOrOptionThePhoneCannotReadIsNotAnswerable() throws {
+        let question = ChatQuestion(requestID: "request-1", questions: [.init(question: "First?", options: [.init(label: "A")]),
+                                                                        .init(question: "Second?", options: [.init(label: "B"), .init(label: "C")])])
+        func replacing(prompt: Int, option: Int? = nil, with value: JSONValue) throws -> JSONValue {
+            guard case .object(var body) = try json(question), case .array(var prompts)? = body["questions"] else { throw CocoaError(.coderReadCorrupt) }
+            if let option {
+                guard case .object(var row) = prompts[prompt], case .array(var options)? = row["options"] else { throw CocoaError(.coderReadCorrupt) }
+                options[option] = value; row["options"] = .array(options); prompts[prompt] = .object(row)
+            } else { prompts[prompt] = value }
+            body["questions"] = .array(prompts); return .object(body)
+        }
+        // A prompt without its question: a lenient read keeps only the second, and its answer would go to the first.
+        let missingPrompt = try replacing(prompt: 0, with: .object(["options": .array([])]))
+        XCTAssertTrue(try DashboardSnapshot(wire: wire(missingPrompt, kind: "question")).decisions.rows.isEmpty)
+        let missingOption = try replacing(prompt: 1, option: 0, with: .object(["description": .string("no label")]))
+        XCTAssertTrue(try DashboardSnapshot(wire: wire(missingOption, kind: "question")).decisions.rows.isEmpty)
+        // The whole question is a card, and a fresh snapshot holding a partial one cannot vouch for it.
+        let row = try XCTUnwrap(DashboardSnapshot(wire: wire(try json(question), kind: "question")).decisions.rows.first)
+        let partial = try reply([try json(ChatEvent.state(.waiting)), .object(["event": .string("question_requested"), "question": missingOption])])
+        XCTAssertEqual(partial.partialRequestIDs, ["request-1"])
+        XCTAssertEqual(row.check(.answer(requestID: "request-1", answers: [["A"], ["C"]]), snapshot: partial), .unreadable)
+        let whole = try reply([try json(ChatEvent.state(.waiting)), try json(ChatEvent.questionRequested(question))])
+        XCTAssertTrue(whole.partialRequestIDs.isEmpty)
+        XCTAssertEqual(row.check(.answer(requestID: "request-1", answers: [["A"], ["C"]]), snapshot: whole), .current)
+    }
+    func testRepeatedSummaryLinesAreRowsOfTheirOwn() throws {
+        let line: JSONValue = .object(["text": .string("Tests pass"), "source_event_ids": .array([.string("chat:\(chatID):seq:1")])])
+        let snapshot = try DashboardSnapshot(wire: .object(["v": .number(1), "intelligence": .object([
+            "state": .string("ready"), "summary": .string("Summary"), "highlights": .array([line, line]), "followups": .array([line, line, line])])]))
+        XCTAssertEqual(snapshot.intelligence.highlights.map(\.id), [0, 1])
+        XCTAssertEqual(snapshot.intelligence.followups.map(\.id), [0, 1, 2])
+        XCTAssertEqual(Set(snapshot.intelligence.highlights.map(\.text)), ["Tests pass"])
+    }
+    func testLongRequestIDsAndSummariesArriveWhole() throws {
+        // The engine allows request IDs up to 512 bytes and summaries up to 600 characters.
+        let id = String(repeating: "r", count: 400)
+        let approval = ChatApproval(requestID: id, kind: .command, title: "Run tests", detail: "cargo test", choices: [.accept])
+        let body = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(approval))
+        let row = try XCTUnwrap(DashboardSnapshot(wire: wire(body, requestID: id)).decisions.rows.first)
+        XCTAssertEqual(row.requestID, id)
+        let summary = String(repeating: "s", count: 600)
+        let snapshot = try DashboardSnapshot(wire: .object(["v": .number(1), "intelligence": .object([
+            "state": .string("ready"), "summary": .string(summary), "highlights": .array([]), "followups": .array([]), "stale": .bool(false)])]))
+        XCTAssertEqual(snapshot.intelligence.summary, summary)
+    }
+    func testOlderHostsRemainReadableWithUnknownDecisionCoverage() throws {
+        let snapshot = try DashboardSnapshot(wire: .object(["v": .number(1)]))
+        XCTAssertTrue(snapshot.decisions.rows.isEmpty)
+        XCTAssertFalse(snapshot.decisionSources.complete)
+        XCTAssertTrue(snapshot.recentActivity.rows.isEmpty)
+    }
+}
+
 /// The desktop's dashboard on the phone (`dashboard.get`): read leniently (a figure that is missing or wrong is unknown, never 0; a row
 /// that cannot be read is left out), kept in the desktop's order and attention precedence (checked on the fixture the engine itself
 /// writes, ios/Tests/Fixtures/dashboard.json), how current it says it is, where each row leads, and what the global orchestrator's

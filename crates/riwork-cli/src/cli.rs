@@ -1086,12 +1086,26 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
 /// (`global_overview::wire`). Reading starts nothing: no chat host (a running one is asked
 /// for its chats, else the saved chats are read), chat, shell, orchestrator or tmux server.
 fn dashboard_command(args: Vec<String>, json: bool) -> Result<(), String> {
+    if args.first().map(String::as_str) == Some(SUMMARY_REFRESH) {
+        ensure_empty(&args[1..])?;
+        let sessions = SessionManager::open_default()?;
+        riwork_engine::dashboard_intelligence::refresh(sessions.state_home(), std::io::stdin());
+        return Ok(());
+    }
     ensure_empty(&args)?;
-    let (overview, now) = dashboard_overview()?;
+    let (overview, observed, now) = dashboard_overview()?;
     if json {
         // One line, not pretty-printed: the connector reads it under the reply limit.
-        let line = serde_json::to_string(&crate::global_overview::wire(&overview, now))
-            .map_err(|error| error.to_string())?;
+        let mut wire = crate::global_overview::wire_with_observations(&overview, now, &observed);
+        let sessions = SessionManager::open_default()?;
+        // The connector's read never waits on Keychain or Haiku: a due summary is asked
+        // for by a process of its own, and a later read shows it.
+        if let Some(evidence) =
+            riwork_engine::dashboard_intelligence::enrich_saved(sessions.state_home(), &mut wire)
+        {
+            spawn_summary_refresh(&evidence);
+        }
+        let line = serde_json::to_string(&wire).map_err(|error| error.to_string())?;
         println!("{line}");
     } else {
         print!("{}", dashboard_summary(&overview, now));
@@ -1099,12 +1113,47 @@ fn dashboard_command(args: Vec<String>, json: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// `riwork dashboard --refresh-summary`: internal, the process `spawn_summary_refresh` starts.
+const SUMMARY_REFRESH: &str = "--refresh-summary";
+
+/// Ask for a due Haiku summary in a detached process that reads `evidence` from stdin.
+/// Nothing waits for it, so the connector's read is not held to its API deadline.
+fn spawn_summary_refresh(evidence: &serde_json::Value) {
+    let Ok(executable) = env::current_exe() else {
+        return;
+    };
+    let mut command = Command::new(executable);
+    command
+        .args(["dashboard", SUMMARY_REFRESH])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let Ok(mut child) = command.spawn() else {
+        return;
+    };
+    if let Some(stdin) = child.stdin.take() {
+        let _ = serde_json::to_writer(stdin, evidence);
+    }
+}
+
 /// What the desktop's dashboard is drawn from, read once: the store, the shells and their
 /// directories, each agent's state read cold (`activity::states_once`), the chats, the
 /// automations and the log times of failed and waiting chats (`global_overview::read_extras`),
 /// and the app, the chat host and the providers' CLIs (`global_overview::read_backends`, which
 /// runs no provider CLI and never connects to the chat host).
-fn dashboard_overview() -> Result<(crate::global_overview::Overview, u64), String> {
+fn dashboard_overview() -> Result<
+    (
+        crate::global_overview::Overview,
+        crate::global_overview::observed::Observations,
+        u64,
+    ),
+    String,
+> {
     use crate::global_overview::{Inputs, build, read_backends, read_extras, timed_chats};
     let state = Store::open_default()?.snapshot()?;
     let sessions = SessionManager::open_default()?;
@@ -1140,7 +1189,8 @@ fn dashboard_overview() -> Result<(crate::global_overview::Overview, u64), Strin
         backends: Some(&backends),
         now,
     });
-    Ok((overview, now))
+    let observed = crate::global_overview::observed::read(home, &state, chats.as_deref(), now);
+    Ok((overview, observed, now))
 }
 
 /// The dashboard as a few lines of text.

@@ -690,16 +690,24 @@ impl Workspace {
             .snapshot
             .as_ref();
         let system_home = resolve_selection(None, snapshot);
-        let label = project_default_account_label(
-            self.project(),
-            self.settings.selected_codex_account.as_deref(),
-            snapshot,
-            reported_account_label(
-                &cx.global::<AccountUsage>().codex,
-                system_home_path(&system_home),
+        let balanced = self.settings.codex_subscription_balancing
+            && self
+                .project()
+                .is_none_or(|project| project.codex_account == ProjectCodexAccount::Inherit);
+        let label = if balanced {
+            "SUBSCRIPTIONS (AUTO)".to_owned()
+        } else {
+            project_default_account_label(
+                self.project(),
+                self.settings.selected_codex_account.as_deref(),
+                snapshot,
+                reported_account_label(
+                    &cx.global::<AccountUsage>().codex,
+                    system_home_path(&system_home),
+                )
+                .as_deref(),
             )
-            .as_deref(),
-        );
+        };
         let bounds = self.account_item_bounds.clone();
         behavior_controls::action(
             "status-codex-account",
@@ -853,7 +861,7 @@ impl Workspace {
             &cx.global::<AccountUsage>().codex,
             system_home_path(&system_home),
         );
-        let choices = default_choices(
+        let mut choices = default_choices(
             &self
                 .project()
                 .map(|project| project.codex_account.clone())
@@ -862,6 +870,11 @@ impl Workspace {
             &accounts,
             system_label.as_deref(),
         );
+        if self.settings.codex_subscription_balancing {
+            if let Some(inherit) = choices.rows.first_mut() {
+                inherit.detail = Some("Automatically chooses the saved subscription with the most usable quota. Explicit project choices below stay fixed.".into());
+            }
+        }
         let note = |text: String, color: u32| {
             div()
                 .px(ui_text::space(8.0))

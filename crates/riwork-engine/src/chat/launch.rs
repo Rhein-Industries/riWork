@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 /// The Codex account a new chat of `provider` runs under: the one `requested`
 /// (an account id, which must be usable), or else the project's own, or else
-/// the app's selection, as `Some(account id)`; `None` is the system default
+/// the app's selection (or subscription balancing), as `Some(account id)`; `None` is the system default
 /// (and every Claude chat). An unusable selection is an error, never a quiet
 /// switch to another account.
 pub fn account_for(
@@ -30,7 +30,7 @@ pub fn account_for(
         (Provider::Codex, Some(id)) => {
             Ok(crate::codex_accounts::resolve_launch_binding(home, Some(id))?.id)
         }
-        (Provider::Codex, None) => Ok(sessions::selected_codex_binding(home, project_id)?.id),
+        (Provider::Codex, None) => Ok(sessions::new_codex_binding(home, project_id)?.id),
         (Provider::Claude, Some(_)) => {
             Err("a Claude chat has no Codex account; it uses the system login".into())
         }

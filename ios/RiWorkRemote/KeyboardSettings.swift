@@ -8,19 +8,26 @@ import RiWorkCore
 /// software keyboard and shows only the key bar, so focusing the terminal costs no screen; without one it pops the keyboard up.
 @MainActor @Observable final class HardwareKeyboardMonitor {
     private(set) var isAttached: Bool
+    private(set) var vendorName: String?
     @ObservationIgnored private let probe: () -> Bool
+    @ObservationIgnored private let nameProbe: () -> String?
     @ObservationIgnored private var observers: [any NSObjectProtocol] = []
 
-    init(probe: @escaping () -> Bool = { GCKeyboard.coalesced != nil }) {
+    init(probe: @escaping () -> Bool = { GCKeyboard.coalesced != nil }, nameProbe: @escaping () -> String? = { GCKeyboard.coalesced?.vendorName }) {
         self.probe = probe
+        self.nameProbe = nameProbe
         isAttached = probe()
-        for name in [Notification.Name.GCKeyboardDidConnect, .GCKeyboardDidDisconnect] {
+        vendorName = isAttached ? nameProbe() : nil
+        for name in [Notification.Name.GCKeyboardDidConnect, .GCKeyboardDidDisconnect, UIApplication.didBecomeActiveNotification] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.refresh() }
             })
         }
     }
-    func refresh() { isAttached = probe() }
+    func refresh() {
+        isAttached = probe()
+        vendorName = isAttached ? nameProbe() : nil
+    }
 }
 
 /// Whether the software keyboard is on screen, from the keyboard's frame notifications. GameController can report a keyboard (one that
@@ -55,30 +62,132 @@ import RiWorkCore
 
 /// Keyboard preferences: when the terminal takes the keyboard by itself, and the key readout. Kept in UserDefaults.
 @MainActor @Observable final class KeyboardPrefs {
-    static let focusKey = "riwork.focusKeyboard", showKeyEventsKey = "riwork.showKeyEvents"
+    static let focusKey = "riwork.focusKeyboard", showKeyEventsKey = "riwork.showKeyEvents", layoutKey = "riwork.hardwareKeyboardLayout"
     private(set) var focusSetting: KeyboardFocusSetting
     private(set) var showKeyEvents: Bool
+    private(set) var layout: HardwareKeyboardLayout
+    var usesClicks: Bool { layout.usesClicks(attached: hardware.isAttached, vendorName: hardware.vendorName) }
+    /// The software keyboard can be shown with a case attached. Keep its touch layout until it is put away again.
+    var usesHardwareLayout: Bool { hardware.isAttached && !software.isShown }
     let hardware: HardwareKeyboardMonitor
     let software = SoftwareKeyboardMonitor()
     let events = KeyEventLog()
+    let tabShortcuts = TabShortcutController()
+    private(set) var modelPickerRequests = 0
     @ObservationIgnored private let defaults: UserDefaults
 
     init(defaults: UserDefaults, hardware: HardwareKeyboardMonitor = HardwareKeyboardMonitor()) {
         self.defaults = defaults
         self.hardware = hardware
         focusSetting = KeyboardFocusSetting(stored: defaults.string(forKey: Self.focusKey))
+        layout = HardwareKeyboardLayout(stored: defaults.string(forKey: Self.layoutKey))
         showKeyEvents = defaults.bool(forKey: Self.showKeyEventsKey)
+        tabShortcuts.isEnabled = { [weak self] in self?.usesClicks == true && self?.usesHardwareLayout == true }
+        tabShortcuts.modalPresented = { Self.keyWindowIsCovered() }
     }
+    /// Key presses go to the foreground scene's key window: whether a sheet, alert or popover is up over its screen.
+    static func keyWindowIsCovered() -> Bool {
+        UIApplication.shared.connectedScenes.contains { scene in
+            guard let scene = scene as? UIWindowScene, scene.activationState == .foregroundActive else { return false }
+            return scene.keyWindow?.rootViewController?.presentedViewController != nil
+        }
+    }
+    func requestModelPicker() { modelPickerRequests &+= 1 }
     func setFocusSetting(_ setting: KeyboardFocusSetting) {
         guard setting != focusSetting else { return }
         focusSetting = setting
         defaults.set(setting.rawValue, forKey: Self.focusKey)
+    }
+    func setLayout(_ layout: HardwareKeyboardLayout) {
+        guard layout != self.layout else { return }
+        self.layout = layout
+        tabShortcuts.cancel()
+        defaults.set(layout.rawValue, forKey: Self.layoutKey)
     }
     func setShowKeyEvents(_ on: Bool) {
         guard on != showKeyEvents else { return }
         showKeyEvents = on
         defaults.set(on, forKey: Self.showKeyEventsKey)
     }
+}
+
+/// One leader shared by terminal input, chat text and keyboard-navigated menus. App handlers belong to the visible screen.
+@MainActor @Observable final class TabShortcutController {
+    private(set) var state = TabShortcutState()
+    var isEnabled: () -> Bool = { false }
+    /// A sheet, alert or popover is over the screen. Under one without the guide (`tabShortcutGuide`) the prefix is off: it could not
+    /// be seen there, and its Tab Q would reach the shell or draft hidden behind it.
+    @ObservationIgnored var modalPresented: () -> Bool = { false }
+    @ObservationIgnored private var timer: Task<Void, Never>?
+    /// Physical presses the prefix took, kept until their release so neither it nor a key-command echo or repeat of them acts again.
+    @ObservationIgnored private var heldCodes: Set<Int> = []
+    /// A key command the prefix took (⌘E cancelling it, say). Holding it repeats the command with no press in between: the repeats are
+    /// the prefix's too, until a press or release arrives.
+    @ObservationIgnored private var repeatingCommand: KeyChord?
+    @ObservationIgnored private var appOwner: UUID?
+    @ObservationIgnored private var appHandler: ((TabShortcutAction) -> Void)?
+    var guideVisible: Bool { state.guideVisible && isEnabled() }
+    var armed: Bool { state.armed && isEnabled() }
+
+    @ObservationIgnored private var suspensions: Set<UUID> = []
+    func setAppHandler(owner: UUID, handler: @escaping (TabShortcutAction) -> Void) { appOwner = owner; appHandler = handler }
+    /// A sheet is over the screen: its handler must not act behind it (switch tabs under an unsaved form, say).
+    func suspendApp(owner: UUID) { suspensions.insert(owner) }
+    func resumeApp(owner: UUID) { suspensions.remove(owner) }
+    func clearAppHandler(owner: UUID) { if appOwner == owner { appOwner = nil; appHandler = nil; cancelPrefix() } }
+
+    @discardableResult
+    func handle(_ event: KeyEventRecord, markedText: Bool = false, perform: (TabShortcutAction) -> Bool) -> Bool {
+        guard isEnabled(), !markedText, !(suspensions.isEmpty && modalPresented()) else { cancel(); return false }
+        guard let code = event.keyCode else { return false }
+        if event.phase == .command {
+            if repeatingCommand == KeyChord(keyCode: code, modifiers: event.modifiers) { return true }
+        } else { repeatingCommand = nil }
+        if event.phase == .up {
+            let used = heldCodes.remove(code) != nil
+            let outcome = update { $0.handle(event) }
+            if code == HIDKey.tab { timer?.cancel(); timer = nil }
+            return used || outcome.consumed
+        }
+        if event.phase == .cancelled { let used = heldCodes.contains(code) || state.armed; cancel(); return used }
+        if event.phase == .down {
+            // UIKit begins each physical press once (a held key repeats as text or key commands): a claim left by a press whose release
+            // went to another responder is stale, and this press is a new one.
+            heldCodes.remove(code)
+        } else if heldCodes.contains(code) {
+            // A key-command echo or repeat of a claimed press cannot run an action twice.
+            return true
+        }
+        let outcome = update { $0.handle(event) }
+        guard outcome.consumed else { return false }
+        // A press is held until its release; a key command has none, so its repeats are caught by the command itself.
+        if event.phase == .down { heldCodes.insert(code) } else { repeatingCommand = KeyChord(keyCode: code, modifiers: event.modifiers) }
+        if code == HIDKey.tab, state.tabIsHeld {
+            timer?.cancel()
+            timer = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                self?.update { $0.heldLongEnough() }
+            }
+        }
+        if let action = outcome.action {
+            timer?.cancel(); timer = nil
+            if !perform(action), suspensions.isEmpty { appHandler?(action) }
+        }
+        return true
+    }
+    /// Observers hear of the state only when it changes, not on every key that leaves it as it was.
+    @discardableResult private func update<Result>(_ change: (inout TabShortcutState) -> Result) -> Result {
+        var next = state
+        let result = change(&next)
+        if next != state { state = next }
+        return result
+    }
+    /// A screen/focus change dismisses the prefix, but a key already claimed by it
+    /// remains claimed in the next responder until its physical release arrives.
+    func cancelPrefix() { timer?.cancel(); timer = nil; update { $0.cancel() } }
+    /// Physical cancellation, IME/disabled routing and keyboard/app lifecycle resets
+    /// terminate the event stream, so no future key-up can be relied on.
+    func cancel() { cancelPrefix(); heldCodes.removeAll(); repeatingCommand = nil }
 }
 
 /// The open hotkey menu, if there is one. The capture view drives it from the keyboard and the SwiftUI overlay draws it and takes

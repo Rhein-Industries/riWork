@@ -26,6 +26,7 @@ use tokio::{
 };
 
 mod chat;
+mod chat_assets;
 mod dashboard;
 mod memo;
 mod orchestrator;
@@ -1144,6 +1145,7 @@ pub struct Rpc {
     shell_paste: AtomicBool,
     /// Files the phones sent (see `crate::upload`).
     uploads: Arc<crate::upload::Uploads>,
+    chat_assets: Mutex<chat_assets::AssetCache>,
 }
 impl Rpc {
     pub fn new(cli: PathBuf, storage: Storage) -> Self {
@@ -1166,6 +1168,7 @@ impl Rpc {
             capability_answers: AtomicU64::new(0),
             shell_paste: AtomicBool::new(false),
             uploads: Arc::new(crate::upload::Uploads::new(storage.dir.clone())),
+            chat_assets: Mutex::new(chat_assets::AssetCache::default()),
             storage,
         }
     }
@@ -1915,6 +1918,7 @@ impl Rpc {
                 let spec = chat::snapshot_spec(&r.params)?;
                 self.chat_snapshot(&r.id, spec, reply_limit).await
             }
+            "chat.asset.read" => self.chat_asset_read(device, r).await,
             "chat.events" => {
                 let spec = chat::events_spec(&r.params)?;
                 self.chat_events(&r.id, spec, reply_limit).await

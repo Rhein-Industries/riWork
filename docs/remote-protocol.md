@@ -6,6 +6,7 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-10-16: Additive dashboard fields, with no new method, feature flag, error code or version: optional `decisions` / `decisions_total`, `decision_sources`, `recent_activity` / `recent_activity_total`, and `intelligence`. Actual approval/question cards retain exact chat/request IDs, provider choices and source event identities; coverage and observation times distinguish incomplete or saved state. Each new list is capped at 40 rows. Optional Haiku summaries are separately identified, cite observed events and never create controls. Explicit answers revalidate the same host's current `chat.snapshot` and use existing `chat.command`; an uncertain outcome is never automatically retried. Applies to v1 and v2 sessions; original fixtures and older replies remain valid. See "Observed decisions and optional intelligence" in the Dashboard extension, [dashboard decisions](dashboard-decisions.md), and [Haiku summaries](haiku-dashboard.md). The iOS client implements the same fields and response checks.
 - 2026-10-15 (later): Additive, in the same "Chat extension": `presentation.worker` may also carry `after` (a worker chat's log `seq` when its card was written), and its `final` may carry `turn` and `turn_end` (the worker chat's turn that ended it, and the `seq` of that end in the worker's log) or `done_since` (Unix seconds a terminal's agent became done). They say which card an end belongs to and that it is recorded once; a phone reads none of them, and an older one ignores them. Existing methods, bytes and fixtures are unchanged. See `docs/chat-events.md` "Worker markers".
 - 2026-10-15: Additive, in the same "Chat extension", no new method, no new event and no new error code: chat items may carry optional `presentation.worker`, the record of a terminal or chat that this chat started (its worker): `session_id`, `kind` (`shell|chat`), `title`, and optionally `harness`, `model`, `worktree_id`, `assignment` (the first line of what the chat sent it, at most 240 characters), `noted_at` (Unix seconds), `late` and `follow_up` (present only when true), and `final` (`status` `done|exited|failed|stopped`, `ended_at`, `tail`: the worker's last six lines, at most 2 KiB). Such an item is an ordinary `tool_call` (`server` `riwork`, `tool` `worker`), always `completed`, with id `worker:<session_id>` or `worker:<session_id>:<n>`; the same id is written again when the worker finishes. Live state stays where it was: a client joins `session_id` against `shells.list` (terminals) and `chats.list` (chats). The relay never shortens `session_id`. An older phone shows the plain tool row and ignores the field; a phone decodes it leniently and drops a malformed one. See `docs/chat-events.md` "Worker markers". Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
 - 2026-10-15: In the "Project memo extension", no new method, field or error code: a memo's `updated_at` is now a revision. Every save that changes the text sets it to at least one more than the one before (the Unix seconds of the save, or the previous value plus one when that is not later), so two different texts never share an `updated_at`, even when saved within one second or after the Mac's clock was set back; it can run a few seconds ahead of the clock. Equal values mean the same text, which is what a phone relies on to send kept text again only over the memo it was written on. And `project.memo.set` first checks that the project exists under exactly the id given (`riwork project show ID --json`): an id the desktop does not have is `not_found` and saves nothing, also when a project is named that way, where it used to save that project's memo and answer `cli_error`. A desktop from before it may still give two saves in one second the same `updated_at`. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
@@ -1811,6 +1812,46 @@ code, envelope or fixture, for v1 and v2 sessions alike.
   id fail (`not_found` or `cli_error`). The connector's tests are
   `remote/tests/chat_orchestrator.rs`.
 
+### Chat output previews (v1 and v2, 2026-10-18)
+
+`chat.asset.read` previews a local file referenced by one chat item over the existing
+paired, encrypted RPC channel. It fetches no URLs and accepts no workspace/root from
+the client. Older desktops reject the unknown method; clients offer an update message.
+
+Params are `{"chat_id":"UUID","cursor":"SNAPSHOT_CURSOR","item_id":"ITEM_ID",`
+`"reference":"plots/result.png","offset":0}` with no extra fields. The cursor and
+item identify the displayed occurrence. The connector verifies the exact Markdown
+link/image destination in an agent message or the item's local `presentation.images`
+reference. If that item arrived after the historical cursor, it pins a fresh bounded
+snapshot and hydrates only that item. It looks up the chat's trusted `cwd` through the
+CLI and opens the referenced file beneath that directory without following symlinks;
+parent traversal, outside absolute paths, directories, and special files are refused.
+
+Preview types are PNG, JPEG, GIF, WebP, PDF, and plain-text `.txt`, `.md`, `.csv`, or
+`.json` files, at most 8 MiB each. `reference` is 1–4096 UTF-8 bytes, with no scheme,
+network path, or control characters. `item_id` is 1–512 bytes. Offsets are nonnegative
+multiples of 65,536, at most 8 MiB. Offset zero prepares an immutable transfer snapshot;
+later requests use the same `(device, chat, cursor, item, reference)` identity.
+
+The result is `{"chat_id":"UUID","item_id":"ITEM_ID","reference":"plots/result.png",`
+`"offset":0,"total":12345,"data":"UNPADDED_BASE64URL","sha256":"64_LOWERCASE_HEX",`
+`"name":"result.png","media_type":"image/png"}`. Each response contains exactly the
+next 65,536 bytes or the remaining final bytes. An empty file returns an empty chunk.
+Clients validate all identities and offsets, enforce the size/chunk bounds, require
+stable metadata/digest across chunks, and verify SHA-256 over the completed bytes.
+The first request may require several bounded CLI reads; the phone grants it 90 seconds.
+Subsequent chunks use the normal request timeout.
+
+The connector caches at most 16 MiB and eight immutable transfers, expiring them after
+120 idle seconds. Device authorization is checked for every chunk; cached data does
+not bypass revocation. `asset_expired` asks the user to reopen from offset zero.
+`asset_unavailable` means the reference, file type, size, or workspace containment
+cannot be verified. Files that change during transfer cannot mix old/new bytes.
+
+The iOS client binds every request to the selected paired desktop, fetches only after
+a preview tap, checks image dimensions before presentation, and opens the verified
+local temporary file in the native viewer. It removes that file when the viewer closes.
+
 ### Orchestrator creation extension (v1 and v2, 2026-10-05)
 
 Additive and compatible, like the extensions before it: one new method and one new `ready`
@@ -2004,7 +2045,8 @@ protocol v1 and v2 sessions alike. A client that never calls the method is unaff
 window) in one read, so a phone can show the same picture without listing every project's
 shells, chats and tasks. The desktop builds it exactly as its own dashboard does
 (`riwork_engine::global_overview::build`) and the phone is sent its projection
-(`global_overview::wire`), through `riwork dashboard --json`.
+(`global_overview::wire`, extended by `wire_with_observations`), through
+`riwork dashboard --json`.
 
 **Feature detection.** `ready.features.dashboard` is `true` when the installed `riwork` CLI
 reports `"dashboard": true` in `riwork capabilities --json`; the connector asks as it asks for
@@ -2039,7 +2081,14 @@ from before the extension answers it.
                | {"state":"unreadable","message":"..."}
                | {"state":"read","total":n,"paused":n,
                   "next"?:{"title":"...","at":n,"project_id"?:"UUID"},
-                  "items":[Automation],"items_total":n}              // at most 30 items
+                  "items":[Automation],"items_total":n},             // at most 30 items
+  "decisions"?: [Decision], "decisions_total"?: n,                   // at most 40 and 64 KiB of JSON, added 2026-10-16
+  "decision_sources"?: {"state":"read|partial|unavailable","sampled_at":n,
+                        "chats_read":n,"chats_complete":n,"chats_total":n},
+  "recent_activity"?: [RecentActivity], "recent_activity_total"?: n, // at most 40
+  "intelligence"?: {"state":"disabled|not_configured|no_evidence|ready|rate_limited|unavailable|refreshing",
+                    "model":"claude-haiku-5-5","generated_at"?:n,"summary"?:"...",
+                    "highlights":[Insight],"followups":[Insight],"error"?:"...","stale":bool}
 }
 
 Target     {"type":"shell","id":"UUID"}
@@ -2061,6 +2110,12 @@ Project    {"id":"UUID","name","folder"?,"agents":{...as in totals},"live_shells
 Task       {"id","title","project_id","project_name","branch"?,"updated_at":n}
 Automation {"id","title","project_id"?,"project_name"?,"paused":bool,"next_run"?:n,
             "last_run"?:{"outcome":"...","at":n}}
+Source     {"chat_id":"UUID","event_seq":n,"event_id":"chat:UUID:seq:n"}
+Decision   {"id","chat_id":"UUID","request_id","kind":"approval|question","session":Session,
+            "observed_at":n,"source":Source,"approval"?:Approval,"question"?:Question}
+RecentActivity {"session":Session,"source":Source,"observed_at":n,"log_updated_at":n,
+                "kind":"...","text":"...","status":"..."}
+Insight    {"text":"...","source_event_ids":["chat:UUID:seq:n",...]}
 ```
 
 - **Omission means unknown.** A figure the desktop does not know is absent, never `0`: without
@@ -2086,10 +2141,11 @@ Automation {"id","title","project_id"?,"project_name"?,"paused":bool,"next_run"?
   scalar values and messages at most 300, cut without an ellipsis, never inside a scalar.
 - **Contents.** Ids are the desktop's own (a shell's, a chat's, a project's, a task's, an
   automation's) and work with the existing methods (`shells.list`, `chats.list`,
-  `chat.events`, `tasks.list`). No project root path (`projects.list` has it) and no `model`
-  are part of the reply: a client that shows the global orchestrator's model takes it from that
-  orchestrator's `orchestrators.list` entry ("Chat orchestrators"), and shows none when the entry
-  has none.
+  `chat.events`, `tasks.list`). Project rows omit root paths (`projects.list` has them) and
+  provider model fields: the global orchestrator's model comes from its `orchestrators.list`
+  entry ("Chat orchestrators"), or is unknown. The additive `intelligence.model` identifies
+  the summarizer only. Exact provider request text and observed activity may contain paths
+  the provider reported.
 - **What the connector checks.** The reply must be an object with `"v": 1`, else `cli_error`;
   only the top-level keys above are passed on; each list must be an array (else `cli_error`),
   of which only objects are kept, at most the limit above (also `automations.items`), with
@@ -2102,6 +2158,56 @@ the shells tmux has (it never starts a tmux server), each agent's state from its
 the chats a chat host that runs knows (or, with none running, the saved chats; it never starts
 a chat host), the automations' ledger and when failed or waiting chats last wrote their logs.
 It creates, resumes or changes no chat, shell, orchestrator, task or automation.
+
+**Observed decisions and optional intelligence (2026-10-16).** These fields are additive to
+the existing dashboard feature. An absent field means that this desktop does not supply it;
+clients keep the existing Needs you rows and must not claim complete decision coverage.
+
+- `decisions` contains pending provider requests from waiting native Claude, Codex and Muse
+  chats. Its `approval` or `question` is the unchanged payload of the corresponding
+  `approval_requested` or `question_requested` chat event, with the same `request_id` as the
+  card. A card's `session.target`, `chat_id` and `source.chat_id` identify the same chat.
+  `id` is `CHAT:approval:REQUEST` or `CHAT:question:REQUEST`. Original choices and option labels
+  are preserved; unsupported or oversized requests are omitted rather than shortened into
+  different answers. Generic terminal waiting rows remain descriptive and are not actionable
+  chat requests.
+- `decision_sources.state` is `read` only when every chat in the known inventory has complete controls;
+  `partial` covers bounded tails, missing/unreadable records or sampling limits, and
+  `unavailable` means the chat inventory is unknown. Counts and `sampled_at` give coverage and
+  revalidation time. A suffix may prove requests seen within it without proving older ones
+  absent. The reader keeps bounded per-log observations in a private cache; the new list totals count observed
+  entries before truncation, not a guessed number of requests in unread logs.
+- `recent_activity` describes concrete messages, commands, tools, edits, plans, notices,
+  worker/subagent metadata and turn outcomes. `text` is at most 300 Unicode scalars; `status`
+  is the event's reported status. Each source names an exact 1-based chat event sequence.
+  `observed_at` is when its evidence was revalidated; `log_updated_at` is the source log's
+  modification time, not an event timestamp. Neither a model nor a new poll invents a
+  lifecycle transition.
+- `intelligence` is an optional, separately labeled Haiku description. It supplies summaries,
+  highlights and suggested followups, never approvals, questions or commands. Insight source
+  IDs must belong to the evidence used for that inference. `generated_at` dates the cached
+  summary; `stale` marks older evidence or a failed refresh. The setting defaults off. When
+  explicitly enabled on the desktop, a requested dashboard may make a bounded, rate-limited
+  Anthropic API call billed to its saved API key; no key travels to the phone and the helper
+  does not change any chat's billing or start agents. Missing credentials and API failures
+  leave observed state and provider decisions available.
+
+**Responding safely.** A decision card is a cached observation, not authorization. After an
+explicit user choice, fetch a fresh `chat.snapshot` on the same paired host and verify its
+exact chat/request IDs, complete understood controls, waiting state and unchanged request
+payload. Send only the provider's offered approval choice, or one answer per question using
+its exact option labels or free text, through existing `chat.command` (`approve` or `answer`).
+Changed, resolved, unknown or elided requests require another review. The phone checks its
+connection generation after preflight and binds the command to the authenticated
+desktop/device/route on the transport executor before sealing it. Timeouts, cancellation or
+unreadable command replies can leave the outcome uncertain; do not automatically retry or
+optimistically mark the provider request resolved.
+
+Cross-host aggregation is local to the phone: every row retains its host route, freshness and
+partial coverage. The active host uses its existing interactive connection; temporary overview
+connections for other established pairings are closed before activating that host. No aggregate
+or summary can redirect an answer to another host. Details and limits are in
+[dashboard decisions](dashboard-decisions.md) and [Haiku dashboard summaries](haiku-dashboard.md).
 
 **Compatibility.** A desktop whose connector or `riwork` CLI predates the extension sends no
 `features.dashboard` and answers `dashboard.get` with `invalid_request` "unsupported RPC

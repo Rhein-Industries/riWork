@@ -65,12 +65,48 @@ pub(super) fn leaves(view: &ChatView, look: Look) -> Vec<SourceLeaf> {
             continue;
         }
         let expanded = view.open.contains(&item.id)
-            && cards::head(item, None).is_some_and(|head| head.expandable);
+            && (cards::head(item, None).is_some_and(|head| head.expandable)
+                || (matches!(item.body, ItemBody::WebSearch { .. })
+                    && view.tool_output(item).is_some()));
+        if expanded && let Some(output) = view.tool_output(item) {
+            result.extend(
+                super::tool_views::texts(&item.id, &output)
+                    .into_iter()
+                    .map(|text| SourceLeaf {
+                        key: text.key,
+                        text: text.text,
+                        row,
+                    }),
+            );
+            if !view.open.contains(&super::tool_views::raw_key(item)) {
+                continue;
+            }
+        }
         let mut entries = Vec::new();
         let mut put = |key: String, text: String| entries.push(SourceLeaf { key, text, row });
         match &item.body {
             ItemBody::AgentMessage { text } => {
-                blocks(&view.parsed(item, text), &item.id, row, &mut result)
+                blocks(&view.parsed(item, text), &item.id, row, &mut result);
+                for (at, change) in view.answer_files(item).iter().enumerate() {
+                    let key = super::turn_review::file_key(&item.id, at);
+                    result.push(SourceLeaf {
+                        key: format!("path:{key}"),
+                        text: change.path.clone(),
+                        row,
+                    });
+                    if view.open.contains(&key)
+                        && let Some(text) = &change.diff
+                    {
+                        for (at, line) in diff::display(text, change.kind).0.iter().enumerate() {
+                            let text = line.text.replace('\t', "    ");
+                            result.push(SourceLeaf {
+                                key: format!("diff:{key}:{at}"),
+                                text: if text.is_empty() { " ".into() } else { text },
+                                row,
+                            });
+                        }
+                    }
+                }
             }
             // As the message shows it: the lines logged for its files are its cards.
             ItemBody::UserMessage { text } => {
@@ -112,6 +148,18 @@ pub(super) fn leaves(view: &ChatView, look: Look) -> Vec<SourceLeaf> {
                     );
                 }
             }
+            ItemBody::WebSearch { query } if expanded => {
+                if let Some(output) = &item.presentation.tool
+                    && let crate::chat::tool_output::ToolOutput::WebSearch { raw, .. } = output
+                {
+                    let input = cards::input_pretty(&serde_json::json!({"query":query}));
+                    put(format!("tool-input:{}", item.id), input);
+                    put(
+                        format!("tool-output:{}", item.id),
+                        cards::clean_output(cards::tail(raw, 200, 32 * 1024).0),
+                    );
+                }
+            }
             ItemBody::FileChange { changes } if expanded => {
                 for (at, change) in changes.iter().enumerate() {
                     let key = format!("{}#{at}", item.id);
@@ -133,6 +181,19 @@ pub(super) fn leaves(view: &ChatView, look: Look) -> Vec<SourceLeaf> {
                 }
             }
             ItemBody::Plan { explanation, steps } => {
+                if steps.is_empty()
+                    && let Some(source) = explanation
+                        .as_deref()
+                        .filter(|text| !text.trim().is_empty())
+                {
+                    blocks(
+                        &view.parsed(item, source),
+                        &format!("plan:{}:document", item.id),
+                        row,
+                        &mut result,
+                    );
+                    continue;
+                }
                 if let Some(text) = explanation {
                     put(format!("plan:{}:explanation", item.id), text.trim().into());
                 }
@@ -186,13 +247,26 @@ fn blocks(source: &[Block], key: &str, row: usize, out: &mut Vec<SourceLeaf>) {
     for (at, block) in source.iter().enumerate() {
         let key = format!("{key}/{at}");
         match block {
-            Block::Paragraph(spans) | Block::Heading { spans, .. } => inline(spans, &key, row, out),
+            Block::Paragraph(spans) | Block::Heading { spans, .. } | Block::Task { spans, .. } => {
+                inline(spans, &key, row, out)
+            }
             Block::Code { text, .. } => out.push(SourceLeaf {
                 key: format!("code:{key}"),
                 text: text.replace('\t', "    "),
                 row,
             }),
             Block::Quote(inner) => blocks(inner, &key, row, out),
+            Block::Callout {
+                kind,
+                blocks: inner,
+            } => {
+                out.push(SourceLeaf {
+                    key: format!("callout:{key}"),
+                    text: kind.label().to_owned(),
+                    row,
+                });
+                blocks(inner, &key, row, out);
+            }
             Block::List { items, .. } => {
                 for (at, item) in items.iter().enumerate() {
                     blocks(item, &format!("{key}/{at}"), row, out);

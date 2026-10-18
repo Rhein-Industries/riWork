@@ -71,11 +71,11 @@ struct ChatScreen: View {
                             if let approval = approvals.first {
                                 BoundedScroll(maxHeight: max(110, height * 0.52 - squeeze)) {
                                     ChatApprovalBar(approval: approval, count: approvals.count, keyHints: model.keyboard.hardware.isAttached, detailHeight: max(70, height * 0.2 - squeeze),
-                                                    busy: !connected || conversation.answered.contains(approval.requestID)) { decision in decide(approval, decision) }
+                                                    busy: !connected || conversation.catchingUp || conversation.answered.contains(approval.requestID)) { decision in decide(approval, decision) }
                                         .id(approval.requestID)
                                 }
                             } else if let question = questions.first {
-                                ChatQuestionBar(question: question, scrollHeight: max(leastQuestionScroll, height * 0.3 - squeeze), busy: !connected || conversation.answered.contains(question.requestID)) { form in
+                                ChatQuestionBar(question: question, scrollHeight: max(leastQuestionScroll, height * 0.3 - squeeze), busy: !connected || conversation.catchingUp || conversation.answered.contains(question.requestID)) { form in
                                     Task { await model.answerChatQuestion(chat.id, form) }
                                 }
                                 .id(question.requestID)
@@ -91,14 +91,15 @@ struct ChatScreen: View {
                                 Task { await model.setChatContributor(chat.id, choice.nextMode) }
                             }
                         }
-                        ChatComposer(conversation: conversation, provider: info.provider, state: state, approval: approvals.first, connected: connected, focusToken: focusToken,
+                        ChatComposer(conversation: conversation, provider: info.provider, state: state, approval: approvals.first, connected: connected && !conversation.catchingUp, focusToken: focusToken,
                                      send: send, interrupt: interrupt, decide: { decision in if let approval = approvals.first { decide(approval, decision) } },
                                      attach: { picking = $0 }, pasteFiles: pasteFiles,
                                      attachmentImages: model.chatAttachmentImages, removeAttachment: { model.removeStagedAttachment($0, from: chat.id) },
                                      pending: model.pendingAttachments(for: chat.id), cancelPending: model.cancelUpload,
                                      barAbove: barShown, suggestionCatalog: model.composerCatalog(for: chat.id), wantSuggestions: { model.wantComposerSuggestions(chat.id) },
                                      // The `&` list marks the model the picker shows as chosen.
-                                     chosenModel: conversation.modelChoices(fallback: info).current?.id ?? conversation.modelChoices(fallback: info).modelID)
+                                     chosenModel: conversation.modelChoices(fallback: info).current?.id ?? conversation.modelChoices(fallback: info).modelID,
+                                     usesClicks: model.keyboard.usesClicks)
                     }
                     .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { bottomTop = $0; transcriptChanged(barShown: barShown) }
                 }
@@ -110,9 +111,17 @@ struct ChatScreen: View {
         .attachmentPicker($picking, onDone: requestFocus) { model.attach($0, to: .chat(chat.id)) }
         .task(id: chat.id) { await model.followChat(chat.id) }
         .onAppear { requestFocus() }
+        .environment(\.chatAssetLoader, { [model, chatID = chat.id] item, reference in
+            try await model.loadChatAsset(chatID: chatID, itemID: item, reference: reference)
+        })
+        .onChange(of: model.appActive) { _, _ in conversation.markCatchingUp() }
+        .onChange(of: model.state) { _, _ in conversation.markCatchingUp() }
         .onChange(of: chat.id) { _, _ in requestFocus() }
         .onChange(of: refocus) { _, _ in requestFocus() }
         .onChange(of: openNotices) { _, _ in showNotices = true }
+        .onChange(of: model.keyboard.modelPickerRequests) { _, _ in
+            if connected, model.selectedChatID == chat.id { showModels = true }
+        }
         .sheet(isPresented: $showNotices, onDismiss: requestFocus) {
             ChatNoticeHistory(notices: ChatNotices.all(conversation.transcript.items)) { showNotices = false }.desktopThemed(model.theme.style)
         }
@@ -429,6 +438,9 @@ struct ChatNoticeBanners: View {
             }
         } else if let error = conversation.readError, conversation.dismissedReadError != error.message {
             lines.append(Line(id: "read", level: .warning, icon: "arrow.triangle.2.circlepath", text: error.message, close: { conversation.dismissedReadError = error.message }))
+        }
+        if connected, conversation.catchingUp, conversation.readError == nil, !conversation.gone {
+            lines.append(Line(id: "catch-up", level: .info, icon: "arrow.triangle.2.circlepath", text: "Updating chat…", working: true, close: {}))
         }
         if let banner = ChatBanner(state: state, provider: chat.provider, lastMessage: conversation.transcript.lastUserMessage), closedState != banner.text {
             switch banner {

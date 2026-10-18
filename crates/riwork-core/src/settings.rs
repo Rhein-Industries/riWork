@@ -226,6 +226,12 @@ pub struct Settings {
     pub open_preview_on_select: bool,
     pub project_order: ProjectOrder,
     pub selected_codex_account: Option<String>,
+    /// New Codex sessions that inherit the app's account choose the saved subscription
+    /// with the most remaining quota. Explicit accounts, project pins and resumes keep
+    /// their identity. Off until the person chooses it.
+    pub codex_subscription_balancing: bool,
+    /// Optional separately billed API summaries of observed dashboard activity.
+    pub dashboard_haiku_summaries: bool,
     pub status_bar: StatusBarSettings,
     /// New agent sessions (Codex, Grok, Claude Code) run inline on the
     /// terminal's main screen instead of its alternate screen, so the
@@ -402,6 +408,8 @@ impl Default for Settings {
             open_preview_on_select: true,
             project_order: ProjectOrder::default(),
             selected_codex_account: None,
+            codex_subscription_balancing: false,
+            dashboard_haiku_summaries: false,
             status_bar: StatusBarSettings::default(),
             agent_inline_mode: true,
             agent_terminals_unrestricted: true,
@@ -473,6 +481,16 @@ impl<'de> Deserialize<'de> for Settings {
                 &object,
                 "selected_codex_account",
                 defaults.selected_codex_account,
+            )?,
+            codex_subscription_balancing: strict_field(
+                &object,
+                "codex_subscription_balancing",
+                defaults.codex_subscription_balancing,
+            )?,
+            dashboard_haiku_summaries: strict_field(
+                &object,
+                "dashboard_haiku_summaries",
+                defaults.dashboard_haiku_summaries,
             )?,
             status_bar: lenient_field(&object, "status_bar", defaults.status_bar),
             agent_inline_mode: lenient_field(
@@ -956,6 +974,35 @@ mod tests {
     use super::*;
     use crate::ui_text::SizeChange;
     use std::env;
+
+    #[test]
+    fn optional_dashboard_api_and_subscription_balancing_are_strict_opt_in_settings() {
+        let defaults = Settings::default();
+        assert!(!defaults.dashboard_haiku_summaries);
+        assert!(!defaults.codex_subscription_balancing);
+        let dir = env::temp_dir().join(format!("riwork-settings-opt-in-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        for key in ["dashboard_haiku_summaries", "codex_subscription_balancing"] {
+            assert_eq!(store.load().unwrap().values().unwrap()[key], false);
+            store.set_value(key, Value::Bool(true)).unwrap();
+            assert_eq!(store.load().unwrap().values().unwrap()[key], true);
+            let before = fs::read(dir.join("settings.json")).unwrap();
+            for bad in [Value::Null, serde_json::json!("yes"), serde_json::json!(1)] {
+                assert!(store.set_value(key, bad).is_err());
+                assert_eq!(fs::read(dir.join("settings.json")).unwrap(), before);
+            }
+            store.set_value(key, Value::Bool(false)).unwrap();
+            assert_eq!(store.load().unwrap().values().unwrap()[key], false);
+        }
+        for key in ["dashboard_haiku_summaries", "codex_subscription_balancing"] {
+            fs::write(dir.join("settings.json"), format!("{{\"{key}\":\"yes\"}}")).unwrap();
+            assert!(
+                store.load().is_err(),
+                "a malformed opt-in cannot turn itself on or off"
+            );
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     /// Pure toggle fixtures for the configuration tests; controls live in desktop.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]

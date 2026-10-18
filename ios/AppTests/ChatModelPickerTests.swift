@@ -604,6 +604,35 @@ import RiWorkCore
         XCTAssertEqual(after.count, 2, "nothing was sent for a choice that changes nothing")
         await finish(rig)
     }
+    func testClicksKeysNavigateAndCloseTheModelPickerWithoutTouch() async throws {
+        let rig = try await connected()
+        rig.model.keyboard.setLayout(.clicks)
+        await echoing(rig)
+        await withModels(rig)
+        let sheet = try await openSheet(rig)
+        for input in ["w", "s", "a", "d", "t", "e"] {
+            let command = try XCTUnwrap(sheet.keys.keyCommands?.first { $0.input == input && $0.modifierFlags == .command })
+            XCTAssertTrue(command.wantsPriorityOverSystemBehavior)
+        }
+        press(sheet, "s", .command)
+        press(sheet, "w", .command)
+        press(sheet, "s", .command)
+        let before = await rig.transport.commands()
+        XCTAssertTrue(before.isEmpty, "moving through the model menu sends no configuration")
+        press(sheet, "\r")
+        await eventually("Command-S moved to the next model and Return selected it") {
+            await rig.transport.commands() == [self.configure(["model": .string("gpt-5.4-mini")])]
+        }
+        XCTAssertEqual(sheet.closed.count, 0, "Command-W moves up instead of closing")
+        press(sheet, "e", .command)
+        XCTAssertEqual(sheet.closed.count, 1, "Command-E supplies the missing Escape key")
+        rig.model.keyboard.setLayout(.standard)
+        await eventually("the open picker follows profile changes") {
+            !(sheet.keys.keyCommands ?? []).contains { $0.input == "w" && $0.modifierFlags == .command }
+        }
+        XCTAssertTrue((sheet.keys.keyCommands ?? []).contains { $0.input == UIKeyCommand.inputUpArrow && $0.modifierFlags == [] }, "native navigation stays available")
+        await finish(rig)
+    }
     func testFastIsFlippedByReturnOrSpaceOnItsRow() async throws {
         let rig = try await connected()
         await echoing(rig)

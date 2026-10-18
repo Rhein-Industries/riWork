@@ -19,9 +19,9 @@ struct NewTerminalSheet: View {
             }
             ScrollView { formContent }.scrollBounceBehavior(.basedOnSize).desktopSheetFooter(style) { footer }
         }
-        .desktopSheetSurface(style)
+        .desktopSheetSurface(style).tabShortcutGuide(sheet.model.keyboard.tabShortcuts)
         .foregroundStyle(style.text).font(style.face(13, relativeTo: .body)).tint(style.accent)
-        .background { NewTerminalKeys(onKey: handle).frame(width: 1, height: 1).accessibilityHidden(true) }
+        .background { NewTerminalKeys(usesClicks: sheet.model.keyboard.usesClicks, onKey: handle).frame(width: 1, height: 1).accessibilityHidden(true) }
         .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         .onChange(of: sheet.model.worktrees) { _, _ in sheet.refreshTargets() }
         .onReceive(NotificationCenter.default.publisher(for: .GCKeyboardDidConnect)) { _ in hardwareKeyboard = true }
@@ -178,7 +178,7 @@ struct NewTerminalSheet: View {
         VStack(spacing: 6) {
             DesktopRule()
             if hardwareKeyboard || sheet.keyboardInUse {
-                Text("↩ create   ⎋ cancel   ↑↓ choose   ⇥ next control").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
+                Text(sheet.model.keyboard.usesClicks ? "↩ create   ⌘E cancel   ⌘W/S choose   ⌘T next" : "↩ create   ⎋ cancel   ↑↓ choose   ⇥ next control").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
                     .lineLimit(1).minimumScaleFactor(0.7).padding(.horizontal, 12).accessibilityHidden(true)
             }
             Button { sheet.keyboardInUse = false; sheet.create() } label: {
@@ -209,6 +209,8 @@ enum NewTerminalSheetKey: Equatable {
 /// input).
 @MainActor final class NewTerminalKeyView: UIView {
     var onKey: (NewTerminalSheetKey) -> Void = { _ in }
+    var usesClicks = false
+    var tabShortcuts: TabShortcutController?
 
     static let bindings: [(input: String, flags: UIKeyModifierFlags, key: NewTerminalSheetKey)] = [
         (UIKeyCommand.inputUpArrow, [], .form(.up)), (UIKeyCommand.inputDownArrow, [], .form(.down)),
@@ -216,18 +218,41 @@ enum NewTerminalSheetKey: Equatable {
         ("\t", [], .form(.tab)), ("\t", .shift, .form(.backTab)), (" ", [], .form(.space)),
         ("\r", [], .create), (UIKeyCommand.inputEscape, [], .cancel)
     ]
-    private lazy var commands: [UIKeyCommand] = Self.bindings.map { binding in
+    private var activeBindings: [(input: String, flags: UIKeyModifierFlags, key: NewTerminalSheetKey)] {
+        Self.bindings + (usesClicks ? Self.bindings.compactMap { binding in
+            ClicksNavigation.alias(input: binding.input, modifiers: binding.flags).map { ($0.alias, $0.aliasModifiers, binding.key) }
+        } : [])
+    }
+    private var commands: [UIKeyCommand] { activeBindings.map { binding in
         let command = UIKeyCommand(input: binding.input, modifierFlags: binding.flags, action: #selector(fired(_:)))
         command.wantsPriorityOverSystemBehavior = true
         return command
-    }
-    override var keyCommands: [UIKeyCommand]? { commands }
+    } }
+    override var keyCommands: [UIKeyCommand]? { TabShortcutInput.withoutPrefix(commands, tabShortcuts) }
     override var canBecomeFirstResponder: Bool { true }
 
     @objc func fired(_ command: UIKeyCommand) {
-        guard let input = command.input, let match = Self.bindings.first(where: { $0.input == input && $0.flags == command.modifierFlags }) else { return }
+        if let event = TabShortcutInput.record(command), handleTabShortcut(event) { return }
+        guard let input = command.input, let match = activeBindings.first(where: { $0.input == input && $0.flags == command.modifierFlags }) else { return }
         onKey(match.key)
     }
+    func handleTabShortcut(_ event: KeyEventRecord) -> Bool {
+        tabShortcuts?.handle(event, perform: { action in
+            guard let input = TabShortcutInput.input(action) else { return false }
+            if let binding = Self.bindings.first(where: { $0.input == input && $0.flags.isEmpty }) { self.onKey(binding.key) }
+            return true
+        }) ?? false
+    }
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let rest = presses.filter { press in TabShortcutInput.record(press, phase: .down).map { !handleTabShortcut($0) } ?? true }
+        if !rest.isEmpty { super.pressesBegan(Set(rest), with: event) }
+    }
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let rest = presses.filter { press in TabShortcutInput.record(press, phase: .up).map { !handleTabShortcut($0) } ?? true }
+        if !rest.isEmpty { super.pressesEnded(Set(rest), with: event) }
+    }
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) { tabShortcuts?.cancel(); super.pressesCancelled(presses, with: event) }
+    override func resignFirstResponder() -> Bool { let resigned = super.resignFirstResponder(); if resigned { tabShortcuts?.cancelPrefix() }; return resigned }
     override func didMoveToWindow() {
         super.didMoveToWindow()
         takeFocus()
@@ -243,6 +268,8 @@ enum NewTerminalSheetKey: Equatable {
 }
 
 private struct NewTerminalKeys: UIViewRepresentable {
+    @Environment(\.tabShortcuts) private var tabShortcuts
+    var usesClicks: Bool
     var onKey: (NewTerminalSheetKey) -> Void
     func makeUIView(context: Context) -> NewTerminalKeyView {
         let view = NewTerminalKeyView()
@@ -250,6 +277,8 @@ private struct NewTerminalKeys: UIViewRepresentable {
         return view
     }
     func updateUIView(_ view: NewTerminalKeyView, context: Context) {
+        view.usesClicks = usesClicks
+        view.tabShortcuts = tabShortcuts
         view.onKey = onKey
         // A menu or a toggle may have taken the keyboard; the next update gives it back.
         view.takeFocus()

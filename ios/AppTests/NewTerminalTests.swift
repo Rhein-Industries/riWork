@@ -522,6 +522,28 @@ actor SpawnTransport: RemoteTransport {
         view.takeFocus()
         await settle { view.isFirstResponder }
     }
+    func testClicksKeysNavigateTheSheetAndStopWhenTheProfileChanges() throws {
+        let view = NewTerminalKeyView(frame: .zero)
+        view.usesClicks = true
+        var received: [NewTerminalSheetKey] = []
+        view.onKey = { received.append($0) }
+        let expected: [(String, UIKeyModifierFlags, NewTerminalSheetKey)] = [
+            ("w", .command, .form(.up)), ("s", .command, .form(.down)),
+            ("a", .command, .form(.left)), ("d", .command, .form(.right)),
+            ("t", .command, .form(.tab)), ("t", [.command, .shift], .form(.backTab)), ("e", .command, .cancel)
+        ]
+        for (input, flags, _) in expected {
+            let command = try XCTUnwrap(view.keyCommands?.first { $0.input == input && $0.modifierFlags == flags })
+            XCTAssertTrue(command.wantsPriorityOverSystemBehavior)
+            view.fired(command)
+        }
+        XCTAssertEqual(received, expected.map(\.2))
+        let cancel = try XCTUnwrap(view.keyCommands?.first { $0.input == "e" && $0.modifierFlags == .command })
+        view.usesClicks = false
+        XCTAssertNil(view.keyCommands?.first { $0.input == "e" && $0.modifierFlags == .command })
+        view.fired(cancel)
+        XCTAssertEqual(received.count, expected.count, "a queued Clicks key is ignored after switching profiles")
+    }
     func testKeysDriveTheSheetModelEndToEnd() async throws {
         let rig = try await connected()
         let sheet = try XCTUnwrap(NewTerminalSheetModel(model: rig.model))

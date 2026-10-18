@@ -142,7 +142,7 @@ struct HotkeyEditorSheet: View {
                 .onChange(of: selection) { _, row in withAnimation(.easeInOut(duration: 0.15)) { proxy.scrollTo(row) } }
             }
         }
-        .desktopSheetSurface(style).foregroundStyle(style.text)
+        .desktopSheetSurface(style).foregroundStyle(style.text).tabShortcutGuide(keyboard.tabShortcuts)
         .font(style.face(13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
         .background { KeyCommandHost(active: draft == nil && learning == nil && !testing, actions: listActions) }
         .background {
@@ -256,7 +256,7 @@ struct HotkeyEditorSheet: View {
     /// The keys that drive the list.
     private var listActions: [KeyAction] {
         let up: @MainActor () -> Void = { moveSelection(-1) }, down: @MainActor () -> Void = { moveSelection(1) }
-        return [
+        return ClicksNavigation.actions([
             KeyAction(input: UIKeyCommand.inputUpArrow, title: "Previous row", run: up),
             KeyAction(input: UIKeyCommand.inputDownArrow, title: "Next row", run: down),
             KeyAction(input: "p", modifiers: .control, run: up), KeyAction(input: "n", modifiers: .control, run: down),
@@ -269,7 +269,7 @@ struct HotkeyEditorSheet: View {
             KeyAction(input: UIKeyCommand.inputDownArrow, modifiers: .command, title: "Move the selected hotkey down", run: { moveSelected(1) }),
             KeyAction(input: UIKeyCommand.inputEscape, title: "Done", run: { dismiss() }),
             KeyAction(input: ".", modifiers: .command, run: { dismiss() }), KeyAction(input: "w", modifiers: .command, run: { dismiss() })
-        ]
+        ], enabled: keyboard.usesClicks)
     }
     private func moveSelection(_ step: Int) {
         let all = rows
@@ -303,7 +303,7 @@ struct HotkeyEditorSheet: View {
 /// Adds or edits one hotkey: a name, a sequence of steps (text or a special key), a shortcut and whether the key bar shows it.
 ///
 /// From the keyboard: Tab and Shift-Tab move between the name and the text steps, Return saves, Esc (or ⌘.) cancels, ⌘T adds a text
-/// step, ⌘R records a key step by pressing it, ⌘L learns the shortcut by pressing it.
+/// step (⌘⇧N with the Clicks profile, where ⌘T moves to the next field), ⌘R records a key step by pressing it, ⌘L learns the shortcut.
 struct HotkeyForm: View {
     @Environment(\.desktopStyle) private var style
     @Environment(\.dismiss) private var dismiss
@@ -394,7 +394,7 @@ struct HotkeyForm: View {
             // Drag handles and delete controls stay visible: this list is only ever edited.
             .environment(\.editMode, .constant(.active))
         }
-        .desktopSheetSurface(style).foregroundStyle(style.text)
+        .desktopSheetSurface(style).foregroundStyle(style.text).tabShortcutGuide(keyboard.tabShortcuts)
         .font(style.face(13, relativeTo: .body)).tint(style.accent).buttonStyle(DesktopButtonStyle())
         // Keys work even when no field has the keyboard (after a tap on a button, say).
         .background { KeyCommandHost(active: focus == nil && mode == .none, actions: formActions) }
@@ -440,7 +440,7 @@ struct HotkeyForm: View {
     // MARK: Keys
 
     private var formActions: [KeyAction] {
-        [
+        ClicksNavigation.actions([
             KeyAction(input: "\t", title: "Next field", run: { moveFocus(1) }),
             KeyAction(input: "\t", modifiers: .shift, title: "Previous field", run: { moveFocus(-1) }),
             KeyAction(input: UIKeyCommand.inputEscape, title: "Cancel", run: { cancel() }),
@@ -449,8 +449,8 @@ struct HotkeyForm: View {
             KeyAction(input: "\r", modifiers: .command, run: { if draft.problem == nil { save() } }),
             KeyAction(input: "l", modifiers: .command, title: "Learn the shortcut", run: { mode = .shortcut; learnProblem = nil }),
             KeyAction(input: "r", modifiers: .command, title: "Record a key as a step", run: { mode = .recordKey; learnProblem = nil }),
-            KeyAction(input: "t", modifiers: .command, title: "Add a text step", run: { addTextStep() })
-        ]
+            KeyAction(input: keyboard.usesClicks ? "n" : "t", modifiers: keyboard.usesClicks ? [.command, .shift] : .command, title: "Add a text step", run: { addTextStep() })
+        ], enabled: keyboard.usesClicks)
     }
     /// Escape or ⌘.: leaves a learning mode first, and only then the form.
     private func cancel() {

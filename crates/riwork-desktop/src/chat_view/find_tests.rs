@@ -573,6 +573,101 @@ fn a_match_far_along_a_code_line_scrolls_its_box(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_match_in_a_deep_rich_tool_result_scrolls_its_inner_box(cx: &mut TestAppContext) {
+    use crate::chat::tool_output::{FileHit, ToolOutput};
+    let mut item = message("result:part", "");
+    item.presentation.phase = None;
+    item.body = ItemBody::ToolCall {
+        server: None,
+        tool: "Grep".into(),
+        input: serde_json::json!({"pattern":"value"}),
+        output: None,
+    };
+    item.presentation.tool = Some(ToolOutput::FileSearch {
+        query: "value".into(),
+        hits: (0..30)
+            .map(|at| FileHit {
+                path: format!("src/file-{at}.rs"),
+                line: Some(at + 1),
+                preview: if at == 29 {
+                    "needle".into()
+                } else {
+                    "matched value".into()
+                },
+            })
+            .collect(),
+        omitted: 0,
+    });
+    let (handle, view) = mount(cx, vec![item]);
+    act(cx, handle, |_, cx| {
+        view.update(cx, |view, cx| {
+            view.display_mode = DisplayMode::Verbose;
+            view.open.insert("result:part".into());
+            view.refresh_projection(cx);
+            cx.notify();
+        });
+    });
+    press(cx, handle, "cmd-f");
+    type_text(cx, handle, "needle");
+    assert_eq!(status(cx, &view), (Some(1), 1));
+    let inside = cx.read(|cx| {
+        let view = view.read(cx);
+        let hit = view.find.current_hit().unwrap();
+        let rect = view
+            .transcript_selection
+            .painted_rect(hit.leaf, hit.range)
+            .unwrap();
+        let scroller = view.caches.borrow().scrollers["tool-rich:result:part"].clone();
+        let bounds = scroller.handle().bounds();
+        scroller.handle().offset().y < px(0.)
+            && rect.top() >= bounds.top()
+            && rect.bottom() <= bounds.bottom()
+    });
+    assert!(inside, "the result list scrolled down to the matched row");
+    assert!(current_in_view(cx, &view));
+}
+
+#[gpui::test]
+fn a_match_in_a_wide_table_scrolls_to_its_column(cx: &mut TestAppContext) {
+    let header = (0..8)
+        .map(|at| format!("Column {at}"))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let cells = (0..8)
+        .map(|at| {
+            if at == 7 {
+                "needle".into()
+            } else {
+                "long descriptive cell contents".into()
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" | ");
+    let source = format!(
+        "| {header} |\n| {} |\n| {cells} |",
+        vec!["---"; 8].join(" | ")
+    );
+    let (handle, view) = mount(cx, vec![message("table", &source)]);
+    press(cx, handle, "cmd-f");
+    type_text(cx, handle, "needle");
+    assert_eq!(status(cx, &view), (Some(1), 1));
+    let inside = cx.read(|cx| {
+        let view = view.read(cx);
+        let hit = view.find.current_hit().unwrap();
+        let rect = view
+            .transcript_selection
+            .painted_rect(hit.leaf, hit.range)
+            .unwrap();
+        let scroller = view.caches.borrow().scrollers["table:table/0"].clone();
+        let bounds = scroller.handle().bounds();
+        scroller.handle().offset().x < px(0.)
+            && rect.left() >= bounds.left()
+            && rect.right() <= bounds.right()
+    });
+    assert!(inside, "the table scrolled sideways to the matched cell");
+}
+
+#[gpui::test]
 fn streaming_content_updates_the_matches_without_moving_the_view(cx: &mut TestAppContext) {
     let (handle, view) = mount(cx, long_chat(31));
     scroll_to_top(cx, handle, &view);

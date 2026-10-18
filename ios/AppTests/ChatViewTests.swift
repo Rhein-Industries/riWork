@@ -1,4 +1,5 @@
 import XCTest
+import GameController
 import SwiftUI
 import UIKit
 import UIKit.UIGestureRecognizerSubclass
@@ -36,6 +37,28 @@ import RiWorkCore
         while await !condition(), Date() < end { try? await Task.sleep(for: .milliseconds(10)) }
         let met = await condition()
         XCTAssertTrue(met, what, file: file, line: line)
+    }
+    /// Puts the software keyboard up under `field`, as a phone with no keyboard attached shows it. A simulator with I/O › Keyboard ›
+    /// Connect Hardware Keyboard on shows none: its input modes' hardware layout is cleared for this test (and restored after it),
+    /// and where iOS still shows none the measurement is skipped there rather than failed.
+    private func raiseSoftwareKeyboard(_ field: UIView, file: StaticString = #filePath, line: UInt = #line, presented: () -> Bool) async throws {
+        let attached = GCKeyboard.coalesced != nil
+        if attached {
+            let layout = NSSelectorFromString("setHardwareLayout:")
+            for mode in UITextInputMode.activeInputModes
+            where mode.responds(to: layout) && mode.responds(to: NSSelectorFromString("hardwareLayout")) {
+                let previous = mode.value(forKey: "hardwareLayout")
+                mode.perform(layout, with: nil)
+                addTeardownBlock { @MainActor in mode.perform(layout, with: previous) }
+            }
+        }
+        field.becomeFirstResponder()
+        let end = Date().addingTimeInterval(5)
+        while !presented(), Date() < end { try await Task.sleep(for: .milliseconds(10)) }
+        if attached, !presented() {
+            throw XCTSkip("The simulator has a hardware keyboard connected (I/O › Keyboard › Connect Hardware Keyboard), so iOS presents no software keyboard to measure.")
+        }
+        XCTAssertTrue(presented(), "software keyboard is presented", file: file, line: line)
     }
 
     /// How the desktop draws: the terminal look (no palette published), or its Native skin in light or dark.
@@ -254,6 +277,60 @@ import RiWorkCore
         view.unmarkText()
         XCTAssertNotNil(view.keyCommands)
         await finish(rig)
+    }
+
+    func testClicksKeysNavigateComposerSuggestionsWithoutChangingTheDraft() throws {
+        let view = ChatComposerTextView()
+        view.usesClicks = true
+        view.suggesting = true
+        view.text = "/comp"
+        var received: [ChatKey] = []
+        view.onKey = { received.append($0); return .none }
+        for input in ["w", "s", "t", "e"] {
+            let key = try XCTUnwrap(command(view, input, .command))
+            XCTAssertTrue(key.wantsPriorityOverSystemBehavior)
+            view.fired(key)
+        }
+        XCTAssertEqual(received, [.up, .down, .tab, .escape])
+        XCTAssertEqual(view.text, "/comp")
+        let stale = try XCTUnwrap(command(view, "e", .command))
+        view.suggesting = false
+        for input in ["w", "s", "t", "e"] { XCTAssertNil(command(view, input, .command), "normal editing retains its shortcuts") }
+        view.fired(stale)
+        XCTAssertEqual(received.count, 4, "closing suggestions removes their queued aliases")
+        view.usesClicks = false
+        view.suggesting = true
+        XCTAssertNil(command(view, "w", .command), "standard keyboards retain Command-W")
+    }
+
+    func testChangingTheClicksProfileUpdatesTheRealComposerWithoutReopeningTheChat() async throws {
+        let rig = try await makeRig()
+        rig.model.keyboard.setLayout(.standard)
+        let view = try await openChat(rig)
+        XCTAssertFalse(view.usesClicks)
+        rig.model.keyboard.setLayout(.clicks)
+        await eventually("the existing composer uses the selected Clicks profile") { view.usesClicks }
+        rig.model.keyboard.setLayout(.standard)
+        await eventually("switching back restores the standard command behavior") { !view.usesClicks }
+        await finish(rig)
+    }
+
+    func testClicksEscapeAnswersOnlyAnEmptyApprovalAndLeavesMarkedTextToTheInputMethod() throws {
+        let view = ChatComposerTextView()
+        view.usesClicks = true
+        view.answersApproval = true
+        view.text = ""
+        var received: [ChatKey] = []
+        view.onKey = { received.append($0); return .none }
+        view.fired(try XCTUnwrap(command(view, "e", .command)))
+        XCTAssertEqual(received, [.escape])
+        view.text = "keep this draft"
+        XCTAssertNil(command(view, "e", .command), "Escape does not reject an approval while a draft is typed")
+        view.suggesting = true
+        view.setMarkedText("候補", selectedRange: NSRange(location: 2, length: 0))
+        XCTAssertNotNil(view.markedTextRange)
+        XCTAssertNil(view.keyCommands, "all navigation and return stay with the input method during composition")
+        view.unmarkText()
     }
 
     // MARK: A request waiting
@@ -764,7 +841,7 @@ import RiWorkCore
         let second = "cccccccc-2222-4222-8222-222222222222"
         let chats = [ChatInfo(id: chatID, provider: .claude, projectID: project, cwd: "/fixture", title: "Project orchestrator of the fixture", createdAtUnix: 10, state: .idle),
                      ChatInfo(id: second, provider: .codex, projectID: project, cwd: "/fixture", title: "wheres the app icon on the home screen", createdAtUnix: 20, state: .idle)]
-        let rig = try await makeRig(chats: chats, width: 390)
+        let rig = try await makeRig(chats: chats, hardwareKeyboard: false, width: 390)
         await rig.transport.append(chatID, [.info(chats[0]), .usage(ChatUsage(inputTokens: 120_000, contextWindow: 200_000, contextUsed: 124_000))])
         _ = try await openChat(rig)
         await eventually("the row and the ring are laid out") { rig.layout.frames["more-options"] != nil && rig.layout.frames["usage-number"] != nil && rig.layout.frames["row-strip"] != nil }
@@ -949,7 +1026,7 @@ import RiWorkCore
     func testShellAndChatShareTheSameNavigationRow() async throws {
         let screen = UIScreen.main.bounds.size
         for look in Look.allCases {
-            let rig = try await makeRig(width: screen.width, height: screen.height, look: look)
+            let rig = try await makeRig(hardwareKeyboard: false, width: screen.width, height: screen.height, look: look)
             await rig.transport.append(chatID, [.info(chat())])
             await eventually("the shell's row has completed layout") { rig.layout.frames["navigation"] != nil }
             rig.window.layoutIfNeeded()
@@ -978,10 +1055,140 @@ import RiWorkCore
         }
     }
 
+    /// A keyboard case keeps tabs at its edge, across shells and chats; showing the touch keyboard switches back without losing the
+    /// chosen tab or the draft. App shortcuts route through the same real hosting controller that receives physical key commands.
+    func testHardwareKeyboardPutsTabsAtTheBottomAndCanSwitchThemWithoutTouch() async throws {
+        let suite = "com.riwork.tests.keyboard-tabs.\(UUID().uuidString)"
+        defaultsNames.append(suite)
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(KeyboardFocusSetting.never.rawValue, forKey: KeyboardPrefs.focusKey)
+        defaults.set(HardwareKeyboardLayout.clicks.rawValue, forKey: KeyboardPrefs.layoutKey)
+        let screen = UIScreen.main.bounds.size
+        let rig = try await makeRig(hardwareKeyboard: true, width: screen.width, height: screen.height, look: .nativeLight, defaults: suite)
+        XCTAssertTrue(rig.model.keyboard.usesClicks)
+        await rig.transport.append(chatID, [
+            .info(chat()),
+            .itemCompleted(ChatItem(id: "keyboard-tabs-message", status: .completed,
+                                    body: .agentMessage("Your tabs stay beside the Clicks keyboard. Use Command + 1–9 to switch tabs and Command + E for Escape.")))
+        ])
+        await eventually("the physical keyboard layout is at the bottom") {
+            rig.layout.visible["navigation-bottom"] == true
+                && abs((rig.layout.frames["navigation"]?.maxY ?? 0) - (rig.window.bounds.height - rig.host.view.safeAreaInsets.bottom)) < 1
+        }
+        let bottom = try XCTUnwrap(rig.layout.frames["navigation"])
+        XCTAssertGreaterThanOrEqual(bottom.height, 44)
+        XCTAssertLessThanOrEqual(bottom.height, 48)
+        let chatNumber = try XCTUnwrap(rig.model.tabs.firstIndex(where: { $0.chatInfo?.id == chatID })) + 1
+        let shellNumber = try XCTUnwrap(rig.model.tabs.firstIndex(where: { $0.session?.id == ChatTransport.shell && $0.chatInfo == nil })) + 1
+        try shortcut(rig, String(chatNumber), hardwareInput: true)
+        await eventually("Command-number selects the chat") { rig.model.selectedChatID == self.chatID && self.composer(rig) != nil }
+        await eventually("the selected conversation has finished loading") {
+            let conversation = rig.model.conversation(self.chatID)
+            return conversation.feed.loaded && conversation.transcript.item("keyboard-tabs-message") != nil
+        }
+        rig.model.conversation(chatID).draft = "Keep this draft when changing keyboard layouts"
+        await eventually("the terminal's input accessory has gone and the chat row settled") {
+            abs((rig.layout.frames["navigation"]?.maxY ?? 0) - bottom.maxY) < 1
+        }
+        rig.window.layoutIfNeeded()
+        XCTAssertEqual(try XCTUnwrap(rig.layout.frames["navigation"]).maxY, bottom.maxY, accuracy: 1, "chat and shell use the same bottom row")
+        let field = try XCTUnwrap(composer(rig))
+        XCTAssertLessThanOrEqual(field.convert(field.bounds, to: rig.window).maxY, bottom.minY + 1, "the composer ends above the tab row")
+        let surface = try XCTUnwrap(rig.layout.frames["composer"])
+        XCTAssertEqual(bottom.minY - surface.maxY, 8, accuracy: 1, "the hardware layout keeps the composer's 8-point gap above bottom navigation")
+        XCTAssertNotNil(rig.layout.frames["current-project"], "the selected iPhone tab identifies its project")
+        // Let SwiftUI commit the tab's selected fill and the loaded message before taking the review image, after the keyboard's
+        // accessory window and the newly mounted conversation have both settled.
+        try await Task.sleep(for: .milliseconds(500))
+        rig.window.layoutIfNeeded()
+        XCTAssertEqual(rig.model.selectedChatID, chatID)
+        XCTAssertTrue(rig.model.terminalCovered)
+        try compactSnapshot(rig, name: "hardware-keyboard-bottom-tabs")
+        try shortcut(rig, String(shellNumber), hardwareInput: true)
+        await eventually("Command-number returns to the shell") {
+            rig.model.selectedChat == nil && !rig.model.terminalCovered && !self.descendants(KeyCaptureView.self, in: rig.host.view).isEmpty
+        }
+        try shortcut(rig, "]", modifiers: [.command, .shift], hardwareInput: true)
+        await eventually("Command-Shift-right-bracket advances to the chat") { rig.model.selectedChatID == self.chatID }
+        await eventually("the chat's composer is installed") { self.composer(rig) != nil }
+        try shortcut(rig, "[", modifiers: [.command, .shift], hardwareInput: true)
+        await eventually("Command-Shift-left-bracket returns to the shell") {
+            rig.model.selectedChat == nil && !rig.model.terminalCovered && !self.descendants(KeyCaptureView.self, in: rig.host.view).isEmpty
+        }
+        try await Task.sleep(for: .milliseconds(250))
+        rig.model.keyboard.software.update(hiding: false, end: CGRect(x: 0, y: screen.height - 300, width: screen.width, height: 300))
+        await eventually("showing the software keyboard restores top navigation") {
+            rig.layout.visible["navigation-bottom"] == false
+                && abs((rig.layout.frames["navigation"]?.minY ?? -1) - rig.host.view.safeAreaInsets.top) < 1
+        }
+        XCTAssertEqual(rig.model.conversation(chatID).draft, "Keep this draft when changing keyboard layouts")
+        rig.model.keyboard.software.update(hiding: true, end: .zero)
+        await eventually("hiding it restores the bottom row") { rig.layout.visible["navigation-bottom"] == true }
+        rig.model.setFocusMode(true)
+        await eventually("focus mode keeps the navigation hidden") { rig.layout.frames["navigation"] == nil }
+        rig.model.setFocusMode(false)
+        await eventually("leaving focus mode restores bottom navigation") { rig.layout.visible["navigation-bottom"] == true }
+        await finish(rig)
+    }
+
+    func testClicksTabLeaderSwitchesTabsShowsHoldHelpAndKeepsProjectIdentity() async throws {
+        let suite = "com.riwork.tests.tab-leader.\(UUID().uuidString)"
+        defaultsNames.append(suite)
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(HardwareKeyboardLayout.clicks.rawValue, forKey: KeyboardPrefs.layoutKey)
+        defaults.set(KeyboardFocusSetting.never.rawValue, forKey: KeyboardPrefs.focusKey)
+        let screen = UIScreen.main.bounds.size
+        let rig = try await makeRig(hardwareKeyboard: true, width: screen.width, height: screen.height, look: .nativeLight, defaults: suite)
+        await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "tab-help-proof", status: .completed, body: .agentMessage("Use the physical Tab key to reach your RiWork shortcuts.")))])
+        await eventually("the terminal capture and project context are visible") {
+            !self.descendants(KeyCaptureView.self, in: rig.host.view).isEmpty && rig.layout.frames["current-project"] != nil
+        }
+        let terminal = try XCTUnwrap(descendants(KeyCaptureView.self, in: rig.host.view).first)
+        terminal.inputViewStandIn = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 0.001))
+        XCTAssertTrue(terminal.becomeFirstResponder())
+        func event(_ text: String, phase: KeyEventRecord.Phase = .down) -> KeyEventRecord {
+            KeyEventRecord(phase: phase, keyCode: text == "\t" ? HIDKey.tab : HIDKey.code(forCharacter: text), modifiers: [], characters: text, charactersIgnoringModifiers: text)
+        }
+        let number = try XCTUnwrap(rig.model.tabs.firstIndex(where: { $0.chatInfo?.id == chatID })) + 1
+        _ = terminal.handle(event("\t")); _ = terminal.handle(event("\t", phase: .up))
+        _ = terminal.handle(event(String(number))); _ = terminal.handle(event(String(number), phase: .up))
+        await eventually("Tab-number selects the chat without typing into the terminal") { rig.model.selectedChatID == self.chatID && self.composer(rig) != nil }
+        let composer = try XCTUnwrap(composer(rig))
+        composer.inputView = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 0.001))
+        XCTAssertTrue(composer.becomeFirstResponder())
+        rig.model.conversation(chatID).draft = "Draft stays intact"
+        _ = composer.handleTabShortcut(event("\t"))
+        await eventually("holding physical Tab for one second shows help", timeout: 3) { rig.model.keyboard.tabShortcuts.guideVisible }
+        try await Task.sleep(for: .milliseconds(200))
+        try compactSnapshot(rig, name: "clicks-tab-shortcut-help")
+        _ = composer.handleTabShortcut(event("\t", phase: .up))
+        _ = composer.handleTabShortcut(event("q")); _ = composer.handleTabShortcut(event("q", phase: .up))
+        XCTAssertFalse(rig.model.keyboard.tabShortcuts.armed)
+        XCTAssertTrue(composer.text.contains("\t"), "Tab-Q sends the literal Tab to the editor")
+        let shellNumber = try XCTUnwrap(rig.model.tabs.firstIndex(where: { $0.session?.id == ChatTransport.shell && $0.chatInfo == nil })) + 1
+        _ = composer.handleTabShortcut(event("\t")); _ = composer.handleTabShortcut(event("\t", phase: .up))
+        _ = composer.handleTabShortcut(event(String(shellNumber))); _ = composer.handleTabShortcut(event(String(shellNumber), phase: .up))
+        await eventually("Tab-number returns to the terminal") { rig.model.selectedChatID == nil && !rig.model.terminalCovered }
+        rig.model.setFocusMode(true)
+        await eventually("focus mode retains project identity") { rig.layout.frames["current-project-focus"] != nil }
+        await finish(rig)
+    }
+
+    func testCustomTerminalShortcutsKeepOwnershipOfTabNumberBindings() async throws {
+        let rig = try await makeRig(hardwareKeyboard: false)
+        try rig.model.hotkeys.add(Hotkey(id: "test.tab-number", label: "Custom one", steps: [.key(.escape)],
+                                        chord: KeyChord(keyCode: try XCTUnwrap(HIDKey.code(forCharacter: "1")), modifiers: .command), showsOnBar: false))
+        func hasTabOne() -> Bool { (rig.host.keyCommands ?? []).contains { $0.input == "1" && $0.modifierFlags == .command } }
+        await eventually("the custom terminal binding is left to the key view") { !hasTabOne() }
+        _ = try await openChat(rig)
+        await eventually("on a chat the app's tab shortcut is available") { hasTabOne() }
+        await finish(rig)
+    }
+
     func testCompactSelectedTabPaintStaysInsideNavigationAndOutOfTopSafeArea() async throws {
         let screen = UIScreen.main.bounds.size
         for look in [Look.nativeLight, .terminal] {
-            let rig = try await makeRig(width: screen.width, height: screen.height, look: look)
+            let rig = try await makeRig(hardwareKeyboard: false, width: screen.width, height: screen.height, look: look)
             await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "paint", status: .completed, body: .agentMessage("A fixture conversation.")))])
             _ = try await openChat(rig)
             await eventually("navigation has completed layout") { rig.layout.frames["navigation"] != nil }
@@ -1091,8 +1298,7 @@ import RiWorkCore
                 if let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect { keyboardTop = frame.minY }
             }
             defer { NotificationCenter.default.removeObserver(keyboard) }
-            field.becomeFirstResponder()
-            await eventually("software keyboard is presented") { keyboardTop < screen.height - 100 && field.isFirstResponder }
+            try await raiseSoftwareKeyboard(field) { keyboardTop < screen.height - 100 && field.isFirstResponder }
             try await Task.sleep(for: .milliseconds(350))
             let composerFrame = field.convert(field.bounds, to: rig.window)
             XCTAssertLessThanOrEqual(composerFrame.maxY, keyboardTop + 2, "draft remains above the actual keyboard frame")
@@ -1144,8 +1350,7 @@ import RiWorkCore
                 if let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect { keyboardTop = frame.minY }
             }
             defer { NotificationCenter.default.removeObserver(keyboard) }
-            field.becomeFirstResponder()
-            await eventually("software keyboard is presented") { keyboardTop < screen.height - 100 && field.isFirstResponder }
+            try await raiseSoftwareKeyboard(field) { keyboardTop < screen.height - 100 && field.isFirstResponder }
             try await Task.sleep(for: .milliseconds(400))
             try assertReaches("keyboard up")
             let fieldFrame = field.convert(field.bounds, to: rig.window)
@@ -2836,7 +3041,7 @@ import RiWorkCore
     /// row up too. The field stands 8 pt above the keyboard (or the bottom safe area).
     func testTheTranscriptScrollsOnUnderTheComposer() async throws {
         for look in Look.allCases {
-            let rig = try await makeRig(chats: [chat(state: .idle)], look: look)
+            let rig = try await makeRig(chats: [chat(state: .idle)], hardwareKeyboard: false, look: look)
             let messages = (1...14).map { ChatItem(id: "m\($0)", turnID: "t0", status: .completed, body: $0 % 2 == 0 ? .agentMessage("Answer \($0), a line or two of it, long enough to wrap onto a second line here.") : .userMessage("Question \($0)")) }
             await rig.transport.append(chatID, [.info(chat(state: .idle))] + messages.map { .itemCompleted($0) })
             _ = try await openChat(rig)
@@ -3057,10 +3262,22 @@ import RiWorkCore
         }
     }
     /// Sends a ⌘ shortcut of the screen up the responder chain, as a key press does.
-    private func shortcut(_ rig: Rig, _ input: String) throws {
-        let command = try XCTUnwrap((rig.host.keyCommands ?? []).first { $0.input?.lowercased() == input && $0.modifierFlags == .command }, "⌘\(input)")
-        // A key press starts at the first responder: the composer, which takes the keyboard with the chat.
-        if let composer = composer(rig), !composer.isFirstResponder { _ = composer.becomeFirstResponder() }
+    private func shortcut(_ rig: Rig, _ input: String, modifiers: UIKeyModifierFlags = .command, hardwareInput: Bool = false) throws {
+        let command = try XCTUnwrap((rig.host.keyCommands ?? []).first { $0.input?.lowercased() == input && $0.modifierFlags == modifiers }, "⌘\(input)")
+        // A physical key starts at the real input view. The simulator cannot attach a keyboard case, so an empty inputView stands
+        // in for its absent software keyboard, as KeyBarPlacementTests does; the input accessory and responder chain stay real.
+        if let composer = composer(rig) {
+            if hardwareInput {
+                composer.inputView = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 0.001))
+                if composer.isFirstResponder { composer.reloadInputViews() }
+            }
+            if !composer.isFirstResponder { XCTAssertTrue(composer.becomeFirstResponder()) }
+        } else if hardwareInput {
+            let capture = try XCTUnwrap(descendants(KeyCaptureView.self, in: rig.host.view).first)
+            capture.inputViewStandIn = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 0.001))
+            if capture.isFirstResponder { capture.reloadInputViews() }
+            else { XCTAssertTrue(capture.becomeFirstResponder()) }
+        }
         XCTAssertTrue(UIApplication.shared.sendAction(try XCTUnwrap(command.action), to: nil, from: command, for: nil))
     }
     /// With `RIWORK_NATIVE_SCREENSHOTS` set to a directory: leaves `<name>.ready` there and waits for `<name>.png`, which whoever drives
@@ -3386,5 +3603,31 @@ import RiWorkCore
         XCTAssertFalse(stale); XCTAssertTrue(calls.isEmpty)
         let current = await viewport.alignInstalledAnchor(while: { true }, scroll: { calls.append($0) })
         XCTAssertTrue(current); XCTAssertEqual(calls, ["reader"])
+    }
+}
+
+@MainActor final class ChatCatchUpTests: XCTestCase {
+    func testCatchUpRequiresTheEndOfReplayAndResetsForNewConnection() {
+        let conversation = ChatConversation(id: "chat")
+        let first = UUID(), replacement = UUID()
+        conversation.setFollowing(true)
+        conversation.followGeneration(first)
+        XCTAssertTrue(conversation.catchingUp)
+        conversation.accept(ChatEventsReply(chatID: "chat", events: [], next: 0, more: true), since: 0)
+        XCTAssertTrue(conversation.catchingUp)
+        conversation.accept(ChatEventsReply(chatID: "chat", events: [], next: 0, more: false), since: 0)
+        XCTAssertFalse(conversation.catchingUp)
+        conversation.followGeneration(first)
+        XCTAssertFalse(conversation.catchingUp, "ordinary polls on the same connection stay current")
+        conversation.followGeneration(replacement)
+        XCTAssertTrue(conversation.catchingUp)
+        conversation.accept(ChatEventsReply(chatID: "chat", events: [], next: 0, more: false), since: 0)
+        let previousEpoch = conversation.catchUpEpoch
+        conversation.markCatchingUp()
+        XCTAssertTrue(conversation.catchingUp, "foregrounding must refresh retained controls")
+        conversation.accept(ChatEventsReply(chatID: "chat", events: [], next: 0, more: false), since: 0, catchUpEpoch: previousEpoch)
+        XCTAssertTrue(conversation.catchingUp, "a read started before foregrounding cannot certify freshness")
+        conversation.accept(ChatEventsReply(chatID: "chat", events: [], next: 0, more: false), since: 0, catchUpEpoch: conversation.catchUpEpoch)
+        XCTAssertFalse(conversation.catchingUp)
     }
 }

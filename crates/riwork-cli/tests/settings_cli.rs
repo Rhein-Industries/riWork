@@ -146,6 +146,8 @@ fn scalar_enum_nullable_and_billing_values_round_trip() {
     let sandbox = Sandbox::new();
     for (key, input, expected) in [
         ("dictation_mic", "true", json!(true)),
+        ("codex_subscription_balancing", "true", json!(true)),
+        ("dashboard_haiku_summaries", "true", json!(true)),
         ("theme", "tokyo_night", json!("tokyo_night")),
         ("orchestrator_mode", "chat", json!("chat")),
         ("orchestrator_chat_provider", "claude", json!("claude")),
@@ -246,6 +248,8 @@ fn wrong_types_unknown_components_and_lenient_fallbacks_never_write() {
         ("agent_inline_mode", "[]"),
         ("agent_terminals_unrestricted", "{}"),
         ("selected_codex_account", "false"),
+        ("codex_subscription_balancing", "\"true\""),
+        ("dashboard_haiku_summaries", "null"),
         ("schema_version", "2"),
         ("schema_version", "null"),
         ("schema_version", "\"1\""),

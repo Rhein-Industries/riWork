@@ -37,6 +37,10 @@ pub struct Catalog {
     pub account: Option<String>,
     /// That account as the person knows it.
     pub account_label: Option<String>,
+    /// `account` is only subscription balancing's preview: a new chat leaves the account
+    /// to the host, which chooses with fresh quota. UI-only, like `warning`.
+    #[serde(skip)]
+    pub balanced: bool,
     /// Why the provider cannot be offered (a Codex account that cannot be used).
     pub error: Option<String>,
     /// A discovery failure keeps default/manual choices usable. UI-only; it is
@@ -87,10 +91,15 @@ fn reported(home: &Path, id: &str, provider: Provider) -> Option<Vec<ModelOption
     let mut file = File::open(dir.join("events.jsonl")).ok()?;
     let length = file.metadata().ok()?.len();
     let start = length.saturating_sub(TAIL);
-    file.seek(SeekFrom::Start(start)).ok()?;
-    let mut reader = BufReader::new(file.take(length - start));
+    let from = start.saturating_sub(1);
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut reader = BufReader::new(file.take(length - from));
     if start > 0 {
-        reader.skip_until(b'\n').ok()?;
+        let mut previous = [0];
+        reader.read_exact(&mut previous).ok()?;
+        if previous[0] != b'\n' {
+            reader.skip_until(b'\n').ok()?;
+        }
     }
     let mut latest = None;
     let mut running: Option<Provider> = None;
@@ -168,9 +177,13 @@ fn saved_among(
     project: Option<&str>,
     provider: Provider,
 ) -> Catalog {
+    let balanced = provider == Provider::Codex && crate::codex_balancing::balances(home, project);
     let binding = match provider {
         Provider::Codex => match sessions::selected_codex_binding(home, project) {
             Ok(binding) => Some(binding),
+            // The launch balances with fresh quota; the selection is only its tie-break,
+            // and an unusable one must not refuse a chat the launch could start.
+            Err(_) if balanced => None,
             Err(error) => {
                 return Catalog {
                     error: Some(error),
@@ -185,6 +198,7 @@ fn saved_among(
         account: binding.as_ref().and_then(|binding| binding.id.clone()),
         account_label: binding
             .map(|binding| binding.label.unwrap_or_else(|| "System default".into())),
+        balanced,
         ..Default::default()
     };
     let mut found_list = false;
@@ -362,6 +376,35 @@ mod tests {
         assert!(matches!(decode(&id, &whole), Line::Nothing));
         assert!(log::chat_dir(Path::new("/fixture"), "../escape").is_none());
         assert!(log::chat_dir(Path::new("/fixture"), &id.to_uppercase()).is_none());
+    }
+
+    #[test]
+    fn a_model_list_at_the_exact_tail_boundary_is_kept() {
+        let home = std::env::temp_dir().join(format!("riwork-catalog-{}", uuid::Uuid::new_v4()));
+        let id = uuid::Uuid::new_v4().to_string();
+        let dir = log::chat_dir(&home, &id).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let models = line(
+            &id,
+            ChatEvent::Models {
+                models: vec![option("boundary-model")],
+            },
+        );
+        let mut events = b"{}\n".to_vec();
+        events.extend(&models);
+        // One whitespace-only line fills the remainder of the bounded tail.
+        events.resize(TAIL as usize + 2, b' ');
+        events.push(b'\n');
+        std::fs::write(dir.join("events.jsonl"), &events).unwrap();
+        assert_eq!(
+            reported(&home, &id, Provider::Codex),
+            Some(vec![option("boundary-model")])
+        );
+        // Moving the bound inside the model record must still discard its fragment.
+        events.push(b'\n');
+        std::fs::write(dir.join("events.jsonl"), &events).unwrap();
+        assert!(reported(&home, &id, Provider::Codex).is_none());
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

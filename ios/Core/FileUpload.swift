@@ -183,10 +183,13 @@ public enum FileTransfer {
                         try Task.checkCancellation()
                         let end = min(received + chunk, file.data.count)
                         answer = try await call(transport, "upload.chunk", UploadRequests.chunk(upload: upload, offset: received, data: file.data.subdata(in: received..<end)))
-                        received = try position(answer, upload: upload, size: file.data.count)
+                        let acknowledged = try position(answer, upload: upload, size: file.data.count)
+                        guard acknowledged >= end else { throw RemoteError.protocolViolation("The desktop did not acknowledge the uploaded chunk.") }
+                        received = acknowledged
                         progress(received)
                     }
                     if answer["status"].string != "complete" { answer = try await call(transport, "upload.finish", ["upload": .string(upload)]) }
+                    _ = try position(answer, upload: upload, size: file.data.count)
                     guard answer["status"].string == "complete", let path = answer["path"].string, !path.isEmpty else {
                         throw RemoteError.protocolViolation("The desktop did not say where the file is.")
                     }
@@ -237,7 +240,10 @@ public enum FileTransfer {
         }
     }
     private static func position(_ answer: JSONValue, upload: String, size: Int) throws -> Int {
-        guard answer["upload"].string == upload, case .number(let received) = answer["received"], received >= 0, received <= Double(size), received.rounded() == received else {
+        let status = answer["status"].string
+        guard answer["upload"].string == upload, status == "partial" || status == "complete",
+              case .number(let received) = answer["received"], received >= 0, received <= Double(size), received.rounded() == received,
+              status != "complete" || received == Double(size) else {
             throw RemoteError.protocolViolation("Unexpected upload answer.")
         }
         return Int(received)

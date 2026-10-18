@@ -25,6 +25,8 @@ pub struct Fake {
     pub starts: Mutex<Vec<DriverConfig>>,
     /// Every command that reached a driver.
     pub commands: Mutex<Vec<ChatCommand>>,
+    /// Simulate a command failure after the provider received its request.
+    pub fail_command: Mutex<Option<String>>,
     pub shutdowns: AtomicUsize,
     /// The next start fails with this message.
     pub fail_start: Mutex<Option<String>>,
@@ -156,6 +158,9 @@ impl Driver for FakeDriver {
     /// ends, and `flood:N:BYTES` streams N deltas of that size.
     fn command(&mut self, command: ChatCommand) -> Result<(), String> {
         self.fake.commands.lock().unwrap().push(command.clone());
+        if let Some(error) = self.fake.fail_command.lock().unwrap().take() {
+            return Err(error);
+        }
         let text = match command {
             ChatCommand::Send { text } | ChatCommand::SendAttachments { text, .. } => text,
             _ => return Ok(()),

@@ -36,6 +36,29 @@ pub enum Request {
         id: String,
         chat_id: String,
         command: ChatCommand,
+        /// Opt-in durable deduplication. Query CommandReceipt first to ensure
+        /// this host supports it: legacy hosts ignore unknown command fields.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        operation_id: Option<String>,
+        /// Identified sends may forbid resuming a stopped provider. The host
+        /// checks its live generation at dispatch, including a racing Stop.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        require_running: bool,
+    },
+    /// Read a durable outcome without starting a provider. Also serves as the
+    /// feature probe before sending an identified command to an older host.
+    CommandReceipt {
+        id: String,
+        chat_id: String,
+        operation_id: String,
+    },
+    /// A distinct operation: older hosts must refuse, never discard a guard.
+    GuardedCommand {
+        id: String,
+        chat_id: String,
+        operation_id: String,
+        command: ChatCommand,
+        guard: CommandGuard,
     },
     /// Replay the chat's events from `since` (0 for all), then stream new ones.
     Subscribe {
@@ -62,6 +85,21 @@ pub enum Request {
 #[serde(deny_unknown_fields)]
 pub struct Capabilities {
     pub identified_create: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CommandGuard {
+    DelegatedSend {
+        parent_chat_id: String,
+        parent_turn_id: String,
+    },
+    DelegatedCancel {
+        parent_chat_id: String,
+        send_operation_id: String,
+        turn_id: Option<String>,
+        allow_unstarted: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

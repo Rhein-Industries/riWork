@@ -356,6 +356,29 @@ import RiWorkCore
 
     // MARK: Inside the menu, a shortcut stands in for the key it sends
 
+    func testClicksNavigationUsesTheSameActionsAndResolvesCommandWInFavorOfUp() throws {
+        var received: [String] = []
+        let actions = [
+            KeyAction(input: UIKeyCommand.inputUpArrow, title: "Previous row", run: { received.append("up") }),
+            KeyAction(input: "w", modifiers: .command, title: "Close", run: { received.append("close") }),
+            KeyAction(input: "\t", title: "Next field", run: { received.append("tab") }),
+            KeyAction(input: "\t", modifiers: .shift, title: "Previous field", run: { received.append("backtab") }),
+            KeyAction(input: UIKeyCommand.inputEscape, title: "Cancel", run: { received.append("cancel") })
+        ]
+        let table = KeyActionTable()
+        table.actions = ClicksNavigation.actions(actions, enabled: true)
+        let commands = table.commands(action: #selector(KeyCaptureView.keyCommandFired(_:)))
+        for (input, flags) in [("w", UIKeyModifierFlags.command), ("t", .command), ("t", [.command, .shift]), ("e", .command)] {
+            let matching = commands.filter { $0.input == input && $0.modifierFlags == flags }
+            XCTAssertEqual(matching.count, 1, "no duplicate commands shadow an alias")
+            table.run(try XCTUnwrap(matching.first))
+        }
+        XCTAssertEqual(received, ["up", "tab", "backtab", "cancel"])
+        table.actions = ClicksNavigation.actions(actions, enabled: false)
+        table.run(UIKeyCommand(input: "w", modifierFlags: .command, action: #selector(KeyCaptureView.keyCommandFired(_:))))
+        XCTAssertEqual(received.last, "close", "standard keyboards retain their conventional shortcut")
+    }
+
     func testTheClicksTemplateWorksInsideTheMenuWithoutArrowKeys() throws {
         var library = HotkeyLibrary()
         library.merge(.clicks)

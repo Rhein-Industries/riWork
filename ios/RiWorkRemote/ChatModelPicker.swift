@@ -129,6 +129,7 @@ struct ChatFastToggle: View {
 ///
 /// Keyboard (a Clicks or any hardware keyboard): ↑ ↓ (⇥ ⇧⇥, ^P ^N) move the ring down the models, then the efforts, then Fast; ← → move
 /// along the efforts; ⏎ or space chooses what the ring is on (⏎ on what already is chosen closes the sheet); ⎋, ⌘. and ⌘M close it.
+/// With the Clicks profile, ⌘W/S and ⌘A/D are the arrows, ⌘T / ⌘⇧T move the ring, and ⌘E closes.
 struct ChatModelSheet: View {
     @Environment(\.desktopStyle) private var style
     let model: RemoteModel
@@ -159,7 +160,7 @@ struct ChatModelSheet: View {
             WorkspaceBar(title: style.cased("Model")) { Button("Done", action: close).accessibilityHint("Closes the picker") }
             ScrollView { content(choices) }.scrollBounceBehavior(.basedOnSize).desktopSheetFooter(style) { footer }
         }
-        .desktopSheetSurface(style)
+        .desktopSheetSurface(style).tabShortcutGuide(model.keyboard.tabShortcuts)
         .foregroundStyle(style.text).font(style.face(13, relativeTo: .body)).tint(style.accent)
         .background { KeyCommandHost(active: true, actions: keyActions).frame(width: 1, height: 1).accessibilityHidden(true) }
         .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
@@ -336,7 +337,8 @@ struct ChatModelSheet: View {
         VStack(spacing: 6) {
             DesktopRule()
             if model.keyboard.hardware.isAttached || keyboardInUse {
-                Text("↑↓ move   ←→ effort   ⏎ choose   ⎋ close").font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
+                Text(model.keyboard.usesClicks ? "⌘W/S move   ⌘A/D effort   ⏎ choose   ⌘E close" : "↑↓ move   ←→ effort   ⏎ choose   ⎋ close")
+                    .font(style.face(10, relativeTo: .caption2)).foregroundStyle(style.muted)
                     .lineLimit(1).minimumScaleFactor(0.7).padding(.horizontal, 12).accessibilityHidden(true)
             }
             Button(action: close) { Text("Done").font(style.face(14, bold: true, relativeTo: .headline)).frame(maxWidth: .infinity, minHeight: max(style.target, style.pt(48))) }
@@ -380,15 +382,15 @@ struct ChatModelSheet: View {
         func key(_ input: String, _ chord: ChatModelCursor.Key, flags: UIKeyModifierFlags = [], title: String? = nil) -> KeyAction {
             KeyAction(input: input, modifiers: flags, title: title) { press(chord) }
         }
-        return [
+        return ClicksNavigation.actions([
             key(UIKeyCommand.inputUpArrow, .up, title: "Previous"), key(UIKeyCommand.inputDownArrow, .down, title: "Next"),
             key(UIKeyCommand.inputLeftArrow, .left, title: "Previous effort"), key(UIKeyCommand.inputRightArrow, .right, title: "Next effort"),
             key("\t", .tab), key("\t", .backTab, flags: .shift),
             key("p", .up, flags: .control), key("n", .down, flags: .control),
             key("\r", .return, title: "Choose"), key(" ", .space),
             KeyAction(input: UIKeyCommand.inputEscape, title: "Close") { close() },
-            // The Clicks keyboard has no Escape: ⌘. closes, and ⌘M, which opened the sheet, closes it again.
+            // ⌘. closes, and ⌘M, which opened the sheet, closes it again, in either keyboard profile.
             KeyAction(input: ".", modifiers: .command) { close() }, KeyAction(input: "m", modifiers: .command) { close() }
-        ]
+        ], enabled: model.keyboard.usesClicks)
     }
 }

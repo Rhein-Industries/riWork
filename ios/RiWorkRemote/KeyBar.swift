@@ -18,6 +18,8 @@ private final class KeyScrollView: UIScrollView {
 /// clear of the display's rounded corners. Hide stays put at the trailing end, with the dictation mic just before it, so both are always
 /// within reach; everything else, including the "+" that opens the hotkey editor at the very end, is in the scrolling part.
 @MainActor final class KeyBarView: UIInputView {
+    enum Mode: Equatable { case touch, hardware, clicks }
+    var mode = Mode.touch { didSet { if mode != oldValue { endRepeat(); didRepeat = false; rebuild(); scroll.setContentOffset(.zero, animated: false) } } }
     enum Action: Hashable {
         case key(TerminalKey), control, alt, shift, text(String), paste, attach, hide, hotkey(String), editHotkeys, palette, help, dictate
         /// A choice from the paperclip key's menu (the key itself, `attach`, only opens the menu).
@@ -49,6 +51,8 @@ private final class KeyScrollView: UIScrollView {
     private(set) var buttons: [Action: UIButton] = [:]
     /// The hotkeys the person added. They follow the built-in ones.
     var hotkeys: [Hotkey] = [] { didSet { if hotkeys != oldValue { rebuild() } } }
+    /// Includes shortcut-only hotkeys, so the small hardware labels describe the bindings actually in use.
+    var keyboardShortcuts: [Hotkey] = [] { didSet { if keyboardShortcuts != oldValue { rebuild() } } }
     var style = DesktopStyle.builtIn {
         didSet {
             guard style != oldValue else { return }
@@ -192,6 +196,37 @@ private final class KeyScrollView: UIScrollView {
         func key(_ key: TerminalKey, _ face: (String?, String?), _ label: String) {
             add(.key(key), title: face.0, symbol: face.1, label: label, role: .plain)
         }
+        if mode != .touch {
+            // Keep the missing keys and menu first. Letters, symbols, Return and Backspace already live on the physical keyboard.
+            key(.escape, ("Esc", nil), "Escape"); key(.tab, ("Tab", nil), "Tab")
+            add(.palette, title: nil, symbol: "command", label: "Hotkey menu", role: .hotkey)
+            add(.key(.control("c")), title: "^C", symbol: nil, label: "Control C", role: .plain)
+            key(.up, (nil, "arrow.up"), "Up arrow"); key(.down, (nil, "arrow.down"), "Down arrow")
+            key(.left, (nil, "arrow.left"), "Left arrow"); key(.right, (nil, "arrow.right"), "Right arrow")
+            add(.control, title: "Ctrl", symbol: nil, label: "Control", role: .plain)
+            add(.alt, title: "Alt", symbol: nil, label: "Alt", role: .plain)
+            add(.shift, title: "Shift", symbol: nil, label: "Shift", role: .plain)
+            key(.backTab, named("⇧Tab", "arrow.left.to.line"), "Shift Tab")
+            key(.pageUp, named("PgUp", "chevron.up.2"), "Page up"); key(.pageDown, named("PgDn", "chevron.down.2"), "Page down")
+            add(.paste, title: nil, symbol: "doc.on.clipboard", label: "Paste", role: .plain)
+            add(.attach, title: nil, symbol: "paperclip", label: "Send a photo or file", role: .plain)
+            if let paperclip = buttons[.attach] { giveMenu(paperclip) }
+            addDivider()
+            add(.help, title: nil, symbol: "questionmark.circle", label: "Hotkey help", role: .hotkey)
+            for hotkey in Hotkey.builtIn + hotkeys {
+                add(.hotkey(hotkey.id), title: hotkey.label, symbol: nil, label: "Hotkey \(hotkey.label)", role: .hotkey)
+            }
+            add(.editHotkeys, title: nil, symbol: "slider.horizontal.3", label: "Add or edit hotkeys", role: .muted)
+            shortcutHint(.palette, "⌘K")
+            shortcutHint(.help, "⌘/")
+            for key in [TerminalKey.escape, .tab, .up, .down, .left, .right, .control("c"), .backTab, .pageUp, .pageDown] {
+                if let chord = keyboardShortcuts.first(where: { $0.items == [.key(key)] && $0.chord != nil })?.chord {
+                    shortcutHint(.key(key), chord.title)
+                }
+            }
+            restyle()
+            return
+        }
         key(.escape, named("Esc", "escape"), "Escape"); key(.tab, named("Tab", "arrow.right.to.line"), "Tab")
         let control = named("Ctrl", "control"), alt = named("Alt", "option"), shift = named("Shift", "shift")
         add(.control, title: control.0, symbol: control.1, label: "Control", role: .plain); add(.alt, title: alt.0, symbol: alt.1, label: "Alt", role: .plain)
@@ -217,6 +252,14 @@ private final class KeyScrollView: UIScrollView {
         addDivider()
         add(.editHotkeys, title: nil, symbol: "plus", label: "Add or edit hotkeys", role: .muted)
         restyle()
+    }
+    private func shortcutHint(_ action: Action, _ hint: String) {
+        guard let button = buttons[action] else { return }
+        button.configuration?.attributedSubtitle = AttributedString(hint, attributes: AttributeContainer([.font: style.uiFace(size: 8)]))
+        button.configuration?.titleAlignment = .center
+        button.configuration?.imagePlacement = .top
+        button.configuration?.imagePadding = 0
+        button.accessibilityHint = "Keyboard shortcut \(hint)"
     }
     private func add(_ action: Action, title: String?, symbol: String?, label: String, role: Role, wide: Bool = true) {
         let button = makeButton(action, title: title, symbol: symbol, label: label, role: role, wide: wide)

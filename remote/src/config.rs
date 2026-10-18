@@ -326,7 +326,8 @@ pub fn private_export<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 }
 impl Storage {
     pub fn from_env() -> Result<Self> {
-        let home = match env::var_os("RIWORK_HOME") {
+        // Match the main CLI: an empty override is unset, never the working directory.
+        let home = match env::var_os("RIWORK_HOME").filter(|home| !home.is_empty()) {
             Some(home) => PathBuf::from(home),
             // Never fall back to the working directory: this tree holds the PSKs.
             None => match env::var_os("HOME").filter(|h| !h.is_empty()) {

@@ -177,6 +177,8 @@ extension View {
     var frames: [String: CGRect] = [:]
     var visible: [String: Bool] = [:]
     var actions: [String: () -> Void] = [:]
+    fileprivate var owners: [String: UUID] = [:]
+    fileprivate var mounts: [UUID: Int] = [:]
 }
 private struct ChatLayoutInspectionKey: EnvironmentKey {
     static let defaultValue: ChatLayoutInspection? = nil
@@ -189,17 +191,39 @@ extension EnvironmentValues {
 }
 private struct ChatLayoutProbe: ViewModifier {
     @Environment(\.chatLayoutInspection) private var inspection
+    @State private var owner = UUID()
+    @State private var measuredFrame: CGRect?
     let name: String
     let visible: Bool
     let action: (() -> Void)?
+    private func publish(to inspection: ChatLayoutInspection) {
+        guard inspection.mounts[owner, default: 0] > 0, inspection.owners[name] == owner else { return }
+        inspection.frames[name] = measuredFrame
+        inspection.visible[name] = visible
+        inspection.actions[name] = action
+    }
     func body(content: Content) -> some View {
         if let inspection {
             content.onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
-                inspection.frames[name] = frame
-                inspection.actions[name] = action
+                measuredFrame = frame
+                publish(to: inspection)
             }
-            .onChange(of: visible, initial: true) { _, value in inspection.visible[name] = value }
-            .onDisappear { inspection.frames[name] = nil; inspection.visible[name] = nil; inspection.actions[name] = nil }
+            .onAppear {
+                inspection.mounts[owner, default: 0] += 1
+                inspection.owners[name] = owner
+                publish(to: inspection)
+            }
+            .onChange(of: visible) { _, _ in publish(to: inspection) }
+            .onDisappear {
+                // SwiftUI can mount one view twice (a tab's status within the scrolling strip) and unmount it once: it stays measured
+                // until its last mount goes.
+                let mounts = inspection.mounts[owner, default: 1] - 1
+                inspection.mounts[owner] = mounts > 0 ? mounts : nil
+                // A keyboard-mode change can mount the replacement row before the old row disappears. Only the currently mounted
+                // probe may clear its measurements; late callbacks from the old row cannot overwrite or remove the new row's data.
+                guard mounts == 0, inspection.owners[name] == owner else { return }
+                inspection.frames[name] = nil; inspection.visible[name] = nil; inspection.actions[name] = nil; inspection.owners[name] = nil
+            }
         } else { content }
     }
 }

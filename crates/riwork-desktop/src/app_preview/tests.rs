@@ -224,6 +224,39 @@ fn restoring_a_configured_tab_waits_for_explicit_run(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn resetting_a_frame_preserves_control_errors_until_a_successful_retry(cx: &mut TestAppContext) {
+    let home = std::env::temp_dir().join(format!("riwork-preview-reset-{}", uuid::Uuid::new_v4()));
+    let store = PreviewControl::open(&home).unwrap();
+    let preview_id = uuid::Uuid::new_v4().to_string();
+    let host_id = uuid::Uuid::new_v4().to_string();
+    let project_id = uuid::Uuid::new_v4().to_string();
+    let (handle, view, _) = open(cx);
+    test_turn(cx, handle, |_, cx| {
+        view.update(cx, |view, cx| {
+            view.bind_control(
+                store.clone(),
+                preview_id.clone(),
+                host_id.clone(),
+                project_id,
+            );
+            // An unclaimed preview has no owner, so its run cannot be published.
+            view.reset_frame(cx);
+            assert!(
+                view.error
+                    .as_deref()
+                    .is_some_and(|error| { error.starts_with("Cannot start preview status:") })
+            );
+            store.begin(&preview_id, &host_id).unwrap();
+            view.reset_frame(cx);
+            assert!(view.error.is_none());
+            // Keep release and the periodic poll from writing after cleanup.
+            view.control_binding = None;
+        });
+    });
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[gpui::test]
 fn an_edited_launch_waits_for_the_previous_process_to_stop(cx: &mut TestAppContext) {
     let (handle, view, calls) = open(cx);
     let routed = view.clone();

@@ -282,12 +282,20 @@ fn read_records_within(
     let mut file = File::open(path).map_err(fail)?;
     let length = file.metadata().map_err(fail)?.len();
     let start = length.saturating_sub(max_read);
-    file.seek(SeekFrom::Start(start)).map_err(fail)?;
-    let mut reader = BufReader::with_capacity(256 * 1024, file);
+    // Inspect the preceding byte so a tail starting exactly on a record boundary
+    // keeps that record. Pin the read to this snapshot's length: a provider may
+    // keep appending while a handoff reads its conversation.
+    let from = start.saturating_sub(1);
+    file.seek(SeekFrom::Start(from)).map_err(fail)?;
+    let mut reader = BufReader::with_capacity(256 * 1024, file.take(length - from));
     let mut line = Vec::new();
     if start > 0 {
-        // Landed inside a line: the rest of it is not a record.
-        reader.read_until(b'\n', &mut line).map_err(fail)?;
+        let mut previous = [0];
+        reader.read_exact(&mut previous).map_err(fail)?;
+        if previous[0] != b'\n' {
+            // Landed inside a line: discard the fragment without allocating it.
+            reader.skip_until(b'\n').map_err(fail)?;
+        }
     }
     loop {
         line.clear();
@@ -298,10 +306,12 @@ fn read_records_within(
         if read == 0 {
             break;
         }
-        if line.len() > max_line && !line.ends_with(b"\n") {
-            // Too long: drop the rest of it.
-            let mut rest = Vec::new();
-            reader.read_until(b'\n', &mut rest).map_err(fail)?;
+        if line.len() > max_line {
+            // Too long, even if the extra byte was its newline. Drop any rest
+            // without allocating another potentially enormous line buffer.
+            if !line.ends_with(b"\n") {
+                reader.skip_until(b'\n').map_err(fail)?;
+            }
             continue;
         }
         if let Ok(value) = serde_json::from_slice::<Value>(&line) {

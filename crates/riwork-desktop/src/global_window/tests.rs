@@ -945,3 +945,38 @@ fn the_dashboard_is_laid_out_by_the_windows_own_width(cx: &mut gpui::TestAppCont
         assert!(search.read(cx).focus_handle(cx).is_focused(window));
     });
 }
+
+#[gpui::test]
+fn an_observed_decision_opens_its_review_without_starting_a_host(cx: &mut gpui::TestAppContext) {
+    init_app(cx);
+    let home = Home::new();
+    let fixture = open_global(cx, &home.0, GlobalWindowState::default());
+    let info =
+        chat_info(serde_json::json!({"state":{"state":"waiting"},"title":"Choose deployment"}));
+    let dir = home.0.join("chats").join(&info.id);
+    std::fs::create_dir_all(&dir).unwrap();
+    let event = serde_json::json!({"chat_id":info.id,"seq":1,"event":{"event":"approval_requested","approval":{"request_id":"review-only","kind":"command","title":"git push","detail":"Publish changes","choices":["accept","decline"]}}});
+    std::fs::write(dir.join("events.jsonl"), format!("{event}\n")).unwrap();
+    sample(cx, &fixture, vec![], vec![info.clone()]);
+    cx.simulate_window_resize(fixture.handle, gpui::size(px(1500.0), px(1000.0)));
+    cx.run_until_parked();
+    crate::form_input::test_turn(cx, fixture.handle, |_, cx| {
+        fixture.global.update(cx, |global, cx| {
+            global.observations = Some(global_overview::observed::read(
+                &home.0,
+                &global.state,
+                Some(&[info]),
+                activity::unix_now(),
+            ));
+            cx.notify();
+        });
+    });
+    crate::form_input::test_turn(cx, fixture.handle, |window, cx| {
+        window.click("dashboard-decision-0", cx);
+    });
+    fixture.global.read_with(cx, |global, _| {
+        assert!(global.decision_review.is_some());
+    });
+    assert!(!home.0.join("run/chat.sock").exists());
+    assert!(!home.0.join("sessions.json").exists());
+}

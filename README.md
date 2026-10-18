@@ -67,6 +67,32 @@ the terminal, or to a chat, whose message gets its path (see **Files from the ph
 below). Each device has independent endpoint secrets and revocable access; the
 relay routes encrypted frames without session content or pairing secrets.
 
+The [iPhone and iPad app](ios/README.md) opens with an **All hosts** dashboard for
+its paired desktops: work in progress, decisions waiting for you, projects and
+open tasks. Each row names its host, and choosing a desktop opens that host's
+dashboard. Unavailable hosts retain their last successful read with an age;
+partial totals say how many hosts were read. Looking at a dashboard creates no
+sessions or projects. A decision opens its original approval choices or question,
+then checks the exact host, chat and current request again before sending your
+explicit response. An uncertain response is never retried automatically.
+
+**Haiku dashboard summaries** is an optional desktop setting beside the saved
+Anthropic API key. It is off by default and uses separately billed API requests
+to `claude-haiku-5-5` to summarize observed activity. The desktop and phone show
+these summaries with their freshness; actionable decisions still come from
+provider requests. Unchanged evidence is reused, requests are at least one minute
+apart, and each host is limited to 120 requests per day. Missing keys or API
+failures leave the underlying dashboard available. See
+[dashboard decisions](docs/dashboard-decisions.md).
+
+For a connected Clicks keyboard with the software keyboard hidden, the phone puts
+project tabs at the bottom and treats physical **Tab** as a shortcut prefix:
+**Tab Q** sends a normal Tab, **Tab E** sends Escape, **Tab W/A/S/D** moves with
+arrows, and **Tab 1–9** switches tabs. Hold Tab for one second to see the full map.
+The Standard profile and touch Tab keep their usual behavior. Choose the Clicks
+profile in **Display → Keyboard** if iOS reports a generic keyboard name; see
+[keyboard controls](ios/README.md#project-and-terminal-tabs).
+
 ```sh
 cargo build --locked --release --manifest-path remote/Cargo.toml
 export RIWORK_REMOTE_BIN="$PWD/target/release/riwork-remote"
