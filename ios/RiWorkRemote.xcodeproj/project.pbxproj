@@ -228,6 +228,7 @@
 		DE40A3D1882E9F868EB777EF /* SharedTabsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79C8AEF6CA3476651243F203 /* SharedTabsTests.swift */; };
 		E041ABADFE1008753BBEB59C /* LinkSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41AFB702A8C15DAD98DBA71F /* LinkSettingsTests.swift */; };
 		E1AB7A0200A6570C1A886D35 /* KeyboardDockingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25510998496FB09DFA0C00DE /* KeyboardDockingTests.swift */; };
+		E1EE67A4903B6D6CEE7DA0EE /* SpeechSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 354C9CD85A1A05C416D33C0E /* SpeechSession.swift */; };
 		E325D688981981A4EDC0EA4C /* NewOrchestrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BBCAD205DF587C0A3C68737 /* NewOrchestrator.swift */; };
 		E35BB5C4444264D6911A162C /* RemoteModel+Dashboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A16FA698B9C7FC599FD9521D /* RemoteModel+Dashboard.swift */; };
 		E40FC978D21BBADE3650711E /* ChatFileViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20B94196E4386D28063C6BC /* ChatFileViewer.swift */; };
@@ -258,7 +259,6 @@
 		FF3313718A0946B01BC5E9C8 /* AttachmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B620C318695DAB885BC0F84C /* AttachmentTests.swift */; };
 		FF37502303E719419C61D622 /* KeyboardSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6A7FA7AFDF4729479D6BBB8 /* KeyboardSettings.swift */; };
 		FF4360CDECBBD7F89ECBAA0E /* SpeechVocabularyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D26A762F58B2703531A1E8CB /* SpeechVocabularyTests.swift */; };
-		E1EE67A4903B6D6CEE7DA0EE /* SpeechSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 354C9CD85A1A05C416D33C0E /* SpeechSession.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -397,6 +397,7 @@
 		34BEDB5695735830F16DAA27 /* ChatDiffTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatDiffTests.swift; sourceTree = "<group>"; };
 		350A7673B13BBC5F1620A6A2 /* SharedTabStrip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedTabStrip.swift; sourceTree = "<group>"; };
 		354757C53710F00D16F23CDE /* ProjectTabsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectTabsTests.swift; sourceTree = "<group>"; };
+		354C9CD85A1A05C416D33C0E /* SpeechSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechSession.swift; sourceTree = "<group>"; };
 		3684DCDF923347933BF7CDD2 /* KeyboardUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardUI.swift; sourceTree = "<group>"; };
 		37F87448D26EF740B122ED8D /* RiWorkRemote.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = RiWorkRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		38133DE714F1BD5D89FD533F /* ChatPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPresentationTests.swift; sourceTree = "<group>"; };
@@ -578,7 +579,6 @@
 		FC76A77536A88AA078AF3DC1 /* ChatModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatModels.swift; sourceTree = "<group>"; };
 		FEB928105826C732C8F49403 /* RemoteModel+Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteModel+Theme.swift"; sourceTree = "<group>"; };
 		FF4CB316BF5C6D882BC4177A /* ProjectTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectTabs.swift; sourceTree = "<group>"; };
-		354C9CD85A1A05C416D33C0E /* SpeechSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechSession.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
