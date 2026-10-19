@@ -1,16 +1,14 @@
 //! Dictation into the message box: the mic button and ⌃⌥D start and stop it, ⎋ cancels it,
-//! the words appear at the caret as they are heard, and it stops by itself after a pause.
+//! the words appear at the caret as they are heard, until the person stops it.
 //! Dictation never sends the message. The rules are `dictation::Machine`'s; this runs them
 //! against the helper process and the box. All of it is there only while Settings shows the
 //! mic in chats (`mic_shown`): otherwise the button, the key and the hints are gone, and no
 //! helper is started, so nothing asks for the microphone.
 
-use std::time::{Duration, Instant};
-
 use gpui::{App, Context, Focusable, Global, Task, WeakEntity, Window};
 
 use crate::{
-    dictation::{self, Effect, Engine, Event, Insertion, Machine, Phase, Sources},
+    dictation::{Effect, Engine, Event, Insertion, Machine, Phase, Sources},
     settings::Settings,
 };
 
@@ -22,9 +20,7 @@ pub(super) struct Dictation {
     machine: Machine,
     engine: Option<Engine>,
     insertion: Insertion,
-    /// When the words last changed (or the microphone opened), for the silence that ends it.
-    last_change: Option<Instant>,
-    /// The helper's events, and the silence watch.
+    /// The helper's events.
     tasks: Vec<Task<()>>,
 }
 
@@ -115,9 +111,6 @@ impl ChatView {
 
     fn dictate(&mut self, event: Event, window: &mut Window, cx: &mut Context<Self>) {
         let before = self.dictation.phase().text().to_owned();
-        if matches!(event, Event::Heard(_) | Event::Ready) {
-            self.dictation.last_change = Some(Instant::now());
-        }
         let effect = self.dictation.machine.handle(event);
         let phase = self.dictation.phase().clone();
         let focused = self.composer.read(cx).focus_handle(cx).is_focused(window);
@@ -213,7 +206,6 @@ impl ChatView {
         match Engine::start(&sources) {
             Ok((engine, events)) => {
                 self.dictation.engine = Some(engine);
-                self.dictation.last_change = Some(Instant::now());
                 let pump = cx.spawn_in(window, async move |this, cx| {
                     while let Ok(event) = events.recv().await {
                         let event = event.into_event();
@@ -225,19 +217,7 @@ impl ChatView {
                         }
                     }
                 });
-                let watch = cx.spawn_in(window, async move |this, cx| {
-                    loop {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(250))
-                            .await;
-                        match this.update_in(cx, |view, window, cx| view.watch_silence(window, cx))
-                        {
-                            Ok(true) => {}
-                            _ => return,
-                        }
-                    }
-                });
-                self.dictation.tasks = vec![pump, watch];
+                self.dictation.tasks = vec![pump];
             }
             Err(problem) => {
                 self.dictate(Event::Failed(problem), window, cx);
@@ -245,32 +225,10 @@ impl ChatView {
         }
     }
 
-    /// Ends a dictation by itself after a pause once something was said, or after a long wait
-    /// when nothing was. False once there is nothing to watch.
-    fn watch_silence(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Phase::Listening { text } = self.dictation.phase() else {
-            return self.dictation.phase().is_active();
-        };
-        let wait = if text.is_empty() {
-            dictation::SILENCE_BEFORE_SPEECH
-        } else {
-            dictation::SILENCE_AFTER_SPEECH
-        };
-        if self
-            .dictation
-            .last_change
-            .is_some_and(|at| at.elapsed() >= wait)
-        {
-            self.dictate(Event::Stop, window, cx);
-        }
-        true
-    }
-
     fn end_dictation(&mut self, cx: &mut Context<Self>) {
         // Dropping the engine cancels the helper and ends its process.
         self.dictation.engine = None;
         self.dictation.tasks.clear();
-        self.dictation.last_change = None;
         let me = cx.entity().downgrade();
         if cx
             .try_global::<Active>()

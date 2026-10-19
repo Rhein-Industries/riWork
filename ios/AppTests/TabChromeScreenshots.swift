@@ -340,7 +340,6 @@ import RiWorkCore
             DictationController.shared.cancel()
             DictationController.shared.isAllowed = false
             DictationController.shared.makeEngine = { DictationController.defaultEngine() }
-            DictationController.shared.silenceAfterSpeech = DictationMachine.silenceAfterSpeech
         }
         for look in [Look.nativeDark, .nativeLight, .terminal] {
             guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene") }
@@ -442,7 +441,6 @@ import RiWorkCore
             conversation.draft = ""
             let engine = HeldEngine()
             DictationController.shared.makeEngine = { engine }
-            DictationController.shared.silenceAfterSpeech = .seconds(120)
             DictationController.shared.toggle(for: .chat(chatID), live: { _ in }, deliver: { _ in })
             try await Task.sleep(for: .milliseconds(400))
             engine.onEvent?(.level(0.6))
