@@ -649,6 +649,9 @@ impl ChatView {
                 links.push((range, target));
             }
         }
+        // GPUI derives text runs from highlights in order; a link highlight appended
+        // after a later markdown highlight would overlap runs and split a character.
+        highlights.sort_by_key(|(range, _)| range.start);
         links.sort_by_key(|(range, _)| range.start);
         let text: SharedString = text.into();
         let styled = StyledText::new(text.clone()).with_highlights(highlights);
