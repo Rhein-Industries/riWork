@@ -87,7 +87,7 @@ import RiWorkCore
         try store.add(esc)
         let launched = HotkeyStore(defaults: defaults)
         XCTAssertEqual(launched.custom, [esc])
-        XCTAssertEqual(launched.custom[0].chord, chord("e"))
+        XCTAssertEqual(launched.custom.first?.chord, chord("e"))
         XCTAssertEqual(launched.onBar, [], "a shortcut-only hotkey stays off the key bar")
         XCTAssertEqual(launched.shortcutMap.action(for: chord("e")), .hotkey(esc))
     }
@@ -156,7 +156,7 @@ import RiWorkCore
         try store.addPaletteChord(KeyChord(keyCode: HIDKey.leftControl))
         let result = store.install(.clicks)
         XCTAssertEqual(result.skipped.map(\.hotkey.id), ["template.clicks.esc"])
-        XCTAssertEqual(store.shortcutMap.action(for: chord("e")), .hotkey(store.custom[0]), "theirs")
+        XCTAssertEqual(store.shortcutMap.action(for: chord("e")), store.custom.first.map { .hotkey($0) }, "theirs")
         XCTAssertEqual(result.paletteChordsAdded, [KeyChord(keyCode: HIDKey.rightControl)], "the Control tap they had already is not added twice")
     }
 

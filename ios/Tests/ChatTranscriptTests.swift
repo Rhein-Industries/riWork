@@ -29,7 +29,7 @@ final class ChatTranscriptTests: XCTestCase {
         XCTAssertEqual(t.items[0].body, .agentMessage("Hello"))
         t.apply(.itemCompleted(agent("a", "Hello!", .completed)))
         XCTAssertEqual(t.items.count, 1)
-        XCTAssertEqual(t.items[0], agent("a", "Hello!", .completed))
+        XCTAssertEqual(t.items.first, agent("a", "Hello!", .completed))
     }
     func testAFinishedTurnClosesWhatItLeftOpenAndItsRequests() {
         var t = ChatTranscript()

@@ -230,6 +230,7 @@ import RiWorkCore
         await eventually("it has asked four times") { await rig.transport.count("chat.events") >= 4 }
         let times = await rig.transport.calls(of: "chat.events").map(\.at)
         let gaps = zip(times.dropFirst(), times).map { ($0 - $1).timeInterval }
+        guard gaps.count >= 3 else { follower.cancel(); await rig.model.disconnect(); return XCTFail("\(times.count) reads") }
         XCTAssertGreaterThanOrEqual(gaps[0], 0.2, "250 ms after the first failure")
         XCTAssertGreaterThanOrEqual(gaps[1], 0.45, "500 ms after the second")
         XCTAssertGreaterThanOrEqual(gaps[2], 0.9, "1 s after the third")

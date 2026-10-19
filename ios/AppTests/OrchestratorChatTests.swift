@@ -90,7 +90,7 @@ import RiWorkCore
         let model = rig.model
         XCTAssertEqual(model.openSessions.map(\.id), [shell], "the chat is not a terminal")
         XCTAssertEqual(model.tabs.map(\.id), [chatID, shell], "the orchestrator first, as ever, then the shell")
-        guard case .orchestratorChat(let session, let info) = model.tabs[0] else { return XCTFail("a chat tab: \(model.tabs[0])") }
+        guard case .orchestratorChat(let session, let info)? = model.tabs.first else { return XCTFail("a chat tab: \(model.tabs)") }
         XCTAssertEqual(session.id, entryID)
         XCTAssertEqual(info.id, chatID)
         XCTAssertEqual(ChatTabs.title(info), "Project orchestrator")
@@ -107,7 +107,7 @@ import RiWorkCore
         let rig = try await connected(orchestrators: [chatEntry()])
         let model = rig.model
         await rig.transport.append(chatID, [.state(.idle), .itemStarted(ChatItem(id: "a", turnID: "t1", status: .completed, body: .agentMessage("hello from the orchestrator")))])
-        model.chooseOrchestrator(model.tabs[0])
+        model.chooseOrchestrator(try XCTUnwrap(model.tabs.first))
         XCTAssertEqual(model.selectedChatID, chatID, "the chat's id, not the entry's")
         XCTAssertEqual(model.selectedChat?.id, chatID)
         XCTAssertEqual(model.selectedChat?.title, "Project orchestrator")
@@ -140,7 +140,7 @@ import RiWorkCore
         let model = rig.model
         XCTAssertEqual(model.tabs.map(\.id), [chatID, shell], "one tab for it, not two")
         XCTAssertTrue(model.projectChats.isEmpty)
-        let info = try XCTUnwrap(model.tabs[0].chatInfo)
+        let info = try XCTUnwrap(model.tabs.first?.chatInfo)
         XCTAssertEqual(ChatTabs.title(info), "Project orchestrator", "it is called by its label")
         XCTAssertEqual(model.chatActivity(info), .waiting, "the desktop's word about the chat")
         model.selectChat(chatID)
@@ -150,7 +150,7 @@ import RiWorkCore
     func testTheTabShowsWhatTheEntryIsDoingUntilTheChatSaysSo() async throws {
         let rig = try await connected(orchestrators: [chatEntry("\"activity\":\"working\"")])
         let model = rig.model
-        let info = try XCTUnwrap(model.tabs[0].chatInfo)
+        let info = try XCTUnwrap(model.tabs.first?.chatInfo)
         XCTAssertEqual(model.chatActivity(info), .working, "the activity indicator of a terminal's tab")
         // Followed, the chat's own word is the fresher one.
         await rig.transport.append(chatID, [.state(.waiting)])
@@ -224,11 +224,11 @@ import RiWorkCore
         let model = rig.model
         XCTAssertEqual(model.chatSupport, .unsupported)
         XCTAssertEqual(model.openSessions.map(\.id), [shell], "not a terminal")
-        guard case .unavailable(let session, let opening) = model.tabs[0] else { return XCTFail("a tab that says why: \(model.tabs[0])") }
+        guard case .unavailable(let session, let opening)? = model.tabs.first else { return XCTFail("a tab that says why: \(model.tabs)") }
         XCTAssertEqual(session.id, entryID)
         XCTAssertEqual(opening, .needsUpdate)
         XCTAssertNil(model.selectedBlocked)
-        model.chooseOrchestrator(model.tabs[0])
+        model.chooseOrchestrator(try XCTUnwrap(model.tabs.first))
         XCTAssertEqual(model.selectedBlockedID, entryID)
         let blocked = try XCTUnwrap(model.selectedBlocked)
         XCTAssertEqual(blocked.opening.notice?.headline, "Update the Mac to open this orchestrator")
@@ -258,9 +258,9 @@ import RiWorkCore
         let rig = try await connected(orchestrators: [entry("\"mode\":\"chat\",\"provider\":\"claude\"")])
         let model = rig.model
         XCTAssertEqual(model.openSessions.map(\.id), [shell])
-        guard case .unavailable(_, let opening) = model.tabs[0] else { return XCTFail("a tab that says why") }
+        guard case .unavailable(_, let opening)? = model.tabs.first else { return XCTFail("a tab that says why") }
         XCTAssertEqual(opening, .notReady)
-        model.chooseOrchestrator(model.tabs[0])
+        model.chooseOrchestrator(try XCTUnwrap(model.tabs.first))
         XCTAssertNotNil(model.selectedBlocked)
         let asked = await readShells(rig)
         XCTAssertFalse(asked.contains(entryID))
@@ -269,14 +269,14 @@ import RiWorkCore
     func testTheNoticeGoesWhenTheMacCanOpenItAfterAReconnect() async throws {
         let rig = try await connected(orchestrators: [chatEntry()], feature: false)
         let model = rig.model
-        model.chooseOrchestrator(model.tabs[0])
+        model.chooseOrchestrator(try XCTUnwrap(model.tabs.first))
         XCTAssertNotNil(model.selectedBlocked)
         // The Mac was updated; the next connection reads its features again.
         await rig.transport.setFeature(true)
         await model.disconnect()
         await model.connect()
         XCTAssertEqual(model.chatSupport, .supported)
-        guard case .orchestratorChat = model.tabs[0] else { return XCTFail("it is a chat now: \(model.tabs[0])") }
+        guard case .orchestratorChat? = model.tabs.first else { return XCTFail("it is a chat now: \(model.tabs)") }
         XCTAssertNil(model.selectedBlocked)
         XCTAssertFalse(model.terminalCovered)
         await model.disconnect()

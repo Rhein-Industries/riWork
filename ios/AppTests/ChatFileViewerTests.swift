@@ -20,6 +20,7 @@ import RiWorkCore
         let files = ChatFileCatalog.entries(items: items)
         XCTAssertEqual(files.map(\.path), ["/host/inbox/screen.png", "/host/inbox/notes.txt", "src/main.swift", "report.md", "next.swift"])
         XCTAssertEqual(files.filter { $0.turnID == "one" }.count, 4)
+        guard files.count == 5 else { return }
         XCTAssertEqual(files[2].line, 13)
         XCTAssertEqual(files[2].textStartLine, 13)
         XCTAssertEqual(files[2].availableText, "let a = 1")

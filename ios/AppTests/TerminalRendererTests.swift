@@ -32,6 +32,7 @@ import RiWorkCore
     func testAGlyphTheFontBorrowsGetsAKernThatBringsItsAdvanceBackToItsCellsAndTheNextPieceHasNone() {
         let pieces = TerminalRenderer.segments(text: "x日本y", runs: [StyleRun(length: 4, style: .plain)], cursorColumn: nil, settings: settings())
         XCTAssertEqual(pieces.map(\.text), ["x", "日", "本", "y"])
+        guard pieces.count == 4 else { return }
         XCTAssertEqual(pieces[0].kern, 0)
         XCTAssertNotEqual(pieces[1].kern, 0, "a wide glyph is brought to two cells")
         XCTAssertEqual(pieces[3].kern, 0, "and the kern does not run on into the next piece")

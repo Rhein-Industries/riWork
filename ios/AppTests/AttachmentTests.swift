@@ -332,6 +332,7 @@ actor UploadTransport: RemoteTransport {
         model.cancelUpload()
         model.attach([.camera(Data())], to: .shell(shell))
         await settle { loads.count == 2 }
+        guard loads.count == 2 else { return await model.disconnect() }
         let newJob = model.attachments.job
         loads[0].resume(returning: UploadFile(name: "old.bin", mediaType: nil, data: Data([0])))
         await old.value
