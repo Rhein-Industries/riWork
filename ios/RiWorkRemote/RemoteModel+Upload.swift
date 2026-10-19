@@ -50,6 +50,8 @@ struct PendingAttachment: Identifiable, Equatable {
 // into the shell as a drop of them on its terminal would type them, or into the chat's message as their paths. See "File upload
 // extension" in docs/remote-protocol.md.
 extension RemoteModel {
+    var uploadInProgress: Bool { attachments.job != nil }
+
     /// The cards of files on their way to `chat`.
     func pendingAttachments(for chat: String) -> [PendingAttachment] { attachments.pending.filter { $0.chat == chat } }
 

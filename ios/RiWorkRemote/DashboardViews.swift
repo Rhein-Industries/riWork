@@ -444,6 +444,7 @@ struct GlobalOrchestratorScreen: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             menu(chrome)
         }
+        .clearsWindowControls()
         .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
         .background(style.panel)
         .overlay(alignment: .bottom) { DesktopRule() }

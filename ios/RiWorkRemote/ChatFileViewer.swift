@@ -43,6 +43,9 @@ extension EnvironmentValues {
     @Entry var chatFileEntries: [ChatFileEntry] = []
     @Entry var chatFileIndex = ChatFileIndex()
     @Entry var chatOpenFile: @MainActor (ChatFileEntry) -> Void = { _ in }
+    /// The height of the chat screen to its window's bottom, whatever the keyboard does; it follows the window as it is resized or turned
+    /// (Stage Manager, tiling, rotation). Set by `ChatScreen`; the default stands in elsewhere.
+    @Entry var chatScreenHeight: CGFloat = 800
 }
 
 enum ChatFileCatalog {
@@ -409,13 +412,13 @@ struct ChatFileThumbnail: View {
     }
 }
 
-/// Opened row images keep their real aspect ratio and contain within half of the current window's height.
+/// Opened row images keep their real aspect ratio and contain within half of the chat screen's height (its window's, as it is resized).
 struct ChatInlineImage: View {
     @Environment(\.chatOpenFile) private var openFile
     @Environment(\.desktopStyle) private var style
+    @Environment(\.chatScreenHeight) private var screenHeight
     let file: ChatFileEntry
     @State private var image: UIImage?
-    @State private var windowHeight: CGFloat = 800
     @State private var loading = true
     @State private var copied = false
     @State private var copyResetTask: Task<Void, Never>?
@@ -444,13 +447,11 @@ struct ChatInlineImage: View {
         .chatLayoutProbe("file-\(file.id)", action: { openFile(file) })
         .chatLayoutProbe("image-state-\(file.id)", revision: loading ? "loading" : image == nil ? "error" : "loaded")
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { _ in updateWindowHeight() }
         .task(id: file) {
             image = nil
             loading = true
             copied = false
             copyResetTask?.cancel()
-            updateWindowHeight()
             let loadedImage = await ChatFileBytes.image(for: file)
             guard !Task.isCancelled else { return }
             image = loadedImage
@@ -461,7 +462,7 @@ struct ChatInlineImage: View {
 
     @ViewBuilder private var imageContent: some View {
         if let image {
-            ChatInlineImageLayout(naturalSize: CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale), maximumHeight: windowHeight * 0.5) {
+            ChatInlineImageLayout(naturalSize: CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale), maximumHeight: screenHeight * 0.5) {
                 Image(uiImage: image).resizable().aspectRatio(contentMode: .fit)
             }
         } else {
@@ -477,12 +478,6 @@ struct ChatInlineImage: View {
     private var imageError: String {
         if case .unavailable(let reason) = file.imageSource, !reason.isEmpty { return reason }
         return "Image unavailable"
-    }
-
-    private func updateWindowHeight() {
-        if let height = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).flatMap(\.windows).first(where: \.isKeyWindow)?.bounds.height {
-            windowHeight = height
-        }
     }
 
     private func copyImage() {

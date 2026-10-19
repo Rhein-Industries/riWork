@@ -47,6 +47,9 @@ struct HistoryHeader: Equatable {
         var floatingInset: Double
         /// The size of the header row's text (Menlo), already scaled with the interface. Its color is the terminal's text at 55 %.
         var headerSize: Double
+        /// The window's pixels per point: rows are whole pixels tall (`TerminalFont.cell`), so a window moved to a display of another
+        /// scale has another line height, and every row is laid out and painted again.
+        var pixelScale: Double = TerminalFont.pixelsPerPoint
     }
     private var headerFont: UIFont { UIFont(name: "Menlo", size: look.headerSize) ?? .monospacedSystemFont(ofSize: look.headerSize, weight: .regular) }
     private var headerColor: UIColor {
@@ -142,7 +145,10 @@ struct HistoryHeader: Equatable {
     /// A new look (colors, size, padding, floating inset). Repaints what shows.
     func configure(_ next: Look) {
         guard next != look else { return }
-        let sizeChanged = next.fontSize != look.fontSize
+        let scaleChanged = next.pixelScale != look.pixelScale
+        // The cell cache keys on the scale it is asked with: the new one must be in place before the geometry is worked out again.
+        if scaleChanged, next.pixelScale > 0 { TerminalFont.pixelsPerPoint = next.pixelScale }
+        let sizeChanged = next.fontSize != look.fontSize || scaleChanged
         let paints = next.settings != look.settings || sizeChanged || next.headerSize != look.headerSize
         look = next
         if paints { lookID += 1 }

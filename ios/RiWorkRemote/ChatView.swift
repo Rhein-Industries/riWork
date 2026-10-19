@@ -29,6 +29,9 @@ struct ChatScreen: View {
     /// The height the screen has now. With the software keyboard up it is under half of the phone, and the bars above the composer must
     /// leave the transcript room, so what they may scroll is a share of it.
     @State private var height: CGFloat = 800
+    /// The screen's height to the window's bottom, whatever the keyboard does, measured as the window is resized or turned: what inline
+    /// images are sized by (`chatScreenHeight`).
+    @State private var screenHeight: CGFloat = 800
     /// The photo or file picker of the composer's paperclip.
     @State private var picking: AttachmentChoice?
     /// Scrolling room the bar over the composer gives up so the transcript keeps its last message in view (`transcriptChanged`).
@@ -110,7 +113,18 @@ struct ChatScreen: View {
         .frame(maxWidth: 760)
         .frame(maxWidth: .infinity)
         .background(style.background)
+        // SwiftUI makes room for any keyboard it sees, a floating one or a hardware keyboard's shortcut bar too: the screen keeps to the
+        // window's bottom unless a software keyboard is docked (`SoftwareKeyboardMonitor.isDocked`). Docking takes SwiftUI's own keyboard
+        // motion; going back to the bottom (floating, split, undocked, hidden) eases over the keyboard's time.
+        // Measured beside the content and out of the keyboard's way, so a docked keyboard does not change it and a resize always does.
+        .background {
+            Color.clear.ignoresSafeArea(.keyboard, edges: .bottom)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { screenHeight = $0 }
+        }
+        .ignoresSafeArea(.keyboard, edges: keyboardDocked ? [] : .bottom)
+        .animation(keyboardDocked ? nil : .easeOut(duration: 0.25), value: keyboardDocked)
         .environment(\.chatFileEntries, files)
+        .environment(\.chatScreenHeight, screenHeight)
         .environment(\.chatFileIndex, fileIndex)
         .environment(\.chatOpenFile, { file in viewingFile = file })
         .navigationDestination(item: $viewingFile) { file in
@@ -120,6 +134,7 @@ struct ChatScreen: View {
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0; squeeze = 0 }
         .attachmentPicker($picking, onDone: requestFocus) { model.attach($0, to: .chat(chat.id)) }
+        .chatDropTarget(model: model, chat: chat)
         .task(id: chat.id) { await model.followChat(chat.id) }
         .onAppear { requestFocus() }
         .onChange(of: chat.id) { _, _ in requestFocus() }
@@ -176,6 +191,8 @@ struct ChatScreen: View {
 
     /// The least the questions may scroll in: a question and an answer, at least.
     private var leastQuestionScroll: CGFloat { style.native ? 60 : 100 }
+    /// A software keyboard is docked: only then does the screen make room for it, and the composer stands on it.
+    private var keyboardDocked: Bool { model.keyboard.software.isDocked }
     /// The least of the transcript that stays on screen above a request or question bar: the last message, at one line.
     private var leastTranscript: CGFloat { style.pt(48) }
     /// In Native, where the bars are taller, a bar over a short screen (the keyboard up) gives up scrolling room until the transcript
@@ -688,12 +705,20 @@ private struct WorkerVisibility: ViewModifier {
 /// Capture the concrete scrolling ancestor from a materialized row. List's
 /// ScrollPosition does not perform absolute Y corrections on every supported OS.
 private struct TranscriptScrollCapture: UIViewRepresentable {
+    @Environment(\.chatDropHandler) private var dropHandler
     let viewport: ChatHistoryViewport
-    func makeUIView(context: Context) -> Installer { Installer(viewport: viewport) }
-    func updateUIView(_ view: Installer, context: Context) { view.viewport = viewport; view.capture() }
+    func makeUIView(context: Context) -> Installer {
+        let view = Installer(viewport: viewport)
+        view.dropPassThrough = dropHandler?.transcript
+        return view
+    }
+    func updateUIView(_ view: Installer, context: Context) {
+        view.viewport = viewport; view.dropPassThrough = dropHandler?.transcript; view.capture()
+    }
 
     final class Installer: UIView {
         weak var viewport: ChatHistoryViewport?
+        weak var dropPassThrough: TranscriptDropPassThrough?
         init(viewport: ChatHistoryViewport) {
             self.viewport = viewport
             super.init(frame: .zero)
@@ -707,6 +732,7 @@ private struct TranscriptScrollCapture: UIViewRepresentable {
             while let current = ancestor, !(current is UIScrollView) { ancestor = current.superview }
             guard let scroll = ancestor as? UIScrollView, let viewport else { return }
             viewport.nativeScrollView = scroll
+            dropPassThrough?.capture(scroll)
             if viewport.keyboardTap.view !== scroll {
                 viewport.keyboardTap.view?.removeGestureRecognizer(viewport.keyboardTap)
                 scroll.addGestureRecognizer(viewport.keyboardTap)

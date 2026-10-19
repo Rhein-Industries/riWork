@@ -484,6 +484,7 @@ struct TerminalTabsView: View {
             .chatLayoutProbe("row-strip")
             screenMenu(chrome).chatLayoutProbe("more-options")
         }
+        .clearsWindowControls()
         .accessibilityElement(children: .contain)
         .frame(minHeight: CGFloat(TabScreenChrome.rowHeight(scale: style.scale)))
         .chatLayoutProbe("navigation")

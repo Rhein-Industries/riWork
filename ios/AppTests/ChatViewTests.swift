@@ -177,8 +177,8 @@ import RiWorkCore
         await rig.transport.append(chatID, [approval("r1")])
         await eventually("a request waits") { rig.model.conversation(self.chatID).openApprovals.count == 1 }
         let shortcuts = Set((view.keyCommands ?? []).map { ($0.input ?? "") + "|\($0.modifierFlags.rawValue)" })
-        XCTAssertEqual(shortcuts, ["\r|0", "\r|\(UIKeyModifierFlags.shift.rawValue)", "\(UIKeyCommand.inputEscape)|0", "\u{8}|\(UIKeyModifierFlags.command.rawValue)"],
-                       "⏎ ⇧⏎ ⎋ and ⌘⌫ are all the composer claims; ⌘. is the screen's")
+        XCTAssertEqual(shortcuts, ["\r|0", "\r|\(UIKeyModifierFlags.shift.rawValue)", "\r|\(UIKeyModifierFlags.command.rawValue)", "\(UIKeyCommand.inputEscape)|0", "\u{8}|\(UIKeyModifierFlags.command.rawValue)"],
+                       "⏎ ⇧⏎ ⌘⏎ ⎋ and ⌘⌫ are all the composer claims; ⌘. is the screen's")
         // ⌘. is on the hosting controller while there is something to interrupt, and nothing else of the terminal's is.
         func commandKeys() -> [String] { (rig.host.keyCommands ?? []).filter { $0.modifierFlags == .command }.compactMap { $0.input?.lowercased() } }
         XCTAssertFalse(commandKeys().contains("."), "nothing to interrupt yet")
@@ -1319,8 +1319,9 @@ import RiWorkCore
         // The keyboard's frame as the monitor reads it from UIKit's notifications (not posted: UIKit's own keyboard tracking would
         // take them too, for the tests after this one).
         func keyboard(_ height: CGFloat) {
-            let screen = UIScreen.main.bounds
-            rig.model.keyboard.software.update(hiding: height == 0, end: CGRect(x: 0, y: screen.maxY - height, width: screen.width, height: height))
+            // At the bottom of the rig's window, which on an iPad is smaller than the screen: the monitor measures the window it covers.
+            let screen = rig.window.windowScene.map { rig.window.convert(rig.window.bounds, to: $0.screen.coordinateSpace) } ?? UIScreen.main.bounds
+            rig.model.keyboard.software.update(hiding: height == 0, end: CGRect(x: screen.minX, y: screen.maxY - height, width: screen.width, height: height))
         }
         let interactive: [UIScrollView.KeyboardDismissMode] = [.interactive, .interactiveWithAccessory]
         // The tap: the transcript scroll view's own recognizer, fired as UIKit fires it once a tap is recognized.
@@ -2671,7 +2672,7 @@ import RiWorkCore
         rig.host.traitOverrides.preferredContentSizeCategory = .accessibilityExtraLarge
         await eventually("composer font follows accessibility text size") { (field.font?.pointSize ?? 0) > initialFont }
         XCTAssertEqual(field.text, "A draft that must survive text scaling.")
-        XCTAssertEqual(field.keyCommands?.count, 2, "Return routing is unchanged by layout")
+        XCTAssertEqual(field.keyCommands?.count, 3, "Return routing (⏎, ⇧⏎, ⌘⏎) is unchanged by layout")
         let frame = field.convert(field.bounds, to: rig.window)
         XCTAssertGreaterThanOrEqual(frame.minX, 0)
         XCTAssertLessThanOrEqual(frame.maxX, rig.window.bounds.width)

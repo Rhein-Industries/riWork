@@ -1,14 +1,15 @@
+import GameController
 import SwiftUI
 import UIKit
 import RiWorkCore
 
-// The composer of a chat: a multi-line text view that reads a hardware keyboard the way a chat needs it (⏎ sends, ⇧⏎ is a new line, and
-// with a request waiting and nothing typed, ⏎ allows it, ⇧⏎ allows it for the session and ⎋ denies it), and the bars above it for
-// requests and questions.
+// The composer of a chat: a multi-line text view that reads a hardware keyboard the way a chat needs it (⏎ sends, ⇧⏎ is a new line, ⌘⏎
+// always sends, and with a request waiting and nothing typed, ⏎ allows it, ⇧⏎ allows it for the session and ⎋ denies it), and the bars
+// above it for requests and questions.
 
 /// The text view of the composer.
 ///
-/// - **Hardware keyboard.** Return and Shift-Return, and with a request waiting also Escape and ⌘⌫, are `UIKeyCommand`s with priority
+/// - **Hardware keyboard.** Return, Shift-Return and ⌘-Return, and with a request waiting also Escape and ⌘⌫, are `UIKeyCommand`s with priority
 ///   over the system, because a text view would otherwise insert a line break for Return and ignore the rest. What each means is
 ///   decided by `ChatKeyRouter` from what is on the screen now; this view reports the key, and puts in the line break when the router
 ///   says it is the text's. The commands are re-read for every key press: Escape and ⌘⌫ belong to the request only while one waits and
@@ -26,7 +27,14 @@ import RiWorkCore
     }
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window != nil { DispatchQueue.main.async { [weak self] in self?.fulfilFocusRequest() } }
+        if window != nil {
+            observeHardwareKeyboard()
+            updateShortcutBar()
+            DispatchQueue.main.async { [weak self] in self?.fulfilFocusRequest() }
+        } else {
+            keyboardObservers.forEach(NotificationCenter.default.removeObserver)
+            keyboardObservers = []
+        }
     }
     private func fulfilFocusRequest() {
         guard focusRequested, window != nil, isEditable else { return }
@@ -49,9 +57,21 @@ import RiWorkCore
         if let onPasteFiles, PasteboardAttachments.available, onPasteFiles() { return }
         super.paste(sender)
     }
+
+    var onDropItems: (([NSItemProvider], Bool, @escaping @MainActor (String) -> Void) -> Bool)?
+    var dropHandler: ChatDropHandler?
+    private lazy var chatDropInteraction = UIDropInteraction(delegate: self)
+    func configureDrop(_ handler: ChatDropHandler?) {
+        dropHandler = handler
+        onDropItems = handler.map { handler in { providers, local, insert in handler.perform(providers, local: local, insert: insert) } }
+        // UITextView would otherwise paste a Files URL or a text file's contents, and reject images.
+        if let textDropInteraction { removeInteraction(textDropInteraction) }
+        if !interactions.contains(where: { $0 === chatDropInteraction }) { addInteraction(chatDropInteraction) }
+    }
     private lazy var typingCommands: [UIKeyCommand] = [
         Self.command("\r", [], action: #selector(fired(_:))),
-        Self.command("\r", .shift, action: #selector(fired(_:)))
+        Self.command("\r", .shift, action: #selector(fired(_:))),
+        Self.command("\r", .command, action: #selector(fired(_:)))
     ]
     private lazy var requestCommands: [UIKeyCommand] = [
         Self.command(UIKeyCommand.inputEscape, [], action: #selector(fired(_:))),
@@ -73,6 +93,28 @@ import RiWorkCore
         guard markedTextRange == nil else { return nil }
         if suggesting { return typingCommands + suggestionCommands }
         return answersApproval && text.isEmpty ? typingCommands + requestCommands : typingCommands
+    }
+    /// With a hardware keyboard the composer stays at the bottom of the window, and iPadOS would draw its shortcut bar over the field's
+    /// trailing end, where Send is. The bar is left out while a hardware keyboard is attached (an assistant item with no groups has no
+    /// bar); a software keyboard keeps its groups.
+    private var systemAssistantGroups: (leading: [UIBarButtonItemGroup], trailing: [UIBarButtonItemGroup])?
+    private var keyboardObservers: [any NSObjectProtocol] = []
+    private func updateShortcutBar() {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
+        let item = inputAssistantItem
+        if systemAssistantGroups == nil { systemAssistantGroups = (item.leadingBarButtonGroups, item.trailingBarButtonGroups) }
+        let hardware = GCKeyboard.coalesced != nil
+        item.leadingBarButtonGroups = hardware ? [] : systemAssistantGroups?.leading ?? []
+        item.trailingBarButtonGroups = hardware ? [] : systemAssistantGroups?.trailing ?? []
+        if isFirstResponder { reloadInputViews() }
+    }
+    private func observeHardwareKeyboard() {
+        guard keyboardObservers.isEmpty else { return }
+        for name in [Notification.Name.GCKeyboardDidConnect, .GCKeyboardDidDisconnect] {
+            keyboardObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateShortcutBar() }
+            })
+        }
     }
     /// A Return that put a suggestion in, while it may still be held: its repeats must not send the draft it completed.
     private var heldReturn = HeldReturn()
@@ -98,6 +140,7 @@ import RiWorkCore
         switch (input, flags.intersection([.shift, .command, .alternate, .control])) {
         case ("\r", []): .return
         case ("\r", .shift): .shiftReturn
+        case ("\r", .command): .commandReturn
         case (UIKeyCommand.inputEscape, []): .escape
         case (UIKeyCommand.inputDelete, .command): .commandDelete
         case (UIKeyCommand.inputUpArrow, []): .up
@@ -160,6 +203,7 @@ struct ChatComposerField: UIViewRepresentable {
         view.returnKeyType = .default
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         view.accessibilityIdentifier = "chat-composer"
+        view.configureDrop(context.environment.chatDropHandler)
         return view
     }
     func updateUIView(_ view: ChatComposerTextView, context: Context) {
@@ -191,6 +235,7 @@ struct ChatComposerField: UIViewRepresentable {
         view.suggesting = suggesting
         insertion?.view = view
         view.onPasteFiles = onPasteFiles
+        view.configureDrop(context.environment.chatDropHandler)
         if coordinator.lastFocusToken != focusToken {
             coordinator.lastFocusToken = focusToken
             if isEnabled { view.requestFocusWhenAttached() }
@@ -235,6 +280,7 @@ struct ChatComposerField: UIViewRepresentable {
 /// 44-point target that reaches out over the margin to the screen's edge.
 struct ChatComposer: View {
     @Environment(\.desktopStyle) private var style
+    @Environment(\.chatDropHandler) private var dropHandler
     @Environment(\.dynamicTypeSize) private var typeSize
     let conversation: ChatConversation
     let provider: ChatProvider
@@ -316,7 +362,7 @@ struct ChatComposer: View {
                 if actions.send { sendButton }
             }
             .padding(.leading, attach == nil ? style.pt(4) : 0).padding(.trailing, 0)
-            .modifier(ComposerFieldSurface(focused: focused))
+            .modifier(ComposerFieldSurface(focused: focused, targeted: dropHandler?.composerTargeted == true))
             .animation(.easeInOut(duration: 0.12), value: actions)
             .chatLayoutProbe("composer")
             .padding(.horizontal, Self.fieldMargin)
@@ -365,7 +411,10 @@ struct ChatComposer: View {
     private func handle(_ key: ChatKey) -> ChatKeyAction {
         let action = ChatKeyRouter.action(for: key, in: keyContext)
         switch action {
-        case .send: send()
+        case .send:
+            // ⌘⏎ sends with the `/` or `@` list open: the list goes with the draft.
+            if key == .commandReturn { suggestions.dismiss() }
+            send()
         case .decide(let decision): decide(decision)
         case .interrupt: interrupt()
         case .acceptSuggestion: acceptSuggestion(suggestions.accepted())
@@ -427,14 +476,25 @@ private struct ComposerPaperclip: View, Equatable {
 private struct ComposerFieldSurface: ViewModifier {
     @Environment(\.desktopStyle) private var style
     let focused: Bool
+    let targeted: Bool
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: style.pt(23), style: .continuous)
         if style.glass {
             content.nativeGlass(style, in: shape, interactive: false)
+                .overlay { if targeted { shape.stroke(style.accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4])) } }
         } else if style.native {
-            content.background(style.background, in: shape).overlay(shape.stroke(focused ? style.accent : style.divider, lineWidth: 1))
+            content.background(style.background, in: shape)
+                .overlay {
+                    if targeted { shape.stroke(style.accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4])) }
+                    else { shape.stroke(focused ? style.accent : style.divider, lineWidth: 1) }
+                }
         } else {
-            content.background(style.background).overlay(RoundedRectangle(cornerRadius: 3).stroke(focused ? style.accent : style.divider, lineWidth: 1))
+            content.background(style.background)
+                .overlay {
+                    let border = RoundedRectangle(cornerRadius: 3)
+                    if targeted { border.stroke(style.accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4])) }
+                    else { border.stroke(focused ? style.accent : style.divider, lineWidth: 1) }
+                }
         }
     }
 }
