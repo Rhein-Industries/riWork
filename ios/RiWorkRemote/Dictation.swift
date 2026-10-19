@@ -34,6 +34,12 @@ enum DictationOwner: Hashable, Sendable {
     @ObservationIgnored private var deliver: ((String) -> Void)?
     @ObservationIgnored private var live: ((String) -> Void)?
     @ObservationIgnored private var observers: [any NSObjectProtocol] = []
+    @ObservationIgnored private var completion: ((Bool) -> Void)?
+    @ObservationIgnored private var stopping: Task<Void, Never>?
+    /// Shared with the engines; injectable so tests control the deadline without sleeping.
+    @ObservationIgnored var waitForFinal: @MainActor () async throws -> Void = {
+        try await Task.sleep(for: DictationMachine.stoppingDeadline)
+    }
 
     /// The desktop's mic setting (`DesktopStyle.mic`), kept by the root view. Off, no dictation starts (and so neither the microphone nor
     /// speech recognition is asked for), and one in progress is cancelled the moment it turns off.
@@ -44,12 +50,12 @@ enum DictationOwner: Hashable, Sendable {
     func isActive(for owner: DictationOwner) -> Bool { self.owner == owner && phase.isActive }
     func phase(for owner: DictationOwner) -> DictationPhase { self.owner == owner ? phase : .idle }
 
-    /// The mic button: starts a dictation for `owner`, or stops the one it has. A dictation of another field is cancelled first.
+    /// The mic button: starts a dictation for `owner`, or stops the one it has. Another field keeps its words first.
     /// `live` sees the text while it is being heard (and "" when it is cancelled); `deliver` gets the final text, once.
     func toggle(for owner: DictationOwner, live: ((String) -> Void)? = nil, deliver: @escaping (String) -> Void) {
         if self.owner == owner, phase.isActive { stop(); return }
         guard isAllowed else { return }
-        if phase.isActive { cancel() }
+        if phase.isActive { finishNow() }
         self.owner = owner
         self.deliver = deliver
         self.live = live
@@ -57,7 +63,21 @@ enum DictationOwner: Hashable, Sendable {
         send(.start)
     }
     func stop() { send(.stop) }
+    /// Complete insertion before running the action, even for an empty result or an engine that never finishes.
+    func stop(then action: @escaping (Bool) -> Void) {
+        guard phase.isActive else { action(true); return }
+        guard completion == nil else { action(false); return }
+        completion = action
+        stop()
+    }
     func cancel() { send(.cancel) }
+    /// Leaving a field keeps its latest text, but must never complete a pending send in another view.
+    func finishNow() {
+        let completion = completion
+        self.completion = nil
+        if phase.isActive { send(.finished(phase.text)) }
+        completion?(false)
+    }
     /// The failure was seen.
     func dismiss() { send(.dismiss) }
 
@@ -75,12 +95,24 @@ enum DictationOwner: Hashable, Sendable {
         switch effect {
         case .none: break
         case .beginEngine: begin()
-        case .finishEngine: engine?.finish()
+        case .finishEngine:
+            let waitForFinal = waitForFinal
+            stopping = Task { [weak self] in
+                try? await waitForFinal()
+                guard !Task.isCancelled, let self, case .finishing = self.phase else { return }
+                self.send(.finished(self.phase.text))
+            }
+            engine?.finish()
         case .cancelEngine: live?(""); tearDown()
         case .deliver(let text): let deliver = deliver; tearDown(); deliver?(text)
         }
         // Finished with nothing heard: whatever was shown goes, and so does the engine.
         if !phase.isActive, engine != nil, effect == .none { live?(""); tearDown() }
+        if !phase.isActive, let completion {
+            self.completion = nil
+            // A recognizer failure keeps text but does not authorize sending it.
+            if case .finished = event { completion(true) } else { completion(false) }
+        }
     }
 
     private func begin() {
@@ -105,6 +137,7 @@ enum DictationOwner: Hashable, Sendable {
         }
     }
     private func tearDown() {
+        stopping?.cancel(); stopping = nil
         engine?.onEvent = nil
         engine?.cancel()
         engine = nil
@@ -190,11 +223,17 @@ enum DictationOwner: Hashable, Sendable {
     private var base: String?
     private var anchor = NSRange(location: 0, length: 0)
     private var written: String?
+    private var writtenRange = NSRange(location: 0, length: 0)
+    private var userTookOver = false
 
     /// Shows `text` at the caret in place of what was shown before; "" takes it out.
     func show(_ text: String) {
         if text.isEmpty { discard(); return }
-        guard let view else { return }
+        guard !userTookOver, let view else { return }
+        let selection = view.selectedRange
+        let updating = written != nil
+        if let written, view.text != written { rebaseTyping(from: written, to: view.text ?? "") }
+        guard !userTookOver else { return }
         if base == nil || view.text != written {
             let text = view.text ?? ""
             base = text
@@ -203,12 +242,41 @@ enum DictationOwner: Hashable, Sendable {
         }
         guard let base else { return }
         let result = text.isEmpty ? (text: base, caret: anchor.location + anchor.length) : DictatedText.insert(text, into: base, at: anchor)
-        apply(result, to: view)
+        let oldEnd = NSMaxRange(writtenRange)
+        let newLength = (result.text as NSString).length - (base as NSString).length + anchor.length
+        let delta = newLength - writtenRange.length
+        writtenRange = NSRange(location: anchor.location, length: newLength)
+        let caret: NSRange
+        if updating {
+            func shifted(_ offset: Int) -> Int { offset >= oldEnd ? offset + delta : offset }
+            caret = NSRange(location: shifted(selection.location), length: max(0, shifted(NSMaxRange(selection)) - shifted(selection.location)))
+        } else { caret = NSRange(location: result.caret, length: 0) }
+        apply((result.text, caret.location), to: view, selection: caret)
+    }
+    /// A typed edit before or after the live span belongs to the base, not to a second copy of the transcript.
+    private func rebaseTyping(from old: String, to new: String) {
+        guard let base else { return }
+        let a = Array(old.utf16), b = Array(new.utf16)
+        var prefix = 0, suffix = 0
+        while prefix < min(a.count, b.count), a[prefix] == b[prefix] { prefix += 1 }
+        while suffix < min(a.count, b.count) - prefix, a[a.count - 1 - suffix] == b[b.count - 1 - suffix] { suffix += 1 }
+        let removed = a.count - prefix - suffix
+        let replacement = (new as NSString).substring(with: NSRange(location: prefix, length: b.count - prefix - suffix))
+        let location: Int
+        if prefix + removed <= writtenRange.location {
+            location = prefix
+            anchor.location += b.count - a.count
+            writtenRange.location += b.count - a.count
+        } else if prefix >= NSMaxRange(writtenRange) {
+            location = prefix - writtenRange.length + anchor.length
+        } else { userTookOver = true; return }
+        self.base = (base as NSString).replacingCharacters(in: NSRange(location: location, length: removed), with: replacement)
+        written = new
     }
     /// The final text, at the caret. The next dictation starts from where this one left the caret.
     func commit(_ text: String) {
         show(text)
-        base = nil; written = nil
+        base = nil; written = nil; userTookOver = false
     }
     /// Takes out what dictation showed.
     func discard() {
@@ -216,12 +284,18 @@ enum DictationOwner: Hashable, Sendable {
         if let view, let base, view.text == written {
             apply((text: base, caret: anchor.location + anchor.length), to: view)
         }
-        base = nil; written = nil
+        base = nil; written = nil; userTookOver = false
     }
-    private func apply(_ result: (text: String, caret: Int), to view: UITextView) {
+    private func apply(_ result: (text: String, caret: Int), to view: UITextView, selection: NSRange? = nil) {
         guard view.text != result.text else { return }
+        let composer = view as? ChatComposerTextView
+        composer?.applyingDictation = true
+        defer { composer?.applyingDictation = false }
         view.text = result.text
-        view.selectedRange = NSRange(location: min(result.caret, (result.text as NSString).length), length: 0)
+        let length = (result.text as NSString).length
+        let requested = selection ?? NSRange(location: result.caret, length: 0)
+        let location = min(max(0, requested.location), length)
+        view.selectedRange = NSRange(location: location, length: min(requested.length, length - location))
         written = view.text
         view.delegate?.textViewDidChange?(view)
         view.scrollRangeToVisible(view.selectedRange)
@@ -230,7 +304,7 @@ enum DictationOwner: Hashable, Sendable {
 
 // MARK: - The mic button (SwiftUI)
 
-/// The mic beside a Send button: tap to dictate, tap again to stop; while it listens a cancel button sits beside it. The text goes into
+/// The mic beside a Send button: tap to dictate, tap again to stop; outside the compact chat, a cancel button sits beside it. Text goes into
 /// `insertion`'s text view at the caret as it is heard.
 struct DictationButton: View {
     @Environment(\.desktopStyle) private var style
@@ -246,11 +320,12 @@ struct DictationButton: View {
     private var column: CGFloat { style.pt(30) + style.pt(8) }
     /// Says a failure in an alert of its own; off where the screen says it in its banner row (the chat).
     var alerts = true
+    @State private var hardware = HardwareKeyboardMonitor()
 
     var body: some View {
         let phase = controller.phase(for: owner)
         HStack(spacing: 0) {
-            if phase.isActive {
+            if phase.isActive && !compact {
                 Button { controller.cancel() } label: {
                     Image(systemName: "xmark.circle").font(.system(size: style.pt(compact ? 17 : 20))).foregroundStyle(style.muted)
                         .frame(width: compact ? style.pt(30) : nil).frame(width: compact ? column : nil, alignment: .leading)
@@ -264,22 +339,34 @@ struct DictationButton: View {
                     .frame(width: compact ? column + reach : nil, alignment: .leading)
             }
                 .buttonStyle(TargetButtonStyle(dims: false, alignment: compact ? .trailing : .center))
-                .chatLayoutProbe("dictation-target")
+                .chatLayoutProbe("dictation-target", action: toggle)
                 .padding(.trailing, compact ? -reach : 0)
                 .disabled(!isEnabled && !phase.isActive)
+                .contextMenu {
+                    if phase.isActive { Button("Cancel dictation", systemImage: "xmark", action: cancel) }
+                }
+                .accessibilityAction(named: "Cancel dictation", cancel)
+                .chatLayoutProbe("dictation-cancel", visible: phase.isActive, action: cancel)
                 .accessibilityLabel(phase.isActive ? "Stop dictation" : "Dictate")
                 .accessibilityValue(phase.isActive ? "Listening" : "")
-                .accessibilityHint(phase.isActive ? "Keeps what was heard" : "Speak a message; it is recognized on this iPhone")
+                .accessibilityHint(Self.hint(active: phase.isActive, compact: compact, hardware: hardware.isAttached))
                 .accessibilityIdentifier("dictation.\(owner.identifier)")
         }
         .animation(.easeInOut(duration: 0.15), value: phase.isActive)
         .dictationAlert(controller, owner: owner, enabled: alerts)
         // Another chat in the same composer, or the chat gone from the screen: its words must not land in the field now shown.
-        .onChange(of: owner) { old, _ in if controller.isActive(for: old) { controller.cancel() } }
-        .onDisappear { if controller.isActive(for: owner) { controller.cancel() } }
+        .onChange(of: owner) { old, _ in if controller.isActive(for: old) { controller.finishNow() } }
+        .onDisappear { if controller.isActive(for: owner) { controller.finishNow() } }
     }
+    static func hint(active: Bool, compact: Bool, hardware: Bool) -> String {
+        guard active else { return "Speak a message; it is recognized on this iPhone" }
+        guard compact else { return "Keeps what was heard" }
+        return hardware ? "Keeps what was heard. Escape stops; Return or Send stops and sends." : "Keeps what was heard. Send stops and sends. Touch and hold to cancel."
+    }
+    private func cancel() { if controller.isActive(for: owner) { controller.cancel() } }
     private func toggle() {
         let insertion = insertion
+        if !controller.isActive(for: owner), controller.isAllowed { (insertion.view as? ChatComposerTextView)?.holdDictationHeight() }
         controller.toggle(for: owner, live: { insertion.show($0) }, deliver: { insertion.commit($0) })
     }
 }

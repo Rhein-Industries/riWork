@@ -19,6 +19,13 @@ final class ChatPresentationTests: XCTestCase {
         XCTAssertEqual(action(.return, empty: false, canSend: false), .none, "a send is on its way, or the link is down")
         XCTAssertEqual(action(.return, empty: false, approval: approval(everything)), .send, "typing something takes Return back from the request")
     }
+    func testCommandReturnAlwaysUsesSendRoutingIncludingSuggestionsAndApprovals() {
+        let pending = approval(everything)
+        XCTAssertEqual(action(.commandReturn, empty: false, approval: pending), .send)
+        XCTAssertEqual(action(.commandReturn, approval: pending), .none)
+        XCTAssertEqual(action(.commandReturn, empty: false, canSend: false), .none)
+        XCTAssertEqual(ChatKeyRouter.action(for: .commandReturn, in: ChatKeyContext(composerIsEmpty: false, suggesting: true)), .send)
+    }
     func testWithARequestWaitingAndNothingTypedTheKeysAnswerIt() {
         let pending = approval(everything)
         XCTAssertEqual(action(.return, approval: pending), .decide(.accept))

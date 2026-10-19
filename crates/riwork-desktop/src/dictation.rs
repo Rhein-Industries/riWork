@@ -30,6 +30,8 @@ use crate::{
 /// The shortcut that starts and stops dictation in a chat, as it is shown (main.rs binds it
 /// as `ctrl-alt-d`).
 pub const SHORTCUT_LABEL: &str = "⌃⌥D";
+/// Give the helper's five-second finalisation deadline one second to reach the event pump.
+pub const STOPPING_DEADLINE: std::time::Duration = std::time::Duration::from_secs(6);
 
 /// Why dictation could not go on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,6 +161,8 @@ pub enum Event {
     Heard(String),
     /// The person clicked stop or pressed the shortcut.
     Stop,
+    /// The helper did not finish within the settling window. Keep its latest hypothesis.
+    FinishTimedOut,
     /// The recognizer has finished; this is all of it.
     Finished(String),
     Cancel,
@@ -208,6 +212,9 @@ impl Machine {
                 };
                 Effect::None
             }
+            (phase, Event::Heard(text)) if text.trim().is_empty() && !phase.text().is_empty() => {
+                Effect::None
+            }
             (Phase::Preparing { .. } | Phase::Listening { .. }, Event::Heard(text)) => {
                 self.phase = Phase::Listening { text };
                 Effect::None
@@ -225,16 +232,22 @@ impl Machine {
                 self.phase = Phase::Finishing { text: text.clone() };
                 Effect::FinishEngine
             }
-            (
-                Phase::Preparing { .. } | Phase::Listening { .. } | Phase::Finishing { .. },
-                Event::Finished(text),
-            ) => {
+            (Phase::Finishing { text }, Event::FinishTimedOut) => {
+                let text = text.clone();
+                self.handle(Event::Finished(text))
+            }
+            (phase, Event::Finished(text)) if active => {
+                // A final with no words must not erase a volatile hypothesis already shown.
+                let text = if text.trim().is_empty() {
+                    phase.text().trim().to_owned()
+                } else {
+                    text.trim().to_owned()
+                };
                 self.phase = Phase::Idle;
-                let text = text.trim();
                 if text.is_empty() {
                     Effect::None
                 } else {
-                    Effect::Deliver(text.to_owned())
+                    Effect::Deliver(text)
                 }
             }
             (_, Event::Cancel) if active => {
@@ -307,6 +320,11 @@ pub struct Insertion {
     base: Option<(String, Range<usize>)>,
     /// What this wrote last, to tell whether the input was edited since.
     written: Option<String>,
+    /// Last speech span, retained across typing so every cumulative update replaces it in place.
+    speech_span: Option<(String, Range<usize>)>,
+    latest_heard: String,
+    /// Speech edited by the person belongs to them. Only words after this prefix remain live.
+    claimed_words: usize,
 }
 
 impl Insertion {
@@ -346,23 +364,66 @@ impl Insertion {
         focused: bool,
     ) -> (String, Range<usize>) {
         if self.base.is_none() || self.written.as_deref() != Some(text) {
-            let anchor = if !focused && cursor == 0 && !text.is_empty() {
-                text.len()..text.len()
+            let rebased = self.speech_span.as_ref().and_then(|(previous, span)| {
+                let prefix = previous
+                    .chars()
+                    .zip(text.chars())
+                    .take_while(|(a, b)| a == b)
+                    .map(|(c, _)| c.len_utf8())
+                    .sum::<usize>();
+                let suffix = previous[prefix..]
+                    .chars()
+                    .rev()
+                    .zip(text[prefix..].chars().rev())
+                    .take_while(|(a, b)| a == b)
+                    .map(|(c, _)| c.len_utf8())
+                    .sum::<usize>();
+                let old_end = previous.len() - suffix;
+                let new_end = text.len() - suffix;
+                if prefix >= span.end {
+                    Some(span.clone())
+                } else if old_end <= span.start {
+                    Some((span.start - old_end + new_end)..(span.end - old_end + new_end))
+                } else {
+                    None
+                }
+            });
+            if let Some(span) = rebased {
+                let mut base = text.to_owned();
+                base.replace_range(span.clone(), "");
+                self.base = Some((base, span.start..span.start));
             } else {
-                selection
-            };
-            self.base = Some((text.to_owned(), anchor));
+                if self.speech_span.is_some() {
+                    self.claimed_words = self.latest_heard.split_whitespace().count();
+                }
+                let anchor = if !focused && cursor == 0 && !text.is_empty() {
+                    text.len()..text.len()
+                } else {
+                    selection
+                };
+                self.base = Some((text.to_owned(), anchor));
+            }
         }
         let (base, anchor) = self
             .base
             .as_ref()
             .expect("dictation anchor was initialized");
-        let (next, caret) = if heard.trim().is_empty() {
+        let remaining = unclaimed_words(heard, self.claimed_words);
+        let (next, caret) = if remaining.trim().is_empty() {
             (base.clone(), anchor.end)
         } else {
-            insert(heard, base, anchor.clone())
+            insert(remaining, base, anchor.clone())
         };
         self.written = Some(next.clone());
+        self.speech_span = Some((
+            next.clone(),
+            if remaining.trim().is_empty() {
+                caret..caret
+            } else {
+                anchor.start..caret
+            },
+        ));
+        self.latest_heard = heard.to_owned();
         (next, caret..caret)
     }
     pub fn commit_snapshot(
@@ -405,6 +466,22 @@ impl Insertion {
         }
         *self = Self::default();
     }
+}
+
+/// Keep the user's edited prefix even if recognition later corrects its spelling or punctuation.
+fn unclaimed_words(text: &str, claimed: usize) -> &str {
+    let mut words = 0;
+    let mut space = true;
+    for (at, c) in text.char_indices() {
+        if !c.is_whitespace() && space {
+            if words == claimed {
+                return &text[at..];
+            }
+            words += 1;
+        }
+        space = c.is_whitespace();
+    }
+    ""
 }
 
 /// What the chat on screen offers dictation to listen for: the same as the phone's
@@ -698,6 +775,55 @@ mod tests {
     }
 
     #[test]
+    fn stopping_deadline_keeps_latest_volatile_text_and_ignores_late_results() {
+        let (machine, effects) = run(vec![
+            Event::Start,
+            Event::Ready,
+            heard("first"),
+            Event::Stop,
+            Event::Stop,
+            heard("first and last"),
+            Event::FinishTimedOut,
+            finished("late duplicate"),
+            Event::FinishTimedOut,
+        ]);
+        assert_eq!(machine.phase(), &Phase::Idle);
+        assert_eq!(
+            effects
+                .iter()
+                .filter(|e| **e == Effect::FinishEngine)
+                .count(),
+            1
+        );
+        assert_eq!(
+            effects
+                .iter()
+                .filter(|e| matches!(e, Effect::Deliver(_)))
+                .collect::<Vec<_>>(),
+            vec![&Effect::Deliver("first and last".into())]
+        );
+        assert_eq!(&effects[7..], &[Effect::None, Effect::None]);
+        let (machine, effects) = run(vec![Event::Start, Event::Ready, Event::FinishTimedOut]);
+        assert!(matches!(machine.phase(), Phase::Listening { .. }));
+        assert_eq!(effects.last(), Some(&Effect::None));
+    }
+
+    #[test]
+    fn an_empty_final_keeps_a_nonempty_hypothesis() {
+        let (_, effects) = run(vec![
+            Event::Start,
+            Event::Ready,
+            heard("pending words"),
+            Event::Stop,
+            finished(""),
+        ]);
+        assert_eq!(
+            effects.last(),
+            Some(&Effect::Deliver("pending words".into()))
+        );
+    }
+
+    #[test]
     fn the_phases_carry_the_text_heard_so_far() {
         let mut machine = Machine::default();
         machine.handle(Event::Start);
@@ -940,16 +1066,65 @@ mod tests {
     }
 
     #[test]
-    fn typing_during_dictation_is_kept_as_the_new_base() {
+    fn typing_beside_dictation_is_kept_while_cumulative_speech_replaces_in_place() {
         let mut field = input("", 0);
         let mut insertion = Insertion::default();
         insertion.show(&mut field, "hello", true);
         field.replace_lines(None, "!");
         assert_eq!(field.text, "hello!");
-        insertion.show(&mut field, "world", true);
-        assert_eq!(field.text, "hello! world");
+        insertion.show(&mut field, "hello world", true);
+        assert_eq!(field.text, "hello world!");
         insertion.discard(&mut field);
-        assert_eq!(field.text, "hello!");
+        assert_eq!(field.text, "!");
+    }
+
+    #[test]
+    fn editing_speech_claims_its_prefix_and_only_new_words_remain_live() {
+        let mut insertion = Insertion::default();
+        insertion.show_snapshot("", 0..0, 0, "héllo world", true);
+        insertion.user_edited();
+        let (text, at) = insertion.show_snapshot("my edit", 7..7, 7, "hello world again", true);
+        assert_eq!(text, "my edit again");
+        let (text, at) = insertion.show_snapshot(
+            &text,
+            at.clone(),
+            at.end,
+            "hello world again tomorrow",
+            true,
+        );
+        assert_eq!(text, "my edit again tomorrow");
+        assert_eq!(
+            insertion
+                .commit_snapshot(
+                    &text,
+                    at.clone(),
+                    at.end,
+                    "hello world again tomorrow",
+                    true
+                )
+                .0,
+            text
+        );
+    }
+
+    #[test]
+    fn final_corrections_preserve_typing_on_either_side_of_the_speech_span() {
+        for (edited, expected) in [
+            ("typed héllo plus typing", "typed héllo world. plus typing"),
+            ("🦀 typed héllo", "🦀 typed héllo world."),
+        ] {
+            let mut insertion = Insertion::default();
+            insertion.show_snapshot("typed ", 6..6, 6, "héllo", true);
+            insertion.user_edited();
+            let (text, _) = insertion.commit_snapshot(
+                edited,
+                edited.len()..edited.len(),
+                edited.len(),
+                "héllo world.",
+                true,
+            );
+            assert_eq!(text, expected);
+        }
     }
 
     #[test]

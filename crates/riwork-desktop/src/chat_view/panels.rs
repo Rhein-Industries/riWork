@@ -16,7 +16,7 @@ use crate::{
         Question,
     },
     controls::{self, Button},
-    dictation::{self, Phase},
+    dictation::Phase,
     icons::{self, Icon},
     text_input, theme,
     tooltip::{self, Look as TipLook},
@@ -2733,7 +2733,8 @@ impl ChatView {
     /// is something to send, taking no click or key meanwhile.
     fn composer_send(&self, look: Look, side: gpui::Pixels, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
-        let empty = self.draft_empty(cx) || self.pending_submission.is_some();
+        let empty = (self.draft_empty(cx) && !self.dictation.phase().is_active())
+            || self.pending_submission.is_some();
         let tip = if self.running() {
             "Send · ⏎ steers the turn · ⇧⏎ new line · ⌘. interrupts"
         } else {
@@ -2860,24 +2861,48 @@ impl ChatView {
         let field = div()
             .flex_1()
             .min_w_0()
+            .relative()
             .debug_selector(|| "composer-field".into())
             .child(
                 self.composer_editor(look, glyph_inset, window, cx)
                     .test_support(),
+            )
+            .children(
+                composer::speech_status(self.dictation.phase()).map(|status| {
+                    div()
+                        .id("chat-dictation-status")
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .max_w(relative(0.85))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .text_size(ui_text::text(10.0))
+                        .text_color(rgb(colors.working))
+                        .bg(rgb(colors.panel))
+                        .px(ui_text::space(3.0))
+                        .role(gpui::Role::Status)
+                        .aria_label(status.clone())
+                        .child(status)
+                        .test_support()
+                }),
             );
         // Send and Stop share one slot, so neither moves the controls: Stop while a turn runs
         // and there is nothing to send, Send (which steers the turn, as ⏎ does) once there is.
         // ⌘. interrupts either way.
-        let action =
-            if self.running() && (self.draft_empty(cx) || self.pending_submission.is_some()) {
-                div()
-                    .debug_selector(|| "composer-stop".into())
-                    .child(self.composer_stop(look, side, cx))
-            } else {
-                div()
-                    .debug_selector(|| "composer-send".into())
-                    .child(self.composer_send(look, side, cx))
-            };
+        let action = if self.running()
+            && !self.dictation.phase().is_active()
+            && (self.draft_empty(cx) || self.pending_submission.is_some())
+        {
+            div()
+                .debug_selector(|| "composer-stop".into())
+                .child(self.composer_stop(look, side, cx))
+        } else {
+            div()
+                .debug_selector(|| "composer-send".into())
+                .child(self.composer_send(look, side, cx))
+        };
         let actions = div()
             .flex()
             .flex_none()
@@ -2975,19 +3000,19 @@ impl ChatView {
         .child(content)
         .child(self.suggestion_anchor())
         // Saved submissions to review, below the box.
-        .children((!self.submissions.is_empty()).then(|| {
-            div()
-                .id("chat-submission-reviews")
-                .max_h(ui_text::space(280.0))
-                .overflow_y_scroll()
-                .child(self.submission_cards(look, cx))
-        }))
-        .children(composer::status(self.dictation.phase(), mic).map(|status| {
-            div()
-                .text_size(ui_text::text(10.0))
-                .text_color(rgb(colors.text))
-                .child(status)
-        }));
+        .children(
+            self.submissions
+                .iter()
+                .any(|s| self.dictation.show_submission(s))
+                .then(|| {
+                    div()
+                        .id("chat-submission-reviews")
+                        .max_h(ui_text::space(280.0))
+                        .overflow_y_scroll()
+                        .child(self.submission_cards(look, cx))
+                }),
+        )
+        .test_support();
         // The pane's width as laid out, for the next frame's `layout`. It does not depend on
         // the layout, so it settles after one redraw.
         let measured = self.composer_width.clone();
@@ -3040,14 +3065,9 @@ impl ChatView {
     fn mic_button(&self, look: Look, side: gpui::Pixels, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
         let phase = self.dictation.phase();
-        let key = dictation::SHORTCUT_LABEL;
-        let tooltip = match phase {
-            Phase::Listening { .. } => format!("Stop dictating · {key} · ⎋ cancels"),
-            Phase::Preparing { note: Some(note) } => note.clone(),
-            Phase::Preparing { .. } | Phase::Finishing { .. } => "Stop dictating".to_owned(),
-            Phase::Failed(_) => format!("Dictate again · {key}"),
-            Phase::Idle => format!("Dictate · {key}"),
-        };
+        let tooltip = composer::mic_tooltip(phase);
+        let accessibility = composer::speech_status(phase)
+            .map_or_else(|| tooltip.clone(), |status| format!("{status}. {tooltip}"));
         let busy = matches!(phase, Phase::Preparing { .. } | Phase::Finishing { .. });
         let listening = matches!(phase, Phase::Listening { .. });
         let mic = if look.native || look.hermes() {
@@ -3080,6 +3100,7 @@ impl ChatView {
                 look,
             )
         }
+        .map(|mic| mic.accessibility_label(accessibility))
         .when(listening, |mic| {
             mic.bg(rgb(look.tint(colors.working, 0.18)))
         })
@@ -3520,6 +3541,191 @@ mod tests {
             (f32::from(field.size.width), frames)
         })
         .unwrap()
+    }
+
+    #[gpui::test]
+    fn dictation_composer_bounds_hold_through_start_streaming_and_stop(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::dictation::Event;
+        for (face, design) in [
+            (ui_text::Face::System, theme::ThemeChoice::Native),
+            (ui_text::Face::Hermes, theme::ThemeChoice::Hermes),
+            (ui_text::Face::Menlo, theme::ThemeChoice::RiWork),
+        ] {
+            let previous = ui_text::set_for_tests(1.0, face);
+            for width in [300., 760.] {
+                for draft in ["typed ", "typed\nseveral\nlines "] {
+                    let (handle, view, _) = composer_fixture(cx, width, design, ChatState::Idle);
+                    set_draft(cx, handle, &view, draft);
+                    let bounds = |cx: &mut gpui::TestAppContext| {
+                        cx.update_window(handle.into(), |_, window, _| {
+                            [
+                                "chat-composer-bar",
+                                "chat-composer-shell",
+                                "chat-dictate",
+                                "chat-send",
+                            ]
+                            .map(|id| window.find(id).bounds())
+                        })
+                        .unwrap()
+                    };
+                    let before = bounds(cx);
+                    let long = "streaming words that wrap on narrow panes\n".repeat(30);
+                    for event in [
+                        Event::Start,
+                        Event::Note("Preparing the speech model…".into()),
+                        Event::Ready,
+                        Event::Heard("first words".into()),
+                        Event::Heard(long.clone()),
+                        Event::Stop,
+                        Event::Heard(format!("{long}last words.")),
+                    ] {
+                        cx.update_window(handle.into(), |_, window, cx| {
+                            view.update(cx, |v, cx| v.dictation_fixture(event.clone(), window, cx));
+                        })
+                        .unwrap();
+                        draw_hermes(cx, handle);
+                        assert_eq!(bounds(cx), before, "{design:?} {width} {draft:?} {event:?}");
+                        cx.update_window(handle.into(), |_, window, cx| {
+                            let status =
+                                composer::speech_status(view.read(cx).dictation.phase()).unwrap();
+                            assert_eq!(
+                                window.find("chat-dictation-status").label(),
+                                Some(status.as_str())
+                            );
+                            assert!(
+                                window
+                                    .find("chat-dictate")
+                                    .label()
+                                    .unwrap()
+                                    .contains(&status)
+                            );
+                        })
+                        .unwrap();
+                    }
+                    cx.update_window(handle.into(), |_, window, cx| {
+                        view.update(cx, |v, cx| {
+                            v.dictation_fixture(
+                                Event::Finished(format!("{long}last words.")),
+                                window,
+                                cx,
+                            )
+                        });
+                    })
+                    .unwrap();
+                    // Finalisation changes no bounds in the stop turn. Normal growth resumes next frame.
+                    assert_eq!(bounds(cx), before);
+                    draw_hermes(cx, handle);
+                    assert!(
+                        view.read_with(cx, |v, cx| v.composer_text(cx).ends_with("last words."))
+                    );
+                }
+            }
+            ui_text::set_for_tests(previous.0, previous.1);
+        }
+    }
+
+    #[gpui::test]
+    fn dictation_bounds_after_escape_send_receipt_and_programmatic_clear(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::dictation::Event;
+        for gesture in ["escape", "enter", "cmd-enter", "send"] {
+            let (handle, view, recording) =
+                composer_fixture(cx, 520., theme::ThemeChoice::Native, ChatState::Idle);
+            let field_bounds = |cx: &mut gpui::TestAppContext| {
+                cx.update_window(handle.into(), |_, window, _| {
+                    (
+                        window.find("chat-composer-bar").bounds(),
+                        window.find("chat-composer-shell").bounds(),
+                    )
+                })
+                .unwrap()
+            };
+            let empty = field_bounds(cx);
+            set_draft(cx, handle, &view, "several\ntyped\nlines ");
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |v, cx| {
+                    v.focus(window, cx);
+                    v.dictation_fixture(Event::Start, window, cx);
+                    v.dictation_fixture(Event::Ready, window, cx);
+                });
+            })
+            .unwrap();
+            draw_hermes(cx, handle);
+            let before = field_bounds(cx);
+            let words = "many streaming words\n".repeat(20);
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |v, cx| {
+                    v.dictation_fixture(Event::Heard(words.clone()), window, cx)
+                });
+            })
+            .unwrap();
+            draw_hermes(cx, handle);
+            assert_eq!(field_bounds(cx), before);
+            cx.update_window(handle.into(), |_, window, cx| {
+                if gesture == "send" {
+                    window.click("chat-send", cx);
+                } else {
+                    window.press(gesture, cx);
+                }
+            })
+            .unwrap();
+            draw_hermes(cx, handle);
+            assert_eq!(
+                field_bounds(cx),
+                before,
+                "{gesture}: stop/send gesture moved the field"
+            );
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |v, cx| {
+                    v.dictation_fixture(Event::Heard(words.clone()), window, cx);
+                    v.dictation_fixture(Event::Finished(words.clone()), window, cx);
+                });
+            })
+            .unwrap();
+            assert_eq!(
+                field_bounds(cx),
+                before,
+                "{gesture}: terminal event moved the field synchronously"
+            );
+            cx.run_until_parked();
+            if gesture != "escape" {
+                let super::super::feed::Delivery::Submission { id, command } =
+                    recording.try_recv().unwrap()
+                else {
+                    panic!("send expected");
+                };
+                cx.update_window(handle.into(), |_, window, cx| {
+                    view.update(cx, |v, cx| {
+                        v.submission_receipt(id, command, Ok(()), window, cx)
+                    });
+                })
+                .unwrap();
+            } else {
+                assert!(recording.try_recv().is_err());
+                cx.update_window(handle.into(), |_, window, cx| {
+                    view.update(cx, |v, cx| v.set_composer_value("", window, cx));
+                })
+                .unwrap();
+            }
+            draw_hermes(cx, handle);
+            assert_eq!(
+                field_bounds(cx),
+                empty,
+                "{gesture}: empty composer kept the speech viewport"
+            );
+            cx.update_window(handle.into(), |_, window, cx| window.input("x", cx))
+                .unwrap();
+            draw_hermes(cx, handle);
+            assert_eq!(
+                field_bounds(cx).1.size.height,
+                empty.1.size.height,
+                "{gesture}: later typing snapped the height"
+            );
+            assert!(recording.try_recv().is_err());
+        }
     }
 
     #[gpui::test]
