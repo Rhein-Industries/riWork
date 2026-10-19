@@ -901,11 +901,12 @@ impl GlobalWindow {
         let work = cx.background_executor().spawn(async move {
             let activity = tracker.sample_states(&shells, activity::unix_now());
             for completion in tracker.take_completions() {
-                if let Err(error) = notifications::record_completion(
+                if let Err(error) = notifications::record_completion_outcome(
                     &home,
                     &completion.shell_id,
                     &completion.event_id,
                     HarnessKind::Codex,
+                    completion.outcome,
                 ) {
                     eprintln!("riwork notifications: {error}");
                 }
