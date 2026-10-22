@@ -127,7 +127,10 @@ import RiWorkCore
     func testScrolledUpNothingMovesWhileOutputArrivesAndThePillCountsAndBringsTheReaderBack() async throws {
         try await withScreen(ScriptedScrollback(history: 3000)) { s in
             let view = try XCTUnwrap(surface(s))
-            await drag(view, to: view.geometry.maxOffset - 400, in: s)
+            // Up, but less than a screen (`StickyBottom.far`). The pane is under 400 points where the software keyboard is up over it:
+            // GameController reports a keyboard, the shell takes the keyboard, and a simulator with no hardware keyboard connected
+            // shows its own.
+            await drag(view, to: view.geometry.maxOffset - min(400, view.geometry.viewportHeight / 2), in: s)
             XCTAssertFalse(s.model.scrollFollow.following)
             XCTAssertNil(s.model.scrollFollow.pill, "nothing new yet, and not far away")
             let before = offset(view)
