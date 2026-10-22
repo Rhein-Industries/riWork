@@ -1410,17 +1410,25 @@ pub fn render_panel<V: Render + 'static>(
                     })),
             )
             .children(session_controls)
-            .child(
+            .child(rows_box(
                 div()
                     .id(format!("{name}-rows"))
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
+                    .size_full()
                     .overflow_y_scroll()
                     .children(rows),
-            );
+            ));
 
     finish_panel(panel, kind, &data, sort_selector_bounds, on_action, cx)
+}
+
+/// A panel's list in the room the panel leaves it, laid out at that size
+/// (`pane_layout`): the room never depends on the rows, and the rows are most of a panel.
+fn rows_box(rows: impl IntoElement) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .min_h_0()
+        .child(crate::pane_layout::laid_out_alone(rows))
 }
 
 /// What every panel ends with: the selected task's detail under the Tasks list, and the
@@ -1680,19 +1688,17 @@ fn native_panel<V: Render + 'static>(
         ))
         .child(search)
         .children(session_controls)
-        .child(
+        .child(rows_box(
             div()
                 .id(format!("{name}-rows"))
-                .flex_1()
-                .min_w_0()
-                .min_h_0()
+                .size_full()
                 .flex()
                 .flex_col()
                 .gap(ui_text::space(1.0))
                 .pb(ui_text::space(controls::LIST_MARGIN))
                 .overflow_y_scroll()
                 .children(rows),
-        );
+        ));
     finish_panel(panel, kind, data, sort_selector_bounds, on_action, cx)
 }
 
