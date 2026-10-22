@@ -1388,7 +1388,10 @@ import RiWorkCore
             XCTAssertGreaterThanOrEqual(fieldFrame.maxY, keyboardTop - 16, "\(look): and close to it")
             let scroll = try XCTUnwrap(transcriptScroll(rig))
             try XCTUnwrap(rig.layout.actions["transcript-accessibility-previous"])()
-            scroll.setContentOffset(CGPoint(x: 0, y: max(20, bottomOffset(scroll) - 600)), animated: false)
+            // Latest is offered with nothing new once the reader is more than a screen of what is seen from the bottom
+            // (`StickyBottom.far`): 600 points is that on a phone with the keyboard up, not on an iPad, which sees about 700.
+            let away = max(600, seenTranscript(scroll, rig).height + 200)
+            scroll.setContentOffset(CGPoint(x: 0, y: max(20, bottomOffset(scroll) - away)), animated: false)
             try await Task.sleep(for: .milliseconds(150))
             await eventually("Latest shows while reading") { rig.layout.visible["latest"] == true }
             try await Task.sleep(for: .milliseconds(100))
