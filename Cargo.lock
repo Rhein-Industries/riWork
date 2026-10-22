@@ -6049,6 +6049,7 @@ dependencies = [
  "ignore",
  "image",
  "libc",
+ "memchr",
  "riwork-core",
  "security-framework",
  "serde",

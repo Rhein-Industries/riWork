@@ -511,10 +511,10 @@ pub fn notice_tail(dir: &Path, max: u64) -> super::model::Transcript {
     transcript
 }
 
+/// Whether `needle` is in `haystack`. Every line of a whole log can pass through here, so
+/// this is a vectorized substring search, not a comparison at every offset.
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|window| window == needle)
+    memchr::memmem::find(haystack, needle).is_some()
 }
 
 // Snapshot v1 reads one immutable prefix without contacting or upgrading the host.
@@ -1261,6 +1261,27 @@ mod tests {
         assert_eq!(chat_dir(home, &id), Some(home.join("chats").join(&id)));
         for bad in ["", "..", "../x", &id.to_uppercase(), &id[..8], "a/b"] {
             assert_eq!(chat_dir(home, bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_marker_is_found_wherever_it_is_in_a_line() {
+        let marker = br#""type":"notice""#;
+        for (line, found) in [
+            (&br#""type":"notice""#[..], true),
+            (br#"{"body":{"type":"notice","text":"x"}}"#, true),
+            (br#"{"text":"x","type":"notice""#, true),
+            (br#"{"body":{"type":"notices"}}"#, false),
+            (br#"{"text":"\"type\":\"notice\""}"#, false),
+            (br#""type":"notic"#, false),
+            (b"", false),
+        ] {
+            assert_eq!(
+                contains(line, marker),
+                found,
+                "{}",
+                String::from_utf8_lossy(line)
+            );
         }
     }
 }

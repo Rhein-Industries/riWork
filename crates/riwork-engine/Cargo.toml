@@ -25,3 +25,5 @@ security-framework = "3"
 # Already in the lockfile (globwalk); `.gitignore` rules for the composer's file suggestions.
 ignore = "0.4"
 ureq = "3"
+# Already in the lockfile (serde_json, ignore); finds marker keys in long chat log lines.
+memchr = "2"
