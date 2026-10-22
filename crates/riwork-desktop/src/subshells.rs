@@ -13,8 +13,11 @@ use notify::{RecursiveMode, Watcher};
 use riwork_engine::subshells::{PollState, ShellCard, bounded_output};
 use std::{
     collections::{BTreeMap, HashSet},
-    path::Path,
-    sync::{LazyLock, Mutex},
+    path::{Path, PathBuf},
+    sync::{
+        Arc, LazyLock, Mutex, PoisonError, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Instant,
 };
 
@@ -194,7 +197,7 @@ pub(crate) struct WorkerState {
     awaiting: BTreeMap<(String, u64), String>,
     /// Notes that did not reach a host, until one says them: checks go on meanwhile.
     undelivered: HashSet<Said>,
-    watcher: Option<notify::RecommendedWatcher>,
+    watcher: Option<WatchListener>,
     watch_error: Option<String>,
     fingerprint: Vec<Option<(std::time::SystemTime, u64)>>,
     paused: bool,
@@ -226,6 +229,104 @@ fn relevant(path: &Path, home: &Path) -> bool {
     path == home.join("sessions.json")
         || path == home.join("orchestrator-wakes.json")
         || path.starts_with(home.join("agent-activity"))
+}
+
+/// What a window hears from the watch: `None` when something it samples changed, or the
+/// watcher's error.
+type Wake = Option<String>;
+
+/// The windows listening to one home's watch, each with its own way to be woken.
+type Listeners = Mutex<Vec<(u64, async_channel::Sender<Wake>)>>;
+
+/// The watch on a state home, shared by every project window of the process. Each window
+/// used to watch the home itself, so every write under it (chat logs while they stream,
+/// preview heartbeats) reached one FSEvents stream per window, and each relevant write
+/// invalidated the shared session sample once per window: windows that sampled between
+/// those invalidations took it from tmux again, up to once each. The one watcher now
+/// invalidates once and then wakes every window, which shares the sample taken after it.
+struct HomeWatch {
+    _watcher: notify::RecommendedWatcher,
+    listeners: Arc<Listeners>,
+}
+
+static HOME_WATCHES: LazyLock<Mutex<BTreeMap<PathBuf, Weak<HomeWatch>>>> =
+    LazyLock::new(Mutex::default);
+
+/// A window's place among a home watch's listeners. Dropping it leaves; the watch stops
+/// with its last listener.
+pub(crate) struct WatchListener {
+    watch: Arc<HomeWatch>,
+    id: u64,
+}
+
+impl Drop for WatchListener {
+    fn drop(&mut self) {
+        self.watch
+            .listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(id, _)| *id != self.id);
+    }
+}
+
+/// Listen to `home`'s watch, starting it when no window has. `changed` runs once for each
+/// relevant change or error, before any window is woken.
+fn listen_to_home(
+    home: &Path,
+    changed: impl Fn() + Send + 'static,
+    wake: async_channel::Sender<Wake>,
+) -> notify::Result<WatchListener> {
+    static NEXT_LISTENER: AtomicU64 = AtomicU64::new(0);
+    let mut watches = HOME_WATCHES.lock().unwrap_or_else(PoisonError::into_inner);
+    let watch = match watches.get(home).and_then(Weak::upgrade) {
+        Some(watch) => watch,
+        None => {
+            let listeners: Arc<Listeners> = Arc::default();
+            let woken = listeners.clone();
+            let filter_home = home.to_path_buf();
+            let mut watcher =
+                notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                    deliver(&event, &filter_home, &changed, &woken)
+                })?;
+            watcher.watch(home, RecursiveMode::Recursive)?;
+            let watch = Arc::new(HomeWatch {
+                _watcher: watcher,
+                listeners,
+            });
+            watches.insert(home.to_path_buf(), Arc::downgrade(&watch));
+            watch
+        }
+    };
+    let id = NEXT_LISTENER.fetch_add(1, Ordering::Relaxed);
+    watch
+        .listeners
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push((id, wake));
+    Ok(WatchListener { watch, id })
+}
+
+/// One watcher event: when it touched what the windows sample, or failed, `changed` runs
+/// once and every listener is woken. A window with a wake already queued keeps that one.
+fn deliver(
+    event: &notify::Result<notify::Event>,
+    home: &Path,
+    changed: &dyn Fn(),
+    listeners: &Listeners,
+) {
+    let wake = match event {
+        Err(error) => Some(error.to_string()),
+        Ok(event) if event.paths.iter().any(|path| relevant(path, home)) => None,
+        Ok(_) => return,
+    };
+    changed();
+    for (_, window) in listeners
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+    {
+        let _ = window.try_send(wake.clone());
+    }
 }
 
 fn fingerprint(home: &Path) -> Vec<Option<(std::time::SystemTime, u64)>> {
@@ -374,24 +475,10 @@ fn dispatch(
 impl Workspace {
     pub(crate) fn start_worker_watch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let home = self.sessions.state_home().to_path_buf();
-        let filter_home = home.clone();
+        let sessions = self.sessions.clone();
         let (tx, rx) = async_channel::bounded(1);
-        let watcher =
-            notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
-                Err(error) => {
-                    let _ = tx.try_send(Some(error.to_string()));
-                }
-                Ok(event) if event.paths.iter().any(|path| relevant(path, &filter_home)) => {
-                    let _ = tx.try_send(None);
-                }
-                _ => {}
-            })
-            .and_then(|mut watcher| {
-                watcher.watch(&home, RecursiveMode::Recursive)?;
-                Ok(watcher)
-            });
-        match watcher {
-            Ok(watcher) => self.subshells.watcher = Some(watcher),
+        match listen_to_home(&home, move || sessions.invalidate_sample(), tx) {
+            Ok(listener) => self.subshells.watcher = Some(listener),
             Err(error) => {
                 self.subshells.watch_error = Some(format!("Event watcher unavailable: {error}"))
             }
@@ -405,7 +492,8 @@ impl Workspace {
                                 "Event watcher failed: {error}; discovery checks every 2s"
                             ));
                         }
-                        workspace.request_worker_refresh(window, cx)
+                        // The watch invalidated the sample before it woke any window.
+                        workspace.refresh_workers(window, cx)
                     })
                     .is_err()
                 {
@@ -417,8 +505,13 @@ impl Workspace {
     }
 
     pub(crate) fn request_worker_refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.subshells.poll.request();
         self.sessions.invalidate_sample();
+        self.refresh_workers(window, cx);
+    }
+
+    /// Look at the sessions again now, from a sample no older than the last invalidation.
+    fn refresh_workers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.subshells.poll.request();
         self.refresh_sessions(window, cx);
     }
 
@@ -1229,6 +1322,88 @@ mod tests {
         assert!(state.retrying(), "the exit is still to be said");
         state.settle(&exited, &[]);
         assert!(!state.retrying());
+    }
+
+    /// However many windows listen, a change invalidates the sample once and wakes each of
+    /// them; what no window samples wakes nobody.
+    #[test]
+    fn a_change_invalidates_once_and_wakes_every_window() {
+        use std::sync::atomic::AtomicUsize;
+        let home = Path::new("/synthetic/riwork");
+        let listeners: Listeners = Mutex::default();
+        let windows: Vec<_> = (0..3)
+            .map(|id| {
+                let (tx, rx) = async_channel::bounded(1);
+                listeners.lock().unwrap().push((id, tx));
+                rx
+            })
+            .collect();
+        let invalidated = AtomicUsize::new(0);
+        let changed = || {
+            invalidated.fetch_add(1, Ordering::SeqCst);
+        };
+        let send = |event: notify::Result<notify::Event>| {
+            deliver(&event, home, &changed, &listeners);
+            invalidated.load(Ordering::SeqCst)
+        };
+        let write = |path: &str| Ok(notify::Event::default().add_path(home.join(path)));
+
+        assert_eq!(send(write("chats/id/events.jsonl")), 0);
+        assert!(windows.iter().all(|window| window.is_empty()));
+
+        assert_eq!(send(write("sessions.json")), 1, "once, not per window");
+        for window in &windows {
+            assert_eq!(window.try_recv(), Ok(None));
+        }
+
+        // A burst before the windows look: each keeps one wake, and the sample is
+        // invalidated for each change.
+        send(write("agent-activity/a"));
+        assert_eq!(send(write("agent-activity/b")), 3);
+        assert!(windows.iter().all(|window| window.len() == 1));
+        for window in &windows {
+            assert_eq!(window.try_recv(), Ok(None));
+        }
+
+        assert_eq!(send(Err(notify::Error::generic("stream lost"))), 4);
+        for window in &windows {
+            assert_eq!(window.try_recv(), Ok(Some("stream lost".to_owned())));
+        }
+    }
+
+    /// The windows of a home share one watcher, which wakes each of them and stops when the
+    /// last one leaves.
+    #[test]
+    fn the_windows_of_a_home_share_one_watcher() {
+        let home = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("riwork-home-watch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let listen = || {
+            let (tx, rx) = async_channel::bounded(1);
+            (listen_to_home(&home, || {}, tx).unwrap(), rx)
+        };
+        let (first, first_wakes) = listen();
+        let (second, second_wakes) = listen();
+        assert!(Arc::ptr_eq(&first.watch, &second.watch));
+        let sessions = Ok(notify::Event::default().add_path(home.join("sessions.json")));
+        deliver(&sessions, &home, &|| {}, &first.watch.listeners);
+        assert_eq!(first_wakes.try_recv(), Ok(None));
+        assert_eq!(second_wakes.try_recv(), Ok(None));
+
+        drop(first);
+        deliver(&sessions, &home, &|| {}, &second.watch.listeners);
+        assert_eq!(second_wakes.try_recv(), Ok(None));
+        assert!(first_wakes.is_empty(), "a window that left is not woken");
+        assert_eq!(second.watch.listeners.lock().unwrap().len(), 1);
+        let watch = Arc::downgrade(&second.watch);
+        drop(second);
+        assert!(watch.upgrade().is_none(), "the last window stops the watch");
+        let (again, _) = listen();
+        assert!(!Weak::ptr_eq(&watch, &Arc::downgrade(&again.watch)));
+        drop(again);
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]
