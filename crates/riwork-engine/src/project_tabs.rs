@@ -303,6 +303,16 @@ impl TabStore {
         })
     }
     fn transact<T>(&self, f: impl FnOnce(&mut State) -> Result<T, String>) -> Result<T, String> {
+        self.transact_steps(|steps| steps.step(f))
+    }
+    /// Several `transact`s under one lock and one read: each step counts a revision
+    /// when it changes what is durable, as its own transaction would, and the file
+    /// is written once, after the last step. A poll's reconcile, prune and snapshot
+    /// would otherwise each lock, read, parse and compare the whole list again.
+    fn transact_steps<T>(
+        &self,
+        f: impl FnOnce(&mut Steps) -> Result<T, String>,
+    ) -> Result<T, String> {
         let dir = self.home.join("project-tabs");
         crate::paths::create_private_dir(&dir).map_err(|e| e.to_string())?;
         let lock = OpenOptions::new()
@@ -342,15 +352,17 @@ impl TabStore {
             .collect::<Vec<_>>();
         legacy.sort();
         state.deletion_order.extend(legacy);
-        let answer = f(&mut state)?;
-        if exists && before == durable_bytes(&state)? {
+        let mut steps = Steps {
+            state,
+            before,
+            exists,
+            changed: false,
+        };
+        let answer = f(&mut steps)?;
+        if !steps.changed {
             return Ok(answer);
         }
-        state.revision = state
-            .revision
-            .checked_add(1)
-            .ok_or("tab revision exhausted")?;
-        let data = serde_json::to_vec(&state).map_err(|e| e.to_string())?;
+        let data = serde_json::to_vec(&steps.state).map_err(|e| e.to_string())?;
         let tmp = dir.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
         let result = (|| {
             let mut file = OpenOptions::new()
@@ -441,8 +453,28 @@ impl TabStore {
     /// stale snapshot cannot delete entries; explicit deletion calls `forget`.
     /// Complete host/registry inventory: prune vanished sessions and bound stopped history.
     pub fn reconcile_inventory(&self, sessions: &[Session]) -> Result<Vec<Entry>, String> {
-        self.reconcile(sessions)?;
-        self.transact(|state| {
+        self.transact_steps(|steps| self.reconcile_inventory_steps(steps, sessions))
+    }
+    /// `reconcile_inventory` then `snapshot_for`, as one transaction: what a
+    /// window's poll does.
+    fn refresh(&self, sessions: &[Session]) -> Result<Snapshot, String> {
+        let snapshot = self.transact_steps(|steps| {
+            self.reconcile_inventory_steps(steps, sessions)?;
+            Self::snapshot_steps(steps)
+        })?;
+        Ok(with_statuses(snapshot, sessions))
+    }
+    fn reconcile_inventory_steps(
+        &self,
+        steps: &mut Steps,
+        sessions: &[Session],
+    ) -> Result<Vec<Entry>, String> {
+        Self::reconcile_step(steps, sessions, false)?;
+        self.prune_step(steps, sessions)?;
+        Self::reconcile_step(steps, sessions, false)
+    }
+    fn prune_step(&self, steps: &mut Steps, sessions: &[Session]) -> Result<(), String> {
+        steps.step(|state| {
             // Pruning keeps every key the inventory lists, so the metadata (every
             // chat's info and the whole registry) is read only when a tab is not
             // listed. Polls find none almost always.
@@ -504,8 +536,7 @@ impl TabStore {
             state.retired.extend(expired.iter().cloned());
             state.entries.retain(|e| !expired.contains(&e.key));
             Ok(())
-        })?;
-        self.reconcile(sessions)
+        })
     }
     /// Creation is explicit user intent, including when the first registration
     /// itself initializes a store and migration seeds the new metadata as hidden.
@@ -521,7 +552,14 @@ impl TabStore {
         sessions: &[Session],
         created: bool,
     ) -> Result<Vec<Entry>, String> {
-        self.transact(|state| {
+        self.transact_steps(|steps| Self::reconcile_step(steps, sessions, created))
+    }
+    fn reconcile_step(
+        steps: &mut Steps,
+        sessions: &[Session],
+        created: bool,
+    ) -> Result<Vec<Entry>, String> {
+        steps.step(|state| {
             let dead_shells = sessions
                 .iter()
                 .filter(|s| s.kind == Kind::Shell && s.status == Status::Stopped)
@@ -641,8 +679,11 @@ impl TabStore {
         })
     }
     pub fn snapshot(&self) -> Result<Snapshot, String> {
-        self.list()?;
-        self.transact(|state| {
+        self.transact_steps(Self::snapshot_steps)
+    }
+    fn snapshot_steps(steps: &mut Steps) -> Result<Snapshot, String> {
+        steps.step(Self::list_step)?;
+        steps.step(|state| {
             Ok(Snapshot {
                 epoch: state.epoch.clone(),
                 revision: state.revision,
@@ -680,11 +721,12 @@ impl TabStore {
         })
     }
     pub fn list(&self) -> Result<Vec<Entry>, String> {
-        self.transact(|state| {
-            bound_parent_depth(state);
-            normalize(state);
-            Ok(tree(state))
-        })
+        self.transact(Self::list_step)
+    }
+    fn list_step(state: &mut State) -> Result<Vec<Entry>, String> {
+        bound_parent_depth(state);
+        normalize(state);
+        Ok(tree(state))
     }
     pub fn update(&self, update: &Update) -> Result<Vec<Entry>, String> {
         update.validate()?;
@@ -794,6 +836,32 @@ fn normalize(state: &mut State) {
         e.child_count = 0;
     }
 }
+/// The list as `transact_steps` holds it between steps.
+struct Steps {
+    state: State,
+    /// `durable_bytes` of `state` as the next step finds it.
+    before: Vec<u8>,
+    exists: bool,
+    changed: bool,
+}
+impl Steps {
+    fn step<T>(&mut self, f: impl FnOnce(&mut State) -> Result<T, String>) -> Result<T, String> {
+        let answer = f(&mut self.state)?;
+        let after = durable_bytes(&self.state)?;
+        if self.exists && self.before == after {
+            return Ok(answer);
+        }
+        self.state.revision = self
+            .state
+            .revision
+            .checked_add(1)
+            .ok_or("tab revision exhausted")?;
+        self.before = durable_bytes(&self.state)?;
+        self.exists = true;
+        self.changed = true;
+        Ok(answer)
+    }
+}
 // Status-only polling does not advance the durable revision or write/fsync the file.
 fn durable_bytes(state: &State) -> Result<Vec<u8>, String> {
     let mut state = state.clone();
@@ -839,7 +907,9 @@ fn tree(state: &State) -> Vec<Entry> {
         .collect()
 }
 pub fn snapshot_for(store: &TabStore, sessions: &[Session]) -> Result<Snapshot, String> {
-    let mut snapshot = store.snapshot()?;
+    Ok(with_statuses(store.snapshot()?, sessions))
+}
+fn with_statuses(mut snapshot: Snapshot, sessions: &[Session]) -> Snapshot {
     let status = sessions
         .iter()
         .map(|s| (s.key.as_str(), &s.status))
@@ -849,13 +919,11 @@ pub fn snapshot_for(store: &TabStore, sessions: &[Session]) -> Result<Snapshot, 
             e.status = (*s).clone();
         }
     }
-    Ok(snapshot)
+    snapshot
 }
 pub fn refresh_snapshot(home: &Path, project: &str) -> Result<Snapshot, String> {
     let sessions = inventory(home, project)?;
-    let store = TabStore::at(home, project)?;
-    store.reconcile_inventory(&sessions)?;
-    snapshot_for(&store, &sessions)
+    TabStore::at(home, project)?.refresh(&sessions)
 }
 /// A shell's status from whether its tmux session is there and what its agent is doing
 /// (`AgentActivity::as_str`, absent for a shell without one): `stopped` without the
@@ -2021,6 +2089,101 @@ mod tests {
             [session(2).key]
         );
     }
+    /// A window's poll as it ran before it was one transaction: five of them.
+    fn refresh_in_separate_transactions(store: &TabStore, sessions: &[Session]) -> Snapshot {
+        store
+            .transact_steps(|steps| TabStore::reconcile_step(steps, sessions, false))
+            .unwrap();
+        store
+            .transact_steps(|steps| store.prune_step(steps, sessions))
+            .unwrap();
+        store
+            .transact_steps(|steps| TabStore::reconcile_step(steps, sessions, false))
+            .unwrap();
+        store.list().unwrap();
+        snapshot_for(store, sessions).unwrap()
+    }
+    /// What the store keeps durably (statuses are refreshed by every poll).
+    fn durable(store: &TabStore) -> State {
+        let path = store
+            .home
+            .join("project-tabs")
+            .join(format!("{}.json", store.project));
+        let mut state: State = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        for entry in &mut state.entries {
+            entry.status = Status::Stopped;
+        }
+        state
+    }
+    #[test]
+    fn one_refresh_transaction_ends_where_separate_transactions_did() {
+        let (separate, merged) = (Fixture::new(), Fixture::new());
+        separate.store.reconcile(&[session(2)]).unwrap();
+        // The same file to start from, epoch included.
+        fs::create_dir_all(merged.home.join("project-tabs")).unwrap();
+        let file = format!("project-tabs/{}.json", id(1));
+        fs::copy(separate.home.join(&file), merged.home.join(&file)).unwrap();
+        let poll = |sessions: &[Session]| {
+            let expected = refresh_in_separate_transactions(&separate.store, sessions);
+            let actual = merged.store.refresh(sessions).unwrap();
+            assert_eq!(actual.entries, expected.entries);
+            assert_eq!(actual.revision, expected.revision);
+            assert_eq!(actual.epoch, expected.epoch);
+            assert_eq!(actual.known_keys, expected.known_keys);
+            let (expected, actual) = (durable(&separate.store), durable(&merged.store));
+            assert_eq!(actual.entries, expected.entries);
+            assert_eq!(actual.revision, expected.revision);
+            assert_eq!(actual.retired, expected.retired);
+            assert_eq!(actual.deleted, expected.deleted);
+            assert_eq!(actual.deletion_order, expected.deletion_order);
+            actual.revision
+        };
+        let start = poll(&[session(2)]);
+        // Only a status moves: nothing is written.
+        let mut waiting = session(2);
+        waiting.status = Status::Waiting;
+        assert_eq!(poll(std::slice::from_ref(&waiting)), start);
+        // A worker chat under it and a shell appear; then the shell exits.
+        let mut child = session(3);
+        child.parent_id = Some(id(2));
+        child.worker = true;
+        let mut shell = session(4);
+        shell.kind = Kind::Shell;
+        shell.key = format!("shell:{}", id(4));
+        poll(&[waiting.clone(), child.clone(), shell.clone()]);
+        shell.status = Status::Stopped;
+        poll(&[waiting.clone(), child.clone(), shell]);
+        let stopped = |n: u128, worker: bool| Session {
+            key: format!("chat:{}", uuid::Uuid::from_u128(n)),
+            status: Status::Stopped,
+            worker,
+            created: n as u64,
+            ..session(9)
+        };
+        // 205 stopped workers arrive hidden: the reconcile adds them, the prune
+        // retires 5 and the second reconcile renumbers the rest, a revision each.
+        let mut all = (1000..1205)
+            .map(|n| stopped(n, true))
+            .chain([waiting, child])
+            .collect::<Vec<_>>();
+        let revision = durable(&merged.store).revision;
+        assert_eq!(poll(&all), revision + 3);
+        assert_eq!(durable(&merged.store).retired.len(), 5);
+        // 205 more, shown, then hidden by hand: the first reconcile has nothing
+        // to change.
+        let history = (2000..2205).map(|n| stopped(n, false)).collect::<Vec<_>>();
+        all.extend(history.iter().cloned());
+        poll(&all);
+        for store in [&separate.store, &merged.store] {
+            for s in &history {
+                store.update(&Update::Hide { key: s.key.clone() }).unwrap();
+            }
+        }
+        let revision = durable(&merged.store).revision;
+        assert_eq!(poll(&all), revision + 2);
+        assert_eq!(durable(&merged.store).retired.len(), 210);
+        assert_eq!(poll(&all), revision + 2);
+    }
     #[test]
     #[ignore = "timing: cargo test -p riwork-engine --lib -- --ignored --nocapture time_reconcile_inventory"]
     fn time_reconcile_inventory_with_a_long_history() {
@@ -2067,27 +2230,20 @@ mod tests {
         );
         let started = std::time::Instant::now();
         for _ in 0..rounds {
-            f.store.metadata_keys().unwrap();
-        }
-        eprintln!("  metadata_keys: {:?} per call", started.elapsed() / rounds);
-        let started = std::time::Instant::now();
-        for _ in 0..rounds {
-            f.store.reconcile(&sessions).unwrap();
-        }
-        eprintln!("  reconcile: {:?} per call", started.elapsed() / rounds);
-        let started = std::time::Instant::now();
-        for _ in 0..rounds {
-            f.store.transact(|_| Ok(())).unwrap();
+            refresh_in_separate_transactions(&f.store, &sessions);
         }
         eprintln!(
-            "  empty transact: {:?} per call",
+            "a window's poll as five transactions: {:?} per call",
             started.elapsed() / rounds
         );
         let started = std::time::Instant::now();
         for _ in 0..rounds {
-            snapshot_for(&f.store, &sessions).unwrap();
+            f.store.refresh(&sessions).unwrap();
         }
-        eprintln!("  snapshot_for: {:?} per call", started.elapsed() / rounds);
+        eprintln!(
+            "a window's poll as one transaction: {:?} per call",
+            started.elapsed() / rounds
+        );
     }
     #[test]
     fn unreadable_metadata_never_prunes_the_last_good_chat_list() {
