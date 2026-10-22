@@ -443,8 +443,21 @@ impl TabStore {
     pub fn reconcile_inventory(&self, sessions: &[Session]) -> Result<Vec<Entry>, String> {
         self.reconcile(sessions)?;
         self.transact(|state| {
+            // Pruning keeps every key the inventory lists, so the metadata (every
+            // chat's info and the whole registry) is read only when a tab is not
+            // listed. Polls find none almost always.
+            let listed = sessions
+                .iter()
+                .map(|s| s.key.as_str())
+                .collect::<HashSet<_>>();
+            let unlisted = state
+                .entries
+                .iter()
+                .map(|e| &e.key)
+                .chain(&state.retired)
+                .any(|key| !listed.contains(key.as_str()));
             // An unreadable metadata directory is unknown, not an empty inventory.
-            if let Ok(mut known) = self.metadata_keys() {
+            if unlisted && let Ok(mut known) = self.metadata_keys() {
                 known.extend(sessions.iter().map(|s| s.key.clone()));
                 // A mid-create/unreadable info file is not evidence of deletion.
                 if let Ok(dirs) = fs::read_dir(crate::chat::log::chats_dir(&self.home)) {
@@ -1970,6 +1983,111 @@ mod tests {
             entries.iter().find(|e| e.key == child.key).unwrap().parent,
             Some(session(2).key)
         );
+    }
+    fn write_chat_info(home: &Path, n: u8, title: &str) {
+        let dir = home.join("chats").join(id(n));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("info.json"), serde_json::to_vec(&serde_json::json!({"id":id(n),"provider":"codex","project_id":id(1),"cwd":"/tmp","title":title,"created_at_unix":n})).unwrap()).unwrap();
+    }
+    #[test]
+    fn the_inventory_prunes_vanished_sessions_and_keeps_ones_metadata_knows() {
+        let f = Fixture::new();
+        if crate::sessions::SessionManager::at(f.home.clone()).is_err() {
+            return; // No tmux: the metadata cannot be read, so nothing is pruned.
+        }
+        f.store
+            .reconcile(&[session(2), session(3), session(4)])
+            .unwrap();
+        // Everything listed: nothing to prune.
+        let keys = |entries: Vec<Entry>| entries.into_iter().map(|e| e.key).collect::<Vec<_>>();
+        assert_eq!(
+            keys(
+                f.store
+                    .reconcile_inventory(&[session(2), session(3), session(4)])
+                    .unwrap()
+            ),
+            [session(2).key, session(3).key, session(4).key]
+        );
+        // 3 drops out of the inventory but its metadata is there; 4 is gone.
+        write_chat_info(&f.home, 3, "known");
+        assert_eq!(
+            keys(f.store.reconcile_inventory(&[session(2)]).unwrap()),
+            [session(2).key, session(3).key]
+        );
+        // Once its metadata goes too, so does its tab.
+        fs::remove_dir_all(f.home.join("chats").join(id(3))).unwrap();
+        assert_eq!(
+            keys(f.store.reconcile_inventory(&[session(2)]).unwrap()),
+            [session(2).key]
+        );
+    }
+    #[test]
+    #[ignore = "timing: cargo test -p riwork-engine --lib -- --ignored --nocapture time_reconcile_inventory"]
+    fn time_reconcile_inventory_with_a_long_history() {
+        let f = Fixture::new();
+        if crate::sessions::SessionManager::at(f.home.clone()).is_err() {
+            return;
+        }
+        // About a long-used install: 200 chats and a 370 KB, 170-shell registry.
+        for n in 2..202 {
+            write_chat_info(&f.home, n, &"a chat title ".repeat(80));
+        }
+        let shells = (0..170)
+            .map(|n| uuid::Uuid::from_u128(n).to_string())
+            .collect::<Vec<_>>();
+        let rows = shells
+            .iter()
+            .map(|id_| serde_json::json!({"id":id_,"project_id":id(1),"kind":"project","cwd":"/tmp","command":"x".repeat(2000),"created_at_unix":1}))
+            .collect::<Vec<_>>();
+        fs::write(
+            f.home.join("sessions.json"),
+            serde_json::to_vec(&serde_json::json!({ "sessions": rows })).unwrap(),
+        )
+        .unwrap();
+        // As `inventory` lists them: every chat, and every registered shell, here
+        // all exited.
+        let sessions = (2..202)
+            .map(session)
+            .chain(shells.iter().map(|shell| Session {
+                key: format!("shell:{shell}"),
+                kind: Kind::Shell,
+                status: Status::Stopped,
+                ..session(1)
+            }))
+            .collect::<Vec<_>>();
+        f.store.reconcile_inventory(&sessions).unwrap();
+        let rounds = 50;
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            f.store.reconcile_inventory(&sessions).unwrap();
+        }
+        eprintln!(
+            "reconcile_inventory, 200 chats: {:?} per call",
+            started.elapsed() / rounds
+        );
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            f.store.metadata_keys().unwrap();
+        }
+        eprintln!("  metadata_keys: {:?} per call", started.elapsed() / rounds);
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            f.store.reconcile(&sessions).unwrap();
+        }
+        eprintln!("  reconcile: {:?} per call", started.elapsed() / rounds);
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            f.store.transact(|_| Ok(())).unwrap();
+        }
+        eprintln!(
+            "  empty transact: {:?} per call",
+            started.elapsed() / rounds
+        );
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            snapshot_for(&f.store, &sessions).unwrap();
+        }
+        eprintln!("  snapshot_for: {:?} per call", started.elapsed() / rounds);
     }
     #[test]
     fn unreadable_metadata_never_prunes_the_last_good_chat_list() {
