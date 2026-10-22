@@ -304,6 +304,55 @@ async fn resize_clear_checks_the_session_before_reaching_the_cli() {
         calls(&log)
     );
 }
+/// The connection seals the text its request task serialized; it must be the
+/// very bytes of the response the other entry points return, the reply that is
+/// too long for its connection included.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_reply_serialized_in_its_task_is_the_response_byte_for_byte() {
+    use std::os::unix::fs::PermissionsExt;
+    let (tmp, _, device) = fixture();
+    let cli = tmp.path().join("projects-riwork");
+    let listing = tmp.path().join("projects.json");
+    std::fs::write(&cli, format!("#!/bin/sh\ncat '{}'\n", listing.display())).unwrap();
+    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let rpc = Rpc::new(cli.clone(), Storage::at(tmp.path().into()).unwrap());
+    let viewport = tokio::sync::Mutex::new(Some(Viewport::new(cli, device.clone())));
+    let project =
+        |name: &str| json!([{"id":uuid::Uuid::new_v4().to_string(),"name":name,"path":"/p"}]);
+    // Fits; then a name longer than a frame (the CLI's list may be, the reply may not).
+    for (listed, limit, code) in [
+        (project("small"), 131_072, None),
+        (
+            project(&"\u{7}".repeat(30_000)),
+            131_072,
+            Some("response_too_large"),
+        ),
+        (project(&"\u{7}".repeat(30_000)), 2 * 1024 * 1024, None),
+    ] {
+        std::fs::write(&listing, listed.to_string()).unwrap();
+        let request = req("projects.list", json!({}));
+        let response = rpc
+            .handle_session_up_to(&device, request.clone(), &viewport, None, limit)
+            .await
+            .unwrap();
+        let reply = rpc
+            .handle_session_reply(&device, request.clone(), &viewport, None, limit)
+            .await
+            .unwrap();
+        assert_eq!(reply.body, serde_json::to_vec(&response).unwrap());
+        assert_eq!(reply.id, request["id"]);
+        assert_eq!(response["error"]["code"].as_str(), code, "{response}");
+    }
+    // A request refused before it ran answers with the id it could be correlated by.
+    let refused = rpc
+        .handle_session_reply(&device, json!({"id":7}), &viewport, None, 131_072)
+        .await
+        .unwrap();
+    assert_eq!(refused.id, Value::Null);
+    let refused: Value = serde_json::from_slice(&refused.body).unwrap();
+    assert_eq!(refused["error"]["code"], "invalid_request");
+}
 /// The ids of the input ledger are kept between requests; every way the ledger
 /// can change must still be seen by the very next request.
 #[cfg(unix)]

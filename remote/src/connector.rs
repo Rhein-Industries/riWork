@@ -9,7 +9,7 @@ use crate::{
     link::{self, EncodeError},
     log_safe,
     pty::{self, PtySet},
-    rpc::Rpc,
+    rpc::{Reply, Rpc},
     viewport::Viewport,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -328,7 +328,7 @@ struct Done {
     lane: Lane,
     epoch: u64,
     received: std::time::Instant,
-    outcome: Option<Result<Value>>,
+    outcome: Option<Result<Reply>>,
 }
 
 /// Starts every queued request that has a slot, each as a task of its own so
@@ -355,7 +355,7 @@ fn start_ready(
                 pty,
             } = queued;
             let run =
-                rpc.handle_session_up_to(&device, request, &viewport, pty.as_ref(), reply_limit);
+                rpc.handle_session_reply(&device, request, &viewport, pty.as_ref(), reply_limit);
             let outcome = if lane.cancellable() {
                 tokio::select! {
                     result = run => Some(result),
@@ -397,7 +397,20 @@ async fn seal_reply(
     received: std::time::Instant,
     compress: bool,
 ) -> Result<crate::crypto::Envelope> {
-    let body = serde_json::to_vec(&response)?;
+    let reply = Reply {
+        id: response.get("id").cloned().unwrap_or(Value::Null),
+        body: serde_json::to_vec(&response)?,
+    };
+    seal_body(session, reply, received, compress).await
+}
+/// `seal_reply` for a response a request's task has already serialized.
+async fn seal_body(
+    session: &mut Session,
+    reply: Reply,
+    received: std::time::Instant,
+    compress: bool,
+) -> Result<crate::crypto::Envelope> {
+    let Reply { id, body } = reply;
     // A big body is deflated on a blocking thread so the connection loop (the
     // heartbeat, the socket, the other requests) is not held for the duration.
     let encoded = if compress && body.len() >= link::OFFLOAD_BYTES {
@@ -412,12 +425,7 @@ async fn seal_reply(
         Ok(encoded) => encoded.plaintext,
         Err(EncodeError::TooLarge) => {
             // Same request, small answer; a request without a usable id gets `null` as ever.
-            let id = response.get("id").cloned().unwrap_or(Value::Null);
-            let error = crate::rpc::error_for(
-                id,
-                "response_too_large",
-                "result exceeds encrypted response limit; reduce output lines",
-            );
+            let error = crate::rpc::too_large(id);
             link::encode_reply(&error, received, false, MAX_PLAINTEXT)
                 .map_err(anyhow::Error::from)?
                 .plaintext
@@ -523,14 +531,14 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                 lanes.finished(done.lane);
                 start_ready(&mut lanes,&mut tasks,rpc,&p.device_id,&session_ended);
                 if done.epoch==epoch && let Some(outcome)=done.outcome {
-                    let response=outcome?;
+                    let reply=outcome?;
                     ensure!(
                         rpc.storage.authorized(&p.device_id)?,
                         "device revoked during RPC"
                     );
                     let s=session.as_mut().context("response without a session")?;
-                    let reply=seal_reply(s,response,done.received,compress).await?;
-                    send_json(&mut ws,&reply).await?;
+                    let sealed=seal_body(s,reply,done.received,compress).await?;
+                    send_json(&mut ws,&sealed).await?;
                 }
                 continue;
             },
@@ -955,6 +963,89 @@ mod tests {
         eventually(|| renewals(&log) > stopped).await;
         connector.abort();
         server.abort();
+    }
+
+    /// `cargo test -p riwork-remote --lib reply_tail_cost -- --ignored --nocapture` prints
+    /// what a finished response costs until it is sealed: before, its task serialized it
+    /// to check the reply limit and the connection loop serialized it again to seal it;
+    /// now the task's text is sealed.
+    #[tokio::test]
+    #[ignore = "prints timings; run on demand"]
+    async fn reply_tail_cost() {
+        let id = crate::crypto::Identity {
+            desktop_id: uuid::Uuid::new_v4().to_string(),
+            device_id: uuid::Uuid::new_v4().to_string(),
+            route_id: uuid::Uuid::new_v4().to_string(),
+        };
+        let (secret, c) = (random32(), random32());
+        let hello = client_hello(&id, &secret, c).unwrap();
+        let (server, pending) = accept_hello(&id, &secret, &hello, random32()).unwrap();
+        let (finish, _) = accept_server(&id, &secret, &c, &server).unwrap();
+        let mut session = pending.finish(&finish).unwrap();
+        let request = uuid::Uuid::new_v4().to_string();
+        let styled: String = (0..400)
+            .map(|i| {
+                format!(
+                    "\u{1b}[38;5;{}mline {i} of the build output\u{1b}[0m\n",
+                    i % 200
+                )
+            })
+            .collect();
+        let chunk = crate::crypto::b64(&[b'x'; pty::MAX_CHUNK]);
+        let events: Vec<Value> = (0..400)
+            .map(|seq| json!({"seq":seq,"event":{"event":"agent_message_delta","text":styled[..2000].to_owned()}}))
+            .collect();
+        for (label, result, compress) in [
+            (
+                "styled shell.output",
+                json!({"shell_id":"s","output":styled,"hash":"0123456789abcdef"}),
+                false,
+            ),
+            (
+                "pty.read chunk",
+                json!({"stream":"s","seq":0,"data":chunk}),
+                false,
+            ),
+            (
+                "chat.events page, deflated",
+                json!({"chat_id":"c","events":events,"next":400,"more":false}),
+                true,
+            ),
+        ] {
+            let response = json!({"v":1,"type":"response","id":request,"ok":true,"result":result});
+            let limit = if compress {
+                link::MAX_INFLATED
+            } else {
+                MAX_PLAINTEXT
+            };
+            let rounds = 20u32;
+            let started = std::time::Instant::now();
+            for _ in 0..rounds {
+                let response = response.clone();
+                assert!(serde_json::to_vec(&response).unwrap().len() <= limit);
+                seal_reply(&mut session, response, std::time::Instant::now(), compress)
+                    .await
+                    .unwrap();
+            }
+            let before = started.elapsed() / rounds;
+            let started = std::time::Instant::now();
+            for _ in 0..rounds {
+                let response = response.clone();
+                let reply = Reply {
+                    id: response["id"].clone(),
+                    body: serde_json::to_vec(&response).unwrap(),
+                };
+                assert!(reply.body.len() <= limit);
+                seal_body(&mut session, reply, std::time::Instant::now(), compress)
+                    .await
+                    .unwrap();
+            }
+            let after = started.elapsed() / rounds;
+            println!(
+                "{label} ({} bytes of JSON): serialized twice {before:?}, once {after:?}",
+                serde_json::to_vec(&response).unwrap().len()
+            );
+        }
     }
 
     #[tokio::test]

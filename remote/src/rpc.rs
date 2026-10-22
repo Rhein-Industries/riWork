@@ -106,6 +106,20 @@ pub(crate) fn error_for(id: Value, code: &str, message: impl AsRef<str>) -> Valu
 fn success(id: &str, result: Value) -> Value {
     json!({"v":1,"type":"response","id":id,"ok":true,"result":result})
 }
+/// What replaces a response that is longer than its connection may carry.
+pub(crate) fn too_large(id: Value) -> Value {
+    error_for(
+        id,
+        "response_too_large",
+        "result exceeds encrypted response limit; reduce output lines",
+    )
+}
+/// A response as the connection seals it: its JSON text, serialized once, and
+/// the id it answers (`null` when the request had no usable one).
+pub struct Reply {
+    pub id: Value,
+    pub body: Vec<u8>,
+}
 /// The request in `value` and its id, or the response to send instead.
 /// Malformed requests get an error response, not a dropped session. Only an ID
 /// that is a bounded string can be echoed for correlation.
@@ -1477,6 +1491,36 @@ impl Rpc {
         )
         .await
     }
+    /// `handle_session_up_to`, answered as the JSON text the connection seals.
+    /// The response is serialized once, here in the request's own task: the
+    /// same text is measured against `reply_limit` and then sealed.
+    pub async fn handle_session_reply(
+        &self,
+        device: &str,
+        value: Value,
+        viewport: &tokio::sync::Mutex<Option<Viewport>>,
+        pty: Option<&Arc<PtySet>>,
+        reply_limit: usize,
+    ) -> Result<Reply> {
+        let reply_limit = reply_limit.clamp(MAX_PLAINTEXT, crate::link::MAX_INFLATED);
+        let (response, sized) = self
+            .respond(
+                device,
+                value,
+                ViewportAccess::Shared(viewport),
+                pty,
+                reply_limit,
+            )
+            .await?;
+        let id = response.get("id").cloned().unwrap_or(Value::Null);
+        let mut body = serde_json::to_vec(&response)?;
+        if let Some(request_id) = sized
+            && body.len() > reply_limit
+        {
+            body = serde_json::to_vec(&too_large(json!(request_id)))?;
+        }
+        Ok(Reply { id, body })
+    }
     /// `pty.write`, `pty.resize` or `pty.close`, which the connection loop
     /// answers itself, in arrival order (they never wait). The same checks as
     /// every other request; the device's authorization is looked at again
@@ -1538,9 +1582,29 @@ impl Rpc {
         pty: Option<&Arc<PtySet>>,
         reply_limit: usize,
     ) -> Result<Value> {
+        let (response, sized) = self
+            .respond(device, value, viewport, pty, reply_limit)
+            .await?;
+        if let Some(request_id) = sized
+            && serde_json::to_vec(&response)?.len() > reply_limit
+        {
+            return Ok(too_large(json!(request_id)));
+        }
+        Ok(response)
+    }
+    /// The response to one request, and, for one that was dispatched (not refused
+    /// before), its id: such a response must be checked against the reply limit.
+    async fn respond(
+        &self,
+        device: &str,
+        value: Value,
+        viewport: ViewportAccess<'_>,
+        pty: Option<&Arc<PtySet>>,
+        reply_limit: usize,
+    ) -> Result<(Value, Option<String>)> {
         let (request_id, request) = match parse_request(value) {
             Ok(parsed) => parsed,
-            Err(response) => return Ok(response),
+            Err(response) => return Ok((response, None)),
         };
         let result = if request.v != 1 || request.kind != "request" {
             Err(invalid("unsupported request version/type"))
@@ -1554,10 +1618,13 @@ impl Rpc {
                 && !request.method.starts_with("pty.")
                 && self.used_for_input(device, &request.id)?
             {
-                return Ok(error(
-                    &request.id,
-                    "request_conflict",
-                    "request UUID already used for input",
+                return Ok((
+                    error(
+                        &request.id,
+                        "request_conflict",
+                        "request UUID already used for input",
+                    ),
+                    None,
                 ));
             }
             self.dispatch(device, &request, viewport, pty, reply_limit)
@@ -1567,14 +1634,7 @@ impl Rpc {
             Ok(v) => success(&request_id, v),
             Err(f) => error(&request_id, f.code, f.message),
         };
-        if serde_json::to_vec(&response)?.len() > reply_limit {
-            return Ok(error(
-                &request_id,
-                "response_too_large",
-                "result exceeds encrypted response limit; reduce output lines",
-            ));
-        }
-        Ok(response)
+        Ok((response, Some(request_id)))
     }
     async fn dispatch(
         &self,
