@@ -81,12 +81,15 @@ impl Subagent {
         result
     }
 }
+/// A field as the card shows it. A file it cites reads as its name, before the bound
+/// can cut the citation.
 fn text(value: &Value, key: &str, limit: usize) -> Option<String> {
     value[key]
         .as_str()
         .filter(|s| !s.trim().is_empty())
         .map(|s| {
-            s.chars()
+            super::citation::with_names(s)
+                .chars()
                 .filter(|c| !c.is_control() || *c == '\n')
                 .take(limit)
                 .collect()
@@ -337,6 +340,15 @@ mod tests {
         assert_eq!(run.children[0].summary.as_ref().unwrap().len(), 4096);
         value["agentsStates"]["child"]["status"] = json!("futureStatus");
         assert_eq!(codex(&value).status, RunStatus::Unknown);
+        // A file the child cites past the bound's reach still reads as its name.
+        let cited = format!(
+            "{}:codex-file-citation{{path=\"/out/{}/Bericht.pdf\"}}",
+            "x".repeat(4090),
+            "d".repeat(200)
+        );
+        value["agentsStates"]["child"]["message"] = json!(cited);
+        let summary = codex(&value).children[0].summary.clone().unwrap();
+        assert_eq!(summary, format!("{}Bericht.pdf", "x".repeat(4090))[..4096]);
     }
     #[test]
     fn muse_requires_its_explicit_subagent_kind() {

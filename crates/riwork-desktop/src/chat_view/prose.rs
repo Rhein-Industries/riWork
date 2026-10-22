@@ -271,6 +271,7 @@ impl ChatView {
                 .h(px(1.0))
                 .bg(rgb(colors.divider))
                 .into_any_element(),
+            Block::Files(files) => self.cited_files(files, key, look, cx),
         }
     }
 

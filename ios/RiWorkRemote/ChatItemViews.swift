@@ -73,7 +73,7 @@ struct ChatItemRow: View, Equatable {
         case .agentMessage(let text):
             ChatMarkdownView(source: text).equatable()
                 .accessibilityLabel("\(provider.title) said")
-                .accessibilityValue(text)
+                .accessibilityValue(ChatFileCitation.replacing(in: text))
         case .reasoning(let text): ReasoningBlock(item: item, text: text, isOpen: open.contains(item.id), toggle: { toggle(item.id) })
         case .plan(let explanation, let steps): ChecklistCard(title: "Plan", icon: "list.bullet.clipboard", explanation: explanation, steps: steps)
         case .todo(let items): ChecklistCard(title: "To-do", icon: "checklist", explanation: nil, steps: items)

@@ -108,7 +108,7 @@ struct ChatActivityRows: View, Equatable {
                 if !messageText.isEmpty {
                     ChatMarkdownView(source: messageText).equatable()
                         .environment(\.chatFileEntries, fileIndex.byTurn[item?.turnID ?? "legacy:\(row.id)"] ?? [])
-                        .accessibilityLabel("\(provider.title) said").accessibilityValue(messageText)
+                        .accessibilityLabel("\(provider.title) said").accessibilityValue(ChatFileCitation.replacing(in: messageText))
                 }
                 if showArtifacts, !ownedFiles.isEmpty { ChatFileStrip(files: ownedFiles) }
                 // Local provider images open through the authenticated chat preview endpoint (`ChatOutputAssetCard`).
@@ -120,7 +120,7 @@ struct ChatActivityRows: View, Equatable {
     }
 
     private var commentary: some View {
-        Text(messageText).font(.system(size: 12)).foregroundStyle(style.muted)
+        Text(ChatFileCitation.replacing(in: messageText)).font(.system(size: 12)).foregroundStyle(style.muted)
             .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 16).padding(.vertical, 2)
     }
@@ -209,7 +209,7 @@ struct ChatActivityRows: View, Equatable {
         case .command(let command, _, let output, _): return "$ \(command)\n\(output)"
         case .toolCall(_, _, let input, let output): return ChatToolSummary.pretty(input, limit: .max) + (output.map { "\n\($0)" } ?? "")
         case .fileChange(let changes): return changes.map { $0.path + "\n" + ($0.diff ?? "") }.joined(separator: "\n")
-        default: return messageText
+        default: return ChatFileCitation.replacing(in: messageText) { $0.path }
         }
     }
 }

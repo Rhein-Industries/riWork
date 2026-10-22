@@ -73,6 +73,8 @@ final class ChatMarkdownTests: XCTestCase {
             case .table(let header, let rows):
                 XCTAssertFalse(header.isEmpty, source(), file: file, line: line)
                 for row in rows { XCTAssertEqual(row.count, header.count, source(), file: file, line: line) }
+            case .files(let files):
+                XCTAssertFalse(files.isEmpty, source(), file: file, line: line)
             }
         }
     }
@@ -652,6 +654,63 @@ final class ChatMarkdownTests: XCTestCase {
         XCTAssertEqual(plain(ChatMarkdown.inline(header[0])), "a")
         XCTAssertEqual(links(ChatMarkdown.inline(header[1])), [])
         XCTAssertEqual(links(ChatMarkdown.inline(rows[0][1])), ["https://example.com"])
+    }
+
+    // MARK: File citations
+
+    private let report = "/Users/me/projects/Baumer_featuring_UBS/outputs/ocra-ky3p/Baumer_Organisation_Fragen_und_Nachweise_20261021.docx"
+    private func cite(_ path: String) -> String { #":codex-file-citation{path="\#(path)" artifact_kind="document" purpose="output"}"# }
+
+    func testCitationLinesAreFileBlocksBetweenTheirParagraphs() {
+        let blocks = parse(cite(report), "Qbit: 114 eigene Einträge plus Übersicht.", cite("/out/Qbit Fragen.docx"), "  \(cite("/out/b.pdf")) \(cite("/out/c.txt"))  ")
+        XCTAssertEqual(blocks, [
+            .files([ChatFileCitation(path: report, artifactKind: "document", purpose: "output")]),
+            p("Qbit: 114 eigene Einträge plus Übersicht."),
+            .files(["/out/Qbit Fragen.docx", "/out/b.pdf", "/out/c.txt"].map { ChatFileCitation(path: $0, artifactKind: "document", purpose: "output") })
+        ])
+        guard case .files(let files)? = blocks.first else { return XCTFail("not files") }
+        XCTAssertEqual(files[0].name, "Baumer_Organisation_Fragen_und_Nachweise_20261021.docx")
+        XCTAssertEqual(parse("- One", "  \(cite("/out/d.md"))"), [bullets(item(p("One"), .files([ChatFileCitation(path: "/out/d.md", artifactKind: "document", purpose: "output")])))])
+        XCTAssertEqual(parse("```", cite("/out/e.md"), "```"), [code(cite("/out/e.md"))], "code shows the directive itself")
+    }
+
+    func testACitationInsideASentenceReadsAsTheFileName() {
+        let sentence = "See \(cite("/out/Zuarbeit März_[final]*.xlsx")) for the rest."
+        XCTAssertEqual(parse(sentence), [p(sentence)])
+        XCTAssertEqual(plain(ChatMarkdown.inline(sentence)), "See Zuarbeit März_[final]*.xlsx for the rest.")
+        XCTAssertEqual(links(ChatMarkdown.inline(sentence)), [], "a local file is never a link")
+        XCTAssertEqual(plain(ChatMarkdown.inline("`\(cite("/out/a.md"))`")), cite("/out/a.md"))
+    }
+
+    func testMalformedOrUnfinishedCitationsStayText() {
+        for source in [#":codex-file-citation{purpose="output"}"#, #":codex-file-citation{path=""}"#, #":codex-file-citation{path="/out/a.docx""#,
+                       #":codex-file-citation{path="/out/a.do"#, #":codex-file-citation{path=/out/a.docx}"#,
+                       #":codex-file-citation{path="/a.txt"purpose="x"}"#, #":codex-file-citation{path="/a.txt\"#, ":codex-file-citation"] {
+            XCTAssertNil(ChatFileCitation.parse(Substring(source)), source)
+            XCTAssertEqual(parse(source), [p(source)], source)
+            XCTAssertEqual(plain(ChatMarkdown.inline(source)), source, source)
+        }
+        XCTAssertNil(ChatFileCitation.parse(Substring(#":codex-file-citation{path=""# + String(repeating: "a", count: 9000) + #""}"#)))
+        // While a message streams, a directive is text until its brace closes, then a file.
+        let full = "Done.\n" + cite(report)
+        var prefix = ""
+        for character in full {
+            prefix.append(character)
+            let blocks = ChatMarkdown.parse(prefix)
+            assertWellFormed(blocks, prefix)
+            if prefix != full, prefix.count > 6 { XCTAssertEqual(blocks, [p(prefix.trimmingCharacters(in: .whitespaces))], prefix) }
+        }
+        XCTAssertEqual(ChatMarkdown.parse(full).last, .files([ChatFileCitation(path: report, artifactKind: "document", purpose: "output")]))
+    }
+
+    func testCitationValuesKeepSpacesUmlautsAndEscapedQuotesAndUnknownAttributesAreSkipped() {
+        let source = #":codex-file-citation{line="4" path="/tmp/Bericht März \"final\".pdf" other="x"} after"#
+        guard case let (citation, end)? = ChatFileCitation.parse(Substring(source)) else { return XCTFail("not a citation") }
+        XCTAssertEqual(citation, ChatFileCitation(path: #"/tmp/Bericht März "final".pdf"#))
+        XCTAssertEqual(String(source[end...]), " after")
+        XCTAssertEqual(ChatFileCitation(path: "/dir/").name, "dir")
+        XCTAssertEqual(ChatFileCitation.replacing(in: "Wrote \(cite(report)) and \(cite("/b.pdf")).") { $0.path }, "Wrote \(report) and /b.pdf.")
+        XCTAssertEqual(ChatItemBody.agentMessage("Wrote \(cite("/out/b.pdf"))").summary, "Wrote b.pdf")
     }
 }
 

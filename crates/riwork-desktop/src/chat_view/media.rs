@@ -5,7 +5,10 @@ use super::{
     widgets::{Look, button},
 };
 use crate::{
-    chat::model::{ChatImage, ImageSource, Item, ItemBody, MessagePhase},
+    chat::{
+        citation::FileCitation,
+        model::{ChatImage, ImageSource, Item, ItemBody, MessagePhase},
+    },
     file_preview::{self, PreviewContent},
     ui_text,
 };
@@ -1884,7 +1887,7 @@ impl ChatView {
         name: String,
         size: Option<u64>,
         target: String,
-        owner: String,
+        owner: Option<String>,
         image: Option<&ChatImage>,
         look: Look,
         cx: &mut Context<Self>,
@@ -1953,9 +1956,42 @@ impl ChatView {
         .text_color(rgb(look.colors.text))
         .on_click(cx.listener(move |v, _, _, cx| {
             cx.stop_propagation();
-            v.preview_reference(&target, Some(&owner), cx);
+            v.preview_reference(&target, owner.as_deref(), cx);
         }))
         .into_any_element()
+    }
+
+    /// Files a message cites on lines of their own, as the chips a call's files get. A click
+    /// previews the file through the same checks as a link to it.
+    pub(super) fn cited_files(
+        &self,
+        files: &[FileCitation],
+        key: &str,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let owner = self.selection_owner(key).map(str::to_owned);
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(ui_text::space(4.0))
+            .children(files.iter().enumerate().map(|(at, file)| {
+                // An image shows its thumbnail, as a call's image chip does.
+                let image = super::markdown::is_local_image(&file.path)
+                    .then(|| crate::chat::media::reference(file.name(), &file.path));
+                self.file_chip(
+                    cited_file_key(key, at),
+                    file.name().to_owned(),
+                    None,
+                    file.path.clone(),
+                    owner.clone(),
+                    image.as_ref(),
+                    look,
+                    cx,
+                )
+            }))
+            .into_any_element()
     }
 
     pub(super) fn render_artifact_refs(
@@ -1992,7 +2028,7 @@ impl ChatView {
                         name,
                         None,
                         target,
-                        item.id.clone(),
+                        Some(item.id.clone()),
                         None,
                         look,
                         cx,
@@ -2025,7 +2061,7 @@ impl ChatView {
                         image_label(image, Some(item)),
                         None,
                         target,
-                        item.id.clone(),
+                        Some(item.id.clone()),
                         Some(image),
                         look,
                         cx,
@@ -2098,6 +2134,12 @@ impl ChatView {
         self.list.scroll_to(offset);
         cx.notify();
     }
+}
+
+/// The key of the `at`th chip of the cited files whose block is `key`; the selection
+/// document gives the chip's text the same key.
+pub(super) fn cited_file_key(key: &str, at: usize) -> String {
+    format!("{key}/file/{at}")
 }
 
 /// Whether a row lists `artifact` as a chip. Verbose lists every file a call produced,

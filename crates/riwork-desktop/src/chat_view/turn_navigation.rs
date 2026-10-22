@@ -224,7 +224,15 @@ fn previews(turn: &Turn, items: &[Item]) -> (String, String) {
     let text = |at: Option<usize>| {
         at.and_then(|at| items.get(at))
             .map(|item| match &item.body {
-                ItemBody::UserMessage { text } | ItemBody::AgentMessage { text } => preview(text),
+                ItemBody::UserMessage { text } | ItemBody::AgentMessage { text } => {
+                    // A cited file reads as its name. Only the head is read: `preview`
+                    // keeps far less than this, and a citation is never longer.
+                    let mut head = text.len().min(16 * 1024);
+                    while !text.is_char_boundary(head) {
+                        head -= 1;
+                    }
+                    preview(&crate::chat::citation::with_names(&text[..head]))
+                }
                 _ => String::new(),
             })
             .unwrap_or_default()
@@ -705,6 +713,10 @@ mod tests {
             *text = "after 🦀".into();
         }
         assert_eq!(previews(&turns[0], &items).1, "after 🦀");
+        if let ItemBody::AgentMessage { text } = &mut items[1].body {
+            *text = "Wrote\n:codex-file-citation{path=\"/out/Bericht März.docx\"}".into();
+        }
+        assert_eq!(previews(&turns[0], &items).1, "Wrote Bericht März.docx");
         assert!(preview(&"🦀".repeat(100_000)).chars().count() <= PREVIEW_CHARS + 1);
         assert!(preview(&" ".repeat(100_000)).is_empty());
     }

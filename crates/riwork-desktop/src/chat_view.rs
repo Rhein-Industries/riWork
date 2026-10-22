@@ -2038,7 +2038,10 @@ impl ChatView {
             .find(|item| item.id == id)
             .map(|item| &item.body)
         {
-            Some(ItemBody::AgentMessage { text }) => text.clone(),
+            // The Markdown as the agent wrote it, with each cited file as its path.
+            Some(ItemBody::AgentMessage { text }) => {
+                crate::chat::citation::with_paths(text).into_owned()
+            }
             Some(ItemBody::Command { output, .. }) => command_output::retained_text(output),
             Some(ItemBody::ToolCall {
                 output: Some(output),

@@ -2,8 +2,9 @@ import Foundation
 import CryptoKit
 
 // Markdown for agent chat messages. The chat view draws paragraphs, headings and list items with SwiftUI `Text(AttributedString)`,
-// so this file does the BLOCK structure (headings, code, lists, quotes, tables, rules) and leaves inline syntax (emphasis, code
-// spans, links) as source strings that `ChatMarkdown.inline` turns into styled text. Everything here is pure and `Sendable`.
+// so this file does the BLOCK structure (headings, code, lists, quotes, tables, rules, lines of file citations) and leaves inline
+// syntax (emphasis, code spans, links) as source strings that `ChatMarkdown.inline` turns into styled text. Everything here is pure
+// and `Sendable`.
 //
 // The text is STREAMING: the agent's reply is parsed again after every delta, so any prefix of a valid message must give
 // sensible blocks and never trap (a fence that is not closed yet is `.code(closed: false)`, a lone `#` or `-` is a paragraph, a
@@ -24,6 +25,9 @@ public indirect enum ChatMarkdownBlock: Sendable, Equatable {
     case rule
     /// A GitHub pipe table. Cells are inline-markdown source; every row has exactly as many cells as the header.
     case table(header: [String], rows: [[String]])
+    /// Files the agent cited on lines of their own, one after the other (never empty). A citation inside a sentence stays in its
+    /// paragraph, where `inline` writes it as the file's name.
+    case files([ChatFileCitation])
 }
 
 public struct ChatMarkdownListItem: Sendable, Equatable {
@@ -54,6 +58,7 @@ public enum ChatMarkdown {
         var options = AttributedString.MarkdownParsingOptions()
         options.interpretedSyntax = .inlineOnlyPreservingWhitespace
         options.failurePolicy = .returnPartiallyParsedIfPossible
+        let source = namingCitations(source)
         var text = (try? AttributedString(markdown: source, options: options)) ?? AttributedString(source)
         var unsafe: [Range<AttributedString.Index>] = []
         for (link, range) in text.runs[\.link] {
@@ -66,6 +71,163 @@ public enum ChatMarkdown {
     private static func isWebLink(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased() else { return false }
         return scheme == "http" || scheme == "https"
+    }
+
+    /// `source` with each citation written as its file's name, escaped so that a `_` or `[` in the name is a character and not syntax.
+    /// A code span keeps the directive as written, as the desktop shows it.
+    private static func namingCitations(_ source: String) -> String {
+        guard source.contains(ChatFileCitation.opening) else { return source }
+        func named(_ text: Substring) -> String { ChatFileCitation.replacing(in: String(text)) { escaped($0.name) } }
+        var out = ""
+        var rest = Substring(source)
+        while let tick = rest.firstIndex(of: "`") {
+            out += named(rest[..<tick])
+            let run = rest[tick...].prefix { $0 == "`" }
+            // The span closes at the next run of exactly as many backticks; without one, the backticks are text.
+            var close: Range<Substring.Index>?
+            var from = run.endIndex
+            while close == nil, let next = rest[from...].firstIndex(of: "`") {
+                let other = rest[next...].prefix { $0 == "`" }
+                if other.count == run.count { close = next..<other.endIndex }
+                from = other.endIndex
+            }
+            let end = close?.upperBound ?? run.endIndex
+            out += rest[tick..<end]
+            rest = rest[end...]
+        }
+        return out + named(rest)
+    }
+
+    /// Every ASCII punctuation character behind a backslash: Markdown reads the text back exactly.
+    private static func escaped(_ text: String) -> String {
+        var out = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            if scalar.isASCII, ##"!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~"##.unicodeScalars.contains(scalar) { out.append("\\") }
+            out.append(scalar)
+        }
+        return String(out)
+    }
+}
+
+// MARK: - File citations
+
+/// A file an agent cites in its message. Codex writes `:codex-file-citation{path="…" artifact_kind="document" purpose="output"}` on a
+/// line of its own or inside a sentence: a line of citations is a `.files` block, drawn as file chips, and one inside a sentence reads
+/// as the file's name. A directive that does not read (no `path`, no closing brace, a line break inside) stays text. The desktop reads
+/// the same syntax (`crates/riwork-engine/src/chat/citation.rs`).
+public struct ChatFileCitation: Sendable, Equatable, Hashable {
+    public let path: String
+    /// What the agent says the file is (`document`, `image`, …), if it says.
+    public let artifactKind: String?
+    /// Why it cites it (`output`, `input`, …), if it says.
+    public let purpose: String?
+
+    public init(path: String, artifactKind: String? = nil, purpose: String? = nil) {
+        self.path = path; self.artifactKind = artifactKind; self.purpose = purpose
+    }
+
+    /// The last part of the path, or the whole path when it has no other.
+    public var name: String {
+        var trimmed = Substring(path)
+        while trimmed.hasSuffix("/") { trimmed = trimmed.dropLast() }
+        let last = trimmed.split(separator: "/", omittingEmptySubsequences: false).last ?? ""
+        return last.isEmpty ? path : String(last)
+    }
+
+    static let opening = ":codex-file-citation{"
+    /// Longer than any path a file link accepts. A brace that never closes costs no more than this to rule out.
+    static let maximumLength = 8 * 1024
+
+    /// The citation at the start of `text` and where it ends. Attributes are `name="value"` pairs apart by blanks; a value may hold
+    /// `\"` and `\\`, and any other character but a line break. Unknown attributes are skipped.
+    public static func parse(_ text: Substring) -> (citation: ChatFileCitation, end: String.Index)? {
+        guard text.hasPrefix(opening) else { return nil }
+        let scalars = text.unicodeScalars
+        var index = scalars.index(scalars.startIndex, offsetBy: opening.unicodeScalars.count)
+        var attributes: [String: String] = [:]
+        var length = opening.unicodeScalars.count
+        func advance() { index = scalars.index(after: index); length += 1 }
+        while true {
+            var blanks = 0
+            while index < scalars.endIndex, scalars[index] == " " || scalars[index] == "\t" { blanks += 1; advance() }
+            guard index < scalars.endIndex else { return nil }
+            if scalars[index] == "}" { advance(); break }
+            // Attributes are apart by blanks: `a="1"b="2"` is not a directive.
+            if blanks == 0, length > opening.unicodeScalars.count { return nil }
+            var name = String.UnicodeScalarView()
+            while index < scalars.endIndex, scalars[index].isASCII,
+                  CharacterSet.alphanumerics.contains(scalars[index]) || scalars[index] == "_" || scalars[index] == "-" {
+                name.append(scalars[index]); advance()
+            }
+            guard !name.isEmpty, index < scalars.endIndex, scalars[index] == "=" else { return nil }
+            advance()
+            guard index < scalars.endIndex, scalars[index] == "\"" else { return nil }
+            advance()
+            var value = String.UnicodeScalarView()
+            while true {
+                guard index < scalars.endIndex, length <= maximumLength else { return nil }
+                let scalar = scalars[index]
+                advance()
+                if scalar == "\"" { break }
+                if scalar == "\n" || scalar == "\r" { return nil }
+                if scalar == "\\", index < scalars.endIndex, scalars[index] == "\"" || scalars[index] == "\\" {
+                    value.append(scalars[index]); advance()
+                } else {
+                    value.append(scalar)
+                }
+            }
+            let key = String(name)
+            if attributes[key] == nil { attributes[key] = String(value) }
+        }
+        func given(_ key: String) -> String? {
+            attributes[key].flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
+        }
+        guard let path = given("path") else { return nil }
+        return (ChatFileCitation(path: path, artifactKind: given("artifact_kind"), purpose: given("purpose")), index)
+    }
+
+    /// Every citation in `text`, where it is.
+    public static func find(in text: String) -> [(range: Range<String.Index>, citation: ChatFileCitation)] {
+        var found: [(range: Range<String.Index>, citation: ChatFileCitation)] = []
+        var from = text.startIndex
+        while let match = text.range(of: opening, options: .literal, range: from..<text.endIndex) {
+            if case let (citation, end)? = parse(text[match.lowerBound...]) {
+                found.append((match.lowerBound..<end, citation))
+                from = end
+            } else {
+                from = match.upperBound
+            }
+        }
+        return found
+    }
+
+    /// The citations of a line that holds nothing else, at least one.
+    public static func line(_ line: Substring) -> [ChatFileCitation]? {
+        func blank(_ c: Character) -> Bool { c == " " || c == "\t" }
+        var rest = line.drop(while: blank)
+        while let last = rest.last, blank(last) { rest = rest.dropLast() }
+        var files: [ChatFileCitation] = []
+        while !rest.isEmpty {
+            guard case let (citation, end)? = parse(rest) else { return nil }
+            files.append(citation)
+            rest = rest[end...].drop(while: blank)
+        }
+        return files.isEmpty ? nil : files
+    }
+
+    /// `text` with each citation written as `write` gives it: by default the file's name, as plain text names it.
+    public static func replacing(in text: String, with write: (ChatFileCitation) -> String = { $0.name }) -> String {
+        let found = find(in: text)
+        guard !found.isEmpty else { return text }
+        var out = ""
+        var at = text.startIndex
+        for (range, citation) in found {
+            out += text[at..<range.lowerBound]
+            out += write(citation)
+            at = range.upperBound
+        }
+        out += text[at...]
+        return out
     }
 }
 
@@ -199,6 +361,19 @@ private enum MarkdownBlocks {
             // Before lists: `* * *` and `- - -` are rules, not bullets.
             if isThematicBreak(rest) { flush(); result.append(.rule); i += 1; continue }
             if let heading = atxHeading(rest) { flush(); result.append(heading); i += 1; continue }
+            // A line of nothing but file citations, and the lines like it after it, are one row of files.
+            if var files = ChatFileCitation.line(rest) {
+                flush()
+                i += 1
+                while i < lines.count {
+                    let (indent, next) = measure(lines[i])
+                    guard indent < 4, let more = ChatFileCitation.line(next) else { break }
+                    files += more
+                    i += 1
+                }
+                result.append(.files(files))
+                continue
+            }
             if nests, rest.utf8.first == 62, let (block, next) = quote(lines, from: i, depth: depth) {
                 flush()
                 result.append(block)

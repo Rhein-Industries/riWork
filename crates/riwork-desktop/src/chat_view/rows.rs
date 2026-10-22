@@ -234,14 +234,30 @@ impl ChatView {
                 .text_size(ui_text::text(12.0))
                 .text_color(rgb(look.colors.muted))
                 .children(item.and_then(|(_, item)| match &item.body {
-                    ItemBody::AgentMessage { text } => Some(self.selectable(
-                        &item.id,
-                        text.clone(),
-                        Vec::new(),
-                        Vec::new(),
-                        look,
-                        cx,
-                    )),
+                    ItemBody::AgentMessage { text } => {
+                        // A cited file reads as its name, linked as a path in the text is.
+                        let (text, links) = markdown::cited_text(text);
+                        let highlights = links
+                            .iter()
+                            .map(|(range, _)| {
+                                (
+                                    range.clone(),
+                                    gpui::HighlightStyle {
+                                        color: Some(rgb(look.colors.cyan).into()),
+                                        ..Default::default()
+                                    },
+                                )
+                            })
+                            .collect();
+                        Some(self.selectable(
+                            &item.id,
+                            text.into_owned(),
+                            highlights,
+                            links,
+                            look,
+                            cx,
+                        ))
+                    }
                     _ => None,
                 }))
                 .into_any_element(),

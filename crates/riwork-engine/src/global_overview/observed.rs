@@ -27,6 +27,8 @@ const TAIL_BYTES: u64 = 2 * 1024 * 1024;
 const TOTAL_BYTES: u64 = 12 * 1024 * 1024;
 const CACHE_BYTES: u64 = 256 * 1024;
 const REQUEST_BYTES: usize = 24 * 1024;
+/// Bumped when what a cached snapshot says changes: 2 names the files a message cites.
+const CACHE_VERSION: u8 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {
@@ -269,7 +271,7 @@ fn observe(home: &Path, chat_id: &str, remaining: &mut u64) -> Option<Cached> {
             && bytes.len() as u64 <= CACHE_BYTES
         {
             if let Ok(cached) = serde_json::from_slice::<Cached>(&bytes) {
-                if cached.v == 1 && cached.fingerprint == fingerprint {
+                if cached.v == CACHE_VERSION && cached.fingerprint == fingerprint {
                     return (!cached.unreadable).then_some(cached);
                 }
             }
@@ -299,7 +301,7 @@ fn observe(home: &Path, chat_id: &str, remaining: &mut u64) -> Option<Cached> {
     let Some(cached) = fold(chat_id, fingerprint.clone(), &bytes, start == 0) else {
         if cacheable {
             let unreadable = Cached {
-                v: 1,
+                v: CACHE_VERSION,
                 fingerprint,
                 complete: false,
                 pending: Vec::new(),
@@ -499,7 +501,7 @@ fn fold(chat_id: &str, fingerprint: Fingerprint, bytes: &[u8], at_head: bool) ->
     let mut pending: Vec<_> = pending.into_values().collect();
     pending.sort_by_key(|pending| pending.source.event_seq);
     Some(Cached {
-        v: 1,
+        v: CACHE_VERSION,
         fingerprint,
         complete,
         pending,
@@ -541,9 +543,11 @@ fn compact(text: &str, limit: usize) -> String {
 }
 fn describe(body: &ItemBody) -> Option<(&'static str, String)> {
     let (kind, text) = match body {
-        ItemBody::AgentMessage { text } if !text.trim().is_empty() => {
-            ("message", compact(text, 300))
-        }
+        // A cited file reads as its name; first, so the cut never splits a citation.
+        ItemBody::AgentMessage { text } if !text.trim().is_empty() => (
+            "message",
+            compact(&crate::chat::citation::with_names(text), 300),
+        ),
         ItemBody::Command {
             command, exit_code, ..
         } => (
@@ -891,6 +895,21 @@ mod tests {
             true,
         );
         assert_eq!(plan.recent.unwrap().text, "Run tests");
+    }
+
+    #[test]
+    fn a_recent_message_names_the_files_it_cites() {
+        let cached = folded(
+            &[event(
+                1,
+                json!({"event":"item_completed","item":{"id":"m","status":"completed","body":{"type":"agent_message","text":"Report ready:\n:codex-file-citation{path=\"/work/out/Bericht März.docx\" artifact_kind=\"document\"}"}}}),
+            )],
+            true,
+        );
+        assert_eq!(
+            cached.recent.unwrap().text,
+            "Report ready: Bericht März.docx"
+        );
     }
 
     #[test]

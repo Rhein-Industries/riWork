@@ -39,6 +39,21 @@ import RiWorkCore
         XCTAssertEqual(ChatFileCatalog.resolve(path: "chat.swift", line: 17, files: files)?.line, 17)
     }
 
+    func testCitedFilesJoinTheTurnPagerAndResolveByTheirPath() {
+        let path = "/Users/me/out/Bericht März.docx"
+        let text = "Done.\n:codex-file-citation{path=\"\(path)\" artifact_kind=\"document\" purpose=\"output\"}\nSee :codex-file-citation{path=\"/Users/me/out/b.pdf\"}."
+        XCTAssertEqual(ChatFileCatalog.references(in: text), [.init(path: path), .init(path: "/Users/me/out/b.pdf")])
+        XCTAssertEqual(ChatFileCatalog.references(in: ":codex-file-citation{path=\"https://example.com/a.pdf\"}"), [], "a web address is no local file")
+        let files = ChatFileCatalog.entries(items: [ChatItem(id: "answer", turnID: "turn", status: .completed, body: .agentMessage(text))])
+        XCTAssertEqual(files.map(\.displayName), ["Bericht März.docx", "b.pdf"])
+        XCTAssertEqual(ChatFileCatalog.resolve(path: path, files: files)?.source, "Answer")
+        // A citation of a file an earlier call of the turn made opens that call's entry.
+        let made = ChatItem(id: "make", turnID: "turn", status: .completed, body: .command(command: "pandoc", cwd: nil, output: "", exitCode: 0),
+                            presentation: .init(semantics: .init(kind: .shell, produced: [.init(path: path)])))
+        let turn = ChatFileCatalog.entries(items: [made, ChatItem(id: "answer", turnID: "turn", status: .completed, body: .agentMessage(text))])
+        XCTAssertEqual(ChatFileCatalog.resolve(path: path, files: turn)?.itemID, "make")
+    }
+
     func testAnswerLinksReuseEarlierFileInTheTurnPager() {
         let items = [
             ChatItem(id: "edit", turnID: "one", status: .completed, body: .fileChange([.init(path: "src/main.swift", kind: .modify)])),

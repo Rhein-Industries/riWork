@@ -386,7 +386,7 @@ extension ChatItemBody {
     public var summary: String {
         switch self {
         case .userMessage(let text): "You: \(text)"
-        case .agentMessage(let text): text
+        case .agentMessage(let text): ChatFileCitation.replacing(in: text)
         case .reasoning: "Thinking"
         case .plan(_, let steps): "Plan, \(steps.filter { $0.status == .completed }.count) of \(steps.count) steps done"
         case .command(let command, _, _, let exitCode): "Command: \(command)" + (exitCode.map { $0 == 0 ? "" : ", exit \($0)" } ?? "")

@@ -16,6 +16,8 @@
 //!   and starts drivers with the configuration `launch` resolves.
 //! - `text` writes a transcript as plain text, for what reads a chat like a
 //!   terminal (`riwork orchestrator output`).
+//! - `citation` reads the file citations Codex writes into its messages, for the
+//!   views that draw them as files and the plain text that names them.
 //! - `catalog` reads the models each provider offers from what chats saved, for
 //!   a chat that is not running that provider yet.
 //! - `workers` puts RiWork's own workers (terminals and chats a chat started) in that
@@ -33,6 +35,7 @@ pub mod attachments;
 pub mod billing;
 pub mod catalog;
 pub mod child;
+pub mod citation;
 pub mod claude;
 pub mod client;
 pub mod codex;

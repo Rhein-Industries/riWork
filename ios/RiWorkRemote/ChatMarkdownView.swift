@@ -68,6 +68,8 @@ private struct MarkdownBlockView: View {
             DesktopRule()
         case .table(let header, let rows):
             TableBlock(header: header, rows: rows)
+        case .files(let citations):
+            MarkdownCitedFiles(citations: citations)
         }
     }
 
@@ -93,6 +95,30 @@ private struct MarkdownFileReferences: View {
     private var references: [ChatFileEntry] { index.references(in: source, files: files) }
     var body: some View {
         if !references.isEmpty { ChatFileStrip(files: references) }
+    }
+}
+
+/// Files the agent cited on lines of their own (`:codex-file-citation{…}`), as the chips its file links get: a tap opens the file in
+/// the turn's viewer. The catalog lists every file a message cites, so a citation finds its entry there; one it does not know (a view
+/// without the catalog) reads as the file's name, without a tap that could open another file.
+private struct MarkdownCitedFiles: View {
+    @Environment(\.desktopStyle) private var style
+    @Environment(\.markdownMuted) private var muted
+    @Environment(\.chatFileEntries) private var files
+    let citations: [ChatFileCitation]
+    var body: some View {
+        let resolved = citations.map { ($0, ChatFileCatalog.resolve(path: $0.path, files: files)) }
+        var seen = Set<String>()
+        let known = resolved.compactMap { $0.1 }.filter { seen.insert($0.id).inserted }
+        let unknown = resolved.filter { $0.1 == nil }.map { $0.0 }
+        VStack(alignment: .leading, spacing: 4) {
+            if !known.isEmpty { ChatFileStrip(files: known) }
+            ForEach(unknown.indices, id: \.self) { index in
+                Label(unknown[index].name, systemImage: "doc").chatProse().foregroundStyle(muted ? style.muted : style.text)
+                    .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

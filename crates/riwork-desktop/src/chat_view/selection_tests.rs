@@ -714,3 +714,54 @@ fn chat_base_menu_choice_has_radio_semantics_and_records_one_configuration(
     );
     assert!(view.read_with(cx, |v, _| v.menu.is_none()));
 }
+
+#[gpui::test]
+fn a_cited_file_copies_as_its_name_between_the_text_around_it(cx: &mut TestAppContext) {
+    let (handle, view, _) = editor_tests::mount_selection(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        install(
+            &view,
+            vec![message(
+                "cited",
+                "Wrote the report.\n:codex-file-citation{path=\"/work/out/Bericht März.docx\" artifact_kind=\"document\"}\nSee :codex-file-citation{path=\"/work/out/b.pdf\"} too.",
+            )],
+            window,
+            cx,
+        );
+        assert_eq!(
+            window.find("transcript:cited/2").label(),
+            Some("See b.pdf too.")
+        );
+        select_between(window, "transcript:cited/0", "transcript:cited/2", cx);
+        assert_eq!(
+            copied(window, cx),
+            "Wrote the report.\nBericht März.docx\nSee b.pdf too."
+        );
+    })
+    .unwrap();
+}
+
+#[gpui::test]
+fn commentary_names_a_cited_file_on_screen_and_in_its_selection_text(cx: &mut TestAppContext) {
+    let (handle, view, _) = editor_tests::mount_selection(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        let mut note = message(
+            "note",
+            "Writing :codex-file-citation{path=\"/work/out/Bericht März.docx\"} now.",
+        );
+        note.presentation.phase = Some(crate::chat::model::MessagePhase::Commentary);
+        install(&view, vec![note, message("after", "Done.")], window, cx);
+        // Verbose shows commentary as its own row, outside the turn's activity group.
+        view.update(cx, |v, cx| v.apply_display_mode(DisplayMode::Verbose, cx));
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("transcript:note").label(),
+            Some("Writing Bericht März.docx now.")
+        );
+        // What a selection of the row copies is the same text.
+        let leaves = selection_document::leaves(view.read(cx), widgets::Look::of(cx));
+        let note = leaves.iter().find(|leaf| leaf.key == "note").unwrap();
+        assert_eq!(note.text, "Writing Bericht März.docx now.");
+    })
+    .unwrap();
+}

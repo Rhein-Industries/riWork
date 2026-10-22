@@ -489,8 +489,9 @@ pub fn chat_end(outcome: &TurnOutcome, reply: Option<&str>, now: u64) -> WorkerF
             TurnOutcome::Failed { .. } => WorkerEnd::Failed,
         },
         ended_at: now,
+        // A file the reply cites reads as its name; first, so the bound never cuts one.
         tail: reply
-            .map(crate::subshells::bounded_output)
+            .map(|reply| crate::subshells::bounded_output(&super::citation::with_names(reply)))
             .unwrap_or_default(),
         turn: None,
         turn_end: None,
@@ -1537,6 +1538,13 @@ mod tests {
             .status,
             WorkerEnd::Failed
         );
+        // A long path cut to the line bound would leave half a citation: it reads as its name.
+        let cited = format!(
+            "Done.\n:codex-file-citation{{path=\"/work/{}/Bericht März.docx\" purpose=\"output\"}}",
+            "d".repeat(400)
+        );
+        let end = chat_end(&TurnOutcome::Completed, Some(&cited), 7);
+        assert_eq!(end.tail, "Done.\nBericht März.docx");
     }
 
     #[test]

@@ -127,9 +127,13 @@ pub fn tail(transcript: &Transcript, max: usize) -> Vec<String> {
     lines
 }
 
-/// A message: its first line is labelled, the rest are indented under it.
+/// A message: its first line is labelled, the rest are indented under it. A file it
+/// cites reads as its path.
 fn message(lines: &mut Vec<String>, label: &str, text: &str) {
-    let mut parts = clean(text).lines().map(str::to_owned).collect::<Vec<_>>();
+    let mut parts = clean(&super::citation::with_paths(text))
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
     if parts.is_empty() {
         parts.push(String::new());
     }
@@ -286,6 +290,20 @@ mod tests {
                 "agent: Ready.",
                 "  Waiting for an objective.",
             ]
+        );
+    }
+
+    #[test]
+    fn a_file_the_agent_cites_reads_as_its_path() {
+        let transcript = transcript(vec![(
+            ItemStatus::Completed,
+            ItemBody::AgentMessage {
+                text: "Done.\n:codex-file-citation{path=\"/work/out/Bericht März.docx\" artifact_kind=\"document\"}".into(),
+            },
+        )]);
+        assert_eq!(
+            lines(&transcript),
+            ["agent: Done.", "  /work/out/Bericht März.docx"]
         );
     }
 

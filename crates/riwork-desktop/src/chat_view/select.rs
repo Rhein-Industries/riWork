@@ -810,7 +810,7 @@ impl ChatView {
 
     /// Keys carry the owner's stable ID. Resolve bounded key prefixes through
     /// the model index, rather than formatting every item ID on every frame.
-    fn selection_owner<'a>(&self, key: &'a str) -> Option<&'a str> {
+    pub(super) fn selection_owner<'a>(&self, key: &'a str) -> Option<&'a str> {
         [
             "",
             "user:",

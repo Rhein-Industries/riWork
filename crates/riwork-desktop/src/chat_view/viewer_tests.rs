@@ -381,3 +381,61 @@ fn native_viewer_routes_zoom_paging_and_escape_without_touching_the_composer(
     assert_eq!(fixture.read_with(cx, |fixture, _| fixture.closes), 1);
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[gpui::test]
+fn a_cited_file_is_a_chip_that_opens_the_turn_preview_at_that_file(cx: &mut TestAppContext) {
+    let root = std::env::temp_dir().join(format!("riwork-citation-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("outputs")).unwrap();
+    let report = root.join("outputs/Bericht März.docx");
+    std::fs::write(&report, "fixture").unwrap();
+    let (handle, view, _) = editor_tests::mount_selection(cx);
+    let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = opened.clone();
+    cx.update(|cx| {
+        cx.subscribe(&view, move |_, event: &ChatViewEvent, _| {
+            if let ChatViewEvent::OpenPreview { sequence } = event {
+                observed.borrow_mut().push(sequence.clone());
+            }
+        })
+        .detach()
+    });
+    view.update(cx, |view, cx| {
+        view.model.link = state::Link::Live;
+        let mut info = testing::info("chat");
+        info.cwd = root.clone();
+        view.model.transcript.info = Some(info);
+        let mut answer = item(
+            "answer",
+            "turn",
+            ItemBody::AgentMessage {
+                text: format!(
+                    "Done.\n:codex-file-citation{{path=\"{}\" artifact_kind=\"document\" purpose=\"output\"}}",
+                    report.display()
+                ),
+            },
+        );
+        answer.presentation.phase = Some(MessagePhase::Final);
+        view.model.transcript.items = vec![answer];
+        view.refresh_projection(cx);
+        cx.notify();
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // The chip reads as the file's name; the directive itself is nowhere on screen.
+        assert_eq!(
+            window.find("transcript:answer/1/file/0").label(),
+            Some("Bericht März.docx")
+        );
+        assert_eq!(window.find("transcript:answer/0").label(), Some("Done."));
+        window.click("chip:answer/1/file/0".to_owned(), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let opened = opened.borrow();
+    assert_eq!(opened.len(), 1);
+    let current = opened[0].current().unwrap();
+    assert_eq!(current.title, "Bericht März.docx");
+    assert_eq!(current.target, report.to_string_lossy());
+    assert_eq!(current.source, "Answer");
+    let _ = std::fs::remove_dir_all(root);
+}

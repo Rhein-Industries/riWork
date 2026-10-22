@@ -273,6 +273,11 @@ fn message_references(text: &str) -> Vec<(String, Option<crate::chat::model::Cha
                     }
                 }
                 Block::Rule => {}
+                Block::Files(files) => refs.extend(files.iter().map(|file| {
+                    let image = markdown::is_local_image(&file.path)
+                        .then(|| crate::chat::media::reference(file.name(), &file.path));
+                    (file.path.clone(), image)
+                })),
             }
         }
     }

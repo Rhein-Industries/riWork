@@ -1,12 +1,15 @@
 //! A small Markdown reader for what agents write: headings, paragraphs, emphasis, inline and
-//! fenced code, bullet and numbered lists (nested), links, block quotes, rules and tables.
+//! fenced code, bullet and numbered lists (nested), links, block quotes, rules and tables,
+//! and Codex's file citations (`:codex-file-citation{path="…"}`).
 //!
 //! It reads CommonMark loosely, because the text arrives while it streams. An unclosed code
-//! fence runs to the end of the text, a `**` that never closes is two asterisks, and a line
-//! break inside a paragraph stays a line break, as the agents' own terminals show it. Nothing
-//! here depends on the GUI.
+//! fence runs to the end of the text, a `**` that never closes is two asterisks, a citation
+//! whose brace has not closed yet is text, and a line break inside a paragraph stays a line
+//! break, as the agents' own terminals show it. Nothing here depends on the GUI.
 
-use std::sync::Arc;
+use std::{borrow::Cow, ops::Range, sync::Arc};
+
+use crate::chat::citation::{self, FileCitation};
 
 /// How a run of text is set.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -88,6 +91,9 @@ pub enum Block {
         rows: Vec<Vec<Vec<Span>>>,
     },
     Rule,
+    /// Files cited on lines of their own, one after the other. A citation inside a sentence
+    /// is a link span instead, named for its file.
+    Files(Vec<FileCitation>),
 }
 
 /// Blocks nest (a quote in a list in a quote); past this the rest is plain text.
@@ -174,6 +180,7 @@ mod incremental_tests {
             "```\r\nwindows\r\n```\r\n\r\nTail\r\n",
             "\u{feff}# Heading\n\n```\ncode\n```\n\nTail",
             "Text\n```\nunfinished\n\nmore",
+            "```\nx\n```\n\n:codex-file-citation{path=\"/out/Bericht März.docx\" purpose=\"output\"}\nQbit: see :codex-file-citation{path=\"/out/b.pdf\"}.\n:codex-file-citation{path=\"/out/c.png\"}\n\n- item\n  :codex-file-citation{path=\"/out/d.txt\"}",
         ];
         for source in sources {
             let mut cache = ParseCache::default();
@@ -272,6 +279,29 @@ pub fn plain_text(spans: &[Span]) -> String {
     spans.iter().map(|span| span.text.as_str()).collect()
 }
 
+/// Text a row shows without Markdown (commentary): each citation reads as its file's name,
+/// linked to the file. The row draws this text and selecting it copies the same.
+pub(super) fn cited_text(text: &str) -> (Cow<'_, str>, Vec<(Range<usize>, String)>) {
+    let found = citation::find(text);
+    if found.is_empty() {
+        return (Cow::Borrowed(text), Vec::new());
+    }
+    let mut shown = String::with_capacity(text.len());
+    let mut links = Vec::new();
+    let mut at = 0;
+    for (range, file) in found {
+        shown.push_str(&text[at..range.start]);
+        links.push((
+            shown.len()..shown.len() + file.name().len(),
+            file.path.clone(),
+        ));
+        shown.push_str(file.name());
+        at = range.end;
+    }
+    shown.push_str(&text[at..]);
+    (Cow::Owned(shown), links)
+}
+
 // ---------------------------------------------------------------------------------------
 // Blocks
 // ---------------------------------------------------------------------------------------
@@ -367,6 +397,16 @@ fn blocks_with_boundary(
                 },
                 None => Block::Quote(blocks(&inner, depth + 1)),
             });
+            continue;
+        }
+        if let Some(mut files) = citation::line(line) {
+            flush(&mut paragraph, &mut out);
+            i += 1;
+            while let Some(more) = lines.get(i).and_then(|line| citation::line(line)) {
+                files.extend(more);
+                i += 1;
+            }
+            out.push(Block::Files(files));
             continue;
         }
         if paragraph.is_empty()
@@ -800,29 +840,24 @@ pub fn inline(text: &str) -> Vec<Span> {
     local_images(spans)
 }
 
+/// Whether `target` is a local image, by its extension.
+pub(super) fn is_local_image(target: &str) -> bool {
+    super::links::local_target(target)
+        .ok()
+        .is_some_and(|(path, _)| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    matches!(
+                        ext.to_ascii_lowercase().as_str(),
+                        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "ico"
+                    )
+                })
+        })
+}
+
 fn local_images(spans: Vec<Span>) -> Vec<Span> {
-    let is_image = |target: &str| {
-        super::links::local_target(target)
-            .ok()
-            .is_some_and(|(path, _)| {
-                path.extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| {
-                        matches!(
-                            ext.to_ascii_lowercase().as_str(),
-                            "png"
-                                | "jpg"
-                                | "jpeg"
-                                | "gif"
-                                | "webp"
-                                | "bmp"
-                                | "tif"
-                                | "tiff"
-                                | "ico"
-                        )
-                    })
-            })
-    };
+    let is_image = is_local_image;
     let mut out = Vec::new();
     for span in spans {
         if span.image {
@@ -996,6 +1031,24 @@ fn inline_into(text: &str, style: Style, link: Option<&str>, out: &mut Vec<Span>
                     }
                 }
             }
+            // A citation inside a sentence reads as its file's name, linked to the file.
+            ':' => match citation::parse(rest) {
+                Some((file, used)) => {
+                    push(out, &plain, style, link);
+                    plain.clear();
+                    out.push(Span {
+                        text: file.name().to_owned(),
+                        style,
+                        link: Some(file.path),
+                        image: false,
+                    });
+                    i += used;
+                }
+                None => {
+                    plain.push(c);
+                    i += width;
+                }
+            },
             'h' if link.is_none() && !before.is_some_and(char::is_alphanumeric) => {
                 match bare_url(rest) {
                     Some(url) => {
@@ -1450,6 +1503,119 @@ mod tests {
         );
     }
 
+    const REPORT: &str = "/Users/me/projects/Baumer_featuring_UBS/outputs/ocra-ky3p/Baumer_Organisation_Fragen_und_Nachweise_20261021.docx";
+
+    fn cite(path: &str) -> String {
+        format!(
+            ":codex-file-citation{{path=\"{path}\" artifact_kind=\"document\" purpose=\"output\"}}"
+        )
+    }
+
+    #[test]
+    fn citations_on_lines_of_their_own_are_files_and_in_a_sentence_linked_names() {
+        let source = format!(
+            "{}\nQbit: 114 eigene Einträge plus Übersicht.\n{}\n  {} {}\n\nSee {} for the rest.",
+            cite(REPORT),
+            cite("/out/Qbit Fragen.docx"),
+            cite("/out/b.pdf"),
+            cite("/out/c.txt"),
+            cite("/out/Zuarbeit März.xlsx"),
+        );
+        let blocks = parse(&source);
+        assert_eq!(blocks.len(), 4, "{blocks:#?}");
+        let Block::Files(files) = &blocks[0] else {
+            panic!("{:?}", blocks[0]);
+        };
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, REPORT);
+        assert_eq!(files[0].artifact_kind.as_deref(), Some("document"));
+        assert_eq!(files[0].purpose.as_deref(), Some("output"));
+        // The line between them stays its own paragraph, and the next lines of citations
+        // are one row of files.
+        assert_eq!(
+            text(&blocks[1]),
+            "Qbit: 114 eigene Einträge plus Übersicht."
+        );
+        let Block::Files(files) = &blocks[2] else {
+            panic!("{:?}", blocks[2]);
+        };
+        assert_eq!(
+            files.iter().map(FileCitation::name).collect::<Vec<_>>(),
+            ["Qbit Fragen.docx", "b.pdf", "c.txt"]
+        );
+        // Inside a sentence, the file's name links to its path; selecting it copies the name.
+        let Block::Paragraph(spans) = &blocks[3] else {
+            panic!("{:?}", blocks[3]);
+        };
+        assert_eq!(plain_text(spans), "See Zuarbeit März.xlsx for the rest.");
+        assert_eq!(spans[1].link.as_deref(), Some("/out/Zuarbeit März.xlsx"));
+        assert!(!spans[1].image);
+        // Inside a list item and a quote as well.
+        let Block::List { items, .. } = parse(&format!("- One\n  {}", cite("/out/d.md"))).remove(0)
+        else {
+            panic!()
+        };
+        assert!(matches!(&items[0][1], Block::Files(files) if files[0].path == "/out/d.md"));
+        let Block::Quote(inner) = parse(&format!("> {}", cite("/out/e.md"))).remove(0) else {
+            panic!()
+        };
+        assert!(matches!(&inner[0], Block::Files(_)));
+    }
+
+    #[test]
+    fn malformed_unfinished_and_quoted_citations_stay_text() {
+        for literal in [
+            ":codex-file-citation{purpose=\"output\"}",
+            ":codex-file-citation{path=\"/out/a.docx\"",
+            ":codex-file-citation{path=\"/out/a.docx\" purpose=\"output\"",
+            ":codex-file-citation{path=\"/out/a.do",
+            ":codex-file-citation{path=/out/a.docx}",
+            "a :codex-file-citation{path=\"\"} b",
+        ] {
+            let blocks = parse(literal);
+            assert_eq!(blocks.len(), 1, "{literal}: {blocks:?}");
+            assert_eq!(text(&blocks[0]), literal);
+        }
+        // Code shows the directive itself.
+        let spans = inline(&format!("`{}`", cite("/out/a.docx")));
+        assert_eq!(plain_text(&spans), cite("/out/a.docx"));
+        assert!(spans[0].style.code && spans[0].link.is_none());
+        assert!(matches!(
+            &parse(&format!("```\n{}\n```", cite("/out/a.docx")))[0],
+            Block::Code { .. }
+        ));
+        // While a message streams, a directive is text until its brace closes, then a file.
+        let full = format!("Done.\n{}", cite(REPORT));
+        for end in full.char_indices().map(|(at, _)| at).chain([full.len()]) {
+            let blocks = parse(&full[..end]);
+            if end == full.len() {
+                assert!(matches!(&blocks[1], Block::Files(_)), "{blocks:?}");
+            } else if end > "Done.\n".len() {
+                assert_eq!(text(&blocks[0]), full[..end].trim_end());
+            }
+        }
+    }
+
+    #[test]
+    fn plain_rows_name_cited_files_and_link_them() {
+        let source = format!("Wrote {} and {}.", cite(REPORT), cite("/b.pdf"));
+        let (shown, links) = cited_text(&source);
+        assert_eq!(
+            shown,
+            "Wrote Baumer_Organisation_Fragen_und_Nachweise_20261021.docx and b.pdf."
+        );
+        assert_eq!(links.len(), 2);
+        assert_eq!(
+            &shown[links[0].0.clone()],
+            "Baumer_Organisation_Fragen_und_Nachweise_20261021.docx"
+        );
+        assert_eq!(links[0].1, REPORT);
+        assert_eq!(&shown[links[1].0.clone()], "b.pdf");
+        assert!(
+            matches!(cited_text("No files."), (Cow::Borrowed("No files."), links) if links.is_empty())
+        );
+    }
+
     #[test]
     fn hostile_input_neither_panics_nor_runs_away() {
         let deep = ">".repeat(500) + " x";
@@ -1460,6 +1626,8 @@ mod tests {
         let _ = inline(&brackets);
         let lists = "- a\n".to_owned() + &"  - b\n".repeat(200);
         assert!(!parse(&lists).is_empty());
+        let citations = ":codex-file-citation{path=\"".repeat(500);
+        assert_eq!(plain_text(&inline(&citations)), citations);
         for odd in [
             "", "\n\n", "| |\n|-|", "```", "- ", "1.", "> ", "[](", "é*é*é", "**é**",
         ] {

@@ -139,8 +139,12 @@ enum ChatFileCatalog {
     }
 
     static func references(in text: String) -> [ChatPathRef] {
-        // Matches Markdown file links and ordinary file:line references, without treating web URLs as local files.
+        // Matches Codex file citations, Markdown file links and ordinary file:line references, without treating web URLs as local files.
         var refs: [ChatPathRef] = []
+        for (_, citation) in ChatFileCitation.find(in: text) where !citation.path.hasPrefix("http:") && !citation.path.hasPrefix("https:") {
+            let ref = ChatPathRef(path: citation.path, line: nil)
+            if !refs.contains(ref) { refs.append(ref) }
+        }
         for regex in referenceExpressions {
             for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
                 guard let pathRange = Range(match.range(at: 1), in: text) else { continue }

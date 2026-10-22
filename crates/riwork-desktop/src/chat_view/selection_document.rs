@@ -293,7 +293,7 @@ fn append_item(
     let mut put = |key: String, text: String| entries.push(SourceLeaf { key, text, row });
     match &item.body {
         ItemBody::AgentMessage { text } if projected.kind == RowKind::Commentary => {
-            put(item.id.clone(), text.clone());
+            put(item.id.clone(), markdown::cited_text(text).0.into_owned());
         }
         ItemBody::AgentMessage { text } => {
             blocks(&view.parsed(item, text), &item.id, row, result);
@@ -617,6 +617,16 @@ fn blocks(source: &[Block], key: &str, row: usize, out: &mut Vec<SourceLeaf>) {
                 }
             }
             Block::Rule => {}
+            // A chip's text is its file's name.
+            Block::Files(files) => {
+                for (at, file) in files.iter().enumerate() {
+                    out.push(SourceLeaf {
+                        key: super::media::cited_file_key(&key, at),
+                        text: file.name().to_owned(),
+                        row,
+                    });
+                }
+            }
         }
     }
 }

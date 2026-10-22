@@ -3847,6 +3847,28 @@ extension ChatViewTests {
         await finish(rig)
     }
 
+    func testACitedFileIsAChipThatOpensTheFileViewer() async throws {
+        let rig = try await makeRig(hardwareKeyboard: false, width: 402, height: 874, look: .nativeLight, pushed: true)
+        rig.model.keyboard.setFocusSetting(.never)
+        let path = "/Users/me/outputs/Quarterly Report.docx"
+        let answer = ChatItem(id: "cited", turnID: "cited-turn", status: .completed,
+            body: .agentMessage("Done.\n:codex-file-citation{path=\"\(path)\" artifact_kind=\"document\" purpose=\"output\"}"))
+        await rig.transport.append(chatID, [.info(chat()), .itemCompleted(answer), .state(.idle)])
+        _ = try await openChat(rig)
+        let file = try XCTUnwrap(ChatFileCatalog.entries(items: [answer]).first)
+        XCTAssertEqual(file.path, path)
+        await eventually("the citation is the file's chip") { rig.layout.frames["file-chip-\(file.id)"] != nil }
+        XCTAssertFalse(try renderedText(rig, in: rig.window.bounds).contains("codex-file-citation"), "the directive is never shown")
+        try XCTUnwrap(rig.layout.actions["file-\(file.id)"])()
+        await eventually("the viewer shows the cited file") {
+            guard let frame = rig.layout.frames["file-toolbar"] else { return false }
+            return (try? self.renderedText(rig, in: frame).contains("Quarterly Report.docx")) == true
+        }
+        try XCTUnwrap(rig.layout.actions["file-back"])()
+        await eventually("Back returns to the chat") { rig.layout.frames["file-toolbar"] == nil && self.composer(rig) != nil }
+        await finish(rig)
+    }
+
     /// Real SwiftUI list screen, 2,200 items, 1,200 calls in one group, 100 images, large call output,
     /// token-rate updates and actual scroll/layout/disclosure/preview operations.
     func testToolUILargeFixturePerformance() async throws {

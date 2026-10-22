@@ -74,7 +74,7 @@ public struct ChatSubagent: Codable, Sendable, Equatable {
                 children = states.keys.sorted().prefix(32).map { id in
                     let state = states[id] ?? .null
                     let status: Status = switch state["status"].string { case "running", "pendingInit": .running; case "completed": .done; case "errored": .failed; case "shutdown", "interrupted": .interrupted; default: .unknown }
-                    return Child(id: String(id.prefix(120)), status: status, summary: state["message"].string.map { String($0.prefix(4096)) })
+                    return Child(id: String(id.prefix(120)), status: status, summary: state["message"].string.map { String(ChatFileCitation.replacing(in: $0).prefix(4096)) })
                 }
             }
             let status: Status = children.contains { $0.status == .running } ? .running : children.contains { $0.status == .failed } ? .failed :
