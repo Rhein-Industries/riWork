@@ -1,0 +1,686 @@
+RiWork performance recovery — implementation integrated locally; review pending
+Recorded: 2026-10-22T20:03:16.467533+00:00
+
+CURRENT INTEGRATION STATUS (supersedes historical statuses below)
+
+Integration task: c9484da1-33e7-4f11-b1c3-2eccf9bca318 (in_progress; left for orchestrator review)
+Accepted original performance task: f389de22-9c12-4edf-a59d-5198ce37d5ad (done)
+Accepted scroll-anchor correction: 6e63d998-fa21-4151-b58b-072a9b397a6f (done)
+Project: 39832c2e-23a5-476d-aa8f-5ff34a02d314
+Sole worker shell: b6d8011c-0c7d-429f-837d-57edfc731295
+Codex thread: 01a16492-b781-7d72-b9a8-96ed02c6c8c9
+Source worktree: b4f35d44-fc70-49e2-99a9-88782f64545c
+Source branch: recovery/astra-performance-20261022
+Implementation/test cwd: /Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022
+Primary worktree: aee3a8be-5d60-44a1-a30d-4ee1acfeb066
+Primary branch: feat/chat-output-delegation-20261018
+Primary directory: /Users/dominik/orca/projects/riWork
+Starting commit on both branches: 4ec85e85c4f94a2fb3e67298bd15417fe0f4de41
+Implementation commit: c9a8723ce901d0f99bf5d2c9ba880c8b2bcc8baa
+Primary advanced to that exact implementation commit by git merge --ff-only
+--no-edit at 2026-10-22T20:01:34.570105+00:00; primary was clean before and after.
+This report is a subsequent documentation-only commit on the recovery branch.
+Its final commit ID and fast-forward receipt are recorded in the retained
+integration-20261022/final-integration.json evidence file, avoiding a self-
+referential report hash. No source changes were made during integration.
+
+All 17 implementation hashes and the tracked patch matched the parent-accepted
+budget-control-provenance.json and budget-control-current.patch before staging.
+The code commit contains exactly those 17 implementation files, including the
+new message_parts.rs and both accepted fixes; no unrelated file was included.
+Both accepted tasks remain done. Integration is ready for review, not marked done.
+
+Runtime identity: Codex gpt-6-astra, ultra effort, Fast, explicit system-default
+account/home /Users/dominik/.codex. Latest local turn_context confirms Astra and
+ultra; local config confirms service_tier=fast; shell launch metadata and actual
+CODEX_HOME confirm the pinned home. The user's fresh /status confirms
+dokgst@gmail.com / Pro200 / weekly 74% remaining at assignment time. No new
+account login, quota request, model change, or additional session was launched.
+The shell's persisted cwd/worktree is primary; the assigned implementation cwd
+was explicitly set to recovery for every command, with primary addressed only
+by explicit path for read checks and authorized Git integration. The inherited
+RIWORK_PROJECT_ID was unrelated; task/project lookups used explicit IDs.
+Cua.ai Driver remains the required desktop provider; no desktop input was used.
+
+ACCEPTED CHANGES
+
+1. Split long final answers into virtual list sections, preserving original
+   message/block identities, Find destinations, copy, and trailing artifacts.
+2. Reuse tracked tab activity and sample only missing shell observations.
+3. Renew preview leases every five seconds; idle request polls skip the lock
+   while nonempty requests retain exactly-once claiming.
+4. Capture a bounded log prefix briefly under the chat lock, then parse and
+   validate resume history outside the lock with truncation failing closed.
+Accepted correction 1: per-section cache invalidation preserves other mounted
+sections; actual message changes retain intentional whole-message invalidation.
+Accepted correction 2: established section boundaries survive threshold changes,
+so reading anchors persist while ordinary projection and tail-following remain.
+
+Implementation files (all exactly match accepted SHA256 provenance):
+  crates/riwork-desktop/src/chat_view.rs
+  crates/riwork-desktop/src/chat_view/display.rs
+  crates/riwork-desktop/src/chat_view/display_tests.rs
+  crates/riwork-desktop/src/chat_view/find_tests.rs
+  crates/riwork-desktop/src/chat_view/message_parts.rs
+  crates/riwork-desktop/src/chat_view/prose.rs
+  crates/riwork-desktop/src/chat_view/rows.rs
+  crates/riwork-desktop/src/chat_view/select.rs
+  crates/riwork-desktop/src/chat_view/selection_document.rs
+  crates/riwork-desktop/src/chat_view/selection_tests.rs
+  crates/riwork-desktop/src/main.rs
+  crates/riwork-engine/src/chat/host.rs
+  crates/riwork-engine/src/chat/host/tests.rs
+  crates/riwork-engine/src/chat/log.rs
+  crates/riwork-engine/src/preview_control.rs
+  crates/riwork-engine/src/preview_control/tests.rs
+  crates/riwork-engine/src/project_tabs.rs
+  PERFORMANCE_RECOVERY_REPORT.txt (this integration report and archived evidence)
+
+FOCUSED INTEGRATION VALIDATION
+
+Existing source-proven debug test binaries were reused; no build, install, or
+primary target output was needed. Current source matches the accepted binary's
+recorded build input hashes. Baseline fixture contents still match all 942 Git
+blobs from original 4ec85e8; both binaries matched their recorded SHA256 before
+and after validation. Earlier build logs and red/green evidence remain below.
+
+Desktop correctness: 18 passed, 0 failed, 2 deliberately ignored slow selection
+checks, 10.19 s test time; process wall/user/sys 10.26 / 6.36 / 0.18 s.
+Includes all default selection tests (cache retention, selection persistence,
+actual changed-content invalidation), three threshold-anchor/tail regressions,
+existing streaming section-anchor test, and Find into an offscreen section.
+The two ignored wheel/drag tests retain earlier accepted green evidence; they
+were not newly executed and are not included in the 18 passes.
+
+Engine correctness: five distinct targeted checks passed. Initial invocation:
+4 passed / 1 fixture setup failure (exit 101), because a TMPDIR under the long
+evidence path made NoticeHost's inert socket pathname exceed macOS's 103-byte
+limit before the snapshot assertions. No socket or provider was started. Corrected only
+the test environment by creating a short /tmp/rwi-* symlink to that run's private
+recovery-target tmp directory; the exact failed snapshot/lock/truncation test
+then passed (exit 0, 0.14 s test time). The symlink/target is retained in
+engine-fixture-short-path/tmp-alias.txt. No source or threshold was changed.
+The other four passes cover activity reuse, five-second heartbeat and project
+changes, empty mailbox lock bypass, and once-only request claiming.
+
+cargo fmt --all --check: exit 0; output retained in format-check.log.
+git diff --check and staged diff check: passed. No implementation edits occurred.
+
+Performance: exactly one serial baseline/current pair; no dedicated warm-up or retries.
+Only chat_view::display_tests::large_disclosed_turn_virtualizes_children_and_streams_within_budget
+was selected with --exact --test-threads=1 --nocapture. Both invocations failed
+the original 25 ms frame guard (exit 101). Each test reports its existing median
+of three frames, not a newly introduced statistic.
+
+baseline-performance: frame 34.0 ms; wall/user/sys 1.21 / 0.66 / 0.15 seconds.
+UTC: 2026-10-22T20:00:07.262248+00:00 -> 2026-10-22T20:00:08.628240+00:00
+Load 1/5/15 before: [29.9375, 33.23193359375, 27.4453125]
+Load 1/5/15 after:  [29.9375, 33.23193359375, 27.4453125]
+
+current-performance: frame 40.5 ms; wall/user/sys 1.39 / 0.72 / 0.13 seconds.
+UTC: 2026-10-22T20:00:09.029127+00:00 -> 2026-10-22T20:00:10.793646+00:00
+Load 1/5/15 before: [29.9375, 33.23193359375, 27.4453125]
+Load 1/5/15 after:  [30.5830078125, 33.31103515625, 27.5068359375]
+
+The current result was 6.5 ms higher in this single pair. It does not establish
+patch timing equivalence, a statistically reliable regression, or a cause.
+Background workload was not controlled; cache histories were not balanced,
+and the current binary had already run correctness checks. Read-only CPU/load context is
+retained; load alone is not treated as an explanation. Both builds exited at
+the first frame guard, so later interaction budgets were not assessed here.
+Earlier accepted serial baseline 33.6 ms / current 35.2 ms failures and the
+three pre-anchor/current pairs remain evidence below. The absolute budget is
+still unresolved; correctness passes do not make the timing checks green.
+No thresholds were relaxed and no additional benchmark campaign was launched.
+
+Executable provenance:
+Current: /Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/debug/deps/riwork-880cfbac88af8500
+SHA256 0d8e5d2efbf673a793c67aff3f55874f85ead366cfd7c33cba853e88058d6d4f
+Original baseline: /Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/baseline-4ec85e8/target/debug/deps/riwork-880cfbac88af8500
+SHA256 747034e7f36198b9f6ed09c9989d0a5f64ae7cf8d376b4346e897abad4e1f1c2
+Engine fixture binary: /Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/debug/deps/riwork_engine-df3820d4cabdef51
+SHA256 0a332f3b644de24bf655481f34bd54fd6edb576287d8d4e76d7162bb1580a6e6
+
+Exact validation commands (argv also retained as structured JSON and raw logs):
+All tests use the explicit recovery cwd, a fresh per-invocation RIWORK_HOME,
+private TMPDIR, and no inherited RIWORK_* live-session identity. The short-path
+engine retry changes only TMPDIR via the recorded symlink. HOME/CODEX_HOME were
+not repurposed. The shell itself retains its original live environment.
+
+desktop-correctness
+  RIWORK_HOME=/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/integration-20261022/desktop-correctness/riwork-home
+  TMPDIR=/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/integration-20261022/desktop-correctness/tmp
+  /usr/bin/time -p /Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/debug/deps/riwork-880cfbac88af8500 chat_view::selection_tests:: chat_view::display_tests::answer_threshold_ chat_view::display_tests::long_answers_keep_section_keys_search_order_and_scroll_anchor_when_streaming chat_view::find_tests::find_reveals_an_offscreen_section_of_one_long_answer --test-threads=1 --nocapture
+  exit=0; test result: ok. 18 passed; 0 failed; 2 ignored; 0 measured; 750 filtered out; finished in 10.19s
+
+engine-correctness
+  RIWORK_HOME=/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/integration-20261022/engine-correctness/riwork-home
+  TMPDIR=/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/integration-20261022/engine-correctness/tmp
+  /usr/bin/time -p /Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/debug/deps/riwork_engine-df3820d4cabdef51 project_tabs::tests::inventory_reuses_observed_activity_and_only_reads_new_shells preview_control::tests::frequent_polls_renew_the_lease_every_five_seconds_and_project_changes_immediately preview_control::tests::an_empty_request_poll_does_not_wait_for_the_mailbox_lock preview_control::tests::open_round_trip_is_claimed_once_by_the_selected_project_window chat::host::tests::resume_history_snapshot_releases_the_chat_lock_and_excludes_later_appends --exact --test-threads=1 --nocapture
+  exit=101; test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 1327 filtered out; finished in 0.09s
+
+engine-fixture-short-path
+  RIWORK_HOME=/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/integration-20261022/engine-fixture-short-path/riwork-home
+  TMPDIR=/tmp/rwi-ab189f9f45
+  /usr/bin/time -p /Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/debug/deps/riwork_engine-df3820d4cabdef51 chat::host::tests::resume_history_snapshot_releases_the_chat_lock_and_excludes_later_appends --exact --test-threads=1 --nocapture
+  exit=0; test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1331 filtered out; finished in 0.14s
+
+baseline-performance
+  RIWORK_HOME=/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/integration-20261022/baseline-performance/riwork-home
+  TMPDIR=/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/integration-20261022/baseline-performance/tmp
+  /usr/bin/time -p /Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/baseline-4ec85e8/target/debug/deps/riwork-880cfbac88af8500 chat_view::display_tests::large_disclosed_turn_virtualizes_children_and_streams_within_budget --exact --test-threads=1 --nocapture
+  exit=101; test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 760 filtered out; finished in 1.08s
+
+current-performance
+  RIWORK_HOME=/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/integration-20261022/current-performance/riwork-home
+  TMPDIR=/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/integration-20261022/current-performance/tmp
+  /usr/bin/time -p /Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/debug/deps/riwork-880cfbac88af8500 chat_view::display_tests::large_disclosed_turn_virtualizes_children_and_streams_within_budget --exact --test-threads=1 --nocapture
+  exit=101; test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 769 filtered out; finished in 1.36s
+
+VERIFICATION ENVIRONMENT AND BOUNDARIES
+
+verification_environment: isolated headless GPUI debug tests with inert/recording
+transports; engine file fixtures and fake provider objects, no socket/provider
+process. Each invocation uses disposable RIWORK_HOME/TMPDIR beneath the assigned
+recovery target (one short /tmp alias points into it). macOS 26.2 / arm64,
+16 logical/physical CPUs, 64 GiB RAM. No shared writable build target, live app
+check, runtime restart, executable replacement, or paid remote work occurred.
+
+live_targets_touched: no GUI, provider, chat-host, or session lifecycle targets.
+Read-only live RiWork metadata probes: task show for the three IDs above and
+shell list to verify this worker. Authorized repository write: primary branch
+fast-forward only. Installed CLI was invoked for those metadata reads and read
+for integrity; its file was never modified. No push, force/reset, deploy,
+update/reload/restart, new agent, storage cleanup, or prohibited CAD script.
+Historical storage candidates below were not re-investigated or deleted.
+
+Installed executable preserved (preflight and final receipt recheck):
+/Users/dominik/orca/projects/riWork/target/release/RiWork.app/Contents/MacOS/riwork
+SHA256 fc5f40aec8b91194f39bc6a8881f25a965c44cd8abed85f6f1d92adabcc2a4a2
+size 73490320 bytes; mtime_ns 1792684241397237036.
+
+Evidence/artifacts:
+/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/integration-20261022
+  preflight.json; post-validation-integrity.json
+  runtime-identity.json; task-state.json
+  desktop-correctness/run.log; engine-correctness/run.log
+  engine-fixture-short-path/run.log; engine-fixture-short-path/tmp-alias.txt
+  baseline-performance/run.log; current-performance/run.log
+  results.json; followup-results.json (all commands, exits, CPU/wall, UTC/load)
+  validate.py; validate-initial.py; driver.log; followup-driver.log
+  format-check.log; implementation-staged.patch
+  implementation-commit.json; implementation-commit.log
+  implementation-integration.json; implementation-fast-forward.log
+  report-commit.log; report-fast-forward.log; final-integration.json
+  report-before-integration.txt (unchanged historical report)
+No new runnable artifact was built. Existing source-proven test binaries remain
+under recovery target; no output was written to the installed primary target.
+
+Remaining limitations: the absolute 25 ms large-turn budget and some previously
+variable timing guards remain unresolved. One new pair is not an equivalence
+proof. Live behavior after installation is unverified; no installation was
+requested. The accepted correctness evidence is intact. Local integration is
+complete and awaits orchestrator review with task c9484da1 still in_progress.
+
+ARCHIVED RECOVERY EVIDENCE — HISTORICAL STATUSES AND RESTRICTIONS FOLLOW
+Everything below is preserved from the pre-integration report. References to
+uncommitted code, parent in_progress, no integration, and the old authorization
+boundary describe those earlier stages, not the current state above.
+
+Recorded: 2026-10-22T20:38:55+02:00
+Initial recovery evidence recorded: 2026-10-22T19:27:27+02:00
+
+RiWork performance recovery — ready for review
+Parent task: f389de22-9c12-4edf-a59d-5198ce37d5ad (in_progress)
+Accepted scroll-anchor task: 6e63d998-fa21-4151-b58b-072a9b397a6f (done per parent review)
+Project: 39832c2e-23a5-476d-aa8f-5ff34a02d314
+Worktree: b4f35d44-fc70-49e2-99a9-88782f64545c
+Branch: recovery/astra-performance-20261022
+Baseline: 4ec85e85c4f94a2fb3e67298bd15417fe0f4de41 (clean before edits)
+Workdir: /Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022
+Status: both correctness fixes accepted; baseline also fails the absolute frame
+budget. No current-specific frame regression demonstrated by bounded controls.
+Uncommitted and unchanged source; stopped for review. Parent remains in_progress.
+
+FOCUSED VALIDATION FOLLOW-UP — BOUNDED LARGE-TURN CONTROL
+
+Conclusion: the verified unpatched 4ec85e8 baseline also fails the 25 ms frame
+budget, at 33.6 ms. The three interleaved pre-anchor/current pairs do not
+establish a current-specific frame slowdown: pre-anchor failed the frame guard
+at 27.6 / 29.5 / 26.7 ms, while current passed that guard twice and failed it
+once at 36.0 ms. No implementation or threshold was changed in this follow-up.
+The absolute budget remains unmet; this is evidence for review, not a green
+performance acceptance or proof of the cause. Parent remains in_progress.
+
+Only this exact test was executed, with --exact --test-threads=1 --nocapture:
+chat_view::display_tests::large_disclosed_turn_virtualizes_children_and_streams_within_budget
+Execution order was A1, B1, A2, B2, A3, B3, then one source-proven baseline C1.
+All seven exact-test invocations returned exit 101 (one failed test apiece).
+No additional tests, engine/storage checks, or other benchmarks were run.
+
+Binary paths and provenance:
+A — preserved pre-anchor binary:
+/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/riwork-corrected-tests
+SHA256: b2df9637383f580c13ed87fa513c1aa6da87e7a6aca745f743cd50446fd24a3d
+APFS copy retained from the review-correction-build.log build (22.35 s), before
+anchor changes. It contains the four performance changes and accepted section-
+cache fix. Its copy/build provenance is from the earlier recovery session;
+it is not presented as a newly source-reconstructed build.
+B — current accepted patch binary:
+/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/debug/deps/riwork-880cfbac88af8500
+SHA256: 0d8e5d2efbf673a793c67aff3f55874f85ead366cfd7c33cba853e88058d6d4f
+Built by anchor-correction-build.log (1m 08s), with both accepted correctness
+fixes. Neither A nor B was rebuilt, replaced, or modified in this follow-up.
+C — fresh baseline binary:
+/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/baseline-4ec85e8/target/debug/deps/riwork-880cfbac88af8500
+SHA256: 747034e7f36198b9f6ed09c9989d0a5f64ae7cf8d376b4346e897abad4e1f1c2
+Commit: 4ec85e85c4f94a2fb3e67298bd15417fe0f4de41
+Tree: 94be20abce4d0a22a5374d96cd4599591b6a7b39
+
+The worker-owned baseline fixture is:
+/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/baseline-4ec85e8
+It was extracted with git archive from the commit above using the assigned
+recovery checkout's read-only Git objects. All 942 tracked files, executable
+modes, and Git blob hashes were checked before compilation; all file contents
+were checked again after building and after the test. No source edits occurred
+in the fixture. The exact test body also matches baseline and current source:
+SHA256 dacdfce5abf5bddce530abcdf67da411098b785fc301023fa86e4f43accedaf9.
+
+Baseline target is private to that fixture, not shared with the current tree.
+18586 dependency files were APFS-cloned from the assigned recovery target,
+with distinct inode and link-count-one checks. All riwork workspace artifacts
+were excluded, forcing fresh compilation of riwork-core, riwork-engine,
+riwork-cli, and riwork-desktop from baseline source. 147 generated cache metadata
+files had target paths relocated within the clone. No primary checkout or other
+worker tree was modified; no shared writable target or hardlink reuse was used.
+The fixture/archive and logs are retained; no storage cleanup was performed.
+
+Exact command shape for every trial (full argv is recorded in each raw log):
+/usr/bin/time -p <absolute binary path A, B, or C above> chat_view::display_tests::large_disclosed_turn_virtualizes_children_and_streams_within_budget --exact --test-threads=1 --nocapture
+Working directory for A and B:
+/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022
+Working directory for C:
+/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/baseline-4ec85e8
+Baseline build command, in C's fixture directory:
+/usr/bin/time -p env ZIG=/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0/zig CARGO_TARGET_DIR=/Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation/baseline-4ec85e8/target cargo test --locked --offline -p riwork-desktop --bin riwork --no-run --verbose
+Build exit 0; wall/user/system = 119.64 / 116.59 / 10.01 seconds. Rust/Cargo
+1.99.1, locked/offline dependencies, the same unoptimized debug profile, and
+21 existing desktop warnings. Building dependencies did not run engine tests.
+
+All trial results (frame in ms; process wall/user/system CPU in seconds):
+Trial | Frame median | Failed assertion | Wall / user / system | Exit
+A1 | 27.6 | large-fixture frame 27.6 ms exceeded 25 ms | 4.45 / 0.63 / 0.09 | 101
+B1 | <25 (passed; exact value not printed) | row toggle 60.5 ms exceeded 60 ms | 2.09 / 1.31 / 0.14 | 101
+A2 | 29.5 | large-fixture frame 29.5 ms exceeded 25 ms | 0.95 / 0.64 / 0.06 | 101
+B2 | <25 (passed; exact value not printed) | Expand all 62.5 ms exceeded 60 ms | 1.22 / 0.63 / 0.10 | 101
+A3 | 26.7 | large-fixture frame 26.7 ms exceeded 25 ms | 0.98 / 0.67 / 0.07 | 101
+B3 | 36.0 | large-fixture frame 36.0 ms exceeded 25 ms | 1.08 / 0.66 / 0.08 | 101
+C1 | 33.6 | large-fixture frame 33.6 ms exceeded 25 ms | 4.69 / 0.67 / 0.14 | 101
+
+A1–B3 ran 2026-10-22 18:29:42–18:29:54 UTC; C1 ran 18:35:40–18:35:45 UTC.
+The process timings are /usr/bin/time -p output; finer monotonic wall and child
+resource CPU timings are retained in budget-control-runs.json. B1 reached the
+row-toggle check and B2 reached Expand all after passing the frame check; their
+frame medians are bounded below 25 ms but were not printed before the later
+failure. No exact frame value was inferred. Different early exits and startup
+work make whole-process CPU/wall ratios unsuitable as a patch speedup metric.
+
+Read-only host context: macOS 26.2 (25C56), arm64, 16 logical/physical CPUs,
+64 GiB RAM. Load averages below are 1/5/15 minute values, before -> after each
+trial (rounded here; full precision and UTC timestamps are in the JSON/logs):
+Trial | Start UTC | Load 1/5/15 before -> after
+A1 | 2026-10-22T18:29:41.996028+00:00 | 63.12, 57.45, 47.26 -> 63.43, 57.60, 47.38
+B1 | 2026-10-22T18:29:46.684021+00:00 | 63.43, 57.60, 47.38 -> 63.43, 57.60, 47.38
+A2 | 2026-10-22T18:29:49.015774+00:00 | 63.43, 57.60, 47.38 -> 68.12, 58.67, 47.81
+B2 | 2026-10-22T18:29:50.213125+00:00 | 68.12, 58.67, 47.81 -> 68.12, 58.67, 47.81
+A3 | 2026-10-22T18:29:51.711861+00:00 | 68.12, 58.67, 47.81 -> 68.12, 58.67, 47.81
+B3 | 2026-10-22T18:29:53.003431+00:00 | 68.12, 58.67, 47.81 -> 68.12, 58.67, 47.81
+C1 | 2026-10-22T18:35:40.425250+00:00 | 67.24, 64.44, 54.28 -> 67.24, 64.44, 54.28
+
+Limitations: load readings are context only and do not establish a cause.
+Background workload was not controlled. Baseline was freshly built and tested
+later, not interleaved with the initial three pairs. One baseline invocation
+contains the test's existing median of three frames. Its failure demonstrates
+that the frame-budget failure occurs without the recovery patch; it does not
+prove all patch timings equivalent. Baseline and A stop before the later guards,
+so this comparison does not settle B's row-toggle/Expand-all limits. No guard
+was weakened, and no further performance investigation was undertaken.
+
+Integrity and authorization:
+- The tracked uncommitted patch is byte-identical to the initial snapshot;
+  SHA256 checks confirm all 17 modified/new implementation files are unchanged,
+  including both accepted fixes. Existing A/B binaries also retain their hashes.
+- Only this report and ignored validation scripts, logs, archive, fixture and
+  build outputs were added/updated. No new agent session, account/provider
+  change, primary edit, integration, commit, push, deploy, update/reload/restart,
+  live-app check, storage deletion, or prohibited CAD script occurred.
+- verification_environment: isolated headless GPUI debug test, inert fixture
+  transport; independent worker-owned baseline source and target directory.
+- live_targets_touched: NONE. Cua.ai Driver remains the desktop preference.
+- Scroll-anchor task 6e63d998-fa21-4151-b58b-072a9b397a6f is done per parent
+  review. Parent f389de22-9c12-4edf-a59d-5198ce37d5ad remains in_progress.
+
+Evidence under /Users/dominik/orca/projects/riWork-recovery-astra-performance-20261022/target/recovery-validation:
+  budget-control-provenance.json (A/B hashes, source hashes, test-body proof)
+  budget-control-current.patch (pre-follow-up tracked patch snapshot)
+  budget-control-runs.json (all seven outcomes, full argv/cwd/timing/load)
+  budget-control-pre-anchor-1.log, -2.log, -3.log
+  budget-control-current-1.log, -2.log, -3.log
+  budget-control-baseline-4ec85e8-1.log
+  budget-control-baseline-provenance.json (all source blob IDs, cache/build data)
+  budget-control-baseline-prepare.log, budget-control-baseline-build.log
+  budget-control-baseline-4ec85e8.tar
+  budget-control-final-integrity.json (unchanged patch/binaries, baseline proof)
+  run_budget_control.py, prepare_budget_baseline.py, write_budget_control_report.py
+
+REVIEW CORRECTION 2 — THRESHOLD SCROLL ANCHORS (ACCEPTED)
+
+Task: 6e63d998-fa21-4151-b58b-072a9b397a6f.
+Reproduced before production edits with three new headless GUI tests in
+chat_view/display_tests.rs. They compare a surviving Markdown block's actual
+rendered y-coordinate, not only a list-row ID or logical offset.
+
+Red evidence: anchor-correction-red.log, exit 101, 1 passed / 2 failed (0.53 s).
+- answer_threshold_shrink_preserves_reading_anchor: initial 12-block answer,
+  section start 4 / offset zero, replaced by the first eight unchanged blocks.
+  Block 4 moved from y=76 px to y=1200 px.
+- answer_threshold_growth_preserves_reading_anchor: initial unsplit eight-block
+  answer, reader inside block 4, ninth block appended. Block 4 moved from
+  y=57 px to y=76 px.
+- answer_threshold_transitions_preserve_tail_following already passed.
+
+Fix: retain established partition boundaries instead of merging sections when
+an answer drops below the splitting threshold. MessagePart.block_capacity keeps
+its boundary even when only a short final section remains. For an existing
+unsplit answer growing beyond eight blocks, retain its entire prior prefix in
+one initial section (capacity eight); later sections still have capacity four.
+Initially loaded long answers still use four-block sections. Empty answers have
+no surviving text anchor and can return to the ordinary unsplit representation.
+Both targeted updates and ordinary projection rebuilding reuse this metadata.
+Projection rebuilding indexes prior first sections once, avoiding a history scan
+for each message. Tail-following and the existing offset-remapping code are
+unchanged. Files changed in this correction: message_parts.rs, display.rs,
+display_tests.rs and this report.
+
+Green focused evidence: anchor-correction-focused.log, 7 passed / 0 failed /
+0 ignored (3.77 s): the three new tests, the existing long-answer streaming /
+source-key / scroll-anchor test, and all three section-cache regressions.
+Full desktop chat evidence: anchor-correction-desktop-chat.log, exit 101,
+361 passed / 2 failed / 7 ignored (94.03 s). Both failures were existing timing
+assertions, not the new anchor checks:
+- large_disclosed_turn_virtualizes_children_and_streams_within_budget:
+  frame median 89.6 ms exceeded the 25 ms limit.
+- large_turn_preview_reuses_validation_and_indexes_unique_paths:
+  cold median 577.279 ms exceeded the 500 ms limit.
+One bounded serial recheck of only those failures, without code or limit changes:
+anchor-correction-timing-recheck.log, exit 101, 1 passed / 1 failed (2.53 s).
+Preview discovery passed at 490.810 ms. The large-turn frame still failed at
+35.2 ms against 25 ms. This timing failure remains unresolved for review;
+the desktop suite is NOT reported as fully passing. No cause is established.
+The large-turn fixture contains command rows rather than sectioned answers;
+preview discovery does not call message_parts. Neither timing test was changed.
+Formatting and whitespace checks passed.
+
+Threshold checks include:
+- Reader in block 4: 12 -> 8 -> 9 -> 5 -> 8 -> 12 blocks.
+- Reader in block 0: 12 -> 4 -> 1 -> 8 -> 9 -> 12 blocks.
+- Reader inside the initially unsplit block 4: 8 -> 9 -> 12 -> 8 -> 5 -> 9.
+- Every reading-position case also switches Normal -> Verbose -> Normal after
+  each replacement, then appends an unrelated item through the event fold.
+- Tail-following: 12 -> 8 -> 9 -> 4 -> 1 -> 0 -> 12, with the final block visible
+  whenever text remains. Fixtures assert no provider delivery occurred.
+
+The preceding section-cache correction is intact, verified by passing its
+regressions and unchanged SHA256 values before/after this correction:
+select.rs: 443b4b6aa0ed434d824f0fef1aca3494225cd73eb7b19a98368140ca37fd7c97
+selection_tests.rs: 8df4cfd9b90acb2cb13a952b1d303e70f989c8ae0f0195c1d185cd663df192f7
+
+Measurement limits: these are headless debug correctness checks, not live GUI
+or release timing measurements. The long-answer benchmark was not rerun. Only
+the two desktop timing-test failures received one serial recheck; no broader
+benchmark-variability investigation, engine tests, or storage investigation was
+performed for this correction. The long-answer/engine timing and storage figures
+later in this report are retained historical evidence; they do not measure the
+new partition-retention path. The position guarantee
+covers surviving section boundaries/prefix text across the tested transitions;
+this change does not introduce semantic text anchoring for edits before a block.
+The first section of an answer promoted from unsplit can now contain eight
+blocks; all subsequent sections remain bounded at four.
+
+REVIEW CORRECTION 1 — SECTION CACHE INVALIDATION
+
+The review blocker was reproduced before changing production code. Rendering
+one section called invalidate_source(message_id), which evicted every cached
+section of that message. Subsequent frames rebuilt sibling sections, and a
+projection refresh could rebuild the selection document without its endpoints.
+
+The correction adds invalidate_source_section(ListRow), keyed by message ID
+and block start, and uses it only in refresh_selection_rows_inner. Existing
+whole-message invalidation remains in invalidate_source for content revisions
+and body-detail changes; whole-document invalidation is unchanged. Removing the
+last cached section also removes its empty owner entry. Only select.rs,
+selection_tests.rs and this report changed during this review correction.
+
+Three new headless GUI regressions (selection_tests.rs):
+- sectioned_answer_keeps_mounted_sources_across_frames: all three sections mount
+  together; three repeat frames add zero source builds and retain all caches.
+  Explicit whole-message invalidation must still remove all three sections.
+- sectioned_answer_selection_survives_projection_refresh: a selection spanning
+  blocks 0 through 4 survives a projection/document rebuild and another frame.
+- sectioned_answer_selection_survives_unrelated_append: the same selection
+  survives an appended ItemCompleted event and its actual projection rebuild.
+  Both selection cases then replace text with same-length edits in blocks 0
+  and 4, verify selection clears before painting, and copy the new text afterward.
+  All fixtures assert that no provider delivery occurred.
+
+Red evidence: review-correction-red.log, exit 101, 0 passed / 3 failed.
+The source-build counter rose from 4 to 7 on the first unchanged frame. Both
+selection cases copied the unchanged clipboard sentinel instead of the expected
+five paragraphs after the unrelated projection change.
+Green evidence: review-correction-selection.log, 13 passed / 0 failed / 2 ignored,
+including all three unchanged regression tests. Full desktop and slow-selection
+results are below. The production correction was made only after the red run.
+
+The long-answer rerun was substantially slower than the earlier recorded run,
+so a bounded control build changed only the refresh call back to whole-message
+invalidation. The corrected source was restored byte-for-byte immediately after
+building that control, and rebuilt afterward. The contemporary control was also
+slow (43.974 ms late-frame median versus 42.104–42.119 ms corrected). This does
+not show a correction-specific slowdown, but does not reproduce the earlier
+7.214 ms result or establish the cause of the changed timings. Both corrected
+runs and the control are retained, without selecting only the fastest result.
+Corrected select.rs SHA256:
+443b4b6aa0ed434d824f0fef1aca3494225cd73eb7b19a98368140ca37fd7c97
+
+FOCUSED CHANGES
+
+1. Newly loaded long answers use virtual-list sections of four top-level Markdown
+   blocks once the answer exceeds eight blocks. Existing partition boundaries
+   survive shrink/regrowth. An initially unsplit answer retains an eight-block
+   first section when promoted; subsequent sections contain up to four blocks.
+   Only changed sections are remeasured. Paragraph, code, table, citation and nested-block leaf keys keep
+   their original identities. Copy still addresses the whole original message;
+   its file review and artifact strip appear once, after the final section.
+   Search maps matches to their actual section. Scroll anchors retain the block
+   position during streaming and projection changes. Selection caches remain
+   indexed by message, with sections beneath each message, so invalidating a
+   message does not scan all historical caches.
+   Main implementation: crates/riwork-desktop/src/chat_view/message_parts.rs
+   Integration: display.rs, rows.rs, prose.rs, select.rs, selection_document.rs,
+   and chat_view.rs.
+
+2. Desktop tab polling passes its existing incremental agent-activity observations
+   into project_tabs::refresh_snapshot_with_activity. Only shells absent from
+   those observations receive a cold activity read. Project filtering and fresh
+   shell liveness remain authoritative; CLI callers keep the existing cold-read
+   API. Includes foreign-project tabs visible in the same window.
+   Files: crates/riwork-engine/src/project_tabs.rs;
+          crates/riwork-desktop/src/main.rs.
+
+3. Preview heartbeat renewal is throttled to five seconds, below the 15-second
+   host lease. Changed projects, removed hosts and resumed polling renew promptly.
+   Empty request polls skip the shared mailbox lock. Nonempty polls still read
+   and claim under the lock, preserving exactly-once delivery. Poll cadence stays
+   250 ms. The baseline already deduplicated writes within one second; this change
+   advances that existing optimization rather than repeating it.
+   Files: crates/riwork-engine/src/preview_control.rs and its tests.
+
+4. Resume captures an open file and fixed log length briefly under the chat lock,
+   then scans that prefix after releasing the lock. The existing full history
+   guard still validates identity, sequence, complete records, provider switches,
+   legacy sessions and identity adoption. A shortened captured file fails closed.
+   Appends cannot extend a scan. The scan remains linear in log size; this change
+   removes that work from the lock, not from total resume processing.
+   Files: crates/riwork-engine/src/chat/log.rs, chat/host.rs and host/tests.rs.
+
+HISTORICAL MEASUREMENTS (before scroll-anchor correction; debug synthetic fixtures)
+
+- 18,980-byte answer, 475 deltas, medians in milliseconds:
+  Historical baseline: last 100 fold 1.152, frame 90.170.
+  Historical pre-review implementation: last 100 fold 1.046, frame 7.214.
+  Section-cache correction run: first 100 fold 1.245, frame 37.893;
+                 last 100 fold 5.863, frame 42.119.
+  Section-cache correction repeat: first 100 fold 1.230, frame 37.590;
+                    last 100 fold 5.895, frame 42.104.
+  Contemporary pre-correction invalidation control:
+    first 100 fold 1.391, frame 43.190; last 100 fold 5.846, frame 43.974.
+  Repeat process time: real 39.25 s / user 39.17 s / sys 0.05 s.
+  Control process time: real 52.78 s / user 43.40 s / sys 0.22 s.
+  The earlier 12.5x speedup is historical evidence, not a result reproduced in
+  this correction run. These timings are not controlled release benchmarks.
+- Empty preview poll, 200 calls: 34.236 us baseline -> 13.130 us final (62% less).
+- Synthetic 16 MiB resume history, median of three comparisons:
+  baseline-style full scan under lock: 36.437 ms;
+  fixed-prefix capture under lock: 29.750 us;
+  validation scan outside lock: 36.223 ms.
+- Reused tab activity: deterministic test proves zero cold sampler calls for
+  already-observed shells, and one batch containing only newly discovered shells.
+
+VALIDATION
+
+Latest bounded controls: three A/B pairs plus one source-proven baseline run,
+all restricted to the exact large-turn test. Baseline failed at 33.6 ms versus
+25 ms, with no consistent current-specific frame slowdown demonstrated. The
+absolute-budget limitation remains; see the leading follow-up for every result.
+
+Accepted scroll-anchor correction (prior stage): 7 focused checks passed. The desktop chat
+suite had 361 passes / 2 timing failures / 7 ignored; a serial recheck resolved
+one timing failure, with the 25 ms large-turn frame budget still failing.
+See correction 2 above for exact values and evidence. cargo fmt --all --check
+and git diff --check passed. Engine/storage work and long-answer timings were
+not rerun.
+
+Before edits: 50 selected engine tests and 36 selected desktop tests passed.
+Earlier validation retained from recovery and section-cache correction:
+- 163 engine host/log/preview/tab tests passed, zero failures, seven ignored in
+  the original recovery. Engine code is unchanged and was not rerun here.
+- 360 desktop chat tests passed, zero failures, seven ignored (32.16 s).
+- Focused selection suite: 13 passed, zero failures, two ignored (1.12 s).
+- After the control comparison, the final corrected rebuild passed all three
+  regressions again: 3 passed, zero failures, zero ignored (2.49 s).
+- Two normally ignored wheel/drag tests passed separately (39.95 s): selection
+  across unmounted messages and across unmounted sections of a single answer,
+  both directions, including Unicode, changed middle text and unchanged endpoints.
+- The corrected long-answer benchmark passed twice (39.96 s and 39.22 s test
+  duration); the pre-correction control passed (43.65 s test duration). The two
+  engine benchmarks retain their original recovery passes; not rerun here.
+- cargo fmt --all --check and git diff --check passed.
+- New regression checks cover streaming section boundaries, table completion,
+  same-length replacements, search reveal, scroll anchors, heartbeat cadence,
+  project switches, lock-free empty polls, activity reuse, snapshot boundaries,
+  chat-lock availability and truncation failure.
+- Existing build warnings remain (21 desktop test warnings, three engine test
+  warnings, and the existing block crate future-compatibility notice).
+
+Raw evidence: target/recovery-validation/
+  baseline-engine-tests.log, baseline-desktop-tests.log
+  baseline-long-answer.log, baseline-preview-timing.log
+  final-engine-tests.log, final-desktop-tests.log
+  final-virtual-selection.log, final-long-answer.log, final-engine-timings.log
+  engine-build.log, desktop-build.log
+Review-correction evidence in the same directory:
+  review-correction-red-build.log, review-correction-red.log
+  review-correction-build.log, review-correction-selection.log
+  review-correction-desktop-chat.log, review-correction-virtual-selection.log
+  review-correction-long-answer.log, review-correction-long-answer-repeat.log
+  review-correction-control-build.log, review-correction-long-answer-control.log
+  review-correction-restored-build.log, review-correction-restored-regressions.log
+Scroll-anchor correction evidence in the same directory:
+  anchor-correction-red-build.log, anchor-correction-red.log
+  anchor-correction-build.log, anchor-correction-focused.log
+  anchor-correction-desktop-chat.log, anchor-correction-timing-recheck.log
+
+Reproduction from the absolute workdir above (includes historical commands;
+only desktop build, focused threshold/cache tests, chat suite and one targeted
+timing-failure recheck run in correction 2):
+  Set ZIG=/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0/zig
+  Set CARGO_TARGET_DIR=<absolute workdir>/target
+  cargo test --locked --offline -p riwork-engine --lib --no-run
+  target/debug/deps/riwork_engine-df3820d4cabdef51 chat::host::tests:: chat::log:: preview_control:: project_tabs:: --test-threads=2
+  target/debug/deps/riwork_engine-df3820d4cabdef51 time_resume_history_lock_on_a_large_log time_a_windows_request_poll --ignored --nocapture --test-threads=1
+  cargo test --locked --offline -p riwork-desktop --bin riwork --no-run
+  target/debug/deps/riwork-880cfbac88af8500 answer_threshold_ long_answers_keep_section_keys sectioned_answer_ --test-threads=1
+  target/debug/deps/riwork-880cfbac88af8500 sectioned_answer_ --test-threads=1
+  target/debug/deps/riwork-880cfbac88af8500 chat_view::selection_tests:: --test-threads=2
+  target/debug/deps/riwork-880cfbac88af8500 chat_view:: --test-threads=2
+  target/debug/deps/riwork-880cfbac88af8500 large_disclosed_turn_virtualizes_children_and_streams_within_budget large_turn_preview_reuses_validation_and_indexes_unique_paths --test-threads=1 --nocapture
+  target/debug/deps/riwork-880cfbac88af8500 long_answer_selection_crosses virtualized_partial_selection --ignored --test-threads=1
+  target/debug/deps/riwork-880cfbac88af8500 long_answer_streaming_costs --ignored --nocapture --test-threads=1
+  The executable hashes are those produced in this environment; cargo prints the
+  current paths when building. All builds and tests use the isolated workdir.
+
+VERIFICATION_ENVIRONMENT
+
+verification_environment: isolated local worktree; macOS 26.2 (25C56), arm64;
+Rust 1.99.1; Cargo 1.99.1; Zig 0.16.0; locked, offline dependency resolution;
+debug builds (workspace debug symbols/incremental compilation disabled);
+GPUI TestAppContext headless windows, inert transports/fake providers, private
+fixture directories and fixture sockets. No paid provider sessions launched.
+Build cache was initially APFS-cloned from the primary checkout into this
+worktree's own target directory; all compilation outputs remained isolated.
+The original recovery observed load averages roughly 30–38. During the section-cache
+correction, read-only host diagnostics observed averages roughly 13–27 and
+several CPU-active background processes; macOS reported no recorded thermal or
+performance warning. These observations do not establish why timing changed.
+Timing results are illustrative measurements, not release latency guarantees.
+
+live_targets_touched: NONE.
+No desktop input, live app/host/backend restart, RiWork update/reload, deployment,
+push, commit or integration. No additional agent sessions launched. No CAD
+Explorer lifecycle scripts run. Cua.ai Driver remains the desktop preference;
+no desktop automation was needed. The primary checkout was inspected read-only
+and was clean at the reviewed baseline during the original recovery. This
+correction made no primary-checkout changes. No app or runtime was controlled;
+host process/load/thermal diagnostics were read-only.
+
+READ-ONLY STORAGE INVESTIGATION
+
+Retained initial recovery measurements; no new storage scan or deletion during
+this review correction.
+Available space: about 88 GiB at the initial check; about 79 GiB at the final
+check. This is not the earlier 8 GiB emergency. No storage was deleted.
+Measured candidates for a separate review (du sizes, not guaranteed reclaimable
+physical bytes because APFS can share blocks):
+
+- /Users/dominik/Library/Caches/com.spotify.client: 12 GiB total;
+  its Data directory accounts for about 10 GiB. Prefer Spotify's cache controls.
+- /Users/dominik/Library/Caches/Yarn/v6: about 5.0 GiB of package cache.
+- /Users/dominik/Library/Caches/cargo-xwin: about 4.9 GiB, including 3.8 GiB in
+  windows-msvc-sysroot; clearing would require later Windows build downloads.
+- /Users/dominik/Library/Caches/ms-playwright: about 2.5 GiB of browser downloads.
+- /Users/dominik/Library/Caches/Homebrew: about 974 MiB.
+- /Users/dominik/.rustup/toolchains: about 19 GiB across numerous versions.
+  RiWork pins 1.99.1; other projects may need the older or Solana toolchains.
+- /private/tmp/claude-501: about 13 GiB, including about 8.1 GiB under nanoui,
+  1.6 GiB under riChatv2 and 992 MiB under this session's historical riWork root.
+  Ownership/activity and recovery artifacts must be reconciled before cleanup.
+- Primary RiWork target: about 13 GiB (debug about 9 GiB); Xcode DerivedData
+  about 459 MiB. Neither was modified or deleted by this recovery.
+
+REVIEW LIMITS
+
+No live GUI interaction, release build, iOS test run or full workspace test run
+was performed. Individual Markdown blocks (including one huge paragraph, table,
+code block or nested list) remain atomic; the measured win is for long answers
+with many top-level blocks. The history scan still reads and validates its whole
+captured prefix, outside the chat lock. No runtime update is authorized here.
