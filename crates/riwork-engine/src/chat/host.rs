@@ -446,6 +446,9 @@ struct Inner {
     info: ChatInfo,
     log: ChatLog,
     next_seq: u64,
+    /// Where the log's last event ends, so a replay of its end can count back from there.
+    /// `None` once a write may have left part of a line.
+    log_end: Option<u64>,
     open: Open,
     subscribers: Vec<Subscriber>,
     run: Option<Run>,
@@ -490,6 +493,7 @@ impl Inner {
         Self {
             provider_account_identity: super::account_identity::read(log.dir()),
             info,
+            log_end: log.len(),
             log,
             next_seq: last_seq + 1,
             open: Open::default(),
@@ -694,6 +698,7 @@ impl Inner {
         };
         line.push('\n');
         if let Err(error) = self.log.append(line.as_bytes(), sync) {
+            self.log_end = None;
             let message = format!("cannot write the chat's event log: {error}");
             eprintln!("riwork chat: {}: {message}", self.info.id);
             self.broken = true;
@@ -702,6 +707,7 @@ impl Inner {
             return;
         }
         self.next_seq += 1;
+        self.log_end = self.log_end.map(|end| end + line.len() as u64);
         if let ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } = &envelope.event
             && let Some(worker) = workers::of(item)
             && let Some(index) = self.workers.as_mut()
@@ -1706,12 +1712,15 @@ fn recover_worker_ends(shared: &Shared) {
                 .unwrap_or(1)
                 .max(1)
         };
-        let last = lock(&child.inner).next_seq.saturating_sub(1);
+        let (last, end) = {
+            let inner = lock(&child.inner);
+            (inner.next_seq.saturating_sub(1), inner.log_end)
+        };
         if from > last {
             continue;
         }
         let mut lines = Vec::new();
-        let envelopes = log::replay(&child.dir, from - 1, last, &mut lines)
+        let envelopes = log::replay(&child.dir, from - 1, last, end, &mut lines)
             .map_err(|error| error.to_string())
             .and_then(|()| {
                 lines
@@ -1764,9 +1773,9 @@ fn subscribe(shared: &Shared, mut stream: UnixStream, id: String, chat_id: &str,
             queued: queued.clone(),
             max_bytes: shared.options.subscriber_bytes,
         });
-        Ok((chat.dir.clone(), rx, queued, last))
+        Ok((chat.dir.clone(), rx, queued, last, inner.log_end))
     });
-    let (dir, rx, queued, last) = match registered {
+    let (dir, rx, queued, last, end) = match registered {
         Ok(registered) => registered,
         Err(error) => {
             let _ = send(&mut stream, &failure(id, error));
@@ -1778,7 +1787,7 @@ fn subscribe(shared: &Shared, mut stream: UnixStream, id: String, chat_id: &str,
     }
     // Events that arrive while the replay is written wait in the queue: nothing
     // in it is older than the replay's last line.
-    if let Err(error) = log::replay(&dir, since, last, &mut stream) {
+    if let Err(error) = log::replay(&dir, since, last, end, &mut stream) {
         eprintln!("riwork chat: cannot replay {chat_id}: {error}");
         return;
     }

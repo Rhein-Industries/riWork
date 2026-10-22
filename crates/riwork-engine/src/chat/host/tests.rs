@@ -2193,7 +2193,14 @@ fn rate_limits_control_replays_to_a_late_joiner_and_survives_restart_in_snapshot
         windows: windows.clone(),
     });
     let mut replay = Vec::new();
-    log::replay(&chat.dir, 0, lock(&chat.inner).next_seq - 1, &mut replay).unwrap();
+    log::replay(
+        &chat.dir,
+        0,
+        lock(&chat.inner).next_seq - 1,
+        None,
+        &mut replay,
+    )
+    .unwrap();
     let mut transcript = Transcript::default();
     for line in replay
         .split(|b| *b == b'\n')

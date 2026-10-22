@@ -99,6 +99,13 @@ impl ChatLog {
         ))
     }
 
+    /// The log's length in bytes, if it can be read.
+    pub(super) fn len(&self) -> Option<u64> {
+        fs::metadata(self.dir.join(EVENTS))
+            .map(|meta| meta.len())
+            .ok()
+    }
+
     /// Appends one complete line (ending in a newline) with a single write, so
     /// a reader never sees half of it while the host runs. With `sync`, what
     /// was appended so far survives a power loss.
@@ -294,7 +301,18 @@ fn open_events(dir: &Path) -> io::Result<File> {
 /// only in the response. Durable bytes and event sequence numbers never change. The caller
 /// knows `last` from the moment it registered for live events, so lines that
 /// are written afterwards are not part of the replay.
-pub fn replay(dir: &Path, since: u64, last: u64, out: &mut impl Write) -> io::Result<()> {
+///
+/// `end`, when the caller knows it, is where event `last` ends. A replay of the end of a
+/// long log (a phone's poll, a window reconnecting) then finds its first line by counting
+/// back from there, once the line before it says it is event `since`; otherwise, or if
+/// that is not so, lines are counted from the start.
+pub fn replay(
+    dir: &Path,
+    since: u64,
+    last: u64,
+    end: Option<u64>,
+    out: &mut impl Write,
+) -> io::Result<()> {
     let truncated = || {
         io::Error::new(
             io::ErrorKind::UnexpectedEof,
@@ -302,9 +320,25 @@ pub fn replay(dir: &Path, since: u64, last: u64, out: &mut impl Write) -> io::Re
         )
     };
     let mut reader = BufReader::with_capacity(256 * 1024, File::open(dir.join(EVENTS))?);
-    for _ in 0..since {
-        if reader.skip_until(b'\n')? == 0 {
-            return Err(truncated());
+    let counted_back = match end {
+        Some(end) if since > 0 => event_start(reader.get_mut(), since, last, end)
+            .ok()
+            .flatten(),
+        _ => None,
+    };
+    let found = match counted_back {
+        Some(start) => {
+            reader.seek(SeekFrom::Start(start))?;
+            numbered(reader.fill_buf()?, since) && reader.skip_until(b'\n')? > 0
+        }
+        None => false,
+    };
+    if !found {
+        reader.rewind()?;
+        for _ in 0..since {
+            if reader.skip_until(b'\n')? == 0 {
+                return Err(truncated());
+            }
         }
     }
     let mut line = Vec::new();
@@ -323,6 +357,42 @@ pub fn replay(dir: &Path, since: u64, last: u64, out: &mut impl Write) -> io::Re
         }
     }
     out.flush()
+}
+
+/// Where event `since` starts in a log whose event `last` ends at `end`, counted back from
+/// `end`. `None` once that has read half the log: counting from the start reads less.
+fn event_start(file: &mut File, since: u64, last: u64, end: u64) -> io::Result<Option<u64>> {
+    const CHUNK: u64 = 256 * 1024;
+    // The newline before event `since` is the `last - since + 2`th before `end`.
+    let mut newlines = last - since + 2;
+    let mut position = end;
+    let mut buffer = Vec::new();
+    while position > 0 && end - position <= end / 2 {
+        let from = position.saturating_sub(CHUNK);
+        buffer.resize((position - from) as usize, 0);
+        file.seek(SeekFrom::Start(from))?;
+        file.read_exact(&mut buffer)?;
+        for at in memchr::memrchr_iter(b'\n', &buffer) {
+            newlines -= 1;
+            if newlines == 0 {
+                return Ok(Some(from + at as u64 + 1));
+            }
+        }
+        position = from;
+    }
+    // Event 1 has no newline before it.
+    Ok((position == 0 && newlines == 1).then_some(0))
+}
+
+/// Whether `head`, the start of a line, is the head the host writes event `seq` with:
+/// `{"chat_id":"…","seq":N,`.
+fn numbered(head: &[u8], seq: u64) -> bool {
+    head.strip_prefix(br#"{"chat_id":""#)
+        .and_then(|rest| {
+            let close = memchr::memchr(b'"', rest)?;
+            Some(rest[close..].starts_with(format!(r#"","seq":{seq},"#).as_bytes()))
+        })
+        .unwrap_or(false)
 }
 
 // ---- Reading a chat's files without the host ----------------------------------------
@@ -1162,12 +1232,65 @@ mod tests {
             log.append(line(seq).as_bytes(), false).unwrap();
         }
         let mut out = Vec::new();
-        replay(&dir, 2, 4, &mut out).unwrap();
+        replay(&dir, 2, 4, None, &mut out).unwrap();
         assert_eq!(out, [line(3), line(4)].concat().as_bytes());
         let mut nothing = Vec::new();
-        replay(&dir, 5, 5, &mut nothing).unwrap();
+        replay(&dir, 5, 5, None, &mut nothing).unwrap();
         assert!(nothing.is_empty());
-        assert!(replay(&dir, 0, 6, &mut Vec::new()).is_err());
+        assert!(replay(&dir, 0, 6, None, &mut Vec::new()).is_err());
+        let end = 5 * line(1).len() as u64;
+        let mut file = File::open(dir.join(EVENTS)).unwrap();
+        assert_eq!(event_start(&mut file, 1, 5, end).unwrap(), Some(0));
+        assert_eq!(
+            event_start(&mut file, 4, 5, end).unwrap(),
+            Some(end * 3 / 5)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_replay_counted_back_from_the_end_is_the_one_counted_from_the_start() {
+        let root = scratch();
+        let dir = root.join("chat");
+        let log = ChatLog::create(&dir, &info(&root)).unwrap();
+        // Lines on both sides of the 256 KiB chunks the count back reads.
+        let mut ends = vec![0];
+        for seq in 1..=40 {
+            let text = "é\"x".repeat([3, 90_000, 0, 20, 40_000][seq as usize % 5]);
+            let written = user_line(seq, &text);
+            log.append(written.as_bytes(), false).unwrap();
+            ends.push(ends.last().unwrap() + written.len() as u64);
+        }
+        let replayed = |since, last, end| {
+            let mut out = Vec::new();
+            replay(&dir, since, last, end, &mut out).map(|()| out)
+        };
+        // A subscriber that registered at `last` while later lines were written.
+        for last in [40, 39, 33, 1] {
+            let end = ends[last as usize];
+            for since in 0..=last {
+                let expected = replayed(since, last, None).unwrap();
+                assert_eq!(replayed(since, last, Some(end)).unwrap(), expected);
+                // An end that is not where event `last` ends never changes what is sent.
+                for wrong in [0, end - 1, end + 1, ends[last as usize - 1], u64::MAX / 2] {
+                    assert_eq!(
+                        replayed(since, last, Some(wrong)).unwrap(),
+                        expected,
+                        "since {since} last {last} end {wrong}"
+                    );
+                }
+            }
+        }
+        // The end of a long log is found counting back, and its start counting forward.
+        let mut file = File::open(dir.join(EVENTS)).unwrap();
+        for since in 30..=40 {
+            assert_eq!(
+                event_start(&mut file, since, 40, ends[40]).unwrap(),
+                Some(ends[since as usize - 1])
+            );
+        }
+        assert_eq!(event_start(&mut file, 2, 40, ends[40]).unwrap(), None);
+        assert!(replayed(0, 41, Some(ends[40])).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
