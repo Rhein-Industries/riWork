@@ -1,5 +1,5 @@
-//! Agent activity: Codex from exact pane/thread bindings and its rollout
-//! lifecycle events, Claude from the turn cursor its hooks keep (see
+//! Agent activity: Codex and Grok from invocation-scoped lifecycle hooks,
+//! with exact Codex pane/thread rollouts as a fallback; Claude from the turn cursor its hooks keep (see
 //! `agent_hooks`). No CPU, terminal output, prompts, tool results, or message
 //! bodies are used.
 //!
@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 use crate::{
     chat::model::ChatState,
+    notifications::CompletionOutcome,
     sessions::{HarnessKind, ShellSession},
     store::State,
 };
@@ -332,6 +333,14 @@ fn codex_home() -> Option<PathBuf> {
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
 }
 
+pub(crate) fn resolved_codex_home(home: &Path, shell: &ShellSession) -> Option<PathBuf> {
+    ActivityTracker::at(home.into())
+        .binding_of(shell)
+        .map(|binding| binding.codex_home)
+        .or_else(|| shell.codex_home.clone())
+        .or_else(codex_home)
+}
+
 /// Used only when a launch notification or authenticated thread environment
 /// identifies the exact shell and thread. Stores identifiers, never content.
 pub fn bind_codex_thread(
@@ -421,7 +430,13 @@ fn record_codex_notification_at(
         && home.join("sessions.json").is_file()
     {
         let event_id = codex_completion_event_id(log_home, &notification.thread_id, &turn);
-        crate::notifications::record_completion(home, shell_id, &event_id, HarnessKind::Codex)?;
+        crate::notifications::record_completion_outcome(
+            home,
+            shell_id,
+            &event_id,
+            HarnessKind::Codex,
+            cursor.outcome,
+        )?;
     }
     Ok(())
 }
@@ -449,7 +464,7 @@ fn notified_turn(
     }
 }
 
-fn codex_completion_event_id(log_home: &Path, thread_id: &str, turn_id: &str) -> String {
+pub(crate) fn codex_completion_event_id(log_home: &Path, thread_id: &str, turn_id: &str) -> String {
     serde_json::to_string(&("codex", log_home.to_string_lossy(), thread_id, turn_id))
         .expect("serializing identifiers cannot fail")
 }
@@ -458,6 +473,7 @@ fn codex_completion_event_id(log_home: &Path, thread_id: &str, turn_id: &str) ->
 pub struct CodexCompletion {
     pub shell_id: String,
     pub event_id: String,
+    pub outcome: CompletionOutcome,
 }
 
 pub struct ActivityTracker {
@@ -570,6 +586,29 @@ impl ActivityTracker {
             .retain(|id, _| shells.iter().any(|shell| &shell.id == id));
         let mut result = BTreeMap::new();
         for shell in shells {
+            let hook_state = shell
+                .harness
+                .filter(|provider| matches!(provider, HarnessKind::Codex | HarnessKind::Grok))
+                .and_then(|provider| {
+                    crate::agent_hooks::harness_snapshot(
+                        &self.home,
+                        &shell.id,
+                        provider,
+                        now,
+                        provider == HarnessKind::Grok && shell.alive,
+                    )
+                });
+            if shell.harness == Some(HarnessKind::Grok) {
+                result.insert(
+                    shell.id.clone(),
+                    if shell.alive {
+                        hook_state.map(|(state, _)| state).unwrap_or_default()
+                    } else {
+                        AgentState::plain(AgentActivity::Exited)
+                    },
+                );
+                continue;
+            }
             if shell.harness == Some(HarnessKind::Claude) {
                 result.insert(shell.id.clone(), self.claude_state(shell, now));
                 continue;
@@ -588,7 +627,16 @@ impl ActivityTracker {
                 continue;
             }
             let Some(binding) = binding else {
-                result.insert(shell.id.clone(), AgentState::plain(AgentActivity::Unknown));
+                let state = crate::agent_hooks::harness_snapshot(
+                    &self.home,
+                    &shell.id,
+                    HarnessKind::Codex,
+                    now,
+                    true,
+                )
+                .map(|(state, _)| state)
+                .unwrap_or_default();
+                result.insert(shell.id.clone(), state);
                 continue;
             };
             let cursor = self
@@ -624,11 +672,12 @@ impl ActivityTracker {
                 cursor.last_completed_turn = None;
             }
             if cursor.rollout.caught_up && cursor.rollout.valid_session {
-                if cursor.primed && status == AgentActivity::Done {
-                    if let Some(turn) = &cursor.rollout.completed_turn {
+                if cursor.primed && cursor.rollout.ended_turn.is_some() {
+                    if let Some(turn) = &cursor.rollout.ended_turn {
                         if cursor.last_completed_turn.as_ref() != Some(turn) {
                             self.completions.push(CodexCompletion {
                                 shell_id: shell.id.clone(),
+                                outcome: cursor.rollout.outcome,
                                 event_id: codex_completion_event_id(
                                     &binding.codex_home,
                                     &binding.thread_id,
@@ -641,7 +690,7 @@ impl ActivityTracker {
                 // First EOF establishes a baseline, including any historical
                 // Done. Backlogged initial reads never produce startup alerts.
                 cursor.primed = true;
-                cursor.last_completed_turn = cursor.rollout.completed_turn.clone();
+                cursor.last_completed_turn = cursor.rollout.ended_turn.clone();
             }
             let mut state = AgentState::plain(status);
             if matches!(
@@ -650,7 +699,43 @@ impl ActivityTracker {
             ) {
                 state.since_unix = cursor.rollout.since_unix;
             }
-            if delegates && status == AgentActivity::Working {
+            let rollout_valid = cursor.rollout.valid_session
+                && cursor.rollout.caught_up
+                && status != AgentActivity::Unknown;
+            flag_missing_codex_hooks(&self.home, shell, rollout_valid, hook_state.is_some());
+            if let Some((hook, observed)) = hook_state {
+                if !rollout_valid
+                    || observed > state.since_unix.unwrap_or(0)
+                    || (observed == state.since_unix.unwrap_or(0)
+                        && hook.activity != AgentActivity::Working)
+                {
+                    state = if rollout_valid {
+                        hook
+                    } else {
+                        crate::agent_hooks::harness_snapshot(
+                            &self.home,
+                            &shell.id,
+                            HarnessKind::Codex,
+                            now,
+                            true,
+                        )
+                        .map(|(state, _)| state)
+                        .unwrap_or(hook)
+                    };
+                } else if let (Some(turn), Some(since)) =
+                    (&cursor.rollout.ended_turn, state.since_unix)
+                {
+                    let _ = crate::agent_hooks::settle_rollout(
+                        &self.home,
+                        shell,
+                        &binding.thread_id,
+                        turn,
+                        since,
+                        cursor.rollout.outcome,
+                    );
+                }
+            }
+            if delegates && state.activity == AgentActivity::Working {
                 if let Some(path) = cursor.path.clone() {
                     state.subagents = cursor.delegates.working(
                         self.child_scan_every,
@@ -786,18 +871,42 @@ pub(crate) fn bound_rollout(home: &Path, shell: &ShellSession) -> Option<PathBuf
     find_rollout(&binding.codex_home, &binding.thread_id)
 }
 
+fn flag_missing_codex_hooks(home: &Path, shell: &ShellSession, rollout: bool, hooks: bool) {
+    let path = home
+        .join("agent-hooks/codex")
+        .join(format!("{}.warning", shell.id));
+    if hooks {
+        let _ = fs::remove_file(path);
+        return;
+    }
+    if !shell.alive || !rollout {
+        return;
+    }
+    if fs::create_dir_all(path.parent().unwrap()).is_err() {
+        return;
+    }
+    if let Ok(mut file) = OpenOptions::new().write(true).create_new(true).open(path) {
+        let message = format!(
+            "Codex shell {} has a rollout but lifecycle hooks have never reported; relaunch with updated RiWork and review hook policy.\n",
+            shell.id
+        );
+        let _ = file.write_all(message.as_bytes());
+        eprintln!("riwork activity: {message}");
+    }
+}
+
 /// The state of every agent shell in `shells`, read cold: a tracker made for
 /// this one call, which is what a CLI process has. Needs nothing from the GUI;
 /// the rollouts, bindings and hook cursors are all on disk.
 ///
-/// Grok and Muse have no activity tracking: a live one is `Unknown` and a
-/// dead one `Exited`. A plain shell has no entry unless it holds a bound Codex.
+/// Muse has no activity tracking: a live one is `Unknown` and a dead one
+/// `Exited`. A plain shell has no entry unless it holds a bound Codex.
 pub fn states_once(home: &Path, shells: &[ShellSession], now: u64) -> BTreeMap<String, AgentState> {
     let mut tracker = ActivityTracker::at(home.to_path_buf());
     tracker.seed_over = COLD_SEED_OVER;
     let mut states = tracker.sample_states(shells, now);
     for shell in shells {
-        if matches!(shell.harness, Some(HarnessKind::Grok | HarnessKind::Muse)) {
+        if shell.harness == Some(HarnessKind::Muse) {
             let activity = if shell.alive {
                 AgentActivity::Unknown
             } else {
@@ -919,6 +1028,7 @@ struct LogPayload {
     parent_thread_id: Option<String>,
     agent_role: Option<String>,
     model: Option<ReportedModel>,
+    error: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -967,6 +1077,8 @@ struct RolloutCursor {
     malformed: bool,
     active_turn: Option<String>,
     completed_turn: Option<String>,
+    ended_turn: Option<String>,
+    outcome: CompletionOutcome,
     caught_up: bool,
     restarted: bool,
     status: AgentActivity,
@@ -992,6 +1104,8 @@ impl RolloutCursor {
             malformed: false,
             active_turn: None,
             completed_turn: None,
+            ended_turn: None,
+            outcome: CompletionOutcome::Completed,
             caught_up: false,
             restarted: false,
             status: AgentActivity::Unknown,
@@ -1216,19 +1330,33 @@ impl RolloutCursor {
                     self.malformed = false;
                     self.active_turn = Some(turn);
                     self.completed_turn = None;
+                    self.ended_turn = None;
+                    self.outcome = CompletionOutcome::Completed;
                     self.status = AgentActivity::Working;
                     self.since_unix = at();
                     return Applied::Started;
                 }
                 "task_complete" | "turn_complete" if self.active_turn.as_deref() == Some(&turn) => {
                     self.active_turn = None;
+                    self.ended_turn = Some(turn.clone());
                     self.completed_turn = Some(turn);
+                    self.outcome = if record.payload.error.is_some() {
+                        CompletionOutcome::Failed
+                    } else {
+                        CompletionOutcome::Completed
+                    };
                     self.status = AgentActivity::Done;
                     self.since_unix = at();
                 }
                 "turn_aborted" if self.active_turn.as_deref() == Some(&turn) => {
                     self.active_turn = None;
                     self.completed_turn = None;
+                    self.ended_turn = Some(turn);
+                    self.outcome = if record.payload.error.is_some() {
+                        CompletionOutcome::Failed
+                    } else {
+                        CompletionOutcome::Interrupted
+                    };
                     self.status = AgentActivity::Waiting;
                     self.since_unix = at();
                 }
@@ -1543,6 +1671,81 @@ mod tests {
     }
 
     #[test]
+    fn newer_rollout_settles_old_hook_and_failure_outcome_survives_cold_sampling() {
+        let fixture = Fixture::new();
+        fs::create_dir_all(fixture.home.join("project")).unwrap();
+        let store = crate::store::Store::open(fixture.home.clone()).unwrap();
+        let project = store
+            .add_project(fixture.home.join("project"), Some("Review"))
+            .unwrap();
+        store
+            .set_project_orchestrator_wakes(&project.id, true)
+            .unwrap();
+        let mut session = shell(Some(HarnessKind::Codex));
+        session.project_id = Some(project.id);
+        session.user_opened = false;
+        session.codex_home = Some(fixture.log_home.clone());
+        fs::write(
+            fixture.home.join("sessions.json"),
+            serde_json::json!({"sessions":[session]}).to_string(),
+        )
+        .unwrap();
+        let thread = Uuid::new_v4().to_string();
+        fixture.bind(&session, &thread);
+        let directory = fixture.home.join("agent-hooks/codex");
+        fs::create_dir_all(&directory).unwrap();
+        let hook = directory.join(format!("{}.json", session.id));
+        let write_hook = |seen| {
+            fs::write(&hook, serde_json::json!({"session":thread,"turn":"turn","phase":"working","since":1,"seen":seen}).to_string()).unwrap()
+        };
+        let end = |error: bool| {
+            format!(
+                "{}\n",
+                serde_json::json!({"timestamp":"2026-10-03T10:00:30Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn","error":if error {serde_json::json!({"message":"API failed"})} else {serde_json::Value::Null}}})
+            )
+        };
+        let at = unix_from_rfc3339("2026-10-03T10:00:30Z").unwrap();
+        fixture.log(
+            &thread,
+            &(meta(&thread) + &event("task_started", "turn") + &end(true)),
+        );
+        write_hook(at - 1);
+        assert_eq!(
+            fixture.tracker().sample_states(&[session.clone()], at)[&session.id].activity,
+            AgentActivity::Done
+        );
+        let ledger: serde_json::Value = serde_json::from_slice(
+            &fs::read(fixture.home.join("orchestrator-wakes.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ledger["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(ledger["entries"][0]["outcome"], "failed");
+        write_hook(at + 1);
+        assert_eq!(
+            fixture.tracker().sample_states(&[session.clone()], at + 1)[&session.id].activity,
+            AgentActivity::Working,
+            "newer hook wins"
+        );
+        write_hook(at);
+        assert_eq!(
+            fixture.tracker().sample_states(&[session.clone()], at)[&session.id].activity,
+            AgentActivity::Done,
+            "settled rollout beats a tied working hook"
+        );
+        fs::remove_file(&hook).unwrap();
+        fixture.tracker().sample_states(&[session.clone()], at);
+        let warning = directory.join(format!("{}.warning", session.id));
+        assert!(
+            fs::read_to_string(&warning)
+                .unwrap()
+                .contains("hooks have never reported")
+        );
+        write_hook(at + 1);
+        fixture.tracker().sample_states(&[session], at + 1);
+        assert!(!warning.exists());
+    }
+
+    #[test]
     fn scheduled_readiness_cannot_transfer_to_a_replacement_provider_thread() {
         let fixture = Fixture::new();
         let mut session = shell(Some(HarnessKind::Codex));
@@ -1772,7 +1975,9 @@ mod tests {
                 + &event("task_complete", "aborted")),
         );
         tracker.sample(&[session.clone()]);
-        assert!(tracker.take_completions().is_empty());
+        let interrupted = tracker.take_completions();
+        assert_eq!(interrupted.len(), 1);
+        assert_eq!(interrupted[0].outcome, CompletionOutcome::Interrupted);
     }
 
     #[test]
@@ -2458,13 +2663,12 @@ mod tests {
             AgentState::plain(AgentActivity::Exited)
         );
         assert!(!states.contains_key(&plain.id));
-        // The window's tracker does not track Grok at all, so its summary never
-        // claims "unknown" for a Grok tab.
-        assert!(
-            !fixture
+        // Before its hooks speak, the window and cold CLI agree too.
+        assert_eq!(
+            fixture
                 .tracker()
-                .sample_states(std::slice::from_ref(&grok), 100)
-                .contains_key(&grok.id)
+                .sample_states(std::slice::from_ref(&grok), 100)[&grok.id],
+            AgentState::plain(AgentActivity::Unknown)
         );
     }
 

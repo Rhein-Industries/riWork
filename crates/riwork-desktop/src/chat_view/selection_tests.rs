@@ -14,6 +14,8 @@ use gpui_kit::{
 
 fn message(id: &str, text: &str) -> Item {
     Item {
+        started_at: None,
+        ended_at: None,
         id: id.into(),
         turn_id: Some(format!("fixture-turn:{id}")),
         status: ItemStatus::Completed,
@@ -89,6 +91,8 @@ fn base_drag_crosses_unicode_paragraphs_and_messages_in_reading_order(cx: &mut T
         let ax = window.find("transcript:first/0");
         assert_eq!(ax.role(), Some(gpui::Role::Label));
         assert_eq!(ax.label(), Some("alpha 🦀 café"));
+        // The activity header is crossed visually, but decorative headers are
+        // excluded from the text that the drag copies.
         select_between(window, "transcript:first/0", "transcript:second/0", cx);
         assert_eq!(copied(window, cx), "alpha 🦀 café\nbeta\ngamma");
         // Native menu/action routing uses the same Base Copy action.
@@ -268,6 +272,8 @@ fn selected_diff_comment_carries_exact_old_new_ranges_and_original_edit(cx: &mut
     let patch = "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -10,2 +10,3 @@\n old\n-removed\n+added 🦀\n+extra";
     cx.update_window(handle.into(), |_, window, cx| {
         let edit = Item {
+            started_at: None,
+            ended_at: None,
             id: "edit:stable".into(),
             turn_id: Some("turn".into()),
             status: ItemStatus::Completed,
@@ -433,6 +439,12 @@ fn virtualized_partial_selection_exports_unmounted_endpoints_and_middle_both_dir
             .map(|(row, text)| message(&format!("virtual-{row}"), text))
             .collect();
         cx.update_window(handle.into(), |_, window, cx| {
+            // This fixture measures message virtualization, with one row per message.
+            // Normal's per-turn activity headers have their own export test above.
+            view.update(cx, |v, cx| {
+                v.pending_display = Some(DisplayMode::Verbose);
+                v.apply_display_mode(DisplayMode::Verbose, cx);
+            });
             install(&view, items, window, cx);
             view.update(cx, |v, cx| {
                 v.list.pause_following_tail();

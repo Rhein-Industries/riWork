@@ -196,6 +196,7 @@ private struct ChatLayoutProbe: ViewModifier {
     let name: String
     let visible: Bool
     let action: (() -> Void)?
+    let revision: String
     private func publish(to inspection: ChatLayoutInspection) {
         guard inspection.mounts[owner, default: 0] > 0, inspection.owners[name] == owner else { return }
         inspection.frames[name] = measuredFrame
@@ -214,6 +215,11 @@ private struct ChatLayoutProbe: ViewModifier {
                 publish(to: inspection)
             }
             .onChange(of: visible) { _, _ in publish(to: inspection) }
+            // A changed state its action reads (a row opened, a copy made) takes the name back for this mounted probe.
+            .onChange(of: revision) { _, _ in
+                if inspection.mounts[owner, default: 0] > 0 { inspection.owners[name] = owner }
+                publish(to: inspection)
+            }
             .onDisappear {
                 // SwiftUI can mount one view twice (a tab's status within the scrolling strip) and unmount it once: it stays measured
                 // until its last mount goes.
@@ -229,12 +235,66 @@ private struct ChatLayoutProbe: ViewModifier {
 }
 #endif
 extension View {
-    @ViewBuilder func chatLayoutProbe(_ name: String, visible: Bool = true, action: (() -> Void)? = nil) -> some View {
+    /// Chat and preview controls sit on the same compact surface and use the same separator policy.
+    func chatToolbarSurface() -> some View { modifier(ChatToolbarSurface()) }
+
+    @ViewBuilder func chatLayoutProbe(_ name: String, visible: Bool = true, revision: String = "", action: (() -> Void)? = nil) -> some View {
         #if DEBUG
-        modifier(ChatLayoutProbe(name: name, visible: visible, action: action))
+        modifier(ChatLayoutProbe(name: name, visible: visible, action: action, revision: revision))
         #else
         self
         #endif
+    }
+}
+
+private struct ChatToolbarSurface: ViewModifier {
+    @Environment(\.desktopStyle) private var style
+    func body(content: Content) -> some View {
+        content.padding(.horizontal, 8)
+            .frame(minHeight: style.target)
+            .background(style.background)
+            .overlay(alignment: .bottom) { if !style.glass { DesktopRule() } }
+    }
+}
+
+/// An expanded tool container's 28-point visual control with a 44-point touch target.
+struct ChatContainerIconAction: View {
+    let symbol: String
+    let label: String
+    var translucent = false
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) { Image(systemName: symbol) }
+            .buttonStyle(ChatContainerIconStyle(translucent: translucent))
+            .accessibilityLabel(label).help(label)
+    }
+}
+
+private struct ChatContainerIconStyle: ButtonStyle {
+    @Environment(\.desktopStyle) private var style
+    @Environment(\.isEnabled) private var enabled
+    var translucent: Bool
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(.system(size: 12)).foregroundStyle(style.muted)
+            .frame(width: 28, height: 28)
+            .background(configuration.isPressed ? style.active : style.panel.opacity(translucent ? 0.85 : 1), in: RoundedRectangle(cornerRadius: 4))
+            .contentShape(Rectangle().inset(by: -8))
+            .opacity(enabled ? 1 : 0.45)
+    }
+}
+
+extension View {
+    func chatContainerSurface() -> some View { modifier(ChatContainerSurface()) }
+}
+
+private struct ChatContainerSurface: ViewModifier {
+    @Environment(\.desktopStyle) private var style
+    func body(content: Content) -> some View {
+        content.padding(.vertical, 6).padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(style.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(style.divider, lineWidth: 0.5))
     }
 }
 

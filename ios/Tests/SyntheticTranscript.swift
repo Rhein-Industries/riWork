@@ -1,4 +1,5 @@
 import Foundation
+import RiWorkCore
 
 /// Lines the way a styled terminal capture holds them (`capture-pane -e`): prose, an agent's tool calls and their results, diffs with
 /// filled backgrounds, build output with colored words, box drawing, and the symbols the agents use. Deterministic: line `n` is always
@@ -49,4 +50,34 @@ enum SyntheticTranscript {
 
     /// `count` lines starting at `first`, joined by line breaks (no break after the last).
     static func lines(_ first: Int, _ count: Int) -> [String] { (first..<(first + count)).map(line) }
+}
+
+/// Long tool-call transcript shared by the pure projection and hosted Simulator regressions.
+enum ToolUIPerformanceFixture {
+    static let itemCount = 2200
+    static let imageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAlklEQVR4nO3PsQ2AMBTEUMbJiIyTERmBBfgFlWPJ0pUu7l3r3p979vrcaf112qEA9KEA9KEA9KHfAMvRqQ9A9wHoPgDd+wGWo1MfgO4D0H0AuvcDLEenPgDdB6D7AHTvB1iOTn0Aug9A9wHo3g+wHJ36AHQfgO4D0L0fYDk69QHoPgDdB6B7P8BydOoD0H0Aug9A93rAC0TkwVrNiEm+AAAAAElFTkSuQmCC"
+    static func items() -> [ChatItem] {
+        let output = String(String(repeating: "result: 0123456789 abcdefghijklmnopqrstuvwxyz\n", count: 1600).prefix(65_536))
+        return (0..<itemCount).map { index in
+            let turn = index < 1200 ? "perf-dense" : "perf-turn-\((index - 1200) / 22)"
+            let body: ChatItemBody
+            switch index < 1200 ? -1 : (index - 1200) % 22 {
+            case -1: body = .toolCall(server: nil, tool: "Read", input: .object(["file_path": .string("src/file-\(index).rs")]), output: output)
+            case 0: body = .userMessage("Inspect source files and show the result for turn \(index / 22).")
+            case 21: body = .agentMessage("Completed inspection of turn \(index / 22).")
+            default: body = .command(command: "cat src/file-\(index).rs", cwd: "/fixture", output: output, exitCode: 0)
+            }
+            return ChatItem(id: "perf-item-\(index)", turnID: turn, status: .completed, body: body,
+                            presentation: ChatPresentation(images: index % 22 == 20 ? [.init(label: "fixture.png", source: .data(mime: "image/png", base64: imageBase64))] : [],
+                                                           semantics: index < 1200 ? .init(kind: .read, target: "src/file-\(index).rs") : nil),
+                            startedAt: UInt64(index * 100), endedAt: UInt64(index * 100 + 50))
+        }
+    }
+    static func transcript() -> ChatTranscript {
+        var transcript = ChatTranscript()
+        for item in items() { transcript.apply(.itemCompleted(item)) }
+        transcript.apply(.turnStarted(turnID: "perf-live", startedAt: 1_000))
+        transcript.apply(.itemStarted(.init(id: "perf-live", turnID: "perf-live", body: .agentMessage("Streaming"))))
+        return transcript
+    }
 }

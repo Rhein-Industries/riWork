@@ -112,6 +112,8 @@ struct FakeDriver {
 
 fn agent_item(id: &str, turn: &str, text: &str, status: ItemStatus) -> Item {
     Item {
+        started_at: None,
+        ended_at: None,
         presentation: Default::default(),
         id: id.into(),
         turn_id: Some(turn.into()),
@@ -176,9 +178,12 @@ impl Driver for FakeDriver {
         });
         fake.emit(ChatEvent::TurnStarted {
             turn_id: turn.clone(),
+            started_at: None,
         });
         fake.emit(ChatEvent::ItemStarted {
             item: Item {
+                started_at: None,
+                ended_at: None,
                 presentation: Default::default(),
                 id: format!("user-{}-{}", self.number, self.turn),
                 turn_id: Some(turn.clone()),
@@ -217,6 +222,7 @@ impl Driver for FakeDriver {
         fake.emit(ChatEvent::TurnCompleted {
             turn_id: turn,
             outcome: TurnOutcome::Completed,
+            ended_at: None,
         });
         fake.emit(ChatEvent::State {
             state: ChatState::Idle,

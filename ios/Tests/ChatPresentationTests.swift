@@ -19,6 +19,13 @@ final class ChatPresentationTests: XCTestCase {
         XCTAssertEqual(action(.return, empty: false, canSend: false), .none, "a send is on its way, or the link is down")
         XCTAssertEqual(action(.return, empty: false, approval: approval(everything)), .send, "typing something takes Return back from the request")
     }
+    func testCommandReturnAlwaysUsesSendRoutingIncludingSuggestionsAndApprovals() {
+        let pending = approval(everything)
+        XCTAssertEqual(action(.commandReturn, empty: false, approval: pending), .send)
+        XCTAssertEqual(action(.commandReturn, approval: pending), .none)
+        XCTAssertEqual(action(.commandReturn, empty: false, canSend: false), .none)
+        XCTAssertEqual(ChatKeyRouter.action(for: .commandReturn, in: ChatKeyContext(composerIsEmpty: false, suggesting: true)), .send)
+    }
     func testWithARequestWaitingAndNothingTypedTheKeysAnswerIt() {
         let pending = approval(everything)
         XCTAssertEqual(action(.return, approval: pending), .decide(.accept))
@@ -199,6 +206,27 @@ final class ChatPresentationTests: XCTestCase {
         let unnamed = ChatInfo(id: id, provider: .claude, title: "  ")
         XCTAssertEqual(ChatTabs.title(unnamed), "Claude chat")
         XCTAssertEqual(ChatTabs.detail(unnamed, branch: nil), "44444444")
+    }
+}
+
+/// The typed projection hints and upstream inline-card hints share one tolerant wire object.
+final class ChatToolMetadataTests: XCTestCase {
+    func testPresentationHintsRoundTripTogetherAndTolerateMalformedOptionalFields() throws {
+        let data = Data(#"{"id":"read","turn_id":"t","status":"completed","started_at":1000,"ended_at":2000,"body":{"type":"tool_call","tool":"Read"},"presentation":{"phase":false,"parent_id":"parent","images":[false,{"label":"screen.png","source":{"kind":"unavailable","reason":"elided"}}],"attachments":false,"semantics":{"kind":"read","target":"main.swift","range":{"start":12,"end":25},"worker":{"role":"reviewer","objective":"Inspect"}},"worker":{"session_id":"child","kind":"chat","title":"Review","noted_at":1000},"subagent":{"name":"Reviewer","status":"done","summary":"Reviewed"}}}"#.utf8)
+        let item = try JSONDecoder().decode(ChatItem.self, from: data)
+        XCTAssertEqual(item.body, .toolCall(server: nil, tool: "Read", input: .null, output: nil))
+        XCTAssertEqual(item.startedAt, 1000); XCTAssertEqual(item.endedAt, 2000)
+        XCTAssertNil(item.presentation.phase)
+        XCTAssertEqual(item.presentation.parentID, "parent")
+        XCTAssertEqual(item.presentation.images, [.init(label: "screen.png", source: .unavailable(reason: "elided"))])
+        XCTAssertTrue(item.presentation.attachments.isEmpty)
+        XCTAssertEqual(item.presentation.semantics?.range, .init(start: 12, end: 25))
+        XCTAssertEqual(item.presentation.semantics?.worker?.role, "reviewer")
+        XCTAssertEqual(item.worker?.sessionID, "child")
+        XCTAssertEqual(item.subagent?.summary, "Reviewed")
+        XCTAssertEqual(item.worker, item.presentation.worker)
+        XCTAssertEqual(item.subagent, item.presentation.subagent)
+        XCTAssertEqual(try JSONDecoder().decode(ChatItem.self, from: JSONEncoder().encode(item)), item)
     }
 }
 

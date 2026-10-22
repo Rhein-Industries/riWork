@@ -959,6 +959,8 @@ mod tests {
                 seq,
                 event: ChatEvent::ItemCompleted {
                     item: Item {
+                        started_at: None,
+                        ended_at: None,
                         id: format!("message-{seq}"),
                         turn_id: None,
                         status: ItemStatus::Completed,

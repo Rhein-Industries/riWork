@@ -7,7 +7,7 @@
 //! there is one selection per window and the two panes cannot disagree.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     cmp::Ordering,
     collections::{BTreeMap, HashSet},
     ffi::OsStr,
@@ -26,6 +26,11 @@ use gpui::{
     Window, div, img, prelude::*, px, rgb, uniform_list,
 };
 use gpui::{Focusable, Subscription};
+use gpui_kit::base::TestSupportExt as _;
+gpui::actions!(
+    riwork_preview,
+    [PreviewZoomIn, PreviewZoomOut, PreviewZoomFit]
+);
 
 use crate::{
     behavior_controls as behavior, controls,
@@ -54,6 +59,7 @@ pub enum FileExplorerEvent {
     Reveal(PathBuf),
     /// The path is relative to the current worktree root.
     CopyRelativePath(PathBuf),
+    ClosePreview,
     /// The user chose a file or link: with a click or the keyboard, not by the tree
     /// picking its first row. The window shows the preview if it is set to.
     Selected,
@@ -760,6 +766,16 @@ const PREVIEW_FOCUS_ORDER: [Mode; 6] = [
     Mode::Open,
 ];
 
+const CHAT_PREVIEW_FOCUS_ORDER: [Mode; 4] = [Mode::Preview, Mode::Open, Mode::Reveal, Mode::Copy];
+const NATIVE_PREVIEW_FOCUS_ORDER: [Mode; 6] = [
+    Mode::Preview,
+    Mode::Open,
+    Mode::Reveal,
+    Mode::Copy,
+    Mode::Edit,
+    Mode::CopyContents,
+];
+
 impl Mode {
     /// Whether the control is in the Preview pane rather than the Files pane.
     fn in_preview_pane(self) -> bool {
@@ -1078,6 +1094,36 @@ fn release_image(image: Arc<RenderImage>, cx: &mut App) {
     cx.defer(move |cx| cx.drop_image(image, None));
 }
 
+/// Validate on the background executor before exposing a turn's paging sequence.
+fn available_chat_sequence(
+    mut sequence: file_preview::PreviewSequence,
+    scope: &crate::chat_view::ImageScope,
+    files_root: Option<&Path>,
+) -> file_preview::PreviewSequence {
+    let selected = sequence.current().cloned();
+    sequence.entries.retain(|entry| {
+        let target = match entry.image.as_ref().map(|image| &image.source) {
+            Some(crate::chat::model::ImageSource::Local { path }) => path.as_str(),
+            Some(_) => return true,
+            None => entry.target.as_str(),
+        };
+        let Ok(resolved) = scope.resolve(target) else {
+            return false;
+        };
+        if entry.image.is_none()
+            && !entry.attachment
+            && !files_root.is_some_and(|root| resolved.path.starts_with(root))
+        {
+            return false;
+        }
+        file_preview::validated_live_editor_path(&resolved.root, &resolved.path).is_ok()
+    });
+    sequence.index = selected
+        .and_then(|selected| sequence.entries.iter().position(|e| *e == selected))
+        .unwrap_or_else(|| sequence.index.min(sequence.entries.len().saturating_sub(1)));
+    sequence
+}
+
 pub struct FileExplorer {
     root: Option<ExplorerRoot>,
     tree: TreeModel,
@@ -1094,6 +1140,14 @@ pub struct FileExplorer {
     mode: Mode,
     scroll: UniformListScrollHandle,
     preview_scroll: UniformListScrollHandle,
+    preview_text_list: gpui::ListState,
+    chat_sequence: Option<file_preview::PreviewSequence>,
+    chat_scope: Option<crate::chat_view::ImageScope>,
+    /// The verified scope root for the currently loaded chat file (attachments may use another root).
+    chat_preview_root: Option<PathBuf>,
+    preview_zoom: file_preview::PreviewZoom,
+    preview_bytes: Option<u64>,
+    preview_extent: Rc<Cell<gpui::Size<gpui::Pixels>>>,
     preview: PreviewState,
     /// The file `preview` shows. It trails `selected` while a replacement loads.
     preview_path: Option<PathBuf>,
@@ -1183,6 +1237,13 @@ impl FileExplorer {
             mode: Mode::Tree,
             scroll: UniformListScrollHandle::new(),
             preview_scroll: UniformListScrollHandle::new(),
+            preview_text_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(40.0)),
+            chat_sequence: None,
+            chat_scope: None,
+            chat_preview_root: None,
+            preview_zoom: Default::default(),
+            preview_bytes: None,
+            preview_extent: Rc::new(Cell::new(gpui::size(px(0.0), px(0.0)))),
             preview: PreviewState::Empty,
             preview_path: None,
             preview_loading: false,
@@ -1375,6 +1436,11 @@ impl FileExplorer {
             return;
         }
         self.root = root;
+        self.chat_sequence = None;
+        self.chat_scope = None;
+        self.chat_preview_root = None;
+        self.preview_zoom.reset();
+        self.preview_bytes = None;
         self.generation = self.generation.wrapping_add(1);
         self.tree.clear();
         self.selected = None;
@@ -1532,6 +1598,15 @@ impl FileExplorer {
     }
 
     fn select_row(&mut self, row: Option<&TreeRow>, intent: Intent, cx: &mut Context<Self>) {
+        if intent == Intent::Auto && self.chat_sequence.is_some() {
+            return;
+        }
+        if intent != Intent::Auto {
+            self.chat_sequence = None;
+            self.chat_scope = None;
+            self.chat_preview_root = None;
+            self.preview_zoom.reset();
+        }
         self.select_row_announcing(row, intent, true, cx);
     }
 
@@ -1573,6 +1648,9 @@ impl FileExplorer {
     /// Refresh the preview when the selected entry's listing no longer matches
     /// what the preview was loaded from.
     fn reload_preview_if_changed(&mut self, listed: &Path, cx: &mut Context<Self>) {
+        if self.chat_sequence.is_some() {
+            return;
+        }
         let Some(selected) = &self.selected else {
             return;
         };
@@ -1652,6 +1730,10 @@ impl FileExplorer {
             self.preview_scroll = UniformListScrollHandle::new();
             self.highlight_line = None;
         }
+        self.preview_text_list.reset(match &state {
+            PreviewState::Ready(PreviewContent::Text { lines, .. }) => lines.len(),
+            _ => 0,
+        });
         self.preview_path = path;
         let old = std::mem::replace(&mut self.preview, state);
         if let Some(image) = old.render_image() {
@@ -1676,6 +1758,218 @@ impl FileExplorer {
         self.reveal_inner(path, line, true, window, cx)
     }
 
+    fn image_dimensions(&self) -> Option<(f32, f32)> {
+        let PreviewState::Ready(PreviewContent::Image { image, description }) = &self.preview
+        else {
+            return None;
+        };
+        let dimensions = description
+            .split(" · ")
+            .find(|part| part.contains('×'))
+            .unwrap_or(description);
+        let mut words = dimensions.split_whitespace();
+        let width = words.next().and_then(|word| word.parse::<f32>().ok());
+        let height = words.nth(1).and_then(|word| word.parse::<f32>().ok());
+        let size = image.size(0);
+        Some((
+            width.unwrap_or(size.width.0 as f32),
+            height.unwrap_or(size.height.0 as f32),
+        ))
+    }
+
+    fn effective_zoom(&self) -> f32 {
+        if !self.preview_zoom.fit {
+            return self.preview_zoom.scale;
+        }
+        let Some((width, height)) = self.image_dimensions() else {
+            return 1.0;
+        };
+        let viewport = self.preview_extent.get();
+        if viewport.width <= px(0.0) || viewport.height <= px(0.0) {
+            return 1.0;
+        }
+        (f32::from(viewport.width) / width)
+            .min(f32::from(viewport.height) / height)
+            .min(1.0)
+            .max(0.01)
+    }
+
+    fn adjust_preview_zoom(&mut self, factor: f32) {
+        if self.preview_zoom.fit {
+            self.preview_zoom.scale = self.effective_zoom();
+        }
+        self.preview_zoom.adjust(factor);
+        if self.image_dimensions().is_none() {
+            self.preview_zoom.scale = self.preview_zoom.scale.max(0.5);
+        }
+        self.preview_text_list.remeasure();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn preview_state_for_test(
+        &self,
+    ) -> (
+        file_preview::PreviewZoom,
+        Option<file_preview::PreviewSequence>,
+    ) {
+        (self.preview_zoom, self.chat_sequence.clone())
+    }
+
+    /// Closing the Preview tab must not leave an old turn sequence or zoom behind.
+    pub fn clear_chat_preview(&mut self, cx: &mut Context<Self>) {
+        let was_chat = self.chat_sequence.take().is_some();
+        self.chat_scope = None;
+        self.chat_preview_root = None;
+        self.preview_zoom.reset();
+        if was_chat {
+            self.preview_task = None;
+            self.preview_request = self.preview_request.wrapping_add(1);
+            self.preview_loading = false;
+            self.preview_bytes = None;
+            self.selected = None;
+            self.preview_identity = None;
+            self.preview_kind = None;
+            self.pending_line = None;
+            self.highlight_line = None;
+            self.notice = None;
+            self.set_preview(PreviewState::Empty, None, cx);
+        }
+        cx.notify();
+    }
+
+    /// Chat previews share this pane and its lifecycle while retaining their turn sequence.
+    pub fn show_chat_sequence(
+        &mut self,
+        sequence: file_preview::PreviewSequence,
+        scope: crate::chat_view::ImageScope,
+        cx: &mut Context<Self>,
+    ) {
+        self.chat_sequence = Some(sequence);
+        self.chat_scope = Some(scope);
+        self.load_chat_entry(cx);
+        cx.emit(FileExplorerEvent::Revealed);
+    }
+
+    fn page_chat(&mut self, direction: isize, cx: &mut Context<Self>) {
+        if self
+            .chat_sequence
+            .as_mut()
+            .is_some_and(|sequence| sequence.step(direction))
+        {
+            self.load_chat_entry(cx);
+        }
+    }
+
+    fn load_chat_entry(&mut self, cx: &mut Context<Self>) {
+        let Some(sequence) = self.chat_sequence.clone() else {
+            return;
+        };
+        let Some(scope) = self.chat_scope.clone() else {
+            return;
+        };
+        self.preview_task = None;
+        self.preview_request = self.preview_request.wrapping_add(1);
+        let request = self.preview_request;
+        self.chat_preview_root = None;
+        self.preview_zoom.reset();
+        self.preview_bytes = None;
+        self.pending_line = None;
+        self.highlight_line = None;
+        self.notice = None;
+        self.preview_loading = true;
+        let root = self.root.as_ref().map(|r| r.path.clone());
+        self.set_preview(PreviewState::Loading, None, cx);
+        self.preview_task = Some(cx.spawn(async move |this, cx| {
+            let (sequence, result) = cx
+                .background_executor()
+                .spawn(async move {
+                    // Semantic references can outlive their files. Do not let paging visit missing,
+                    // nonregular or out-of-scope entries, even when an old transcript names them.
+                    let sequence = available_chat_sequence(sequence, &scope, root.as_deref());
+                    let result = (|| {
+                        let entry = sequence
+                            .current()
+                            .ok_or("This file is no longer available.")?;
+                        if let Some(image) = &entry.image {
+                            let (content, _) = crate::chat_view::load_preview_image(image, &scope);
+                            let resolved = match &image.source {
+                                crate::chat::model::ImageSource::Local { path } => {
+                                    scope.resolve(path).ok()
+                                }
+                                _ => None,
+                            };
+                            let size = resolved
+                                .as_ref()
+                                .and_then(|r| fs::metadata(&r.path).ok())
+                                .map(|m| m.len());
+                            let (path, resolved_root) =
+                                resolved.map_or((None, None), |r| (Some(r.path), Some(r.root)));
+                            return content
+                                .map(|content| (content, path, None, None, size, resolved_root));
+                        }
+                        let resolved = scope.resolve(&entry.target)?;
+                        let identity = file_preview::validated_live_editor_path(
+                            &resolved.root,
+                            &resolved.path,
+                        )
+                        .and_then(|path| {
+                            fs::symlink_metadata(path)
+                                .map(|m| FileIdentity::of(&m))
+                                .map_err(|e| e.to_string())
+                        })?;
+                        let line = crate::chat_view::local_preview_target(&entry.target)
+                            .ok()
+                            .and_then(|(_, line)| line);
+                        let size = fs::metadata(&resolved.path).ok().map(|m| m.len());
+                        file_preview::load(&resolved.root, &resolved.path, Some(identity)).map(
+                            |content| {
+                                (
+                                    content,
+                                    Some(resolved.path),
+                                    Some(identity),
+                                    line,
+                                    size,
+                                    Some(resolved.root),
+                                )
+                            },
+                        )
+                    })();
+                    (sequence, result)
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                if view.preview_request != request {
+                    if let Ok((content, _, _, _, _, _)) = result
+                        && let Some(image) = content.render_image()
+                    {
+                        release_image(image.clone(), cx);
+                    }
+                    return;
+                }
+                view.chat_sequence = Some(sequence);
+                view.preview_loading = false;
+                match result {
+                    Ok((content, path, identity, line, size, resolved_root)) => {
+                        view.chat_preview_root = resolved_root;
+                        view.preview_bytes = size;
+                        view.selected = path.clone();
+                        view.preview_identity = identity;
+                        view.preview_kind = path.as_ref().map(|_| EntryKind::File);
+                        view.pending_line = path.clone().zip(line.map(|line| line as usize));
+                        view.set_preview(PreviewState::Ready(content), path, cx);
+                        view.apply_pending_line(cx);
+                    }
+                    Err(error) => {
+                        view.selected = None;
+                        view.set_preview(PreviewState::Error(error), None, cx);
+                    }
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     /// Chat links always stay inside the read-only preview, even if listings change.
     pub fn reveal_read_only(
         &mut self,
@@ -1695,6 +1989,10 @@ impl FileExplorer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        self.chat_sequence = None;
+        self.chat_scope = None;
+        self.chat_preview_root = None;
+        self.preview_zoom.reset();
         let root = self
             .root
             .as_ref()
@@ -1809,6 +2107,7 @@ impl FileExplorer {
             LineOutcome::Show { index } => {
                 self.preview_scroll
                     .scroll_to_item(index, ScrollStrategy::Center);
+                self.preview_text_list.scroll_to_reveal_item(index);
                 self.highlight_line = Some((path, index));
             }
             LineOutcome::PastEnd { last, truncated } => {
@@ -2010,6 +2309,17 @@ impl FileExplorer {
                 }
             }
             Mode::Open => {
+                if self.chat_sequence.is_some() {
+                    if let (Some(root), Some(path)) = (&self.chat_preview_root, &self.preview_path)
+                    {
+                        match open_refusal(root, path) {
+                            Some(reason) => self.notice = Some(Notice::refusal(reason)),
+                            None => cx.emit(FileExplorerEvent::Open(path.clone())),
+                        }
+                    }
+                    cx.notify();
+                    return;
+                }
                 if let (Some(root), Some(path)) = (&self.root, &self.selected) {
                     match open_refusal(&root.path, path) {
                         Some(reason) => self.notice = Some(Notice::refusal(reason)),
@@ -2023,6 +2333,12 @@ impl FileExplorer {
                     match mode {
                         Mode::Reveal => cx.emit(FileExplorerEvent::Reveal(path.clone())),
                         Mode::Copy => {
+                            if self.chat_sequence.is_some() {
+                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                    path.to_string_lossy().into_owned(),
+                                ));
+                                return;
+                            }
                             if let Some(relative) = self
                                 .root
                                 .as_ref()
@@ -2090,7 +2406,21 @@ impl FileExplorer {
         }
         let key = event.keystroke.key.as_str();
         let platform = event.keystroke.modifiers.platform;
-        if platform && key == "f" && !in_preview {
+        if in_preview && platform && matches!(key, "+" | "=" | "-" | "0") {
+            match key {
+                "0" => self.preview_zoom.reset(),
+                "-" => self.adjust_preview_zoom(1.0 / 1.2),
+                _ => self.adjust_preview_zoom(1.2),
+            }
+        } else if in_preview && key == "escape" {
+            cx.emit(FileExplorerEvent::ClosePreview);
+        } else if in_preview
+            && !platform
+            && matches!(key, "left" | "right")
+            && self.chat_sequence.is_some()
+        {
+            self.page_chat(if key == "left" { -1 } else { 1 }, cx);
+        } else if platform && key == "f" && !in_preview {
             self.focus_search(window, cx);
         } else if platform && key == "r" {
             self.refresh(cx);
@@ -2101,7 +2431,16 @@ impl FileExplorer {
         } else if platform && key == "e" && self.mode != Mode::Search {
             self.action(Mode::Edit, cx);
         } else if key == "tab" {
-            let order = self.mode.focus_order();
+            let order: &[Mode] =
+                if in_preview && (ui_text::is_native() || self.chat_sequence.is_some()) {
+                    if self.chat_sequence.is_some() {
+                        &CHAT_PREVIEW_FOCUS_ORDER
+                    } else {
+                        &NATIVE_PREVIEW_FOCUS_ORDER
+                    }
+                } else {
+                    self.mode.focus_order()
+                };
             let index = order
                 .iter()
                 .position(|mode| *mode == self.mode)
@@ -2528,7 +2867,7 @@ impl FileExplorer {
     /// The Preview pane: the selected file's name and actions above its contents. It is
     /// drawn by `FilePreview`, but its clicks and keys act on this entity.
     fn preview_panel(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        if ui_text::is_native() {
+        if ui_text::is_native() || self.chat_sequence.is_some() {
             return self.native_preview_panel(window, cx);
         }
         let colors = theme::palette(cx);
@@ -2775,7 +3114,7 @@ impl FileExplorer {
             .id("file-preview-panel")
             .track_focus(&self.preview_focus)
             .key_context("FilePreview")
-            .on_key_down(cx.listener(Self::preview_key_down))
+            .capture_key_down(cx.listener(Self::preview_key_down))
             .size_full()
             .flex()
             .flex_col()
@@ -2873,6 +3212,69 @@ impl FileExplorer {
 }
 
 impl FileExplorer {
+    fn native_preview_metadata(&self, path: Option<String>, zoom: &str) -> String {
+        let entry = self
+            .chat_sequence
+            .as_ref()
+            .and_then(|sequence| sequence.current());
+        let kind = if self.preview_loading && self.preview_path != self.selected {
+            Some("Loading…".to_owned())
+        } else {
+            match &self.preview {
+                PreviewState::Ready(PreviewContent::Text {
+                    lines, markdown, ..
+                }) => Some(format!(
+                    "{} · {} {}",
+                    if *markdown {
+                        "Markdown"
+                    } else {
+                        entry
+                            .map(|e| file_preview::file_type(&e.title))
+                            .unwrap_or("Text")
+                    },
+                    lines.len(),
+                    if lines.len() == 1 { "line" } else { "lines" }
+                )),
+                PreviewState::Ready(PreviewContent::Image { description, .. }) => {
+                    Some(description.clone())
+                }
+                PreviewState::Ready(PreviewContent::Pdf { pages, .. }) => Some(format!(
+                    "PDF · {pages} {}",
+                    if *pages == 1 { "page" } else { "pages" }
+                )),
+                PreviewState::PdfPending => Some("PDF".to_owned()),
+                _ => None,
+            }
+        };
+        let path = entry.map(|e| e.display_target().to_owned()).or(path);
+        let position = self
+            .chat_sequence
+            .as_ref()
+            .filter(|s| s.entries.len() > 1)
+            .map(|s| format!("{}/{}", s.index + 1, s.entries.len()));
+        let source = entry.map(|e| format!("source: {}", e.source));
+        // Decoded image descriptions carry the actual encoded format and byte
+        // count, including retained tool payloads that have no on-disk path.
+        let size = (!matches!(
+            self.preview,
+            PreviewState::Ready(PreviewContent::Image { .. })
+        ))
+        .then(|| self.preview_bytes.map(file_preview::format_size))
+        .flatten();
+        [
+            path.map(|path| file_preview::middle_elide(&path, 42)),
+            kind,
+            size,
+            position,
+            source,
+            Some(zoom.to_owned()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ")
+    }
+
     /// The Preview pane under Native, laid out like every navigation panel: the file's name
     /// over its kind, size and path, its actions as symbols, then the contents on the
     /// panel's own background with nothing framing them.
@@ -2891,39 +3293,257 @@ impl FileExplorer {
                 .to_string_lossy()
                 .into_owned()
         });
-        let kind = if self.preview_loading && self.preview_path != self.selected {
-            Some("Loading…".to_owned())
-        } else {
-            match &self.preview {
-                PreviewState::Ready(PreviewContent::Text {
-                    lines, markdown, ..
-                }) => Some(format!(
-                    "{} · {} {}",
-                    if *markdown { "Markdown" } else { "Text" },
-                    lines.len(),
-                    if lines.len() == 1 { "line" } else { "lines" }
-                )),
-                PreviewState::Ready(PreviewContent::Image { description, .. }) => {
-                    Some(format!("Image · {description}"))
+        let entry = self.chat_sequence.as_ref().and_then(|s| s.current());
+        let zoom = format!(
+            "{}{}%",
+            if self.preview_zoom.fit { "Fit · " } else { "" },
+            (self.effective_zoom() * 100.0).round() as u32
+        );
+        let meta = self.native_preview_metadata(path, &zoom);
+        let mut actions = Vec::new();
+        let mut zoom_controls = div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(ui_text::space(controls::DESKTOP_TOOLBAR_GAP));
+        zoom_controls = zoom_controls
+            .child(
+                preview_toolbar_button(
+                    "preview-zoom-out",
+                    "minus.magnifyingglass",
+                    "Zoom out (⌘−)",
+                    true,
+                    colors,
+                )
+                .on_click(cx.listener(|v, _, _, cx| {
+                    cx.stop_propagation();
+                    v.adjust_preview_zoom(1.0 / 1.2);
+                    v.preview_text_list.remeasure();
+                    cx.notify();
+                })),
+            )
+            .child(
+                controls::toolbar_capsule(
+                    "preview-zoom-fit",
+                    zoom,
+                    controls::Button::Secondary,
+                    colors,
+                )
+                .accessibility_label("Fit to pane (⌘0)")
+                .hover(move |style| style.bg(rgb(controls::Button::Secondary.hover(colors))))
+                .on_click(cx.listener(|v, _, _, cx| {
+                    cx.stop_propagation();
+                    v.preview_zoom.reset();
+                    v.preview_text_list.remeasure();
+                    cx.notify();
+                })),
+            )
+            .child(
+                preview_toolbar_button(
+                    "preview-zoom-in",
+                    "plus.magnifyingglass",
+                    "Zoom in (⌘+)",
+                    true,
+                    colors,
+                )
+                .on_click(cx.listener(|v, _, _, cx| {
+                    cx.stop_propagation();
+                    v.adjust_preview_zoom(1.2);
+                    v.preview_text_list.remeasure();
+                    cx.notify();
+                })),
+            );
+        actions.push(zoom_controls.into_any_element());
+        for (id, symbol, label, mode) in [
+            (
+                "preview-open",
+                "arrow.up.forward.square",
+                "Open file",
+                Mode::Open,
+            ),
+            ("preview-reveal", "folder", "Reveal in Finder", Mode::Reveal),
+            ("preview-copy-path", "doc.on.doc", "Copy path", Mode::Copy),
+        ] {
+            actions.push(
+                preview_toolbar_button(id, symbol, label, shown.is_some(), colors)
+                    .track_focus(self.focus_of(mode))
+                    .on_click(cx.listener(move |v, _, window, cx| {
+                        cx.stop_propagation();
+                        v.mode = mode;
+                        v.focus_of(mode).focus(window, cx);
+                        v.action(mode, cx);
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+        }
+        actions.push(
+            preview_toolbar_button(
+                "preview-share",
+                "square.and.arrow.up",
+                "Share file",
+                shown.is_some(),
+                colors,
+            )
+            .on_click(cx.listener(|v, _, window, cx| {
+                cx.stop_propagation();
+                if let Some(path) = &v.preview_path {
+                    file_preview::share_file(path, window);
                 }
-                PreviewState::Ready(PreviewContent::Pdf { pages, .. }) => Some(format!(
-                    "PDF · {pages} {}",
-                    if *pages == 1 { "page" } else { "pages" }
-                )),
-                PreviewState::PdfPending => Some("PDF".to_owned()),
-                _ => None,
+            }))
+            .into_any_element(),
+        );
+        if self.chat_sequence.is_none() {
+            for action in TOOLBAR
+                .iter()
+                .filter(|action| matches!(action.mode, Mode::Edit | Mode::CopyContents))
+            {
+                // Use the Files action renderer so its keyboard hint, refusal
+                // explanation and active-mode tint stay identical in either pane.
+                actions.push(self.toolbar_button(action, true, window, cx));
             }
-        };
-        let meta = [kind, path]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" · ");
-        let meta = (!meta.is_empty()).then(|| meta.into());
-        let actions = TOOLBAR
-            .iter()
-            .map(|action| self.toolbar_button(action, true, window, cx))
-            .collect::<Vec<_>>();
+        }
+        actions.push(
+            preview_toolbar_button(
+                "preview-close",
+                "xmark",
+                "Close preview (Esc)",
+                true,
+                colors,
+            )
+            .on_click(cx.listener(|_, _, _, cx| {
+                cx.stop_propagation();
+                cx.emit(FileExplorerEvent::ClosePreview);
+            }))
+            .into_any_element(),
+        );
+        let paging = self
+            .chat_sequence
+            .as_ref()
+            .filter(|s| s.entries.len() > 1)
+            .map(|sequence| {
+                let previous = sequence.index > 0;
+                let next = sequence.index + 1 < sequence.entries.len();
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(controls::DESKTOP_TOOLBAR_GAP))
+                    .child(
+                        preview_toolbar_button(
+                            "preview-previous-file",
+                            "chevron.left",
+                            "Previous file (←)",
+                            previous,
+                            colors,
+                        )
+                        .on_click(cx.listener(move |v, _, _, cx| {
+                            cx.stop_propagation();
+                            if previous {
+                                v.page_chat(-1, cx);
+                            }
+                        })),
+                    )
+                    .child(
+                        preview_toolbar_button(
+                            "preview-next-file",
+                            "chevron.right",
+                            "Next file (→)",
+                            next,
+                            colors,
+                        )
+                        .on_click(cx.listener(move |v, _, _, cx| {
+                            cx.stop_propagation();
+                            if next {
+                                v.page_chat(1, cx);
+                            }
+                        })),
+                    )
+            });
+        let title_limit = ((f32::from(self.preview_extent.get().width) - 390.0)
+            / (controls::TOOLBAR_TEXT * 0.58))
+            .floor()
+            .max(8.0) as usize;
+        let title = entry.map(|entry| entry.title.clone()).unwrap_or(title);
+        let heading = div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .child(
+                controls::desktop_toolbar(colors)
+                    .id("preview-toolbar")
+                    .test_support()
+                    .font_family(ui_text::ui_family())
+                    .text_size(ui_text::text(controls::TOOLBAR_TEXT))
+                    .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(controls::DESKTOP_TOOLBAR_GAP))
+                    .children(paging)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap(ui_text::space(controls::DESKTOP_TOOLBAR_GAP))
+                            .child(icons::symbol(
+                                "doc",
+                                controls::TOOLBAR_SYMBOL,
+                                Some(colors.muted),
+                            ))
+                            .child(
+                                div()
+                                    .id("preview-title")
+                                    .role(gpui::Role::Label)
+                                    .aria_label(title.clone())
+                                    .test_support()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(file_preview::middle_elide(&title, title_limit))
+                                    .child(tooltip::anchor(
+                                        SharedString::from(
+                                            entry
+                                                .map(|e| e.display_target().to_owned())
+                                                .unwrap_or_default(),
+                                        ),
+                                        Look::Control,
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(ui_text::space(controls::DESKTOP_TOOLBAR_GAP))
+                            .children(actions),
+                    ),
+            )
+            .child(
+                div()
+                    .px(ui_text::space(controls::DESKTOP_TOOLBAR_INSET))
+                    .py(ui_text::space(controls::TOOLBAR_CAPSULE_PAD_Y))
+                    .border_b_1()
+                    .border_color(rgb(colors.divider))
+                    .bg(rgb(colors.panel))
+                    .child(
+                        div()
+                            .id("preview-metadata")
+                            .test_support()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .font_family(ui_text::ui_family())
+                            .text_size(ui_text::text(controls::TOOLBAR_TEXT))
+                            .text_color(rgb(colors.muted))
+                            .child(meta),
+                    ),
+            );
         let content: AnyElement = match &self.preview {
             PreviewState::Empty => {
                 controls::empty_state("eye", "Select a file to preview it here.", colors)
@@ -2973,13 +3593,16 @@ impl FileExplorer {
                 markdown,
             }) => {
                 let lines = lines.clone();
-                let count = lines.len();
                 let markdown = *markdown;
-                // A quiet gutter, wide enough for the last line's number.
-                let digits = count.max(1).to_string().len().max(2) as f32;
-                let gutter = ui_text::space(14.0 + digits * 6.5);
-                let number = theme::mix(colors.muted, colors.panel, 0.35);
-                let text = colors.text;
+                let fit = self.preview_zoom.fit;
+                let scale = self.preview_zoom.scale;
+                let longest = lines
+                    .iter()
+                    .map(|line| line.chars().count())
+                    .max()
+                    .unwrap_or(0) as f32;
+                let digits = lines.len().max(1).to_string().len().max(2) as f32;
+                let gutter = ui_text::space((16.0 + digits * 7.0) * scale);
                 let marked = self
                     .highlight_line
                     .as_ref()
@@ -2989,74 +3612,99 @@ impl FileExplorer {
                 div()
                     .flex_1()
                     .min_h_0()
+                    .min_w_0()
                     .flex()
                     .flex_col()
                     .children(truncated.then(|| {
                         controls::footnote("Preview truncated at 1 MiB or 10,000 lines", colors)
-                            .text_color(rgb(colors.gold))
                     }))
                     .child(
-                        uniform_list("file-preview-lines", count, move |range, _, _| {
-                            range
-                                .map(|index| {
+                        div()
+                            .id("preview-code-scroll")
+                            .flex_1()
+                            .w_full()
+                            .min_h_0()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .overflow_x_scroll()
+                            .child(
+                                gpui::list(self.preview_text_list.clone(), move |index, _, _| {
                                     let line = &lines[index];
-                                    let heading = markdown && line.trim_start().starts_with('#');
                                     div()
-                                        .h(ui_text::space(18.0))
+                                        .id(SharedString::from(format!(
+                                            "preview-code-line:{index}"
+                                        )))
+                                        .font_family(ui_text::code_family())
                                         .w_full()
+                                        .min_h(ui_text::space(20.0 * scale))
                                         .flex()
-                                        .items_center()
-                                        .pr(ui_text::space(controls::PANEL_INSET))
-                                        .when(marked == Some(index), |row| row.bg(rgb(marker)))
+                                        .items_start()
+                                        .when(marked == Some(index), |r| r.bg(rgb(marker)))
                                         .child(
                                             div()
                                                 .w(gutter)
                                                 .flex_none()
-                                                .flex()
-                                                .justify_end()
                                                 .pr(ui_text::space(8.0))
-                                                .text_color(rgb(number))
-                                                .text_size(ui_text::text(9.0))
-                                                .child(format!("{}", index + 1)),
+                                                .text_color(rgb(colors.muted))
+                                                .text_size(ui_text::text(11.0 * scale))
+                                                .text_align(gpui::TextAlign::Right)
+                                                .child((index + 1).to_string()),
                                         )
                                         .child(
                                             div()
                                                 .flex_1()
                                                 .min_w_0()
-                                                .overflow_hidden()
-                                                .whitespace_nowrap()
-                                                .text_ellipsis()
-                                                .text_size(ui_text::text(10.5))
-                                                .text_color(rgb(text))
-                                                .when(heading, |line| {
-                                                    line.font_weight(gpui::FontWeight::SEMIBOLD)
-                                                })
+                                                .px(ui_text::space(8.0))
+                                                .text_size(ui_text::text(12.0 * scale))
+                                                .text_color(rgb(colors.text))
+                                                .when(fit, |r| r.whitespace_normal())
+                                                .when(!fit, |r| r.whitespace_nowrap())
+                                                .when(
+                                                    markdown && line.trim_start().starts_with('#'),
+                                                    |r| r.font_weight(gpui::FontWeight::SEMIBOLD),
+                                                )
                                                 .child(line.clone()),
                                         )
+                                        .test_support()
                                         .into_any_element()
                                 })
-                                .collect::<Vec<_>>()
-                        })
-                        .flex_1()
-                        .min_h_0()
-                        .pb(ui_text::space(controls::LIST_MARGIN))
-                        .font_family(accent_family())
-                        .track_scroll(&self.preview_scroll),
+                                .flex_1()
+                                .w_full()
+                                .min_h_0()
+                                .font_family(ui_text::code_family())
+                                .when(!fit, |list| {
+                                    list.min_w(ui_text::space(longest * 7.2 * scale + 80.0))
+                                }),
+                            ),
                     )
                     .into_any_element()
             }
-            PreviewState::Ready(PreviewContent::Image { image, .. }) => div()
-                .flex_1()
-                .min_h_0()
-                .min_w_0()
-                .px(ui_text::space(controls::PANEL_INSET + 4.0))
-                .pt(ui_text::space(4.0))
-                .pb(ui_text::space(controls::PANEL_INSET + 4.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(img(image.clone()).size_full())
-                .into_any_element(),
+            PreviewState::Ready(PreviewContent::Image { image, .. }) => {
+                let size = image.size(0);
+                let dimensions = self
+                    .image_dimensions()
+                    .unwrap_or((size.width.0 as f32, size.height.0 as f32));
+                let scale = self.effective_zoom();
+                div()
+                    .id("preview-image-stage")
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .bg(rgb(0x202124))
+                    .overflow_scroll()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        img(image.clone())
+                            .object_fit(gpui::ObjectFit::Contain)
+                            .flex_none()
+                            .w(px(dimensions.0 * scale))
+                            .h(px(dimensions.1 * scale)),
+                    )
+                    .into_any_element()
+            }
             PreviewState::Ready(PreviewContent::Pdf {
                 image, page, pages, ..
             }) => {
@@ -3132,12 +3780,78 @@ impl FileExplorer {
                     .into_any_element()
             }
         };
+        let extent = self.preview_extent.clone();
+        let weak = cx.entity().downgrade();
+        let content = div()
+            .id("preview-content")
+            .test_support()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .child(
+                gpui::canvas(
+                    move |bounds, _, cx| {
+                        if extent.replace(bounds.size) != bounds.size {
+                            cx.defer(move |cx| {
+                                let _ = weak.update(cx, |_, cx| cx.notify());
+                            });
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .child(content)
+            .on_click(cx.listener(|view, event: &gpui::ClickEvent, _, cx| {
+                if event.click_count() == 2 {
+                    view.preview_zoom.toggle();
+                    view.preview_text_list.remeasure();
+                    cx.notify();
+                }
+            }));
         controls::panel(colors)
             .id("file-preview-panel")
             .track_focus(&self.preview_focus)
             .key_context("FilePreview")
-            .on_key_down(cx.listener(Self::preview_key_down))
-            .child(controls::panel_header(title, meta, actions, colors))
+            .capture_key_down(cx.listener(Self::preview_key_down))
+            .on_action(cx.listener(|v, _: &PreviewZoomIn, _, cx| {
+                v.adjust_preview_zoom(1.2);
+                v.preview_text_list.remeasure();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|v, _: &PreviewZoomOut, _, cx| {
+                v.adjust_preview_zoom(1.0 / 1.2);
+                v.preview_text_list.remeasure();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|v, _: &PreviewZoomFit, _, cx| {
+                v.preview_zoom.reset();
+                v.preview_text_list.remeasure();
+                cx.notify();
+            }))
+            .on_pinch(cx.listener(|v, event: &gpui::PinchEvent, _, cx| {
+                v.adjust_preview_zoom(1.0 + event.delta);
+                v.preview_text_list.remeasure();
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .on_scroll_wheel(cx.listener(|v, event: &gpui::ScrollWheelEvent, _, cx| {
+                if event.modifiers.control {
+                    let dy = match event.delta {
+                        gpui::ScrollDelta::Pixels(p) => f32::from(p.y),
+                        gpui::ScrollDelta::Lines(p) => p.y * 12.0,
+                    };
+                    v.adjust_preview_zoom((-dy * 0.01).exp());
+                    v.preview_text_list.remeasure();
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
+            .child(heading)
             // Directly under the header, where the action that caused it just was.
             .children(self.notice.as_ref().map(|notice| {
                 controls::footnote(notice.text.clone(), colors)
@@ -3150,13 +3864,45 @@ impl FileExplorer {
                     }))
             }))
             .child(content)
-            .on_click(cx.listener(|view, _, window, cx| {
+            .child(
+                div()
+                    .flex_none()
+                    .h(ui_text::space(26.0))
+                    .px(ui_text::space(12.0))
+                    .border_t_1()
+                    .border_color(rgb(colors.divider))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .text_size(ui_text::text(10.0))
+                    .text_color(rgb(colors.muted))
+                    .child("Esc close · ←/→ page · ⌘+/− zoom · ⌘0 fit"),
+            )
+            .on_click(cx.listener(|view, _: &gpui::ClickEvent, window, cx| {
                 view.mode = Mode::Preview;
                 view.preview_focus.focus(window, cx);
                 cx.notify();
             }))
             .into_any_element()
     }
+}
+
+/// Native viewer controls remain keyboard and accessibility buttons as well as symbols.
+fn preview_toolbar_button(
+    id: impl Into<gpui::ElementId>,
+    symbol: &'static str,
+    label: &'static str,
+    enabled: bool,
+    colors: theme::Palette,
+) -> behavior::Button {
+    controls::toolbar_symbol_button(
+        id,
+        symbol,
+        label,
+        enabled,
+        colors,
+        ui_text::space(controls::TOOLBAR_BUTTON),
+    )
 }
 
 /// How a button shows its action.
@@ -4025,5 +4771,111 @@ mod kit_control_tests {
                 gpui::Role::Button
             );
         });
+    }
+
+    #[gpui::test]
+    fn native_files_preview_keeps_edit_copy_contents_and_visible_focus_order(
+        cx: &mut TestAppContext,
+    ) {
+        let previous = ui_text::set_for_tests(1., ui_text::Face::SystemMono);
+        let root =
+            std::env::temp_dir().join(format!("riwork-native-actions-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("notes.txt"), "hello\n").unwrap();
+        let mount_root = root.clone();
+        let (window, owner) = test_window(cx, move |window, cx| {
+            let explorer = cx.new(|cx| FileExplorer::new(window, cx));
+            explorer.update(cx, |view, cx| {
+                view.set_root(
+                    Some(ExplorerRoot {
+                        path: mount_root.clone(),
+                        label: "Fixture".into(),
+                        worktree_id: None,
+                    }),
+                    window,
+                    cx,
+                );
+                view.reveal_read_only(&mount_root.join("notes.txt"), None, window, cx)
+                    .unwrap();
+            });
+            let preview = cx.new(|cx| FilePreview::new(explorer.clone(), cx));
+            PreviewFixture { explorer, preview }
+        });
+        let explorer = owner.read_with(cx, |fixture, _| fixture.explorer.clone());
+        let edits = Rc::new(Cell::new(0));
+        let recorded_edits = edits.clone();
+        let _edit_subscription = cx.update(|cx| {
+            cx.subscribe(&explorer, move |_, event, _| {
+                if matches!(event, FileExplorerEvent::Edit { .. }) {
+                    recorded_edits.set(recorded_edits.get() + 1);
+                }
+            })
+        });
+        // Listing auto-selection starts the normal 150 ms preview debounce. A
+        // reveal of that same selection does not restart it, so advance the
+        // deterministic executor rather than waiting on filesystem wall time.
+        for _ in 0..10 {
+            cx.run_until_parked();
+            if explorer.read_with(cx, |view, _| matches!(view.preview, PreviewState::Ready(_))) {
+                break;
+            }
+            cx.executor().advance_clock(Duration::from_millis(50));
+        }
+        cx.run_until_parked();
+        test_turn(cx, window, |window, app| {
+            assert!(window.try_find("file-explorer-edit").is_some());
+            assert!(window.try_find("file-explorer-copy-contents").is_some());
+            let explorer = owner.read(app).explorer.clone();
+            let loaded = explorer.read(app);
+            assert!(
+                loaded.chat_sequence.is_none(),
+                "this is the regular Files preview"
+            );
+            assert!(matches!(
+                loaded.preview,
+                PreviewState::Ready(PreviewContent::Text { .. })
+            ));
+            assert!(
+                loaded.selected_editable().is_some(),
+                "Edit in Vim must be enabled"
+            );
+            assert!(
+                loaded.copy_contents_refusal().is_none(),
+                "Copy contents must be enabled"
+            );
+            explorer.update(app, |view, cx| view.focus_preview(window, cx));
+            window.press("cmd-e", app);
+            for expected in [
+                Mode::Open,
+                Mode::Reveal,
+                Mode::Copy,
+                Mode::Edit,
+                Mode::CopyContents,
+            ] {
+                window.press("tab", app);
+                assert!(
+                    explorer.read(app).focus_of(expected).is_focused(window),
+                    "expected {expected:?}, mode {:?}, native {}, focused controls {:?}, preview focused {}",
+                    explorer.read(app).mode,
+                    ui_text::is_native(),
+                    explorer
+                        .read(app)
+                        .control_focus
+                        .iter()
+                        .filter(|(_, focus)| focus.is_focused(window))
+                        .map(|(mode, _)| mode)
+                        .collect::<Vec<_>>(),
+                    explorer.read(app).preview_focus.is_focused(window),
+                );
+            }
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            edits.get(),
+            1,
+            "⌘E dispatches one Edit event from the preview"
+        );
+        fs::remove_dir_all(root).unwrap();
+        ui_text::set_for_tests(previous.0, previous.1);
     }
 }

@@ -1,0 +1,1276 @@
+{
+  "spec_version": 2,
+  "cases": [
+    {
+      "name": "Completed activity exact counts duration and deduplicated updates",
+      "items": [
+        {
+          "id": "e0",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "file_change",
+            "changes": [
+              {
+                "path": "f0.rs",
+                "kind": "modify"
+              }
+            ]
+          }
+        },
+        {
+          "id": "e1",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "file_change",
+            "changes": [
+              {
+                "path": "f1.rs",
+                "kind": "modify"
+              }
+            ]
+          }
+        },
+        {
+          "id": "e2",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "file_change",
+            "changes": [
+              {
+                "path": "f2.rs",
+                "kind": "modify"
+              }
+            ]
+          }
+        },
+        {
+          "id": "c0",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "cargo test"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "shell",
+              "target": "cargo test"
+            }
+          }
+        },
+        {
+          "id": "c1",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "cargo test"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "shell",
+              "target": "cargo test"
+            }
+          }
+        },
+        {
+          "id": "c2",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "cargo test"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "shell",
+              "target": "cargo test"
+            }
+          }
+        },
+        {
+          "id": "c3",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "cargo test"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "shell",
+              "target": "cargo test"
+            }
+          }
+        },
+        {
+          "id": "r0",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "r1",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "r2",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "r3",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "r4",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "r5",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "r6",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "r7",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "r8",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "r8",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "turn_timing": {
+          "t": {
+            "started_at": 1000,
+            "ended_at": 73000
+          }
+        }
+      },
+      "expected_rows": [
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Worked 1m 12s · 3 files edited · 4 commands · 9 reads",
+          "duration_ms": 72000,
+          "children": [
+            {
+              "id": "e0",
+              "kind": "edit",
+              "title": "Edited",
+              "target": "f0.rs",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "e1",
+              "kind": "edit",
+              "title": "Edited",
+              "target": "f1.rs",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "e2",
+              "kind": "edit",
+              "title": "Edited",
+              "target": "f2.rs",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "c0",
+              "kind": "shell",
+              "title": "Ran",
+              "target": "cargo test",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "c1",
+              "kind": "shell",
+              "title": "Ran",
+              "target": "cargo test",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "c2",
+              "kind": "shell",
+              "title": "Ran",
+              "target": "cargo test",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "c3",
+              "kind": "shell",
+              "title": "Ran",
+              "target": "cargo test",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "g:t:r0",
+              "kind": "group",
+              "title": "Read 9 files",
+              "children": [
+                {
+                  "id": "r0",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "r1",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "r2",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "r3",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "r4",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "r5",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "r6",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "r7",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "r8",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                }
+              ],
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false,
+          "artifacts": [
+            {
+              "item_id": "e0",
+              "path": {
+                "path": "f0.rs"
+              }
+            },
+            {
+              "item_id": "e1",
+              "path": {
+                "path": "f1.rs"
+              }
+            },
+            {
+              "item_id": "e2",
+              "path": {
+                "path": "f2.rs"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Unique edited paths, recorded artifact lines and partial known durations",
+      "items": [
+        {
+          "id": "e1",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "file_change",
+            "changes": [
+              {
+                "path": "a",
+                "kind": "modify"
+              },
+              {
+                "path": "b",
+                "kind": "add"
+              }
+            ]
+          },
+          "started_at": 10,
+          "ended_at": 2010,
+          "presentation": {
+            "semantics": {
+              "kind": "other",
+              "produced": [
+                {
+                  "path": "a",
+                  "line": 7
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "e2",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "file_change",
+            "changes": [
+              {
+                "path": "a",
+                "kind": "modify"
+              }
+            ]
+          }
+        }
+      ],
+      "expected_rows": [
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Worked 2s · 2 files edited",
+          "duration_ms": 2000,
+          "children": [
+            {
+              "id": "e1",
+              "kind": "edit",
+              "title": "Edited",
+              "duration_ms": 2000,
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "e2",
+              "kind": "edit",
+              "title": "Edited",
+              "target": "a",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false,
+          "artifacts": [
+            {
+              "item_id": "e1",
+              "path": {
+                "path": "a",
+                "line": 7
+              }
+            },
+            {
+              "item_id": "e1",
+              "path": {
+                "path": "b"
+              }
+            },
+            {
+              "item_id": "e2",
+              "path": {
+                "path": "a"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Running activity uses turn elapsed and current item label",
+      "items": [
+        {
+          "id": "r",
+          "turn_id": "t",
+          "status": "in_progress",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read",
+              "target": "main.rs"
+            }
+          },
+          "started_at": 2000
+        }
+      ],
+      "options": {
+        "now_ms": 19000,
+        "running_turn_id": "t",
+        "turn_timing": {
+          "t": {
+            "started_at": 1000
+          }
+        }
+      },
+      "expected_rows": [
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Working 18s · reading main.rs",
+          "running": true,
+          "duration_ms": 18000,
+          "current_label": "reading main.rs",
+          "children": [
+            {
+              "id": "r",
+              "kind": "read",
+              "title": "Read",
+              "target": "main.rs",
+              "running": true,
+              "duration_ms": 17000,
+              "current_label": "reading main.rs",
+              "open": false,
+              "failed_count": 0,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Failures badge stays on closed activity with no output",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "failed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "expected_rows": [
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Worked · 2 reads",
+          "failed_count": 1,
+          "children": [
+            {
+              "id": "g:t:a",
+              "kind": "group",
+              "title": "Read 2 files",
+              "children": [
+                {
+                  "id": "a",
+                  "kind": "read",
+                  "title": "Read",
+                  "failed_count": 1,
+                  "open": false,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "b",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                }
+              ],
+              "failed_count": 1,
+              "open": false,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Requests and artifacts stay visible once outside Normal disclosure",
+      "items": [
+        {
+          "id": "u",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "user_message",
+            "text": "go"
+          }
+        },
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read",
+              "target": "main.rs",
+              "produced": [
+                {
+                  "path": "report.md",
+                  "line": 3
+                }
+              ]
+            },
+            "images": [
+              {
+                "label": "plot",
+                "source": {
+                  "kind": "unavailable",
+                  "reason": "on Mac"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "c",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "agent_message",
+            "text": "checking"
+          },
+          "presentation": {
+            "phase": "commentary"
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "answer",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "agent_message",
+            "text": "done"
+          },
+          "presentation": {
+            "images": [
+              {
+                "label": "Result",
+                "source": {
+                  "kind": "unavailable",
+                  "reason": "on Mac"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "item_sequences": {
+        "u": 1,
+        "a": 2,
+        "c": 3,
+        "b": 5,
+        "answer": 6
+      },
+      "requests": [
+        {
+          "request_id": "q",
+          "kind": "question",
+          "title": "Continue?",
+          "turn_id": "t",
+          "requested_seq": 4,
+          "resolution": "answered",
+          "answer_summary": "Yes"
+        }
+      ],
+      "expected_rows": [
+        {
+          "id": "u",
+          "kind": "user",
+          "title": "User",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Worked · 2 reads",
+          "children": [
+            {
+              "id": "a",
+              "kind": "read",
+              "title": "Read",
+              "target": "main.rs",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "b",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "artifacts": [
+            {
+              "item_id": "a",
+              "path": {
+                "path": "report.md",
+                "line": 3
+              }
+            },
+            {
+              "item_id": "a",
+              "image_index": 0
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "request:q",
+          "kind": "request",
+          "title": "Answered: Continue? · Yes",
+          "request_id": "q",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "answer",
+          "kind": "final",
+          "title": "Answer",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false,
+          "artifacts": [
+            {
+              "item_id": "answer",
+              "image_index": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Named turn with no tool calls still gets one activity",
+      "items": [
+        {
+          "id": "u",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "user_message",
+            "text": "hi"
+          }
+        },
+        {
+          "id": "answer",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "agent_message",
+            "text": "hello"
+          }
+        }
+      ],
+      "expected_rows": [
+        {
+          "id": "u",
+          "kind": "user",
+          "title": "User",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Worked",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "answer",
+          "kind": "final",
+          "title": "Answer",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Normal keeps host worker and explicit subagent cards outside activity before the answer even for a late marker",
+      "items": [
+        {
+          "id": "user",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "user_message",
+            "text": "Review the change"
+          }
+        },
+        {
+          "id": "call",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "swift test",
+            "output": "Passed",
+            "exit_code": 0
+          }
+        },
+        {
+          "id": "subagent",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "delegate",
+            "input": null
+          },
+          "presentation": {
+            "subagent": {
+              "name": "Reviewer",
+              "status": "done",
+              "summary": "Reviewed",
+              "children": [
+                {
+                  "id": "review-child",
+                  "status": "done",
+                  "summary": "Checked"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "answer",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "agent_message",
+            "text": "All checks passed"
+          }
+        },
+        {
+          "id": "worker",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "server": "riwork",
+            "tool": "worker",
+            "input": {
+              "session_id": "child"
+            },
+            "output": "Passed"
+          },
+          "presentation": {
+            "worker": {
+              "session_id": "child",
+              "kind": "chat",
+              "title": "Review",
+              "noted_at": 1000,
+              "late": true,
+              "final": {
+                "status": "done",
+                "ended_at": 1001,
+                "tail": "Passed"
+              }
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "normal"
+      },
+      "expected_rows": [
+        {
+          "id": "user",
+          "kind": "user",
+          "title": "User",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Worked · 1 command · 1 tool call",
+          "children": [
+            {
+              "id": "call",
+              "kind": "shell",
+              "title": "Ran",
+              "target": "swift test",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "subagent",
+          "kind": "subagent",
+          "title": "Agent",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "worker",
+          "kind": "worker",
+          "title": "Worker",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "answer",
+          "kind": "final",
+          "title": "Answer",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ],
+      "anchors": {
+        "call": "activity:t",
+        "subagent": "subagent",
+        "worker": "worker",
+        "answer": "answer"
+      }
+    },
+    {
+      "name": "Verbose keeps host worker and explicit subagent cards in transcript order including a late marker after the answer",
+      "items": [
+        {
+          "id": "user",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "user_message",
+            "text": "Review the change"
+          }
+        },
+        {
+          "id": "call",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "swift test",
+            "output": "Passed",
+            "exit_code": 0
+          }
+        },
+        {
+          "id": "subagent",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "delegate",
+            "input": null
+          },
+          "presentation": {
+            "subagent": {
+              "name": "Reviewer",
+              "status": "done",
+              "summary": "Reviewed",
+              "children": [
+                {
+                  "id": "review-child",
+                  "status": "done",
+                  "summary": "Checked"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "answer",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "agent_message",
+            "text": "All checks passed"
+          }
+        },
+        {
+          "id": "worker",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "server": "riwork",
+            "tool": "worker",
+            "input": {
+              "session_id": "child"
+            },
+            "output": "Passed"
+          },
+          "presentation": {
+            "worker": {
+              "session_id": "child",
+              "kind": "chat",
+              "title": "Review",
+              "noted_at": 1000,
+              "late": true,
+              "final": {
+                "status": "done",
+                "ended_at": 1001,
+                "tail": "Passed"
+              }
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "user",
+          "kind": "user",
+          "title": "User",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "call",
+          "kind": "shell",
+          "title": "Ran",
+          "target": "swift test",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "subagent",
+          "kind": "subagent",
+          "title": "Agent",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "answer",
+          "kind": "final",
+          "title": "Answer",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "worker",
+          "kind": "worker",
+          "title": "Worker",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ],
+      "anchors": {
+        "call": "call",
+        "subagent": "subagent",
+        "worker": "worker",
+        "answer": "answer"
+      }
+    }
+  ]
+}

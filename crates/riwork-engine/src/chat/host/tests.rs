@@ -1358,6 +1358,7 @@ fn a_chat_that_died_in_the_middle_of_a_turn_is_made_tidy_when_the_next_host_load
         },
         ChatEvent::TurnStarted {
             turn_id: "t1".into(),
+            started_at: None,
         },
         ChatEvent::ApprovalRequested {
             approval: Approval {
@@ -1412,7 +1413,7 @@ fn a_chat_that_died_in_the_middle_of_a_turn_is_made_tidy_when_the_next_host_load
     assert_gapless(&seen, 1);
     assert!(matches!(
         &seen[5].event,
-        ChatEvent::TurnCompleted { turn_id, outcome: TurnOutcome::Interrupted } if turn_id == "t1"
+        ChatEvent::TurnCompleted { turn_id, outcome: TurnOutcome::Interrupted, .. } if turn_id == "t1"
     ));
     assert_eq!(transcript.state, ChatState::Stopped);
     assert_eq!(transcript.turn_id, None);
@@ -1575,6 +1576,7 @@ fn events_of_a_run_that_was_replaced_are_dropped() {
     straggler
         .send(ChatEvent::TurnStarted {
             turn_id: "ghost".into(),
+            started_at: None,
         })
         .unwrap();
     std::thread::sleep(Duration::from_millis(100));
@@ -1737,6 +1739,7 @@ fn an_idle_host_exits_but_not_while_a_client_is_connected_or_a_chat_is_at_work()
     fake.emit(ChatEvent::TurnCompleted {
         turn_id: "turn-1".into(),
         outcome: TurnOutcome::Completed,
+        ended_at: None,
     });
     fake.emit(ChatEvent::State {
         state: ChatState::Idle,
@@ -1931,6 +1934,8 @@ fn outstanding_sticky_notices_exclude_resolved_and_superseded_items() {
         }
         transcript.apply(&ChatEvent::ItemCompleted {
             item: Item {
+                started_at: None,
+                ended_at: None,
                 presentation: Default::default(),
                 id: id.into(),
                 turn_id: None,
@@ -1956,6 +1961,8 @@ fn dismissal_notice(id: &str, kind: &str, reset: Option<u64>) -> Item {
         *resets_at = reset;
     }
     Item {
+        started_at: None,
+        ended_at: None,
         id: id.into(),
         turn_id: None,
         status: ItemStatus::Completed,
@@ -3551,6 +3558,8 @@ fn legacy_history_outside_the_notice_tail_still_guards_resume_and_bad_history_fa
         let events = [
             ChatEvent::ItemCompleted {
                 item: Item {
+                    started_at: None,
+                    ended_at: None,
                     id: "legacy-user".into(),
                     turn_id: None,
                     status: ItemStatus::Completed,
@@ -3562,6 +3571,8 @@ fn legacy_history_outside_the_notice_tail_still_guards_resume_and_bad_history_fa
             },
             ChatEvent::ItemCompleted {
                 item: Item {
+                    started_at: None,
+                    ended_at: None,
                     id: "long-notice".into(),
                     turn_id: None,
                     status: ItemStatus::Completed,
@@ -3837,6 +3848,7 @@ fn provider_observations_supersede_older_acknowledgements_and_reach_existing_inf
             .collect::<Vec<_>>();
         event_keys.sort_unstable();
         assert_eq!(event_keys, ["event", "info"]);
+
         assert_eq!(shape["event"]["event"], "info");
         let disk = fs::read_to_string(host.home.join("chats").join(&chat.id).join("events.jsonl"))
             .unwrap();
@@ -4086,9 +4098,12 @@ fn identity_adoption_during_an_open_turn_keeps_its_history_but_an_idle_clear_res
     inner.publish_info();
     inner.append(ChatEvent::TurnStarted {
         turn_id: "first-turn".into(),
+        started_at: None,
     });
     inner.append(ChatEvent::ItemCompleted {
         item: Item {
+            started_at: None,
+            ended_at: None,
             id: "first-input".into(),
             turn_id: Some("first-turn".into()),
             status: ItemStatus::Completed,
@@ -4107,6 +4122,7 @@ fn identity_adoption_during_an_open_turn_keeps_its_history_but_an_idle_clear_res
     inner.append(ChatEvent::TurnCompleted {
         turn_id: "first-turn".into(),
         outcome: TurnOutcome::Completed,
+        ended_at: None,
     });
     inner.info.provider_thread_id = Some("cleared-idle-session".into());
     inner.publish_info();
@@ -4421,6 +4437,7 @@ fn a_billing_change_waits_for_a_quiet_claude_chat_restarts_it_on_its_session_and
         host.fake().emit(ChatEvent::TurnCompleted {
             turn_id: "turn-1-1".into(),
             outcome: TurnOutcome::Interrupted,
+            ended_at: None,
         });
         host.fake().emit(ChatEvent::State {
             state: ChatState::Idle,
@@ -4665,10 +4682,13 @@ mod worker_markers {
         host.wait_for_state(&parent.id, |s| *s == ChatState::Idle);
         let fake = host.fake();
         fake.emit(ChatEvent::TurnStarted {
+            started_at: None,
             turn_id: "t1".into(),
         });
         fake.emit(ChatEvent::ItemStarted {
             item: Item {
+                started_at: None,
+                ended_at: None,
                 presentation: Default::default(),
                 id: "spawn-command".into(),
                 turn_id: Some("t1".into()),
@@ -4729,6 +4749,7 @@ mod worker_markers {
 
         // The turn ends; the card stays completed, the command is closed.
         fake.emit(ChatEvent::TurnCompleted {
+            ended_at: None,
             turn_id: "t1".into(),
             outcome: TurnOutcome::Interrupted,
         });
@@ -4873,11 +4894,14 @@ mod worker_markers {
         host.wait_for_state(&child.id, |s| *s == ChatState::Idle);
         let fake = fake_for(&host.home.join("child"));
         fake.emit(ChatEvent::TurnStarted {
+            started_at: None,
             turn_id: "c1".into(),
         });
         // The card was given nothing, and is the latest: the first message is its.
         fake.emit(ChatEvent::ItemCompleted {
             item: Item {
+                started_at: None,
+                ended_at: None,
                 presentation: Default::default(),
                 id: "task".into(),
                 turn_id: Some("c1".into()),
@@ -4889,6 +4913,8 @@ mod worker_markers {
         });
         fake.emit(ChatEvent::ItemCompleted {
             item: Item {
+                started_at: None,
+                ended_at: None,
                 presentation: Default::default(),
                 id: "reply".into(),
                 turn_id: Some("c1".into()),
@@ -4899,6 +4925,7 @@ mod worker_markers {
             },
         });
         fake.emit(ChatEvent::TurnCompleted {
+            ended_at: None,
             turn_id: "c1".into(),
             outcome: TurnOutcome::Completed,
         });
@@ -4989,13 +5016,20 @@ mod worker_ends {
     }
 
     fn turn(chat: &Chat, id: &str) {
-        emit(chat, ChatEvent::TurnStarted { turn_id: id.into() });
+        emit(
+            chat,
+            ChatEvent::TurnStarted {
+                turn_id: id.into(),
+                started_at: None,
+            },
+        );
     }
 
     fn end(chat: &Chat, id: &str, outcome: TurnOutcome) {
         emit(
             chat,
             ChatEvent::TurnCompleted {
+                ended_at: None,
                 turn_id: id.into(),
                 outcome,
             },
@@ -5007,6 +5041,8 @@ mod worker_ends {
             chat,
             ChatEvent::ItemCompleted {
                 item: Item {
+                    started_at: None,
+                    ended_at: None,
                     presentation: Default::default(),
                     id: id.into(),
                     turn_id: Some(turn.into()),
@@ -5142,6 +5178,8 @@ mod worker_ends {
             &child,
             ChatEvent::ItemStarted {
                 item: Item {
+                    started_at: None,
+                    ended_at: None,
                     presentation: Default::default(),
                     id: "r1".into(),
                     turn_id: Some("c1".into()),
@@ -5180,6 +5218,8 @@ mod worker_ends {
             &child,
             ChatEvent::ItemStarted {
                 item: Item {
+                    started_at: None,
+                    ended_at: None,
                     presentation: Default::default(),
                     id: "r1".into(),
                     turn_id: Some("c1".into()),
@@ -5336,4 +5376,44 @@ mod worker_ends {
         fs::set_permissions(&events, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(result.is_err(), "nothing was recorded: {result:?}");
     }
+}
+
+#[test]
+fn host_persists_item_and_turn_lifecycle_metadata() {
+    let fixture = NoticeHost::new();
+    let chat = fixture.create(Provider::Claude);
+    let mut inner = lock(&chat.inner);
+    inner.append(ChatEvent::TurnStarted {
+        turn_id: "turn".into(),
+        started_at: None,
+    });
+    let start: Item = serde_json::from_value(serde_json::json!({
+        "id":"call", "turn_id":"turn", "status":"in_progress",
+        "body":{"type":"tool_call","tool":"Read","input":{"file_path":"src/main.rs"}},
+        "presentation":{"parent_id":"agent"}
+    }))
+    .unwrap();
+    inner.append(ChatEvent::ItemStarted { item: start });
+    let complete: Item = serde_json::from_value(serde_json::json!({
+        "id":"call", "turn_id":"turn", "status":"completed",
+        "body":{"type":"tool_call","tool":"Read","output":"done"}
+    }))
+    .unwrap();
+    inner.append(ChatEvent::ItemCompleted { item: complete });
+    inner.append(ChatEvent::TurnCompleted {
+        turn_id: "turn".into(),
+        outcome: TurnOutcome::Completed,
+        ended_at: None,
+    });
+    let transcript = log::read_transcript(&fixture.home, &inner.info.id).unwrap();
+    let timing = transcript.turn_timing["turn"];
+    assert!(timing.started_at.is_some());
+    assert!(timing.ended_at >= timing.started_at);
+    let item = transcript.item("call").unwrap();
+    assert!(item.started_at.is_some());
+    assert!(item.ended_at >= item.started_at);
+    assert_eq!(item.presentation.parent_id.as_deref(), Some("agent"));
+    let semantics = item.presentation.semantics.as_ref().unwrap();
+    assert_eq!(semantics.target.as_deref(), Some("src/main.rs"));
+    assert_eq!(semantics.excerpt.as_deref(), Some("done"));
 }

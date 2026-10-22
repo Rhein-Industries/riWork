@@ -1,15 +1,16 @@
+import GameController
 import SwiftUI
 import UIKit
 import RiWorkCore
 
-// The composer of a chat: a multi-line text view that reads a hardware keyboard the way a chat needs it (⏎ sends, ⇧⏎ is a new line, and
-// with a request waiting and nothing typed, ⏎ allows it, ⇧⏎ allows it for the session and ⎋ denies it), and the bars above it for
-// requests and questions.
+// The composer of a chat: a multi-line text view that reads a hardware keyboard the way a chat needs it (⏎ sends, ⇧⏎ is a new line, ⌘⏎
+// always sends, and with a request waiting and nothing typed, ⏎ allows it, ⇧⏎ allows it for the session and ⎋ denies it), and the bars
+// above it for requests and questions.
 
 /// The text view of the composer.
 ///
-/// - **Hardware keyboard.** Return and Shift-Return, and with a request waiting also Escape and ⌘⌫, are `UIKeyCommand`s with priority
-///   over the system, because a text view would otherwise insert a line break for Return and ignore the rest. What each means is
+/// - **Hardware keyboard.** Return, Shift-Return and ⌘-Return, with a request waiting also Escape and ⌘⌫, and while dictating Escape (it
+///   only stops the mic), are `UIKeyCommand`s with priority over the system, because a text view would otherwise insert a line break for Return and ignore the rest. What each means is
 ///   decided by `ChatKeyRouter` from what is on the screen now; this view reports the key, and puts in the line break when the router
 ///   says it is the text's. The commands are re-read for every key press: Escape and ⌘⌫ belong to the request only while one waits and
 ///   nothing is typed, and every key is the text view's own while a word is being composed (marked text), so a Japanese or Chinese
@@ -18,6 +19,41 @@ import RiWorkCore
 /// - **Software keyboard.** Return makes a new line, as in any chat; the Send button sends.
 /// - **⌘. (interrupt) is not here:** it is a SwiftUI shortcut on the screen, so it works wherever the keyboard is.
 @MainActor final class ChatComposerTextView: UITextView {
+    /// Read live, because two hardware events can arrive before SwiftUI updates this view.
+    var isDictating: () -> Bool = { false }
+    var applyingDictation = false
+    private var dictationHeight: CGFloat?
+    private var measuredHeight: CGFloat?
+    private var wasDictating = false
+    private var releaseAfterLayout = false
+    var hasHeldDictationHeight: Bool { dictationHeight != nil }
+    /// Use the rendered height, not the most recent speculative SwiftUI sizing probe.
+    func holdDictationHeight() { dictationHeight = dictationHeight ?? (bounds.height > 0 ? bounds.height : measuredHeight) }
+    func releaseDictationHeight() { dictationHeight = nil; releaseAfterLayout = false }
+    func updateDictationActivity() {
+        let active = isDictating()
+        if active && !wasDictating { holdDictationHeight() }
+        if !active && wasDictating { releaseAfterLayout = true; setNeedsLayout() }
+        wasDictating = active
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard releaseAfterLayout else { return }
+        releaseAfterLayout = false
+        // Retain the final insertion's rendered frame. Release without invalidating that frame;
+        // the next sizing pass can measure ordinary text again.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.isDictating() else { return }
+            self.releaseDictationHeight()
+        }
+    }
+    func composerHeight(fitted: CGFloat, minimum: CGFloat, maximum: CGFloat) -> CGFloat {
+        updateDictationActivity()
+        let height = dictationHeight ?? min(max(fitted, minimum), maximum)
+        measuredHeight = height
+        isScrollEnabled = fitted > height
+        return height
+    }
     private var focusRequested = false
     /// SwiftUI may request focus before this view is attached. Keep that one request until UIKit gives it a window.
     func requestFocusWhenAttached() {
@@ -26,7 +62,14 @@ import RiWorkCore
     }
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window != nil { DispatchQueue.main.async { [weak self] in self?.fulfilFocusRequest() } }
+        if window != nil {
+            observeHardwareKeyboard()
+            updateShortcutBar()
+            DispatchQueue.main.async { [weak self] in self?.fulfilFocusRequest() }
+        } else {
+            keyboardObservers.forEach(NotificationCenter.default.removeObserver)
+            keyboardObservers = []
+        }
     }
     private func fulfilFocusRequest() {
         guard focusRequested, window != nil, isEditable else { return }
@@ -52,9 +95,21 @@ import RiWorkCore
         if let onPasteFiles, PasteboardAttachments.available, onPasteFiles() { return }
         super.paste(sender)
     }
+
+    var onDropItems: (([NSItemProvider], Bool, @escaping @MainActor (String) -> Void) -> Bool)?
+    var dropHandler: ChatDropHandler?
+    private lazy var chatDropInteraction = UIDropInteraction(delegate: self)
+    func configureDrop(_ handler: ChatDropHandler?) {
+        dropHandler = handler
+        onDropItems = handler.map { handler in { providers, local, insert in handler.perform(providers, local: local, insert: insert) } }
+        // UITextView would otherwise paste a Files URL or a text file's contents, and reject images.
+        if let textDropInteraction { removeInteraction(textDropInteraction) }
+        if !interactions.contains(where: { $0 === chatDropInteraction }) { addInteraction(chatDropInteraction) }
+    }
     private lazy var typingCommands: [UIKeyCommand] = [
         Self.command("\r", [], action: #selector(fired(_:))),
-        Self.command("\r", .shift, action: #selector(fired(_:)))
+        Self.command("\r", .shift, action: #selector(fired(_:))),
+        Self.command("\r", .command, action: #selector(fired(_:)))
     ]
     private lazy var requestCommands: [UIKeyCommand] = [
         Self.command(UIKeyCommand.inputEscape, [], action: #selector(fired(_:))),
@@ -74,13 +129,36 @@ import RiWorkCore
     override var keyCommands: [UIKeyCommand]? {
         // A word being composed is the input method's: its Return is not ours.
         guard markedTextRange == nil else { return nil }
-        let commands = suggesting ? typingCommands + suggestionCommands : (answersApproval && text.isEmpty ? typingCommands + requestCommands : typingCommands)
+        let commands = isDictating() ? typingCommands + [requestCommands[0]]
+            : suggesting ? typingCommands + suggestionCommands : (answersApproval && text.isEmpty ? typingCommands + requestCommands : typingCommands)
         let available = TabShortcutInput.withoutPrefix(commands, tabShortcuts)
         guard usesClicks else { return available }
         // From every command, the filtered Tab included: with Tab as the prefix, ⌘T is how a suggestion list gets its Tab.
         return available + commands.compactMap { command in
             guard let binding = ClicksNavigation.alias(input: command.input, modifiers: command.modifierFlags) else { return nil }
             return Self.command(binding.alias, binding.aliasModifiers, action: #selector(fired(_:)))
+        }
+    }
+    /// With a hardware keyboard the composer stays at the bottom of the window, and iPadOS would draw its shortcut bar over the field's
+    /// trailing end, where Send is. The bar is left out while a hardware keyboard is attached (an assistant item with no groups has no
+    /// bar); a software keyboard keeps its groups.
+    private var systemAssistantGroups: (leading: [UIBarButtonItemGroup], trailing: [UIBarButtonItemGroup])?
+    private var keyboardObservers: [any NSObjectProtocol] = []
+    private func updateShortcutBar() {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
+        let item = inputAssistantItem
+        if systemAssistantGroups == nil { systemAssistantGroups = (item.leadingBarButtonGroups, item.trailingBarButtonGroups) }
+        let hardware = GCKeyboard.coalesced != nil
+        item.leadingBarButtonGroups = hardware ? [] : systemAssistantGroups?.leading ?? []
+        item.trailingBarButtonGroups = hardware ? [] : systemAssistantGroups?.trailing ?? []
+        if isFirstResponder { reloadInputViews() }
+    }
+    private func observeHardwareKeyboard() {
+        guard keyboardObservers.isEmpty else { return }
+        for name in [Notification.Name.GCKeyboardDidConnect, .GCKeyboardDidDisconnect] {
+            keyboardObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateShortcutBar() }
+            })
         }
     }
     /// A Return that put a suggestion in, while it may still be held: its repeats must not send the draft it completed.
@@ -140,6 +218,7 @@ import RiWorkCore
         switch (input, flags.intersection([.shift, .command, .alternate, .control])) {
         case ("\r", []): .return
         case ("\r", .shift): .shiftReturn
+        case ("\r", .command): .commandReturn
         case (UIKeyCommand.inputEscape, []): .escape
         case (UIKeyCommand.inputDelete, .command): .commandDelete
         case (UIKeyCommand.inputUpArrow, []): .up
@@ -169,6 +248,9 @@ struct ChatComposerField: UIViewRepresentable {
     var suggesting = false
     var usesClicks = false
     var onSelection: ((String, NSRange) -> Void)?
+    var isDictating: () -> Bool = { false }
+    var ownerID: String?
+    var onLeavingOwner: (String) -> Void = { _ in }
 
     /// Space above and below the text inside the field.
     static let verticalInset: CGFloat = 12
@@ -204,14 +286,19 @@ struct ChatComposerField: UIViewRepresentable {
         view.returnKeyType = .default
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         view.accessibilityIdentifier = "chat-composer"
+        view.configureDrop(context.environment.chatDropHandler)
         return view
     }
     func updateUIView(_ view: ChatComposerTextView, context: Context) {
         let coordinator = context.coordinator
+        // Finish against the old binding before this reusable UIKit view is assigned to another chat.
+        if let old = coordinator.ownerID, old != ownerID { onLeavingOwner(old) }
+        coordinator.ownerID = ownerID
         coordinator.parent = self
         let style = context.environment.desktopStyle
         let category = context.environment.dynamicTypeSize
         if coordinator.appliedStyle != style || coordinator.appliedTypeSize != category {
+            if coordinator.appliedTypeSize != category { view.releaseDictationHeight() }
             coordinator.appliedStyle = style
             coordinator.appliedTypeSize = category
             // The field's rounded ends hold the paperclip and the buttons; the text needs no room of its own beside them beyond the
@@ -226,17 +313,21 @@ struct ChatComposerField: UIViewRepresentable {
             // Not reported as the person's own change: the draft was changed from elsewhere (sent, another chat).
             coordinator.applyingDraft = true
             view.text = text
+            if text.isEmpty && !isDictating() { view.releaseDictationHeight() }
             coordinator.applyingDraft = false
         }
         view.accessibilityLabel = placeholderLabel
         view.isEditable = isEnabled
         view.onKey = onKey
+        view.isDictating = isDictating
+        view.updateDictationActivity()
         view.answersApproval = answersApproval
         view.suggesting = suggesting
         view.usesClicks = usesClicks
         view.tabShortcuts = tabShortcuts
         insertion?.view = view
         view.onPasteFiles = onPasteFiles
+        view.configureDrop(context.environment.chatDropHandler)
         if coordinator.lastFocusToken != focusToken {
             coordinator.lastFocusToken = focusToken
             if isEnabled { view.requestFocusWhenAttached() }
@@ -247,8 +338,7 @@ struct ChatComposerField: UIViewRepresentable {
         let fitted = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
         let line = uiView.font?.lineHeight ?? 20
         let maximum = line * CGFloat(maxLines) + uiView.textContainerInset.top + uiView.textContainerInset.bottom
-        let height = min(max(fitted.height, line + uiView.textContainerInset.top + uiView.textContainerInset.bottom), maximum)
-        uiView.isScrollEnabled = fitted.height > maximum
+        let height = uiView.composerHeight(fitted: fitted.height, minimum: line + uiView.textContainerInset.top + uiView.textContainerInset.bottom, maximum: maximum)
         return CGSize(width: width, height: height)
     }
 
@@ -257,17 +347,41 @@ struct ChatComposerField: UIViewRepresentable {
         var appliedStyle: DesktopStyle?
         var appliedTypeSize: DynamicTypeSize?
         var lastFocusToken = 0
+        var ownerID: String?
         var applyingDraft = false
         init(_ parent: ChatComposerField) { self.parent = parent }
         func textViewDidChange(_ textView: UITextView) {
+            let dictated = (textView as? ChatComposerTextView)?.applyingDictation == true
+            if !parent.isDictating() && !dictated { (textView as? ChatComposerTextView)?.releaseDictationHeight() }
             parent.text = textView.text
-            parent.onSelection?(textView.text, textView.selectedRange)
+            if !dictated { parent.onSelection?(textView.text, textView.selectedRange) }
         }
         func textViewDidChangeSelection(_ textView: UITextView) {
-            if !applyingDraft { parent.onSelection?(textView.text, textView.selectedRange) }
+            if !applyingDraft && (textView as? ChatComposerTextView)?.applyingDictation != true { parent.onSelection?(textView.text, textView.selectedRange) }
         }
         func textViewDidBeginEditing(_ textView: UITextView) { parent.onFocusChange(true) }
-        func textViewDidEndEditing(_ textView: UITextView) { parent.onFocusChange(false) }
+        func textViewDidEndEditing(_ textView: UITextView) {
+            (textView as? ChatComposerTextView)?.releaseDictationHeight()
+            parent.onFocusChange(false)
+        }
+    }
+}
+
+/// Reserves a send synchronously, before stopping the engine or scheduling the model's asynchronous send.
+/// Both buttons and hardware keys use this gate; the model owns protection once a send starts.
+@MainActor final class ComposerSubmission {
+    private(set) var finalizing = false
+    func request(conversation: ChatConversation, dictation: DictationController, eligible: @escaping () -> Bool, send: @escaping () -> Void) {
+        guard !finalizing else { return }
+        let submit = { [self] (completed: Bool) in
+            defer { finalizing = false }
+            guard completed, eligible(), conversation.hasMessage else { return }
+            send()
+        }
+        if dictation.isActive(for: .chat(conversation.id)) {
+            finalizing = true
+            dictation.stop(then: submit)
+        } else { submit(true) }
     }
 }
 
@@ -275,12 +389,13 @@ struct ChatComposerField: UIViewRepresentable {
 
 /// The text field, Send and Interrupt. (What went wrong is said in the banner row above it, `ChatNoticeBanners`.)
 ///
-/// One rounded field holds everything: the paperclip at its leading end, the text, and one action at its trailing end that changes with
-/// what is useful now (`ComposerAction`): Send once something is typed, Stop while the agent works, the mic otherwise. The field has the
+/// One rounded field holds everything: the paperclip at its leading end, the text, Send, and the mic when enabled. Those action columns
+/// stay reserved through dictation; Stop is also available while the agent works. The field has the
 /// transcript's margins (`fieldMargin`); the glyphs stay small inside it, so the text gets the width, and the buttons at its ends keep a
 /// 44-point target that reaches out over the margin to the screen's edge.
 struct ChatComposer: View {
     @Environment(\.desktopStyle) private var style
+    @Environment(\.chatDropHandler) private var dropHandler
     @Environment(\.dynamicTypeSize) private var typeSize
     let conversation: ChatConversation
     let provider: ChatProvider
@@ -312,13 +427,18 @@ struct ChatComposer: View {
     var usesClicks = false
     @State private var focused = false
     @State private var insertion = TextInsertion()
+    @State private var submission = ComposerSubmission()
     /// The list and where the caret is (nil while text is selected); see ComposerSuggestionViews.swift.
     @State var suggestions = ComposerSuggestionList()
     @State var suggestionCaret: Int?
 
-    private var canSend: Bool { connected && !conversation.sending && pending.isEmpty && conversation.hasMessage }
+    private var dictating: Bool { dictation.isActive(for: .chat(conversation.id)) }
+    private var canSend: Bool { connected && !conversation.sending && pending.isEmpty && (conversation.hasMessage || dictating) && !submission.finalizing }
     private var keyContext: ChatKeyContext {
-        ChatKeyContext(composerIsEmpty: conversation.draft.isEmpty && conversation.attachments.isEmpty, approval: approval, busy: state.isBusy, canSend: connected && !conversation.sending && pending.isEmpty,
+        // UIKit may deliver another key before SwiftUI replaces its handler.
+        // Read the live request queue so an optimistic answer immediately moves
+        // the next key to the next request, including its offered decisions.
+        ChatKeyContext(composerIsEmpty: conversation.draft.isEmpty && conversation.attachments.isEmpty, approval: conversation.openApprovals.first, busy: state.isBusy, canSend: connected && !conversation.sending && pending.isEmpty,
                        suggesting: showsSuggestions)
     }
     private var actions: ComposerActions {
@@ -337,7 +457,7 @@ struct ChatComposer: View {
                                     cancelPending: { cancelPending?() }, leadingInset: ChatItemRow.horizontalInset)
                     .chatLayoutProbe("attachments")
             }
-            if showsSuggestions {
+            if showsSuggestions && !dictating {
                 ComposerSuggestionPanel(list: suggestions, tap: { acceptSuggestion(suggestions.tap($0)) }, insert: { acceptSuggestion(suggestions.accepted()) },
                                         close: { suggestions.dismiss() })
                     .padding(.horizontal, Self.fieldMargin)
@@ -349,18 +469,21 @@ struct ChatComposer: View {
                 }
                 ChatComposerField(text: Binding(get: { conversation.draft }, set: { conversation.draft = $0 }), placeholderLabel: "Message to \(provider.title)",
                                   isEnabled: true, answersApproval: approval != nil, focusToken: focusToken, maxLines: typeSize.isAccessibilitySize ? 3 : 6, onKey: handle, onFocusChange: { focused = $0 },
-                                  insertion: insertion, onPasteFiles: pasteFiles, suggesting: showsSuggestions, usesClicks: usesClicks, onSelection: suggestionCaretMoved)
+                                  insertion: insertion, onPasteFiles: pasteFiles, suggesting: showsSuggestions && !dictating, usesClicks: usesClicks, onSelection: suggestionCaretMoved,
+                                  isDictating: { dictating }, ownerID: conversation.id, onLeavingOwner: { old in
+                                      if dictation.isActive(for: .chat(old)) { dictation.finishNow() }
+                                  })
                     .alignmentGuide(.composerLine) { [band = ChatComposerField.lineBand(style, typeSize)] d in d.height - band / 2 }
                     .chatLayoutProbe("composer-field")
                 // The last button's target reaches out over the margin to the screen's edge.
                 if actions.stop { stopButton(reach: actions.mic || actions.send ? 0 : Self.fieldMargin) }
                 if actions.mic {
-                    DictationButton(owner: .chat(conversation.id), insertion: insertion, compact: true, reach: Self.fieldMargin, alerts: false).chatLayoutProbe("mic")
+                    DictationButton(owner: .chat(conversation.id), insertion: insertion, controller: dictation, compact: true, reach: 0, alerts: false).chatLayoutProbe("mic")
                 }
                 if actions.send { sendButton }
             }
             .padding(.leading, attach == nil ? style.pt(4) : 0).padding(.trailing, 0)
-            .modifier(ComposerFieldSurface(focused: focused))
+            .modifier(ComposerFieldSurface(focused: focused, targeted: dropHandler?.composerTargeted == true))
             .animation(.easeInOut(duration: 0.12), value: actions)
             .chatLayoutProbe("composer")
             .padding(.horizontal, Self.fieldMargin)
@@ -387,11 +510,11 @@ struct ChatComposer: View {
             .frame(width: Self.buttonColumn(style) + reach, alignment: .leading)
     }
     private var sendButton: some View {
-        Button(action: send) { circle("arrow.up", fill: canSend ? style.accent : style.active, glyph: canSend ? style.background : style.muted, reach: Self.fieldMargin) }
+        Button(action: requestSend) { circle("arrow.up", fill: canSend ? style.accent : style.active, glyph: canSend ? style.background : style.muted, reach: Self.fieldMargin) }
             .buttonStyle(TargetButtonStyle(dims: false, alignment: .trailing))
             .disabled(!canSend)
             .transition(.scale(scale: 0.6).combined(with: .opacity))
-            .chatLayoutProbe("send")
+            .chatLayoutProbe("send", action: requestSend)
             .padding(.trailing, -Self.fieldMargin)
             .accessibilityLabel("Send").accessibilityHint(conversation.sending ? "Sending" : "Sends the message")
     }
@@ -407,9 +530,20 @@ struct ChatComposer: View {
 
     /// A key from the hardware keyboard: the router says what it means now.
     private func handle(_ key: ChatKey) -> ChatKeyAction {
+        if dictating || submission.finalizing {
+            switch key {
+            case .escape: dictation.stop(); return .none
+            case .return, .commandReturn: requestSend(); return .send
+            case .shiftReturn: return .insertNewline
+            default: break
+            }
+        }
         let action = ChatKeyRouter.action(for: key, in: keyContext)
         switch action {
-        case .send: send()
+        case .send:
+            // ⌘⏎ sends with the `/` or `@` list open: the list goes with the draft. Sending finalises a dictation first (`requestSend`).
+            if key == .commandReturn { suggestions.dismiss() }
+            requestSend()
         case .decide(let decision): decide(decision)
         case .interrupt: interrupt()
         case .acceptSuggestion: acceptSuggestion(suggestions.accepted())
@@ -418,6 +552,10 @@ struct ChatComposer: View {
         case .insertNewline, .none: break
         }
         return action
+    }
+    private func requestSend() {
+        submission.request(conversation: conversation, dictation: dictation,
+                           eligible: { connected && !conversation.sending && pending.isEmpty }, send: send)
     }
     /// Puts an accepted suggestion in the text view as dictation does (`TextInsertion`), so the draft follows: a command, a path or a
     /// model's `&` mention, which is only text. Nothing is sent, and the chat's model stays as it is.
@@ -471,28 +609,37 @@ private struct ComposerPaperclip: View, Equatable {
 private struct ComposerFieldSurface: ViewModifier {
     @Environment(\.desktopStyle) private var style
     let focused: Bool
+    let targeted: Bool
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: style.pt(23), style: .continuous)
         if style.glass {
             content.nativeGlass(style, in: shape, interactive: false)
+                .overlay { if targeted { shape.stroke(style.accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4])) } }
         } else if style.native {
-            content.background(style.background, in: shape).overlay(shape.stroke(focused ? style.accent : style.divider, lineWidth: 1))
+            content.background(style.background, in: shape)
+                .overlay {
+                    if targeted { shape.stroke(style.accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4])) }
+                    else { shape.stroke(focused ? style.accent : style.divider, lineWidth: 1) }
+                }
         } else {
-            content.background(style.background).overlay(RoundedRectangle(cornerRadius: 3).stroke(focused ? style.accent : style.divider, lineWidth: 1))
+            content.background(style.background)
+                .overlay {
+                    let border = RoundedRectangle(cornerRadius: 3)
+                    if targeted { border.stroke(style.accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4])) }
+                    else { border.stroke(focused ? style.accent : style.divider, lineWidth: 1) }
+                }
         }
     }
 }
 
-/// Which buttons the composer's field holds at its trailing end. One slot, shared: Send once something is typed, Stop while the agent
-/// works and nothing is typed, the mic (when the desktop's mic setting is on) while neither; Send, greyed, when there is no mic. The
-/// mic stays while it listens, whatever the field holds, and Stop stays beside Send while the agent works, so Interrupt is one tap away
-/// in every state (⌘. too, with a keyboard).
+/// Reserve mic and Send columns whenever dictation is enabled, so starting, streaming and stopping never rewrap the text.
+/// Stop stays beside them while the agent works (⌘. too, with a keyboard).
 struct ComposerActions: Equatable {
     let send: Bool, stop: Bool, mic: Bool
     init(typed: Bool, busy: Bool, mic micOn: Bool, dictating: Bool) {
-        mic = dictating || (micOn && !typed && !busy)
+        mic = dictating || micOn
         stop = busy
-        send = !dictating && (typed || (!busy && !micOn))
+        send = mic || typed || !busy
     }
 }
 

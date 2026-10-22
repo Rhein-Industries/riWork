@@ -1,6 +1,4 @@
-//! User-triggered, bounded image loading. Folding uses stable message/image keys. The
-//! thumbnails of images the user sent are read as their messages are drawn, a few at a time,
-//! from the chat's own snapshot folder only (`want_thumbnails`).
+//! User-triggered, bounded image loading. Folding uses stable message/image keys.
 use super::{
     ChatView, ChatViewEvent,
     image_scope::ImageScope,
@@ -16,7 +14,7 @@ use gpui::{
     AnyElement, Context, MouseButton, Pixels, Point, RenderImage, ScrollHandle, SharedString, div,
     img, point, prelude::*, px, rgb,
 };
-use gpui_kit::base::TestSupportExt as _;
+use gpui_kit::base::{ElementExt as _, TestSupportExt as _};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::Read,
@@ -24,13 +22,13 @@ use std::{
     time::Duration,
 };
 
-const CONCURRENT: usize = 2;
+const CONCURRENT: usize = 4;
 const LOADED: usize = 8;
 const OPEN: usize = 16;
+const THUMBNAILS: usize = 64;
+const THUMBNAIL_EDGE: u32 = 360;
 const OPEN_LIMIT: &str = "Fold an image before opening more.";
 const NETWORK_BYTES: u64 = 8 * 1024 * 1024;
-/// Thumbnails of sent images read at once; the rest are asked for as those come back.
-const THUMB_READS: usize = 4;
 pub(super) const ARTIFACT_PAGE: usize = 32;
 mod actions;
 
@@ -93,7 +91,7 @@ fn filename(path: &str) -> Option<String> {
 }
 
 /// Pure renderer fallback: old logs and resident hosts may still label every image "Image".
-fn image_label(image: &ChatImage, context: Option<&Item>) -> String {
+pub(super) fn image_label(image: &ChatImage, context: Option<&Item>) -> String {
     if let Some(label) = readable_label(&image.label) {
         // URL labels can contain credentials/query tokens; display only their source name.
         if !label.starts_with("https://") && !label.starts_with("http://") {
@@ -187,6 +185,8 @@ fn card_label(
 #[derive(Default)]
 pub(super) struct MediaState {
     pub artifact_pages: HashMap<String, usize>,
+    thumbnails: ThumbnailCache,
+    expanded: HashSet<String>,
     slots: HashMap<String, Slot>,
     queue: VecDeque<(String, ChatImage)>,
     active: usize,
@@ -197,17 +197,80 @@ pub(super) struct MediaState {
     viewer_scroll: ScrollHandle,
     viewer_drag: Option<(Point<Pixels>, Point<Pixels>)>,
     action_pending: bool,
-    /// The thumbnails of the files users sent, by the keys `attachment_ui::thumbnails` gives.
-    thumbs: HashMap<String, Thumb>,
 }
 
-/// A sent attachment's thumbnail: the host's bounded preview of it, read as soon as its
-/// message is drawn rather than on a click, as only a small picture the user sent is.
-struct Thumb {
-    generation: u64,
-    path: String,
-    /// Nothing while it is read; then the picture, or why there is none.
-    content: Option<Result<Arc<RenderImage>, String>>,
+/// Small decoded images have their own demand, queue and LRU. Scrolling through
+/// attachments must neither open cards nor consume the manual-image allowance.
+#[derive(Default)]
+struct ThumbnailCache {
+    slots: HashMap<String, Slot>,
+    queue: VecDeque<(String, ChatImage)>,
+    lru: VecDeque<String>,
+}
+
+impl ThumbnailCache {
+    fn prepare(&mut self, key: String, image: ChatImage, generation: u64) -> Vec<Slot> {
+        let mut released = Vec::new();
+        self.lru.retain(|cached| cached != &key);
+        self.lru.push_back(key.clone());
+        if self
+            .slots
+            .get(&key)
+            .is_some_and(|slot| slot.source == image.source)
+        {
+            if let Some(index) = self.queue.iter().position(|(queued, _)| queued == &key)
+                && let Some(request) = self.queue.remove(index)
+            {
+                self.queue.push_front(request);
+            }
+            return released;
+        }
+        self.queue.retain(|(queued, _)| queued != &key);
+        if let Some(stale) = self.slots.remove(&key) {
+            released.push(stale);
+        }
+        self.slots.insert(
+            key.clone(),
+            Slot {
+                generation,
+                source: image.source.clone(),
+                content: None,
+                in_files: false,
+            },
+        );
+        self.queue.push_front((key, image));
+        while self.slots.len() > THUMBNAILS {
+            let Some(oldest) = self.lru.pop_front() else {
+                break;
+            };
+            self.queue.retain(|(key, _)| key != &oldest);
+            if let Some(slot) = self.slots.remove(&oldest) {
+                released.push(slot);
+            }
+        }
+        released
+    }
+
+    fn complete(
+        &mut self,
+        key: &str,
+        generation: u64,
+        source: &ImageSource,
+        content: Result<PreviewContent, String>,
+        in_files: bool,
+    ) -> Option<PreviewContent> {
+        if let Some(slot) = self
+            .slots
+            .get_mut(key)
+            .filter(|slot| slot.generation == generation && &slot.source == source)
+        {
+            slot.content = Some(content);
+            slot.in_files = in_files;
+            None
+        } else {
+            content.ok()
+        }
+    }
 }
 
 impl MediaState {
@@ -246,27 +309,6 @@ impl MediaState {
             .collect();
         keys.sort_by(|(left, a), (right, b)| left.cmp(right).then_with(|| image_key_cmp(a, b)));
         keys.into_iter().map(|(_, key)| key).collect()
-    }
-
-    /// Explicitly collapsing a disclosure folds its images on every page.
-    /// Removing slots invalidates in-flight generations; active workers still
-    /// drain normally and release their results without reviving hidden cards.
-    fn fold_images(&mut self, keys: &[String], open: &mut HashSet<String>) -> Vec<Slot> {
-        let hidden: HashSet<&str> = keys.iter().map(String::as_str).collect();
-        self.queue.retain(|(key, _)| !hidden.contains(key.as_str()));
-        if self
-            .viewer
-            .as_deref()
-            .is_some_and(|key| hidden.contains(key))
-        {
-            self.viewer = None;
-        }
-        keys.iter()
-            .filter_map(|key| {
-                open.remove(key);
-                self.slots.remove(key)
-            })
-            .collect()
     }
 
     /// Return stale decoded content to the caller for resource release.
@@ -310,7 +352,9 @@ impl MediaState {
             if self.viewer.as_ref() == Some(&key) {
                 self.viewer = None;
             }
-            if open.contains(&key) && !self.queue.iter().any(|(queued, _)| *queued == key) {
+            if (open.contains(&key) || self.expanded.contains(&key))
+                && !self.queue.iter().any(|(queued, _)| *queued == key)
+            {
                 self.queue.push_back((
                     key,
                     ChatImage {
@@ -321,6 +365,20 @@ impl MediaState {
             }
             released.push(slot);
         }
+        let stale: Vec<_> = self
+            .thumbnails
+            .slots
+            .iter()
+            .filter(|(_, slot)| matches!(slot.source, ImageSource::Local { .. }))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in stale {
+            if let Some(slot) = self.thumbnails.slots.remove(&key) {
+                self.thumbnails.lru.retain(|cached| cached != &key);
+                self.thumbnails.queue.retain(|(queued, _)| queued != &key);
+                released.push(slot);
+            }
+        }
         released
     }
 }
@@ -328,6 +386,9 @@ impl MediaState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::model::{ItemStatus, Presentation};
+    use gpui::TestAppContext;
+    use gpui_kit::test::TestWindowExt;
     use std::io::Write;
 
     fn decoded(width: u32, height: u32) -> PreviewContent {
@@ -350,6 +411,8 @@ mod tests {
             body: ItemBody::AgentMessage {
                 text: "Image results".into(),
             },
+            started_at: None,
+            ended_at: None,
         }
     }
 
@@ -421,6 +484,8 @@ mod tests {
                     gallery_item("first", "turn"),
                     gallery_item("second", "turn"),
                 ];
+                // Projection retires slots no row asks for; these stand for opened cards.
+                view.refresh_projection(cx);
                 for key in ["first:image:0", "second:image:0"] {
                     view.media.slots.insert(
                         key.into(),
@@ -431,7 +496,6 @@ mod tests {
                     );
                 }
                 view.media.show("first:image:0".into());
-                view.refresh_projection(cx);
                 cx.notify();
             });
             window.render_frame(cx);
@@ -458,124 +522,35 @@ mod tests {
         assert!(recording.try_recv().is_err());
     }
 
-    #[test]
-    fn collapsing_group_frees_hidden_expansions_and_rejects_late_results_after_reopening() {
-        let source = ImageSource::Local {
-            path: "shot.png".into(),
-        };
-        let image = ChatImage {
-            label: "Image".into(),
-            source: source.clone(),
-        };
-        let keys: Vec<String> = (0..15).map(|n| format!("tool-{n}:image:0")).collect();
-        let other = "user:image:0".to_owned();
-        let mut open: HashSet<String> = keys.iter().cloned().chain([other.clone()]).collect();
-        let mut media = MediaState {
-            active: 2,
-            generation: 10,
-            viewer: Some(keys[0].clone()),
-            ..Default::default()
-        };
-        media.slots.insert(
-            keys[0].clone(),
-            Slot {
-                generation: 8,
-                source: source.clone(),
-                content: Some(Ok(PreviewContent::Message("Loaded".into()))),
-                in_files: false,
+    fn image_item(n: usize) -> Item {
+        Item {
+            id: format!("tool-{n}"),
+            turn_id: Some("images".into()),
+            status: ItemStatus::Completed,
+            body: ItemBody::Command {
+                command: "cat result.txt".into(),
+                cwd: None,
+                output: String::new(),
+                exit_code: Some(0),
             },
-        );
-        media.slots.insert(
-            keys[1].clone(),
-            Slot {
-                generation: 9,
-                source: source.clone(),
-                content: None,
-                in_files: false,
+            presentation: Presentation {
+                images: vec![ChatImage {
+                    label: format!("result-{n}.png"),
+                    source: ImageSource::Local {
+                        path: format!("result-{n}.png"),
+                    },
+                }],
+                ..Presentation::default()
             },
-        );
-        media.slots.insert(
-            other.clone(),
-            Slot {
-                generation: 10,
-                source: source.clone(),
-                content: None,
-                in_files: false,
-            },
-        );
-        media.queue.extend(
-            keys[2..]
-                .iter()
-                .cloned()
-                .chain([other.clone()])
-                .map(|key| (key, image.clone())),
-        );
-        assert_eq!(open.len(), 16);
-        let released = media.fold_images(&keys, &mut open);
-        assert_eq!(released.len(), 2);
-        assert!(released.iter().any(|slot| slot.content.is_some()));
-        assert_eq!(open, HashSet::from([other.clone()]));
-        assert_eq!(media.slots.len(), 1);
-        assert!(media.slots.contains_key(&other));
-        assert_eq!(media.queue.len(), 1);
-        assert_eq!(media.queue[0].0, other);
-        assert!(media.viewer.is_none());
-        assert_eq!(media.active, 2); // running workers keep the concurrency bound until they drain
-        assert!(
-            media
-                .complete(
-                    &keys[1],
-                    9,
-                    &source,
-                    Ok(PreviewContent::Message("Late".into())),
-                    false
-                )
-                .is_some()
-        );
-        assert!(!media.slots.contains_key(&keys[1]));
-
-        open.insert(keys[1].clone());
-        media.generation += 1;
-        media.slots.insert(
-            keys[1].clone(),
-            Slot {
-                generation: media.generation,
-                source: source.clone(),
-                content: None,
-                in_files: false,
-            },
-        );
-        assert!(
-            media
-                .complete(
-                    &keys[1],
-                    9,
-                    &source,
-                    Ok(PreviewContent::Message("Old generation".into())),
-                    false
-                )
-                .is_some()
-        );
-        assert!(media.slots[&keys[1]].content.is_none());
-        assert!(
-            media
-                .complete(
-                    &keys[1],
-                    11,
-                    &source,
-                    Ok(PreviewContent::Message("Reopened".into())),
-                    false
-                )
-                .is_none()
-        );
-        assert!(
-            matches!(&media.slots[&keys[1]].content, Some(Ok(PreviewContent::Message(text))) if text == "Reopened")
-        );
-        assert_eq!(open.len(), 2);
+            started_at: None,
+            ended_at: None,
+        }
     }
 
-    #[test]
-    fn artifact_pages_bound_rendering_and_keep_all_images_reachable() {
+    #[gpui::test]
+    fn artifact_pages_bound_rendering_and_keep_all_images_reachable(cx: &mut TestAppContext) {
+        // The projected Activity's artifact strip keeps upstream's bounded pages;
+        // opening an image also exposes the complete shared preview sequence.
         assert_eq!(artifact_range(9, 0), 0..9);
         assert_eq!(artifact_range(0, 100), 0..0);
         let pages = (0..313)
@@ -584,6 +559,202 @@ mod tests {
         assert_eq!(pages, (0..10_000).collect::<Vec<_>>());
         assert_eq!(artifact_range(33, 99), 32..33);
         assert_eq!(artifact_range(10_000, 20), 640..672);
+        let (handle, view, _feed) = super::super::editor_tests::mount_selection(cx);
+        view.update(cx, |view, cx| {
+            view.model.transcript.items = (0..10_000).map(image_item).collect();
+            view.refresh_projection(cx);
+            assert_eq!(view.items_in_list, 1);
+            assert_eq!(view.visible[0].artifacts.len(), 10_000);
+            cx.notify();
+
+            let mut sequence = view.file_preview_sequence("result-0.png");
+            assert_eq!(sequence.entries.len(), 10_000);
+            assert!(!sequence.step(-1));
+            for n in 0..10_000 {
+                let current = sequence.current().unwrap();
+                assert_eq!(current.target, format!("result-{n}.png"));
+                assert_eq!(
+                    current.image,
+                    Some(image_item(n).presentation.images.remove(0))
+                );
+                assert_eq!(sequence.step(1), n < 9999);
+            }
+            assert_eq!(sequence.index, 9999);
+        });
+        for page in [0, 1, 312] {
+            view.update(cx, |view, cx| {
+                view.media
+                    .artifact_pages
+                    .insert("activity:images".into(), page);
+                view.list.remeasure();
+                cx.notify();
+            });
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let range = artifact_range(10_000, page);
+                for n in range.clone() {
+                    assert!(
+                        window
+                            .try_find(format!("chip:artifact:tool-{n}:image:0"))
+                            .is_some()
+                    );
+                }
+                if range.start > 0 {
+                    assert!(
+                        window
+                            .try_find(format!("chip:artifact:tool-{}:image:0", range.start - 1))
+                            .is_none()
+                    );
+                }
+                assert!(
+                    window
+                        .try_find(format!("chip:artifact:tool-{}:image:0", range.end))
+                        .is_none()
+                );
+                if page == 0 {
+                    assert!(
+                        window
+                            .try_find("previous:artifacts:activity:images")
+                            .is_none()
+                    );
+                    window.click("next:artifacts:activity:images", cx);
+                    assert_eq!(view.read(cx).media.artifact_pages["activity:images"], 1);
+                } else {
+                    window.click("previous:artifacts:activity:images", cx);
+                    assert_eq!(
+                        view.read(cx).media.artifact_pages["activity:images"],
+                        page - 1
+                    );
+                }
+            })
+            .unwrap();
+        }
+    }
+
+    #[gpui::test]
+    fn collapsing_group_frees_hidden_expansions_and_rejects_late_results_after_reopening(
+        cx: &mut TestAppContext,
+    ) {
+        // Projected calls now own automatic image demand independently of manually
+        // opened image cards. Collapsing their parent must retire that demand and
+        // its resources, while leaving unrelated manual disclosures alone.
+        let (_, view, _feed) = super::super::editor_tests::mount_selection(cx);
+        view.update(cx, |view, cx| {
+            view.model.transcript.items = (0..15).map(image_item).collect();
+            view.apply_display_mode(super::super::DisplayMode::Verbose, cx);
+            view.expand_transcript(true, cx);
+            let source = ImageSource::Local {
+                path: "shot.png".into(),
+            };
+            let image = ChatImage {
+                label: "Image".into(),
+                source: source.clone(),
+            };
+            let keys: Vec<String> = (0..15).map(|n| format!("tool-{n}:image:0")).collect();
+            let other = "user:image:0".to_owned();
+            view.open.insert(other.clone());
+            view.media = MediaState {
+                expanded: keys.iter().cloned().collect(),
+                active: 2,
+                generation: 10,
+                viewer: Some(keys[0].clone()),
+                ..Default::default()
+            };
+            for (key, generation, content) in [
+                (
+                    keys[0].clone(),
+                    8,
+                    Some(Ok(PreviewContent::Message("Loaded".into()))),
+                ),
+                (keys[1].clone(), 9, None),
+                (other.clone(), 10, None),
+            ] {
+                view.media.slots.insert(
+                    key,
+                    Slot {
+                        generation,
+                        source: source.clone(),
+                        content,
+                        in_files: false,
+                    },
+                );
+            }
+            view.media.queue.extend(
+                keys[2..]
+                    .iter()
+                    .cloned()
+                    .chain([other.clone()])
+                    .map(|key| (key, image.clone())),
+            );
+
+            view.toggle_projected("g:images:tool-0", cx);
+            assert!(view.media.expanded.is_empty());
+            assert_eq!(view.media.slots.len(), 1);
+            assert!(view.media.slots.contains_key(&other));
+            assert_eq!(view.media.queue.len(), 1);
+            assert_eq!(view.media.queue[0].0, other);
+            assert!(view.media.viewer.is_none());
+            assert_eq!(view.media.active, 2); // In-flight workers still occupy their slots.
+            assert!(view.open.contains(&other));
+            assert!(
+                view.media
+                    .complete(
+                        &keys[1],
+                        9,
+                        &source,
+                        Ok(PreviewContent::Message("Late".into())),
+                        false,
+                    )
+                    .is_some()
+            );
+            assert!(!view.media.slots.contains_key(&keys[1]));
+
+            view.toggle_projected("g:images:tool-0", cx);
+            view.media.expanded.insert(keys[1].clone());
+            view.media.generation += 1;
+            view.media.slots.insert(
+                keys[1].clone(),
+                Slot {
+                    generation: view.media.generation,
+                    source: source.clone(),
+                    content: None,
+                    in_files: false,
+                },
+            );
+            assert!(
+                view.media
+                    .complete(
+                        &keys[1],
+                        9,
+                        &source,
+                        Ok(PreviewContent::Message("Old generation".into())),
+                        false,
+                    )
+                    .is_some()
+            );
+            assert!(view.media.slots[&keys[1]].content.is_none());
+            assert!(
+                view.media
+                    .complete(
+                        &keys[1],
+                        11,
+                        &source,
+                        Ok(PreviewContent::Message("Reopened".into())),
+                        false,
+                    )
+                    .is_none()
+            );
+            assert!(
+                matches!(&view.media.slots[&keys[1]].content, Some(Ok(PreviewContent::Message(text))) if text == "Reopened")
+            );
+            assert!(view.open.contains(&other));
+            // This fixture supplies in-flight slots itself, without background reads.
+            // Retire it before the test harness draws the reopened calls.
+            view.model.transcript.items.clear();
+            view.open.clear();
+            view.media = MediaState::default();
+            view.refresh_projection(cx);
+        });
     }
 
     #[test]
@@ -639,7 +810,7 @@ struct Slot {
 /// read only when `scope` allows it, and only as an image: the scope reaches further than
 /// Files does, so it shows nothing else. A name with another extension is refused unread; a
 /// name without one (an attachment snapshot is `content`) is decoded by what it holds.
-pub(super) fn load(
+pub(crate) fn load(
     image: &ChatImage,
     scope: &ImageScope,
 ) -> (Result<PreviewContent, String>, bool) {
@@ -704,11 +875,38 @@ fn load_remote(image: &ChatImage) -> Result<PreviewContent, String> {
         ImageSource::Unavailable { reason } => Err(reason.clone()),
     }
 }
-fn release_thumb(thumb: Thumb, cx: &mut gpui::App) {
-    if let Some(Ok(image)) = thumb.content {
-        cx.defer(move |cx| cx.drop_image(image, None));
+
+/// Called exclusively by the background loader. Retain at most a thumbnail's
+/// pixels in its cache, rather than a full preview bitmap for every file chip.
+fn thumbnail_content(content: PreviewContent) -> PreviewContent {
+    let PreviewContent::Image { image, description } = content else {
+        return content;
+    };
+    let size = image.size(0);
+    let (width, height) = (size.width.0 as u32, size.height.0 as u32);
+    if width <= THUMBNAIL_EDGE && height <= THUMBNAIL_EDGE {
+        return PreviewContent::Image { image, description };
+    }
+    let pixels = image.as_bytes(0).unwrap_or_default().to_vec();
+    let Some(buffer) = image::RgbaImage::from_raw(width, height, pixels) else {
+        return PreviewContent::Message("Cannot prepare this image thumbnail.".into());
+    };
+    // RenderImage's bytes are BGRA. Resizing preserves their channel order.
+    let buffer = image::imageops::thumbnail(&buffer, THUMBNAIL_EDGE, THUMBNAIL_EDGE);
+    PreviewContent::Image {
+        image: Arc::new(gpui::RenderImage::new([image::Frame::new(buffer)])),
+        description,
     }
 }
+
+/// Design-point bounds, independent of the UI font scale. Never upscale pixels.
+fn fitted_image_size(width: f32, height: f32, available: f32) -> (f32, f32) {
+    let scale = 1.0f32
+        .min(available.max(0.0) / width.max(1.0))
+        .min(320.0 / height.max(1.0));
+    (width * scale, height * scale)
+}
+
 fn release(slot: Slot, cx: &mut Context<ChatView>) {
     if let Some(Ok(content)) = slot.content
         && let Some(image) = content.render_image()
@@ -764,34 +962,53 @@ impl ChatView {
         cx.notify();
     }
 
-    pub(super) fn fold_group_images(&mut self, keys: &[String], cx: &mut Context<Self>) {
-        for slot in self.media.fold_images(keys, &mut self.open) {
-            release(slot, cx);
-        }
-        if self.open.iter().filter(|id| id.contains("image")).count() < OPEN {
-            self.notices.clear(super::notices::LocalKey::Media);
-        }
-    }
-
     /// A new image scope: what the old one let a card read is forgotten and read again.
     pub(super) fn rescope_images(&mut self, cx: &mut Context<Self>) {
         for slot in self.media.rescope(&self.open) {
             release(slot, cx);
-        }
-        // Thumbnails are read again under the new scope when their messages are drawn.
-        for (_, thumb) in self.media.thumbs.drain() {
-            release_thumb(thumb, cx);
         }
         self.start_images(cx);
         self.list.remeasure();
         cx.notify();
     }
 
+    /// `demand` contains `<item-id>:image:<index>` for opened projected rows.
+    /// Manual/global image cards keep their own disclosure keys in `open`.
+    pub(super) fn retain_opened_images(
+        &mut self,
+        demand: &HashSet<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.media.expanded.retain(|key| demand.contains(key));
+        self.media
+            .queue
+            .retain(|(key, _)| demand.contains(key) || self.open.contains(key));
+        let stale: Vec<_> = self
+            .media
+            .slots
+            .keys()
+            .filter(|key| !demand.contains(*key) && !self.open.contains(*key))
+            .cloned()
+            .collect();
+        for key in stale {
+            if self.media.viewer.as_ref() == Some(&key) {
+                self.media.viewer = None;
+            }
+            if let Some(slot) = self.media.slots.remove(&key) {
+                release(slot, cx);
+            }
+        }
+    }
+
     /// What a card's slot holds, for tests: `Ok(in_files)` once an image or a message was
     /// read, the error once it failed, nothing while it loads or when nothing was asked.
     #[cfg(test)]
     pub(super) fn image_slot(&self, key: &str) -> Option<Result<bool, String>> {
-        let slot = self.media.slots.get(key)?;
+        let slot = self
+            .media
+            .slots
+            .get(key)
+            .or_else(|| self.media.thumbnails.slots.get(key))?;
         match slot.content.as_ref()? {
             Ok(PreviewContent::Image { .. }) => Some(Ok(slot.in_files)),
             Ok(other) => Some(Err(format!(
@@ -806,7 +1023,12 @@ impl ChatView {
     }
 
     pub(super) fn release_images(&mut self, cx: &mut gpui::App) {
-        for (_, slot) in self.media.slots.drain() {
+        for (_, slot) in self
+            .media
+            .slots
+            .drain()
+            .chain(self.media.thumbnails.slots.drain())
+        {
             if let Some(Ok(content)) = slot.content
                 && let Some(image) = content.render_image()
             {
@@ -814,116 +1036,41 @@ impl ChatView {
                 cx.defer(move |cx| cx.drop_image(image, None));
             }
         }
-        for (_, thumb) in self.media.thumbs.drain() {
-            release_thumb(thumb, cx);
-        }
     }
 
-    /// Start reading the thumbnails of what the user message at `at` sent that are not read
-    /// or being read: each as an image card reads a local image, within the chat's scope, a
-    /// few at a time. One that could not be read is not read again until the scope changes.
-    pub(super) fn want_thumbnails(&mut self, at: usize, cx: &mut Context<Self>) {
-        let Some(item) = self.model.transcript.items.get(at) else {
+    /// Copy the displayed raster as PNG, converting GPUI's BGRA bytes back to RGBA.
+    fn copy_tool_image(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(Ok(PreviewContent::Image { image, .. })) = self
+            .media
+            .slots
+            .get(key)
+            .and_then(|slot| slot.content.as_ref())
+        else {
             return;
         };
-        let reading = self
-            .media
-            .thumbs
-            .values()
-            .filter(|thumb| thumb.content.is_none())
-            .count();
-        let wanted: Vec<(String, String)> =
-            super::attachment_ui::thumbnails(item, &self.image_scope)
-                .filter(|(key, path)| {
-                    !self
-                        .media
-                        .thumbs
-                        .get(key)
-                        .is_some_and(|thumb| thumb.path == *path)
-                })
-                .take(THUMB_READS.saturating_sub(reading))
-                .collect();
-        for (key, path) in wanted {
-            self.media.generation += 1;
-            let generation = self.media.generation;
-            let image = ChatImage {
-                label: String::new(),
-                source: ImageSource::Local { path: path.clone() },
-            };
-            let scope = self.image_scope.clone();
-            let work = cx
-                .background_executor()
-                .spawn(async move { load(&image, &scope).0 });
-            if let Some(old) = self.media.thumbs.insert(
-                key.clone(),
-                Thumb {
-                    generation,
-                    path,
-                    content: None,
-                },
-            ) {
-                release_thumb(old, cx);
-            }
-            cx.spawn(async move |this, cx| {
-                let content = match work.await {
-                    Ok(PreviewContent::Image { image, .. }) => Ok(image),
-                    Ok(PreviewContent::Message(message)) | Err(message) => Err(message),
-                    // `load` reads nothing else; a picture never drawn holds no atlas tiles.
-                    Ok(_) => Err("This reference is not a supported image.".into()),
-                };
-                let _ = this.update(cx, |view, cx| {
-                    match view
-                        .media
-                        .thumbs
-                        .get_mut(&key)
-                        .filter(|thumb| thumb.generation == generation)
-                    {
-                        Some(thumb) => {
-                            thumb.content = Some(content);
-                            cx.notify();
-                        }
-                        // Forgotten while it was read: its scope changed or the view let it go.
-                        None => {
-                            if let Ok(image) = content {
-                                cx.defer(move |cx| cx.drop_image(image, None));
-                            }
-                        }
-                    }
-                });
-            })
-            .detach();
+        let Some(bytes) = image.as_bytes(0) else {
+            return;
+        };
+        let size = image.size(0);
+        let mut rgba = bytes.to_vec();
+        for pixel in rgba.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
         }
-    }
-
-    /// For tests: how many thumbnails are being read, and when each one was last asked for.
-    #[cfg(test)]
-    pub(super) fn thumbnail_reads(&self) -> (usize, HashMap<String, u64>) {
-        (
-            self.media
-                .thumbs
-                .values()
-                .filter(|thumb| thumb.content.is_none())
-                .count(),
-            self.media
-                .thumbs
-                .iter()
-                .map(|(key, thumb)| (key.clone(), thumb.generation))
-                .collect(),
-        )
-    }
-
-    /// The thumbnail read for `key` from `path`: nothing while it is read or before.
-    pub(super) fn thumbnail(
-        &self,
-        key: &str,
-        path: &str,
-    ) -> Option<&Result<Arc<RenderImage>, String>> {
-        self.media
-            .thumbs
-            .get(key)
-            .filter(|thumb| thumb.path == path)?
-            .content
-            .as_ref()
+        let Some(buffer) =
+            image::RgbaImage::from_raw(size.width.0 as u32, size.height.0 as u32, rgba)
+        else {
+            return;
+        };
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        if image::DynamicImage::ImageRgba8(buffer)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .is_err()
+        {
+            return;
+        }
+        let clipboard = gpui::Image::from_bytes(gpui::ImageFormat::Png, encoded.into_inner());
+        cx.write_to_clipboard(gpui::ClipboardItem::new_image(&clipboard));
+        self.mark_copied(format!("copy-image:{key}"), cx);
     }
 
     pub(super) fn image_card(
@@ -935,6 +1082,166 @@ impl ChatView {
         look: Look,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let global = self.info().is_some_and(|info| {
+            matches!(
+                info.orchestrator,
+                Some(crate::chat::model::OrchestratorScope::Global)
+            )
+        });
+        // Old user messages without owned snapshot metadata keep their explicit
+        // image disclosure. New sent files use the owned-snapshot grid instead.
+        let legacy_user =
+            context.is_some_and(|item| matches!(item.body, ItemBody::UserMessage { .. }));
+        if !legacy_user
+            && (!global
+                || context.is_some_and(|item| {
+                    !matches!(
+                        item.body,
+                        ItemBody::UserMessage { .. } | ItemBody::AgentMessage { .. }
+                    )
+                }))
+        {
+            let owner = context.map(|item| item.id.clone());
+            let preview_image = image.clone();
+            let preview_key = key.to_owned();
+            let content = self
+                .media
+                .slots
+                .get(key)
+                .filter(|slot| slot.source == image.source)
+                .and_then(|slot| slot.content.as_ref());
+            let group = SharedString::from(format!("tc:{}", owner.as_deref().unwrap_or(key)));
+            let copied_key = format!("copy-image:{key}");
+            let copied = self.copied.as_deref() == Some(copied_key.as_str());
+            let show_actions = copied || owner.as_deref().is_some_and(|id| self.row_is_focused(id));
+            let ready = matches!(content, Some(Ok(PreviewContent::Image { .. })));
+            let (width, aspect) = match content {
+                Some(Ok(PreviewContent::Image { image, .. })) => {
+                    let size = image.size(0);
+                    let aspect = size.width.0 as f32 / (size.height.0 as f32).max(1.0);
+                    let (width, _) =
+                        fitted_image_size(size.width.0 as f32, size.height.0 as f32, f32::MAX);
+                    (Some(width), Some(aspect))
+                }
+                _ => (None, None),
+            };
+            let body = match content {
+                Some(Ok(PreviewContent::Image { image, .. })) => img(image.clone())
+                    .size_full()
+                    .object_fit(gpui::ObjectFit::Contain)
+                    .into_any_element(),
+                _ => div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(6.0))
+                    .text_size(ui_text::text(11.0))
+                    .text_color(rgb(look.colors.muted))
+                    .child(crate::icons::symbol("photo", 12.0, Some(look.colors.muted)))
+                    .child(match content {
+                        Some(Err(error)) | Some(Ok(PreviewContent::Message(error))) => {
+                            error.clone()
+                        }
+                        _ => "Loading image…".into(),
+                    })
+                    .into_any_element(),
+            };
+            let copy_key = key.to_owned();
+            let open_owner = owner.clone();
+            let open_image = preview_image.clone();
+            let open_key = preview_key.clone();
+            let backing = gpui::rgba((look.colors.panel << 8) | 0xd9);
+            return div()
+                .id(SharedString::from(format!("tool-image:{key}")))
+                .cursor_text()
+                .when(context.is_none(), |frame| frame.group(group.clone()))
+                .relative()
+                .flex_none()
+                .when_some(width, |frame, width| frame.w(px(width)))
+                .when(width.is_none(), |frame| frame.w_full().h(px(72.0)))
+                .max_w_full()
+                .max_h(px(320.0))
+                .when_some(aspect, |frame, aspect| frame.aspect_ratio(aspect))
+                .bg(rgb(look.colors.panel))
+                .border_1()
+                .border_color(rgb(look.colors.divider))
+                .rounded(px(4.0))
+                .overflow_hidden()
+                .child(
+                    crate::behavior_controls::button_content(
+                        SharedString::from(format!("view:{key}")),
+                        "Preview image",
+                        body,
+                    )
+                    .absolute()
+                    .inset_0()
+                    .size_full()
+                    .p_0()
+                    .cursor_text()
+                    .on_click(cx.listener(move |v, _, _, cx| {
+                        cx.stop_propagation();
+                        v.preview_image_reference(
+                            &preview_image,
+                            &preview_key,
+                            owner.as_deref(),
+                            cx,
+                        );
+                    })),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(4.0))
+                        .right(px(4.0))
+                        .flex()
+                        .gap(px(2.0))
+                        .child(
+                            super::widgets::tool_icon_action(
+                                SharedString::from(format!("copy-image:{key}")),
+                                if copied { "checkmark" } else { "doc.on.doc" },
+                                if copied { "Copied" } else { "Copy image" },
+                                ready,
+                                look,
+                            )
+                            .bg(backing)
+                            .opacity(if show_actions { 1.0 } else { 0.0 })
+                            .group_hover(group.clone(), |style| style.opacity(1.0))
+                            .on_click(cx.listener(
+                                move |v, _, _, cx| {
+                                    cx.stop_propagation();
+                                    v.copy_tool_image(&copy_key, cx);
+                                },
+                            )),
+                        )
+                        .child(
+                            super::widgets::tool_icon_action(
+                                SharedString::from(format!("open-image:{key}")),
+                                "arrow.up.right.square",
+                                "Open in viewer",
+                                true,
+                                look,
+                            )
+                            .bg(backing)
+                            .opacity(if show_actions { 1.0 } else { 0.0 })
+                            .group_hover(group, |style| style.opacity(1.0))
+                            .on_click(cx.listener(
+                                move |v, _, _, cx| {
+                                    cx.stop_propagation();
+                                    v.preview_image_reference(
+                                        &open_image,
+                                        &open_key,
+                                        open_owner.as_deref(),
+                                        cx,
+                                    );
+                                },
+                            )),
+                        ),
+                )
+                .test_support()
+                .into_any_element();
+        }
+
         let open = self.open.contains(key);
         let label = card_label(image, context, ordinal);
         let owned = image.clone();
@@ -1078,21 +1385,30 @@ impl ChatView {
     }
     fn start_images(&mut self, cx: &mut Context<Self>) {
         while self.media.active < CONCURRENT {
-            let Some((key, image)) = self.media.queue.pop_front() else {
+            let (thumbnail, queued) = if let Some(queued) = self.media.queue.pop_front() {
+                (false, Some(queued))
+            } else {
+                (true, self.media.thumbnails.queue.pop_front())
+            };
+            let Some((key, image)) = queued else {
                 break;
             };
-            if !self.open.contains(&key) {
+            if !thumbnail && !self.open.contains(&key) && !self.media.expanded.contains(&key) {
                 continue;
             }
-            if self
-                .media
-                .slots
-                .get(&key)
-                .is_some_and(|slot| slot.source == image.source)
+            if thumbnail && !self.media.thumbnails.slots.contains_key(&key) {
+                continue;
+            }
+            if !thumbnail
+                && self
+                    .media
+                    .slots
+                    .get(&key)
+                    .is_some_and(|slot| slot.source == image.source)
             {
                 continue;
             }
-            if self.media.slots.len() >= LOADED {
+            if !thumbnail && self.media.slots.len() >= LOADED {
                 // Only retain a bounded decoded cache; evicted expanded cards can be folded/reopened.
                 let oldest = self
                     .media
@@ -1111,41 +1427,85 @@ impl ChatView {
             // folders its identity allows (`ImageScope`), never the selected UI worktree.
             let scope = self.image_scope.clone();
             let owned = image.clone();
-            let work = cx
-                .background_executor()
-                .spawn(async move { load(&owned, &scope) });
+            let work = cx.background_executor().spawn(async move {
+                let (content, in_files) = load(&owned, &scope);
+                (
+                    content.map(|content| {
+                        if thumbnail {
+                            thumbnail_content(content)
+                        } else {
+                            content
+                        }
+                    }),
+                    in_files,
+                )
+            });
             self.media.active += 1;
-            self.media.generation += 1;
-            let generation = self.media.generation;
+            let generation = if thumbnail {
+                self.media.thumbnails.slots[&key].generation
+            } else {
+                self.media.generation += 1;
+                self.media.generation
+            };
             let completion_key = key.clone();
             let source = image.source.clone();
             cx.spawn(async move |this, cx| {
                 let (content, in_files) = work.await;
                 let _ = this.update(cx, |view, cx| {
                     view.media.active = view.media.active.saturating_sub(1);
-                    if let Some(content) =
+                    let stale = if thumbnail {
+                        view.media.thumbnails.complete(
+                            &completion_key,
+                            generation,
+                            &source,
+                            content,
+                            in_files,
+                        )
+                    } else {
                         view.media
                             .complete(&completion_key, generation, &source, content, in_files)
+                    };
+                    if let Some(content) = stale
                         && let Some(image) = content.render_image()
                     {
                         let image = image.clone();
                         cx.defer(move |cx| cx.drop_image(image, None));
                     }
                     view.start_images(cx);
-                    view.list.remeasure();
+                    // Thumbnails have fixed geometry. Full images can also live
+                    // in prose or an Activity artifact strip, outside the call's
+                    // own list entry; those keys need a conservative fallback.
+                    if !thumbnail {
+                        view.remeasure_completed_image(&completion_key);
+                    }
                     cx.notify();
                 });
             })
             .detach();
-            self.media.slots.insert(
-                key,
-                Slot {
-                    generation,
-                    source: image.source,
-                    content: None,
-                    in_files: false,
-                },
-            );
+            if !thumbnail {
+                self.media.slots.insert(
+                    key,
+                    Slot {
+                        generation,
+                        source: image.source,
+                        content: None,
+                        in_files: false,
+                    },
+                );
+            }
+        }
+    }
+
+    fn remeasure_completed_image(&self, key: &str) {
+        let row = key.rsplit_once(":image:").and_then(|(owner, _)| {
+            self.list_rows
+                .iter()
+                .position(|entry| entry.row.id == owner)
+        });
+        if let Some(at) = row {
+            self.list.remeasure_items(at..at + 1);
+        } else {
+            self.list.remeasure();
         }
     }
     fn set_image_zoom(&mut self, zoom: Option<f32>, cx: &mut Context<Self>) {
@@ -1356,4 +1716,441 @@ impl ChatView {
                 .into_any_element(),
         )
     }
+}
+
+fn size_label(bytes: u64) -> String {
+    crate::file_preview::format_size(bytes)
+}
+
+impl ChatView {
+    pub(super) fn prepare_opened_images(
+        &mut self,
+        owner: &str,
+        images: &[ChatImage],
+        cx: &mut Context<Self>,
+    ) {
+        for (i, image) in images.iter().enumerate() {
+            let key = format!("{owner}:image:{i}");
+            self.media.expanded.insert(key.clone());
+            if self
+                .media
+                .slots
+                .get(&key)
+                .is_some_and(|slot| slot.source != image.source)
+                && let Some(slot) = self.media.slots.remove(&key)
+            {
+                release(slot, cx);
+            }
+            if !self.media.slots.contains_key(&key)
+                && !self.media.queue.iter().any(|(queued, _)| queued == &key)
+            {
+                self.media.queue.push_back((key, image.clone()));
+            }
+        }
+        self.start_images(cx);
+    }
+
+    /// The owned snapshot preview and tool thumbnails share one bounded cache.
+    pub(super) fn thumbnail(
+        &self,
+        key: &str,
+        path: &str,
+    ) -> Option<Result<&Arc<gpui::RenderImage>, &str>> {
+        let source = ImageSource::Local {
+            path: path.to_owned(),
+        };
+        let content = self
+            .media
+            .thumbnails
+            .slots
+            .get(key)
+            .filter(|slot| slot.source == source)?
+            .content
+            .as_ref()?;
+        Some(match content {
+            Ok(PreviewContent::Image { image, .. }) => Ok(image),
+            Ok(PreviewContent::Message(message)) | Err(message) => Err(message.as_str()),
+            Ok(_) => Err("This reference is not a supported image."),
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn thumbnail_reads(&self) -> (usize, HashMap<String, u64>) {
+        let slots = &self.media.thumbnails.slots;
+        (
+            slots.values().filter(|slot| slot.content.is_none()).count(),
+            slots
+                .iter()
+                .map(|(key, slot)| (key.clone(), slot.generation))
+                .collect(),
+        )
+    }
+
+    /// Loading follows clipped thumbnail bounds, so even one message containing
+    /// hundreds of images cannot evict its first images before they are drawn.
+    pub(super) fn render_thumbnail(
+        &self,
+        key: &str,
+        image: &ChatImage,
+        fit: gpui::ObjectFit,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let content = self
+            .media
+            .thumbnails
+            .slots
+            .get(key)
+            .filter(|slot| slot.source == image.source)
+            .and_then(|slot| slot.content.as_ref())
+            .and_then(|content| content.as_ref().ok())
+            .and_then(PreviewContent::render_image);
+        let view = cx.entity().downgrade();
+        let key = key.to_owned();
+        let image = image.clone();
+        div()
+            .size_full()
+            .relative()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                content
+                    .map(|image| {
+                        img(image.clone())
+                            .size_full()
+                            .object_fit(fit)
+                            .into_any_element()
+                    })
+                    .unwrap_or_else(|| {
+                        crate::icons::symbol("photo", 12.0, Some(look.colors.muted))
+                    }),
+            )
+            .on_prepaint(move |bounds, window, cx| {
+                if bounds.intersects(&window.content_mask().bounds) {
+                    let _ = view.update(cx, |view, cx| {
+                        if !view.media.thumbnails.slots.contains_key(&key)
+                            && view.media.active >= CONCURRENT
+                        {
+                            return;
+                        }
+                        view.media.generation += 1;
+                        for slot in view
+                            .media
+                            .thumbnails
+                            .prepare(key, image, view.media.generation)
+                        {
+                            release(slot, cx);
+                        }
+                        view.start_images(cx);
+                    });
+                }
+            })
+            .into_any_element()
+    }
+
+    /// The first image remains recognizable while its call is collapsed.
+    pub(super) fn image_header_thumbnail(
+        &self,
+        item: &Item,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let image = item.presentation.images.first()?;
+        let key = format!("{}:image:0", item.id);
+        let image = image.clone();
+        Some(
+            div()
+                .id(SharedString::from(format!("header-thumb:{key}")))
+                .role(gpui::Role::Image)
+                .aria_label(image_label(&image, Some(item)))
+                .child(self.render_thumbnail(&key, &image, gpui::ObjectFit::Contain, look, cx))
+                .w(px(28.0))
+                .h(px(20.0))
+                .flex_none()
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(rgb(look.colors.divider))
+                .bg(rgb(look.colors.panel))
+                .overflow_hidden()
+                .test_support()
+                .into_any_element(),
+        )
+    }
+
+    fn file_chip(
+        &self,
+        key: String,
+        name: String,
+        size: Option<u64>,
+        target: String,
+        owner: String,
+        image: Option<&ChatImage>,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let visible = size.map_or_else(
+            || name.clone(),
+            |size| format!("{name} {}", size_label(size)),
+        );
+        let highlights = size
+            .map(|_| {
+                (
+                    name.len() + 1..visible.len(),
+                    gpui::HighlightStyle {
+                        color: Some(rgb(look.colors.muted).into()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .into_iter()
+            .collect();
+        let text = self.selectable(&key, visible, highlights, Vec::new(), look, cx);
+        let is_image = key
+            .rsplit_once(":image:")
+            .is_some_and(|(_, index)| index.parse::<usize>().is_ok());
+        let icon = image
+            .map(|image| {
+                let cache_key = key.strip_prefix("artifact:").unwrap_or(&key);
+                // Smaller than the 11 pt text line at every scale, so an image chip is
+                // exactly as tall as a file chip; a 24 px thumbnail made it 6 px taller.
+                div()
+                    .flex_none()
+                    .size(ui_text::text(16.0))
+                    .child(self.render_thumbnail(
+                        cache_key,
+                        image,
+                        gpui::ObjectFit::Cover,
+                        look,
+                        cx,
+                    ))
+                    .into_any_element()
+            })
+            .unwrap_or_else(|| {
+                crate::icons::symbol(
+                    if is_image { "photo" } else { "doc" },
+                    11.0,
+                    Some(look.colors.muted),
+                )
+            });
+        crate::behavior_controls::button_content(
+            SharedString::from(format!("chip:{key}")),
+            format!("Preview {name}"),
+            div()
+                .flex()
+                .items_center()
+                .gap(ui_text::space(5.0))
+                .child(icon)
+                .child(text),
+        )
+        .px(ui_text::space(7.0))
+        .py(ui_text::space(3.0))
+        .rounded(ui_text::space(6.0))
+        .border_1()
+        .border_color(rgb(look.colors.divider))
+        .bg(rgb(look.colors.panel))
+        .text_size(ui_text::text(11.0))
+        .text_color(rgb(look.colors.text))
+        .on_click(cx.listener(move |v, _, _, cx| {
+            cx.stop_propagation();
+            v.preview_reference(&target, Some(&owner), cx);
+        }))
+        .into_any_element()
+    }
+
+    pub(super) fn render_artifact_refs(
+        &self,
+        owner: &str,
+        refs: &[riwork_engine::chat::projection::ArtifactRef],
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let range = artifact_range(
+            refs.len(),
+            self.media.artifact_pages.get(owner).copied().unwrap_or(0),
+        );
+        let page = range.start / ARTIFACT_PAGE;
+        let previous_owner = owner.to_owned();
+        let next_owner = owner.to_owned();
+        let chips = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(ui_text::space(4.0))
+            .children(refs[range.clone()].iter().filter_map(|artifact| {
+                let (_, item) = self.projected_item(&artifact.item_id)?;
+                if let Some(path) = &artifact.path {
+                    let target = path
+                        .line
+                        .map_or_else(|| path.path.clone(), |line| format!("{}:{line}", path.path));
+                    let name = std::path::Path::new(&path.path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.path.clone());
+                    Some(self.file_chip(
+                        format!("artifact:{}:path:{}", item.id, path.path),
+                        name,
+                        None,
+                        target,
+                        item.id.clone(),
+                        None,
+                        look,
+                        cx,
+                    ))
+                } else {
+                    let n = artifact.image_index?;
+                    let image = item.presentation.images.get(n)?;
+                    if self.info().is_some_and(|info| {
+                        matches!(
+                            info.orchestrator,
+                            Some(crate::chat::model::OrchestratorScope::Global)
+                        )
+                    }) {
+                        return Some(self.image_card(
+                            image,
+                            &format!("{}:image:{n}", item.id),
+                            Some(item),
+                            None,
+                            look,
+                            cx,
+                        ));
+                    }
+                    let target = match &image.source {
+                        ImageSource::Local { path } => path.clone(),
+                        ImageSource::Url { url } => url.clone(),
+                        _ => format!("image:{}:{n}", item.id),
+                    };
+                    Some(self.file_chip(
+                        format!("artifact:{}:image:{n}", item.id),
+                        image_label(image, Some(item)),
+                        None,
+                        target,
+                        item.id.clone(),
+                        Some(image),
+                        look,
+                        cx,
+                    ))
+                }
+            }));
+        div()
+            .flex()
+            .flex_col()
+            .gap(ui_text::space(4.0))
+            .child(chips)
+            .when(refs.len() > ARTIFACT_PAGE, |body| {
+                body.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(ui_text::space(6.0))
+                        .children((range.start > 0).then(|| {
+                            button(
+                                SharedString::from(format!("previous:artifacts:{owner}")),
+                                "Previous files",
+                                None,
+                                look,
+                            )
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    view.set_artifact_page(
+                                        &previous_owner,
+                                        page.saturating_sub(1),
+                                        cx,
+                                    );
+                                },
+                            ))
+                        }))
+                        .child(format!(
+                            "{}–{} of {}",
+                            range.start + 1,
+                            range.end,
+                            refs.len()
+                        ))
+                        .children((range.end < refs.len()).then(|| {
+                            button(
+                                SharedString::from(format!("next:artifacts:{owner}")),
+                                "Next files",
+                                None,
+                                look,
+                            )
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    view.set_artifact_page(&next_owner, page + 1, cx);
+                                },
+                            ))
+                        })),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn set_artifact_page(&mut self, owner: &str, page: usize, cx: &mut Context<Self>) {
+        let offset = self.list.logical_scroll_top();
+        self.list.pause_following_tail();
+        self.media.artifact_pages.insert(owner.to_owned(), page);
+        if let Some(at) = self
+            .list_rows
+            .iter()
+            .position(|entry| entry.row.id == owner)
+        {
+            self.list.remeasure_items(at..at + 1);
+        }
+        self.list.scroll_to(offset);
+        cx.notify();
+    }
+}
+
+/// Whether a row lists `artifact` as a chip. Verbose lists every file a call produced,
+/// including an image the call already shows; only a Normal call row folds the chip
+/// of an image it shows inline. Messages and activity summaries list every chip.
+pub(super) fn artifact_chip_shown(
+    mode: super::display::DisplayMode,
+    kind: riwork_engine::chat::projection::RowKind,
+    artifact: &riwork_engine::chat::projection::ArtifactRef,
+    item: Option<&Item>,
+    open: bool,
+) -> bool {
+    use riwork_engine::chat::projection::RowKind;
+    mode == super::display::DisplayMode::Verbose
+        || matches!(
+            kind,
+            RowKind::User
+                | RowKind::Final
+                | RowKind::Commentary
+                | RowKind::Compaction
+                | RowKind::Notice
+        )
+        || item.is_none_or(|item| !artifact_shown_inline(artifact, item, open))
+}
+
+/// A collapsed header shows its first image; an open call shows every image.
+/// Extra images and files still need their chips.
+fn artifact_shown_inline(
+    artifact: &riwork_engine::chat::projection::ArtifactRef,
+    item: &Item,
+    open: bool,
+) -> bool {
+    if artifact.item_id != item.id {
+        return false;
+    }
+    let shown = if open {
+        item.presentation.images.len()
+    } else {
+        1
+    };
+    if let Some(index) = artifact.image_index {
+        return index < shown && index < item.presentation.images.len();
+    }
+    let Some(path) = &artifact.path else {
+        return false;
+    };
+    item.presentation.images.iter().take(shown).any(|image| match &image.source {
+        ImageSource::Local { path: source } => source == &path.path,
+        ImageSource::Url { url } => url == &path.path,
+        ImageSource::Data { .. } => item.presentation.images.len() == 1 && (
+            item.presentation.semantics.as_ref().and_then(|s| s.target.as_deref()) == Some(path.path.as_str())
+            || matches!(&item.body, ItemBody::ToolCall { input, .. } if ["file_path", "path", "target"].iter().any(|key| input.get(key).and_then(serde_json::Value::as_str) == Some(path.path.as_str())))
+        ),
+        ImageSource::Unavailable { .. } => false,
+    })
 }

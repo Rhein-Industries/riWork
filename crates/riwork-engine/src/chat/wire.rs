@@ -123,3 +123,16 @@ pub struct Envelope {
 
 /// The `result` of `List`.
 pub type ChatList = Vec<ChatInfo>;
+
+impl Envelope {
+    /// Best-effort legacy semantics for response paths; the stored event is unchanged.
+    pub fn enrich(&mut self) {
+        match &mut self.event {
+            ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => {
+                super::semantics::enrich(item);
+                super::semantics::refresh_output(item);
+            }
+            _ => {}
+        }
+    }
+}

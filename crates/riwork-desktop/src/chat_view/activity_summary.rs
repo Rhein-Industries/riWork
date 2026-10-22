@@ -52,6 +52,7 @@ impl Summary {
         }
     }
 
+    #[cfg(test)]
     pub fn has_failure(&self) -> bool {
         self.failed > 0
     }
@@ -183,6 +184,8 @@ mod tests {
 
     fn item(id: &str, body: ItemBody) -> Item {
         Item {
+            started_at: None,
+            ended_at: None,
             id: id.into(),
             turn_id: Some("turn".into()),
             status: ItemStatus::Completed,

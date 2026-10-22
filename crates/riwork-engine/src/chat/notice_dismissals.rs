@@ -530,6 +530,8 @@ mod tests {
             *resets_at = reset;
         }
         Item {
+            started_at: None,
+            ended_at: None,
             id: id.into(),
             turn_id: None,
             status: ItemStatus::Completed,

@@ -385,7 +385,7 @@ fn lists_report_what_each_agent_is_doing_and_the_projects_count_them() {
         assert_eq!(codex_entry["subagent_kinds"], json!(["explorer"]));
         assert_eq!(codex_entry["activity_since_unix"], 1_791_021_630u64);
 
-        // Hooks that never spoke: not known. Grok has no tracking at all.
+        // Hooks that never spoke: not known, including Grok's.
         let idle = entry(&list, &claude_idle);
         assert_eq!(idle["activity"], "unknown");
         assert!(

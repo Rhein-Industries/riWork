@@ -415,6 +415,7 @@ fn a_question_is_asked_and_the_answers_go_back_keyed_by_question() {
     assert_eq!(question.request_id, "ask-1");
     assert_eq!(question.questions.len(), 2);
     assert_eq!(question.questions[0].header.as_deref(), Some("Library"));
+    assert_eq!(question.item_id.as_deref(), Some("toolu_q"));
     assert_eq!(question.questions[0].question, "Which date library?");
     assert_eq!(
         question.questions[0].options,
@@ -454,7 +455,8 @@ fn a_question_is_asked_and_the_answers_go_back_keyed_by_question() {
     rig.until_idle();
     assert!(rig.transcript().questions.is_empty());
     assert!(rig.seen.contains(&ChatEvent::QuestionResolved {
-        request_id: "ask-1".into()
+        request_id: "ask-1".into(),
+        answer_summary: Some("chrono; serde, clock".into()),
     }));
     assert!(!rig.fake.saw("mismatch"));
 }
@@ -2566,7 +2568,16 @@ fn messages_queued_for_a_restart_the_user_stops_keep_their_text() {
 
 #[test]
 fn a_prompt_the_interrupt_refused_is_not_answered_again() {
-    let mut rig = Rig::new(&["interrupt_late_approval"]);
+    // This fixture deliberately replies after 100 ms. It tests prompt identity,
+    // not watchdog escalation: leave room for a loaded test runner to read it.
+    let mut rig = Rig::with(
+        &["interrupt_late_approval"],
+        Tuning {
+            interrupt_grace: Duration::from_secs(5),
+            ..fast()
+        },
+        |_| {},
+    );
     rig.send("go");
     rig.until(is_approval);
     rig.command(ChatCommand::Interrupt);
@@ -2726,6 +2737,13 @@ fn subagent_synthetic_and_meta_user_frames_are_not_the_users_messages() {
     assert_eq!(
         item(&fold(&seen), "toolu_sub").status,
         ItemStatus::Completed
+    );
+    assert_eq!(
+        item(&fold(&seen), "toolu_sub")
+            .presentation
+            .parent_id
+            .as_deref(),
+        Some("toolu_task")
     );
 }
 

@@ -126,6 +126,17 @@ pub fn elide_event(event: &Value) -> Value {
         {
             out["item_id"] = json!(id);
         }
+        for field in ["turn_id", "started_at", "ended_at"] {
+            if let Some(value) = event["item"].get(field) {
+                out[field] = value.clone();
+            }
+        }
+        if let Some(parent) = event["item"]["presentation"].get("parent_id") {
+            out["parent_id"] = parent.clone();
+        }
+        if let Some(kind) = event["item"]["presentation"]["semantics"].get("kind") {
+            out["tool_kind"] = kind.clone();
+        }
         if let Some(status) = event["item"].get("status") {
             out["status"] = status.clone();
         } else if event["event"] == "item_completed" {
@@ -154,8 +165,22 @@ pub fn elide_item(item: &Value) -> Value {
         "body":{"type":"agent_message","text":TRUNCATION_NOTE},
         "elided":elide_event(&json!({"event":"item_completed","item":item}))});
     out["elided"]["bytes"] = json!(serde_json::to_vec(item).expect("JSON value").len());
-    if let Some(turn) = item.get("turn_id") {
-        out["turn_id"] = turn.clone();
+    for field in ["turn_id", "started_at", "ended_at"] {
+        if let Some(value) = item.get(field) {
+            out[field] = value.clone();
+        }
+    }
+    // Preserve the grouping discriminator and parentage even when output cannot
+    // travel. Excerpts and other potentially large hints are best effort.
+    let mut presentation = serde_json::Map::new();
+    if let Some(parent) = item["presentation"].get("parent_id") {
+        presentation.insert("parent_id".into(), parent.clone());
+    }
+    if let Some(kind) = item["presentation"]["semantics"].get("kind") {
+        presentation.insert("semantics".into(), json!({"kind":kind}));
+    }
+    if !presentation.is_empty() {
+        out["presentation"] = Value::Object(presentation);
     }
     out
 }
@@ -224,12 +249,15 @@ pub fn fit_snapshot<E>(
             .as_object()
             .unwrap()
             .iter()
-            .filter(|(k, _)| k.as_str() != "items" && k.as_str() != "controls")
+            .filter(|(k, _)| !matches!(k.as_str(), "items" | "controls" | "requests"))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect(),
     );
     single["items"] = json!([]);
     single["controls"] = json!([]);
+    if result.get("requests").is_some() {
+        single["requests"] = json!([]);
+    }
     for row in result["items"].as_array_mut().unwrap() {
         // The conservative fast path avoids encoding/compressing small rows.
         if row.to_string().len() <= payload_budget {
@@ -265,16 +293,65 @@ pub fn fit_snapshot<E>(
             *control = elide_event(control);
         }
     }
+    single["controls"] = json!([]);
+    if let Some(requests) = result.get_mut("requests").and_then(Value::as_array_mut) {
+        for request in requests {
+            if request.to_string().len() > payload_budget {
+                cut_strings(request, 512);
+            }
+        }
+    }
     // Seal the whole only once per pass. Ordinary rows paginate rather than elide.
     loop {
         if fits(&result)? {
             return Ok(Some(result));
         }
-        let rows = result["items"].as_array_mut().unwrap();
+        let rows = result["items"].as_array().unwrap();
         if paginate && rows.len() > 1 {
-            rows.drain(..rows.len() / 2);
-            result["before"] = result["items"][0]["order"].clone();
+            let preferred_cut = rows.len() / 2;
+            let mut cut = preferred_cut;
+            let mut boundary = snapshot_turn_boundary(&result, cut);
+            loop {
+                boundary = boundary.min(snapshot_turn_boundary(&result, cut));
+                let previous_cut = cut;
+                while cut > 0 && rows[cut - 1]["order"].as_u64().unwrap_or(0) >= boundary {
+                    cut -= 1;
+                }
+                if cut == previous_cut {
+                    break;
+                }
+            }
+            // One oversized turn has to travel in partial pages.
+            let forced_partial = cut == 0;
+            if cut == 0 {
+                cut = preferred_cut;
+            }
+            let last_dropped = rows[cut - 1]["order"].as_u64().unwrap_or(0);
+            boundary = boundary.min(snapshot_turn_boundary(&result, cut));
+            let partial_start = forced_partial
+                || last_dropped >= boundary
+                || (cut..rows.len())
+                    .any(|index| snapshot_turn_boundary(&result, index) <= last_dropped);
+            // Never hide a dropped row behind a turn/request boundary. In a
+            // partial turn, the exact first kept order is the only safe cursor.
+            let before = if last_dropped >= boundary {
+                rows[cut]["order"].as_u64().unwrap_or(0)
+            } else {
+                boundary
+            };
+            result["items"].as_array_mut().unwrap().drain(..cut);
+            result["provisional"] =
+                json!(result["provisional"].as_bool().unwrap_or(false) || partial_start);
+            if let Some(requests) = result.get_mut("requests").and_then(Value::as_array_mut) {
+                requests.retain(|request| {
+                    request["requested_seq"]
+                        .as_u64()
+                        .is_some_and(|seq| seq >= before)
+                });
+            }
+            result["before"] = json!(before);
             result["more"] = json!(true);
+            retain_snapshot_turn_metadata(&mut result);
             continue;
         }
         // An aggregate of small controls has no history pagination. Replace a batch
@@ -299,6 +376,67 @@ pub fn fit_snapshot<E>(
         }
         if !changed {
             return Ok(None);
+        }
+    }
+}
+
+fn snapshot_turn_boundary(snapshot: &Value, index: usize) -> u64 {
+    let rows = snapshot["items"].as_array().unwrap();
+    let row = &rows[index];
+    let order = row["order"].as_u64().unwrap_or(0);
+    let Some(turn) = row["item"]["turn_id"].as_str() else {
+        return order;
+    };
+    let item_start = rows
+        .iter()
+        .filter(|row| row["item"]["turn_id"].as_str() == Some(turn))
+        .filter_map(|row| row["order"].as_u64())
+        .min()
+        .unwrap_or(order);
+    let request_start = snapshot
+        .get("requests")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|request| request["turn_id"].as_str() == Some(turn))
+        .filter_map(|request| request["requested_seq"].as_u64())
+        .min()
+        .unwrap_or(order);
+    snapshot["turn_starts"][turn]
+        .as_u64()
+        .unwrap_or(order)
+        .min(item_start)
+        .min(request_start)
+        .min(order)
+}
+
+fn retain_snapshot_turn_metadata(snapshot: &mut Value) {
+    let turns: std::collections::HashSet<String> = snapshot["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["item"]["turn_id"].as_str())
+        .chain(
+            snapshot
+                .get("requests")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|request| request["turn_id"].as_str()),
+        )
+        .chain(
+            snapshot["controls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|control| control["event"] == "turn_started")
+                .filter_map(|control| control["turn_id"].as_str()),
+        )
+        .map(str::to_owned)
+        .collect();
+    for key in ["turn_timing", "turn_starts"] {
+        if let Some(map) = snapshot.get_mut(key).and_then(Value::as_object_mut) {
+            map.retain(|turn, _| turns.contains(turn));
         }
     }
 }

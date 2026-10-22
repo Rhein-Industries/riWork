@@ -76,6 +76,19 @@ pub(super) struct AnswerFailure {
 }
 
 impl ChatView {
+    /// Whole-draft programmatic changes do not emit Change; retire any speech viewport lock here.
+    pub(super) fn set_composer_value(
+        &mut self,
+        text: impl Into<gpui::SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.release_dictation_height(cx);
+        self.dictation.user_edited();
+        let text: gpui::SharedString = text.into();
+        self.composer
+            .update(cx, |state, cx| state.set_value(text, window, cx));
+    }
     pub(super) fn composer_text(&self, cx: &gpui::App) -> String {
         self.composer.read(cx).value().to_string()
     }
@@ -109,9 +122,7 @@ impl ChatView {
             && self.attachments.is_empty()
             && self.references.is_empty()
         {
-            self.composer.update(cx, |state, cx| {
-                state.set_value(record.draft.text, window, cx)
-            });
+            self.set_composer_value(record.draft.text, window, cx);
             self.restore_attachment_chips(record.draft.attachments, window, cx);
             self.restore_references(record.draft.references, window, cx);
             self.bump_generation();
@@ -173,7 +184,7 @@ impl ChatView {
                 if self.programmatic_changes > 0 {
                     self.programmatic_changes -= 1;
                 } else {
-                    self.dictation.user_edited();
+                    self.dictation_user_edited(cx);
                 }
                 self.remember_draft(cx);
                 cx.notify();
@@ -183,7 +194,16 @@ impl ChatView {
                 cx.notify();
             }
             _ if text_input::is_submit(event, EnterBehavior::Submit) => {
-                if !self.accepts_input() || self.enter_repeated {
+                if self.enter_repeated {
+                    return;
+                }
+                if self.dictation.phase().is_active() {
+                    if self.composer_owns_dictation_keys(window, cx) {
+                        self.send_message(window, cx);
+                    }
+                    return;
+                }
+                if !self.accepts_input() {
                     return;
                 }
                 let offered = if self.enter_repeated
@@ -327,6 +347,35 @@ impl ChatView {
         }
     }
 
+    /// Only the bare composer owns dictation keys; auxiliary interfaces keep their actions.
+    fn composer_owns_dictation_keys(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.composer.read(cx).focus_handle(cx).is_focused(window)
+            && self.menu.is_none()
+            && self.suggestions.open.is_none()
+            && self.media.viewer.is_none()
+            && self.memo_preview.is_none()
+    }
+
+    /// A disabled editor blocks its own Enter event. Report refusal before it consumes the key.
+    pub(super) fn refused_dictation_enter(
+        &mut self,
+        action: &Enter,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !action.shift
+            && self.dictation.phase().is_active()
+            && !self.accepts_input()
+            && self.composer_owns_dictation_keys(window, cx)
+            && !self.composer.update(cx, |state, cx| {
+                state.marked_text_range(window, cx).is_some()
+            })
+        {
+            self.dictation_send_refused(cx);
+            cx.stop_propagation();
+        }
+    }
+
     /// Observe Enter only to distinguish a held key from a new approval gesture.
     /// Submission remains in the one InputEvent subscription. KeyUp rearms this guard.
     pub(super) fn capture_enter(&mut self, _: &Enter, _: &mut Window, _: &mut Context<Self>) {
@@ -398,15 +447,17 @@ impl ChatView {
         } else if self.memo_preview.is_some() {
             self.close_memo_preview(window, cx);
             true
-        } else if self.dictation.phase().is_active() {
-            self.cancel_dictation(window, cx);
-            true
         } else if self.find_takes_escape(window, cx) {
             self.close_find(window, cx);
             true
         } else if self.close_file_review(window, cx) {
             true
         } else if self.composer.read(cx).focus_handle(cx).is_focused(window) {
+            if self.dictation.phase().is_active() {
+                self.stop_dictation(window, cx);
+                cx.stop_propagation();
+                return;
+            }
             match super::composer::escape(
                 self.draft_empty(cx),
                 &if repeated
@@ -440,20 +491,19 @@ impl ChatView {
     }
 
     pub(super) fn send_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dictation.phase().is_active() {
+            if !self.accepts_input() {
+                self.dictation_send_refused(cx);
+            } else if self.pending_submission.is_none() {
+                self.send_after_dictation(window, cx);
+            }
+            return;
+        }
         // `/memo` previews the project's memo and sends nothing (`memo`).
         if self.open_memo_preview(window, cx) {
             return;
         }
         if !self.accepts_input() || self.pending_submission.is_some() {
-            return;
-        }
-        if self.dictation.phase().is_active() {
-            self.notices.set(
-                notices::LocalKey::Send,
-                NoticeLevel::Warning,
-                "Finish dictation before sending the draft.",
-            );
-            cx.notify();
             return;
         }
         if self
@@ -485,6 +535,14 @@ impl ChatView {
             window,
             cx,
         );
+    }
+    fn dictation_send_refused(&mut self, cx: &mut Context<Self>) {
+        self.notices.set(
+            notices::LocalKey::Send,
+            NoticeLevel::Warning,
+            "Finish dictation before sending the draft.",
+        );
+        cx.notify();
     }
     fn dispatch_draft(
         &mut self,
@@ -642,9 +700,7 @@ impl ChatView {
             return;
         };
         // This is an explicit Replace draft action, never automatic error recovery.
-        self.composer.update(cx, |state, cx| {
-            state.set_value(saved.snapshot.text, window, cx)
-        });
+        self.set_composer_value(saved.snapshot.text, window, cx);
         self.release_attachment_previews(cx);
         self.restore_attachment_chips(saved.snapshot.attachments, window, cx);
         self.restore_references(saved.snapshot.references, window, cx);
@@ -722,8 +778,7 @@ impl ChatView {
             self.pending_submission = None;
         }
         if clear {
-            self.composer
-                .update(cx, |state, cx| state.set_value("", window, cx));
+            self.set_composer_value("", window, cx);
             self.attachments.clear();
             self.references.clear();
             self.bump_generation();

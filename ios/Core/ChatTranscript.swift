@@ -5,12 +5,18 @@ import Foundation
 /// A chat's transcript as events build it: what the chat screen draws. This is `Transcript::apply` of `src/chat/model.rs`, line for line,
 /// so the phone shows what the desktop's own tab shows: the same events in the same order give the same transcript, whichever side folds them.
 public struct ChatTranscript: Sendable, Equatable {
+    /// Invalidates grouping only when projection metadata changes; body deltas keep the same grouping.
+    public private(set) var projectionRevision = UUID()
+    /// A cheap change token for file/attachment indexes, avoiding full item-array equality per token.
+    public private(set) var itemsRevision = UUID()
     public private(set) var info: ChatInfo?
     public private(set) var state: ChatState = .starting
     public private(set) var items: [ChatItem] = []
     /// Requests still waiting for the user, in arrival order.
     public private(set) var approvals: [ChatApproval] = []
     public private(set) var questions: [ChatQuestion] = []
+    /// Pending and resolved requests in transcript order, with the turn and sequence that introduced them.
+    public private(set) var requests: [ChatRequestRecord] = []
     /// Requests the relay could not send in full: they wait on the Mac, where their details are, and nothing here can answer them.
     public private(set) var elidedRequests: [ChatElidedRequest] = []
     public private(set) var usage: ChatUsage?
@@ -19,12 +25,32 @@ public struct ChatTranscript: Sendable, Equatable {
     /// The provider's usage windows, as its last `rate_limits` said (none from an older driver or desktop).
     public private(set) var rateLimits: [ChatRateWindow] = []
     public private(set) var turnID: String?
+    /// Original item arrival sequences, retained across updates for projection's request boundaries.
+    public private(set) var itemSequences: [String: UInt64] = [:]
+    /// Host turn timestamps, retained for completed turns and merged with historical pages.
+    public private(set) var turnTiming: [String: ChatTurnTiming] = [:]
     /// Where each item is, by id, so a delta finds its item without a search.
     private var index: [String: Int] = [:]
+    private var lastSequence: UInt64 = 0
 
     public init() {}
 
-    public mutating func apply(_ event: ChatEvent) {
+    public static func == (lhs: ChatTranscript, rhs: ChatTranscript) -> Bool {
+        lhs.info == rhs.info && lhs.state == rhs.state && lhs.items == rhs.items && lhs.approvals == rhs.approvals
+            && lhs.questions == rhs.questions && lhs.requests == rhs.requests && lhs.elidedRequests == rhs.elidedRequests
+            && lhs.usage == rhs.usage && lhs.models == rhs.models && lhs.rateLimits == rhs.rateLimits && lhs.turnID == rhs.turnID
+            && lhs.itemSequences == rhs.itemSequences
+            && lhs.turnTiming == rhs.turnTiming
+    }
+
+    public mutating func apply(_ event: ChatEvent, seq: UInt64? = nil) {
+        if case .itemDelta = event {} else { projectionRevision = UUID() }
+        switch event {
+        case .itemStarted, .itemCompleted, .itemDelta, .turnCompleted: itemsRevision = UUID()
+        default: break
+        }
+        let sequence = seq ?? (lastSequence == UInt64.max ? UInt64.max : lastSequence + 1)
+        lastSequence = max(lastSequence, sequence)
         switch event {
         case .info(let info):
             // A chat that went on with another provider starts over with what belongs to one: the new agent lists its own models and
@@ -39,9 +65,13 @@ public struct ChatTranscript: Sendable, Equatable {
         case .state(let state):
             self.state = state
             info?.state = state
-        case .turnStarted(let turnID):
+        case .turnStarted(let turnID, let startedAt):
             self.turnID = turnID
-        case .turnCompleted(let turnID, let outcome):
+            var timing = turnTiming[turnID] ?? ChatTurnTiming()
+            timing.startedAt = timing.startedAt ?? startedAt; turnTiming[turnID] = timing
+        case .turnCompleted(let turnID, let outcome, let endedAt):
+            var timing = turnTiming[turnID] ?? ChatTurnTiming()
+            timing.endedAt = endedAt ?? timing.endedAt; turnTiming[turnID] = timing
             if self.turnID == turnID { self.turnID = nil }
             // Whatever the provider left open in this turn is over now. An item that names no turn is closed by any turn's end.
             let closed: ChatItemStatus = switch outcome {
@@ -52,12 +82,20 @@ public struct ChatTranscript: Sendable, Equatable {
             for at in items.indices where items[at].status == .inProgress && (items[at].turnID == nil || items[at].turnID == turnID) {
                 items[at].status = closed
             }
+            for at in requests.indices where requests[at].resolvedSeq == nil && (requests[at].turnID == nil || requests[at].turnID == turnID) {
+                requests[at].resolvedSeq = sequence; requests[at].resolution = "cancel"
+            }
             approvals.removeAll()
             questions.removeAll()
             elidedRequests.removeAll()
         case .itemStarted(let item), .itemCompleted(let item):
+            if itemSequences[item.id] == nil { itemSequences[item.id] = sequence }
             if let at = index[item.id] {
-                items[at] = item
+                var completed = item
+                completed.startedAt = completed.startedAt ?? items[at].startedAt
+                completed.presentation.parentID = completed.presentation.parentID ?? items[at].presentation.parentID
+                completed.presentation.semantics = completed.presentation.semantics ?? items[at].presentation.semantics
+                items[at] = completed
             } else {
                 index[item.id] = items.count
                 items.append(item)
@@ -75,14 +113,22 @@ public struct ChatTranscript: Sendable, Equatable {
             approvals.removeAll { $0.requestID == approval.requestID }
             elidedRequests.removeAll { $0.requestID == approval.requestID }
             approvals.append(approval)
-        case .approvalResolved(let requestID, _):
+            retainRequest(ChatRequestRecord(requestID: approval.requestID, kind: .approval, title: approval.title,
+                                            turnID: approval.itemID.flatMap { item($0)?.turnID } ?? turnID, itemID: approval.itemID, requestedSeq: sequence))
+        case .approvalResolved(let requestID, let decision):
+            resolveRequest(requestID, sequence: sequence, resolution: decision.rawValue)
             approvals.removeAll { $0.requestID == requestID }
             elidedRequests.removeAll { $0.requestID == requestID }
         case .questionRequested(let question):
             questions.removeAll { $0.requestID == question.requestID }
             elidedRequests.removeAll { $0.requestID == question.requestID }
             questions.append(question)
-        case .questionResolved(let requestID):
+            retainRequest(ChatRequestRecord(requestID: question.requestID, kind: .question,
+                                            title: question.questions.map(\.question).joined(separator: "; "),
+                                            turnID: question.itemID.flatMap { item($0)?.turnID } ?? turnID,
+                                            itemID: question.itemID, requestedSeq: sequence))
+        case .questionResolved(let requestID, let answerSummary):
+            resolveRequest(requestID, sequence: sequence, resolution: "answered", answerSummary: answerSummary)
             questions.removeAll { $0.requestID == requestID }
             elidedRequests.removeAll { $0.requestID == requestID }
         case .usage(let usage):
@@ -97,27 +143,103 @@ public struct ChatTranscript: Sendable, Equatable {
                 approvals.removeAll { $0.requestID == requestID }
                 questions.removeAll { $0.requestID == requestID }
                 elidedRequests.removeAll { $0.requestID == requestID }
-                if elided.isRequest { elidedRequests.append(ChatElidedRequest(requestID: requestID, question: elided.of == "question_requested")) }
+                if elided.isRequest {
+                    let question = elided.of == "question_requested"
+                    elidedRequests.append(ChatElidedRequest(requestID: requestID, question: question))
+                    retainRequest(ChatRequestRecord(requestID: requestID, kind: question ? .question : .approval,
+                                                    title: requests.first { $0.requestID == requestID }?.title ?? "",
+                                                    turnID: elided.turnID ?? elided.itemID.flatMap { item($0)?.turnID } ?? turnID,
+                                                    itemID: elided.itemID, requestedSeq: sequence))
+                } else {
+                    resolveRequest(requestID, sequence: sequence, resolution: elided.of == "question_resolved" ? "answered" : nil)
+                }
                 return
             }
             // The feed resolves these by sequence number; one that comes without (a snapshot's controls) is keyed by its place.
             let row = event.resolved(seq: UInt64(items.count))
-            if row != event { apply(row) }
+            if row != event { apply(row, seq: sequence) }
         }
+    }
+
+    private mutating func retainRequest(_ record: ChatRequestRecord) {
+        if let at = requests.firstIndex(where: { $0.requestID == record.requestID }) {
+            // A repeated pending request updates its title without changing its place in the transcript.
+            requests[at].title = record.title
+            requests[at].itemID = record.itemID ?? requests[at].itemID
+            requests[at].turnID = record.turnID ?? requests[at].turnID
+        } else {
+            requests.append(record)
+            requests.sort { $0.requestedSeq < $1.requestedSeq }
+        }
+    }
+    private mutating func resolveRequest(_ id: String, sequence: UInt64, resolution: String?, answerSummary: String? = nil) {
+        guard let at = requests.firstIndex(where: { $0.requestID == id }) else { return }
+        requests[at].resolvedSeq = sequence; requests[at].resolution = resolution; requests[at].answerSummary = answerSummary
+    }
+    fileprivate mutating func installRequests(_ records: [ChatRequestRecord], through seq: UInt64) {
+        projectionRevision = UUID()
+        requests = records; lastSequence = seq
+    }
+    /// Historical pages recover original boundaries and missing records while newer live resolutions remain authoritative.
+    fileprivate mutating func mergeRequestHistory(_ records: [ChatRequestRecord]) {
+        projectionRevision = UUID()
+        for record in records {
+            if let at = requests.firstIndex(where: { $0.requestID == record.requestID }) {
+                requests[at].requestedSeq = min(requests[at].requestedSeq, record.requestedSeq)
+                requests[at].turnID = requests[at].turnID ?? record.turnID
+                requests[at].itemID = requests[at].itemID ?? record.itemID
+                if requests[at].title.isEmpty { requests[at].title = record.title }
+                if let resolved = record.resolvedSeq, resolved > (requests[at].resolvedSeq ?? 0) {
+                    requests[at].resolvedSeq = resolved; requests[at].resolution = record.resolution
+                    requests[at].answerSummary = record.answerSummary
+                }
+            } else { requests.append(record) }
+        }
+        requests.sort { $0.requestedSeq < $1.requestedSeq }
+    }
+    /// Only records present at the recovery checkpoint override replay; older records can still be reconstructed.
+    fileprivate mutating func restoreRequests(_ records: [ChatRequestRecord]) {
+        projectionRevision = UUID()
+        let historical = requests
+        requests = records
+        var known = Set(records.map(\.requestID))
+        for record in historical where known.insert(record.requestID).inserted { requests.append(record) }
+        requests.sort { $0.requestedSeq < $1.requestedSeq }
+    }
+
+    fileprivate mutating func applyRecovering(_ event: ChatEvent, seq: UInt64, requestTurnID: String?) {
+        let liveTurnID = turnID
+        turnID = requestTurnID
+        apply(event, seq: seq)
+        turnID = liveTurnID
     }
 
     /// Preserve already-authoritative controls while exceptional replay reconstructs older bodies.
     fileprivate func controlsOnly() -> ChatTranscript {
-        var value = self; value.items = []; value.index = [:]; return value
+        var value = self; value.projectionRevision = UUID(); value.itemsRevision = UUID(); value.items = []; value.index = [:]; value.itemSequences = [:]; return value
     }
     fileprivate mutating func restoreControls(_ value: ChatTranscript) {
+        projectionRevision = UUID()
         info = value.info; state = value.state; approvals = value.approvals; questions = value.questions; elidedRequests = value.elidedRequests
         usage = value.usage; models = value.models; rateLimits = value.rateLimits; turnID = value.turnID
+        mergeTurnTiming(value.turnTiming, preferIncoming: true)
+        lastSequence = max(lastSequence, value.lastSequence)
+    }
+
+    fileprivate mutating func mergeTurnTiming(_ records: [String: ChatTurnTiming], preferIncoming: Bool = false) {
+        projectionRevision = UUID()
+        for (id, record) in records {
+            let existing = turnTiming[id] ?? ChatTurnTiming()
+            turnTiming[id] = ChatTurnTiming(startedAt: preferIncoming ? record.startedAt ?? existing.startedAt : existing.startedAt ?? record.startedAt,
+                                           endedAt: preferIncoming ? record.endedAt ?? existing.endedAt : existing.endedAt ?? record.endedAt)
+        }
     }
 
     /// Merge only missing historical rows; live rows and controls remain authoritative.
     public mutating func mergeHistory(_ rows: [ChatSnapshotRow], orders: [String: UInt64]) {
+        projectionRevision = UUID(); itemsRevision = UUID()
         for row in rows where index[row.item.id] == nil { apply(.itemCompleted(row.item)) }
+        for item in items { if let order = orders[item.id] { itemSequences[item.id] = order } }
         items.sort { (orders[$0.id] ?? UInt64.max) < (orders[$1.id] ?? UInt64.max) }
         index = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($0.element.id, $0.offset) })
     }
@@ -128,6 +250,40 @@ public struct ChatTranscript: Sendable, Equatable {
     public var lastUserMessage: String? {
         for item in items.reversed() { if case .userMessage(let text) = item.body { return text } }
         return nil
+    }
+}
+
+/// A retained request boundary (`RequestRecord`), also sent by snapshot v1 hosts that support tool activity.
+public struct ChatRequestRecord: Codable, Sendable, Equatable, Identifiable {
+    public enum Kind: String, Codable, Sendable { case approval, question }
+    public var requestID: String
+    public var kind: Kind
+    public var title: String
+    public var turnID: String?
+    public var itemID: String?
+    public var requestedSeq: UInt64
+    public var resolvedSeq: UInt64?
+    /// `accept`, `accept_for_session`, `decline`, `cancel` or `answered`; future words are retained.
+    /// A resolved record with no known word (for example an elided approval resolution) has the prefix "Resolved".
+    public var resolution: String?
+    public var answerSummary: String?
+    public var id: String { requestID }
+    public init(requestID: String, kind: Kind, title: String = "", turnID: String? = nil, itemID: String? = nil,
+                requestedSeq: UInt64 = 0, resolvedSeq: UInt64? = nil, resolution: String? = nil, answerSummary: String? = nil) {
+        self.requestID = requestID; self.kind = kind; self.title = title; self.turnID = turnID; self.itemID = itemID
+        self.requestedSeq = requestedSeq; self.resolvedSeq = resolvedSeq; self.resolution = resolution; self.answerSummary = answerSummary
+    }
+    private enum CodingKeys: String, CodingKey {
+        case requestID = "request_id", kind, title, turnID = "turn_id", itemID = "item_id"
+        case requestedSeq = "requested_seq", resolvedSeq = "resolved_seq", resolution, answerSummary = "answer_summary"
+    }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        requestID = try c.decode(String.self, forKey: .requestID); kind = try c.decode(Kind.self, forKey: .kind)
+        title = c.tolerant(String.self, forKey: .title) ?? ""; turnID = c.tolerant(String.self, forKey: .turnID)
+        itemID = c.tolerant(String.self, forKey: .itemID); requestedSeq = c.tolerant(UInt64.self, forKey: .requestedSeq) ?? 0
+        resolvedSeq = c.tolerant(UInt64.self, forKey: .resolvedSeq); resolution = c.tolerant(String.self, forKey: .resolution)
+        answerSummary = c.tolerant(String.self, forKey: .answerSummary)
     }
 }
 
@@ -204,14 +360,19 @@ public struct ChatFeed: Sendable, Equatable {
     public private(set) var dismissedNotices: Set<String> = []
     public private(set) var before: UInt64 = 0
     public private(set) var hasOlder = false
+    /// The oldest loaded turn is incomplete because its snapshot hit the relay byte limit.
+    /// Hydrating individual items cannot complete that boundary; prepending history can.
+    public private(set) var provisional = false
     private var orders: [String: UInt64] = [:]
     private var hidden = ChatTranscript()
-    // Only edits to unloaded rows are retained. History applies them to its full base,
+    // Edits to unloaded rows and request resolutions retain their original sequence. History applies them to its frozen base,
     // never to the live controls; replaying a page therefore cannot resolve a new request.
-    private var deferred: [ChatEvent] = []
+    private var deferred: [ChatEnvelope] = []
     private var deferredBytes = 0
     public private(set) var degradedReplay = false
     private var recoveryThrough: UInt64 = 0
+    private var recoveryRequests: [ChatRequestRecord] = []
+    private var recoveryRequestTurnID: String?
 
     public init() {}
 
@@ -219,14 +380,18 @@ public struct ChatFeed: Sendable, Equatable {
         self = ChatFeed()
         next = snapshot.next; loaded = true; historyCursor = snapshot.cursor; itemArrivals = snapshot.items.count
         before = snapshot.before; hasOlder = snapshot.more; dismissedNotices = Set(snapshot.dismissedNotices)
+        provisional = snapshot.provisional
         for event in snapshot.controls { transcript.apply(event) }
+        transcript.mergeTurnTiming(snapshot.turnTiming, preferIncoming: true)
         for row in snapshot.items { orders[row.item.id] = row.order }
         transcript.mergeHistory(snapshot.items, orders: orders)
+        transcript.installRequests(snapshot.requests ?? transcript.requests, through: snapshot.next)
     }
 
     public mutating func beginDegradedReplay() {
         let controls = transcript.controlsOnly(), checkpoint = next, arrivals = itemArrivals, dismissed = dismissedNotices
         self = ChatFeed(); transcript = controls; recoveryThrough = checkpoint; dismissedNotices = dismissed
+        recoveryRequests = controls.requests
         itemArrivals = arrivals; degradedReplay = true
     }
 
@@ -237,27 +402,47 @@ public struct ChatFeed: Sendable, Equatable {
         guard page.cursor == historyCursor else { return }
         for row in page.items { orders[row.item.id] = row.order }
         var base = ChatTranscript()
-        for row in page.items { base.apply(.itemCompleted(row.item)) }
-        for event in deferred { base.apply(event) }
+        base.mergeTurnTiming(page.turnTiming)
+        for row in page.items { base.apply(.itemCompleted(row.item), seq: row.order) }
+        base.installRequests(page.requests ?? [], through: page.next)
+        for envelope in deferred { if let event = envelope.event { base.apply(event, seq: envelope.seq) } }
         for item in base.items where !hasItem(item.id) { hidden.apply(.itemCompleted(item)) }
+        hidden.mergeRequestHistory(base.requests)
+        hidden.mergeTurnTiming(base.turnTiming)
     }
 
     public mutating func prepend(_ page: ChatSnapshotReply, requestedBefore: UInt64) {
         guard page.cursor == historyCursor, requestedBefore == before, page.before < before || !page.more else { return }
         var historical = ChatTranscript()
-        for row in page.items { orders[row.item.id] = row.order; historical.apply(.itemCompleted(row.item)) }
-        for event in deferred { historical.apply(event) }
+        historical.mergeTurnTiming(page.turnTiming)
+        for row in page.items { orders[row.item.id] = row.order; historical.apply(.itemCompleted(row.item), seq: row.order) }
+        historical.installRequests(page.requests ?? [], through: page.next)
+        for envelope in deferred { if let event = envelope.event { historical.apply(event, seq: envelope.seq) } }
         let rows = historical.items.map { ChatSnapshotRow(order: orders[$0.id] ?? 0, item: hidden.item($0.id) ?? $0) }
         transcript.mergeHistory(rows, orders: orders)
+        transcript.mergeRequestHistory(historical.requests)
+        transcript.mergeTurnTiming(historical.turnTiming)
         before = page.before; hasOlder = page.more
-        deferred.removeAll { event in
+        // A provisional newest edge joins the rows already held. An oldest edge
+        // remains partial whenever a represented turn started before the cursor,
+        // even if a legacy/no-turn item precedes that turn on the page.
+        let clippedKnownTurn = page.items.contains { row in
+            row.item.turnID.flatMap { page.turnStarts[$0] }.map { $0 < page.before } ?? false
+        }
+        let legacyBoundary = page.items.first.map { row in
+            guard let turn = row.item.turnID else { return false }
+            return page.turnStarts[turn] == nil && page.before == row.order
+        } ?? true
+        provisional = page.provisional && page.more && (clippedKnownTurn || legacyBoundary)
+        deferred.removeAll { envelope in
+            guard let event = envelope.event else { return true }
             switch event {
             case .itemDelta(let id, _): return transcript.item(id) != nil
             case .itemStarted(let item), .itemCompleted(let item): return transcript.item(item.id) != nil
             default: return !hasOlder
             }
         }
-        deferredBytes = deferred.reduce(0) { $0 + ((try? JSONEncoder().encode($1).count) ?? 0) }
+        deferredBytes = deferred.reduce(0) { $0 + ($1.event.flatMap { try? JSONEncoder().encode($0).count } ?? 0) }
     }
 
     private mutating func restart() {
@@ -292,13 +477,17 @@ public struct ChatFeed: Sendable, Equatable {
         for envelope in reply.events where envelope.seq > next {
             if let event = envelope.event?.resolved(seq: envelope.seq) {
                 let protectedControls = envelope.seq <= recoveryThrough ? transcript.controlsOnly() : nil
+                if protectedControls != nil, case .turnStarted(let id, _) = event { recoveryRequestTurnID = id }
                 if historyCursor != nil {
                     switch event {
                     case .itemStarted(let item), .itemCompleted(let item):
                         if orders[item.id] == nil { orders[item.id] = envelope.seq }
                     case .itemDelta(let id, _):
-                        if !hasItem(id) { deferred.append(event); deferredBytes += (try? JSONEncoder().encode(event).count) ?? 0 }
-                    case .turnCompleted: if hasOlder { deferred.append(event); deferredBytes += (try? JSONEncoder().encode(event).count) ?? 0 }
+                        if !hasItem(id) { deferred.append(envelope); deferredBytes += (try? JSONEncoder().encode(event).count) ?? 0 }
+                    case .turnCompleted, .approvalResolved, .questionResolved:
+                        if hasOlder { deferred.append(envelope); deferredBytes += (try? JSONEncoder().encode(event).count) ?? 0 }
+                    case .elided(let elided) where elided.isResolution:
+                        if hasOlder { deferred.append(envelope); deferredBytes += (try? JSONEncoder().encode(event).count) ?? 0 }
                     default: break
                     }
                 }
@@ -306,15 +495,21 @@ public struct ChatFeed: Sendable, Equatable {
                 case .itemStarted(let item), .itemCompleted(let item):
                     // A provider notice is the banner row's, not a row of the transcript: it is not news there.
                     if !hasItem(item.id), envelope.seq > recoveryThrough, ChatNotices.isTranscriptRow(item) { itemArrivals += 1 }
-                    if hidden.item(item.id) != nil && transcript.item(item.id) == nil { hidden.apply(event) }
-                    else { transcript.apply(event) }
+                    if hidden.item(item.id) != nil && transcript.item(item.id) == nil { hidden.apply(event, seq: envelope.seq) }
+                    else { transcript.apply(event, seq: envelope.seq) }
                 case .itemDelta(let id, _):
-                    if hidden.item(id) != nil && transcript.item(id) == nil { hidden.apply(event) }
-                    else { transcript.apply(event) }
+                    if hidden.item(id) != nil && transcript.item(id) == nil { hidden.apply(event, seq: envelope.seq) }
+                    else { transcript.apply(event, seq: envelope.seq) }
                 default:
-                    hidden.apply(event); transcript.apply(event)
+                    hidden.apply(event, seq: envelope.seq)
+                    if protectedControls != nil { transcript.applyRecovering(event, seq: envelope.seq, requestTurnID: recoveryRequestTurnID) }
+                    else { transcript.apply(event, seq: envelope.seq) }
                 }
-                if let protectedControls { transcript.restoreControls(protectedControls) }
+                if let protectedControls {
+                    transcript.restoreControls(protectedControls)
+                    transcript.restoreRequests(recoveryRequests)
+                    if case .turnCompleted(let id, _, _) = event, id == recoveryRequestTurnID { recoveryRequestTurnID = nil }
+                }
                 applied += 1
             } else { skipped += 1 }
             next = envelope.seq

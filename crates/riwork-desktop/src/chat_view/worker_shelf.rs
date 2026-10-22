@@ -428,16 +428,23 @@ impl ChatView {
                             })
                             .test_support(),
                     );
-                let mut actions = div().flex().items_center().flex_wrap().gap(ui_text::space(6.0))
-                    .child(widgets::button(SharedString::from(format!("shelf-reveal:{}", worker.id)),
-                        "In chat", None, look).on_click(cx.listener(move |view, _, _, cx| {
-                            if let Some(row) = view.visible.iter().position(|row|
-                                matches!(row, display::Row::Item(ix) | display::Row::Details(ix) if *ix == at)) {
-                                view.list.pause_following_tail();
-                                view.list.scroll_to_reveal_item(row);
-                                cx.notify();
-                            }
-                        })));
+                let mut actions = div()
+                    .flex()
+                    .items_center()
+                    .flex_wrap()
+                    .gap(ui_text::space(6.0))
+                    .child(
+                        widgets::button(
+                            SharedString::from(format!("shelf-reveal:{}", worker.id)),
+                            "In chat",
+                            None,
+                            look,
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            let item_id = view.model.transcript.items[at].id.clone();
+                            view.reveal_projected_item(&item_id, cx);
+                        })),
+                    );
                 if let Some(session) = &worker.session {
                     let marker = workers::of(&self.model.transcript.items[at]).unwrap();
                     let live = self.workers.live.get(session);

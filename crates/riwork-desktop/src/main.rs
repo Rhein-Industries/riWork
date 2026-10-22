@@ -2063,6 +2063,22 @@ impl Workspace {
             }
             FileExplorerEvent::Selected => workspace.reveal_preview(false, cx),
             FileExplorerEvent::Revealed => workspace.reveal_preview(true, cx),
+            FileExplorerEvent::ClosePreview => {
+                let view = cx.weak_entity();
+                let entity_id = cx.entity_id();
+                cx.defer(move |app| {
+                    app.with_window(entity_id, |window, app| {
+                        let _ = view.update(app, |workspace, cx| {
+                            if let Some(explorer) = &workspace.file_explorer {
+                                explorer.update(cx, |explorer, cx| explorer.clear_chat_preview(cx));
+                            }
+                            if let Some((pane, tab, _)) = workspace.panel_tab(PanelKind::Preview) {
+                                workspace.remove_tab(pane, tab, window, cx);
+                            }
+                        });
+                    });
+                });
+            }
             FileExplorerEvent::NotListed(path) => workspace.open_unlisted(path.clone(), cx),
             FileExplorerEvent::RevealFailed(message) => {
                 workspace.notice = Some(message.clone());
@@ -2347,11 +2363,12 @@ impl Workspace {
                 let activity = tracker.sample_states(&shells, activity::unix_now());
                 let models = tracker.reported_models();
                 for completion in tracker.take_completions() {
-                    if let Err(error) = notifications::record_completion(
+                    if let Err(error) = notifications::record_completion_outcome(
                         &home,
                         &completion.shell_id,
                         &completion.event_id,
                         HarnessKind::Codex,
+                        completion.outcome,
                     ) {
                         eprintln!("riwork notifications: {error}");
                     }
@@ -8326,6 +8343,19 @@ impl Workspace {
             cx.notify();
             return;
         };
+        if info.orchestrator != Some(OrchestratorScope::Global) {
+            let sequence = view.read(cx).file_preview_sequence(&target);
+            let scope = view.read(cx).image_scope().clone();
+            self.selected_worktree_id = info.worktree_id.clone();
+            self.sync_file_explorer(window, cx);
+            if let Some(explorer) = &self.file_explorer {
+                explorer.update(cx, |explorer, cx| {
+                    explorer.show_chat_sequence(sequence, scope, cx)
+                });
+                self.open_preview(window, cx);
+            }
+            return;
+        }
         let project_id = project.to_owned();
         let worktree = info.worktree_id.clone();
         let work = cx
@@ -8534,6 +8564,38 @@ impl Workspace {
                         Some("That terminal is no longer open. Choose a terminal again.".into());
                 }
                 cx.notify();
+            }
+            ChatViewEvent::OpenPreview { sequence } => {
+                if let Some(info) = view.read(cx).info().cloned() {
+                    if info.orchestrator != Some(OrchestratorScope::Global) {
+                        if info.project_id.as_deref() != Some(self.project_id.as_str()) {
+                            self.notice =
+                                Some("This chat's project is not open in this window.".into());
+                            cx.notify();
+                            return;
+                        }
+                        if file_explorer_root(
+                            &self.state,
+                            &self.project_id,
+                            info.worktree_id.as_deref(),
+                        )
+                        .is_none()
+                        {
+                            self.notice = Some("This chat's worktree is unavailable.".into());
+                            cx.notify();
+                            return;
+                        }
+                        self.selected_worktree_id = info.worktree_id.clone();
+                        self.sync_file_explorer(window, cx);
+                    }
+                    let scope = view.read(cx).image_scope().clone();
+                    if let Some(explorer) = &self.file_explorer {
+                        explorer.update(cx, |explorer, cx| {
+                            explorer.show_chat_sequence(sequence.clone(), scope, cx)
+                        });
+                        self.open_preview(window, cx);
+                    }
+                }
             }
             ChatViewEvent::ShowUsage => {
                 self.open_panel(PanelKind::Usage, self.active_pane, window, cx)
@@ -13535,6 +13597,29 @@ fn exit_startup(error: String) -> ! {
     std::process::exit(2);
 }
 
+/// The real application zoom keymap, shared with native preview routing tests.
+fn text_and_preview_zoom_bindings() -> [KeyBinding; 10] {
+    // Terminals and the file viewer own these gestures; only other surfaces
+    // change the global interface text size. The first binding is the menu hint.
+    let interface_text = Some("!Terminal && !FilePreview");
+    [
+        KeyBinding::new("cmd-=", BiggerText, interface_text),
+        KeyBinding::new("cmd-+", BiggerText, interface_text),
+        KeyBinding::new("cmd-shift-=", BiggerText, interface_text),
+        KeyBinding::new("cmd--", SmallerText, interface_text),
+        KeyBinding::new("cmd-0", ActualSizeText, interface_text),
+        KeyBinding::new("cmd-=", file_explorer::PreviewZoomIn, Some("FilePreview")),
+        KeyBinding::new("cmd-+", file_explorer::PreviewZoomIn, Some("FilePreview")),
+        KeyBinding::new(
+            "cmd-shift-=",
+            file_explorer::PreviewZoomIn,
+            Some("FilePreview"),
+        ),
+        KeyBinding::new("cmd--", file_explorer::PreviewZoomOut, Some("FilePreview")),
+        KeyBinding::new("cmd-0", file_explorer::PreviewZoomFit, Some("FilePreview")),
+    ]
+}
+
 fn main() {
     #[cfg(feature = "app-preview-fixture")]
     if app_preview::render_fixture_if_requested() {
@@ -13665,18 +13750,7 @@ fn main() {
         cx.on_action(|_: &BiggerText, cx| ui_text::change(ui_text::SizeChange::Bigger, cx));
         cx.on_action(|_: &SmallerText, cx| ui_text::change(ui_text::SizeChange::Smaller, cx));
         cx.on_action(|_: &ActualSizeText, cx| ui_text::change(ui_text::SizeChange::Reset, cx));
-        // RiWork's text size, except inside a terminal: there GPUI finds no binding,
-        // so the key reaches Ghostty for its own font zoom (see `search_key_down`).
-        // `!Terminal` fails when any focused ancestor is gpui-libghostty's
-        // `key_context("Terminal")`. The first binding is the one the menu shows.
-        let outside_terminals = Some("!Terminal");
-        cx.bind_keys([
-            KeyBinding::new("cmd-=", BiggerText, outside_terminals),
-            KeyBinding::new("cmd-+", BiggerText, outside_terminals),
-            KeyBinding::new("cmd-shift-=", BiggerText, outside_terminals),
-            KeyBinding::new("cmd--", SmallerText, outside_terminals),
-            KeyBinding::new("cmd-0", ActualSizeText, outside_terminals),
-        ]);
+        cx.bind_keys(text_and_preview_zoom_bindings());
         // ⌘V in a terminal: RiWork pastes copied files and pictures (terminal_drop) and leaves
         // text to Ghostty, which gets the key when the action propagates.
         cx.bind_keys([KeyBinding::new(
@@ -13740,6 +13814,9 @@ fn main() {
             KeyBinding::new("cmd-g", chat_view::FindNext, Some("ChatView > Input")),
             KeyBinding::new("cmd-shift-g", chat_view::FindPrevious, Some("ChatView")),
             KeyBinding::new("cmd-shift-g", chat_view::FindPrevious, Some("ChatView > Input")),
+            KeyBinding::new("cmd-shift-v", chat_view::ToggleTranscriptMode, Some("ChatView")),
+            KeyBinding::new("cmd-alt-right", chat_view::ExpandTranscript, Some("ChatView")),
+            KeyBinding::new("cmd-alt-left", chat_view::CollapseTranscript, Some("ChatView")),
         ]);
         cx.set_menus([
             Menu::new("RiWork").items([
@@ -13760,6 +13837,10 @@ fn main() {
                 MenuItem::action("Sessions", OpenSessions),
                 MenuItem::action("Default Layout", ApplyDefaultLayout),
                 MenuItem::action("Gather Tabs into Main Pane", GatherTabs),
+                MenuItem::separator(),
+                MenuItem::action("Toggle Normal / Verbose", chat_view::ToggleTranscriptMode),
+                MenuItem::action("Expand All Activity", chat_view::ExpandTranscript),
+                MenuItem::action("Collapse All Activity", chat_view::CollapseTranscript),
                 MenuItem::separator(),
                 MenuItem::action("Bigger Text", BiggerText),
                 MenuItem::action("Smaller Text", SmallerText),

@@ -26,7 +26,6 @@ import RiWorkCore
         DictationController.shared.cancel()
         DictationController.shared.isAllowed = false
         DictationController.shared.makeEngine = { DictationController.defaultEngine() }
-        DictationController.shared.silenceAfterSpeech = DictationMachine.silenceAfterSpeech
         windows.forEach { $0.isHidden = true }
         windows = []
     }
@@ -67,7 +66,6 @@ import RiWorkCore
         let engine = HeldEngine()
         DictationController.shared.makeEngine = { engine }
         // Taking a picture is slow: the pause after speech must not end the dictation meanwhile.
-        DictationController.shared.silenceAfterSpeech = .seconds(120)
         DictationController.shared.toggle(for: owner, live: live, deliver: { _ in })
         await settle()
         engine.onEvent?(.level(0.6))

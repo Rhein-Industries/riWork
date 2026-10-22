@@ -69,6 +69,8 @@ public enum ChatBanner: Sendable, Equatable {
 /// The keys of a hardware keyboard that the composer reads.
 public enum ChatKey: Sendable, Equatable, CaseIterable {
     case `return`, shiftReturn, escape
+    /// ⌘⏎ : send, whatever else ⏎ would do now (put a suggestion in, answer a request); never a line break.
+    case commandReturn
     /// ⌘⌫ : Escape for a keyboard without one (the Clicks keyboard has none), where Escape means Deny.
     case commandDelete
     /// ⌘. : interrupt.
@@ -85,6 +87,7 @@ public enum ChatKeyBindings {
         switch key {
         case .return: KeyChord(keyCode: HIDKey.returnKey)
         case .shiftReturn: KeyChord(keyCode: HIDKey.returnKey, modifiers: .shift)
+        case .commandReturn: KeyChord(keyCode: HIDKey.returnKey, modifiers: .command)
         case .escape: KeyChord(keyCode: HIDKey.escape)
         case .commandDelete: KeyChord(keyCode: HIDKey.backspace, modifiers: .command)
         case .commandPeriod: KeyChord(keyCode: period, modifiers: .command)
@@ -130,16 +133,18 @@ public enum ChatKeyAction: Sendable, Equatable {
 /// What a key does. ⏎ sends and ⇧⏎ makes a new line; with a request waiting and nothing typed ⏎ allows it, ⇧⏎ allows it for the session
 /// and ⎋ (or ⌘⌫) denies it; ⌘. interrupts. A decision the provider does not offer is never made on a key: ⏎ does not choose Deny for you.
 /// While the composer's `/` or `@` list is open, ⏎ and Tab put the highlighted row in the draft (⏎ never sends then), ↑ and ↓ move the
-/// highlight and ⎋ closes the list; ⇧⏎ and ⌘. are as ever. ↑, ↓ and Tab mean nothing to the composer otherwise.
+/// highlight and ⎋ closes the list; ⇧⏎ and ⌘. are as ever. ↑, ↓ and Tab mean nothing to the composer otherwise. ⌘⏎ sends what is
+/// typed in every case, the list open or a request waiting, and does nothing with nothing typed.
 public enum ChatKeyRouter {
     public static func action(for key: ChatKey, in context: ChatKeyContext) -> ChatKeyAction {
+        if key == .commandReturn { return !context.composerIsEmpty && context.canSend ? .send : .none }
         if context.suggesting && !context.answersApproval {
             switch key {
             case .return, .tab: return .acceptSuggestion
             case .up: return .moveSuggestion(.up)
             case .down: return .moveSuggestion(.down)
             case .escape: return .closeSuggestions
-            case .shiftReturn, .commandDelete, .commandPeriod: break
+            case .shiftReturn, .commandReturn, .commandDelete, .commandPeriod: break
             }
         }
         switch key {
@@ -155,7 +160,7 @@ public enum ChatKeyRouter {
             return approval.offers(.cancel) ? .decide(.cancel) : .none
         case .commandPeriod:
             return context.busy ? .interrupt : .none
-        case .up, .down, .tab:
+        case .commandReturn, .up, .down, .tab:
             return .none
         }
     }
@@ -392,6 +397,7 @@ extension ChatItemBody {
         case .compaction: "Context compacted"
         case .notice(_, let text, _, _, _, _): text
         case .elided: ChatElision(self)?.line ?? "Shown on your Mac"
+        case .unknown: "Activity on your Mac"
         }
     }
 }

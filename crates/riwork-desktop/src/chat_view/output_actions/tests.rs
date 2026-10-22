@@ -23,6 +23,8 @@ impl Drop for TempDir {
 
 fn item(id: &str, text: &str, status: ItemStatus) -> Item {
     Item {
+        started_at: None,
+        ended_at: None,
         id: id.into(),
         turn_id: Some("turn".into()),
         status,

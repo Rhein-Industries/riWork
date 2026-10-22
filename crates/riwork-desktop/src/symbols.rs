@@ -285,5 +285,12 @@ fn coverage(key: &Key) -> Option<Vec<u8>> {
         drawn.then_some(())
     })?;
     // A bitmap context's first row is the image's top.
-    Some(pixels.chunks_exact(4).map(|pixel| pixel[3]).collect())
+    Some(
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| pixel[3])
+            .collect(),
+    )
 }

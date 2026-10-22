@@ -83,14 +83,29 @@ public struct ChatSubagent: Codable, Sendable, Equatable {
         }
         return nil
     }
+    /// Resolve every card once per transcript change. A later child report may
+    /// update a card that appeared much earlier in the transcript.
+    public static func cards(in items: [ChatItem], provider: ChatProvider) -> [String: Self] {
+        let runs = items.compactMap { item in of(item, provider: provider).map { (item.id, $0) } }
+        guard provider == .codex else { return Dictionary(runs, uniquingKeysWith: { _, latest in latest }) }
+        var latest: [String: Child] = [:]
+        for (_, run) in runs { for child in run.children { latest[child.id] = child } }
+        return Dictionary(runs.map { id, run in (id, run.resolving(children: latest)) }, uniquingKeysWith: { _, latest in latest })
+    }
+
     public static func inTranscript(_ item: ChatItem, items: [ChatItem], provider: ChatProvider) -> Self? {
-        guard let run = of(item,provider:provider) else { return nil }
+        guard let run = of(item, provider: provider) else { return nil }
         guard provider == .codex, !run.children.isEmpty else { return run }
         var latest: [String: Child] = [:]
-        for source in items { for child in of(source,provider:provider)?.children ?? [] { latest[child.id] = child } }
-        let children = run.children.map { latest[$0.id] ?? $0 }
+        for source in items { for child in of(source, provider: provider)?.children ?? [] { latest[child.id] = child } }
+        return run.resolving(children: latest)
+    }
+
+    private func resolving(children latest: [String: Child]) -> Self {
+        guard !children.isEmpty else { return self }
+        let children = children.map { latest[$0.id] ?? $0 }
         let status: Status = children.contains { $0.status == .running } ? .running : children.contains { $0.status == .failed } ? .failed :
             children.allSatisfy { $0.status == .done } ? .done : children.allSatisfy { $0.status == .interrupted } ? .interrupted : .unknown
-        return Self(name:run.name,purpose:run.purpose,status:status,summary:run.summary,children:children)
+        return Self(name: name, purpose: purpose, status: status, summary: summary, children: children)
     }
 }

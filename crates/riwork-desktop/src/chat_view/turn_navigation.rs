@@ -39,11 +39,11 @@ impl Navigation {
         self.requested = None;
     }
 
-    fn refresh(&mut self, items: &[Item], visible: &[display::Row]) {
+    fn refresh(&mut self, items: &[Item], rows: &[display::ListRow], tree: &[display::Row]) {
         if self.indexed {
             return;
         }
-        self.turns = index(items, visible);
+        self.turns = index(items, rows, tree);
         self.page = self
             .page
             .min(self.turns.len().saturating_sub(1) / PAGE_SIZE);
@@ -60,9 +60,10 @@ struct Turn {
     row: usize,
 }
 
-/// Build in O(items + visible rows), grouping steering messages with their real
+/// Build in O(items + projected rows), grouping steering messages with their real
 /// turn. Legacy messages without a turn id get a stable prompt-item boundary.
-fn index(items: &[Item], visible: &[display::Row]) -> Vec<Turn> {
+/// `rows` are the virtual list's entries; `tree` is the projection they flatten.
+fn index(items: &[Item], rows: &[display::ListRow], tree: &[display::Row]) -> Vec<Turn> {
     let mut turns: Vec<Turn> = Vec::new();
     let mut by_key = HashMap::<String, usize>::new();
     let mut owners = vec![None; items.len()];
@@ -130,20 +131,43 @@ fn index(items: &[Item], visible: &[display::Row]) -> Vec<Turn> {
             _ => {}
         }
     }
-    for (row, entry) in visible.iter().enumerate() {
-        let (owner, prompt) = match entry {
-            display::Row::Item(at) | display::Row::Details(at) => {
-                let owner = owners.get(*at).copied().flatten();
-                (
-                    owner,
-                    owner.is_some_and(|owner| turns[owner].prompt == Some(*at)),
-                )
-            }
-            display::Row::Activity { turn_id, .. }
-            | display::Row::Artifacts { turn_id, .. }
-            | display::Row::Outcome(turn_id, _) => {
-                (by_key.get(&format!("turn:{turn_id}")).copied(), false)
-            }
+    let positions: HashMap<&str, usize> = items
+        .iter()
+        .enumerate()
+        .map(|(at, item)| (item.id.as_str(), at))
+        .collect();
+    // A list entry has no children; its projected row's first item names its turn.
+    fn anchors<'a>(rows: &'a [display::Row], out: &mut HashMap<&'a str, &'a str>) {
+        for row in rows {
+            out.insert(row.id.as_str(), display::anchor_item(row));
+            anchors(&row.children, out);
+            anchors(&row.comments, out);
+        }
+    }
+    let mut anchor = HashMap::new();
+    anchors(tree, &mut anchor);
+    let owner_of = |id: &str| {
+        positions
+            .get(id)
+            .and_then(|at| owners.get(*at).copied().flatten())
+    };
+    for (row, entry) in rows.iter().enumerate() {
+        let id = entry.row.id.as_str();
+        let (owner, prompt) = if let Some(&at) = positions.get(id) {
+            let owner = owners.get(at).copied().flatten();
+            (
+                owner,
+                owner.is_some_and(|owner| turns[owner].prompt == Some(at)),
+            )
+        } else {
+            // Activity, group and request rows: a turn's work, even while it is empty.
+            let owner = anchor.get(id).copied().and_then(owner_of).or_else(|| {
+                let turn = id.strip_prefix("activity:")?;
+                turn.strip_prefix("legacy:")
+                    .and_then(owner_of)
+                    .or_else(|| by_key.get(&format!("turn:{turn}")).copied())
+            });
+            (owner, false)
         };
         if let Some(owner) = owner {
             let turn = &mut turns[owner];
@@ -152,8 +176,8 @@ fn index(items: &[Item], visible: &[display::Row]) -> Vec<Turn> {
             }
         }
     }
-    // Entirely hidden entries have no honest jump target. A visible activity,
-    // artifact or outcome is a valid fallback when no prompt is available.
+    // Entirely hidden entries have no honest jump target. A visible activity
+    // row is a valid fallback when no prompt is available.
     turns.retain(|turn| turn.row != usize::MAX);
     turns.sort_by_key(|turn| turn.row);
     turns
@@ -222,7 +246,7 @@ fn previews(turn: &Turn, items: &[Item]) -> (String, String) {
 impl ChatView {
     fn refresh_turn_navigation(&mut self) {
         self.turn_navigation
-            .refresh(&self.model.transcript.items, &self.visible);
+            .refresh(&self.model.transcript.items, &self.list_rows, &self.visible);
         if self.list.is_following_tail() || self.list.is_scrollbar_dragging() {
             self.turn_navigation.manual_scroll();
         } else if let Some(key) = &self.turn_navigation.requested {
@@ -575,7 +599,22 @@ mod tests {
             } else {
                 ItemBody::AgentMessage { text: text.into() }
             },
+            started_at: None,
+            ended_at: None,
         }
+    }
+
+    fn row(id: &str, children: Vec<display::Row>) -> display::Row {
+        display::Row {
+            id: id.into(),
+            children,
+            ..Default::default()
+        }
+    }
+
+    /// Index projected rows as the virtual list shows them: closed rows hide their children.
+    fn index_tree(items: &[Item], tree: &[display::Row]) -> Vec<Turn> {
+        index(items, &display::list_rows(tree), tree)
     }
 
     #[test]
@@ -591,6 +630,8 @@ mod tests {
                 body: ItemBody::Reasoning {
                     text: "hidden".into(),
                 },
+                started_at: None,
+                ended_at: None,
             },
             message("steer", Some("t1"), true, "Also check the edge"),
             message("a1", Some("t1"), false, "First answer"),
@@ -598,17 +639,14 @@ mod tests {
             message("a2", Some("t2"), false, "Streaming answer"),
         ];
         let rows = vec![
-            display::Row::Item(0),
-            display::Row::Activity {
-                turn_id: "t1".into(),
-                items: vec![1],
-            },
-            display::Row::Item(2),
-            display::Row::Item(3),
-            display::Row::Item(4),
-            display::Row::Item(5),
+            row("q1", Vec::new()),
+            row("activity:t1", vec![row("tool", Vec::new())]),
+            row("steer", Vec::new()),
+            row("a1", Vec::new()),
+            row("q2", Vec::new()),
+            row("a2", Vec::new()),
         ];
-        let turns = index(&transcript.items, &rows);
+        let turns = index_tree(&transcript.items, &rows);
         assert_eq!(turns.len(), 2);
         assert_eq!((turns[0].row, turns[1].row), (0, 4));
         assert_eq!(turns[0].followups, 1);
@@ -618,29 +656,34 @@ mod tests {
         // The second turn moves when a detail is collapsed. Recompute the row,
         // never reuse its raw item position (4).
         let compact = vec![
-            display::Row::Item(0),
-            display::Row::Item(3),
-            display::Row::Item(4),
-            display::Row::Item(5),
+            row("q1", Vec::new()),
+            row("a1", Vec::new()),
+            row("q2", Vec::new()),
+            row("a2", Vec::new()),
         ];
-        assert_eq!(index(&transcript.items, &compact)[1].row, 2);
+        assert_eq!(index_tree(&transcript.items, &compact)[1].row, 2);
+        // Opening the activity lists its call too; the second turn moves down again.
+        let mut open = rows.clone();
+        open[1].open = true;
+        assert_eq!(index_tree(&transcript.items, &open)[1].row, 5);
     }
 
     #[test]
-    fn turn_index_handles_legacy_empty_hidden_and_outcome_only_turns() {
-        assert!(index(&[], &[]).is_empty());
+    fn turn_index_handles_legacy_empty_hidden_and_activity_only_turns() {
+        assert!(index(&[], &[], &[]).is_empty());
         let items = vec![
             message("legacy-q", None, true, "old prompt"),
             message("legacy-a", None, false, "old answer"),
             message("hidden", Some("hidden"), false, "not visible"),
             message("interrupted", Some("stopped"), false, ""),
         ];
+        // An interrupted turn without answer text shows only its (empty) activity row.
         let rows = vec![
-            display::Row::Item(0),
-            display::Row::Item(1),
-            display::Row::Outcome("stopped".into(), TurnOutcome::Interrupted),
+            row("legacy-q", Vec::new()),
+            row("legacy-a", Vec::new()),
+            row("activity:stopped", Vec::new()),
         ];
-        let turns = index(&items, &rows);
+        let turns = index_tree(&items, &rows);
         assert_eq!(turns.len(), 2);
         assert_eq!(turns[0].answer, Some(1));
         assert_eq!(turns[1].row, 2);
@@ -653,7 +696,10 @@ mod tests {
             message("prompt", Some("turn"), true, "   🦀\n two\t words "),
             message("answer", Some("turn"), false, "before"),
         ];
-        let turns = index(&items, &[display::Row::Item(0), display::Row::Item(1)]);
+        let turns = index_tree(
+            &items,
+            &[row("prompt", Vec::new()), row("answer", Vec::new())],
+        );
         assert_eq!(previews(&turns[0], &items).0, "🦀 two words");
         if let ItemBody::AgentMessage { text } = &mut items[1].body {
             *text = "after 🦀".into();
@@ -871,7 +917,7 @@ mod tests {
                     },
                     cx,
                 );
-                // Four fixture rows: know the total height before asserting
+                // A few fixture rows: know the total height before asserting
                 // ListState's public end condition.
                 view.list.clone().measure_all();
                 view.jump_to_turn("turn:t1", cx);
@@ -879,7 +925,11 @@ mod tests {
             window.render_frame(cx);
             assert_eq!(view.read(cx).list.is_scrolled_to_end(), Some(true));
             assert_eq!(view.read(cx).current_turn(), Some(1));
-            assert!(view.read(cx).list.logical_scroll_top().item_ix < 2);
+            // The top stays above the second turn's prompt row.
+            assert!(
+                view.read(cx).list.logical_scroll_top().item_ix
+                    < view.read(cx).turn_navigation.turns[1].row
+            );
             assert!(!view.read(cx).list.is_following_tail());
             assert!(window.find("chat-latest").visible());
             window.click("chat-latest", cx);

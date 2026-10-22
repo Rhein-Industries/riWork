@@ -625,6 +625,7 @@ impl ChatView {
             .handle()
             .set_offset(point(px(0.), px(0.)));
         self.transcript_selection.changed();
+        self.invalidate_leaf_owner(id);
         self.list.remeasure();
         cx.notify();
     }
@@ -822,6 +823,8 @@ mod tests {
 
     fn command(id: &str, output: &str) -> Item {
         Item {
+            started_at: None,
+            ended_at: None,
             id: id.into(),
             turn_id: Some("turn".into()),
             status: ItemStatus::InProgress,
@@ -959,7 +962,8 @@ mod tests {
                 view.model.link = super::super::Link::Live;
                 view.display_mode = super::super::DisplayMode::Verbose;
                 view.model.transcript.items = vec![command("build", &raw)];
-                view.open.insert("build".into());
+                // The call row opens through its projected disclosure.
+                view.disclosure.overrides.insert("build".into(), true);
                 view.refresh_projection(cx);
                 view.list.pause_following_tail();
                 view.list.scroll_to(gpui::ListOffset {
@@ -1022,7 +1026,7 @@ mod tests {
             assert_eq!(
                 view.read(cx)
                     .transcript_selection
-                    .with_source(|source| source
+                    .with_selection_source(|source| source
                         .iter()
                         .find(|leaf| leaf.key == "output:build")
                         .unwrap()

@@ -187,3 +187,293 @@ fn a_new_chat_takes_the_setting_and_two_chats_keep_different_modes(cx: &mut Test
     assert_eq!(mode(cx, &tabs[2]), Verbose);
     let _ = std::fs::remove_dir_all(home);
 }
+
+pub(super) fn tool_transcript() -> crate::chat::model::Transcript {
+    use crate::chat::model::{Item, ItemStatus, MessagePhase, Presentation, Transcript};
+    let make = |id: &str, body| Item {
+        id: id.into(),
+        turn_id: Some("turn".into()),
+        status: ItemStatus::Completed,
+        presentation: Presentation::default(),
+        body,
+        started_at: None,
+        ended_at: None,
+    };
+    let mut transcript = Transcript::default();
+    transcript.items = vec![
+        make(
+            "user",
+            ItemBody::UserMessage {
+                text: "Inspect the project".into(),
+            },
+        ),
+        make(
+            "read",
+            ItemBody::Command {
+                command: "cat src/main.rs".into(),
+                cwd: None,
+                output: "fn main() {}".into(),
+                exit_code: Some(0),
+            },
+        ),
+        make(
+            "search",
+            ItemBody::Command {
+                command: "rg main src".into(),
+                cwd: None,
+                output: "src/main.rs:1:fn main() {}".into(),
+                exit_code: Some(0),
+            },
+        ),
+        make(
+            "build",
+            ItemBody::Command {
+                command: "cargo build".into(),
+                cwd: None,
+                output: "error: fixture".into(),
+                exit_code: Some(1),
+            },
+        ),
+        make(
+            "answer",
+            ItemBody::AgentMessage {
+                text: "The build needs a fix.".into(),
+            },
+        ),
+    ];
+    transcript.items[3].status = ItemStatus::Failed;
+    transcript.items[4].presentation.phase = Some(MessagePhase::Final);
+    transcript
+}
+
+fn install_tools(cx: &mut TestAppContext, view: &Entity<ChatView>) {
+    view.update(cx, |view, cx| {
+        view.model.transcript = tool_transcript();
+        view.model.link = Link::Live;
+        view.refresh_projection(cx);
+        cx.notify();
+    });
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn shared_projection_starts_closed_and_manual_children_survive_activity_reopening(
+    cx: &mut TestAppContext,
+) {
+    let home = home();
+    start(cx, &home);
+    let id = chat_id();
+    let (_, _, tabs) = mount(cx, &[&id]);
+    let view = &tabs[0];
+    install_tools(cx, view);
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.visible.iter().map(|row| row.kind).collect::<Vec<_>>(),
+            [
+                display::RowKind::User,
+                display::RowKind::Activity,
+                display::RowKind::Final
+            ]
+        );
+        assert!(view.open.is_empty(), "failed rows never open themselves");
+        view.list.scroll_to(gpui::ListOffset {
+            item_ix: 1,
+            offset_in_item: px(3.),
+        });
+        let anchor = view.list.logical_scroll_top();
+        view.toggle_projected("activity:turn", cx);
+        assert!(!view.list.is_following_tail());
+        assert_eq!(view.list.logical_scroll_top().item_ix, anchor.item_ix);
+        assert_eq!(
+            view.list.logical_scroll_top().offset_in_item,
+            anchor.offset_in_item
+        );
+        assert!(!display::find(&view.visible, "g:turn:read").unwrap().open);
+        view.toggle_projected("g:turn:read", cx);
+        view.toggle_projected("read", cx);
+        view.toggle_projected("activity:turn", cx);
+        assert!(!view.visible[1].open);
+        view.toggle_projected("activity:turn", cx);
+        assert!(display::find(&view.visible, "read").unwrap().open);
+        // Streaming reprojects without replacing a deliberate disclosure.
+        view.model.transcript.items[1].status = crate::chat::model::ItemStatus::InProgress;
+        view.refresh_projection(cx);
+        assert!(display::find(&view.visible, "read").unwrap().open);
+        assert!(!display::find(&view.visible, "build").unwrap().open);
+    });
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[gpui::test]
+fn mode_and_bulk_resets_obey_the_shared_normal_and_verbose_scopes(cx: &mut TestAppContext) {
+    let home = home();
+    start(cx, &home);
+    let id = chat_id();
+    let (_, _, tabs) = mount(cx, &[&id]);
+    let view = &tabs[0];
+    install_tools(cx, view);
+    view.update(cx, |view, cx| {
+        view.toggle_projected("activity:turn", cx);
+        view.toggle_projected("build", cx);
+        view.expand_transcript(true, cx);
+        assert!(view.visible[1].open);
+        assert!(!display::find(&view.visible, "build").unwrap().open);
+        assert_eq!(view.disclosure.overrides.get("activity:turn"), Some(&true));
+        view.apply_display_mode(Verbose, cx);
+        assert!(view.open.is_empty());
+        view.expand_transcript(true, cx);
+        assert!(display::find(&view.visible, "read").unwrap().open);
+        assert!(display::find(&view.visible, "build").unwrap().open);
+        view.toggle_projected("build", cx);
+        view.refresh_projection(cx);
+        assert!(!display::find(&view.visible, "build").unwrap().open);
+        view.expand_transcript(false, cx);
+        assert!(view.open.is_empty());
+        view.apply_display_mode(Normal, cx);
+        assert!(!view.visible[1].open);
+        assert!(view.disclosure.overrides.is_empty());
+        assert!(view.disclosure.bulk.is_none());
+    });
+    let _ = std::fs::remove_dir_all(home);
+}
+
+/// Exercise native layout, selection export and token updates together. A
+/// virtual top-level group alone does not protect us from 2,200 eager children.
+#[gpui::test]
+fn large_disclosed_turn_virtualizes_children_and_streams_within_budget(cx: &mut TestAppContext) {
+    use crate::chat::{
+        model::{ChatEvent, Delta, Item, ItemStatus, Presentation},
+        wire::Envelope,
+    };
+    let home = home();
+    start(cx, &home);
+    let id = chat_id();
+    use gpui_kit::test::TestWindowExt;
+    let (handle, _, tabs) = mount(cx, &[&id]);
+    let view = &tabs[0];
+    let mut bulk_ms = [0.; 3];
+    view.update(cx, |view, cx| {
+        let events: Vec<_> = (0..2200)
+            .map(|n| Envelope {
+                chat_id: id.clone(),
+                seq: n + 1,
+                event: ChatEvent::ItemStarted {
+                    item: Item {
+                        id: format!("perf-{n}"),
+                        turn_id: Some("perf".into()),
+                        status: if n == 2199 {
+                            ItemStatus::InProgress
+                        } else {
+                            ItemStatus::Completed
+                        },
+                        presentation: Presentation::default(),
+                        started_at: None,
+                        ended_at: None,
+                        body: ItemBody::Command {
+                            command: "cat src/main.rs".into(),
+                            cwd: None,
+                            output: "bounded output line\n".repeat(3500),
+                            exit_code: Some(0),
+                        },
+                    },
+                },
+            })
+            .collect();
+        let applied = view.model.apply(&events);
+        view.sync_list(&applied, cx);
+        view.apply_display_mode(Verbose, cx);
+        for duration in &mut bulk_ms {
+            let toggle = Instant::now();
+            view.expand_transcript(true, cx);
+            *duration = toggle.elapsed().as_secs_f64() * 1000.;
+            view.expand_transcript(false, cx);
+        }
+        view.expand_transcript(true, cx);
+        assert!(view.items_in_list >= 2200);
+        view.list.scroll_to(gpui::ListOffset {
+            item_ix: 1000,
+            offset_in_item: px(0.),
+        });
+        view.rendered_rows.set(0);
+        cx.notify();
+    });
+    let mut frames_ms = [0.; 3];
+    for duration in &mut frames_ms {
+        view.update(cx, |view, _| view.rendered_rows.set(0));
+        let frame = Instant::now();
+        // TestWindowExt refreshes and draws the native frame on every call.
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        *duration = frame.elapsed().as_secs_f64() * 1000.;
+        view.read_with(cx, |view, _| {
+            assert!(
+                view.rendered_rows.get() > 0 && view.rendered_rows.get() < 100,
+                "offscreen children rendered: {}",
+                view.rendered_rows.get()
+            );
+        });
+    }
+    frames_ms.sort_by(f64::total_cmp);
+    let frame_ms = frames_ms[1];
+    assert!(
+        frame_ms < 25.,
+        "median large-fixture frame {frame_ms:.1} ms exceeded 25 ms"
+    );
+    bulk_ms.sort_by(f64::total_cmp);
+    let expand_ms = bulk_ms[1];
+    assert!(
+        expand_ms < 60.,
+        "median Expand all {expand_ms:.1} ms exceeded 60 ms"
+    );
+    let mut toggles_ms = [0.; 3];
+    view.update(cx, |view, cx| {
+        let builds = view.transcript_selection.source_builds.get();
+        assert!(builds < 100, "offscreen selection bodies built: {builds}");
+        for duration in &mut toggles_ms {
+            let toggles = Instant::now();
+            for _ in 0..4 {
+                view.toggle_projected("g:perf:perf-0", cx);
+                view.refresh_selection_document(Look::of(cx), cx);
+            }
+            *duration = toggles.elapsed().as_secs_f64() * 1000. / 4.;
+        }
+        assert!(
+            view.transcript_selection.source_builds.get() - builds <= 12,
+            "disclosure rebuilt unchanged historical selection bodies"
+        );
+    });
+    toggles_ms.sort_by(f64::total_cmp);
+    let toggle_ms = toggles_ms[1];
+    assert!(
+        toggle_ms < 60.,
+        "median row toggle {toggle_ms:.1} ms exceeded 60 ms"
+    );
+    let started = Instant::now();
+    view.update(cx, |view, cx| {
+        let runs = view.projection_runs;
+        for seq in 2201..2321 {
+            let applied = view.model.apply(&[Envelope {
+                chat_id: id.clone(),
+                seq,
+                event: ChatEvent::ItemDelta {
+                    item_id: "perf-2199".into(),
+                    delta: Delta::Output("token ".into()),
+                },
+            }]);
+            view.sync_list(&applied, cx);
+        }
+        assert_eq!(
+            view.projection_runs, runs,
+            "tokens reprojected historical calls"
+        );
+    });
+    let event_ms = started.elapsed().as_secs_f64() * 1000. / 120.;
+    eprintln!(
+        "desktop perf: native frame median={frame_ms:.3} ms samples={frames_ms:?}; event={event_ms:.3} ms; row toggle median={toggle_ms:.3} ms; Expand all median={expand_ms:.3} ms"
+    );
+    assert!(
+        event_ms < 1.5,
+        "stream event {event_ms:.3} ms exceeded 1.5 ms"
+    );
+    let _ = std::fs::remove_dir_all(home);
+}

@@ -22,6 +22,89 @@ pub use riwork_engine::file_preview::{
     FileIdentity, copy_block, read_text, validated_editor_path, validated_live_editor_path,
 };
 
+/// A single deliberate reference in a turn. Repeated call references retain their place.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreviewEntry {
+    pub target: String,
+    pub title: String,
+    pub source: String,
+    pub image: Option<crate::chat::model::ChatImage>,
+    pub attachment: bool,
+}
+
+impl PreviewEntry {
+    /// Retained payload keys and attachment snapshots are internal storage;
+    /// display their original filename instead of exposing that storage path.
+    pub fn display_target(&self) -> &str {
+        if self.attachment || self.target.starts_with("image:") {
+            &self.title
+        } else {
+            &self.target
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PreviewSequence {
+    pub entries: Vec<PreviewEntry>,
+    pub index: usize,
+}
+impl PreviewSequence {
+    pub fn current(&self) -> Option<&PreviewEntry> {
+        self.entries.get(self.index)
+    }
+    pub fn step(&mut self, direction: isize) -> bool {
+        let next = self.index.saturating_add_signed(direction);
+        if next >= self.entries.len() || next == self.index {
+            return false;
+        }
+        self.index = next;
+        true
+    }
+}
+
+/// Fit is a distinct state: text wraps and images remain bounded by the pane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PreviewZoom {
+    pub fit: bool,
+    pub scale: f32,
+}
+impl Default for PreviewZoom {
+    fn default() -> Self {
+        Self {
+            fit: true,
+            scale: 1.0,
+        }
+    }
+}
+impl PreviewZoom {
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+    pub fn adjust(&mut self, factor: f32) {
+        if !factor.is_finite() || factor <= 0.0 {
+            return;
+        }
+        self.fit = false;
+        self.scale = (self.scale * factor).clamp(0.05, 5.0);
+    }
+    pub fn toggle(&mut self) {
+        if self.fit {
+            self.fit = false;
+            self.scale = 1.0;
+        } else {
+            self.reset();
+        }
+    }
+    pub fn label(self) -> String {
+        if self.fit {
+            "Fit · 100%".into()
+        } else {
+            format!("{}%", (self.scale * 100.0).round() as u32)
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum PreviewContent {
     Text {
@@ -64,7 +147,7 @@ pub fn is_pdf(path: &Path) -> bool {
 /// Wrap RGBA pixels as a GPUI image, which expects BGRA.
 fn to_render_image(rgba: image::RgbaImage) -> Arc<RenderImage> {
     let mut rgba = rgba;
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Arc::new(RenderImage::new([Frame::new(rgba)]))
@@ -300,7 +383,20 @@ pub(crate) fn decode_image(bytes: &[u8]) -> Result<PreviewContent, String> {
     };
     Ok(PreviewContent::Image {
         image: to_render_image(decoded.into_rgba8()),
-        description: format!("{width} × {height} pixels"),
+        description: format!(
+            "{} · {} · {width} × {height} pixels",
+            match format {
+                image::ImageFormat::Jpeg => "JPEG",
+                image::ImageFormat::Png => "PNG",
+                image::ImageFormat::Gif => "GIF",
+                image::ImageFormat::WebP => "WebP",
+                image::ImageFormat::Bmp => "BMP",
+                image::ImageFormat::Tiff => "TIFF",
+                image::ImageFormat::Ico => "ICO",
+                _ => "Image",
+            },
+            format_size(bytes.len() as u64),
+        ),
     })
 }
 
@@ -867,5 +963,141 @@ mod tests {
         assert_eq!(count, 2);
         assert_ne!(image.as_bytes(0), second.as_bytes(0));
         assert!(render_pdf(&bytes, 3).is_err());
+    }
+}
+
+pub(crate) fn format_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{} KB", (bytes + 512) / 1024)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// Show the system share picker anchored in this preview's own native window.
+#[cfg(target_os = "macos")]
+pub(crate) fn share_file(path: &Path, window: &gpui::Window) {
+    use objc2::{
+        class,
+        encode::{Encode, Encoding},
+        msg_send,
+        rc::Retained,
+        runtime::AnyObject,
+    };
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::{cell::RefCell, ffi::CString};
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Point {
+        x: f64,
+        y: f64,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Size {
+        width: f64,
+        height: f64,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Rect {
+        origin: Point,
+        size: Size,
+    }
+    unsafe impl Encode for Point {
+        const ENCODING: Encoding = Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]);
+    }
+    unsafe impl Encode for Size {
+        const ENCODING: Encoding = Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING]);
+    }
+    unsafe impl Encode for Rect {
+        const ENCODING: Encoding = Encoding::Struct("CGRect", &[Point::ENCODING, Size::ENCODING]);
+    }
+    thread_local! {static PICKER:RefCell<Option<Retained<AnyObject>>>=const{RefCell::new(None)};}
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+    let Ok(path) = CString::new(path.to_string_lossy().as_bytes()) else {
+        return;
+    };
+    // SAFETY: invoked by the preview's click handler on AppKit's main thread; the
+    // native view belongs to the live GPUI window. Retain the picker while open.
+    unsafe {
+        let string: *mut AnyObject = msg_send![class!(NSString),stringWithUTF8String:path.as_ptr()];
+        let url: *mut AnyObject = msg_send![class!(NSURL),fileURLWithPath:string];
+        let items: *mut AnyObject = msg_send![class!(NSArray),arrayWithObject:url];
+        let allocated: *mut AnyObject = msg_send![class!(NSSharingServicePicker), alloc];
+        let picker: *mut AnyObject = msg_send![allocated,initWithItems:items];
+        if let Some(picker) = Retained::from_raw(picker) {
+            let view = handle.ns_view.as_ptr().cast::<AnyObject>();
+            let bounds: Rect = msg_send![view, bounds];
+            let anchor = Rect {
+                origin: Point {
+                    x: bounds.size.width - 80.0,
+                    y: bounds.size.height - 55.0,
+                },
+                size: Size {
+                    width: 24.0,
+                    height: 24.0,
+                },
+            };
+            let _: () =
+                msg_send![&*picker,showRelativeToRect:anchor,ofView:view,preferredEdge:1_isize];
+            PICKER.with(|slot| *slot.borrow_mut() = Some(picker));
+        }
+    }
+}
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn share_file(_: &Path, _: &gpui::Window) {}
+
+pub(crate) fn middle_elide(text: &str, limit: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= limit {
+        return text.into();
+    }
+    let extension = text
+        .rfind('.')
+        .filter(|dot| text.rfind('/').is_none_or(|slash| *dot > slash))
+        .map(|dot| &text[dot..])
+        .unwrap_or_default();
+    let suffix: Vec<char> = extension.chars().collect();
+    let budget = limit.saturating_sub(suffix.len() + 1).max(2);
+    let head = (budget as f32 * 0.6).ceil() as usize;
+    let tail = budget - head;
+    let stem_len = chars.len() - suffix.len();
+    chars[..head.min(stem_len)]
+        .iter()
+        .chain(std::iter::once(&'…'))
+        .chain(chars[stem_len.saturating_sub(tail)..stem_len].iter())
+        .chain(suffix.iter())
+        .collect()
+}
+
+pub(crate) fn file_type(name: &str) -> &'static str {
+    match Path::new(name)
+        .extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "rs" => "Rust",
+        "md" | "markdown" => "Markdown",
+        "js" | "jsx" => "JavaScript",
+        "ts" | "tsx" => "TypeScript",
+        "swift" => "Swift",
+        "json" => "JSON",
+        "toml" => "TOML",
+        "html" => "HTML",
+        "css" => "CSS",
+        "py" => "Python",
+        "sh" | "zsh" | "bash" => "Shell",
+        "yaml" | "yml" => "YAML",
+        _ => "Text",
     }
 }

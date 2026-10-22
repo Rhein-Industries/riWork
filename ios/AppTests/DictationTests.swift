@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import SwiftUI
 import AVFoundation
 import RiWorkCore
 @testable import RiWorkRemote
@@ -11,18 +12,20 @@ import RiWorkCore
         var onEvent: ((SpeechEngineEvent) -> Void)?
         var started = false, finished = false, cancelled = false
         var startProblem: DictationProblem?
+        var finalOnFinish: String?
+        var finishCount = 0
         func start(vocabulary: SpeechVocabulary) async {
             started = true
             if let startProblem { onEvent?(.failed(startProblem)) } else { onEvent?(.ready) }
         }
-        func finish() { finished = true }
+        func finish() { finished = true; finishCount += 1; if let finalOnFinish { send(.finished(finalOnFinish)) } }
         func cancel() { cancelled = true }
         func send(_ event: SpeechEngineEvent) { onEvent?(event) }
     }
     private final class Received { var live: [String] = []; var delivered: [String] = [] }
 
-    private func makeController(_ engine: any SpeechEngine, silence: Duration = .seconds(60)) -> DictationController {
-        let controller = DictationController(silenceAfterSpeech: silence, silenceBeforeSpeech: .seconds(60))
+    private func makeController(_ engine: any SpeechEngine) -> DictationController {
+        let controller = DictationController()
         controller.makeEngine = { engine }
         controller.sessionSources = { SpeechVocabularySources(names: ["ios-speech-input"], text: "KeyBarView") }
         // The desktop's mic setting is on.
@@ -44,6 +47,353 @@ import RiWorkCore
     private func wait(until condition: @autoclosure () -> Bool, timeout: TimeInterval = 3) async {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(condition(), "condition did not become true")
+    }
+    override func tearDown() async throws {
+        windows.forEach { $0.isHidden = true }
+        windows = []
+    }
+
+    // MARK: Composer stop / send races, using real mic, Send and hardware command handlers
+
+    @MainActor private final class Deadline {
+        var continuation: CheckedContinuation<Void, Never>?
+        private var fired = false
+        func wait() async {
+            guard !fired else { return }
+            await withCheckedContinuation { continuation = $0 }
+        }
+        func fire() { fired = true; let continuation = continuation; self.continuation = nil; continuation?.resume() }
+    }
+    @MainActor private final class ComposerRig {
+        let conversation = ChatConversation(id: "dictation-keys")
+        let engine: ManualEngine
+        let controller: DictationController
+        let layout = ChatLayoutInspection()
+        let deadline = Deadline()
+        let window: UIWindow
+        var host: UIViewController?
+        var view: ChatComposerTextView!
+        var sent: [String] = []
+        var decisions: [ChatDecision] = []
+        init(engine: ManualEngine, controller: DictationController, window: UIWindow) {
+            self.engine = engine; self.controller = controller; self.window = window
+        }
+    }
+    private func composerRig(draft: String = "", width: CGFloat = 390, native: Bool = false, clearOnSend: Bool = true) async throws -> ComposerRig {
+        let engine = ManualEngine()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: width, height: 700)
+        let controller = makeController(engine)
+        let rig = ComposerRig(engine: engine, controller: controller, window: window)
+        controller.waitForFinal = { [deadline = rig.deadline] in await deadline.wait() }
+        rig.conversation.draft = draft
+        let composer = ChatComposer(conversation: rig.conversation, provider: .claude, state: .idle, approval: nil, connected: true, focusToken: 0,
+                                    send: { [weak rig] in
+                                        guard let rig, !rig.conversation.sending, rig.conversation.hasMessage else { return }
+                                        rig.conversation.sending = true
+                                        rig.sent.append(rig.conversation.draft)
+                                        if clearOnSend { rig.conversation.draft = "" }
+                                    }, interrupt: {}, decide: { [weak rig] in rig?.decisions.append($0) }, dictation: controller)
+        let host = UIHostingController(rootView: AnyView(VStack { Spacer(); composer }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .desktopThemed(style(mic: true, native: native)).environment(\.chatLayoutInspection, rig.layout)))
+        rig.host = host
+        host.view.frame = window.bounds
+        window.rootViewController = host
+        windows.append(window)
+        window.makeKeyAndVisible()
+        host.view.setNeedsLayout(); host.view.layoutIfNeeded()
+        func find(_ view: UIView) -> ChatComposerTextView? { (view as? ChatComposerTextView) ?? view.subviews.lazy.compactMap(find).first }
+        await wait(until: find(host.view) != nil && rig.layout.actions["dictation-target"] != nil && rig.layout.actions["send"] != nil && rig.layout.frames["composer"] != nil && rig.layout.frames["composer-field"] != nil)
+        if find(host.view) == nil {
+            func describe(_ view: UIView) -> String { "\(type(of: view)) \(view.frame) [\(view.subviews.map(describe).joined(separator: ", "))]" }
+            print("COMPOSER_FIXTURE \(describe(host.view)) window=\(window.frame) hidden=\(window.isHidden) frames=\(rig.layout.frames)")
+        }
+        rig.view = try XCTUnwrap(find(host.view))
+        return rig
+    }
+    private func startMic(_ rig: ComposerRig) async throws {
+        try XCTUnwrap(rig.layout.actions["dictation-target"])()
+        await wait(until: rig.controller.phase == .listening(text: ""))
+    }
+    private func key(_ rig: ComposerRig, _ input: String, _ flags: UIKeyModifierFlags = []) throws {
+        let command = try XCTUnwrap(rig.view.keyCommands?.first { $0.input == input && $0.modifierFlags == flags })
+        rig.view.fired(command)
+    }
+
+    func testEscapeStopsAndKeepsTypedAndVolatileTextWithoutSending() async throws {
+        let rig = try await composerRig(draft: "Typed before")
+        try await startMic(rig)
+        rig.engine.send(.heard("dictated words"))
+        XCTAssertEqual(rig.view.text, "Typed before dictated words")
+        // Typing after the live span must survive its final replacement, without duplicating the words.
+        rig.view.text += " typed after"
+        rig.view.delegate?.textViewDidChange?(rig.view)
+        try key(rig, UIKeyCommand.inputEscape)
+        XCTAssertTrue(rig.engine.finished)
+        XCTAssertEqual(rig.view.text, "Typed before dictated words typed after")
+        XCTAssertTrue(rig.sent.isEmpty)
+        rig.engine.send(.finished("dictated words"))
+        XCTAssertEqual(rig.view.text, "Typed before dictated words typed after")
+        XCTAssertEqual(rig.conversation.draft, rig.view.text)
+        XCTAssertTrue(rig.sent.isEmpty)
+        XCTAssertEqual(rig.controller.phase, .idle)
+        rig.deadline.fire()
+    }
+    func testEscapeWithNoFinalKeepsTheLatestVolatileSegment() async throws {
+        let rig = try await composerRig(draft: "Please")
+        try await startMic(rig)
+        rig.engine.send(.heard("keep every word"))
+        try key(rig, UIKeyCommand.inputEscape)
+        await wait(until: rig.deadline.continuation != nil)
+        rig.engine.send(.heard("keep every last word"))
+        rig.deadline.fire()
+        await wait(until: rig.controller.phase == .idle)
+        XCTAssertEqual(rig.conversation.draft, "Please keep every last word")
+        XCTAssertTrue(rig.sent.isEmpty)
+        rig.engine.send(.finished("stale result"))
+        XCTAssertEqual(rig.conversation.draft, "Please keep every last word")
+    }
+    func testLeavingAHostWhileFinishingKeepsWordsAndNeverSends() async throws {
+        for sendPending in [false, true] {
+            let rig = try await composerRig(draft: "Typed")
+            try await startMic(rig)
+            rig.engine.send(.heard("keep these words"))
+            try key(rig, sendPending ? "\r" : UIKeyCommand.inputEscape)
+            XCTAssertTrue(rig.controller.phase.isActive)
+            rig.window.rootViewController = nil
+            rig.host = nil
+            await wait(until: !rig.controller.phase.isActive)
+            XCTAssertEqual(rig.conversation.draft, "Typed keep these words")
+            XCTAssertTrue(rig.sent.isEmpty)
+            rig.engine.send(.finished("late words"))
+            XCTAssertEqual(rig.conversation.draft, "Typed keep these words")
+            rig.deadline.fire()
+        }
+    }
+    func testSwitchingTheComposersOwnerFinishesAgainstTheOldBinding() async throws {
+        let rig = try await composerRig(draft: "Old draft")
+        try await startMic(rig)
+        rig.engine.send(.heard("old words"))
+        try key(rig, "\r")
+        let next = ChatConversation(id: "next-chat")
+        next.draft = "New draft"
+        let composer = ChatComposer(conversation: next, provider: .claude, state: .idle, approval: nil, connected: true, focusToken: 0,
+                                    send: { XCTFail("navigation must not send") }, interrupt: {}, decide: { _ in }, dictation: rig.controller)
+        // Reuse the same representable identity, as the chat screen does when its selection changes.
+        let host = try XCTUnwrap(rig.host as? UIHostingController<AnyView>)
+        host.rootView = AnyView(VStack { Spacer(); composer }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            .desktopThemed(style(mic: true)).environment(\.chatLayoutInspection, rig.layout))
+        await wait(until: !rig.controller.phase.isActive)
+        XCTAssertEqual(rig.conversation.draft, "Old draft old words")
+        XCTAssertEqual(next.draft, "New draft")
+        XCTAssertTrue(rig.sent.isEmpty)
+        rig.deadline.fire()
+    }
+    func testRecognizerFailureWhileWaitingKeepsWordsWithoutSending() async throws {
+        for problem: DictationProblem in [.interrupted, .failed("recognizer lost"), .modelUnavailable] {
+            let rig = try await composerRig(draft: "Typed")
+            try await startMic(rig)
+            rig.engine.send(.heard("last words"))
+            try key(rig, "\r")
+            rig.engine.send(.failed(problem))
+            XCTAssertEqual(rig.conversation.draft, "Typed last words")
+            XCTAssertTrue(rig.sent.isEmpty)
+            rig.engine.send(.finished("stale"))
+            XCTAssertTrue(rig.sent.isEmpty)
+            rig.deadline.fire()
+        }
+    }
+    func testSecondComposerForSameChatReleasesItsFinalizingReservation() async throws {
+        let rig = try await composerRig()
+        try await startMic(rig)
+        rig.engine.send(.heard("words"))
+        let first = ComposerSubmission(), second = ComposerSubmission()
+        first.request(conversation: rig.conversation, dictation: rig.controller, eligible: { true }, send: { rig.sent.append("first") })
+        second.request(conversation: rig.conversation, dictation: rig.controller, eligible: { true }, send: { XCTFail("second send") })
+        XCTAssertTrue(first.finalizing)
+        XCTAssertFalse(second.finalizing)
+        rig.controller.finishNow()
+        XCTAssertFalse(first.finalizing)
+        XCTAssertTrue(rig.sent.isEmpty)
+        rig.deadline.fire()
+    }
+    func testMicHintOffersKeyboardShortcutsOnlyWithHardwareKeyboard() {
+        XCTAssertFalse(DictationButton.hint(active: true, compact: true, hardware: false).contains("Escape"))
+        XCTAssertTrue(DictationButton.hint(active: true, compact: true, hardware: true).contains("Escape"))
+    }
+    func testExplicitMicCancelRestoresTypedTextWithoutChangingTheActionSlots() async throws {
+        let rig = try await composerRig(draft: "Typed")
+        let frame = try XCTUnwrap(rig.layout.frames["composer"])
+        try await startMic(rig)
+        rig.engine.send(.heard("discard these words"))
+        try XCTUnwrap(rig.layout.actions["dictation-cancel"])()
+        XCTAssertEqual(rig.conversation.draft, "Typed")
+        XCTAssertTrue(rig.sent.isEmpty)
+        XCTAssertEqual(rig.layout.frames["composer"], frame)
+    }
+    func testSendWaitsForLateFinalAndReturnOrSendRepeatsSubmitOnce() async throws {
+        // Both orders: double Return, Send+Return, Return+Send. Hardware Cmd+Return uses the same path.
+        for first in ["return", "send", "command"] {
+            let rig = try await composerRig(draft: "Please")
+            try await startMic(rig)
+            rig.engine.send(.heard("run"))
+            if first == "send" { try XCTUnwrap(rig.layout.actions["send"])() }
+            else { try key(rig, "\r", first == "command" ? .command : []) }
+            XCTAssertTrue(rig.engine.finished)
+            XCTAssertTrue(rig.sent.isEmpty, "a partial is not sent before the final")
+            try key(rig, "\r")
+            try XCTUnwrap(rig.layout.actions["send"])()
+            XCTAssertEqual(rig.engine.finishCount, 1)
+            rig.engine.send(.heard("run every"))
+            rig.engine.send(.finished("run every test."))
+            XCTAssertEqual(rig.sent, ["Please run every test."])
+            rig.engine.send(.finished("late duplicate"))
+            try key(rig, "\r")
+            XCTAssertEqual(rig.sent.count, 1)
+            XCTAssertEqual(rig.conversation.draft, "")
+            XCTAssertTrue(rig.decisions.isEmpty)
+            rig.deadline.fire()
+        }
+    }
+    func testSendWithSynchronousEarlyFinalDoesNotMissOrDoubleSubmit() async throws {
+        let rig = try await composerRig(clearOnSend: false)
+        try await startMic(rig)
+        rig.engine.send(.heard("last"))
+        rig.engine.finalOnFinish = "last words"
+        let staleCallback = rig.engine.onEvent
+        try key(rig, "\r")
+        XCTAssertEqual(rig.sent, ["last words"])
+        try key(rig, "\r")
+        try XCTUnwrap(rig.layout.actions["send"])()
+        staleCallback?(.finished("duplicate"))
+        XCTAssertEqual(rig.sent, ["last words"])
+        XCTAssertEqual(rig.conversation.draft, "last words", "late engine callbacks cannot overwrite a submitted draft")
+        rig.deadline.fire()
+    }
+    func testSendWithFinalBeforeTheKeyUsesAlreadyCommittedText() async throws {
+        let rig = try await composerRig()
+        try await startMic(rig)
+        rig.engine.send(.heard("early"))
+        rig.engine.send(.finished("early final"))
+        try key(rig, "\r")
+        XCTAssertEqual(rig.sent, ["early final"])
+        XCTAssertEqual(rig.engine.finishCount, 0)
+    }
+    func testSendWithNoFinalUsesLatestVolatileAtControlledDeadline() async throws {
+        let rig = try await composerRig()
+        try await startMic(rig)
+        rig.engine.send(.heard("keep"))
+        try key(rig, "\r")
+        await wait(until: rig.deadline.continuation != nil)
+        rig.engine.send(.heard("keep the last words"))
+        XCTAssertTrue(rig.sent.isEmpty)
+        rig.deadline.fire()
+        await wait(until: !rig.sent.isEmpty)
+        XCTAssertEqual(rig.sent, ["keep the last words"])
+        rig.engine.send(.finished("too late"))
+        try key(rig, "\r")
+        XCTAssertEqual(rig.sent.count, 1)
+    }
+    func testEmptyRecordingOnlyStopsForReturnCommandReturnAndSend() async throws {
+        for action in ["return", "command", "send"] {
+            let rig = try await composerRig()
+            try await startMic(rig)
+            if action == "send" { try XCTUnwrap(rig.layout.actions["send"])() }
+            else { try key(rig, "\r", action == "command" ? .command : []) }
+            XCTAssertTrue(rig.engine.finished)
+            rig.engine.send(.finished(""))
+            XCTAssertTrue(rig.sent.isEmpty)
+            XCTAssertEqual(rig.controller.phase, .idle)
+            XCTAssertTrue(rig.decisions.isEmpty)
+            rig.deadline.fire()
+        }
+    }
+    func testEmptyRecordingWithNoFinalStopsWithoutSendingAtTheDeadline() async throws {
+        let rig = try await composerRig()
+        try await startMic(rig)
+        try key(rig, "\r")
+        await wait(until: rig.deadline.continuation != nil)
+        rig.deadline.fire()
+        await wait(until: rig.controller.phase == .idle)
+        XCTAssertTrue(rig.sent.isEmpty)
+        XCTAssertEqual(rig.conversation.draft, "")
+    }
+    func testEmptyFinalRetainsVolatileAndCancellationDoesNotSend() async throws {
+        let rig = try await composerRig()
+        try await startMic(rig)
+        rig.engine.send(.heard("volatile"))
+        try key(rig, "\r")
+        rig.engine.send(.heard(""))
+        rig.engine.send(.finished(""))
+        XCTAssertEqual(rig.sent, ["volatile"])
+        let cancelled = try await composerRig()
+        try await startMic(cancelled)
+        cancelled.engine.send(.heard("cancel me"))
+        try key(cancelled, "\r")
+        cancelled.controller.cancel()
+        cancelled.engine.send(.finished("late"))
+        XCTAssertTrue(cancelled.sent.isEmpty)
+        cancelled.conversation.draft = "typed later"
+        try key(cancelled, "\r")
+        XCTAssertEqual(cancelled.sent, ["typed later"], "cancel releases the send reservation")
+        rig.deadline.fire(); cancelled.deadline.fire()
+    }
+    func testEscapeWhenNotRecordingKeepsItsCurrentRoutingAndShiftReturnInsertsNewline() async throws {
+        let rig = try await composerRig(draft: "typed")
+        XCTAssertFalse(rig.view.keyCommands?.contains { $0.input == UIKeyCommand.inputEscape } == true)
+        XCTAssertEqual(rig.view.onKey(.escape), .none)
+        XCTAssertEqual(rig.conversation.draft, "typed")
+        XCTAssertTrue(rig.sent.isEmpty)
+        try await startMic(rig)
+        rig.engine.send(.heard("words"))
+        try key(rig, "\r", .shift)
+        XCTAssertFalse(rig.engine.finished)
+        XCTAssertTrue(rig.view.text.contains("\n"))
+        rig.controller.cancel()
+    }
+    func testComposerFrameDoesNotChangeOnStartStreamingOrStopOnPhoneAndPad() async throws {
+        for width: CGFloat in [390, 1024] {
+            for native in [false, true] {
+                let rig = try await composerRig(draft: "Typed\nsecond line\nthird line", width: width, native: native)
+                let original = try XCTUnwrap(rig.layout.frames["composer"])
+                let field = try XCTUnwrap(rig.layout.frames["composer-field"])
+                try await startMic(rig)
+                rig.engine.send(.heard(Array(repeating: "words wrapping across many lines", count: 20).joined(separator: " ")))
+                await wait(until: rig.view.isScrollEnabled)
+                rig.window.layoutIfNeeded()
+                XCTAssertEqual(rig.layout.frames["composer"], original, "start/stream at \(width), native \(native)")
+                XCTAssertEqual(rig.layout.frames["composer-field"], field)
+                try XCTUnwrap(rig.layout.actions["dictation-target"])()
+                rig.engine.send(.finished(rig.controller.phase.text))
+                await wait(until: rig.controller.phase == .idle)
+                // Flush layout after SwiftUI observes the final insertion.
+                try await Task.sleep(for: .milliseconds(100))
+                rig.window.layoutIfNeeded()
+                XCTAssertEqual(rig.layout.frames["composer"], original, "stop at \(width), native \(native)")
+                XCTAssertEqual(rig.layout.frames["composer-field"], field)
+                XCTAssertTrue(rig.sent.isEmpty)
+                await wait(until: !rig.view.hasHeldDictationHeight)
+                rig.deadline.fire()
+            }
+        }
+    }
+    func testHeightUsesRenderedBoundsAndReleasesAfterStopFocusLossAndDynamicType() async throws {
+        let view = ChatComposerTextView(frame: CGRect(x: 0, y: 0, width: 300, height: 87))
+        _ = view.composerHeight(fitted: 200, minimum: 44, maximum: 200)
+        view.holdDictationHeight()
+        XCTAssertEqual(view.composerHeight(fitted: 200, minimum: 44, maximum: 200), 87)
+        let rig = try await composerRig(draft: "one\ntwo\nthree")
+        try await startMic(rig)
+        XCTAssertTrue(rig.view.hasHeldDictationHeight)
+        rig.view.delegate?.textViewDidEndEditing?(rig.view)
+        XCTAssertFalse(rig.view.hasHeldDictationHeight)
+        rig.view.holdDictationHeight()
+        rig.host?.traitOverrides.preferredContentSizeCategory = .accessibilityExtraLarge
+        await wait(until: !rig.view.hasHeldDictationHeight)
+        rig.controller.finishNow()
     }
 
     // MARK: Controller
@@ -101,7 +451,7 @@ import RiWorkCore
         XCTAssertEqual(controller.phase, .preparing(note: "Installing the speech model…"))
         XCTAssertEqual(TerminalDictationPanel.status(controller.phase), "Installing the speech model…")
     }
-    func testAnotherFieldsMicCancelsTheFirstDictation() async {
+    func testAnotherFieldsMicKeepsTheFirstDictation() async {
         let first = ManualEngine(), second = ManualEngine()
         var engines: [ManualEngine] = [first, second]
         let controller = makeController(first)
@@ -116,16 +466,40 @@ import RiWorkCore
         second.send(.heard("hello"))
         controller.stop()
         second.send(.finished("hello"))
-        XCTAssertEqual(a.delivered, [])
+        XCTAssertEqual(a.delivered, ["half a command"])
         XCTAssertEqual(b.delivered, ["hello"])
     }
-    func testSilenceAfterSpeechStopsByItself() async {
-        let engine = ScriptedSpeechEngine(script: "git status", interval: .milliseconds(10))
-        let controller = makeController(engine, silence: .milliseconds(300))
+    func testSilenceBeforeAndAfterSpeechKeepsListeningUntilATap() async {
+        let engine = ManualEngine()
+        let controller = makeController(engine)
         let received = start(controller)
-        await wait(until: received.delivered == ["git status"], timeout: 5)
-        XCTAssertTrue(engine.finished, "the pause after speech stopped it, without a tap")
+        await wait(until: controller.phase == .listening(text: ""))
+        try? await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(controller.phase, .listening(text: ""))
+        engine.send(.heard("git status"))
+        try? await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(controller.phase, .listening(text: "git status"))
+        XCTAssertFalse(engine.finished)
+        XCTAssertEqual(received.delivered, [])
+        controller.stop()
+        engine.send(.finished("git status"))
         XCTAssertEqual(received.delivered, ["git status"])
+    }
+    func testEveryFailureKeepsLiveTextAndTearsDownTheEngine() async {
+        for problem: DictationProblem in [.interrupted, .failed("dead microphone"), .modelUnavailable] {
+            let engine = ManualEngine()
+            let controller = makeController(engine)
+            let received = start(controller)
+            await wait(until: controller.phase == .listening(text: ""))
+            engine.send(.heard("keep these words"))
+            engine.send(.failed(problem))
+            XCTAssertEqual(received.delivered, ["keep these words"])
+            XCTAssertEqual(received.live.last, "keep these words")
+            XCTAssertEqual(controller.phase, .failed(problem))
+            XCTAssertTrue(engine.cancelled)
+            engine.send(.finished("late duplicate"))
+            XCTAssertEqual(received.delivered, ["keep these words"])
+        }
     }
     func testACallKeepsWhatWasSaidBeforeIt() async {
         let engine = ManualEngine()
@@ -235,6 +609,35 @@ import RiWorkCore
         insertion.show("now")
         insertion.commit("now")
         XCTAssertEqual(view.text, "Please fix all now the tests", "the next dictation goes on from the caret")
+    }
+    func testTypingInsideTheDictatedSpanTakesOverUntilCommit() {
+        let (view, delegate) = makeTextView("Typed", caret: 5)
+        let insertion = TextInsertion()
+        insertion.view = view
+        insertion.show("some words")
+        view.selectedRange = NSRange(location: 8, length: 0)
+        view.insertText("EDIT")
+        let edited = view.text, caret = view.selectedRange
+        insertion.show("some different words")
+        insertion.commit("some final words")
+        XCTAssertEqual(view.text, edited)
+        XCTAssertEqual(delegate.text, edited)
+        XCTAssertEqual(view.selectedRange, caret)
+        insertion.commit("new dictation")
+        XCTAssertTrue(view.text.contains("new dictation"), "a new dictation can insert normally")
+    }
+    func testTypingTwoKeystrokesBetweenPartialsKeepsCaretAndOrder() {
+        let (view, _) = makeTextView("Typed", caret: 5)
+        let insertion = TextInsertion()
+        insertion.view = view
+        insertion.show("words")
+        view.insertText(" a")
+        insertion.show("words more")
+        XCTAssertEqual(view.selectedRange.location, (view.text as NSString).length)
+        view.insertText("b")
+        insertion.commit("words more")
+        XCTAssertEqual(view.text, "Typed words more ab")
+        XCTAssertEqual(view.selectedRange.location, (view.text as NSString).length)
     }
     func testCancellingTakesTheWordsOutAgain() {
         let (view, delegate) = makeTextView("Hello", caret: 5)

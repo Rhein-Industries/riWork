@@ -37,6 +37,8 @@ mod tests {
                 view.model.link = super::super::Link::Live;
                 view.display_mode = super::super::DisplayMode::Verbose;
                 view.model.transcript.items = vec![Item {
+                    started_at: None,
+                    ended_at: None,
                     id: "search".into(),
                     turn_id: Some("turn".into()),
                     status: ItemStatus::Completed,
@@ -48,7 +50,8 @@ mod tests {
                         output: Some("src/日本語.rs:42:hello".into()),
                     },
                 }];
-                view.open.insert("search".into());
+                // The call row opens through its projected disclosure.
+                view.disclosure.overrides.insert("search".into(), true);
                 view.refresh_projection(cx);
                 view.list.remeasure();
                 cx.notify();
@@ -65,13 +68,18 @@ mod tests {
             );
             window.click("tool-raw:search", cx);
             window.render_frame(cx);
+            // The raw output is the call's output container, one leaf per run of lines.
             assert_eq!(
-                window.find("transcript:tool-output:search").label(),
+                window.find("transcript:tool-output:search:run:0").label(),
                 Some("src/日本語.rs:42:hello")
             );
             let leaves = super::super::selection_document::leaves(view.read(cx), Look::of(cx));
             assert!(leaves.iter().any(|leaf| leaf.key == "tool-view:search:0"));
-            assert!(leaves.iter().any(|leaf| leaf.key == "tool-output:search"));
+            assert!(
+                leaves
+                    .iter()
+                    .any(|leaf| leaf.key == "tool-output:search:run:0")
+            );
         })
         .unwrap();
         assert!(recording.try_recv().is_err());

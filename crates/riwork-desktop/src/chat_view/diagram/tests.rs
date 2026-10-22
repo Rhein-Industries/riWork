@@ -85,6 +85,8 @@ fn native_source_switch_copy_enlarge_and_streaming_preserve_original_source(
         view.update(cx, |view, cx| {
             view.model.link = super::super::Link::Live;
             view.model.transcript.items = vec![Item {
+                started_at: None,
+                ended_at: None,
                 id: "diagram-answer".into(),
                 turn_id: Some("turn".into()),
                 status: ItemStatus::Completed,
@@ -212,6 +214,8 @@ fn completion_uses_the_longest_item_identity_even_with_slashes(cx: &mut TestAppC
     let (_, view, _) = super::super::editor_tests::mount_selection(cx);
     view.update(cx, |view, _| {
         let item = |id: &str, status| Item {
+            started_at: None,
+            ended_at: None,
             id: id.into(),
             turn_id: None,
             status,

@@ -22,8 +22,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-/// Each source the document is given has its own number, across every chat and window, so
-/// find can tell the text it searched from the text now shown.
+/// Content revisions are unique across chats and windows. Mounting another virtual
+/// row does not change this revision; changing disclosed text does.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
@@ -44,13 +44,14 @@ struct Document {
     origin: Point<Pixels>,
     scroll: Point<Pixels>,
     native: Option<bool>,
+    container_width: f32,
     participant: Option<gpui::EntityId>,
-    /// Which source this is (`GENERATION`), and how many frames have been laid out.
     generation: u64,
     paints: u64,
-    /// The matches of an open find bar, painted under each leaf's glyphs.
+    /// Complete disclosed text, built on demand while Find is open. Selection
+    /// itself retains only mounted bodies in `source`.
+    search_source: Vec<SourceLeaf>,
     find: Option<FindPaint>,
-    /// What the last frame painted of `find`: leaf, bytes and whether it is the current one.
     #[cfg(test)]
     found: Vec<(String, Range<usize>, bool)>,
 }
@@ -65,6 +66,20 @@ pub(super) struct SelectionFragment {
 }
 
 impl Document {
+    fn changed(&mut self) {
+        self.generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    }
+
+    fn painted_rect(&self, leaf: &SourceLeaf, range: Range<usize>) -> Option<Bounds<Pixels>> {
+        let painted = self
+            .frame
+            .iter()
+            .find(|painted| painted.key == leaf.key && painted.text.as_ref() == leaf.text)?;
+        range_quads(&painted.layout, range)
+            .into_iter()
+            .reduce(|a, b| a.union(&b))
+    }
+
     fn endpoint(&self, key: TextSelectionContentKey) -> Option<(usize, usize)> {
         let id = (key.value() >> 32) as u32;
         let byte = key.value() as u32 as usize;
@@ -107,26 +122,41 @@ impl Document {
             .collect::<Vec<_>>()
             .join("\n")
     }
+    fn export_complete(
+        &self,
+        snapshot: Option<TextSelectionSnapshot>,
+        source: &[SourceLeaf],
+    ) -> String {
+        let Some((a, b)) = snapshot.and_then(|s| self.endpoints(s)) else {
+            return String::new();
+        };
+        let Some(start) = source
+            .iter()
+            .position(|leaf| leaf.key == self.source[a.0].key)
+        else {
+            return String::new();
+        };
+        let Some(end) = source
+            .iter()
+            .position(|leaf| leaf.key == self.source[b.0].key)
+        else {
+            return String::new();
+        };
+        (start..=end)
+            .map(|at| {
+                let text = &source[at].text;
+                let from = if at == start { a.1 } else { 0 };
+                let to = if at == end { b.1 } else { text.len() };
+                text.get(from..to).unwrap_or(text)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
     fn rows(&self, snapshot: Option<TextSelectionSnapshot>) -> Vec<usize> {
         let Some((a, b)) = snapshot.and_then(|s| self.endpoints(s)) else {
             return Vec::new();
         };
         self.source[a.0..=b.0].iter().map(|leaf| leaf.row).collect()
-    }
-    fn replace_source(&mut self, source: Vec<SourceLeaf>) {
-        self.source = source;
-        self.generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
-    }
-    /// Where `range` of source leaf `leaf` was drawn in the last frame, in window
-    /// coordinates; none for a leaf the virtual list did not draw.
-    fn painted_rect(&self, leaf: &SourceLeaf, range: Range<usize>) -> Option<Bounds<Pixels>> {
-        let painted = self
-            .frame
-            .iter()
-            .find(|painted| painted.key == leaf.key && painted.text.as_ref() == leaf.text)?;
-        range_quads(&painted.layout, range)
-            .into_iter()
-            .reduce(|a, b| a.union(&b))
     }
     fn content_key(&self, point: Point<Pixels>) -> Option<TextSelectionContentKey> {
         let window_point = point + self.origin + self.scroll;
@@ -164,6 +194,9 @@ pub(super) struct TranscriptSelection {
     handle: TextSelectionHandle,
     data: Rc<RefCell<Document>>,
     dirty: Cell<bool>,
+    source_cache: RefCell<HashMap<String, (super::display::Row, Vec<SourceLeaf>)>>,
+    #[cfg(test)]
+    pub(super) source_builds: Cell<usize>,
     _refresh: Subscription,
 }
 impl TranscriptSelection {
@@ -188,14 +221,19 @@ impl TranscriptSelection {
                 let Some(owner) = owner.upgrade() else {
                     return String::new();
                 };
-                let selection = &owner.read(cx).transcript_selection;
+                let view = owner.read(cx);
+                let selection = &view.transcript_selection;
                 if selection.handle.entity_id() != participant {
                     return String::new();
                 }
+                let Some(snapshot) = selection.handle.snapshot(cx) else {
+                    return String::new();
+                };
+                let source = super::selection_document::leaves(view, Look::of(cx));
                 selection
                     .data
                     .borrow()
-                    .export(selection.handle.snapshot(cx))
+                    .export_complete(Some(snapshot), &source)
             },
             cx,
         );
@@ -212,33 +250,56 @@ impl TranscriptSelection {
             handle,
             data,
             dirty: Cell::new(true),
+            source_cache: RefCell::new(HashMap::new()),
+            #[cfg(test)]
+            source_builds: Cell::new(0),
             _refresh: refresh,
         }
     }
     pub fn changed(&self) {
         self.dirty.set(true);
+        self.invalidate_search();
     }
-    /// Which source the document holds now; a new one has a new number.
+    pub(super) fn invalidate_search(&self) {
+        self.data.borrow_mut().changed();
+    }
     pub fn generation(&self) -> u64 {
         self.data.borrow().generation
     }
-    /// How many frames have laid the transcript out.
     pub fn paints(&self) -> u64 {
         self.data.borrow().paints
     }
+    pub(super) fn set_search_source(&self, source: Vec<SourceLeaf>) {
+        self.data.borrow_mut().search_source = source;
+    }
     pub fn with_source<R>(&self, read: impl FnOnce(&[SourceLeaf]) -> R) -> R {
+        read(&self.data.borrow().search_source)
+    }
+    /// The selection document itself (mounted bodies, or a focused review's patch),
+    /// as Copy's endpoints and `selection_painted_rect` index it.
+    pub(super) fn with_selection_source<R>(&self, read: impl FnOnce(&[SourceLeaf]) -> R) -> R {
         read(&self.data.borrow().source)
     }
-    /// See `Document::painted_rect`.
     pub fn painted_rect(&self, leaf: usize, range: Range<usize>) -> Option<Bounds<Pixels>> {
+        let data = self.data.borrow();
+        data.painted_rect(data.search_source.get(leaf)?, range)
+    }
+    /// `painted_rect` for a leaf of `with_selection_source`.
+    pub(super) fn selection_painted_rect(
+        &self,
+        leaf: usize,
+        range: Range<usize>,
+    ) -> Option<Bounds<Pixels>> {
         let data = self.data.borrow();
         data.painted_rect(data.source.get(leaf)?, range)
     }
-    /// The matches find paints, or none.
     pub fn set_find(&self, find: Option<FindPaint>) {
-        self.data.borrow_mut().find = find;
+        let mut data = self.data.borrow_mut();
+        if find.is_none() {
+            data.search_source.clear();
+        }
+        data.find = find;
     }
-    /// The transcript text selected now, as Copy would export it.
     pub fn selected_text(&self, cx: &App) -> String {
         self.data.borrow().export(self.handle.snapshot(cx))
     }
@@ -280,8 +341,55 @@ impl TranscriptSelection {
     pub(super) fn painted_find(&self) -> Vec<(String, Range<usize>, bool)> {
         self.data.borrow().found.clone()
     }
-    pub fn selected_rows(&self, cx: &App) -> Vec<usize> {
-        self.data.borrow().rows(self.handle.snapshot(cx))
+    pub(super) fn source_was_mounted(&self, id: &str) -> bool {
+        self.source_cache.borrow().contains_key(id)
+    }
+    pub(super) fn invalidate_source(&self, id: &str) {
+        self.source_cache.borrow_mut().remove(id);
+    }
+    pub(super) fn invalidate_sources(&self) {
+        self.source_cache.borrow_mut().clear();
+    }
+    pub(super) fn retain_sources(&self, rows: &[super::display::ListRow]) {
+        let visible: std::collections::HashSet<_> =
+            rows.iter().map(|entry| entry.row.id.as_str()).collect();
+        self.source_cache
+            .borrow_mut()
+            .retain(|id, _| visible.contains(id.as_str()));
+    }
+    fn has_cached_source(&self, row: &super::display::Row) -> bool {
+        self.source_cache
+            .borrow()
+            .get(&row.id)
+            .is_some_and(|(known, _)| known == row)
+    }
+    pub(super) fn cached_source(
+        &self,
+        row: &super::display::Row,
+        at: usize,
+    ) -> Option<Vec<SourceLeaf>> {
+        let cache = self.source_cache.borrow();
+        let (known, source) = cache.get(&row.id)?;
+        if known != row {
+            return None;
+        }
+        Some(
+            source
+                .iter()
+                .cloned()
+                .map(|mut leaf| {
+                    leaf.row = at;
+                    leaf
+                })
+                .collect(),
+        )
+    }
+    pub(super) fn cache_source(&self, row: &super::display::Row, source: &[SourceLeaf]) {
+        #[cfg(test)]
+        self.source_builds.set(self.source_builds.get() + 1);
+        self.source_cache
+            .borrow_mut()
+            .insert(row.id.clone(), (row.clone(), source.to_vec()));
     }
     pub fn clear(&self, window: AnyWindowHandle, cx: &mut App) {
         if self.handle.snapshot(cx).is_some() || self.handle.has_local_selection(cx) {
@@ -296,8 +404,9 @@ impl TranscriptSelection {
                 crate::behavior_controls::retire_content_scope(scope, window, cx)
             });
         });
-        self.data.borrow_mut().replace_source(Vec::new());
+        self.data.borrow_mut().source.clear();
         self.data.borrow_mut().frame.clear();
+        self.set_find(None);
         self.handle.update_runs(&[], cx);
         self.scope = TextSelectionScopeId::new();
         self.changed();
@@ -372,14 +481,147 @@ impl TranscriptSelection {
 }
 
 impl ChatView {
+    pub(super) fn refresh_selection_rows(
+        &mut self,
+        rows: &[usize],
+        look: Look,
+        cx: &mut Context<Self>,
+    ) {
+        self.refresh_selection_rows_inner(rows, look, true, cx);
+    }
+
+    /// A body detail (an output page, a diagram, a raw or expanded view) changed what
+    /// a row exports while its projected row stayed equal: its cached source is stale.
+    /// Detail keys name their owner's ID; an unrelated match only rebuilds that row.
+    pub(super) fn invalidate_leaf_owner(&self, key: &str) {
+        for entry in &self.list_rows {
+            if key.contains(entry.row.id.as_str()) {
+                self.transcript_selection.invalidate_source(&entry.row.id);
+            }
+        }
+    }
+
+    pub(super) fn ensure_selection_row(&mut self, at: usize, look: Look, cx: &mut Context<Self>) {
+        if self
+            .list_rows
+            .get(at)
+            .is_some_and(|entry| !self.transcript_selection.has_cached_source(&entry.row))
+        {
+            self.refresh_selection_rows_inner(&[at], look, false, cx);
+        }
+    }
+
+    fn refresh_selection_rows_inner(
+        &mut self,
+        rows: &[usize],
+        look: Look,
+        clear_changed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        // A focused review has its own row numbers and source. Its single row
+        // must not be interpreted as row zero of the background transcript.
+        if self.transcript_selection.dirty.get() || rows.is_empty() || self.file_review.is_some() {
+            return;
+        }
+        for &at in rows {
+            if let Some(entry) = self.list_rows.get(at) {
+                self.transcript_selection.invalidate_source(&entry.row.id);
+            }
+        }
+        let mut replacements: Vec<_> = rows
+            .iter()
+            .map(|&row| (row, super::selection_document::row_leaves(self, row, look)))
+            .collect();
+        let changed_selected = {
+            let data = self.transcript_selection.data.borrow();
+            let selected = data.rows(self.transcript_selection.handle.snapshot(cx));
+            replacements.iter().any(|(row, source)| {
+                selected.contains(row)
+                    && data
+                        .source
+                        .iter()
+                        .filter(|leaf| leaf.row == *row)
+                        .ne(source.iter())
+            })
+        };
+        if clear_changed && changed_selected {
+            self.transcript_selection.clear(self.window_handle, cx);
+        }
+        replacements.sort_by_key(|(row, _)| std::cmp::Reverse(*row));
+        let mut data = self.transcript_selection.data.borrow_mut();
+        let mut changed = false;
+        for (row, source) in replacements {
+            for leaf in &source {
+                if !data.ids.contains_key(&leaf.key) {
+                    data.next_id = data
+                        .next_id
+                        .checked_add(1)
+                        .expect("transcript leaf identity exhausted");
+                    let id = data.next_id;
+                    data.ids.insert(leaf.key.clone(), id);
+                }
+            }
+            let start = data.source.partition_point(|leaf| leaf.row < row);
+            let end = data.source.partition_point(|leaf| leaf.row <= row);
+            changed |= data.source[start..end] != source;
+            data.source.splice(start..end, source);
+        }
+        if clear_changed && changed {
+            data.changed();
+        }
+    }
+
+    /// Elapsed activity text is the only selectable text changed by a timer.
+    pub(super) fn refresh_selection_timing(&mut self, cx: &mut Context<Self>) {
+        if self.transcript_selection.dirty.get() {
+            return;
+        }
+        self.transcript_selection.invalidate_search();
+        let updates: HashMap<_, _> = self
+            .visible
+            .iter()
+            .filter(|row| row.running && row.kind == super::display::RowKind::Activity)
+            .map(|row| (format!("header:{}", row.id), row.title.as_str()))
+            .collect();
+        let changed_selected = {
+            let data = self.transcript_selection.data.borrow();
+            let selected = data.rows(self.transcript_selection.handle.snapshot(cx));
+            data.source.iter().any(|leaf| {
+                selected.contains(&leaf.row)
+                    && updates
+                        .get(&leaf.key)
+                        .is_some_and(|text| leaf.text != *text)
+            })
+        };
+        if changed_selected {
+            self.transcript_selection.clear(self.window_handle, cx);
+        }
+        let mut data = self.transcript_selection.data.borrow_mut();
+        for leaf in &mut data.source {
+            if let Some(text) = updates.get(&leaf.key) {
+                if leaf.text != *text {
+                    leaf.text = (*text).to_owned();
+                }
+            }
+        }
+    }
+
     pub(super) fn refresh_selection_document(&mut self, look: Look, cx: &mut Context<Self>) {
         self.validate_pending_feedback();
         if !self.transcript_selection.dirty.replace(false)
             && self.transcript_selection.data.borrow().native == Some(look.native)
+            && self.transcript_selection.data.borrow().container_width == self.composer_width.get()
         {
             return;
         }
-        let source = super::selection_document::leaves(self, look);
+        if self.transcript_selection.data.borrow().native != Some(look.native)
+            || self.transcript_selection.data.borrow().container_width != self.composer_width.get()
+        {
+            self.transcript_selection.invalidate_sources();
+            self.transcript_selection.invalidate_search();
+        }
+        let _timing = super::perf::Span::new("selection-document");
+        let source = super::selection_document::mounted_leaves(self);
         let changed_selected = {
             let old = self.transcript_selection.data.borrow();
             self.transcript_selection
@@ -423,8 +665,9 @@ impl ChatView {
                 data.ids.insert(leaf.key.clone(), id);
             }
         }
-        data.replace_source(source);
+        data.source = source;
         data.native = Some(look.native);
+        data.container_width = self.composer_width.get();
         drop(data);
         self.validate_pending_feedback();
     }
@@ -454,7 +697,16 @@ impl ChatView {
         // Query our source projection directly: Base's multi-participant
         // compositor filters whitespace-only contributions before Root Copy.
         let snapshot = self.transcript_selection.handle.snapshot(cx);
-        let text = self.transcript_selection.data.borrow().export(snapshot);
+        if snapshot.is_none() {
+            cx.propagate();
+            return;
+        }
+        let source = super::selection_document::leaves(self, Look::of(cx));
+        let text = self
+            .transcript_selection
+            .data
+            .borrow()
+            .export_complete(snapshot, &source);
         if text.is_empty() {
             cx.propagate();
         } else {
@@ -475,7 +727,10 @@ impl ChatView {
                 .iter()
                 .all(|(other, _)| other.end <= range.start || other.start >= range.end)
             {
-                if highlights.is_empty() {
+                if highlights
+                    .iter()
+                    .all(|(other, _)| other.end <= range.start || other.start >= range.end)
+                {
                     highlights.push((
                         range.clone(),
                         HighlightStyle {
@@ -487,6 +742,9 @@ impl ChatView {
                 links.push((range, target));
             }
         }
+        // GPUI derives text runs from highlights in order; a link highlight appended
+        // after a later markdown highlight would overlap runs and split a character.
+        highlights.sort_by_key(|(range, _)| range.start);
         links.sort_by_key(|(range, _)| range.start);
         let file_actions = self.file_actions_button(
             key,
@@ -506,6 +764,8 @@ impl ChatView {
                 .map(|(_, target)| target)
                 .collect::<Vec<_>>();
             let view = cx.weak_entity();
+            // The leaf's source item disambiguates repeated paths in different turns.
+            let owner = self.selection_owner(key).map(str::to_owned);
             let handle = self.transcript_selection.handle.clone();
             let data = self.transcript_selection.data.clone();
             InteractiveText::new(ElementId::Name(format!("links:{key}").into()), styled)
@@ -522,10 +782,8 @@ impl ChatView {
                         if crate::terminal_links::is_openable_url(target) {
                             cx.open_url(target);
                         } else {
-                            let _ = view.update(cx, |_, cx| {
-                                cx.emit(super::ChatViewEvent::OpenFile {
-                                    target: target.clone(),
-                                })
+                            let _ = view.update(cx, |view, cx| {
+                                view.preview_reference(target, owner.as_deref(), cx)
                             });
                         }
                     }
@@ -549,8 +807,48 @@ impl ChatView {
             .test_support()
             .into_any_element()
     }
+
+    /// Keys carry the owner's stable ID. Resolve bounded key prefixes through
+    /// the model index, rather than formatting every item ID on every frame.
+    fn selection_owner<'a>(&self, key: &'a str) -> Option<&'a str> {
+        [
+            "",
+            "user:",
+            "code:",
+            "code:user:",
+            "header:",
+            "thought:",
+            "command:",
+            "file-header:",
+            "output:",
+            "tool-input:",
+            "tool-output:",
+            "diff:",
+            "artifact:",
+            "attachment:",
+            "callout:",
+            "tool-view:",
+            "path:answer-file:",
+            "diff:answer-file:",
+        ]
+        .into_iter()
+        .filter_map(|prefix| key.strip_prefix(prefix))
+        .filter_map(|candidate| {
+            if self.projected_item(candidate).is_some() {
+                return Some(candidate);
+            }
+            candidate
+                .char_indices()
+                .rev()
+                .filter(|(_, c)| matches!(c, '/' | '#' | ':'))
+                .map(|(at, _)| &candidate[..at])
+                .find(|id| self.projected_item(id).is_some())
+        })
+        .max_by_key(|id| id.len())
+    }
 }
 
+/// Preserve link/error styling while giving GPUI separate runs for a font span.
 struct LeafRenderer {
     body: AnyElement,
     key: String,
@@ -566,7 +864,6 @@ impl IntoElement for LeafRenderer {
 }
 impl Element for LeafRenderer {
     type RequestLayoutState = ();
-    /// The leaf's place in the source, which find's matches are recorded by.
     type PrepaintState = Option<usize>;
     fn id(&self) -> Option<ElementId> {
         Some(ElementId::Name(format!("leaf:{}", self.key).into()))
@@ -594,8 +891,7 @@ impl Element for LeafRenderer {
     ) -> Option<usize> {
         self.body.prepaint(window, cx);
         let mut data = self.data.borrow_mut();
-        let order = data.source.iter().position(|leaf| leaf.key == self.key);
-        if let Some(order) = order {
+        if let Some(order) = data.source.iter().position(|leaf| leaf.key == self.key) {
             debug_assert_eq!(
                 data.source[order].text.as_str(),
                 self.text.as_ref(),
@@ -610,7 +906,9 @@ impl Element for LeafRenderer {
                 order: order as u64,
             });
         }
-        order
+        data.search_source
+            .iter()
+            .position(|leaf| leaf.key == self.key && leaf.text == self.text.as_ref())
     }
     fn paint(
         &mut self,
@@ -622,8 +920,7 @@ impl Element for LeafRenderer {
         window: &mut Window,
         cx: &mut App,
     ) {
-        // Find's matches go under the glyphs and over the card or code background, so the
-        // text stays as it is drawn and nothing is in the way of a click or a selection.
+        // Paint Find under glyphs but over the surrounding output/container.
         if let Some(order) = *order {
             let mut data = self.data.borrow_mut();
             let data = &mut *data;

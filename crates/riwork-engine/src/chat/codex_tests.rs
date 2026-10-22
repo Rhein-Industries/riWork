@@ -191,7 +191,10 @@ fn a_whole_turn_becomes_items_usage_and_states() {
 
     let transcript = run.transcript();
     let item = |id: &str, body: ItemBody| Item {
+        started_at: None,
+        ended_at: None,
         presentation: crate::chat::model::Presentation {
+            semantics: super::super::semantics::classify_body(&body),
             phase: matches!(body, ItemBody::AgentMessage { .. })
                 .then_some(crate::chat::model::MessagePhase::Final),
             images: vec![],
@@ -381,6 +384,7 @@ fn questions_and_permission_requests_are_answered_by_request_id() {
         panic!("{events:#?}");
     };
     assert_eq!(question.request_id, "5");
+    assert_eq!(question.item_id.as_deref(), Some("call-1"));
     assert_eq!(question.questions.len(), 2);
     assert_eq!(question.questions[0].header.as_deref(), Some("Schema"));
     assert_eq!(
@@ -415,7 +419,8 @@ fn questions_and_permission_requests_are_answered_by_request_id() {
         .unwrap();
     let events = run.until(is_approval);
     assert!(events.contains(&ChatEvent::QuestionResolved {
-        request_id: "5".into()
+        request_id: "5".into(),
+        answer_summary: Some("Strict (Recommended); no thanks".into()),
     }));
     let approval = approval_of(&events);
     assert_eq!(approval.kind, ApprovalKind::Permissions);
@@ -442,7 +447,8 @@ fn interrupt_asks_codex_to_stop_the_turn_and_closes_what_it_left_open() {
         events.last(),
         Some(&ChatEvent::TurnCompleted {
             turn_id: "turn-1".into(),
-            outcome: TurnOutcome::Interrupted
+            outcome: TurnOutcome::Interrupted,
+            ended_at: None,
         })
     );
     run.until(is_state(ChatState::Idle));
@@ -840,7 +846,8 @@ fn a_failed_turn_says_why_once() {
             turn_id: "turn-1".into(),
             outcome: TurnOutcome::Failed {
                 message: "usage limit reached".into()
-            }
+            },
+            ended_at: None,
         })
     );
     run.until(is_state(ChatState::Idle));
@@ -901,7 +908,10 @@ fn a_crash_mid_turn_fails_the_turn_and_the_chat_with_the_reason() {
     let mut run = Run::start("crash");
     run.send("crash");
     let events = run.until(is_turn_completed);
-    let Some(ChatEvent::TurnCompleted { turn_id, outcome }) = events.last() else {
+    let Some(ChatEvent::TurnCompleted {
+        turn_id, outcome, ..
+    }) = events.last()
+    else {
         panic!("{events:#?}");
     };
     assert_eq!(turn_id, "turn-1");

@@ -18,6 +18,8 @@ enum AttachmentSource: @unchecked Sendable {
     case camera(Data)
     /// What a paste found on the pasteboard.
     case pasted(NSItemProvider)
+    /// A sandbox copy supplied by a drop, bounded before its bytes are read.
+    case dropped(DroppedAttachment)
 
     /// What its card shows before the file is read: a photo is a picture; a file from Files or the pasteboard has its name.
     var placeholder: (kind: StagedAttachment.Kind, name: String) {
@@ -26,6 +28,8 @@ enum AttachmentSource: @unchecked Sendable {
         case .file(let url): (StagedAttachment.kind(mediaType: nil, name: url.lastPathComponent), url.lastPathComponent)
         case .pasted(let provider):
             (PasteboardAttachments.fileType(of: provider)?.conforms(to: .image) == true ? .image : .file, provider.suggestedName ?? "Pasted item")
+        case .dropped(let item):
+            (item.type.conforms(to: .image) ? .image : .file, item.name)
         }
     }
 
@@ -57,6 +61,14 @@ enum AttachmentSource: @unchecked Sendable {
             var name = provider.suggestedName ?? fallback
             if (name as NSString).pathExtension.isEmpty, let ext = type.preferredFilenameExtension { name += "." + ext }
             return PhotoPreparation.prepare(data, name: name, typeIdentifier: type.identifier, reencode: type.conforms(to: .image))
+        case .dropped(let item):
+            let url = try await item.file.value()
+            defer { item.removeCopy() }
+            try Task.checkCancellation()
+            let data = try await Task.detached { try Data(contentsOf: url) }.value
+            try Task.checkCancellation()
+            guard data.count <= item.maximumBytes else { throw UploadError.tooLarge(name: item.name, limit: item.maximumBytes) }
+            return PhotoPreparation.prepare(data, name: url.lastPathComponent, typeIdentifier: item.type.identifier, reencode: item.reencode)
         }
     }
 }
@@ -328,6 +340,7 @@ struct ChatAttachmentCard: View {
     let open: () -> Void
     let remove: () -> Void
 
+    @State private var thumbnail: UIImage?
     private var side: CGFloat { style.pt(64) }
     private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: style.native ? style.pt(12) : 4, style: .continuous) }
 
@@ -339,6 +352,12 @@ struct ChatAttachmentCard: View {
             .overlay(alignment: .bottom) { if expired, card.kind == .image { expiredBadge } }
             .overlay(alignment: .topTrailing) { ChatCardCloseButton(label: "Remove \(card.name)", action: remove) }
             .accessibilityIdentifier(expired ? "attachment-card-expired" : "attachment-card")
+            .task(id: card.id) {
+                guard card.kind == .image else { return }
+                let decoded = await ChatAttachmentImageCache.image(images.thumbnailURL(card.id))
+                guard !Task.isCancelled else { return }
+                thumbnail = decoded
+            }
     }
     /// The Mac no longer has the file (`StagedAttachment.isExpired`): said on the card, and its path is not sent.
     private var expiredBadge: some View {
@@ -351,7 +370,7 @@ struct ChatAttachmentCard: View {
     }
     @ViewBuilder private func content(expired: Bool) -> some View {
         let spoken = expired ? ", expired on the Mac, attach it again" : ""
-        if card.kind == .image, let thumbnail = ChatAttachmentImageCache.image(images.thumbnailURL(card.id)) {
+        if card.kind == .image, let thumbnail {
             Button(action: open) {
                 Image(uiImage: thumbnail).resizable().scaledToFill()
                     .frame(width: side, height: side).clipShape(shape).contentShape(shape)
@@ -452,10 +471,13 @@ struct ChatCardCloseButton: View {
 /// The cards' thumbnails, read once from disk.
 @MainActor enum ChatAttachmentImageCache {
     private static let cache = NSCache<NSURL, UIImage>()
-    static func image(_ url: URL) -> UIImage? {
+    static func image(_ url: URL) async -> UIImage? {
         if let known = cache.object(forKey: url as NSURL) { return known }
-        guard let image = UIImage(contentsOfFile: url.path) else { return nil }
-        cache.setObject(image, forKey: url as NSURL)
+        let image = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            return ChatFileBytes.decode(data, maxPixelSize: 256)
+        }.value
+        if let image { cache.setObject(image, forKey: url as NSURL) }
         return image
     }
 }
@@ -509,7 +531,12 @@ struct ChatAttachmentPreview: View {
         .preferredColorScheme(.dark)
         .task(id: url) {
             let url = url
-            image = await Task.detached(priority: .userInitiated) { UIImage(contentsOfFile: url.path) }.value
+            let decoded = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+                guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+                return ChatFileBytes.decode(data, maxPixelSize: nil)
+            }.value
+            guard !Task.isCancelled, self.url == url else { return }
+            image = decoded
         }
     }
 }

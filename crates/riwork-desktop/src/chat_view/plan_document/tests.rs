@@ -110,6 +110,8 @@ fn mount(
                 .unwrap(),
             );
             view.model.transcript.items = vec![Item {
+                started_at: None,
+                ended_at: None,
                 id: "plan".into(),
                 turn_id: Some("turn".into()),
                 status: ItemStatus::Completed,
@@ -121,6 +123,8 @@ fn mount(
             }];
             view.composer
                 .update(cx, |state, cx| state.set_value("keep my draft", window, cx));
+            // A plan is a projected call; its document is drawn while the call is open.
+            view.disclosure.overrides.insert("plan".into(), true);
             view.refresh_projection(cx);
             view.list.remeasure();
             cx.notify();

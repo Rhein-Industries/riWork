@@ -50,6 +50,8 @@ fn done(tail: &str) -> Option<WorkerFinal> {
 fn message(id: &str, text: &str) -> ChatEvent {
     ChatEvent::ItemCompleted {
         item: Item {
+            started_at: None,
+            ended_at: None,
             presentation: Default::default(),
             id: id.into(),
             turn_id: Some("turn".into()),
@@ -135,6 +137,7 @@ fn worker_appears_updates_and_collapses_without_taking_composer_focus(cx: &mut T
         &view,
         vec![
             ChatEvent::TurnStarted {
+                started_at: None,
                 turn_id: "turn".into(),
             },
             message("before", "Start a worker."),
@@ -631,6 +634,11 @@ fn the_running_indicator_jumps_to_a_card_out_of_view_and_only_the_latest_card_is
 ) {
     let (handle, view, _recording) = editor_tests::mount(cx);
     live_chat(cx, &view);
+    // These geometry checks retain transcript order; Normal's turn layout
+    // intentionally places the worker after its same-turn user rows.
+    view.update(cx, |view, cx| {
+        view.apply_display_mode(DisplayMode::Verbose, cx)
+    });
     let mut events = vec![marker("worker:w", "w", false, None)];
     events.extend((0..40).map(|n| message(&format!("m{n}"), &format!("Paragraph {n}\n\nmore"))));
     arrive(cx, handle, &view, events);
@@ -660,7 +668,7 @@ fn the_running_indicator_jumps_to_a_card_out_of_view_and_only_the_latest_card_is
             .collect(),
     );
     cx.update_window(handle.into(), |_, window, cx| {
-        view.update(cx, |view, cx| {
+        view.update(cx, |view, _| {
             view.list.set_follow_mode(gpui::FollowMode::Tail)
         });
         window.render_frame(cx);
@@ -760,6 +768,11 @@ fn a_card_that_ends_below_keeps_a_reader_where_they_are(cx: &mut TestAppContext)
 fn a_card_at_the_top_of_the_view_that_ends_keeps_the_view_there(cx: &mut TestAppContext) {
     let (handle, view, _recording) = editor_tests::mount(cx);
     live_chat(cx, &view);
+    // These geometry checks retain transcript order; Normal's turn layout
+    // intentionally places the worker after its same-turn user rows.
+    view.update(cx, |view, cx| {
+        view.apply_display_mode(DisplayMode::Verbose, cx)
+    });
     let mut events: Vec<_> = (0..10)
         .map(|n| message(&format!("m{n}"), &format!("Paragraph {n}\n\nmore")))
         .collect();
@@ -767,9 +780,9 @@ fn a_card_at_the_top_of_the_view_that_ends_keeps_the_view_there(cx: &mut TestApp
     events.extend((10..40).map(|n| message(&format!("m{n}"), &format!("Paragraph {n}"))));
     arrive(cx, handle, &view, events);
     let card_row = view.read_with(cx, |view, _| {
-        view.visible
+        view.list_rows
             .iter()
-            .position(|row| *row == display::Row::Item(10))
+            .position(|row| row.row.id == "worker:w")
             .unwrap()
     });
     cx.update_window(handle.into(), |_, window, cx| {
@@ -815,8 +828,8 @@ fn markers_are_rows_in_every_display_mode_and_live_state_without_a_card_draws_no
     );
     view.read_with(cx, |view, _| {
         for mode in [DisplayMode::Verbose, DisplayMode::default()] {
-            let rows = display::rows(&view.model.transcript, &view.model.completed, mode);
-            assert!(rows.contains(&display::Row::Item(0)), "{mode:?}");
+            let rows = display::rows(&view.model.transcript, mode, &Default::default(), None);
+            assert!(display::find(&rows, "worker:w").is_some(), "{mode:?}");
         }
     });
     cx.update_window(handle.into(), |_, window, cx| {
@@ -841,7 +854,7 @@ fn provider_delegation_has_a_structured_header_and_expandable_result(cx: &mut Te
         let mut info = testing::info("fixture-chat"); info.provider = Provider::Claude;
         view.adopt_info_for_tests(info);
         view.model.link = Link::Live;
-        view.model.transcript.apply(&ChatEvent::ItemCompleted {item:Item {id:"agent".into(),turn_id:Some("turn".into()),status:ItemStatus::Completed,
+        view.model.transcript.apply(&ChatEvent::ItemCompleted {item:Item { started_at: None, ended_at: None,id:"agent".into(),turn_id:Some("turn".into()),status:ItemStatus::Completed,
             body:ItemBody::ToolCall {server:None,tool:"Agent".into(),input:serde_json::json!({"subagent_type":"Explore","description":"Find the handler"}),output:Some("Found in router.rs".into())},presentation:Default::default() }});
         view.refresh_projection(cx);
         cx.notify();

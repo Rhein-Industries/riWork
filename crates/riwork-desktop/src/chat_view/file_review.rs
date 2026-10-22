@@ -391,10 +391,10 @@ impl ChatView {
             }) {
                 return;
             }
-            let rect = view.transcript_selection.with_source(|source| {
+            let rect = view.transcript_selection.with_selection_source(|source| {
                 let at = source.iter().position(|leaf| leaf.key == key)?;
                 let end = source[at].text.chars().next().map_or(0, char::len_utf8);
-                view.transcript_selection.painted_rect(at, 0..end)
+                view.transcript_selection.selection_painted_rect(at, 0..end)
             });
             if let Some(rect) = rect {
                 let mut moved = view.scroll_box_to(&key, rect);

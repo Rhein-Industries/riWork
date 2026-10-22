@@ -3,8 +3,8 @@
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, ElementId, Pixels, Point, ScrollHandle, SharedString,
-    div, prelude::*, pulsating_between, px, rgb,
+    Animation, AnimationExt, AnyElement, App, ElementId, PathBuilder, Pixels, Point, ScrollHandle,
+    SharedString, canvas, div, point, prelude::*, pulsating_between, px, rgb,
 };
 
 use crate::{
@@ -64,7 +64,6 @@ impl Look {
             Tone::Muted => self.colors.muted,
             Tone::Accent => self.colors.working,
             Tone::Warning => self.colors.gold,
-            Tone::Error if self.native => self.colors.gold,
             Tone::Error => self.diff.removed,
         }
     }
@@ -114,7 +113,7 @@ pub(super) fn button(
     }
     let ink = accent.unwrap_or(colors.text);
     behavior::button_content(id, label.clone(), label)
-        .line_height(gpui::relative(1.618_034))
+        .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
         .focus_visible(move |style| style.border_color(rgb(colors.focus)))
         .flex_none()
         .px(ui_text::space(8.0))
@@ -141,7 +140,7 @@ pub(super) fn dimmed(
         return capsule(id, label, Button::Disabled, look);
     }
     behavior::button_content(id, label.clone(), label)
-        .line_height(gpui::relative(1.618_034))
+        .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
         .disabled(true)
         .flex_none()
         .px(ui_text::space(8.0))
@@ -156,7 +155,7 @@ pub(super) fn dimmed(
 /// The vertical padding of a `capsule` (and of the colorful themes' `button`) inside its
 /// hairline edge, which sets the height of the toolbar's controls; a `segments` track is
 /// built to the same height from it.
-pub(super) const CAPSULE_PAD_Y: f32 = 3.0;
+pub(super) use crate::controls::TOOLBAR_CAPSULE_PAD_Y as CAPSULE_PAD_Y;
 
 /// Native's push button at the chat's size, without its hover. Its children line up in a
 /// row, so a caller can add a symbol after the label.
@@ -166,20 +165,7 @@ pub(super) fn capsule(
     kind: Button,
     look: Look,
 ) -> behavior::Button {
-    let label = label.into();
-    controls::button(
-        behavior::button_content(id, label.clone(), label)
-            .line_height(gpui::relative(1.618_034))
-            .disabled(kind == Button::Disabled)
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(ui_text::space(4.0))
-            .py(ui_text::space(CAPSULE_PAD_Y))
-            .text_size(ui_text::text(10.0)),
-        kind,
-        look.colors,
-    )
+    controls::toolbar_capsule(id, label, kind, look.colors)
 }
 
 /// A segmented control's track: one continuous pill in the toolbar's grey control fill,
@@ -293,7 +279,7 @@ pub(super) fn segment(
         });
     behavior::toggle_content(id, label.clone(), pill, selected)
         .group(id)
-        .line_height(gpui::relative(1.618_034))
+        .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
         .flex_none()
         .rounded_full()
         // The margin: a hairline that shows only as the keyboard focus ring, and the rest.
@@ -330,22 +316,7 @@ pub(super) fn symbol_button_sized(
     look: Look,
     side: Pixels,
 ) -> behavior::Button {
-    let name = tooltip.into();
-    bare_symbol(
-        behavior::button_content(
-            id,
-            name.clone(),
-            icons::symbol_in_box(
-                symbol,
-                controls::TOOLBAR_SYMBOL,
-                None,
-                (side - px(4.0)).max(px(1.0)),
-            ),
-        ),
-        name,
-        look,
-    )
-    .size(side)
+    controls::toolbar_symbol_button(id, symbol, tooltip, true, look.colors, side)
 }
 
 /// A `symbol_button` that stays pressed while `pressed`, such as the message box's mic.
@@ -401,20 +372,7 @@ fn bare_symbol<E: Styled + InteractiveElement + ParentElement>(
     name: SharedString,
     look: Look,
 ) -> E {
-    let colors = look.colors;
-    control
-        .line_height(gpui::relative(1.618_034))
-        .flex_none()
-        .size(ui_text::space(controls::TOOLBAR_BUTTON))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_full()
-        .text_color(rgb(colors.muted))
-        .cursor_pointer()
-        .hover(move |style| style.bg(rgb(colors.divider)).text_color(rgb(colors.text)))
-        .focus_visible(move |style| style.bg(rgb(colors.divider)).text_color(rgb(colors.focus)))
-        .child(crate::tooltip::anchor(name, crate::tooltip::Look::Control))
+    controls::toolbar_symbol_style(control, name, look.colors)
 }
 
 /// Native's round button with an SF Symbol and its name in a tooltip, as a message field's
@@ -458,7 +416,7 @@ pub(super) fn round_button_sized(
                 (side - px(4.0)).max(px(1.0)),
             ),
         )
-        .line_height(gpui::relative(1.618_034))
+        .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
         .disabled(kind == Button::Disabled)
         .flex_none()
         .size(side)
@@ -490,7 +448,7 @@ pub(super) const FIELD_TEXT: f32 = 12.0;
 /// The line box of an input box's text (GPUI's default line height, φ times the text size,
 /// rounded as GPUI rounds it), which the box sets explicitly.
 pub(super) fn field_line() -> Pixels {
-    px((f32::from(ui_text::text(FIELD_TEXT)) * 1.618_034).round())
+    px((f32::from(ui_text::text(FIELD_TEXT)) * std::f32::consts::GOLDEN_RATIO).round())
 }
 
 /// A button that copies something: `word` ("copy"), then "copied" once it has, in the
@@ -517,6 +475,36 @@ pub(super) fn copy_button(
     })
 }
 
+/// Consistent tool-container action, including colorful themes. The row owns reveal visibility.
+pub(super) fn tool_icon_action(
+    id: impl Into<ElementId>,
+    symbol: &'static str,
+    tooltip: impl Into<SharedString>,
+    enabled: bool,
+    look: Look,
+) -> behavior::Button {
+    let name = tooltip.into();
+    let colors = look.colors;
+    behavior::button_content(
+        id,
+        name.clone(),
+        icons::symbol(symbol, 11.0, Some(colors.muted)),
+    )
+    .disabled(!enabled)
+    .flex_none()
+    .size(px(20.0))
+    .p_0()
+    .flex()
+    .items_center()
+    .justify_center()
+    .rounded(px(4.0))
+    .text_color(rgb(colors.muted))
+    .cursor_pointer()
+    .hover(move |style| style.bg(rgb(colors.panel_active)))
+    .focus_visible(move |style| style.bg(rgb(colors.panel_active)).opacity(1.0))
+    .child(crate::tooltip::anchor(name, crate::tooltip::Look::Control))
+}
+
 /// Controlled Base toggle with the chat's existing button treatment.
 pub(super) fn toggle_button(
     id: impl Into<ElementId>,
@@ -540,7 +528,7 @@ pub(super) fn toggle_button_with_disabled(
     let colors = look.colors;
     let toggle = behavior::toggle_content(id, label.clone(), label, pressed)
         .disabled(disabled)
-        .line_height(gpui::relative(1.618_034))
+        .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
         .flex_none()
         .text_size(ui_text::text(10.));
     if look.native {
@@ -595,7 +583,7 @@ pub(super) fn content_button(
         .gap_0()
         .p_0()
         .items_stretch()
-        .line_height(gpui::relative(1.618_034))
+        .line_height(gpui::relative(std::f32::consts::GOLDEN_RATIO))
         .focus_visible(move |style| style.bg(rgb(colors.divider)))
 }
 
@@ -654,6 +642,45 @@ pub(super) fn pulse(id: impl Into<ElementId>, color: u32) -> AnyElement {
             |dot, level| dot.opacity(level),
         )
         .into_any_element()
+}
+
+/// A native-style indeterminate spinner, drawn locally rather than embedded in a title.
+pub(super) fn spinner(id: impl Into<ElementId>, color: u32) -> AnyElement {
+    let phase = Rc::new(Cell::new(0.0f32));
+    let paint_phase = phase.clone();
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let side = f32::from(bounds.size.width);
+            let center = bounds.origin + point(px(side * 0.5), px(side * 0.5));
+            let step = (paint_phase.get() * 12.0).floor() as usize;
+            for spoke in 0..12 {
+                let angle = std::f32::consts::TAU * spoke as f32 / 12.0;
+                let direction = point(px(angle.sin()), px(-angle.cos()));
+                let mut path = PathBuilder::stroke(px(side * 0.09));
+                path.move_to(center + direction * (side * 0.23));
+                path.line_to(center + direction * (side * 0.46));
+                if let Ok(path) = path.build() {
+                    let distance = (spoke + 12 - step % 12) % 12;
+                    let opacity = 0.22 + 0.78 * (12 - distance) as f32 / 12.0;
+                    window.paint_path(path, rgb(color).opacity(opacity));
+                }
+            }
+        },
+    )
+    .size(ui_text::space(11.0))
+    .flex_shrink_0()
+    .with_animation(
+        id,
+        Animation::new(Duration::from_millis(900))
+            .repeat_synced()
+            .with_max_fps(20.0),
+        move |spinner, progress| {
+            phase.set(progress);
+            spinner
+        },
+    )
+    .into_any_element()
 }
 
 /// The arrow at the start of a card that opens and closes; Native's is its chevron symbol.

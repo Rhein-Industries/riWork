@@ -22,6 +22,8 @@ fn item(patch: &str) -> Item {
                 diff: Some(patch.into()),
             }],
         },
+        started_at: None,
+        ended_at: None,
     }
 }
 fn act(cx: &mut TestAppContext, handle: Handle, f: impl FnOnce(&mut Window, &mut App)) {

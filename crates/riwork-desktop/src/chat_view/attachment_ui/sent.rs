@@ -18,12 +18,9 @@ use crate::{
     chat_view::{ImageScope, notices::LocalKey, widgets::Look},
     ui_text,
 };
-use gpui::{AnyElement, Context, RenderImage, div, img, prelude::*, rgb};
+use gpui::{AnyElement, Context, div, prelude::*, rgb};
 use gpui_kit::base::TestSupportExt as _;
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::path::{Path, PathBuf};
 
 /// A thumbnail's side in the transcript, in design points: the host's preview is at most 256
 /// pixels on a side, so at 2x it is drawn at its own size.
@@ -52,19 +49,6 @@ pub(in crate::chat_view) fn covered(item: &Item, image: &ChatImage) -> bool {
             if item.presentation.attachments.iter().any(|a| Path::new(path) == a.path))
 }
 
-/// The key and preview of each image a user message sent whose thumbnail `scope` lets it
-/// read.
-pub(in crate::chat_view) fn thumbnails<'a>(
-    item: &'a Item,
-    scope: &'a ImageScope,
-) -> impl Iterator<Item = (String, String)> + 'a {
-    matches!(item.body, ItemBody::UserMessage { .. })
-        .then_some(&item.presentation.attachments)
-        .into_iter()
-        .flatten()
-        .filter_map(move |a| Some((sent_key(item, a), preview(scope, a)?)))
-}
-
 fn sent_key(item: &Item, a: &Attachment) -> String {
     format!("{}:sent:{}", item.id, a.id)
 }
@@ -87,7 +71,7 @@ fn preview(scope: &ImageScope, a: &Attachment) -> Option<String> {
 
 /// What a sent file's card shows.
 enum Face<'a> {
-    Thumbnail(&'a Arc<RenderImage>),
+    Thumbnail,
     /// An image whose thumbnail is still being read.
     Reading,
     /// A card naming the file, with this status below its name.
@@ -110,6 +94,7 @@ impl ChatView {
         Some(
             div()
                 .w_full()
+                .max_w(ui_text::space(400.))
                 .flex()
                 .flex_wrap()
                 .gap(ui_text::space(8.))
@@ -138,17 +123,25 @@ impl ChatView {
         let key = sent_key(item, a);
         let radius = ui_text::space(card_radius(look));
         let size = size_text(a.bytes);
+        let preview = preview(&self.image_scope, a);
+        let thumbnail = preview.as_ref().map(|path| ChatImage {
+            label: a.name.clone(),
+            source: ImageSource::Local { path: path.clone() },
+        });
         let face = match a.kind {
             AttachmentKind::Text => Face::File(&size),
-            AttachmentKind::Image { .. } => match preview(&self.image_scope, a) {
+            AttachmentKind::Image { .. } => match preview {
                 Some(path) => match self.thumbnail(&key, &path) {
                     None => Face::Reading,
-                    Some(Ok(image)) => Face::Thumbnail(image),
+                    Some(Ok(_)) => Face::Thumbnail,
                     Some(Err(_)) => Face::File(UNAVAILABLE),
                 },
                 None => Face::File(UNAVAILABLE),
             },
         };
+        let thumbnail_element = thumbnail
+            .as_ref()
+            .map(|image| self.render_thumbnail(&key, image, gpui::ObjectFit::Contain, look, cx));
         let attachment = a.clone();
         let card = |content: AnyElement| {
             behavior::button_content(
@@ -174,25 +167,20 @@ impl ChatView {
             .on_click(cx.listener(move |view, _, _, cx| view.look_at_sent(&attachment, cx)))
         };
         match face {
-            Face::Thumbnail(image) => card(
+            Face::Thumbnail => card(
                 div()
                     .id(format!("sent-thumbnail:{key}"))
                     .role(gpui::Role::Image)
                     .aria_label(format!("Sent image: {}", a.name))
                     .size_full()
-                    .child(
-                        img(image.clone())
-                            .size_full()
-                            .rounded(radius)
-                            .object_fit(gpui::ObjectFit::Contain),
-                    )
+                    .child(thumbnail_element.expect("owned preview"))
                     .test_support()
                     .into_any_element(),
             )
             .size(ui_text::space(THUMB_SIDE)),
             // The square the thumbnail will fill.
             Face::Reading => {
-                card(div().size_full().into_any_element()).size(ui_text::space(THUMB_SIDE))
+                card(thumbnail_element.expect("owned preview")).size(ui_text::space(THUMB_SIDE))
             }
             Face::File(status) => card(file_card(&key, &a.name, status, look))
                 .h(ui_text::space(CARD_SIDE))

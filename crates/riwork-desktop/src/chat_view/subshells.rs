@@ -74,7 +74,7 @@ impl ChatView {
                     starting.insert(session.clone());
                 }
             }
-            self.remeasure_workers(&starting);
+            self.remeasure_workers(&starting, cx);
             if running || !starting.is_empty() {
                 cx.notify();
             }
@@ -100,29 +100,44 @@ impl ChatView {
             .collect();
         self.workers.live = live;
         self.workers.stale = stale;
-        self.remeasure_workers(&changed);
+        self.remeasure_workers(&changed, cx);
         self.schedule_worker_summaries(cx);
         cx.notify();
     }
 
     /// Only the cards of these workers are measured again: the rest of the transcript, a
     /// selection in it and where the reader is all stay as they were.
-    fn remeasure_workers(&self, sessions: &HashSet<String>) {
+    fn remeasure_workers(&mut self, sessions: &HashSet<String>, cx: &mut Context<Self>) {
         if sessions.is_empty() {
             return;
         }
         let rows: Vec<usize> = self
-            .visible
+            .list_rows
             .iter()
             .enumerate()
-            .filter_map(|(row, shown)| match shown {
-                display::Row::Item(at) | display::Row::Details(at) => {
-                    let worker = workers::of(&self.model.transcript.items[*at])?;
-                    sessions.contains(&worker.session_id).then_some(row)
-                }
-                _ => None,
+            .filter_map(|(row, shown)| {
+                let (_, item) = self.projected_item(&shown.row.id)?;
+                let worker = workers::of(item)?;
+                sessions.contains(&worker.session_id).then_some(row)
             })
             .collect();
+        if rows.is_empty() {
+            return;
+        }
+        self.transcript_selection.invalidate_search();
+        let mounted: Vec<_> = rows
+            .iter()
+            .copied()
+            .filter(|at| {
+                self.transcript_selection
+                    .source_was_mounted(&self.list_rows[*at].row.id)
+            })
+            .collect();
+        for at in &rows {
+            self.transcript_selection
+                .invalidate_source(&self.list_rows[*at].row.id);
+        }
+        self.refresh_selection_rows(&mounted, Look::of(cx), cx);
         for row in rows {
             self.list.remeasure_items(row..row + 1);
         }
@@ -145,9 +160,13 @@ impl ChatView {
         self.workers.latest = latest;
         self.reindex_provider_workers();
         for at in superseded {
-            if let Some(row) = self.visible.iter().position(
-                |row| matches!(row, display::Row::Item(i) | display::Row::Details(i) if *i == at),
-            ) {
+            if let Some(row) = self
+                .model
+                .transcript
+                .items
+                .get(at)
+                .and_then(|item| self.list_rows.iter().position(|row| row.row.id == item.id))
+            {
                 self.list.remeasure_items(row..row + 1);
             }
         }
@@ -173,17 +192,17 @@ impl ChatView {
     pub(super) fn workers_out_of_view(&self) -> (usize, Option<(usize, bool)>) {
         let mut count = 0;
         let mut first = None;
-        for (row, shown) in self.visible.iter().enumerate() {
-            let display::Row::Item(at) = shown else {
+        for (row, shown) in self.list_rows.iter().enumerate() {
+            let Some((at, item)) = self.projected_item(&shown.row.id) else {
                 continue;
             };
-            let Some(worker) = workers::of(&self.model.transcript.items[*at]) else {
+            let Some(worker) = workers::of(item) else {
                 continue;
             };
-            if !self.worker_status(*at, worker).running() {
+            if !self.worker_status(at, worker).running() {
                 continue;
             }
-            let item = &self.model.transcript.items[*at].id;
+            let item = &item.id;
             let mut places = self.workers.places.borrow_mut();
             let known = places.get(item).copied();
             let place = match (
@@ -600,7 +619,6 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = look.colors;
-        let session = worker.session_id.clone();
         let mut about = vec![
             worker.harness.clone().unwrap_or_else(|| "Worker".into()),
             live.and_then(|live| live.model.clone())

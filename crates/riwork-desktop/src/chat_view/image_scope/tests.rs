@@ -513,7 +513,7 @@ fn data_and_url_images_are_read_as_before_whatever_the_scope() {
 mod mounted {
     use super::*;
     use crate::chat::{
-        model::{ChatEvent, Item, ItemBody, ItemStatus, MessagePhase, Presentation},
+        model::{ChatEvent, Item, ItemBody, ItemStatus, Presentation},
         wire::Envelope,
     };
     use gpui::{AppContext as _, TestAppContext};
@@ -598,9 +598,8 @@ mod mounted {
         let info = fixture.chat(Some(ALPHA), Some("alpha-main"), &fixture.alpha, None);
         let snapshot = sent(&fixture.home, CHAT, &fixture.alpha.join("shot.png"));
         let item = Item {
-            // A final answer: Normal mode shows it, with its images.
+            // User-message images use the image cards in the projected renderer.
             presentation: Presentation {
-                phase: Some(MessagePhase::Final),
                 images: vec![
                     local(&fixture.feature.join("my shot ü.png")),
                     local(&fixture.alpha.join("shot.png")),
@@ -608,10 +607,12 @@ mod mounted {
                 ],
                 ..Presentation::default()
             },
+            started_at: None,
+            ended_at: None,
             id: "item-1".into(),
             turn_id: None,
             status: ItemStatus::Completed,
-            body: ItemBody::AgentMessage {
+            body: ItemBody::UserMessage {
                 text: "Here are the screenshots.".into(),
             },
         };

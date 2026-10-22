@@ -438,6 +438,12 @@ impl ChatView {
     fn find_matches(&mut self, jump: bool, window: &mut Window, cx: &mut Context<Self>) {
         let look = Look::of(cx);
         self.refresh_selection_document(look, cx);
+        // Selection keeps only mounted bodies. Find traverses every disclosed
+        // virtual row, and later maps its hits to painted glyphs by stable key.
+        if self.find.searched != Some(self.transcript_selection.generation()) {
+            let source = super::selection_document::leaves(self, look);
+            self.transcript_selection.set_search_source(source);
+        }
         let query = fold_query(&self.find.input.read(cx).value());
         let generation = self.transcript_selection.generation();
         if query.is_empty() {
@@ -599,6 +605,44 @@ impl ChatView {
         cx.notify();
     }
 
+    /// A display mode change closes every disclosure. The rows the current match is
+    /// drawn in stay open in the new mode, as Find opened them to reveal it.
+    pub(super) fn keep_find_disclosures(&mut self) {
+        fn path(rows: &[super::display::Row], id: &str, out: &mut Vec<String>) -> bool {
+            for row in rows {
+                if row.id == id || path(&row.children, id, out) {
+                    out.push(row.id.clone());
+                    return true;
+                }
+                // Comments sit beside a disclosure, so they do not need it open.
+                if path(&row.comments, id, out) {
+                    return true;
+                }
+            }
+            false
+        }
+        let Some(owner) = self
+            .find
+            .current
+            .filter(|_| self.find.open)
+            .and_then(|at| self.find.hits.get(at))
+            .and_then(|hit| self.find.source.leaves.get(hit.leaf))
+            .and_then(|leaf| self.find.source.owners.get(&leaf.key))
+            .cloned()
+        else {
+            return;
+        };
+        let mut rows = Vec::new();
+        path(&self.visible, &owner, &mut rows);
+        for id in rows {
+            if super::display::find(&self.visible, &id)
+                .is_some_and(|row| row.open && super::display::disclosure(row))
+            {
+                self.disclosure.overrides.insert(id, true);
+            }
+        }
+    }
+
     fn start_reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_review_jump();
         if self.file_review.is_none() {
@@ -653,9 +697,28 @@ impl ChatView {
             return;
         };
         let mut opened = false;
-        if let Some(keys) = self.find.source.disclosures.get(&key) {
-            for key in keys {
-                opened |= self.open.insert(key.clone());
+        let needed = self
+            .find
+            .source
+            .disclosures
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        for needed in needed {
+            // Projected rows open through their disclosure; body details through `open`.
+            if let Some(row) = super::display::find(&self.visible, &needed)
+                .filter(|row| super::display::disclosure(row))
+            {
+                if !row.open {
+                    self.disclosure.overrides.insert(needed, true);
+                    opened = true;
+                }
+            } else if self.open.insert(needed) {
+                opened = true;
+                // The row's cached selection source was built without this detail.
+                if let Some(owner) = self.find.source.owners.get(&key) {
+                    self.transcript_selection.invalidate_source(owner);
+                }
             }
         }
         if opened {
@@ -733,8 +796,17 @@ impl ChatView {
                 .scrollers
                 .get(key)
                 .or_else(|| {
-                    let file = key.strip_prefix("diff:")?.rsplit_once(':')?.0;
-                    caches.scrollers.get(&format!("diff:{file}"))
+                    // Output containers share a scroll handle across their stable
+                    // per-line leaves; diffs do the same for each changed file.
+                    ["output:", "tool-output:", "diff:"]
+                        .into_iter()
+                        .filter_map(|prefix| {
+                            let rest = key.strip_prefix(prefix)?;
+                            let (owner, line) = rest.rsplit_once(':')?;
+                            line.parse::<usize>().ok()?;
+                            caches.scrollers.get(&format!("{prefix}{owner}"))
+                        })
+                        .next()
                 })
                 .or_else(|| {
                     let item = key.strip_prefix("tool-view:")?.rsplit_once(':')?.0;

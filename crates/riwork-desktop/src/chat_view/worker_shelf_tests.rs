@@ -55,6 +55,8 @@ fn install(view: &mut ChatView, items: Vec<Item>, cx: &mut Context<ChatView>) {
 
 fn delegation(id: &str, operation: &str, states: serde_json::Value, purpose: Option<&str>) -> Item {
     Item {
+        started_at: None,
+        ended_at: None,
         id: id.into(),
         turn_id: Some("current".into()),
         status: ItemStatus::Completed,
@@ -296,6 +298,8 @@ fn unknown_background_delegation_is_not_active_and_retires_with_its_turn(cx: &mu
             view.model.link = Link::Live;
             view.model.transcript.apply(&ChatEvent::ItemCompleted {
                 item: Item {
+                    started_at: None,
+                    ended_at: None,
                     id: "background-agent".into(),
                     turn_id: Some("previous-turn".into()),
                     status: ItemStatus::Completed,
@@ -332,6 +336,7 @@ fn unknown_background_delegation_is_not_active_and_retires_with_its_turn(cx: &mu
         );
         view.update(cx, |view, cx| {
             view.model.transcript.apply(&ChatEvent::TurnStarted {
+                started_at: None,
                 turn_id: "new-turn".into(),
             });
             view.refresh_projection(cx);
@@ -353,7 +358,22 @@ fn shelf_details_preserve_transcript_actions_and_message_draft(cx: &mut TestAppC
     let (handle, view, _recording) = editor_tests::mount(cx);
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |view, cx| {
-            install(view, vec![worker("w")], cx);
+            view.display_mode = DisplayMode::Verbose;
+            let mut nested = worker("w");
+            nested.presentation.parent_id = Some("parent".into());
+            install(
+                view,
+                vec![
+                    delegation(
+                        "parent",
+                        "spawnAgent",
+                        json!({"child":{"status":"running"}}),
+                        Some("Review with a worker"),
+                    ),
+                    nested,
+                ],
+                cx,
+            );
             view.set_subshells(
                 BTreeMap::from([("w".into(), live(LiveStatus::Working, "Reviewing"))]),
                 None,
@@ -369,9 +389,16 @@ fn shelf_details_preserve_transcript_actions_and_message_draft(cx: &mut TestAppC
         window.click("shelf-worker:worker:w", cx);
         window.render_frame(cx);
         assert!(window.find("shelf-detail:worker:w").visible());
+        assert!(window.try_find("worker-open:w").is_none());
+        window.click("shelf-reveal:worker:w", cx);
+        window.render_frame(cx);
+        view.read_with(cx, |view, _| {
+            assert!(display::find(&view.visible, "parent").unwrap().open);
+            assert!(!display::find(&view.visible, "marker:w").unwrap().open);
+        });
         assert!(
             window.find("worker-open:w").visible(),
-            "the timeline keeps its action"
+            "In chat reveals the nested card without opening its own result"
         );
         window.click("shelf-message:w", cx);
         window.render_frame(cx);

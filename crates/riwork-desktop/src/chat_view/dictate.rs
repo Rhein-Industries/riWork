@@ -1,20 +1,22 @@
-//! Dictation into the message box: the mic button and ⌃⌥D start and stop it, ⎋ cancels it,
-//! the words appear at the caret as they are heard, and it stops by itself after a pause.
-//! Dictation never sends the message. The rules are `dictation::Machine`'s; this runs them
+//! Dictation into the message box: the mic button and ⌃⌥D toggle it; ⎋ stops and keeps its words.
+//! the words appear at the caret as they are heard, until the person stops it.
+//! Send/Return settle speech before sending once. The rules are `dictation::Machine`'s; this runs them
 //! against the helper process and the box. All of it is there only while Settings shows the
 //! mic in chats (`mic_shown`): otherwise the button, the key and the hints are gone, and no
 //! helper is started, so nothing asks for the microphone.
 
-use std::time::{Duration, Instant};
-
 use gpui::{App, Context, Focusable, Global, Task, WeakEntity, Window};
 
 use crate::{
-    dictation::{self, Effect, Engine, Event, Insertion, Machine, Phase, Sources},
+    dictation::{Effect, Engine, Event, Insertion, Machine, Phase, STOPPING_DEADLINE, Sources},
     settings::Settings,
 };
 
-use super::{ChatView, state::provider_name};
+use super::{
+    ChatView,
+    attachment_draft::{Status, Submission},
+    state::provider_name,
+};
 
 /// One dictation of a chat tab, and what it runs on.
 #[derive(Default)]
@@ -22,10 +24,15 @@ pub(super) struct Dictation {
     machine: Machine,
     engine: Option<Engine>,
     insertion: Insertion,
-    /// When the words last changed (or the microphone opened), for the silence that ends it.
-    last_change: Option<Instant>,
-    /// The helper's events, and the silence watch.
+    /// The helper's events.
     tasks: Vec<Task<()>>,
+    stopping: Option<Task<()>>,
+    send_after_finish: bool,
+    /// Keep the starting viewport until the terminal event's next frame.
+    height_locked: bool,
+    session: u64,
+    /// The send button already signals a pending dictation send; avoid adding a review row.
+    pending_send: Option<u64>,
 }
 
 impl Dictation {
@@ -34,6 +41,9 @@ impl Dictation {
     }
     pub fn phase(&self) -> &Phase {
         self.machine.phase()
+    }
+    pub fn show_submission(&self, submission: &Submission) -> bool {
+        self.pending_send != Some(submission.id) || submission.status != Status::Pending
     }
 }
 
@@ -73,6 +83,7 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) {
         if event == Event::Start {
+            self.lock_dictation_height(cx);
             assert_eq!(self.dictation.machine.handle(event), Effect::BeginEngine);
         } else {
             self.dictate(event, window, cx);
@@ -92,9 +103,48 @@ impl ChatView {
         }
     }
 
-    /// ⎋ and closing the tab: stop at once and take out what was dictated.
+    /// Closing the tab: stop at once and take out what was dictated.
     pub(super) fn cancel_dictation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.dictate(Event::Cancel, window, cx);
+    }
+
+    /// Escape only stops the microphone, including when a send was waiting for final words.
+    pub(super) fn stop_dictation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dictation.send_after_finish = false;
+        self.dictate(Event::Stop, window, cx);
+    }
+
+    pub(super) fn send_after_dictation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dictation.send_after_finish = true;
+        self.dictate(Event::Stop, window, cx);
+    }
+
+    fn lock_dictation_height(&mut self, cx: &mut Context<Self>) {
+        self.dictation.session += 1;
+        let state = self.composer.read(cx);
+        let rows = state.line_height().map_or(1, |line| {
+            (f32::from(state.input_bounds().size.height) / f32::from(line))
+                .round()
+                .max(1.) as usize
+        });
+        self.composer
+            .update(cx, |state, cx| state.set_auto_grow(rows, rows, cx));
+        self.dictation.height_locked = true;
+    }
+
+    pub(super) fn dictation_user_edited(&mut self, cx: &mut Context<Self>) {
+        self.dictation.user_edited();
+        if !self.dictation.phase().is_active() {
+            self.release_dictation_height(cx);
+        }
+    }
+
+    pub(super) fn release_dictation_height(&mut self, cx: &mut Context<Self>) {
+        if self.dictation.height_locked {
+            self.dictation.height_locked = false;
+            self.composer
+                .update(cx, |state, cx| state.set_auto_grow(1, 8, cx));
+        }
     }
 
     /// The mic setting changed: turned off, a dictation that runs is cancelled (what it put in
@@ -114,14 +164,16 @@ impl ChatView {
     }
 
     fn dictate(&mut self, event: Event, window: &mut Window, cx: &mut Context<Self>) {
-        let before = self.dictation.phase().text().to_owned();
-        if matches!(event, Event::Heard(_) | Event::Ready) {
-            self.dictation.last_change = Some(Instant::now());
+        if matches!(event, Event::Cancel | Event::Failed(_)) {
+            self.dictation.send_after_finish = false;
         }
+        let was_active = self.dictation.phase().is_active();
+        let heard = matches!(event, Event::Heard(_));
+        let before = self.dictation.phase().text().to_owned();
         let effect = self.dictation.machine.handle(event);
         let phase = self.dictation.phase().clone();
         let focused = self.composer.read(cx).focus_handle(cx).is_focused(window);
-        if phase.is_active() && phase.text() != before {
+        if phase.is_active() && (heard || phase.text() != before) {
             let state = self.composer.read(cx);
             let edit = self.dictation.insertion.show_snapshot(
                 &state.value(),
@@ -140,6 +192,12 @@ impl ChatView {
                 if let Some(engine) = self.dictation.engine.as_mut() {
                     engine.finish();
                 }
+                self.dictation.stopping = Some(cx.spawn_in(window, async move |this, cx| {
+                    cx.background_executor().timer(STOPPING_DEADLINE).await;
+                    let _ = this.update_in(cx, |view, window, cx| {
+                        view.dictate(Event::FinishTimedOut, window, cx);
+                    });
+                }));
             }
             Effect::CancelEngine => {
                 let state = self.composer.read(cx);
@@ -149,7 +207,7 @@ impl ChatView {
                     state.cursor(),
                 );
                 self.apply_dictation_edit(edit, window, cx);
-                self.end_dictation(cx);
+                self.end_dictation(window, cx);
             }
             Effect::Deliver(text) => {
                 let state = self.composer.read(cx);
@@ -161,11 +219,11 @@ impl ChatView {
                     focused,
                 );
                 self.apply_dictation_edit(edit, window, cx);
-                self.end_dictation(cx);
+                self.end_dictation(window, cx);
             }
         }
         // Finished with nothing heard: whatever was shown goes, and so does the helper.
-        if !phase.is_active() && self.dictation.engine.is_some() && quiet {
+        if was_active && !phase.is_active() && quiet {
             let state = self.composer.read(cx);
             let edit = self.dictation.insertion.discard_snapshot(
                 &state.value(),
@@ -173,7 +231,19 @@ impl ChatView {
                 state.cursor(),
             );
             self.apply_dictation_edit(edit, window, cx);
-            self.end_dictation(cx);
+            self.end_dictation(window, cx);
+        }
+        if was_active && !phase.is_active() && std::mem::take(&mut self.dictation.send_after_finish)
+        {
+            // Kit emits Change after this update. Let it advance the draft generation before
+            // snapshotting the send, so its receipt can clear the final text exactly once.
+            cx.defer_in(window, |view, window, cx| {
+                let already_pending = view.pending_submission.is_some();
+                view.send_message(window, cx);
+                if !already_pending {
+                    view.dictation.pending_send = view.pending_submission;
+                }
+            });
         }
         cx.notify();
     }
@@ -194,6 +264,7 @@ impl ChatView {
     }
 
     fn begin_dictation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.lock_dictation_height(cx);
         // Another tab's dictation ends first: there is one microphone.
         let me = cx.entity().downgrade();
         let other = cx.default_global::<Active>().0.replace(me.clone());
@@ -213,31 +284,7 @@ impl ChatView {
         match Engine::start(&sources) {
             Ok((engine, events)) => {
                 self.dictation.engine = Some(engine);
-                self.dictation.last_change = Some(Instant::now());
-                let pump = cx.spawn_in(window, async move |this, cx| {
-                    while let Ok(event) = events.recv().await {
-                        let event = event.into_event();
-                        if this
-                            .update_in(cx, |view, window, cx| view.dictate(event, window, cx))
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
-                });
-                let watch = cx.spawn_in(window, async move |this, cx| {
-                    loop {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(250))
-                            .await;
-                        match this.update_in(cx, |view, window, cx| view.watch_silence(window, cx))
-                        {
-                            Ok(true) => {}
-                            _ => return,
-                        }
-                    }
-                });
-                self.dictation.tasks = vec![pump, watch];
+                self.pump_dictation(events, window, cx);
             }
             Err(problem) => {
                 self.dictate(Event::Failed(problem), window, cx);
@@ -245,32 +292,56 @@ impl ChatView {
         }
     }
 
-    /// Ends a dictation by itself after a pause once something was said, or after a long wait
-    /// when nothing was. False once there is nothing to watch.
-    fn watch_silence(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Phase::Listening { text } = self.dictation.phase() else {
-            return self.dictation.phase().is_active();
-        };
-        let wait = if text.is_empty() {
-            dictation::SILENCE_BEFORE_SPEECH
-        } else {
-            dictation::SILENCE_AFTER_SPEECH
-        };
-        if self
-            .dictation
-            .last_change
-            .is_some_and(|at| at.elapsed() >= wait)
-        {
-            self.dictate(Event::Stop, window, cx);
-        }
-        true
+    fn pump_dictation(
+        &mut self,
+        events: async_channel::Receiver<crate::dictation::EngineEvent>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session = self.dictation.session;
+        let pump = cx.spawn_in(window, async move |this, cx| {
+            while let Ok(event) = events.recv().await {
+                let event = event.into_event();
+                if this
+                    .update_in(cx, |view, window, cx| {
+                        if view.dictation.session != session || !view.dictation.phase().is_active()
+                        {
+                            return false;
+                        }
+                        view.dictate(event, window, cx);
+                        view.dictation.phase().is_active()
+                    })
+                    .ok()
+                    != Some(true)
+                {
+                    return;
+                }
+            }
+        });
+        self.dictation.tasks = vec![pump];
     }
 
-    fn end_dictation(&mut self, cx: &mut Context<Self>) {
+    #[cfg(test)]
+    pub(super) fn dictation_pump_fixture(
+        &mut self,
+        events: async_channel::Receiver<crate::dictation::EngineEvent>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pump_dictation(events, window, cx);
+    }
+
+    fn end_dictation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Dropping the engine cancels the helper and ends its process.
         self.dictation.engine = None;
         self.dictation.tasks.clear();
-        self.dictation.last_change = None;
+        self.dictation.stopping = None;
+        let session = self.dictation.session;
+        cx.on_next_frame(window, move |view, _, cx| {
+            if view.dictation.session == session && !view.dictation.phase().is_active() {
+                view.release_dictation_height(cx);
+            }
+        });
         let me = cx.entity().downgrade();
         if cx
             .try_global::<Active>()

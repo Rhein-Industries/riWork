@@ -282,6 +282,8 @@ mod tests {
     use serde_json::json;
     fn tool(name: &str, input: Value, status: ItemStatus) -> Item {
         Item {
+            started_at: None,
+            ended_at: None,
             id: "i".into(),
             turn_id: None,
             status,
@@ -496,6 +498,7 @@ mod tests {
             RunStatus::Running
         );
         transcript.apply(&ChatEvent::TurnCompleted {
+            ended_at: None,
             turn_id: "turn".into(),
             outcome: TurnOutcome::Failed {
                 message: "exited".into(),

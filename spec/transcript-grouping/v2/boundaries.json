@@ -1,0 +1,1111 @@
+{
+  "spec_version": 2,
+  "cases": [
+    {
+      "name": "edit breaks a run",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "break",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "file_change",
+            "changes": [
+              {
+                "path": "a.rs",
+                "kind": "modify"
+              }
+            ]
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "break",
+          "kind": "edit",
+          "title": "Edited",
+          "target": "a.rs",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false,
+          "artifacts": [
+            {
+              "item_id": "break",
+              "path": {
+                "path": "a.rs"
+              }
+            }
+          ]
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "final breaks a run",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "break",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "agent_message",
+            "text": "done"
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "break",
+          "kind": "final",
+          "title": "Answer",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "plan breaks a run",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "break",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "plan",
+            "steps": []
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "break",
+          "kind": "plan",
+          "title": "Plan",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "todo breaks a run",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "break",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "todo",
+            "items": []
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "break",
+          "kind": "todo",
+          "title": "Todo",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "compaction breaks a run",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "break",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "compaction"
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "break",
+          "kind": "compaction",
+          "title": "Context compacted",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "user breaks a run",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "break",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "user_message",
+            "text": "next"
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "break",
+          "kind": "user",
+          "title": "User",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Subagent is its own row and breaks the parent run",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "agent",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "subagent",
+              "target": "review"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "agent",
+          "kind": "subagent",
+          "title": "Agent",
+          "target": "review",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "approval records break a run at request order even after resolution",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "item_sequences": {
+        "a": 1,
+        "b": 3
+      },
+      "requests": [
+        {
+          "request_id": "q",
+          "kind": "approval",
+          "title": "npm test",
+          "turn_id": "t",
+          "requested_seq": 2,
+          "resolved_seq": 4,
+          "resolution": "accept"
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "request:q",
+          "kind": "request",
+          "title": "Allowed: npm test",
+          "request_id": "q",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "question records break a run at request order even after resolution",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "item_sequences": {
+        "a": 1,
+        "b": 3
+      },
+      "requests": [
+        {
+          "request_id": "q",
+          "kind": "question",
+          "title": "Choose a color",
+          "turn_id": "t",
+          "requested_seq": 2,
+          "resolved_seq": 4,
+          "resolution": "answered"
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "request:q",
+          "kind": "request",
+          "title": "Answered: Choose a color",
+          "request_id": "q",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Approval-gated read-only shell stays outside groups",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "sh",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "ls"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "shell",
+              "target": "ls"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "item_sequences": {
+        "a": 1,
+        "sh": 3,
+        "b": 5
+      },
+      "requests": [
+        {
+          "request_id": "q",
+          "kind": "approval",
+          "title": "ls",
+          "turn_id": "t",
+          "item_id": "sh",
+          "requested_seq": 2,
+          "resolved_seq": 4,
+          "resolution": "accept"
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "request:q",
+          "kind": "request",
+          "title": "Allowed: ls",
+          "request_id": "q",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "sh",
+          "kind": "shell",
+          "title": "Ran",
+          "target": "ls",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Turn boundary prevents grouping",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t1",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t2",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Mutating shell breaks eligible calls",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "sh",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "npm test"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "shell",
+              "target": "npm test"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "sh",
+          "kind": "shell",
+          "title": "Ran",
+          "target": "npm test",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Legacy request without parent or turn still breaks at its sequence",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "Read"
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "Read"
+          }
+        }
+      ],
+      "item_sequences": {
+        "a": 1,
+        "b": 3
+      },
+      "requests": [
+        {
+          "request_id": "q",
+          "kind": "approval",
+          "title": "npm test",
+          "requested_seq": 2,
+          "resolution": "accept"
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "request:q",
+          "kind": "request",
+          "title": "Allowed: npm test",
+          "request_id": "q",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Request-only earlier turn stays ahead of a later turn",
+      "items": [
+        {
+          "id": "later",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "Read"
+          }
+        }
+      ],
+      "item_sequences": {
+        "later": 4
+      },
+      "requests": [
+        {
+          "request_id": "q",
+          "kind": "approval",
+          "title": "npm test",
+          "requested_seq": 2,
+          "resolution": "accept",
+          "turn_id": "earlier"
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "request:q",
+          "kind": "request",
+          "title": "Allowed: npm test",
+          "request_id": "q",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "later",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    }
+  ]
+}

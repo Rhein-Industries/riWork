@@ -472,6 +472,8 @@ mod tests {
 
     fn notice(id: &str, level: NoticeLevel, text: &str, kind: Option<&str>) -> Item {
         Item {
+            started_at: None,
+            ended_at: None,
             id: id.into(),
             turn_id: Some("turn".into()),
             status: ItemStatus::Completed,
@@ -482,6 +484,8 @@ mod tests {
 
     fn user(id: &str) -> Item {
         Item {
+            started_at: None,
+            ended_at: None,
             id: id.into(),
             turn_id: Some("turn".into()),
             status: ItemStatus::Completed,
@@ -847,6 +851,8 @@ mod dismissal_tests {
                 *resets_at = Some(reset);
             }
             Item {
+                started_at: None,
+                ended_at: None,
                 id: "limit".into(),
                 turn_id: None,
                 status: ItemStatus::Completed,

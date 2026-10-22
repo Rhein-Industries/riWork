@@ -33,23 +33,48 @@ import RiWorkCore
 /// Whether the software keyboard is on screen, from the keyboard's frame notifications. GameController can report a keyboard (one that
 /// is paired, a keyboard case) while the on-screen keyboard is up all the same: what can be put away is what is shown, not what is
 /// attached. With a hardware keyboard in use only the shortcut bar shows, well under `shownHeight`.
+///
+/// The frame is the keyboard's on its screen; what counts is how much of the app's window it covers: in Stage Manager the window need
+/// not reach the screen's bottom, and it may be on another display.
+///
+/// It also says whether that keyboard is **docked** at the bottom of the screen (`KeyboardDocking.isDocked`), the only keyboard a
+/// chat's composer stands up for: a floating, split or undocked one, and a hardware keyboard's shortcut bar, leave it at the bottom of
+/// the window. The monitor lives as long as the app, so a chat screen that opens with the keyboard already up knows at once.
 @MainActor @Observable final class SoftwareKeyboardMonitor {
-    static let shownHeight: CGFloat = 120
+    static let shownHeight = CGFloat(KeyboardDocking.dockedMinimumHeight)
     private(set) var isShown = false
+    private(set) var isDocked = false
     @ObservationIgnored private var observers: [any NSObjectProtocol] = []
 
     init() {
-        for name in [UIResponder.keyboardWillChangeFrameNotification, UIResponder.keyboardWillHideNotification] {
+        // Every notification is judged on its own frame, so their order (rotation, a move to another display, floating and splitting)
+        // never matters; the did-notifications settle it on the frame the keyboard ended at.
+        let hides: Set<Notification.Name> = [UIResponder.keyboardWillHideNotification, UIResponder.keyboardDidHideNotification]
+        for name in [UIResponder.keyboardWillShowNotification, UIResponder.keyboardWillChangeFrameNotification, UIResponder.keyboardWillHideNotification,
+                     UIResponder.keyboardDidShowNotification, UIResponder.keyboardDidChangeFrameNotification, UIResponder.keyboardDidHideNotification] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
-                let hiding = note.name == UIResponder.keyboardWillHideNotification
+                let hiding = hides.contains(note.name)
                 let end = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue ?? .zero
-                MainActor.assumeIsolated { self?.update(hiding: hiding, end: end) }
+                // The keyboard's screen, by identity only: it is looked up again among the scenes on the main actor.
+                let screen = (note.object as? UIScreen).map(ObjectIdentifier.init)
+                let screenSize = (note.object as? UIScreen)?.bounds.size
+                MainActor.assumeIsolated { self?.update(hiding: hiding, end: end, screen: screen, screenSize: screenSize) }
             })
         }
     }
-    func update(hiding: Bool, end: CGRect) {
-        let screen = UIScreen.main.bounds
-        isShown = !hiding && screen.intersection(end).height >= Self.shownHeight
+    func update(hiding: Bool, end: CGRect, screen: ObjectIdentifier? = nil, screenSize: CGSize? = nil) {
+        isShown = !hiding && Self.windowOverlap(of: end, on: screen) >= Self.shownHeight
+        let size = screenSize ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first?.screen.bounds.size ?? .zero
+        let docked = KeyboardDocking.isDocked(hiding: hiding, x: Double(end.minX), y: Double(end.minY), width: Double(end.width), height: Double(end.height),
+                                              screenWidth: Double(size.width), screenHeight: Double(size.height))
+        if docked != isDocked { isDocked = docked }
+    }
+    /// How much of the app's window (the key one, on `screen` when it is known) a keyboard at `frame` on its screen covers.
+    static func windowOverlap(of frame: CGRect, on screen: ObjectIdentifier?) -> CGFloat {
+        let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .filter { screen == nil || ObjectIdentifier($0.screen) == screen }.flatMap(\.windows)
+        guard let window = windows.first(where: \.isKeyWindow) ?? windows.first, let space = window.windowScene?.screen.coordinateSpace else { return 0 }
+        return window.bounds.intersection(window.convert(frame, from: space)).height
     }
 }
 

@@ -275,6 +275,8 @@ mod tests {
                 view.display_mode = DisplayMode::Normal;
                 view.model.transcript.items = vec![
                     Item {
+                        started_at: None,
+                        ended_at: None,
                         id: "edit".into(),
                         turn_id: Some("turn".into()),
                         status: ItemStatus::Completed,
@@ -288,6 +290,8 @@ mod tests {
                         },
                     },
                     Item {
+                        started_at: None,
+                        ended_at: None,
                         id: "answer".into(),
                         turn_id: Some("turn".into()),
                         status: ItemStatus::Completed,
@@ -325,7 +329,10 @@ mod tests {
                 .bounds()
                 .size
                 .height;
-            assert!(after > before, "long patch line must reflow");
+            assert!(
+                after < before,
+                "unwrapping must put the long patch line back on one line"
+            );
             window.click("copy-diff:answer-file:answer:0", cx);
             assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), patch);
         })
@@ -335,6 +342,8 @@ mod tests {
     #[test]
     fn latest_reported_edit_is_retained_without_summing_repeated_patches() {
         let edit = |id: &str, turn: &str, patch: &str, status| Item {
+            started_at: None,
+            ended_at: None,
             id: id.into(),
             turn_id: Some(turn.into()),
             status,
@@ -354,6 +363,8 @@ mod tests {
             edit("d", "t", "+failed", ItemStatus::Failed),
         ];
         items.push(Item {
+            started_at: None,
+            ended_at: None,
             id: "answer".into(),
             turn_id: Some("t".into()),
             status: ItemStatus::Completed,

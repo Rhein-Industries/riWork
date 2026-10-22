@@ -7,7 +7,7 @@ A compact, themeable GPUI workspace with native Ghostty terminals on macOS. Tabs
 ## Requirements
 
 - macOS with Xcode command line tools
-- Rust 1.95 (selected by `rust-toolchain.toml`)
+- Rust 1.99.1 (selected by `rust-toolchain.toml`)
 - Zig 0.16 for the Ghostty native build. `riwork update` uses the one unpacked as `toolchains/zig-0.16*` in the RiWork data directory (`~/.local/share/riwork` by default) when `ZIG` is not set; keep it out of `/tmp`, whose periodic cleanup deletes its standard library
 - tmux (`brew install tmux`) for persistent shells
 - Vim for editing files in persistent RiWork tabs (included with macOS)

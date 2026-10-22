@@ -11,8 +11,8 @@ enum TerminalFont {
         let name = switch (bold, italic) { case (false, false): "Menlo-Regular"; case (true, false): "Menlo-Bold"; case (false, true): "Menlo-Italic"; case (true, true): "Menlo-BoldItalic" }
         return UIFont(name: name, size: size) ?? uiFont(size: size)
     }
-    /// Device pixels per point, for rounding the line height. Set once by the app at launch (the font cache below can be asked from any
-    /// thread, so it cannot ask the screen); 3 is every iPhone since the 6 Plus except the SE.
+    /// Device pixels per point, for rounding the line height. Set by the app at launch and when its window moves to a display of another
+    /// scale (the font cache below can be asked from any thread, so it cannot ask the screen); 3 is every iPhone since the 6 Plus except the SE.
     nonisolated(unsafe) static var pixelsPerPoint = 3.0
     private static let lock = NSLock()
     private struct CellKey: Hashable { let size: Double, scale: Double }

@@ -1,0 +1,1729 @@
+{
+  "spec_version": 2,
+  "cases": [
+    {
+      "name": "Plural bucket: read",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:a",
+          "kind": "group",
+          "title": "Read 2 files",
+          "children": [
+            {
+              "id": "a",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "b",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Plural bucket: search",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "search"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "search"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:a",
+          "kind": "group",
+          "title": "Searched 2 patterns",
+          "children": [
+            {
+              "id": "a",
+              "kind": "search",
+              "title": "Searched",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "b",
+              "kind": "search",
+              "title": "Searched",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Plural bucket: list",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "list"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "list"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:a",
+          "kind": "group",
+          "title": "Listed 2 directories",
+          "children": [
+            {
+              "id": "a",
+              "kind": "list",
+              "title": "Listed",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "b",
+              "kind": "list",
+              "title": "Listed",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Plural bucket: web_search",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "web_search"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "web_search"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:a",
+          "kind": "group",
+          "title": "Searched the web 2 times",
+          "children": [
+            {
+              "id": "a",
+              "kind": "web_search",
+              "title": "Searched the web",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "b",
+              "kind": "web_search",
+              "title": "Searched the web",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Plural bucket: web_fetch",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "web_fetch"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "web_fetch"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:a",
+          "kind": "group",
+          "title": "Fetched 2 pages",
+          "children": [
+            {
+              "id": "a",
+              "kind": "web_fetch",
+              "title": "Fetched",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "b",
+              "kind": "web_fetch",
+              "title": "Fetched",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Plural bucket: mcp",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "mcp"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "mcp"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:a",
+          "kind": "group",
+          "title": "Used MCP 2 times",
+          "children": [
+            {
+              "id": "a",
+              "kind": "mcp",
+              "title": "Used MCP",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "b",
+              "kind": "mcp",
+              "title": "Used MCP",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Plural bucket: reasoning",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "reasoning",
+            "text": "thinking"
+          },
+          "turn_id": "t"
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "reasoning",
+            "text": "thinking"
+          },
+          "turn_id": "t"
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:a",
+          "kind": "group",
+          "title": "Thought 2 times",
+          "children": [
+            {
+              "id": "a",
+              "kind": "reasoning",
+              "title": "Thought",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "b",
+              "kind": "reasoning",
+              "title": "Thought",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Plural bucket: other",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "other"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "other"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:a",
+          "kind": "group",
+          "title": "Used 2 tools",
+          "children": [
+            {
+              "id": "a",
+              "kind": "other",
+              "title": "Used tool",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "b",
+              "kind": "other",
+              "title": "Used tool",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Plural shell bucket uses real read-only commands",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "git status --short"
+          },
+          "turn_id": "t"
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "rg needle src | head -n 5"
+          },
+          "turn_id": "t"
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:a",
+          "kind": "group",
+          "title": "Ran 2 commands",
+          "children": [
+            {
+              "id": "a",
+              "kind": "shell",
+              "title": "Ran",
+              "target": "git status --short",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "b",
+              "kind": "shell",
+              "title": "Ran",
+              "target": "rg needle src | head -n 5",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Destructive command body wins over terminal_v2 hint",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "danger",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "rm -rf build"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "terminal_v2",
+              "target": "misleading target"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "danger",
+          "kind": "shell",
+          "title": "Ran",
+          "target": "rm -rf build",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Destructive command body wins over read hint",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "danger",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "rm -rf build"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read",
+              "target": "misleading target"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "danger",
+          "kind": "shell",
+          "title": "Ran",
+          "target": "rm -rf build",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "MCP-only activity bucket",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "mcp"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "mcp"
+            }
+          }
+        }
+      ],
+      "expected_rows": [
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Worked · 2 MCP calls",
+          "children": [
+            {
+              "id": "g:t:a",
+              "kind": "group",
+              "title": "Used MCP 2 times",
+              "children": [
+                {
+                  "id": "a",
+                  "kind": "mcp",
+                  "title": "Used MCP",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "b",
+                  "kind": "mcp",
+                  "title": "Used MCP",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                }
+              ],
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Mixed MCP and Other activity uses tool calls",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "mcp"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "other"
+            }
+          }
+        }
+      ],
+      "expected_rows": [
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Worked · 2 tool calls",
+          "children": [
+            {
+              "id": "g:t:a",
+              "kind": "group",
+              "title": "Used MCP 1 time · Used 1 tool",
+              "children": [
+                {
+                  "id": "a",
+                  "kind": "mcp",
+                  "title": "Used MCP",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "b",
+                  "kind": "other",
+                  "title": "Used tool",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                }
+              ],
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Worker without captured children counts as one tool call",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "subagent",
+              "target": "review"
+            }
+          }
+        }
+      ],
+      "expected_rows": [
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Worked · 1 tool call",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "a",
+          "kind": "subagent",
+          "title": "Agent",
+          "target": "review",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Unassociated legacy items remain separate in Verbose",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Unassociated legacy work gets stable individual activity IDs",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "command",
+            "command": "ls"
+          }
+        }
+      ],
+      "expected_rows": [
+        {
+          "id": "activity:legacy:a",
+          "kind": "activity",
+          "title": "Worked · 1 read",
+          "children": [
+            {
+              "id": "a",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "activity:legacy:b",
+          "kind": "activity",
+          "title": "Worked · 1 command",
+          "children": [
+            {
+              "id": "b",
+              "kind": "shell",
+              "title": "Ran",
+              "target": "ls",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Verbose artifacts remain on owning collapsed row",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read",
+              "target": "main.rs",
+              "produced": [
+                {
+                  "path": "report.md"
+                }
+              ]
+            },
+            "images": [
+              {
+                "label": "plot",
+                "source": {
+                  "kind": "unavailable",
+                  "reason": "on Mac"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "target": "main.rs",
+          "artifacts": [
+            {
+              "item_id": "a",
+              "path": {
+                "path": "report.md"
+              }
+            },
+            {
+              "item_id": "a",
+              "image_index": 0
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Open-group selection includes header and visible leaf headers",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read",
+              "target": "a.rs"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read",
+              "target": "b.rs"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose",
+        "disclosure": {
+          "overrides": {
+            "g:t:a": true
+          }
+        }
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:a",
+          "kind": "group",
+          "title": "Read 2 files",
+          "children": [
+            {
+              "id": "a",
+              "kind": "read",
+              "title": "Read",
+              "target": "a.rs",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "b",
+              "kind": "read",
+              "title": "Read",
+              "target": "b.rs",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": true,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ],
+      "expected_selection": [
+        "Read 2 files",
+        "Read a.rs",
+        "Read b.rs"
+      ]
+    },
+    {
+      "name": "Failed non-exploratory command stays its own collapsed row",
+      "items": [
+        {
+          "id": "a",
+          "status": "failed",
+          "body": {
+            "type": "command",
+            "command": "cargo test",
+            "exit_code": 1
+          },
+          "turn_id": "t"
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "shell",
+          "title": "Ran",
+          "target": "cargo test",
+          "failed_count": 1,
+          "open": false,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Latest running member supplies the current label",
+      "items": [
+        {
+          "id": "a",
+          "status": "in_progress",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read",
+              "target": "a.rs"
+            }
+          },
+          "started_at": 1000
+        },
+        {
+          "id": "b",
+          "status": "in_progress",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read",
+              "target": "b.rs"
+            }
+          },
+          "started_at": 2000
+        }
+      ],
+      "options": {
+        "mode": "verbose",
+        "now_ms": 19000
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:a",
+          "kind": "group",
+          "title": "Read 2 files",
+          "children": [
+            {
+              "id": "a",
+              "kind": "read",
+              "title": "Read",
+              "target": "a.rs",
+              "running": true,
+              "duration_ms": 18000,
+              "current_label": "reading a.rs",
+              "open": false,
+              "failed_count": 0,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "b",
+              "kind": "read",
+              "title": "Read",
+              "target": "b.rs",
+              "running": true,
+              "duration_ms": 17000,
+              "current_label": "reading b.rs",
+              "open": false,
+              "failed_count": 0,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "running": true,
+          "duration_ms": 35000,
+          "current_label": "reading b.rs",
+          "open": false,
+          "failed_count": 0,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Failed subagent child remains grouped and Verbose bulk opens nested calls",
+      "items": [
+        {
+          "id": "agent",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "subagent"
+            }
+          }
+        },
+        {
+          "id": "a",
+          "status": "failed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            },
+            "parent_id": "agent"
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            },
+            "parent_id": "agent"
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "agent",
+          "kind": "subagent",
+          "title": "Agent",
+          "children": [
+            {
+              "id": "g:t:a",
+              "kind": "group",
+              "title": "Read 2 files",
+              "children": [
+                {
+                  "id": "a",
+                  "kind": "read",
+                  "title": "Read",
+                  "failed_count": 1,
+                  "open": false,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                },
+                {
+                  "id": "b",
+                  "kind": "read",
+                  "title": "Read",
+                  "open": false,
+                  "failed_count": 0,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                }
+              ],
+              "failed_count": 1,
+              "open": false,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ],
+      "actions": [
+        {
+          "action": "bulk",
+          "open": true,
+          "expected_open_ids": [
+            "agent",
+            "g:t:a",
+            "a",
+            "b"
+          ],
+          "expected_rows": [
+            {
+              "id": "agent",
+              "kind": "subagent",
+              "title": "Agent",
+              "children": [
+                {
+                  "id": "g:t:a",
+                  "kind": "group",
+                  "title": "Read 2 files",
+                  "children": [
+                    {
+                      "id": "a",
+                      "kind": "read",
+                      "title": "Read",
+                      "failed_count": 1,
+                      "open": true,
+                      "running": false,
+                      "provisional": false,
+                      "elided": false
+                    },
+                    {
+                      "id": "b",
+                      "kind": "read",
+                      "title": "Read",
+                      "open": true,
+                      "failed_count": 0,
+                      "running": false,
+                      "provisional": false,
+                      "elided": false
+                    }
+                  ],
+                  "failed_count": 1,
+                  "open": true,
+                  "running": false,
+                  "provisional": false,
+                  "elided": false
+                }
+              ],
+              "open": true,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Relay-elided read remains counted with an explicit Mac placeholder flag",
+      "items": [
+        {
+          "id": "cut",
+          "status": "completed",
+          "body": {
+            "type": "agent_message",
+            "text": "This message is too long to show here. Full text is on your Mac."
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          },
+          "elided": {
+            "event": "item_elided",
+            "of": "item_completed",
+            "tool_kind": "read",
+            "reason": "too_large",
+            "bytes": 200000
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose",
+        "elided_items": [
+          "cut"
+        ]
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:cut",
+          "kind": "group",
+          "title": "Read 2 files",
+          "children": [
+            {
+              "id": "cut",
+              "kind": "read",
+              "title": "Read",
+              "elided": true,
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false
+            },
+            {
+              "id": "b",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Elided shell with unknown script cannot be classified as exploratory",
+      "items": [
+        {
+          "id": "a",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "cut",
+          "status": "completed",
+          "body": {
+            "type": "agent_message",
+            "text": "This message is too long to show here. Full text is on your Mac."
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "shell"
+            }
+          },
+          "elided": {
+            "event": "item_elided",
+            "of": "item_completed",
+            "tool_kind": "shell",
+            "reason": "too_large",
+            "bytes": 200000
+          }
+        },
+        {
+          "id": "b",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "turn_id": "t",
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose",
+        "elided_items": [
+          "cut"
+        ]
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        },
+        {
+          "id": "cut",
+          "kind": "shell",
+          "title": "Ran",
+          "elided": true,
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false
+        },
+        {
+          "id": "b",
+          "kind": "read",
+          "title": "Read",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Unknown relay-shortened approval decision still shows a resolved record",
+      "items": [],
+      "requests": [
+        {
+          "request_id": "q",
+          "kind": "approval",
+          "title": "npm test",
+          "requested_seq": 2,
+          "resolved_seq": 4
+        }
+      ],
+      "expected_rows": [
+        {
+          "id": "request:q",
+          "kind": "request",
+          "title": "Resolved: npm test",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false,
+          "request_id": "q"
+        }
+      ]
+    }
+  ]
+}

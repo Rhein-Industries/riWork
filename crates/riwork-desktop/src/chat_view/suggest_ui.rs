@@ -561,7 +561,7 @@ impl ChatView {
     /// own).
     fn suggestion_keys(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         self.suggestions.open.is_some()
-            && self.suggestion_room().is_some()
+            && self.suggestion_room(window).is_some()
             && self.composer.read(cx).focus_handle(cx).is_focused(window)
             && !self.composer.update(cx, |state, cx| {
                 state.marked_text_range(window, cx).is_some()
@@ -747,10 +747,11 @@ impl ChatView {
     pub(super) fn suggestion_popup(
         &self,
         look: Look,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let open = self.suggestions.open.as_ref()?;
-        let room = self.suggestion_room()?;
+        let room = self.suggestion_room(window)?;
         let card = self.suggestions.card.get();
         let gap = ui_text::space(4.0);
         let list_width = ui_text::space(LIST_WIDTH).min(card.size.width);
@@ -821,9 +822,11 @@ impl ChatView {
     /// The room above the message box card, as last drawn, that the list may stand in: all of
     /// it below the window's top edge. None while the card is not drawn or the room is too
     /// little for a row, when the list is not shown and has no keys.
-    fn suggestion_room(&self) -> Option<Pixels> {
+    fn suggestion_room(&self, window: &Window) -> Option<Pixels> {
         let card = self.suggestions.card.get();
-        if card.size.width <= px(0.) {
+        // A very short pane can push the composer below the window's edge.
+        // An offscreen draft must not have a popup that takes its Return key.
+        if card.size.width <= px(0.) || card.bottom() > window.viewport_size().height {
             return None;
         }
         let room = (card.top() - ui_text::space(8.0) - ui_text::space(4.0)).max(px(0.));

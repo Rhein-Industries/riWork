@@ -381,7 +381,7 @@ fn fold(chat_id: &str, fingerprint: Fingerprint, bytes: &[u8], at_head: bool) ->
             ChatEvent::ApprovalResolved { request_id, .. } => {
                 pending.remove(&("approval", request_id));
             }
-            ChatEvent::QuestionResolved { request_id } => {
+            ChatEvent::QuestionResolved { request_id, .. } => {
                 pending.remove(&("question", request_id));
             }
             ChatEvent::TurnStarted { .. } => {

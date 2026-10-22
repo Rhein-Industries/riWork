@@ -179,7 +179,7 @@ actor UploadTransport: RemoteTransport {
         XCTAssertEqual(methods, ["upload.begin", "upload.chunk", "upload.finish"], "no RPC for a removal")
         await model.disconnect()
     }
-    /// Cards outlive the app as the text does, and come back into the composer of the chat; pictures no draft holds are tidied away.
+    /// Draft images survive relaunch; recent sent previews remain available and unused previews expire after 30 days.
     func testCardsComeBackAfterARelaunch() async throws {
         let suite = "com.riwork.tests.attach.\(UUID().uuidString)"
         defaultsNames.append(suite)
@@ -189,12 +189,17 @@ actor UploadTransport: RemoteTransport {
         await settle { model.attachments.task == nil }
         let card = try XCTUnwrap(model.conversation(chat).attachments.first)
         images.save("bbbbbbbb-0000-4000-8000-000000000000", data: photo())
+        let old = Date().addingTimeInterval(-40 * 24 * 3600)
+        try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: images.thumbnailURL("bbbbbbbb-0000-4000-8000-000000000000").path)
+        try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: images.previewURL("bbbbbbbb-0000-4000-8000-000000000000").path)
+        images.save("cccccccc-0000-4000-8000-000000000000", data: photo())
         await model.disconnect()
         let (relaunched, _) = try await connected(defaults: suite)
         XCTAssertEqual(relaunched.conversation(chat).draft, "look")
         XCTAssertEqual(relaunched.conversation(chat).attachments, [card])
         await settle { !self.exists(self.images.thumbnailURL("bbbbbbbb-0000-4000-8000-000000000000")) }
         XCTAssertTrue(exists(images.thumbnailURL(card.id)), "a staged card keeps its picture")
+        XCTAssertTrue(exists(images.previewURL("cccccccc-0000-4000-8000-000000000000")), "recent sent previews remain available")
         await relaunched.disconnect()
     }
 
@@ -327,6 +332,7 @@ actor UploadTransport: RemoteTransport {
         model.cancelUpload()
         model.attach([.camera(Data())], to: .shell(shell))
         await settle { loads.count == 2 }
+        guard loads.count == 2 else { return await model.disconnect() }
         let newJob = model.attachments.job
         loads[0].resume(returning: UploadFile(name: "old.bin", mediaType: nil, data: Data([0])))
         await old.value

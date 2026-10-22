@@ -416,6 +416,8 @@ impl Driver for ClaudeDriver {
                 core.last_activity = Instant::now();
                 core.reset_silence();
                 core.born(Item {
+                    started_at: None,
+                    ended_at: None,
                     presentation: super::model::Presentation {
                         images,
                         attachments: attachments.clone(),
@@ -811,6 +813,7 @@ impl Core {
         self.reset_silence();
         self.emit(ChatEvent::TurnStarted {
             turn_id: id.clone(),
+            started_at: None,
         });
         self.set_state(ChatState::Running);
         id
@@ -830,14 +833,16 @@ impl Core {
                     request_id: approval.request_id,
                     decision: Decision::Cancel,
                 }),
-                Pending::Question { request_id, .. } => {
-                    self.emit(ChatEvent::QuestionResolved { request_id })
-                }
+                Pending::Question { request_id, .. } => self.emit(ChatEvent::QuestionResolved {
+                    request_id,
+                    answer_summary: None,
+                }),
             }
         }
         self.emit(ChatEvent::TurnCompleted {
             turn_id: turn.id,
             outcome,
+            ended_at: None,
         });
         self.tools.clear();
         self.stream = Stream::default();
@@ -926,6 +931,8 @@ impl Core {
             *reset = resets_at;
         }
         let item = Item {
+            started_at: None,
+            ended_at: None,
             presentation: Default::default(),
             id: format!("notice-{}-{}", self.notice_prefix, self.notice_counter),
             turn_id: self.turn_id(),
@@ -1130,6 +1137,8 @@ impl Core {
         }
         if echo {
             self.born(Item {
+                started_at: None,
+                ended_at: None,
                 presentation: Default::default(),
                 id: format!("user-{}", Uuid::new_v4()),
                 turn_id: Some(turn_id),
@@ -1165,7 +1174,10 @@ impl Core {
                 }
                 Pending::Question { request_id, .. } => {
                     let _ = self.respond(&request_id, deny_body("", true));
-                    self.emit(ChatEvent::QuestionResolved { request_id });
+                    self.emit(ChatEvent::QuestionResolved {
+                        request_id,
+                        answer_summary: None,
+                    });
                 }
             }
         }
@@ -1268,6 +1280,13 @@ impl Core {
         self.pending.remove(at);
         self.emit(ChatEvent::QuestionResolved {
             request_id: request_id.to_owned(),
+            answer_summary: Some(
+                answers
+                    .iter()
+                    .map(|answer| answer.join(", "))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ),
         });
         self.refresh_state();
         self.answered();
@@ -1669,6 +1688,8 @@ impl Core {
                 }
                 let turn_id = self.turn_id();
                 self.born(Item {
+                    started_at: None,
+                    ended_at: None,
                     presentation: Default::default(),
                     id: format!("compaction-{}", Uuid::new_v4()),
                     turn_id,
@@ -1796,6 +1817,8 @@ impl Core {
                     };
                     self.emit(ChatEvent::ItemStarted {
                         item: Item {
+                            started_at: None,
+                            ended_at: None,
                             presentation: Default::default(),
                             id: item_id.clone(),
                             turn_id: Some(turn_id),
@@ -1855,7 +1878,8 @@ impl Core {
             return;
         }
         let message = &frame["message"];
-        let subagent = !frame["parent_tool_use_id"].is_null();
+        let parent_id = str_of(frame, "parent_tool_use_id").map(str::to_owned);
+        let subagent = parent_id.is_some();
         let message_id = str_of(message, "id")
             .map(str::to_owned)
             .or_else(|| self.stream.message_id.clone())
@@ -1886,6 +1910,8 @@ impl Core {
                 }
                 Some("image") if !subagent => {
                     let item = Item {
+                        started_at: None,
+                        ended_at: None,
                         presentation: super::media::presentation(block),
                         id: format!("{message_id}:{index}"),
                         turn_id: Some(turn_id),
@@ -1905,12 +1931,26 @@ impl Core {
                         continue;
                     };
                     let input = block.get("input").cloned().unwrap_or(Value::Null);
+                    let body = tool_body(name, &input);
+                    let semantics = matches!(
+                        body,
+                        ItemBody::Command { .. }
+                            | ItemBody::ToolCall { .. }
+                            | ItemBody::WebSearch { .. }
+                    )
+                    .then(|| super::semantics::tool_semantics(name, None, &input, None));
                     let item = Item {
-                        presentation: Default::default(),
+                        started_at: None,
+                        ended_at: None,
+                        presentation: super::model::Presentation {
+                            parent_id: parent_id.clone(),
+                            semantics,
+                            ..Default::default()
+                        },
                         id: id.to_owned(),
                         turn_id: Some(turn_id),
                         status: ItemStatus::InProgress,
-                        body: tool_body(name, &input),
+                        body,
                     };
                     self.tools.insert(id.to_owned(), item.clone());
                     self.emit(ChatEvent::ItemStarted { item });
@@ -1951,6 +1991,8 @@ impl Core {
             },
         };
         let mut item = Item {
+            started_at: None,
+            ended_at: None,
             presentation: Default::default(),
             id: item_id,
             turn_id: Some(turn_id),
@@ -1995,6 +2037,8 @@ impl Core {
                 .map(str::to_owned)
                 .unwrap_or_else(|| Uuid::new_v4().to_string());
             self.born(Item {
+                started_at: None,
+                ended_at: None,
                 id: format!("user-echo-{uuid}"),
                 turn_id: self.turn_id(),
                 status: ItemStatus::Completed,
@@ -2044,6 +2088,9 @@ impl Core {
                 }
                 _ => None,
             };
+            if let Some(semantics) = &mut item.presentation.semantics {
+                super::semantics::capture_output(semantics, Some(&text));
+            }
             self.emit(ChatEvent::ItemCompleted { item });
         }
     }
@@ -2137,6 +2184,8 @@ impl Core {
                     |item| matches!(&item.body, ItemBody::AgentMessage { text } if text == result),
                 );
             let mut item = matching.unwrap_or_else(|| Item {
+                started_at: None,
+                ended_at: None,
                 presentation: Default::default(),
                 id: format!("{turn_id}:result"),
                 turn_id: Some(turn_id),
@@ -2285,6 +2334,9 @@ impl Core {
                     } => ChatEvent::QuestionRequested {
                         question: Question {
                             request_id: request_id.clone(),
+                            item_id: str_of(request, "tool_use_id")
+                                .filter(|id| !id.is_empty())
+                                .map(str::to_owned),
                             questions: question_prompts(input, questions),
                         },
                     },
@@ -2340,9 +2392,10 @@ impl Core {
                 request_id: approval.request_id,
                 decision: Decision::Cancel,
             }),
-            Pending::Question { request_id, .. } => {
-                self.emit(ChatEvent::QuestionResolved { request_id })
-            }
+            Pending::Question { request_id, .. } => self.emit(ChatEvent::QuestionResolved {
+                request_id,
+                answer_summary: None,
+            }),
         }
         self.refresh_state();
     }
@@ -3096,6 +3149,11 @@ fn tool_body(name: &str, input: &Value) -> ItemBody {
             },
             None => generic_tool(name, input),
         },
+        // These retain their stable ToolCall body for older clients, while
+        // tool_semantics captures the discriminator and input at this boundary.
+        "Read" | "Grep" | "Glob" | "LS" | "WebFetch" | "Task" | "Agent" => {
+            generic_tool(name, input)
+        }
         _ => generic_tool(name, input),
     }
 }

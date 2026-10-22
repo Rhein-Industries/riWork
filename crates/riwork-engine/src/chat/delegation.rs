@@ -744,7 +744,7 @@ fn observe(home: &Path, stored: &mut Stored) -> Result<(), String> {
         stored.last_seq = envelope.seq;
         processed += bytes.len() as u64;
         match envelope.event {
-            ChatEvent::TurnStarted { turn_id } if stored.turn_id.is_none() => {
+            ChatEvent::TurnStarted { turn_id, .. } if stored.turn_id.is_none() => {
                 stored.turn_id = Some(turn_id)
             }
             ChatEvent::ItemCompleted { item }
@@ -765,9 +765,9 @@ fn observe(home: &Path, stored: &mut Stored) -> Result<(), String> {
                     }
                 }
             }
-            ChatEvent::TurnCompleted { turn_id, outcome }
-                if stored.turn_id.as_deref() == Some(turn_id.as_str()) =>
-            {
+            ChatEvent::TurnCompleted {
+                turn_id, outcome, ..
+            } if stored.turn_id.as_deref() == Some(turn_id.as_str()) => {
                 stored.task.status = match &outcome {
                     TurnOutcome::Completed => TaskStatus::Completed,
                     TurnOutcome::Interrupted if stored.cancel_requested => TaskStatus::Cancelled,

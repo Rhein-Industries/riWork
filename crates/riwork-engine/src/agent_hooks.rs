@@ -20,6 +20,10 @@ use crate::{
     sessions::{HarnessKind, SessionManager},
 };
 
+mod lifecycle;
+pub(crate) use lifecycle::{codex_arguments, grok_hooks, harness_snapshot, settle_rollout};
+pub use lifecycle::{harness_state, record_harness_hook};
+
 /// Events RiWork hooks into every Claude launch, through per-invocation
 /// `--settings` only. Stop and UserPromptSubmit track the turn; SessionStart
 /// rebinds the identity after /clear or /resume; SubagentStart and

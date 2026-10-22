@@ -256,6 +256,8 @@ pub fn item(id: String, turn_id: Option<String>, worker: WorkerRef) -> Item {
         .map(|end| end.tail.clone())
         .filter(|tail| !tail.is_empty());
     Item {
+        started_at: None,
+        ended_at: None,
         body: ItemBody::ToolCall {
             server: Some(SERVER.to_owned()),
             tool: TOOL.to_owned(),
@@ -573,7 +575,9 @@ impl TurnRecord {
                 }
                 _ => {}
             },
-            ChatEvent::TurnCompleted { turn_id, outcome } => {
+            ChatEvent::TurnCompleted {
+                turn_id, outcome, ..
+            } => {
                 let took = self
                     .took
                     .iter()
@@ -996,6 +1000,7 @@ mod tests {
         let start = appended(apply(&[], &spawn(false), fresh("s"), Some("t1"), 100));
         let mut transcript = Transcript::default();
         transcript.apply(&ChatEvent::TurnStarted {
+            started_at: None,
             turn_id: "t1".into(),
         });
         transcript.apply(&ChatEvent::ItemCompleted {
@@ -1003,6 +1008,8 @@ mod tests {
         });
         transcript.apply(&ChatEvent::ItemCompleted {
             item: Item {
+                started_at: None,
+                ended_at: None,
                 presentation: Default::default(),
                 id: "after".into(),
                 turn_id: Some("t1".into()),
@@ -1011,6 +1018,7 @@ mod tests {
             },
         });
         transcript.apply(&ChatEvent::TurnCompleted {
+            ended_at: None,
             turn_id: "t1".into(),
             outcome: TurnOutcome::Interrupted,
         });
@@ -1360,6 +1368,8 @@ mod tests {
             }
         };
         let body = |id: &str, body: ItemBody| Item {
+            started_at: None,
+            ended_at: None,
             presentation: Default::default(),
             id: id.into(),
             turn_id: Some("c1".into()),
@@ -1374,6 +1384,7 @@ mod tests {
         follow(
             &mut record,
             ChatEvent::TurnStarted {
+                started_at: None,
                 turn_id: "c1".into(),
             },
         );
@@ -1428,6 +1439,7 @@ mod tests {
         }) = follow(
             &mut record,
             ChatEvent::TurnCompleted {
+                ended_at: None,
                 turn_id: "c1".into(),
                 outcome: TurnOutcome::Interrupted,
             },

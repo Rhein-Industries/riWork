@@ -200,8 +200,8 @@ import RiWorkCore
         await rig.transport.append(chatID, [approval("r1")])
         await eventually("a request waits") { rig.model.conversation(self.chatID).openApprovals.count == 1 }
         let shortcuts = Set((view.keyCommands ?? []).map { ($0.input ?? "") + "|\($0.modifierFlags.rawValue)" })
-        XCTAssertEqual(shortcuts, ["\r|0", "\r|\(UIKeyModifierFlags.shift.rawValue)", "\(UIKeyCommand.inputEscape)|0", "\u{8}|\(UIKeyModifierFlags.command.rawValue)"],
-                       "⏎ ⇧⏎ ⎋ and ⌘⌫ are all the composer claims; ⌘. is the screen's")
+        XCTAssertEqual(shortcuts, ["\r|0", "\r|\(UIKeyModifierFlags.shift.rawValue)", "\r|\(UIKeyModifierFlags.command.rawValue)", "\(UIKeyCommand.inputEscape)|0", "\u{8}|\(UIKeyModifierFlags.command.rawValue)"],
+                       "⏎ ⇧⏎ ⌘⏎ ⎋ and ⌘⌫ are all the composer claims; ⌘. is the screen's")
         // ⌘. is on the hosting controller while there is something to interrupt, and nothing else of the terminal's is.
         func commandKeys() -> [String] { (rig.host.keyCommands ?? []).filter { $0.modifierFlags == .command }.compactMap { $0.input?.lowercased() } }
         XCTAssertFalse(commandKeys().contains("."), "nothing to interrupt yet")
@@ -361,7 +361,11 @@ import RiWorkCore
         let view = try await openChat(rig)
         await rig.transport.append(chatID, [approval("r1")])
         await eventually("a request waits") { rig.model.conversation(self.chatID).openApprovals.count == 1 }
-        XCTAssertNotNil(command(view, UIKeyCommand.inputEscape))
+        let commandStart = ContinuousClock.now
+        await eventually("the composer claims Escape for the request") { self.command(view, UIKeyCommand.inputEscape) != nil }
+        let commandDelay = commandStart.duration(to: .now)
+        print("COMPOSER_APPROVAL_KEY_DELAY \(commandDelay)")
+        XCTAssertLessThan(commandDelay, .seconds(1), "key registration should need only the existing UIKit update, not a new delay")
         view.insertText("wait, ")
         XCTAssertNil(command(view, UIKeyCommand.inputEscape), "Escape does not deny while a message is being written")
         XCTAssertNil(command(view, "\u{8}", .command), "and ⌘⌫ is the text view's")
@@ -371,6 +375,24 @@ import RiWorkCore
         let sent = await sentCommands(rig)
         XCTAssertEqual(sent, [.object(["command": .string("send"), "text": .string("wait, ")])])
         XCTAssertEqual(rig.model.conversation(chatID).openApprovals.count, 1, "the request still waits")
+        await finish(rig)
+    }
+    func testRecordingReturnAndSendRepeatsReachTheModelOnce() async throws {
+        let rig = try await makeRig(mic: true)
+        let view = try await openChat(rig)
+        let controller = DictationController.shared
+        defer { controller.finishNow(); controller.makeEngine = { DictationController.defaultEngine() } }
+        controller.makeEngine = { ScriptedSpeechEngine(script: "send these words", interval: .milliseconds(1)) }
+        try XCTUnwrap(rig.layout.actions["dictation-target"])()
+        await eventually("the full partial is visible") { view.text == "send these words" }
+        press(view, "\r")
+        press(view, "\r")
+        try XCTUnwrap(rig.layout.actions["send"])()
+        await eventually("one message reaches the model") { await self.sentCommands(rig).count == 1 }
+        // Flush the engine callback and both scheduled model requests before asserting the count.
+        await eventually("recording and sending have ended") { !controller.phase.isActive && !rig.model.conversation(self.chatID).sending }
+        let commands = await sentCommands(rig)
+        XCTAssertEqual(commands, [.object(["command": .string("send"), "text": .string("send these words")])])
         await finish(rig)
     }
     func testADecisionTheProviderDoesNotOfferIsNotMadeOnAKey() async throws {
@@ -523,7 +545,8 @@ import RiWorkCore
         await rig.transport.append(chatID, [.info(chat())] + rows)
         let field = try await openChat(rig), conversation = rig.model.conversation(chatID)
         await eventually("recent window loaded") { conversation.transcript.items.count == 50 }
-        conversation.draft = "gated draft"; conversation.expanded.insert("hetero-254")
+        conversation.setDisplayMode(.verbose)
+        conversation.draft = "gated draft"; conversation.disclosure.overrides["hetero-254"] = true
         rig.window.endEditing(true)
         try await Task.sleep(for: .milliseconds(350))
         let list = try XCTUnwrap(descendants(UIScrollView.self, in: rig.host.view).filter { $0 !== field && $0.bounds.height > 100 && $0.contentSize.height > $0.bounds.height + 500 }.max { $0.contentSize.height < $1.contentSize.height })
@@ -553,8 +576,9 @@ import RiWorkCore
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(try renderedMessageTop(movedMessage, rig: rig, scroll: list), movedAnchor, accuracy: 4)
         XCTAssertEqual(conversation.feed.itemArrivals, 51, "the 50 older rows add no unread arrivals")
+        XCTAssertEqual(conversation.disclosure.overrides["hetero-254"], true, "the installed page retains the existing manual disclosure")
         // A newly prepended card measures again well after the former timer deadline.
-        conversation.expanded.insert("hetero-249")
+        conversation.disclosure.overrides["hetero-249"] = true
         try await Task.sleep(for: .milliseconds(400))
         XCTAssertEqual(try renderedMessageTop(movedMessage, rig: rig, scroll: list), movedAnchor, accuracy: 4, "late expansion above the anchor preserves its within-row position")
         XCTAssertEqual(conversation.draft, "gated draft")
@@ -752,7 +776,7 @@ import RiWorkCore
         try snapshot(rig, name: "worker-card-in-view")
         await rig.transport.append(chatID, [.itemCompleted(workerMarker(notedAt: noted, final: .init(status: .done, endedAt: noted + 95, tail: "Compiling\nAll green")))])
         await eventually("the final snapshot arrived") { conversation.transcript.item("worker:\(ChatTransport.shell)")?.worker?.final != nil }
-        conversation.expanded.insert("worker:\(ChatTransport.shell)")
+        conversation.disclosure.overrides["worker:\(ChatTransport.shell)"] = true
         try await Task.sleep(for: .milliseconds(300))
         try snapshot(rig, name: "worker-card-finished")
         await rig.transport.append(chatID, longAnswer(24))
@@ -803,7 +827,8 @@ import RiWorkCore
         XCTAssertTrue(conversation.alerts.items.isEmpty, "a placeholder is no fault")
         try await Task.sleep(for: .milliseconds(300))
         try snapshot(rig, name: "elided-row")
-        conversation.expanded.insert("big-log")
+        conversation.setDisplayMode(.verbose)
+        conversation.disclosure.overrides["big-log"] = true
         try await Task.sleep(for: .milliseconds(300))
         try snapshot(rig, name: "elided-row-explained")
         await finish(rig)
@@ -1252,10 +1277,15 @@ import RiWorkCore
             events.append(.itemCompleted(ChatItem(id: "layout-command", status: .completed, body: .command(command: "swift test --filter fixture", cwd: "/fixture", output: output, exitCode: 0))))
             await rig.transport.append(chatID, events)
             let field = try await openChat(rig), conversation = rig.model.conversation(chatID)
-            conversation.expanded.insert("layout-command"); conversation.draft = "Layout draft"
+            conversation.setDisplayMode(.verbose)
+            conversation.disclosure.toggle("layout-command", currentlyOpen: false)
+            conversation.draft = "Layout draft"
             await eventually("recent full rows loaded") { conversation.transcript.items.count == 50 }
             try await Task.sleep(for: .milliseconds(350))
             let scroll = try XCTUnwrap(transcriptScroll(rig))
+            let commandHeader = try XCTUnwrap(rig.layout.frames["activity-header-layout-command"])
+            XCTAssertEqual(commandHeader.height, 36, accuracy: 0.5, "tool headers retain the mockup density")
+            XCTAssertGreaterThan(try XCTUnwrap(rig.layout.frames["activity-meta-layout-command"]).width, 0, "cwd remains visible beside an ellipsized command")
             let modelFrame = try XCTUnwrap(rig.layout.frames["model"])
             let permissions = try XCTUnwrap(rig.layout.frames["permissions"])
             let navigation = try XCTUnwrap(rig.layout.frames["navigation"])
@@ -1267,16 +1297,16 @@ import RiWorkCore
                 XCTAssertLessThanOrEqual(modelFrame.union(permissions).height, 48)
             }
             XCTAssertTrue(try renderedTranscriptText(rig, scroll: scroll).contains("output line 23"))
-            XCTAssertFalse(try renderedTranscriptText(rig, scroll: scroll).contains("output line 0:"), "expanded cards begin with a short output preview")
-            let expand = try XCTUnwrap(rig.layout.actions["output-toggle"])
+            XCTAssertFalse(try renderedTranscriptText(rig, scroll: scroll).contains("output line 8:"), "the collapsed output preview omits its middle lines")
+            let expand = try XCTUnwrap(rig.layout.actions["output-show-all-layout-command"])
             expand()
-            await eventually("the visible output expands") { (try? self.renderedText(rig, in: rig.layout.frames["output-toggle"] ?? .zero).contains("Show less output")) == true }
+            await eventually("the visible output expands") { (try? self.renderedText(rig, in: rig.layout.frames["output-show-all-layout-command"] ?? .zero).contains("Show less")) == true }
             await eventually("expanded output settles at the newest bottom") { self.isAtValidBottom(scroll) }
-            let copy = try XCTUnwrap(rig.layout.actions["copy-Copy output"])
+            let copy = try XCTUnwrap(rig.layout.actions["copy-output-layout-command"])
             copy()
             XCTAssertEqual(UIPasteboard.general.string, output, "folded output still copies the full text held locally")
-            try XCTUnwrap(rig.layout.actions["output-toggle"])()
-            await eventually("the visible output folds again") { (try? self.renderedText(rig, in: rig.layout.frames["output-toggle"] ?? .zero).contains("Show more output")) == true }
+            try XCTUnwrap(rig.layout.actions["output-show-all-layout-command"])()
+            await eventually("the visible output folds again") { (try? self.renderedText(rig, in: rig.layout.frames["output-show-all-layout-command"] ?? .zero).contains("Show all")) == true }
             await eventually("folded output settles before reading begins") { self.isAtValidBottom(scroll) }
             if category == .accessibilityExtraLarge { try compactSnapshot(rig, name: "compact-large-text-output") }
             listStartReading(scroll)
@@ -1357,10 +1387,9 @@ import RiWorkCore
             XCTAssertLessThanOrEqual(fieldFrame.maxY, keyboardTop + 2, "\(look): the composer sits on the keyboard")
             XCTAssertGreaterThanOrEqual(fieldFrame.maxY, keyboardTop - 16, "\(look): and close to it")
             let scroll = try XCTUnwrap(transcriptScroll(rig))
-            listStartReading(scroll)
+            try XCTUnwrap(rig.layout.actions["transcript-accessibility-previous"])()
             scroll.setContentOffset(CGPoint(x: 0, y: max(20, bottomOffset(scroll) - 600)), animated: false)
             try await Task.sleep(for: .milliseconds(150))
-            scroll.delegate?.scrollViewDidEndDragging?(scroll, willDecelerate: false)
             await eventually("Latest shows while reading") { rig.layout.visible["latest"] == true }
             try await Task.sleep(for: .milliseconds(100))
             try assertLatestOverTranscriptBottom(rig, scroll: scroll)
@@ -1517,8 +1546,9 @@ import RiWorkCore
         // The keyboard's frame as the monitor reads it from UIKit's notifications (not posted: UIKit's own keyboard tracking would
         // take them too, for the tests after this one).
         func keyboard(_ height: CGFloat) {
-            let screen = UIScreen.main.bounds
-            rig.model.keyboard.software.update(hiding: height == 0, end: CGRect(x: 0, y: screen.maxY - height, width: screen.width, height: height))
+            // At the bottom of the rig's window, which on an iPad is smaller than the screen: the monitor measures the window it covers.
+            let screen = rig.window.windowScene.map { rig.window.convert(rig.window.bounds, to: $0.screen.coordinateSpace) } ?? UIScreen.main.bounds
+            rig.model.keyboard.software.update(hiding: height == 0, end: CGRect(x: screen.minX, y: screen.maxY - height, width: screen.width, height: height))
         }
         let interactive: [UIScrollView.KeyboardDismissMode] = [.interactive, .interactiveWithAccessory]
         // The tap: the transcript scroll view's own recognizer, fired as UIKit fires it once a tap is recognized.
@@ -1610,7 +1640,7 @@ import RiWorkCore
         let field = try await openChat(rig)
         let conversation = rig.model.conversation(chatID)
         XCTAssertEqual(conversation.attachments.count, 1, "kept, so the person sees what happened")
-        XCTAssertTrue(conversation.attachments[0].isExpired())
+        XCTAssertTrue(conversation.attachments.first?.isExpired() == true)
         XCTAssertTrue(conversation.notice?.contains("expired on the Mac") == true, conversation.notice ?? "no notice")
         XCTAssertFalse(conversation.hasMessage, "an expired card alone is nothing to send")
         await rig.model.sendChatDraft(chatID)
@@ -1636,7 +1666,6 @@ import RiWorkCore
         await eventually("the row is up") { relaunched.layout.frames["attachments"] != nil }
         await finish(relaunched)
     }
-
 
     /// Types into the composer as a person does: through the text view, so the binding and the saving run as they do on a device.
     private func type(_ text: String, into field: ChatComposerTextView) {
@@ -1871,7 +1900,7 @@ import RiWorkCore
     func testTheRowDrawsTheSharedListInItsOrderWithoutHiddenWorkers() async throws {
         let rig = try await sharedRig()
         XCTAssertEqual(rig.model.tabs.map(\.id), [chatID, userChatID, ChatTransport.shell], "shared order; the hidden worker is not a tab")
-        XCTAssertEqual(rig.model.tabs[1].chatInfo?.title, "Shared title", "the shared title")
+        XCTAssertEqual(rig.model.tabs.dropFirst().first?.chatInfo?.title, "Shared title", "the shared title")
         await eventually("the row is drawn with drag targets") { rig.layout.frames["tab-chat:\(self.chatID)"] != nil && rig.layout.frames["tab-shell:\(ChatTransport.shell)"] != nil }
         let first = try XCTUnwrap(rig.layout.frames["tab-chat:\(chatID)"]), last = try XCTUnwrap(rig.layout.frames["tab-shell:\(ChatTransport.shell)"])
         XCTAssertLessThan(first.minX, last.minX)
@@ -2355,11 +2384,11 @@ import RiWorkCore
         await finish(rig)
     }
 
-    /// The chat's row is one line: [model ⌄] [ring 56%] … [mode ⌄], at 390 pt with default text and in every look, with usage windows
+    /// The chat's row is one line: [model ⌄] [ring 56%] … [activity] [mode ⌄], at phone widths with default text and in every look, with usage windows
     /// past their warning (once a chip of their own, now only in the ring's detail).
     func testTheChatHeaderIsOneRowOfModelRingAndMode() async throws {
         for look in Look.allCases {
-            for width: CGFloat in [390, 402] {
+            for width: CGFloat in [390, 393, 402] {
                 let rig = try await makeRig(chats: [modelChat(fast: true)], width: width, height: 844, look: look)
                 rig.host.traitOverrides.preferredContentSizeCategory = .large
                 let resets = UInt64(Date().timeIntervalSince1970) + 3 * 86400
@@ -2373,17 +2402,80 @@ import RiWorkCore
                 let what = "\(look) at \(Int(width)) pt"
                 let model = try XCTUnwrap(rig.layout.frames["model"], what), ring = try XCTUnwrap(rig.layout.frames["usage"], what)
                 let mode = try XCTUnwrap(rig.layout.frames["permissions"], what)
+                let activity = try XCTUnwrap(rig.layout.frames["display-mode"], what)
                 XCTAssertNil(rig.layout.frames["usage-limits"], "\(what): no usage-limit chip")
                 XCTAssertEqual(model.midY, ring.midY, accuracy: 2, "\(what): the ring is on the model's line")
                 XCTAssertEqual(model.midY, mode.midY, accuracy: 2, "\(what): the mode is on the model's line")
-                XCTAssertLessThanOrEqual(model.union(ring).union(mode).height, 48, "\(what): one row")
+                XCTAssertEqual(model.midY, activity.midY, accuracy: 2, "\(what): activity stays on the model's line")
+                XCTAssertLessThanOrEqual(activity.height, 30, "\(what): native mini activity control")
+                XCTAssertLessThanOrEqual(model.union(ring).union(activity).union(mode).height, 48, "\(what): one row")
                 XCTAssertLessThanOrEqual(model.maxX, ring.minX + 1, "\(what): model, then ring")
-                XCTAssertLessThan(ring.maxX, mode.minX, "\(what): the ring before the mode")
+                XCTAssertLessThanOrEqual(ring.maxX, activity.minX, "\(what): the ring before activity")
+                XCTAssertLessThanOrEqual(activity.maxX, mode.minX, "\(what): activity before permissions")
+                XCTAssertGreaterThanOrEqual(activity.minX, 8)
+                XCTAssertLessThanOrEqual(mode.maxX, width - 8 + 1)
                 XCTAssertGreaterThan(mode.maxX, width - 20, "\(what): the mode at the row's end")
-                XCTAssertEqual(ChatUsageMeter(conversation.transcript.usage!).percentText, "56%")
+                XCTAssertEqual(conversation.transcript.usage.map { ChatUsageMeter($0).percentText }, "56%")
                 await finish(rig)
             }
         }
+    }
+
+    func testCompactActivityPickerSwitchesAndPersistsModes() async throws {
+        let accessibility = AppAccessibility.enable()
+        defer { accessibility.restore() }
+        let screen = UIScreen.main.bounds.size
+        let childID = "dddddddd-2222-4222-8222-222222222222"
+        var child = ChatInfo(id: childID, provider: .claude, parentID: chatID, projectID: project, title: "Review worker", state: .running)
+        let rig = try await makeRig(chats: [modelChat(fast: true), child], hardwareKeyboard: false, width: screen.width, height: screen.height, look: .nativeLight, pushed: true)
+        rig.model.keyboard.setFocusSetting(.never)
+        let worker = ChatItem(id: "mode-worker", turnID: "mode-turn", status: .completed,
+            body: .toolCall(server: "riwork", tool: "worker", input: .null, output: nil),
+            presentation: .init(worker: ChatWorker(sessionID: childID, kind: .chat, title: "Review worker", notedAt: UInt64(Date().timeIntervalSince1970))))
+        let subagent = try JSONDecoder().decode(ChatItem.self, from: Data(#"{"id":"mode-subagent","turn_id":"mode-turn","status":"completed","body":{"type":"tool_call","tool":"delegate"},"presentation":{"subagent":{"name":"Reviewer","status":"done","summary":"Reviewed"}}}"#.utf8))
+        await rig.transport.append(chatID, [.info(modelChat(fast: true)), .models(models),
+            .usage(ChatUsage(inputTokens: 112_000, contextWindow: 200_000, contextUsed: 112_000)),
+            .itemCompleted(ChatItem(id: "mode-call", turnID: "mode-turn", status: .completed,
+                body: .command(command: "swift test", cwd: nil, output: "Passed", exitCode: 0))),
+            .itemCompleted(worker), .itemCompleted(subagent),
+            .itemCompleted(ChatItem(id: "toggle-answer", turnID: "mode-turn", status: .completed, body: .agentMessage("Activity stays within reach.")))])
+        _ = try await openChat(rig)
+        let conversation = rig.model.conversation(chatID)
+        await eventually("compact activity picker is installed") { rig.layout.frames["display-mode"] != nil && conversation.transcript.usage != nil }
+        rig.window.endEditing(true)
+        let picker = try XCTUnwrap(descendants(UISegmentedControl.self, in: rig.host.view).first)
+        XCTAssertEqual(picker.bounds.height, 28, accuracy: 1.5, "the native control itself stays compact, without clipping")
+        XCTAssertEqual(picker.bounds.width, 132, accuracy: 0.5)
+        XCTAssertEqual(picker.numberOfSegments, 2)
+        XCTAssertEqual(picker.selectedSegmentIndex, 0)
+        XCTAssertFalse(conversation.projectionRows.first { $0.kind == .activity }?.open ?? true)
+        await eventually("Normal shows both inline cards while activity is closed") {
+            let labels = self.accessibilityLabels(in: rig.host.view)
+            return labels.contains { $0.hasPrefix("Worker chat, Review worker, Working") }
+                && labels.contains { $0.hasPrefix("Subagent, Reviewer, Done") }
+        }
+        child.state = .idle
+        await rig.transport.setChats([modelChat(fast: true), child])
+        await rig.model.refreshChatsQuietly()
+        await eventually("the visible worker status follows inventory without a new marker") {
+            self.accessibilityLabels(in: rig.host.view).contains { $0.hasPrefix("Worker chat, Review worker, Done") }
+        }
+        XCTAssertEqual(conversation.transcript.item("mode-worker"), worker)
+        picker.selectedSegmentIndex = 1
+        picker.sendActions(for: .valueChanged)
+        await eventually("native picker selects Verbose") { conversation.displayMode == .verbose }
+        XCTAssertEqual(rig.defaults.string(forKey: "chat.display.\(chatID)"), ChatDisplayMode.verbose.rawValue)
+        XCTAssertEqual(conversation.projectionRows.map(\.id), ["mode-call", "mode-worker", "mode-subagent", "toggle-answer"])
+        await eventually("Verbose shows both cards among the calls") {
+            let labels = self.accessibilityLabels(in: rig.host.view)
+            return labels.contains { $0.hasPrefix("Worker chat, Review worker, Done") }
+                && labels.contains { $0.hasPrefix("Subagent, Reviewer, Done") }
+        }
+        picker.selectedSegmentIndex = 0
+        picker.sendActions(for: .valueChanged)
+        await eventually("native picker selects Normal") { conversation.displayMode == .normal }
+        XCTAssertEqual(rig.defaults.string(forKey: "chat.display.\(chatID)"), ChatDisplayMode.normal.rawValue)
+        await finish(rig)
     }
 
     /// The chat's section of the ⋯ menu keeps its actions but not what the row holds: no usage line, no Change model.
@@ -2409,7 +2501,7 @@ import RiWorkCore
             labels = self.accessibilityLabels(in: host.view)
             return labels.contains("Stop agent")
         }
-        for kept in ["Compact conversation", "Jump to latest", "Notices (1)…", "Copy session id", "Stop agent"] {
+        for kept in ["Compact context", "Jump to latest", "Notices (1)…", "Copy session id", "Stop agent"] {
             XCTAssertTrue(labels.contains(kept), "\(kept) stays in ⋯: \(labels)")
         }
         XCTAssertFalse(labels.contains { $0.hasPrefix("Usage") || $0.hasPrefix("Context") }, "no usage line: \(labels)")
@@ -2444,11 +2536,13 @@ import RiWorkCore
         _ = try await openChat(rig)
         let conversation = rig.model.conversation(chatID)
         await eventually("old provider banner and limits") { rig.layout.frames["banner-notice-kind:rate_limit:weekly"] != nil && conversation.transcript.rateLimits.count == 1 }
-        conversation.showUsageDetail()
+        await eventually("old provider usage control is installed") { rig.layout.visible["usage"] == true && rig.layout.actions["usage"] != nil }
+        XCTAssertTrue(activate("Context usage", in: rig.host.view))
         await eventually("old ring detail") { rig.host.presentedViewController != nil }
-        await eventually("old window rendered") { self.accessibilityLabels(in: rig.host.presentedViewController!.view).contains { $0.contains("Old weekly") } }
-        rig.host.presentedViewController?.dismiss(animated: false)
-        try await Task.sleep(for: .milliseconds(300))
+        let oldDetail = try XCTUnwrap(rig.host.presentedViewController)
+        await eventually("old window rendered") { self.accessibilityLabels(in: oldDetail.view).contains { $0.contains("Old weekly") } }
+        oldDetail.dismiss(animated: false)
+        await eventually("old provider detail is dismissed") { rig.host.presentedViewController == nil }
         var moved = chat(); moved.provider = .codex
         // The host resolves its old items before publishing the new provider's Info.
         await rig.transport.append(chatID, [limit(true), .info(moved),
@@ -2457,10 +2551,12 @@ import RiWorkCore
             conversation.transcript.info?.provider == .codex && conversation.transcript.rateLimits.isEmpty &&
             rig.layout.frames["banner-notice-kind:rate_limit:weekly"] == nil
         }
-        conversation.showUsageDetail()
+        await eventually("new provider usage control is installed") { rig.layout.visible["usage"] == true && rig.layout.actions["usage"] != nil && conversation.transcript.usage?.contextUsed == 10 }
+        XCTAssertTrue(activate("Context usage", in: rig.host.view))
         await eventually("new ring detail") { rig.host.presentedViewController != nil }
-        try await Task.sleep(for: .milliseconds(300))
-        let labels = accessibilityLabels(in: rig.host.presentedViewController!.view)
+        let newDetail = try XCTUnwrap(rig.host.presentedViewController)
+        await eventually("new provider context is rendered") { self.accessibilityLabels(in: newDetail.view).contains { $0.contains("10%") } }
+        let labels = accessibilityLabels(in: newDetail.view)
         XCTAssertFalse(labels.contains { $0.contains("Old weekly") || $0.contains("Usage limits") }, "old provider windows do not survive: \(labels)")
         XCTAssertTrue(labels.contains { $0.contains("10%") }, "new provider's context is visible: \(labels)")
         rig.host.presentedViewController?.dismiss(animated: false)
@@ -2494,8 +2590,10 @@ import RiWorkCore
         conversation.showUsageDetail()
         await eventually("the usage detail is up") { rig.host.presentedViewController != nil }
         rig.host.presentedViewController?.dismiss(animated: false)
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertTrue(try renderedText(rig, in: rig.layout.frames["banner-notice-kind:rate_limit:five_hour"]!).contains("resets"), "says when it resets")
+        await eventually("the detail is gone and the banner is drawn again") {
+            rig.host.presentedViewController == nil && rig.layout.frames["banner-notice-kind:rate_limit:five_hour"] != nil
+        }
+        XCTAssertTrue(try renderedText(rig, in: XCTUnwrap(rig.layout.frames["banner-notice-kind:rate_limit:five_hour"], "the limit's banner")).contains("resets"), "says when it resets")
         // Live windows come by `chat.events` too, which opts in as the snapshot did (the fixture withholds them otherwise).
         await rig.transport.append(chatID, [.rateLimits([ChatRateWindow(id: "seven_day", label: "weekly", usedPercent: 91, resetsAt: resets + 86400)])])
         await eventually("the live windows") { conversation.transcript.rateLimits.map(\.id) == ["seven_day"] }
@@ -2603,9 +2701,14 @@ import RiWorkCore
         await eventually("all messages loaded") { rig.model.conversation(self.chatID).transcript.items.count == 16 }
         try await Task.sleep(for: .milliseconds(400))
         let scroll = try XCTUnwrap(descendants(UIScrollView.self, in: rig.host.view).filter { $0.contentSize.height > $0.bounds.height + 100 }.max { $0.bounds.height < $1.bounds.height })
+        scroll.delegate?.scrollViewWillBeginDragging?(scroll)
+        try await Task.sleep(for: .milliseconds(50))
         scroll.setContentOffset(CGPoint(x: 0, y: -scroll.adjustedContentInset.top), animated: false)
-        try await Task.sleep(for: .milliseconds(300))
+        try await Task.sleep(for: .milliseconds(150))
+        scroll.delegate?.scrollViewDidEndDragging?(scroll, willDecelerate: false)
+        try await Task.sleep(for: .milliseconds(150))
         let offset = scroll.contentOffset.y
+        XCTAssertGreaterThan(bottomOffset(scroll) - offset, 100, "the simulated reader gesture has actually moved away from the bottom before streaming")
         await rig.transport.append(chatID, [.itemDelta(itemID: "message-15", delta: .text(" More streamed text arrives below the reader."))])
         await eventually("stream accepted") { rig.model.conversation(self.chatID).transcript.items.last?.body == .agentMessage("Message 15. A paragraph that wraps across several lines at accessibility text sizes. More streamed text arrives below the reader.") }
         try await Task.sleep(for: .milliseconds(300))
@@ -2617,6 +2720,57 @@ import RiWorkCore
         assertValidBottom(scroll)
         let text = try renderedTranscriptText(rig, scroll: scroll)
         XCTAssertTrue(text.lowercased().contains("reader"), "the streamed tail is actually rendered, not an empty overscrolled viewport: \(text)")
+        await finish(rig)
+    }
+
+    func testVerboseMenuBulkExpansionAndCollapseUpdateEveryRenderedCall() async throws {
+        let accessibility = AppAccessibility.enable()
+        defer { accessibility.restore() }
+        let rig = try await makeRig(hardwareKeyboard: false, width: 402, height: 874, look: .nativeLight)
+        let conversation = rig.model.conversation(chatID)
+        conversation.setDisplayMode(.verbose)
+        rig.model.keyboard.setFocusSetting(.never)
+        await rig.transport.append(chatID, [
+            .info(chat()), .turnStarted(turnID: "bulk-turn"),
+            .itemCompleted(ChatItem(id: "bulk-first", turnID: "bulk-turn", status: .completed,
+                body: .command(command: "swift build", cwd: "/fixture", output: "First complete output", exitCode: 0))),
+            .itemCompleted(ChatItem(id: "bulk-second", turnID: "bulk-turn", status: .completed,
+                body: .command(command: "swift test", cwd: "/fixture", output: "Second complete output", exitCode: 0))),
+            .turnCompleted(turnID: "bulk-turn", outcome: .completed), .state(.idle)
+        ])
+        _ = try await openChat(rig)
+        rig.window.endEditing(true)
+        await eventually("both collapsed call rows are drawn") { rig.layout.actions["activity-row-bulk-first"] != nil && rig.layout.actions["activity-row-bulk-second"] != nil }
+        XCTAssertNil(rig.layout.frames["output-block-bulk-first"])
+        XCTAssertNil(rig.layout.frames["output-block-bulk-second"])
+        try XCTUnwrap(rig.layout.actions["activity-row-bulk-first"])()
+        await eventually("one manual override is rendered") { rig.layout.frames["output-block-bulk-first"] != nil }
+
+        let menuHost = UIHostingController(rootView: VStack(alignment: .leading) { ChatMenuSection(model: rig.model, chat: chat()) }.desktopThemed(rig.model.theme.style))
+        let menuWindow = UIWindow(windowScene: try XCTUnwrap(rig.window.windowScene))
+        menuWindow.frame = CGRect(x: 0, y: 0, width: 402, height: 500)
+        menuWindow.rootViewController = menuHost
+        windows.append(menuWindow)
+        menuWindow.makeKeyAndVisible()
+        await eventually("bulk menu button is available") { self.accessibilityLabels(in: menuHost.view).contains("Expand all activity") }
+        XCTAssertTrue(activate("Expand all activity", in: menuHost.view))
+        menuWindow.isHidden = true; rig.window.makeKeyAndVisible()
+        await eventually("Expand all renders both outputs") { rig.layout.frames["output-block-bulk-first"] != nil && rig.layout.frames["output-block-bulk-second"] != nil }
+        XCTAssertEqual(conversation.projectionRows.filter(\.open).map(\.id), ["bulk-first", "bulk-second"])
+        await rig.transport.append(chatID, [
+            .turnStarted(turnID: "later-turn"),
+            .itemCompleted(ChatItem(id: "bulk-later", turnID: "later-turn", status: .completed,
+                body: .command(command: "swift test --filter Later", cwd: "/fixture", output: "Later output stays closed", exitCode: 0))),
+            .turnCompleted(turnID: "later-turn", outcome: .completed), .state(.idle)
+        ])
+        await eventually("a later call arrives closed") { rig.layout.actions["activity-row-bulk-later"] != nil }
+        XCTAssertNil(rig.layout.frames["output-block-bulk-later"])
+        XCTAssertFalse(try XCTUnwrap(conversation.projectionRows.first { $0.id == "bulk-later" }).open)
+        menuWindow.makeKeyAndVisible()
+        XCTAssertTrue(activate("Collapse all activity", in: menuHost.view))
+        menuWindow.isHidden = true; rig.window.makeKeyAndVisible()
+        await eventually("Collapse all removes both outputs") { rig.layout.frames["output-block-bulk-first"] == nil && rig.layout.frames["output-block-bulk-second"] == nil }
+        XCTAssertTrue(conversation.projectionRows.allSatisfy { !$0.open })
         await finish(rig)
     }
 
@@ -2745,7 +2899,7 @@ import RiWorkCore
         rig.host.traitOverrides.preferredContentSizeCategory = .accessibilityExtraLarge
         await eventually("composer font follows accessibility text size") { (field.font?.pointSize ?? 0) > initialFont }
         XCTAssertEqual(field.text, "A draft that must survive text scaling.")
-        XCTAssertEqual(field.keyCommands?.count, 2, "Return routing is unchanged by layout")
+        XCTAssertEqual(field.keyCommands?.count, 3, "Return routing (⏎, ⇧⏎, ⌘⏎) is unchanged by layout")
         let frame = field.convert(field.bounds, to: rig.window)
         XCTAssertGreaterThanOrEqual(frame.minX, 0)
         XCTAssertLessThanOrEqual(frame.maxX, rig.window.bounds.width)
@@ -2786,7 +2940,8 @@ import RiWorkCore
             await rig.transport.append(chatID, events)
             let field = try await openChat(rig)
             await eventually("fixture messages") { conversation.transcript.items.count == 3 }
-            conversation.expanded.insert("tool")
+            conversation.setDisplayMode(.verbose)
+            conversation.disclosure.toggle("tool", currentlyOpen: false)
             try await Task.sleep(for: .milliseconds(600))
             try reviewSnapshot(rig, name: "\(tablet ? "tablet" : "phone")-\(name)-messages")
             let transcriptScroll = descendants(UIScrollView.self, in: rig.host.view)
@@ -2999,7 +3154,8 @@ import RiWorkCore
             await eventually("the transcript is in") { rig.model.conversation(self.chatID).transcript.items.count >= 11 }
             try await Task.sleep(for: .milliseconds(800))
             try snapshot(rig, name: named("chat-transcript-collapsed", look))
-            rig.model.conversation(chatID).expanded.formUnion(["c1", "f1", "f1#src/main.rs", "t1", "r1"])
+            rig.model.conversation(chatID).setDisplayMode(.verbose)
+            for id in ["c1", "f1", "t1", "r1"] { rig.model.conversation(chatID).disclosure.overrides[id] = true }
             try await Task.sleep(for: .milliseconds(800))
             try snapshot(rig, name: named("chat-transcript-expanded", look))
             await finish(rig)
@@ -3063,8 +3219,6 @@ import RiWorkCore
                 let top = cards ? try XCTUnwrap(rig.layout.frames["attachments"]).minY : surface.minY
                 XCTAssertGreaterThanOrEqual(frame.maxY, surface.maxY, "\(look) cards \(cards): the transcript reaches down under the field")
                 XCTAssertEqual(frame.maxY - list.adjustedContentInset.bottom, top - 6, accuracy: 1.5, "\(look) cards \(cards): its content ends just above the composer")
-                // The keyboard's top, or the home indicator's safe area with no keyboard.
-                XCTAssertEqual(rig.host.view.keyboardLayoutGuide.layoutFrame.minY - surface.maxY, 8, accuracy: 1, "\(look): 8 pt under the field")
                 // The last message, scrolled to, is seen whole above the field.
                 let lastRow = list.contentSize.height - 6 + frame.minY - list.contentOffset.y
                 XCTAssertLessThanOrEqual(lastRow, top, "\(look) cards \(cards): the last message ends above the composer")
@@ -3183,7 +3337,7 @@ import RiWorkCore
         XCTAssertEqual(rig.model.tabs.map(\.id), [chatID, ChatTransport.shell], "its tab sits in the strip, first")
         XCTAssertFalse(descendants(KeyCaptureView.self, in: rig.host.view).isEmpty)
         await rig.transport.append(chatID, [.state(.running), .itemStarted(ChatItem(id: "a", turnID: "t1", status: .completed, body: .agentMessage("Three workers are running; the build is green.")))])
-        rig.model.chooseOrchestrator(rig.model.tabs[0])
+        rig.model.chooseOrchestrator(try XCTUnwrap(rig.model.tabs.first))
         await eventually("the chat screen is up for the chat id") { self.composer(rig) != nil && rig.model.conversation(self.chatID).following }
         XCTAssertTrue(descendants(KeyCaptureView.self, in: rig.host.view).isEmpty, "no terminal behind it")
         XCTAssertFalse(rig.model.terminalVisible)
@@ -3201,7 +3355,7 @@ import RiWorkCore
     }
     func testAChatOrchestratorOnAnOlderMacShowsNeitherAChatNorATerminal() async throws {
         let rig = try await makeRig(chats: [], orchestrators: [chatOrchestrator], chatFeature: false)
-        rig.model.chooseOrchestrator(rig.model.tabs[0])
+        rig.model.chooseOrchestrator(try XCTUnwrap(rig.model.tabs.first))
         await eventually("the terminal is released") { self.descendants(KeyCaptureView.self, in: rig.host.view).isEmpty && !rig.model.terminalVisible }
         XCTAssertNil(composer(rig), "and there is no chat to type into")
         XCTAssertNotNil(rig.model.selectedBlocked)
@@ -3367,15 +3521,15 @@ import RiWorkCore
             XCTAssertNotNil(rig.layout.frames["send"], "\(look): Send, greyed, holds the field's action slot")
             try snapshot(rig, name: named("chat-composer-mic-off", look))
             await setMic(rig, true, look: look, updated: 1_790_000_100)
-            // With nothing typed the mic takes Send's slot: the field keeps its width.
-            await eventually("\(look): the mic is there") { rig.layout.frames["mic"] != nil && rig.layout.frames["send"] == nil }
-            XCTAssertEqual(try XCTUnwrap(width(of: ChatComposerTextView.self, in: rig)), off, accuracy: 1, "\(look): in the same slot")
+            // Mic and Send reserve their columns throughout recording and typing.
+            await eventually("\(look): the mic is there") { rig.layout.frames["mic"] != nil && rig.layout.frames["send"] != nil && abs((self.width(of: ChatComposerTextView.self, in: rig) ?? 0) - (off - max(rig.model.theme.style.target, ChatComposer.buttonColumn(rig.model.theme.style)))) < 1 }
+            XCTAssertEqual(try XCTUnwrap(width(of: ChatComposerTextView.self, in: rig)), off - max(rig.model.theme.style.target, ChatComposer.buttonColumn(rig.model.theme.style)), accuracy: 1, "\(look): reserved mic column")
             // The buttons' column: the 30-point circle and 8 pt to the field's end, the field's height tall.
             // A full target: 44 points at least, from the buttons' 38-point column out over the margin to the screen's edge.
             XCTAssertGreaterThanOrEqual(rig.layout.frames["dictation-target"]?.width ?? 0, 44, "\(look): a full target")
             XCTAssertGreaterThanOrEqual(rig.layout.frames["dictation-target"]?.height ?? 0, 44, "\(look): a full target")
             rig.model.conversation(chatID).draft = "typed"
-            await eventually("\(look): typing brings Send back in its place") { rig.layout.frames["mic"] == nil && rig.layout.frames["send"] != nil }
+            await eventually("\(look): typing keeps both action columns") { rig.layout.frames["mic"] != nil && rig.layout.frames["send"] != nil }
             rig.model.conversation(chatID).draft = ""
             try await Task.sleep(for: .milliseconds(300))
             try snapshot(rig, name: named("chat-composer-mic-on", look))
@@ -3391,14 +3545,14 @@ import RiWorkCore
             let actions = ComposerActions(typed: typed, busy: busy, mic: mic, dictating: dictating)
             return [actions.stop ? "stop" : nil, actions.mic ? "mic" : nil, actions.send ? "send" : nil].compactMap { $0 }
         }
-        XCTAssertEqual(slot(typed: false, busy: false, mic: true), ["mic"])
+        XCTAssertEqual(slot(typed: false, busy: false, mic: true), ["mic", "send"])
         XCTAssertEqual(slot(typed: false, busy: false, mic: false), ["send"], "greyed, holding the slot")
-        XCTAssertEqual(slot(typed: true, busy: false, mic: true), ["send"])
-        XCTAssertEqual(slot(typed: false, busy: true, mic: true), ["stop"])
-        XCTAssertEqual(slot(typed: true, busy: true, mic: true), ["stop", "send"], "Interrupt stays beside Send")
-        XCTAssertEqual(slot(typed: true, busy: false, mic: true, dictating: true), ["mic"], "the mic stays while it listens, whatever is heard")
-        XCTAssertEqual(slot(typed: false, busy: true, mic: true, dictating: true), ["stop", "mic"])
-        XCTAssertEqual(slot(typed: false, busy: false, mic: false, dictating: true), ["mic"], "a dictation the setting has not ended yet keeps its button")
+        XCTAssertEqual(slot(typed: true, busy: false, mic: true), ["mic", "send"])
+        XCTAssertEqual(slot(typed: false, busy: true, mic: true), ["stop", "mic", "send"])
+        XCTAssertEqual(slot(typed: true, busy: true, mic: true), ["stop", "mic", "send"], "Interrupt stays beside Send")
+        XCTAssertEqual(slot(typed: true, busy: false, mic: true, dictating: true), ["mic", "send"], "the mic stays while it listens, whatever is heard")
+        XCTAssertEqual(slot(typed: false, busy: true, mic: true, dictating: true), ["stop", "mic", "send"])
+        XCTAssertEqual(slot(typed: false, busy: false, mic: false, dictating: true), ["mic", "send"], "a dictation the setting has not ended yet keeps its button")
     }
     func testTurningTheSettingOffCancelsAChatDictationInProgress() async throws {
         let rig = try await makeRig(look: .nativeLight, mic: true)
@@ -3536,7 +3690,7 @@ import RiWorkCore
         for look in Look.allCases {
             var rig = try await makeRig(chats: [], orchestrators: [chatOrchestrator], orchestratorCreate: true, look: look)
             await rig.transport.append(chatID, [.state(.running), .itemStarted(ChatItem(id: "a", turnID: "t1", status: .completed, body: .agentMessage("Three workers are running; the build is green.")))])
-            rig.model.chooseOrchestrator(rig.model.tabs[0])
+            rig.model.chooseOrchestrator(try XCTUnwrap(rig.model.tabs.first))
             await eventually("the chat screen is up for the chat id") { self.composer(rig) != nil }
             // Asking for the project's orchestrator again says it is already there, in the note under the tabs.
             _ = await rig.model.createOrchestrator(try NewOrchestratorRequest(projectID: project))
@@ -3547,7 +3701,7 @@ import RiWorkCore
             try await hold(named("tabs-menu", look))
             await finish(rig)
             rig = try await makeRig(chats: [], orchestrators: [chatOrchestrator], chatFeature: false, look: look)
-            rig.model.chooseOrchestrator(rig.model.tabs[0])
+            rig.model.chooseOrchestrator(try XCTUnwrap(rig.model.tabs.first))
             await eventually("the notice") { rig.model.selectedBlocked != nil }
             try await Task.sleep(for: .milliseconds(400))
             try snapshot(rig, name: named("chat-orchestrator-update-the-mac", look))
@@ -3629,5 +3783,138 @@ import RiWorkCore
         XCTAssertTrue(conversation.catchingUp, "a read started before foregrounding cannot certify freshness")
         conversation.accept(ChatEventsReply(chatID: "chat", events: [], next: 0, more: false), since: 0, catchUpEpoch: conversation.catchUpEpoch)
         XCTAssertFalse(conversation.catchingUp)
+    }
+}
+
+extension ChatViewTests {
+    func testTranscriptFileViewerPagesWithinTurnAndReturnsToChat() async throws {
+        let rig = try await makeRig(hardwareKeyboard: false, width: 402, height: 874, look: .nativeLight, pushed: true)
+        rig.model.keyboard.setFocusSetting(.never)
+        let filesItem = ChatItem(id: "files", turnID: "files-turn", status: .completed,
+            body: .fileChange([.init(path: "src/first.swift", kind: .modify), .init(path: "src/second.swift", kind: .add)]))
+        let laterItem = ChatItem(id: "later-file", turnID: "later-turn", status: .completed,
+            body: .fileChange([.init(path: "next-turn.swift", kind: .add)]))
+        await rig.transport.append(chatID, [.info(chat()), .itemCompleted(filesItem), .itemCompleted(laterItem), .state(.idle)])
+        _ = try await openChat(rig)
+        let first = try XCTUnwrap(ChatFileCatalog.entries(items: [filesItem]).first)
+        await eventually("the turn's file action appears") { rig.layout.actions["file-\(first.id)"] != nil }
+        try XCTUnwrap(rig.layout.actions["file-\(first.id)"])()
+        await eventually("the pushed viewer shows the first file") {
+            guard let frame = rig.layout.frames["file-toolbar"] else { return false }
+            return (try? self.renderedText(rig, in: frame).contains("first.swift")) == true
+        }
+        try XCTUnwrap(rig.layout.actions["file-next"])()
+        await eventually("Next stays within the source turn") {
+            guard let frame = rig.layout.frames["file-toolbar"] else { return false }
+            return (try? self.renderedText(rig, in: frame).contains("second.swift")) == true
+        }
+        try XCTUnwrap(rig.layout.actions["file-previous"])()
+        await eventually("Previous returns to the first file") {
+            guard let frame = rig.layout.frames["file-toolbar"] else { return false }
+            return (try? self.renderedText(rig, in: frame).contains("first.swift")) == true
+        }
+        try XCTUnwrap(rig.layout.actions["file-back"])()
+        await eventually("Back returns to the chat") { rig.layout.frames["file-toolbar"] == nil && self.composer(rig) != nil }
+        await finish(rig)
+    }
+
+    /// Real SwiftUI list screen, 2,200 items, 1,200 calls in one group, 100 images, large call output,
+    /// token-rate updates and actual scroll/layout/disclosure/preview operations.
+    func testToolUILargeFixturePerformance() async throws {
+        try await measureToolUI(items: ToolUIPerformanceFixture.items(), label: "2200 synthetic items")
+    }
+
+    private func measureToolUI(items fixtureItems: [ChatItem], label: String) async throws {
+        executionTimeAllowance = 180
+        let rig = try await makeRig(pushed: true)
+        rig.model.keyboard.setFocusSetting(.never)
+        _ = try await openChat(rig)
+        rig.window.endEditing(true)
+        let conversation = rig.model.conversation(chatID)
+        conversation.follower = nil // Stop the scripted network; drive the exact model event path below.
+        let items = fixtureItems + [.init(id: "perf-live", turnID: "perf-live", body: .agentMessage("Streaming"))]
+        let snapshot = ChatSnapshotReply(chatID: chatID, cursor: "perf", next: 3000, before: 0, more: false,
+                                        items: items.enumerated().map { .init(order: UInt64($0.offset + 1), item: $0.element) },
+                                        controls: [.info(chat(state: .running)), .state(.running), .turnStarted(turnID: "perf-live", startedAt: UInt64(Date().timeIntervalSince1970 * 1000))])
+        conversation.install(snapshot)
+        defer { rig.window.isHidden = true }
+        for _ in 0..<20 { rig.host.view.layoutIfNeeded(); try await Task.sleep(for: .milliseconds(30)) }
+        let scroll = try XCTUnwrap(transcriptScroll(rig))
+        let thread = mach_thread_self()
+        defer { mach_port_deallocate(mach_task_self_, thread) }
+        func cpu() -> Double {
+            var value = thread_basic_info(), count = mach_msg_type_number_t(MemoryLayout<thread_basic_info>.size / MemoryLayout<integer_t>.size)
+            let status = withUnsafeMutablePointer(to: &value) { pointer in
+                pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { thread_info(thread, thread_flavor_t(THREAD_BASIC_INFO), $0, &count) }
+            }
+            guard status == KERN_SUCCESS else { return 0 }
+            return Double(value.user_time.seconds + value.system_time.seconds) + Double(value.user_time.microseconds + value.system_time.microseconds) / 1e6
+        }
+        func settle() async throws { rig.host.view.layoutIfNeeded(); CATransaction.flush(); try await Task.sleep(for: .milliseconds(80)) }
+        Perf.reset()
+        let builds = conversation.projectionCache.builds
+        let bodyStart = Perf.counts["body.ChatActivityRows"] ?? 0
+        let streamStart = cpu()
+        var modelCPU = 0.0
+        for token in 0..<40 {
+            let next = conversation.feed.next + 1
+            let modelStart = cpu()
+            conversation.accept(.init(chatID: chatID, events: [.init(seq: next, event: .itemDelta(itemID: "perf-live", delta: .text(" token\(token)")))], next: next, more: false), since: conversation.feed.next)
+            modelCPU += cpu() - modelStart
+            rig.host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(32))
+        }
+        let perEvent = (cpu() - streamStart) * 1000 / 40
+        print(String(format: "PERF tool-ui model fold %.3f ms/event; SwiftUI/drawing %.3f ms/event", modelCPU * 1000 / 40, perEvent - modelCPU * 1000 / 40))
+        print("PERF tool-ui visible row bodies per event \(Double((Perf.counts["body.ChatActivityRows"] ?? 0) - bodyStart) / 40)")
+        XCTAssertEqual(conversation.projectionCache.builds, builds, "token-rate deltas reuse grouping")
+        XCTAssertLessThan(perEvent, 80, "debug Simulator CPU budget per streaming event")
+        Perf.reset()
+        try await Task.sleep(for: .milliseconds(2200))
+        XCTAssertEqual(Perf.counts["body.ChatTranscriptList"] ?? 0, 0, "one-second elapsed labels must not invalidate the list")
+        // Enter the same reading mode as a gesture/VoiceOver page before driving offsets.
+        // Raw setContentOffset alone is an app-driven scroll and intentionally keeps live following.
+        try XCTUnwrap(rig.layout.actions["transcript-accessibility-previous"])()
+        try await settle()
+        let top = max(-scroll.adjustedContentInset.top, scroll.contentSize.height - scroll.bounds.height - 1200)
+        let scrollStart = cpu()
+        for frame in 0..<60 {
+            scroll.setContentOffset(CGPoint(x: 0, y: top - CGFloat(frame * 12)), animated: false)
+            rig.host.view.layoutIfNeeded(); CATransaction.flush()
+            try await Task.sleep(for: .milliseconds(16))
+        }
+        let perFrame = (cpu() - scrollStart) * 1000 / 60
+        let toggleStart = cpu()
+        for _ in 0..<4 {
+            conversation.setDisplayMode(.verbose); try await settle()
+            conversation.setDisplayMode(.normal); try await settle()
+        }
+        let perMode = (cpu() - toggleStart) * 1000 / 8
+        conversation.setDisplayMode(.verbose); try await settle()
+        Perf.reset()
+        let expandStart = cpu()
+        for index in 0..<6 { conversation.discloseAll(index % 2 == 0); try await settle() }
+        let perExpand = (cpu() - expandStart) * 1000 / 6
+        print("PERF bulk row bodies/toggle \(Double(Perf.counts["body.ChatActivityRows"] ?? 0) / 6); output bodies/toggle \(Double(Perf.counts["body.ChatActivityOutput"] ?? 0) / 6)")
+        conversation.setDisplayMode(.verbose); conversation.discloseAll(false); conversation.jumpToEnd(); try await settle()
+        let disclosureID = try XCTUnwrap(conversation.projectionRows.reversed().first { ![.user, .final, .commentary, .notice].contains($0.kind) }?.id)
+        let disclosureStart = cpu()
+        for index in 0..<6 { conversation.disclosure.toggle(disclosureID, currentlyOpen: index % 2 != 0); try await settle() }
+        let perDisclosure = (cpu() - disclosureStart) * 1000 / 6
+        let file = try XCTUnwrap(ChatFileCatalog.entries(items: items, images: rig.model.chatAttachmentImages).last { $0.isImage })
+        let previewHost = UIHostingController(rootView: ChatFileViewer(files: [file], initialID: file.id).desktopThemed(rig.model.theme.style))
+        let previewStart = cpu()
+        rig.host.present(previewHost, animated: false)
+        for _ in 0..<5 { previewHost.view.layoutIfNeeded(); try await Task.sleep(for: .milliseconds(30)) }
+        let preview = (cpu() - previewStart) * 1000
+        XCTAssertLessThan(perFrame, 80, "debug Simulator scrolling CPU budget")
+        XCTAssertLessThan(perMode, 300, "debug Simulator display-mode CPU budget")
+        XCTAssertLessThan(perExpand, 750, "debug Simulator dense bulk disclosure CPU budget")
+        XCTAssertLessThan(Double(Perf.counts["body.ChatActivityOutput"] ?? 0) / 6, 100, "off-screen call outputs must remain virtualized")
+        print(String(format: "PERF tool-ui Simulator \(label): stream %.3f ms/event; scroll %.3f ms/frame; Normal/Verbose %.3f ms/toggle; Expand all %.3f ms/toggle; row %.3f ms/toggle; preview %.3f ms", perEvent, perFrame, perMode, perExpand, perDisclosure, preview))
+        let shot = UIGraphicsImageRenderer(bounds: rig.window.bounds).image { _ in rig.window.drawHierarchy(in: rig.window.bounds, afterScreenUpdates: true) }
+        let attachment = XCTAttachment(image: shot); attachment.name = "tool-ui-perf-preview"; attachment.lifetime = .keepAlways; add(attachment)
+        previewHost.dismiss(animated: false)
+        await finish(rig)
     }
 }

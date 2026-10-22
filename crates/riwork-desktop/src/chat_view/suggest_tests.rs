@@ -391,6 +391,8 @@ fn a_list_without_room_to_show_takes_no_keys(cx: &mut TestAppContext) {
     let open = rows(cx, &mounted).is_some();
     cx.simulate_window_resize(handle(&mounted), size(px(700.), px(150.)));
     cx.run_until_parked();
+    // Popup placement follows the composer's geometry from the completed frame.
+    frame(cx, &mounted, |_, _| {});
     let shown = frame(cx, &mounted, |window, _| {
         window.try_find("composer-suggestions").is_some()
     });

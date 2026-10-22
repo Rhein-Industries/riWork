@@ -10,6 +10,8 @@ fn push(view: &Entity<ChatView>, cx: &mut TestAppContext, id: &str, body: ItemBo
         view.model.link = state::Link::Live;
         view.model.transcript.apply(&ChatEvent::ItemCompleted {
             item: Item {
+                started_at: None,
+                ended_at: None,
                 id: id.into(),
                 turn_id: Some("turn".into()),
                 status: ItemStatus::Completed,
@@ -570,6 +572,7 @@ struct Header {
     first: gpui::Bounds<gpui::Pixels>,
     more: gpui::Bounds<gpui::Pixels>,
     usage: gpui::Bounds<gpui::Pixels>,
+    compact: Option<gpui::Bounds<gpui::Pixels>>,
     thread: gpui::Bounds<gpui::Pixels>,
     billing: Option<gpui::Bounds<gpui::Pixels>>,
     controls: Vec<gpui::Bounds<gpui::Pixels>>,
@@ -630,7 +633,7 @@ fn header_with(
         }
         cx.notify();
     });
-    let controls = [("chat-mode", "more-mode"), ("chat-compact", "more-compact")];
+    let controls = [("chat-mode", "more-mode")];
     let header = cx
         .update_window(handle.into(), |_, window, cx| {
             for _ in 0..4 {
@@ -647,6 +650,9 @@ fn header_with(
                 first: window.find("chat-display-normal").bounds(),
                 more: window.find("chat-more").bounds(),
                 usage: window.find("chat-usage-group").bounds(),
+                compact: window
+                    .try_find("chat-compact")
+                    .map(|control| control.bounds()),
                 thread: window.find("chat-thread").bounds(),
                 billing: window.try_find("chat-api-key").map(|badge| badge.bounds()),
                 controls: controls
@@ -700,7 +706,7 @@ fn the_shared_header_keeps_controls_and_more_on_row_one_and_wraps_usage_below(
     cx: &mut TestAppContext,
 ) {
     let middle = |b: gpui::Bounds<gpui::Pixels>| b.top() + b.size.height / 2.;
-    let order = ["mode", "compact"];
+    let order = ["mode"];
     let mut folds = Vec::new();
     for width in [900.0_f32, 760.0, 520.0, 330.0, 230.0] {
         let header = header_at(cx, width);
@@ -715,8 +721,7 @@ fn the_shared_header_keeps_controls_and_more_on_row_one_and_wraps_usage_below(
             "{width} px: shown {:?}, folded {:?}, more {more:?}, usage {usage:?}",
             header.shown, header.folded
         );
-        // Each control is either on row 1 or in ⋯, and the folded ones are the row's end:
-        // Compact first, then Mode. The model controls live in the composer.
+        // Approval mode can fold into More. Context compaction stays beside the meter.
         assert_eq!(
             header.shown.len() + header.folded.len(),
             order.len(),
@@ -768,27 +773,32 @@ fn the_shared_header_keeps_controls_and_more_on_row_one_and_wraps_usage_below(
             assert!((usage.left() - first.left()).abs() <= px(1.), "{what}");
             assert!((thread.right() - more.right()).abs() <= px(1.), "{what}");
         } else {
-            // Right-aligned before ⋯: … Compact, the usage, the session id, ⋯.
+            // Right-aligned before More: meter, Compact context, session ID.
             assert!(header.folded.is_empty(), "{what}");
             assert!((middle(usage) - middle(first)).abs() <= px(1.), "{what}");
             assert!((middle(thread) - middle(first)).abs() <= px(1.), "{what}");
             let gap = ui_text::space(composer::BAR_GAP) + px(1.);
             assert!(usage.right() <= thread.left(), "{what}");
-            assert!(thread.left() - usage.right() <= gap, "{what}");
+            if let Some(compact) = header.compact {
+                assert!(compact.left() - usage.right() <= gap, "{what}");
+                assert!(thread.left() - compact.right() <= gap, "{what}");
+            }
             assert!(more.left() - thread.right() <= gap, "{what}");
+        }
+        if let Some(compact) = header.compact {
+            assert!((middle(compact) - middle(usage)).abs() <= px(1.), "{what}");
+            assert!(usage.right() <= compact.left(), "{what}");
+            assert!(compact.right() <= thread.left() + px(1.), "{what}");
         }
         folds.push((two_rows, header.folded.len(), usage.size.width));
     }
-    // Wide: nothing folded. Medium: usage and ID below. Narrow: Compact then Mode fold.
+    // Wide: nothing folds. Narrow: usage and compaction stay together below row one.
     let counts = folds
         .iter()
         .map(|(two, folded, _)| (*two, *folded))
         .collect::<Vec<_>>();
-    assert_eq!(
-        counts,
-        [(false, 0), (false, 0), (true, 0), (true, 1), (true, 2)],
-        "{folds:?}"
-    );
+    assert_eq!(counts.first(), Some(&(false, 0)), "{folds:?}");
+    assert_eq!(counts.last(), Some(&(true, 1)), "{folds:?}");
 }
 
 #[gpui::test]
@@ -822,7 +832,14 @@ fn the_billing_badge_is_measured_and_the_two_row_contract_holds_in_every_design(
                 badge.right() + ui_text::space(composer::BAR_GAP) <= h.usage.left() + px(1.),
                 "{what}"
             );
-            assert!(h.usage.right() <= h.thread.left(), "{what}");
+            if let Some(compact) = h.compact {
+                assert!(h.usage.right() <= compact.left(), "{what}");
+                assert!(compact.right() <= h.thread.left() + px(1.), "{what}");
+                assert!(
+                    (middle(compact) - middle(h.usage)).abs() <= px(1.),
+                    "{what}"
+                );
+            }
             assert!((middle(badge) - middle(h.usage)).abs() <= px(1.), "{what}");
             assert!(
                 (middle(h.usage) - middle(h.thread)).abs() <= px(1.),
@@ -953,6 +970,8 @@ fn profile_more_menu(cx: &mut TestAppContext) {
             if at % 3 == 0 {
                 view.model.transcript.apply(&ChatEvent::ItemCompleted {
                     item: Item {
+                        started_at: None,
+                        ended_at: None,
                         id: format!("u{at}"),
                         turn_id: Some(format!("turn{at}")),
                         status: ItemStatus::Completed,
@@ -966,6 +985,8 @@ fn profile_more_menu(cx: &mut TestAppContext) {
             view.model.transcript.apply(&ChatEvent::ItemCompleted {
                 item: Item {
                     id: format!("n{at}"),
+                    started_at: None,
+                    ended_at: None,
                     turn_id: Some(format!("turn{at}")),
                     status: ItemStatus::Completed,
                     body: ItemBody::notice(
@@ -1072,6 +1093,8 @@ fn a_long_history_draws_only_the_newest_and_says_how_many_there_are(cx: &mut Tes
         for at in 0..total {
             view.model.transcript.apply(&ChatEvent::ItemCompleted {
                 item: Item {
+                    started_at: None,
+                    ended_at: None,
                     id: format!("n{at}"),
                     turn_id: Some("turn".into()),
                     status: ItemStatus::Completed,

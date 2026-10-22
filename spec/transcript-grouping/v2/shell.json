@@ -1,0 +1,181 @@
+{
+  "spec_version": 2,
+  "shell_cases": [
+    {
+      "command": "rg needle src",
+      "allowed": true
+    },
+    {
+      "command": "grep 'a > b' file",
+      "allowed": true
+    },
+    {
+      "command": "sed -n '1,120p' model.rs",
+      "allowed": true
+    },
+    {
+      "command": "cat 'a; b' | head -n 5",
+      "allowed": true
+    },
+    {
+      "command": "ls && git status --short",
+      "allowed": true
+    },
+    {
+      "command": "git log -3",
+      "allowed": true
+    },
+    {
+      "command": "git diff -- src",
+      "allowed": true
+    },
+    {
+      "command": "git show HEAD",
+      "allowed": true
+    },
+    {
+      "command": "find . -name '*.rs'",
+      "allowed": true
+    },
+    {
+      "command": "tail -n 20 log",
+      "allowed": true
+    },
+    {
+      "command": "head -n 10 file",
+      "allowed": true
+    },
+    {
+      "command": "git status",
+      "allowed": true
+    },
+    {
+      "command": "rg needle src | head -n 3",
+      "allowed": true
+    },
+    {
+      "command": "sed -n '1p;3,5p' file",
+      "allowed": true
+    },
+    {
+      "command": "",
+      "allowed": false
+    },
+    {
+      "command": "npm test",
+      "allowed": false
+    },
+    {
+      "command": "rm -rf build",
+      "allowed": false
+    },
+    {
+      "command": "cat a > b",
+      "allowed": false
+    },
+    {
+      "command": "rg foo && rm file",
+      "allowed": false
+    },
+    {
+      "command": "find . -delete",
+      "allowed": false
+    },
+    {
+      "command": "find . -exec rm '{}' ';'",
+      "allowed": false
+    },
+    {
+      "command": "sed -i 's/a/b/' f",
+      "allowed": false
+    },
+    {
+      "command": "sed -n '1p;w output' f",
+      "allowed": false
+    },
+    {
+      "command": "rg --pre=evil file",
+      "allowed": false
+    },
+    {
+      "command": "git diff --output=result",
+      "allowed": false
+    },
+    {
+      "command": "git -c alias.x='!rm f' x",
+      "allowed": false
+    },
+    {
+      "command": "cat $(touch file)",
+      "allowed": false
+    },
+    {
+      "command": "cat \"`touch file`\"",
+      "allowed": false
+    },
+    {
+      "command": "cat a &",
+      "allowed": false
+    },
+    {
+      "command": "cat 'unterminated",
+      "allowed": false
+    },
+    {
+      "command": "ls ||",
+      "allowed": false
+    },
+    {
+      "command": "ls\nrm file",
+      "allowed": false
+    },
+    {
+      "command": "git -C repo status",
+      "allowed": false
+    },
+    {
+      "command": "/bin/cat file",
+      "allowed": false
+    },
+    {
+      "command": "FOO=bar ls",
+      "allowed": false
+    },
+    {
+      "command": "cat file < input",
+      "allowed": false
+    },
+    {
+      "command": "ls;",
+      "allowed": false
+    },
+    {
+      "command": "ls |& head",
+      "allowed": false
+    },
+    {
+      "command": "rg --hostname-bin=evil x",
+      "allowed": false
+    },
+    {
+      "command": "git diff --ext-diff",
+      "allowed": false
+    },
+    {
+      "command": "git log --textconv",
+      "allowed": false
+    },
+    {
+      "command": "find . -fprint out",
+      "allowed": false
+    },
+    {
+      "command": "find . -execdir ls {} +",
+      "allowed": false
+    },
+    {
+      "command": "cat \"$HOME/file\"",
+      "allowed": false
+    }
+  ]
+}

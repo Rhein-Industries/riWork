@@ -1,0 +1,579 @@
+{
+  "spec_version": 2,
+  "cases": [
+    {
+      "name": "Three reads and one search use singular bucket labels",
+      "items": [
+        {
+          "id": "r1",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read",
+              "target": "f1.rs"
+            }
+          }
+        },
+        {
+          "id": "r2",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read",
+              "target": "f2.rs"
+            }
+          }
+        },
+        {
+          "id": "r3",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read",
+              "target": "f3.rs"
+            }
+          }
+        },
+        {
+          "id": "s",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "search",
+              "target": "needle"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:r1",
+          "kind": "group",
+          "title": "Read 3 files · Searched 1 pattern",
+          "children": [
+            {
+              "id": "r1",
+              "kind": "read",
+              "title": "Read",
+              "target": "f1.rs",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "r2",
+              "kind": "read",
+              "title": "Read",
+              "target": "f2.rs",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "r3",
+              "kind": "read",
+              "title": "Read",
+              "target": "f3.rs",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "s",
+              "kind": "search",
+              "title": "Searched",
+              "target": "needle",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ],
+      "anchors": {
+        "r2": "g:t:r1"
+      },
+      "expected_selection": [
+        "Read 3 files · Searched 1 pattern"
+      ]
+    },
+    {
+      "name": "All eligible buckets including failed running read-only shell and commentary",
+      "items": [
+        {
+          "id": "r",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read"
+            }
+          }
+        },
+        {
+          "id": "s",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "search"
+            }
+          }
+        },
+        {
+          "id": "l",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "list"
+            }
+          }
+        },
+        {
+          "id": "w",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "web_search"
+            }
+          }
+        },
+        {
+          "id": "f",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "web_fetch"
+            }
+          }
+        },
+        {
+          "id": "m",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "mcp"
+            }
+          }
+        },
+        {
+          "id": "c",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "agent_message",
+            "text": "Looking around"
+          },
+          "presentation": {
+            "phase": "commentary"
+          }
+        },
+        {
+          "id": "sh",
+          "turn_id": "t",
+          "status": "failed",
+          "body": {
+            "type": "command",
+            "command": "cat missing",
+            "exit_code": 1
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "shell",
+              "target": "cat missing"
+            }
+          }
+        },
+        {
+          "id": "thought",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "reasoning",
+            "text": "think"
+          }
+        },
+        {
+          "id": "o",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "other"
+            }
+          }
+        },
+        {
+          "id": "live",
+          "turn_id": "t",
+          "status": "in_progress",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read",
+              "target": "main.rs"
+            }
+          },
+          "started_at": 1000
+        }
+      ],
+      "options": {
+        "mode": "verbose",
+        "now_ms": 19000,
+        "running_turn_id": "t"
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:r",
+          "kind": "group",
+          "title": "Read 2 files · Searched 1 pattern · Listed 1 directory · +6 more",
+          "children": [
+            {
+              "id": "r",
+              "kind": "read",
+              "title": "Read",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "s",
+              "kind": "search",
+              "title": "Searched",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "l",
+              "kind": "list",
+              "title": "Listed",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "w",
+              "kind": "web_search",
+              "title": "Searched the web",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "f",
+              "kind": "web_fetch",
+              "title": "Fetched",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "m",
+              "kind": "mcp",
+              "title": "Used MCP",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "sh",
+              "kind": "shell",
+              "title": "Ran",
+              "target": "cat missing",
+              "failed_count": 1,
+              "open": false,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "thought",
+              "kind": "reasoning",
+              "title": "Thought",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "o",
+              "kind": "other",
+              "title": "Used tool",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "live",
+              "kind": "read",
+              "title": "Read",
+              "target": "main.rs",
+              "running": true,
+              "duration_ms": 18000,
+              "current_label": "reading main.rs",
+              "open": false,
+              "failed_count": 0,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "comments": [
+            {
+              "id": "c",
+              "kind": "commentary",
+              "title": "Commentary",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "failed_count": 1,
+          "running": true,
+          "duration_ms": 18000,
+          "current_label": "reading main.rs",
+          "open": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Singleton thought stays a collapsed row with missing timing",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "reasoning",
+            "text": "think"
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "a",
+          "kind": "reasoning",
+          "title": "Thought",
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Unknown explicit kinds become Other and legacy names enrich only when absent",
+      "items": [
+        {
+          "id": "a",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "future_kind"
+            }
+          }
+        },
+        {
+          "id": "b",
+          "turn_id": "t",
+          "status": "completed",
+          "body": {
+            "type": "tool_call",
+            "tool": "Read",
+            "input": {
+              "file_path": "lib.rs"
+            }
+          }
+        }
+      ],
+      "options": {
+        "mode": "verbose"
+      },
+      "expected_rows": [
+        {
+          "id": "g:t:a",
+          "kind": "group",
+          "title": "Read 1 file · Used 1 tool",
+          "children": [
+            {
+              "id": "a",
+              "kind": "other",
+              "title": "Used tool",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            },
+            {
+              "id": "b",
+              "kind": "read",
+              "title": "Read",
+              "target": "lib.rs",
+              "open": false,
+              "failed_count": 0,
+              "running": false,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "open": false,
+          "failed_count": 0,
+          "running": false,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    },
+    {
+      "name": "Untimed running call never invents elapsed time",
+      "items": [
+        {
+          "id": "r",
+          "turn_id": "t",
+          "status": "in_progress",
+          "body": {
+            "type": "tool_call",
+            "tool": "fixture"
+          },
+          "presentation": {
+            "semantics": {
+              "kind": "read",
+              "target": "a.rs"
+            }
+          }
+        }
+      ],
+      "options": {
+        "running_turn_id": "t",
+        "now_ms": 19000
+      },
+      "expected_rows": [
+        {
+          "id": "activity:t",
+          "kind": "activity",
+          "title": "Working · reading a.rs",
+          "children": [
+            {
+              "id": "r",
+              "kind": "read",
+              "title": "Read",
+              "target": "a.rs",
+              "running": true,
+              "current_label": "reading a.rs",
+              "open": false,
+              "failed_count": 0,
+              "provisional": false,
+              "elided": false
+            }
+          ],
+          "running": true,
+          "current_label": "reading a.rs",
+          "open": false,
+          "failed_count": 0,
+          "provisional": false,
+          "elided": false
+        }
+      ]
+    }
+  ]
+}

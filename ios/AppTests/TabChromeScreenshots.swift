@@ -340,7 +340,6 @@ import RiWorkCore
             DictationController.shared.cancel()
             DictationController.shared.isAllowed = false
             DictationController.shared.makeEngine = { DictationController.defaultEngine() }
-            DictationController.shared.silenceAfterSpeech = DictationMachine.silenceAfterSpeech
         }
         for look in [Look.nativeDark, .nativeLight, .terminal] {
             guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene") }
@@ -392,7 +391,8 @@ import RiWorkCore
                 }
             }
             // Cards: collapsed (above), then open.
-            conversation.expanded = ["edit", "edit#/tmp/brief-ios-chat-chrome.md", "cmd", "read", "edit2"]
+            conversation.setDisplayMode(.verbose)
+            conversation.disclosure = ChatDisclosureState(overrides: ["edit": true, "cmd": true, "read": true, "edit2": true])
             conversation.jumpToEnd()
             try await Task.sleep(for: .milliseconds(500))
             try await shot(window, prefix + "-04-cards-open-bottom")
@@ -407,7 +407,7 @@ import RiWorkCore
                 try await Task.sleep(for: .milliseconds(300))
                 try await shot(window, prefix + "-05b-cards-open-middle")
             }
-            conversation.expanded = []
+            conversation.discloseAll(false)
             conversation.jumpToEnd()
             try await Task.sleep(for: .milliseconds(400))
             try await shot(window, prefix + "-06-cards-collapsed")
@@ -441,7 +441,6 @@ import RiWorkCore
             conversation.draft = ""
             let engine = HeldEngine()
             DictationController.shared.makeEngine = { engine }
-            DictationController.shared.silenceAfterSpeech = .seconds(120)
             DictationController.shared.toggle(for: .chat(chatID), live: { _ in }, deliver: { _ in })
             try await Task.sleep(for: .milliseconds(400))
             engine.onEvent?(.level(0.6))
@@ -728,7 +727,8 @@ import RiWorkCore
             model.selectChat(chatID)
             let conversation = model.conversation(chatID)
             await eventually("chat up") { conversation.following && conversation.transcript.items.count > 8 }
-            conversation.expanded.insert("read")
+            conversation.setDisplayMode(.verbose)
+            conversation.disclosure.overrides["read"] = true
             window.endEditing(true)
             try await Task.sleep(for: .milliseconds(1200))
             let prefix = look.rawValue

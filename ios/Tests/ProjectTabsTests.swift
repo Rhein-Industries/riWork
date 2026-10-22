@@ -132,6 +132,7 @@ final class ProjectTabsTests: XCTestCase {
         let value = try chatEntry()
         let strip = tabs([value])
         XCTAssertEqual(strip.count, 1)
+        guard strip.count == 1 else { return }
         guard case .orchestratorChat(let session, let info) = strip[0] else { return XCTFail("a chat tab, not a terminal: \(strip[0])") }
         XCTAssertEqual(session, value)
         XCTAssertEqual(info.id, chatID, "every chat request uses the chat's id")
@@ -171,6 +172,7 @@ final class ProjectTabsTests: XCTestCase {
         let other = chat("cccccccc-2222-4222-8222-222222222222", at: 20)
         let strip = tabs([value], chats: [listed, other])
         XCTAssertEqual(strip.count, 2, "one tab for the orchestrator, one for the other chat")
+        guard strip.count == 2 else { return }
         guard case .orchestratorChat(_, let info) = strip[0] else { return XCTFail("the orchestrator first") }
         XCTAssertEqual(info.state, .waiting, "what the desktop says about the chat itself")
         XCTAssertEqual(info.provider, .codex)
@@ -183,6 +185,7 @@ final class ProjectTabsTests: XCTestCase {
         let shell = try entry(id: shellID, kind: "project", at: 9)
         let strip = tabs([value, shell], available: false)
         XCTAssertEqual(strip, [.unavailable(value, .needsUpdate), .terminal(shell)])
+        guard strip.count == 2 else { return }
         XCTAssertEqual(strip[0].id, entryID)
         XCTAssertNil(strip[0].chatInfo)
         XCTAssertEqual(strip[0].session, value)

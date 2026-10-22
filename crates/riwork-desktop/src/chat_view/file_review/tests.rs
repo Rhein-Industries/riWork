@@ -19,6 +19,8 @@ fn items(changes: Vec<FileChange>) -> Vec<Item> {
             status: ItemStatus::Completed,
             presentation: Presentation::default(),
             body: ItemBody::FileChange { changes },
+            started_at: None,
+            ended_at: None,
         },
         Item {
             id: "review-answer".into(),
@@ -31,6 +33,8 @@ fn items(changes: Vec<FileChange>) -> Vec<Item> {
             body: ItemBody::AgentMessage {
                 text: "Reported changes are ready.".into(),
             },
+            started_at: None,
+            ended_at: None,
         },
     ]
 }
@@ -324,6 +328,8 @@ fn review_selection_survives_background_rows_but_retires_changed_patch_text(
                     body: ItemBody::UserMessage {
                         text: "Review this change".into(),
                     },
+                    started_at: None,
+                    ended_at: None,
                 },
             );
             view.model.transcript.items = transcript;
@@ -357,8 +363,9 @@ fn review_selection_survives_background_rows_but_retires_changed_patch_text(
                 "+keep this selected"
             );
             let before = view.visible.clone();
-            view.open
-                .insert(super::super::display::activity_key("review-turn"));
+            view.disclosure
+                .overrides
+                .insert("activity:review-turn".into(), true);
             view.refresh_projection(cx);
             assert_ne!(
                 view.visible, before,
@@ -421,9 +428,11 @@ fn hunk_navigation_reveals_the_target_inside_both_review_scroll_regions(cx: &mut
     view.read_with(cx, |view, _| {
         let viewport = view.find_list().viewport_bounds();
         let key = "diff:review-edit#0:151";
-        let rect = view.transcript_selection.with_source(|source| {
+        let rect = view.transcript_selection.with_selection_source(|source| {
             let at = source.iter().position(|leaf| leaf.key == key).unwrap();
-            view.transcript_selection.painted_rect(at, 0..1).unwrap()
+            view.transcript_selection
+                .selection_painted_rect(at, 0..1)
+                .unwrap()
         });
         assert!(
             rect.top() >= viewport.top() && rect.bottom() <= viewport.bottom(),

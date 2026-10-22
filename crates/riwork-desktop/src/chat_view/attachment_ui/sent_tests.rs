@@ -50,6 +50,8 @@ fn sent(id: &str, text: &str, sent: &[Attachment]) -> Item {
         },
         id: id.into(),
         turn_id: Some("turn-1".into()),
+        started_at: None,
+        ended_at: None,
         status: ItemStatus::Completed,
         body: ItemBody::UserMessage {
             text: attachments::summary(text, sent),

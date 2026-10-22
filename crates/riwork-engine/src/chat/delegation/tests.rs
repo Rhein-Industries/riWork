@@ -28,6 +28,7 @@ impl Driver for TaskDriver {
         self.events
             .send(ChatEvent::TurnStarted {
                 turn_id: turn.clone(),
+                started_at: None,
             })
             .unwrap();
         self.events
@@ -44,6 +45,8 @@ impl Driver for TaskDriver {
         self.events
             .send(ChatEvent::ItemCompleted {
                 item: Item {
+                    started_at: None,
+                    ended_at: None,
                     presentation: Default::default(),
                     id: format!("reply-{turn}"),
                     turn_id: Some(turn.clone()),
@@ -58,6 +61,7 @@ impl Driver for TaskDriver {
             .send(ChatEvent::TurnCompleted {
                 turn_id: turn,
                 outcome: TurnOutcome::Completed,
+                ended_at: None,
             })
             .unwrap();
         self.events

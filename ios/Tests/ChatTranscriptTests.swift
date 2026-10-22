@@ -29,7 +29,7 @@ final class ChatTranscriptTests: XCTestCase {
         XCTAssertEqual(t.items[0].body, .agentMessage("Hello"))
         t.apply(.itemCompleted(agent("a", "Hello!", .completed)))
         XCTAssertEqual(t.items.count, 1)
-        XCTAssertEqual(t.items[0], agent("a", "Hello!", .completed))
+        XCTAssertEqual(t.items.first, agent("a", "Hello!", .completed))
     }
     func testAFinishedTurnClosesWhatItLeftOpenAndItsRequests() {
         var t = ChatTranscript()
@@ -549,5 +549,30 @@ extension LatestFirstFeedTests {
         hydrated.install(ChatSnapshotReply(chatID: "c", cursor: "9", next: 42, before: 0, more: false, items: [], controls: []))
         hydrated.hydrate(reply)
         XCTAssertTrue(hydrated.hasItem("tool-7"))
+    }
+}
+
+/// Turn timing is part of the activity projection contract for live events and snapshots.
+final class ChatTurnTimingTests: XCTestCase {
+    func testProjectionUsesLiveAndSnapshotTurnClocksAndHonorsOverrides() {
+        let item = ChatItem(id: "cmd", turnID: "t", status: .completed,
+                            body: .command(command: "swift test", cwd: nil, output: "ok", exitCode: 0),
+                            startedAt: 2_000, endedAt: 3_000)
+        var transcript = ChatTranscript()
+        transcript.apply(.turnStarted(turnID: "t", startedAt: 1_000))
+        transcript.apply(.itemCompleted(item))
+        let running = ChatProjection.project(transcript: transcript, options: .init(nowMS: 9_000))
+        XCTAssertEqual(running.first?.durationMS, 8_000)
+        XCTAssertEqual(running.first?.title, "Working 8s")
+        transcript.apply(.turnCompleted(turnID: "t", outcome: .completed, endedAt: 73_000))
+        XCTAssertEqual(ChatProjection.project(transcript: transcript).first?.title, "Worked 1m 12s · 1 command")
+        let override = ChatProjectionOptions(turnTiming: ["t": .init(startedAt: 10_000, endedAt: 15_000)])
+        XCTAssertEqual(ChatProjection.project(transcript: transcript, options: override).first?.durationMS, 5_000)
+
+        var feed = ChatFeed()
+        feed.install(ChatSnapshotReply(chatID: "c", cursor: "wall-clock", next: 10, before: 1, more: false,
+                                       items: [.init(order: 2, item: item)], controls: [],
+                                       turnTiming: ["t": .init(startedAt: 1_000, endedAt: 73_000)], turnStarts: ["t": 1]))
+        XCTAssertEqual(ChatProjection.project(transcript: feed.transcript).first?.durationMS, 72_000)
     }
 }

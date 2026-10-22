@@ -403,7 +403,8 @@ impl ChatView {
             self.open.insert(key.to_owned());
         }
         self.transcript_selection.changed();
-        self.list.remeasure_items(0..self.visible.len());
+        self.invalidate_leaf_owner(key);
+        self.list.remeasure_items(0..self.list_rows.len());
         self.find_list().remeasure();
         cx.notify();
     }
@@ -676,6 +677,8 @@ mod tests {
         view.update(cx, |view, cx| {
             view.model.link = super::super::Link::Live;
             view.model.transcript.items = vec![Item {
+                started_at: None,
+                ended_at: None,
                 id: "output".into(),
                 turn_id: Some("turn".into()),
                 status: ItemStatus::Completed,

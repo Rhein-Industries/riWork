@@ -342,23 +342,57 @@ impl Run {
 /// progress and the requests waiting for the user. Not the whole `Transcript`:
 /// the log has the items, and a host that kept them as well would hold every
 /// chat in memory twice.
+struct ItemLifecycle {
+    started_at: Option<u64>,
+    parent_id: Option<String>,
+    semantics: Option<super::model::Semantics>,
+}
+
 #[derive(Default)]
 struct Open {
     turn: Option<String>,
+    turn_started_at: Option<u64>,
     approvals: Vec<String>,
     questions: Vec<String>,
+    /// Only lifecycle metadata for open calls, never output bodies.
+    items: HashMap<String, ItemLifecycle>,
 }
 
 impl Open {
     fn apply(&mut self, event: &ChatEvent) {
         match event {
-            ChatEvent::TurnStarted { turn_id } => self.turn = Some(turn_id.clone()),
+            ChatEvent::TurnStarted {
+                turn_id,
+                started_at,
+            } => {
+                if self.turn.as_ref() != Some(turn_id) {
+                    self.turn_started_at = *started_at;
+                } else {
+                    self.turn_started_at = self.turn_started_at.or(*started_at);
+                }
+                self.turn = Some(turn_id.clone());
+            }
             ChatEvent::TurnCompleted { turn_id, .. } => {
                 if self.turn.as_ref() == Some(turn_id) {
                     self.turn = None;
+                    self.turn_started_at = None;
                 }
                 self.approvals.clear();
                 self.questions.clear();
+                self.items.clear();
+            }
+            ChatEvent::ItemStarted { item } => {
+                self.items.insert(
+                    item.id.clone(),
+                    ItemLifecycle {
+                        started_at: item.started_at,
+                        parent_id: item.presentation.parent_id.clone(),
+                        semantics: item.presentation.semantics.clone(),
+                    },
+                );
+            }
+            ChatEvent::ItemCompleted { item } => {
+                self.items.remove(&item.id);
             }
             ChatEvent::ApprovalRequested { approval } => {
                 self.approvals.retain(|id| *id != approval.request_id);
@@ -371,7 +405,7 @@ impl Open {
                 self.questions.retain(|id| *id != question.request_id);
                 self.questions.push(question.request_id.clone());
             }
-            ChatEvent::QuestionResolved { request_id } => {
+            ChatEvent::QuestionResolved { request_id, .. } => {
                 self.questions.retain(|id| id != request_id)
             }
             _ => {}
@@ -558,6 +592,67 @@ impl Inner {
         }
         if matches!(event, ChatEvent::TurnStarted { .. }) {
             self.delegation_pristine = false;
+        }
+        let now = || {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX)
+        };
+        match &mut event {
+            ChatEvent::TurnStarted {
+                turn_id,
+                started_at,
+            } => {
+                if self.open.turn.as_ref() == Some(turn_id) {
+                    *started_at = self.open.turn_started_at.or(*started_at);
+                }
+                started_at.get_or_insert_with(now);
+            }
+            ChatEvent::TurnCompleted { ended_at, .. } => {
+                ended_at.get_or_insert_with(now);
+            }
+            ChatEvent::ItemStarted { item } => {
+                super::semantics::enrich_inheriting(
+                    item,
+                    self.open
+                        .items
+                        .get(&item.id)
+                        .and_then(|value| value.semantics.as_ref()),
+                );
+                if let Some(lifecycle) = self.open.items.get(&item.id) {
+                    item.started_at = lifecycle.started_at.or(item.started_at);
+                    item.presentation.parent_id = item
+                        .presentation
+                        .parent_id
+                        .take()
+                        .or_else(|| lifecycle.parent_id.clone());
+                }
+                item.started_at.get_or_insert_with(now);
+                super::semantics::refresh_output(item);
+            }
+            ChatEvent::ItemCompleted { item } => {
+                super::semantics::enrich_inheriting(
+                    item,
+                    self.open
+                        .items
+                        .get(&item.id)
+                        .and_then(|value| value.semantics.as_ref()),
+                );
+                if let Some(lifecycle) = self.open.items.get(&item.id) {
+                    item.started_at = item.started_at.or(lifecycle.started_at);
+                    item.presentation.parent_id = item
+                        .presentation
+                        .parent_id
+                        .take()
+                        .or_else(|| lifecycle.parent_id.clone());
+                }
+                item.ended_at.get_or_insert_with(now);
+                super::semantics::refresh_output(item);
+            }
+            _ => {}
         }
         // No pruning here: it reads every saved chat, and this runs for every item.
         // Expired entries never match; startup and dismissals prune them.
@@ -786,7 +881,11 @@ impl Inner {
     /// happen any more.
     fn settle(&mut self, outcome: TurnOutcome) {
         if let Some(turn_id) = self.open.turn.clone() {
-            self.append(ChatEvent::TurnCompleted { turn_id, outcome });
+            self.append(ChatEvent::TurnCompleted {
+                turn_id,
+                outcome,
+                ended_at: None,
+            });
         }
         for request_id in std::mem::take(&mut self.open.approvals) {
             self.append(ChatEvent::ApprovalResolved {
@@ -795,7 +894,10 @@ impl Inner {
             });
         }
         for request_id in std::mem::take(&mut self.open.questions) {
-            self.append(ChatEvent::QuestionResolved { request_id });
+            self.append(ChatEvent::QuestionResolved {
+                request_id,
+                answer_summary: None,
+            });
         }
     }
 
@@ -1856,6 +1958,8 @@ fn create_identified(
         let id = format!("fast-refused-{}", inner.next_seq);
         inner.append(ChatEvent::ItemCompleted {
             item: Item {
+                started_at: None,
+                ended_at: None,
                 presentation: Default::default(),
                 id,
                 turn_id: None,
@@ -1872,6 +1976,8 @@ fn create_identified(
         let id = format!("contributor-refused-{}", inner.next_seq);
         inner.append(ChatEvent::ItemCompleted {
             item: Item {
+                started_at: None,
+                ended_at: None,
                 presentation: Default::default(),
                 id,
                 turn_id: None,
@@ -3036,6 +3142,8 @@ fn configure_contributor_locked(
     let id = format!("contributor-refused-{}", inner.next_seq);
     inner.append(ChatEvent::ItemCompleted {
         item: Item {
+            started_at: None,
+            ended_at: None,
             presentation: Default::default(),
             id,
             turn_id: None,
@@ -3173,6 +3281,8 @@ fn configure_billing_locked(
     let id = format!("billing-refused-{}", inner.next_seq);
     inner.append(ChatEvent::ItemCompleted {
         item: Item {
+            started_at: None,
+            ended_at: None,
             presentation: Default::default(),
             id,
             turn_id: None,
@@ -3351,6 +3461,8 @@ fn switch(
         let id = format!("switch-{}", inner.next_seq);
         inner.append(ChatEvent::ItemCompleted {
             item: Item {
+                started_at: None,
+                ended_at: None,
                 presentation: Default::default(),
                 id,
                 turn_id: None,

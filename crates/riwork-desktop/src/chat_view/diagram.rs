@@ -172,7 +172,7 @@ fn permit(cancelled: &AtomicBool, started: Instant) -> Result<Permit, String> {
             return Err("Diagram rendering took too long. Source is still available.".into());
         }
         if ACTIVE
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                 (active < 2).then_some(active + 1)
             })
             .is_ok()
@@ -401,6 +401,7 @@ impl ChatView {
         }
         drop(diagrams);
         self.transcript_selection.changed();
+        self.invalidate_leaf_owner(key);
         self.list.remeasure();
         self.list.scroll_to(offset);
         cx.notify();
@@ -429,6 +430,7 @@ impl ChatView {
             if let Some(entry) = diagrams.remove(key) {
                 Diagrams::release(entry, cx);
                 self.transcript_selection.changed();
+                self.invalidate_leaf_owner(key);
             }
         }
         if complete
@@ -444,6 +446,7 @@ impl ChatView {
         {
             while diagrams.entries.len() >= MAX_ENTRIES {
                 if let Some(entry) = diagrams.entries.pop_front() {
+                    self.invalidate_leaf_owner(&entry.key);
                     Diagrams::release(entry, cx);
                     self.transcript_selection.changed();
                 }
@@ -463,6 +466,7 @@ impl ChatView {
                         .borrow_mut()
                         .complete(&rendered_key, &owned, dark, result, cx);
                     view.transcript_selection.changed();
+                    view.invalidate_leaf_owner(&rendered_key);
                     view.list.remeasure();
                     cx.notify();
                 });

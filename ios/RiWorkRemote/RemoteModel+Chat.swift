@@ -11,8 +11,20 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
 @MainActor @Observable final class ChatConversation: Identifiable {
     let id: String
     /// The transcript and how far into the desktop's event log it has read.
-    private(set) var feed = ChatFeed()
+    private(set) var feed = ChatFeed() {
+        didSet {
+            if feed.transcript.itemsRevision != oldValue.transcript.itemsRevision { fileCatalogRevision &+= 1 }
+        }
+    }
+    private(set) var fileCatalogRevision: UInt64 = 0
+    @ObservationIgnored let fileCatalogCache = ChatFileCatalogCache()
     var transcript: ChatTranscript { feed.transcript }
+    @ObservationIgnored let projectionCache = ChatProjectionCache()
+    var projectionRows: [ChatProjectionRow] {
+        Perf.interval("ChatProjection") {
+            projectionCache.project(transcript: transcript, mode: displayMode, disclosure: disclosure, provisional: feed.provisional)
+        }
+    }
     var modelCatalogue: [ChatModelOption] = []
     var modelCatalogueSource: ChatCatalogueSource = .live
     var modelCatalogueRevision: UInt64 = 0
@@ -33,8 +45,27 @@ enum ChatSupport: Equatable { case unknown, supported, unsupported }
     func switchCatalogueSource(for provider: ChatProvider) -> ChatCatalogueSource { switchCatalogueSources[provider] ?? .bundled }
     /// A `switch` to this provider is on its way: the other providers' rows wait for it.
     var switchingTo: ChatProvider?
-    /// The cards the person opened (command output, diffs, reasoning), by item id. Kept here because rows come and go as the list scrolls.
-    var expanded: Set<String> = []
+    /// Device-local display mode and manual disclosures outlive lazy rows and tab changes.
+    var displayMode: ChatDisplayMode = .normal
+    var disclosure = ChatDisclosureState()
+    @ObservationIgnored private var displayDefaults: UserDefaults?
+    var expanded: Set<String> {
+        get { Set(disclosure.overrides.filter(\.value).map(\.key)) }
+        set { disclosure = ChatDisclosureState(overrides: Dictionary(uniqueKeysWithValues: newValue.map { ($0, true) })) }
+    }
+    func restoreDisplayMode(_ defaults: UserDefaults) {
+        displayDefaults = defaults
+        displayMode = ChatDisplayMode(rawValue: defaults.string(forKey: "chat.display.\(id)") ?? "normal") ?? .normal
+    }
+    func setDisplayMode(_ mode: ChatDisplayMode) {
+        guard displayMode != mode else { return }
+        displayMode = mode
+        disclosure.resetMode()
+        displayDefaults?.set(mode.rawValue, forKey: "chat.display.\(id)")
+    }
+    func discloseAll(_ open: Bool) {
+        disclosure.resetBulkForRows(open: open, mode: displayMode, rows: projectionRows)
+    }
     /// The mode just chosen, shown until the desktop says so itself.
     var pendingMode: ChatApprovalMode?
     /// Only host reports, including the explicit read after a Contributor restart.
@@ -239,6 +270,7 @@ extension RemoteModel {
     func conversation(_ id: String) -> ChatConversation {
         if let known = chatConversations[id] { known.lastUsed = .now; return known }
         let made = ChatConversation(id: id)
+        made.restoreDisplayMode(defaults)
         made.noteSaid = { [weak self] note in !(self?.chatNotesSaid.insert("\(id)|\(note)").inserted ?? false) }
         restoreDraft(made)
         if chatConversations.count >= Self.keptConversations {
@@ -315,11 +347,13 @@ extension RemoteModel {
     func installChats(_ listed: [ChatInfo], project: String) {
         guard projectID == project else { return }
         let ordered = listed
+        let removed = Set(chats.map(\.id)).subtracting(ordered.map(\.id))
         if ordered != chats { chats = ordered }
         if !chatsListed { chatsListed = true }
         reconcileChatSelection()
         // A chat the desktop no longer has is not held on to (an orchestrator's chat is the orchestrator list's to keep, the global one's too).
         let known = Set(ordered.map(\.id)).union(projectTabs.compactMap { $0.chatInfo?.id }).union(globalTabs.compactMap { $0.chatInfo?.id })
+        for id in removed where !known.contains(id) { defaults.removeObject(forKey: "chat.display.\(id)") }
         for id in chatConversations.keys where !known.contains(id) && chatConversations[id]?.following != true && !chatSendsInFlight.contains(id) { chatConversations[id] = nil }
         lastListRead[.sessions] = .now
     }
@@ -442,6 +476,7 @@ extension RemoteModel {
                         let failure = ChatControlError.from(error, operation: .events)
                         if case .notFound = failure {
                             conversation.gone = true; conversation.readError = failure
+                            defaults.removeObject(forKey: "chat.display.\(id)")
                             await refreshChatsQuietly(); return
                         }
                         if case .resourceLimit = failure {
@@ -513,6 +548,7 @@ extension RemoteModel {
             } catch ChatControlError.notFound {
                 guard generation == connection, conversation.follower == token else { continue }
                 conversation.gone = true
+                defaults.removeObject(forKey: "chat.display.\(id)")
                 conversation.readError = .notFound(.events)
                 await refreshChatsQuietly()
                 return
@@ -671,8 +707,8 @@ extension RemoteModel {
             return failure
         }
         if let token { chatDrafts.endSending(for: chatID, token: token) }
-        // Sent: the cards' pictures are no longer needed (the files stay on the Mac, where the message names them).
-        for card in attachments where !chatDrafts.attachmentIDs.contains(card.id) { chatAttachmentImages.remove(card.id) }
+        // Keep the phone's existing image previews for sent-message thumbnails and the file viewer.
+        // Startup expires unused cache files after 30 days; this adds no relay media transport.
         live?.notice = nil
         live?.jumpToEnd()
         return nil

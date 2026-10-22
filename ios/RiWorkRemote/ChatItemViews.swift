@@ -98,6 +98,7 @@ struct ChatItemRow: View, Equatable {
             }
             .accessibilityElement(children: .combine).accessibilityLabel("Context compacted")
         case .notice(let level, let text, _, _, _, _): NoticeBlock(level: level, text: text)
+        case .unknown: NoticeBlock(level: .info, text: item.body.summary)
         case .elided: if let elision = ChatElision(item.body) { ElidedBlock(elision: elision, isOpen: open.contains(item.id), toggle: { toggle(item.id) }) }
         }
         }

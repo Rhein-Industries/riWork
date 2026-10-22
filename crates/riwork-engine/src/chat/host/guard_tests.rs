@@ -68,6 +68,7 @@ impl GuardHost {
         let mut inner = lock(&parent.inner);
         inner.take_driver_event(ChatEvent::TurnStarted {
             turn_id: "parent-turn".into(),
+            started_at: None,
         });
         inner.set_state(ChatState::Running);
         drop(inner);

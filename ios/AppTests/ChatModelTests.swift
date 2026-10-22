@@ -191,9 +191,12 @@ import RiWorkCore
         await rig.transport.append(chatID, [started("b", text: "after")])
         let follower = follow(rig)
         await eventually("both readable messages are in") { self.texts(rig.model) == ["before", "after"] }
-        XCTAssertEqual(rig.model.conversation(chatID).feed.skipped, 2)
-        XCTAssertEqual(rig.model.conversation(chatID).feed.next, 4, "the unknown ones count, so they are not asked for again")
-        XCTAssertNil(rig.model.conversation(chatID).readError)
+        let conversation = rig.model.conversation(chatID)
+        XCTAssertEqual(conversation.feed.skipped, 1, "only the unsupported event is skipped")
+        XCTAssertEqual(conversation.transcript.items.map(\.id), ["a", "z", "b"])
+        XCTAssertEqual(conversation.transcript.items.first(where: { $0.id == "z" })?.body, .unknown("hologram"))
+        XCTAssertEqual(conversation.feed.next, 4, "the unknown ones count, so they are not asked for again")
+        XCTAssertNil(conversation.readError)
         follower.cancel()
         await rig.model.disconnect()
     }
@@ -227,6 +230,7 @@ import RiWorkCore
         await eventually("it has asked four times") { await rig.transport.count("chat.events") >= 4 }
         let times = await rig.transport.calls(of: "chat.events").map(\.at)
         let gaps = zip(times.dropFirst(), times).map { ($0 - $1).timeInterval }
+        guard gaps.count >= 3 else { follower.cancel(); await rig.model.disconnect(); return XCTFail("\(times.count) reads") }
         XCTAssertGreaterThanOrEqual(gaps[0], 0.2, "250 ms after the first failure")
         XCTAssertGreaterThanOrEqual(gaps[1], 0.45, "500 ms after the second")
         XCTAssertGreaterThanOrEqual(gaps[2], 0.9, "1 s after the third")
@@ -343,18 +347,23 @@ import RiWorkCore
         sheet.selectChat(.codex)
         sheet.create()
         await sheet.pending?.value
+        XCTAssertNil(sheet.chatError)
         sheet.selectChat(.claude)
         sheet.setUnrestricted(true)
         sheet.create()
         await sheet.pending?.value
+        XCTAssertNil(sheet.chatError)
         sheet.selectChat(.muse)
         sheet.setUnrestricted(false)
         sheet.create()
         await sheet.pending?.value
+        XCTAssertNil(sheet.chatError)
         let sent = await rig.transport.params(of: "chat.create")
         XCTAssertEqual(sent.map { $0["provider"]?.string }, ["codex", "claude", "muse"])
         XCTAssertEqual(sent.map { $0["approval_mode"]?.string }, [nil, "full", nil])
         XCTAssertEqual(rig.model.chats.count, 3)
+        XCTAssertEqual(Set(rig.model.chats.map(\.id)).count, 3)
+        XCTAssertEqual(Set(rig.model.chats.map(\.provider)), Set([.codex, .claude, .muse]))
         XCTAssertEqual(rig.model.lastChatProvider, .muse)
         await rig.model.disconnect()
     }

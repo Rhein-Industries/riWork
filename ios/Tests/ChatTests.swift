@@ -136,6 +136,7 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual([approval.requestID, approval.itemID, approval.title, approval.detail, approval.kind.rawValue], ["r1", "c", "rm -rf build", "why", "command"])
         guard case .questionRequested(let question) = events[34] else { return XCTFail("a question") }
         XCTAssertEqual(question.questions.count, 2)
+        guard question.questions.count == 2 else { return }
         XCTAssertEqual(question.questions[0].options, [ChatQuestionOption(label: "A", description: "first"), ChatQuestionOption(label: "B")])
         XCTAssertTrue(question.questions[0].multiSelect); XCTAssertEqual(question.questions[0].header, "Pick")
         XCTAssertNil(question.questions[1].header); XCTAssertFalse(question.questions[1].multiSelect)
@@ -242,7 +243,6 @@ final class ChatTests: XCTestCase {
     func testAnUnknownEventItemOrDeltaIsNotReadAndTheOthersAre() throws {
         for json in [
             #"{"event":"hologram","x":1}"#,
-            #"{"event":"item_started","item":{"id":"z","status":"completed","body":{"type":"hologram"}}}"#,
             #"{"event":"item_delta","item_id":"a","delta":{"kind":"smell","text":"x"}}"#,
             #"{"event":"state","state":"idle"}"#,
             #"{"nothing":true}"#
@@ -263,8 +263,8 @@ final class ChatTests: XCTestCase {
         """)
         let reply = try ChatEventsReply.parse(result, chatID: "c")
         XCTAssertEqual(reply.events.map(\.seq), [1, 2, 3, 4, 5, 6, 7], "an entry that is no {seq, event} at all is dropped; the rest keep their numbers")
-        XCTAssertEqual(reply.events.map { $0.event != nil }, [true, false, false, false, false, true, true])
-        XCTAssertEqual(reply.skipped, 4)
+        XCTAssertEqual(reply.events.map { $0.event != nil }, [true, false, true, false, false, true, true])
+        XCTAssertEqual(reply.skipped, 3)
         XCTAssertEqual(reply.next, 7)
     }
     func testAWordThePhoneDoesNotKnowInsideAKnownThingIsReadAsItsNearestHarmlessMeaning() throws {

@@ -2,7 +2,6 @@
 //! again at activation: a streaming replacement cannot silently quote another passage.
 use super::{
     ChatView, diff,
-    display::Row,
     select::SelectionFragment,
     widgets::{self, Look},
 };
@@ -227,7 +226,7 @@ impl ChatView {
         fragments: Vec<SelectionFragment>,
     ) -> Option<SelectionFeedback> {
         let first = fragments.first()?;
-        let rows = self.transcript_selection.with_source(|source| {
+        let rows = self.transcript_selection.with_selection_source(|source| {
             fragments
                 .iter()
                 .map(|fragment| {
@@ -242,10 +241,7 @@ impl ChatView {
         if !rows.iter().all(|row| *row == rows[0]) {
             return None;
         }
-        let (Row::Item(at) | Row::Details(at)) = self.visible.get(rows[0])? else {
-            return None;
-        };
-        let item = self.model.transcript.items.get(*at)?;
+        let (_, item) = self.projected_item(&self.list_rows.get(rows[0])?.row.id)?;
         let ItemBody::AgentMessage { text } = &item.body else {
             return None;
         };

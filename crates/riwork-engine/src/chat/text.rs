@@ -186,6 +186,8 @@ mod tests {
         for (number, (status, body)) in bodies.into_iter().enumerate() {
             transcript.apply(&ChatEvent::ItemCompleted {
                 item: Item {
+                    started_at: None,
+                    ended_at: None,
                     presentation: Default::default(),
                     id: format!("item-{number}"),
                     turn_id: None,
@@ -354,6 +356,7 @@ mod tests {
         });
         transcript.apply(&ChatEvent::QuestionRequested {
             question: Question {
+                item_id: None,
                 request_id: "q1".into(),
                 questions: vec![QuestionPrompt {
                     header: None,

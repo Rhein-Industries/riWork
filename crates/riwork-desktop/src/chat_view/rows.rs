@@ -1,8 +1,19 @@
 //! The rows of the message list: one per transcript item, and a footer after them.
 
-use std::sync::Arc;
+use std::{
+    cell::Cell,
+    collections::HashMap,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use gpui::{AnyElement, Context, ElementId, SharedString, Window, div, prelude::*, px, rgb};
+use gpui::{
+    Animation, AnimationExt, AnyElement, ClickEvent, Context, ElementId, MouseButton, SharedString,
+    Window, canvas, div, prelude::*, px, rgb,
+};
+#[cfg(test)]
+use gpui_kit::base::ElementExt as _;
 use gpui_kit::base::TestSupportExt as _;
 
 use crate::{
@@ -26,11 +37,54 @@ const OUTPUT_BYTES: usize = 32 * 1024;
 /// Every design's transcript geometry, in design points: a row's inset from the pane's sides
 /// and from the rows around it, and the widest the reading column gets, centered in the pane.
 const ROW_INSET_X: f32 = 20.0;
-const ROW_INSET_Y: f32 = 8.0;
+const ROW_INSET_Y: f32 = 1.0;
 const COLUMN_WIDTH: f32 = 1040.0;
+/// How much faster a header's grey details give way than its title in a full row.
+const DETAILS_SHRINK: f32 = 1000.0;
 
-/// Makes the body of a card, which is made only for a card that is open.
+/// A native worker/subagent result is constructed only when disclosed.
 type BodyMaker<'a> = dyn Fn(&ChatView, &mut Context<ChatView>) -> AnyElement + 'a;
+
+const HEADER_HOVER_DURATION: Duration = Duration::from_millis(100);
+
+#[derive(Clone)]
+struct HeaderHover {
+    entered: bool,
+    from: f32,
+    since: Instant,
+    generation: u64,
+}
+
+impl HeaderHover {
+    fn level(&self) -> f32 {
+        let progress =
+            (self.since.elapsed().as_secs_f32() / HEADER_HOVER_DURATION.as_secs_f32()).min(1.0);
+        self.from + ((if self.entered { 1.0 } else { 0.0 }) - self.from) * progress
+    }
+}
+
+#[derive(Default)]
+pub(super) struct HeaderHoverState {
+    hover: HashMap<String, HeaderHover>,
+    generation: u64,
+}
+
+/// Standard headers are 24 pt, with 2 pt gaps and 12 pt disclosed indentation
+/// at each theme's default text size. Larger accessibility text grows these
+/// dimensions relative to that default; SF Pro's normal 13 pt face is not zoom.
+fn row_space(base: f32) -> gpui::Pixels {
+    let default = ui_text::DEFAULT_POINTS + ui_text::face().offset(false);
+    px(base * (ui_text::scale() * ui_text::REFERENCE_SIZE / default).max(1.0))
+}
+
+/// The content column starts exactly below the call title, after its border,
+/// padding, chevron, icon and the three header gaps.
+pub(super) fn text_indent() -> gpui::Pixels {
+    px(1.0)
+        + ui_text::space(8.0) * 3.0
+        + ui_text::space(if ui_text::is_native() { 12.0 } else { 10.0 })
+        + ui_text::space(18.0)
+}
 
 fn id(parts: impl Into<String>) -> ElementId {
     ElementId::Name(SharedString::from(parts.into()))
@@ -44,231 +98,41 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let look = Look::of(cx);
-        if let Some(super::display::Row::Item(at) | super::display::Row::Details(at)) =
-            self.visible.get(ix)
-        {
-            self.want_thumbnails(*at, cx);
+        self.ensure_selection_row(ix, look, cx);
+        if let Some(entry) = self.list_rows.get(ix).filter(|entry| entry.row.open) {
+            if let Some((owner, images)) = self
+                .projected_item(&entry.row.id)
+                .filter(|(_, item)| !item.presentation.images.is_empty())
+                .map(|(_, item)| (item.id.clone(), item.presentation.images.clone()))
+            {
+                self.prepare_opened_images(&owner, &images, cx);
+            }
         }
-        let content = match self.visible.get(ix) {
-            Some(row @ (super::display::Row::Item(at) | super::display::Row::Details(at))) => {
-                let item = &self.model.transcript.items[*at];
-                div()
-                    .w_full()
-                    .child(self.item(*at, item, look, cx))
-                    .when(matches!(row, super::display::Row::Item(_)), |row| {
-                        // A file the message shows as its own card is not shown twice.
-                        row.children(
-                            item.presentation
-                                .images
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, image)| !super::attachment_ui::covered(item, image))
-                                .map(|(n, image)| {
-                                    self.image_card(
-                                        image,
-                                        &format!("{}:image:{n}", item.id),
-                                        Some(item),
-                                        None,
-                                        look,
-                                        cx,
-                                    )
-                                }),
-                        )
-                    })
-                    .into_any_element()
-            }
-            Some(super::display::Row::Activity { turn_id, .. }) => {
-                let key = super::display::activity_key(turn_id);
-                let expanded = self.open.contains(&key);
-                let summary = super::activity_summary::for_turn(
-                    &self.model.transcript,
-                    &self.model.completed,
-                    turn_id,
-                );
-                widgets::button(
-                    SharedString::from(key.clone()),
-                    format!("{} {}", if expanded { "▾" } else { "▸" }, summary.label()),
-                    summary.has_failure().then(|| look.error()),
-                    look,
-                )
-                .max_w_full()
-                .whitespace_normal()
-                .aria_expanded(expanded)
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    let offset = view.list.logical_scroll_top();
-                    let anchor = view.visible.get(offset.item_ix).cloned();
-                    view.list.pause_following_tail();
-                    view.toggle(&key, None, cx);
-                    view.refresh_projection(cx);
-                    view.list.remeasure();
-                    if let Some(anchor) = anchor
-                        && let Some(at) = super::display::remap_anchor(
-                            &anchor,
-                            &view.visible,
-                            &view.model.completed,
-                        )
-                    {
-                        view.list.scroll_to(gpui::ListOffset {
-                            item_ix: at,
-                            offset_in_item: if view.visible.get(at) == Some(&anchor) {
-                                offset.offset_in_item
-                            } else {
-                                px(0.)
-                            },
-                        });
-                    }
-                }))
-                .into_any_element()
-            }
-            Some(super::display::Row::Artifacts { turn_id, items }) => {
-                let key = format!("artifacts:{turn_id}");
-                let open = self.open.contains(&key);
-                let count: usize = items
-                    .iter()
-                    .map(|at| self.model.transcript.items[*at].presentation.images.len())
-                    .sum();
-                let group_items = items.clone();
-                let range = super::media::artifact_range(
-                    count,
-                    self.media.artifact_pages.get(&key).copied().unwrap_or(0),
-                );
-                let previous_key = key.clone();
-                let next_key = key.clone();
-                let previous_page = range.start / super::media::ARTIFACT_PAGE;
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .gap(ui_text::space(4.0))
-                    .child(
-                        widgets::button(
-                            SharedString::from(key.clone()),
-                            format!(
-                                "{} Images from this turn · {count}",
-                                if open { "▾" } else { "▸" }
-                            ),
-                            None,
-                            look,
-                        )
-                        .aria_expanded(open)
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            let offset = view.list.logical_scroll_top();
-                            view.list.pause_following_tail();
-                            view.toggle(&key, None, cx);
-                            if !view.open.contains(&key) {
-                                let image_keys: Vec<String> = group_items
-                                    .iter()
-                                    .flat_map(|at| {
-                                        let item = &view.model.transcript.items[*at];
-                                        (0..item.presentation.images.len())
-                                            .map(move |n| format!("{}:image:{n}", item.id))
-                                    })
-                                    .collect();
-                                view.fold_group_images(&image_keys, cx);
-                            }
-                            view.list.remeasure();
-                            view.list.scroll_to(offset);
-                        })),
-                    )
-                    .when(open, |row| {
-                        row.children(
-                            items
-                                .iter()
-                                .flat_map(|at| {
-                                    let item = &self.model.transcript.items[*at];
-                                    item.presentation
-                                        .images
-                                        .iter()
-                                        .enumerate()
-                                        .map(move |(n, image)| (item, n, image))
-                                })
-                                .enumerate()
-                                .skip(range.start)
-                                .take(range.len())
-                                .map(|(ordinal, (item, n, image))| {
-                                    self.image_card(
-                                        image,
-                                        &format!("{}:image:{n}", item.id),
-                                        Some(item),
-                                        Some((ordinal, count)),
-                                        look,
-                                        cx,
-                                    )
-                                }),
-                        )
-                    })
-                    .when(open && count > super::media::ARTIFACT_PAGE, |row| {
-                        row.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(ui_text::space(6.0))
-                                .children((range.start > 0).then(|| {
-                                    widgets::button(
-                                        SharedString::from(format!("previous:{previous_key}")),
-                                        "Previous images",
-                                        None,
-                                        look,
-                                    )
-                                    .on_click(cx.listener(
-                                        move |view, _, _, cx| {
-                                            let offset = view.list.logical_scroll_top();
-                                            view.list.pause_following_tail();
-                                            view.media.artifact_pages.insert(
-                                                previous_key.clone(),
-                                                previous_page.saturating_sub(1),
-                                            );
-                                            view.list.remeasure();
-                                            view.list.scroll_to(offset);
-                                            cx.notify();
-                                        },
-                                    ))
-                                }))
-                                .child(format!("{}–{} of {count}", range.start + 1, range.end))
-                                .children((range.end < count).then(|| {
-                                    widgets::button(
-                                        SharedString::from(format!("next:{next_key}")),
-                                        "Next images",
-                                        None,
-                                        look,
-                                    )
-                                    .on_click(cx.listener(
-                                        move |view, _, _, cx| {
-                                            let offset = view.list.logical_scroll_top();
-                                            view.list.pause_following_tail();
-                                            view.media
-                                                .artifact_pages
-                                                .insert(next_key.clone(), previous_page + 1);
-                                            view.list.remeasure();
-                                            view.list.scroll_to(offset);
-                                            cx.notify();
-                                        },
-                                    ))
-                                })),
-                        )
-                    })
-                    .into_any_element()
-            }
-            Some(super::display::Row::Outcome(turn, outcome)) => div()
-                .text_size(ui_text::text(11.0))
-                .text_color(rgb(look.colors.muted))
-                .child(self.selectable(
-                    &format!("outcome:{turn}"),
-                    super::display::outcome_text(outcome),
-                    Vec::new(),
-                    Vec::new(),
-                    look,
-                    cx,
-                ))
+        let content = match self.list_rows.get(ix) {
+            Some(entry) => div()
+                .pl(row_space(12.0 * entry.depth as f32))
+                .child(self.render_projected_row(&entry.row, ix, entry.depth, look, cx))
                 .into_any_element(),
             None => self.footer(look),
         };
+        let geometry = self.header_bounds.clone();
         div()
             .id(id(format!("transcript-row:{ix}")))
+            .relative()
+            .child(
+                canvas(
+                    move |bounds, _, _| {
+                        geometry.borrow_mut().insert(format!("top:{ix}"), bounds);
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
             .w_full()
             .min_w_0()
             .px(ui_text::space(ROW_INSET_X))
-            .py(ui_text::space(ROW_INSET_Y))
+            .py(row_space(ROW_INSET_Y))
             .child(
                 div()
                     .id(id(format!("transcript-content:{ix}")))
@@ -281,6 +145,644 @@ impl ChatView {
             )
             .test_support()
             .into_any_element()
+    }
+
+    /// Engine rows retain all children while closed. Rendering follows that projection;
+    /// no provider output is inspected to decide grouping or disclosure.
+    pub(super) fn render_projected_row(
+        &self,
+        row: &super::display::Row,
+        ix: usize,
+        depth: usize,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use riwork_engine::chat::projection::RowKind;
+        #[cfg(test)]
+        self.rendered_rows.set(self.rendered_rows.get() + 1);
+        let item = self.projected_item(&row.id);
+        let artifacts: Vec<_> = row
+            .artifacts
+            .iter()
+            .filter(|artifact| {
+                super::media::artifact_chip_shown(
+                    self.display_mode,
+                    row.kind,
+                    artifact,
+                    item.map(|(_, item)| item),
+                    row.open,
+                )
+            })
+            .cloned()
+            .collect();
+        let content = match row.kind {
+            RowKind::Activity | RowKind::Group => div()
+                .w_full()
+                .min_w_0()
+                .child(self.projected_header(row, None, look, cx))
+                .when(
+                    row.kind == RowKind::Activity && !row.artifacts.is_empty(),
+                    |body| {
+                        body.child(div().pl(row_space(12.0)).child(self.render_artifact_refs(
+                            &row.id,
+                            &row.artifacts,
+                            look,
+                            cx,
+                        )))
+                    },
+                )
+                .when(row.open, |body| {
+                    body.child(
+                        div()
+                            .pl(row_space(12.0))
+                            .flex()
+                            .flex_col()
+                            .gap(row_space(2.0))
+                            // Flattened transcript entries have no children here;
+                            // their descendants are separate virtual list entries.
+                            .children(row.children.iter().map(|child| {
+                                self.render_projected_row(child, ix, depth + 1, look, cx)
+                            })),
+                    )
+                })
+                .children(
+                    row.comments
+                        .iter()
+                        .map(|comment| self.render_projected_row(comment, ix, depth + 1, look, cx)),
+                )
+                .into_any_element(),
+            RowKind::Request => div()
+                .h(row_space(24.0))
+                .overflow_hidden()
+                .w_full()
+                .px(ui_text::space(8.0))
+                .flex()
+                .items_center()
+                .gap(ui_text::space(8.0))
+                .text_size(ui_text::text(12.0))
+                .text_color(rgb(look.colors.muted))
+                .child(icons::symbol(
+                    "checkmark.shield",
+                    12.0,
+                    Some(look.colors.muted),
+                ))
+                .child(cards::first_line(&row.title))
+                .into_any_element(),
+            RowKind::Commentary => div()
+                .w_full()
+                .px(ui_text::space(12.0))
+                .text_size(ui_text::text(12.0))
+                .text_color(rgb(look.colors.muted))
+                .children(item.and_then(|(_, item)| match &item.body {
+                    ItemBody::AgentMessage { text } => Some(self.selectable(
+                        &item.id,
+                        text.clone(),
+                        Vec::new(),
+                        Vec::new(),
+                        look,
+                        cx,
+                    )),
+                    _ => None,
+                }))
+                .into_any_element(),
+            RowKind::Worker | RowKind::Subagent
+                if item.is_some_and(|(_, item)| {
+                    crate::chat::workers::of(item).is_some()
+                        || crate::chat::subagents::in_transcript(
+                            item,
+                            &self.model.transcript,
+                            self.info().map(|info| info.provider),
+                        )
+                        .is_some()
+                }) =>
+            {
+                item.map(|(at, item)| self.item(at, item, look, cx))
+                    .unwrap_or_else(|| self.projected_header(row, None, look, cx))
+            }
+            RowKind::User | RowKind::Final | RowKind::Compaction | RowKind::Notice => div()
+                .w_full()
+                .when(matches!(row.kind, RowKind::User | RowKind::Final), |body| {
+                    body.py(ui_text::space(7.0))
+                })
+                .children(item.map(|(at, item)| self.item(at, item, look, cx)))
+                .into_any_element(),
+            _ => match item {
+                Some((at, item)) => {
+                    let stats = match &item.body {
+                        ItemBody::FileChange { changes } => Some(self.change_stats(item, changes)),
+                        _ => None,
+                    };
+                    let head = cards::head(item, stats.as_ref());
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .child(self.projected_header(row, head.as_ref(), look, cx))
+                        .when(row.open, |body| {
+                            body.child(
+                                div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(row_space(2.0))
+                                    .child(self.projected_body(at, item, look, cx))
+                                    .when(!row.children.is_empty(), |body| {
+                                        body.child(
+                                            div()
+                                                .pl(row_space(12.0))
+                                                .flex()
+                                                .flex_col()
+                                                .gap(row_space(2.0))
+                                                .children(row.children.iter().map(|child| {
+                                                    self.render_projected_row(
+                                                        child,
+                                                        ix,
+                                                        depth + 1,
+                                                        look,
+                                                        cx,
+                                                    )
+                                                })),
+                                        )
+                                    })
+                                    .when(!item.presentation.images.is_empty(), |body| {
+                                        body.child(
+                                            div()
+                                                .pl(text_indent())
+                                                .flex()
+                                                .flex_col()
+                                                .items_start()
+                                                .gap(row_space(4.0))
+                                                .children(
+                                                    item.presentation
+                                                        .images
+                                                        .iter()
+                                                        .enumerate()
+                                                        .map(|(n, image)| {
+                                                            self.image_card(
+                                                                image,
+                                                                &format!("{}:image:{n}", item.id),
+                                                                Some(item),
+                                                                None,
+                                                                look,
+                                                                cx,
+                                                            )
+                                                        }),
+                                                ),
+                                        )
+                                    }),
+                            )
+                        })
+                        .into_any_element()
+                }
+                None => self.projected_header(row, None, look, cx),
+            },
+        };
+        div()
+            .id(id(format!("projected:{}", row.id)))
+            .group(SharedString::from(format!("tc:{}", row.id)))
+            .w_full()
+            .min_w_0()
+            .child(content)
+            .when(
+                !matches!(row.kind, RowKind::User | RowKind::Activity) && !artifacts.is_empty(),
+                |body| {
+                    body.child(
+                        div()
+                            .pl(row_space(12.0))
+                            .child(self.render_artifact_refs(&row.id, &artifacts, look, cx)),
+                    )
+                },
+            )
+            .into_any_element()
+    }
+
+    fn projected_header(
+        &self,
+        row: &super::display::Row,
+        head: Option<&Head>,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use riwork_engine::chat::projection::RowKind;
+        let colors = look.colors;
+        let activity = row.kind == RowKind::Activity;
+        let group = row.kind == RowKind::Group;
+        let key = row.id.clone();
+        let hover_key = key.clone();
+        let mut meta = self
+            .projected_item(&row.id)
+            .map(|(_, item)| cards::metadata(item, head))
+            .unwrap_or_default();
+        // The runtime follows the text and is never cut: a full row cuts the text
+        // before it, so every cut row's runtime ends on the row's right edge.
+        let duration = (!activity)
+            .then_some(row.duration_ms)
+            .flatten()
+            .map(cards::duration);
+        if group
+            && row.running
+            && let Some(label) = &row.current_label
+        {
+            meta.push(cards::first_line(label));
+        }
+        if row.provisional {
+            meta.push("Partial turn".into());
+        }
+        let badge = head.and_then(|head| head.badge.clone()).or_else(|| {
+            if row.running {
+                Some(cards::Badge {
+                    label: "Running".into(),
+                    tone: cards::Tone::Accent,
+                    live: true,
+                })
+            } else if row.failed_count > 0 && !activity {
+                Some(cards::Badge {
+                    label: format!("{} failed", row.failed_count),
+                    tone: cards::Tone::Error,
+                    live: false,
+                })
+            } else {
+                None
+            }
+        });
+        let item = self.projected_item(&row.id).map(|(_, item)| item);
+        let thumbnail = item.and_then(|item| self.image_header_thumbnail(item, look, cx));
+        let height = row_space(24.0);
+        let geometry = self.header_bounds.clone();
+        let geometry_key = row.id.clone();
+        let header = div()
+            .relative()
+            .child(
+                canvas(
+                    move |bounds, _, _| {
+                        geometry.borrow_mut().insert(geometry_key, bounds);
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .h_full()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(ui_text::space(8.0))
+            .px(ui_text::space(8.0))
+            .text_size(ui_text::text(12.0))
+            .line_height(gpui::relative(1.0))
+            .text_color(rgb(if activity { colors.muted } else { colors.text }))
+            .child(chevron(row.open, true, colors.muted))
+            .when(!activity, |header| {
+                header.child(
+                    div()
+                        .flex_none()
+                        .size(ui_text::space(18.0))
+                        .rounded(px(5.0))
+                        .bg(rgb(colors.panel_active))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(if row.running {
+                            widgets::spinner(id(format!("row-spinner:{}", row.id)), colors.working)
+                        } else {
+                            icons::symbol(kind_symbol(row.kind), 11.0, Some(colors.muted))
+                        }),
+                )
+            })
+            .when(activity && row.running, |header| {
+                header.child(widgets::spinner(
+                    id(format!("activity-spinner:{}", row.id)),
+                    colors.working,
+                ))
+            })
+            .child({
+                let title = div().min_w_0().h_full().flex().items_center();
+                #[cfg(test)]
+                let title = {
+                    let geometry = self.header_bounds.clone();
+                    let key = format!("label:{}", row.id);
+                    title.on_prepaint(move |bounds, _, _| {
+                        geometry.borrow_mut().insert(key, bounds);
+                    })
+                };
+                title.child(self.header_label(row, group))
+            })
+            .when(
+                !activity && (!meta.is_empty() || duration.is_some()),
+                |header| header.child(self.header_details(&meta, duration, colors.muted)),
+            )
+            .child(div().flex_1())
+            .when(activity && row.failed_count > 0, |header| {
+                header.child(
+                    div()
+                        .size(px(5.0))
+                        .rounded(px(3.0))
+                        .bg(rgb(look.diff.removed)),
+                )
+            })
+            .when(group && row.running && row.failed_count > 0, |header| {
+                header.child(widgets::badge(
+                    id(format!("failure-count:{}", row.id)),
+                    &cards::Badge {
+                        label: format!("{} failed", row.failed_count),
+                        tone: cards::Tone::Error,
+                        live: false,
+                    },
+                    look,
+                ))
+            })
+            .when(!row.open, |header| header.children(thumbnail))
+            .when(!activity, |header| {
+                header.children(
+                    badge
+                        .as_ref()
+                        .map(|badge| widgets::badge(id(format!("badge:{}", row.id)), badge, look)),
+                )
+            });
+        let title = self.row_title(row);
+        // A summarized activity line already states its failures.
+        let summarized = title != row.title;
+        let control = widgets::content_button(
+            id(format!("card:{}", row.id)),
+            format!(
+                "{}{}{}",
+                title,
+                row.target
+                    .as_ref()
+                    .map(|target| format!(" {target}"))
+                    .unwrap_or_default(),
+                if row.failed_count > 0 && !summarized {
+                    format!(" · {} failed", row.failed_count)
+                } else {
+                    String::new()
+                }
+            ),
+            self.header_hover_background(&row.id, look, cx),
+            look,
+        )
+        .relative()
+        .child(header)
+        .h(height)
+        .overflow_hidden()
+        .rounded(px(4.0))
+        .cursor_pointer()
+        .when(group, |header| header.bg(rgb(colors.panel)))
+        .border_1()
+        .border_color(if self.row_is_focused(&row.id) {
+            gpui::rgba((colors.muted << 8) | 0x66)
+        } else {
+            gpui::rgba(0)
+        })
+        .focus_visible(move |style| {
+            style
+                .bg(gpui::transparent_black())
+                .border_color(gpui::rgba((colors.muted << 8) | 0x66))
+        })
+        .aria_expanded(row.open)
+        .on_hover(cx.listener(move |view, entered: &bool, _, cx| {
+            let state = &mut view.header_hover;
+            if state
+                .hover
+                .get(&hover_key)
+                .is_some_and(|hover| hover.entered == *entered)
+                || !*entered && !state.hover.contains_key(&hover_key)
+            {
+                return;
+            }
+            let from = state.hover.get(&hover_key).map_or(0.0, HeaderHover::level);
+            state.hover.retain(|key, hover| {
+                key == &hover_key || hover.since.elapsed() < HEADER_HOVER_DURATION
+            });
+            state.generation += 1;
+            let generation = state.generation;
+            state.hover.insert(
+                hover_key.clone(),
+                HeaderHover {
+                    entered: *entered,
+                    from,
+                    since: Instant::now(),
+                    generation,
+                },
+            );
+            cx.notify();
+        }))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|view, _, _, cx| {
+                gpui_kit::base::GlobalState::suppress_text_selection(cx);
+                view.row_keyboard_focus = false;
+                cx.notify();
+            }),
+        )
+        .on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
+            window.focus(&view.focus, cx);
+            view.row_keyboard_focus = matches!(event, ClickEvent::Keyboard(_));
+            view.toggle_projected(&key, cx);
+        }));
+        control.into_any_element()
+    }
+
+    /// A finished turn's activity line names its work with the factual summary.
+    fn row_title(&self, row: &super::display::Row) -> String {
+        if row.kind == riwork_engine::chat::projection::RowKind::Activity {
+            super::display::activity_title(row, &self.model.transcript, &self.model.completed)
+        } else {
+            row.title.clone()
+        }
+    }
+
+    /// Header content is decoration. Only the enclosing row owns hit testing,
+    /// pointer styling, disclosure and keyboard focus.
+    fn header_label(
+        &self,
+        row: &super::display::Row,
+        group: bool,
+    ) -> super::header_line::HeaderLine {
+        use super::header_line::{Span, header_line};
+        let item = self.projected_item(&row.id).map(|(_, item)| item);
+        let text = if row.kind == riwork_engine::chat::projection::RowKind::Activity {
+            cards::first_line(&self.row_title(row))
+        } else {
+            super::display::header_text(row, item)
+        };
+        let target = super::display::header_target(row, item);
+        let mut spans = vec![Span {
+            range: 0..text.len(),
+            weight: group.then_some(gpui::FontWeight::MEDIUM),
+            ..Span::default()
+        }];
+        if let Some(at) =
+            target.and_then(|target| text.rfind(&target).map(|at| at..at + target.len()))
+        {
+            // Split the native text run before applying the command/path font.
+            spans.push(Span {
+                range: at,
+                code: true,
+                ..Span::default()
+            });
+        }
+        header_line(text, spans, 1.)
+    }
+
+    /// The grey `· details · runtime` after the title, as one run of text. A full row
+    /// cuts the details first, then the title; the runtime keeps its whole width.
+    fn header_details(&self, meta: &[String], duration: Option<String>, muted: u32) -> AnyElement {
+        // No `min_w_0`: its least width is the runtime's, which therefore never shrinks.
+        div()
+            .flex()
+            .items_center()
+            .text_color(rgb(muted))
+            // The title gives way only once the details are gone.
+            .map(|mut details| {
+                details.style().flex_shrink = Some(DETAILS_SHRINK);
+                details
+            })
+            .when(!meta.is_empty(), |details| {
+                details.child(super::header_line::header_line(
+                    format!("· {}", meta.join(" · ")),
+                    Vec::new(),
+                    1.,
+                ))
+            })
+            .children(duration.map(|duration| {
+                div()
+                    .flex_none()
+                    .whitespace_nowrap()
+                    .child(if meta.is_empty() {
+                        format!("· {duration}")
+                    } else {
+                        format!(" · {duration}")
+                    })
+            }))
+            .into_any_element()
+    }
+
+    /// Animate decoration only, preserving the Base button's focus identity.
+    fn header_hover_background(&self, row: &str, look: Look, cx: &Context<Self>) -> AnyElement {
+        let Some(fade) = self.header_hover.hover.get(row).cloned() else {
+            return div().absolute().inset_0().into_any_element();
+        };
+        let entered = fade.entered;
+        let generation = fade.generation;
+        let owner = cx.weak_entity();
+        let key = row.to_owned();
+        let level = Rc::new(Cell::new(fade.from));
+        let painted_level = level.clone();
+        canvas(
+            move |bounds, window, cx| {
+                // The canvas is inside the row's reserved focus border. Hover
+                // belongs to the complete 24px container, including that edge.
+                let inside = bounds
+                    .dilate(px(1.0))
+                    .intersect(&window.content_mask().bounds)
+                    .contains(&window.mouse_position());
+                if entered && !inside {
+                    let owner = owner.clone();
+                    let key = key.clone();
+                    window.defer(cx, move |_, cx| {
+                        let _ = owner.update(cx, |view, cx| {
+                            if view.header_hover.hover.get(&key).is_some_and(|hover| {
+                                hover.entered && hover.generation == generation
+                            }) {
+                                view.header_hover.hover.remove(&key);
+                                cx.notify();
+                            }
+                        });
+                    });
+                }
+                inside
+            },
+            move |bounds, pointer_inside, window, _| {
+                // A virtualized row can disappear before receiving mouse-exit.
+                // Its cached enter state must never tint it after remounting.
+                if !entered || pointer_inside {
+                    let fill = gpui::rgba(
+                        (look.colors.divider << 8) | (painted_level.get() * 255.0).round() as u32,
+                    );
+                    window.paint_quad(gpui::fill(bounds, fill).corner_radii(px(4.0)));
+                }
+            },
+        )
+        .absolute()
+        .inset_0()
+        .with_animation(
+            id(format!("header-hover:{row}:{}", fade.generation)),
+            Animation::new(HEADER_HOVER_DURATION),
+            move |background, progress| {
+                let to = if fade.entered { 1.0 } else { 0.0 };
+                level.set(fade.from + (to - fade.from) * progress);
+                background
+            },
+        )
+        .into_any_element()
+    }
+
+    fn projected_body(
+        &self,
+        ix: usize,
+        item: &Item,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let content = match &item.body {
+            ItemBody::Reasoning { text } => self.reasoning_body(item, text, look, cx),
+            ItemBody::Command {
+                command, output, ..
+            } => self.command_body(item, command, output, look, cx),
+            ItemBody::ToolCall { input, output, .. } => {
+                self.tool_body(item, input, output.as_deref(), look, cx)
+            }
+            ItemBody::FileChange { changes } => self.changes_body(
+                ix,
+                item,
+                changes,
+                &self.change_stats(item, changes),
+                look,
+                cx,
+            ),
+            ItemBody::Plan { explanation, steps } => {
+                if steps.is_empty()
+                    && let Some(source) = explanation
+                        .as_deref()
+                        .filter(|text| !text.trim().is_empty())
+                {
+                    self.plan_document(item, source, look, cx)
+                } else {
+                    checklist(self, &item.id, steps, explanation.as_deref(), look, cx)
+                }
+            }
+            ItemBody::Todo { items } => checklist(self, &item.id, items, None, look, cx),
+            // Structured results, with their raw input/output a click away.
+            ItemBody::WebSearch { query } => match self.tool_output(item) {
+                Some(output) => {
+                    let raw = match output.as_ref() {
+                        crate::chat::tool_output::ToolOutput::WebSearch { raw, .. } => {
+                            Some(raw.as_str())
+                        }
+                        _ => None,
+                    };
+                    self.tool_body(item, &serde_json::json!({"query":query}), raw, look, cx)
+                }
+                None => div()
+                    .text_color(rgb(look.colors.muted))
+                    .child(query.clone())
+                    .into_any_element(),
+            },
+            _ => div().into_any_element(),
+        };
+        if matches!(item.body, ItemBody::ToolCall { .. }) {
+            content
+        } else {
+            div()
+                .pl(if matches!(item.body, ItemBody::Command { .. }) {
+                    text_indent()
+                } else {
+                    row_space(12.0)
+                })
+                .child(content)
+                .into_any_element()
+        }
     }
 
     fn item(&self, ix: usize, item: &Item, look: Look, cx: &mut Context<Self>) -> AnyElement {
@@ -331,8 +833,7 @@ impl ChatView {
         match &item.body {
             // What you sent is a block across the reading column, in every design; Native's
             // is plain grey with its rounded corners, Hermes's a bordered panel, the colorful
-            // themes' tinted in their accent. The files it sent come first, as the composer
-            // showed them, then what you typed.
+            // themes' tinted in their accent.
             ItemBody::UserMessage { text } => {
                 let sent = self.sent_attachments(item, look, cx);
                 let text = super::attachment_ui::shown_text(item, text);
@@ -377,89 +878,30 @@ impl ChatView {
                                     cx,
                                 )
                             }))
+                            .children(
+                                item.presentation
+                                    .images
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, image)| {
+                                        !super::attachment_ui::covered(item, image)
+                                    })
+                                    .map(|(n, image)| {
+                                        self.image_card(
+                                            image,
+                                            &format!("{}:image:{n}", item.id),
+                                            Some(item),
+                                            None,
+                                            look,
+                                            cx,
+                                        )
+                                    }),
+                            )
                             .test_support(),
                     )
                     .into_any_element()
             }
             ItemBody::AgentMessage { text } => self.agent_message(ix, item, text, look, cx),
-            ItemBody::Reasoning { text } => {
-                let head = cards::head(item, None).expect("reasoning has a head");
-                let body =
-                    |view: &Self, cx: &mut Context<Self>| view.reasoning_body(item, text, look, cx);
-                self.card(ix, item, &head, Some(&body), look, cx)
-            }
-            ItemBody::Command {
-                command, output, ..
-            } => {
-                let head = cards::head(item, None).expect("a command has a head");
-                let body = |view: &Self, cx: &mut Context<Self>| {
-                    view.command_body(item, command, output, look, cx)
-                };
-                self.card(ix, item, &head, Some(&body), look, cx)
-            }
-            ItemBody::FileChange { changes } => {
-                let stats = self.change_stats(item, changes);
-                let head = cards::head(item, Some(&stats)).expect("a file change has a head");
-                let body = |view: &Self, cx: &mut Context<Self>| {
-                    view.changes_body(ix, item, changes, &stats, look, cx)
-                };
-                self.card(ix, item, &head, Some(&body), look, cx)
-            }
-            ItemBody::ToolCall { input, output, .. } => {
-                let head = cards::head(item, None).expect("a tool call has a head");
-                let body = |view: &Self, cx: &mut Context<Self>| {
-                    view.tool_body(item, input, output.as_deref(), look, cx)
-                };
-                self.card(ix, item, &head, Some(&body), look, cx)
-            }
-            ItemBody::Plan { explanation, steps } => {
-                let head = cards::head(item, None).expect("a plan has a head");
-                let body = if steps.is_empty()
-                    && let Some(source) = explanation
-                        .as_deref()
-                        .filter(|text| !text.trim().is_empty())
-                {
-                    self.plan_document(item, source, look, cx)
-                } else {
-                    checklist(self, &item.id, steps, explanation.as_deref(), look, cx)
-                };
-                self.always_open(ix, &head, body, look)
-            }
-            ItemBody::Todo { items } => {
-                let head = cards::head(item, None).expect("a todo list has a head");
-                self.always_open(
-                    ix,
-                    &head,
-                    checklist(self, &item.id, items, None, look, cx),
-                    look,
-                )
-            }
-            ItemBody::WebSearch { .. } => {
-                let mut head = cards::head(item, None).expect("a search has a head");
-                let output = self.tool_output(item);
-                head.expandable = output.is_some();
-                let body = |view: &Self, cx: &mut Context<Self>| {
-                    let raw = match output.as_deref() {
-                        Some(crate::chat::tool_output::ToolOutput::WebSearch { raw, .. }) => {
-                            Some(raw.as_str())
-                        }
-                        _ => None,
-                    };
-                    let input = match &item.body {
-                        ItemBody::WebSearch { query } => serde_json::json!({"query":query}),
-                        _ => serde_json::Value::Null,
-                    };
-                    view.tool_body(item, &input, raw, look, cx)
-                };
-                self.card(
-                    ix,
-                    item,
-                    &head,
-                    output.as_ref().map(|_| &body as &BodyMaker<'_>),
-                    look,
-                    cx,
-                )
-            }
             ItemBody::Compaction => div()
                 .w_full()
                 .flex()
@@ -523,7 +965,87 @@ impl ChatView {
                     cx,
                 ))
                 .into_any_element(),
+            _ => div().into_any_element(),
         }
+    }
+
+    /// A card: its head, always shown, and its body, shown while the card is open.
+    fn card(
+        &self,
+        ix: usize,
+        item: &Item,
+        head: &Head,
+        body: Option<&BodyMaker<'_>>,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = look.colors;
+        let open = self.open.contains(&item.id) && head.expandable;
+        let key = item.id.clone();
+        // A command is code; the subtitles are folders, paths, arguments and line counts.
+        let code_title = matches!(item.body, ItemBody::Command { .. });
+        let header = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(ui_text::space(6.0))
+            .px(ui_text::space(10.0))
+            .py(ui_text::space(6.0))
+            .text_size(ui_text::text(11.0))
+            .when(head.expandable, |header| {
+                header.cursor_pointer().hover(move |style| {
+                    controls::hovered(style, controls::row_hover(false, colors), |style| {
+                        style.bg(rgb(colors.panel_active))
+                    })
+                })
+            })
+            .child(chevron(open, head.expandable, colors.muted))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(rgb(colors.text))
+                    .when(code_title, |title| {
+                        title.font_family(ui_text::code_family())
+                    })
+                    .child(head.title.clone()),
+            )
+            .children(head.subtitle.clone().map(|subtitle| {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .font_family(ui_text::mono_family())
+                    .text_color(rgb(colors.muted))
+                    .child(subtitle)
+            }))
+            .when(head.subtitle.is_none(), |header| {
+                header.child(div().flex_1())
+            })
+            .children(
+                head.badge
+                    .as_ref()
+                    .map(|badge| widgets::badge(id(format!("badge:{}", item.id)), badge, look)),
+            );
+        let header = widgets::content_button(
+            id(format!("card:{}", item.id)),
+            head.title.clone(),
+            header,
+            look,
+        )
+        .disabled(!head.expandable)
+        .aria_expanded(open)
+        .on_click(cx.listener(move |view, _, _, cx| view.toggle(&key, Some(ix), cx)));
+        card_box(look)
+            .child(header)
+            // The body is made only for a card that is open.
+            .children(body.filter(|_| open).map(|body| {
+                div()
+                    .border_t_1()
+                    .border_color(rgb(colors.divider))
+                    .child(body(self, cx))
+            }))
+            .into_any_element()
     }
 
     fn agent_message(
@@ -607,125 +1129,6 @@ impl ChatView {
         stats
     }
 
-    /// A card: its head, always shown, and its body, shown while the card is open.
-    fn card(
-        &self,
-        ix: usize,
-        item: &Item,
-        head: &Head,
-        body: Option<&BodyMaker<'_>>,
-        look: Look,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = look.colors;
-        let open = self.open.contains(&item.id) && head.expandable;
-        let key = item.id.clone();
-        // A command is code; the subtitles are folders, paths, arguments and line counts.
-        let code_title = matches!(item.body, ItemBody::Command { .. });
-        let header = div()
-            .w_full()
-            .flex()
-            .items_center()
-            .gap(ui_text::space(6.0))
-            .px(ui_text::space(10.0))
-            .py(ui_text::space(6.0))
-            .text_size(ui_text::text(11.0))
-            .when(head.expandable, |header| {
-                header.cursor_pointer().hover(move |style| {
-                    controls::hovered(style, controls::row_hover(false, colors), |style| {
-                        style.bg(rgb(colors.panel_active))
-                    })
-                })
-            })
-            .child(chevron(open, head.expandable, colors.muted))
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(rgb(colors.text))
-                    .when(code_title, |title| {
-                        title.font_family(ui_text::code_family())
-                    })
-                    .child(head.title.clone()),
-            )
-            .children(head.subtitle.clone().map(|subtitle| {
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .font_family(ui_text::mono_family())
-                    .text_color(rgb(colors.muted))
-                    .child(subtitle)
-            }))
-            .when(head.subtitle.is_none(), |header| {
-                header.child(div().flex_1())
-            })
-            .children(
-                head.badge
-                    .as_ref()
-                    .map(|badge| widgets::badge(id(format!("badge:{}", item.id)), badge, look)),
-            );
-        let header = widgets::content_button(
-            id(format!("card:{}", item.id)),
-            head.title.clone(),
-            header,
-            look,
-        )
-        .disabled(!head.expandable)
-        .aria_expanded(open)
-        .on_click(cx.listener(move |view, _, _, cx| view.toggle(&key, Some(ix), cx)));
-        card_box(look)
-            .child(header)
-            // The body is made only for a card that is open.
-            .children(body.filter(|_| open).map(|body| {
-                div()
-                    .border_t_1()
-                    .border_color(rgb(colors.divider))
-                    .child(body(self, cx))
-            }))
-            .into_any_element()
-    }
-
-    /// A card whose body is its content: a plan, a todo list.
-    fn always_open(&self, ix: usize, head: &Head, body: AnyElement, look: Look) -> AnyElement {
-        let colors = look.colors;
-        card_box(look)
-            .child(
-                div()
-                    .id(id(format!("plan:{ix}")))
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .gap(ui_text::space(8.0))
-                    .px(ui_text::space(10.0))
-                    .py(ui_text::space(6.0))
-                    .text_size(ui_text::text(11.0))
-                    .child(
-                        div()
-                            .text_color(rgb(colors.cyan))
-                            .when(look.native, |title| {
-                                title.font_weight(gpui::FontWeight::SEMIBOLD)
-                            })
-                            .child(head.title.clone()),
-                    )
-                    .children(head.subtitle.clone().map(|subtitle| {
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(rgb(colors.muted))
-                            .child(subtitle)
-                    })),
-            )
-            .child(
-                div()
-                    .border_t_1()
-                    .border_color(rgb(colors.divider))
-                    .child(body),
-            )
-            .into_any_element()
-    }
-
     fn reasoning_body(
         &self,
         item: &Item,
@@ -734,8 +1137,6 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         div()
-            .px(ui_text::space(10.0))
-            .py(ui_text::space(6.0))
             .italic()
             .text_color(rgb(look.colors.muted))
             .child(self.selectable(
@@ -757,7 +1158,695 @@ impl ChatView {
         look: Look,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.command_output_panel(item, command, output, look, cx)
+        // The live log (terminal styling, independent following, retained pages and
+        // their copy actions) inside the output container and its header. The header
+        // owns `command:{id}`, so the log gets no command of its own to repeat.
+        let colors = look.colors;
+        div()
+            .id(id(format!("output-block:{}", item.id)))
+            .relative()
+            .cursor_text()
+            .w_full()
+            .min_w_0()
+            .rounded(px(4.0))
+            .overflow_hidden()
+            .border_1()
+            .border_color(rgb(colors.divider))
+            .bg(rgb(colors.panel))
+            .py(ui_text::space(6.0))
+            .px(ui_text::space(8.0))
+            .text_size(ui_text::text(11.5))
+            .line_height(gpui::relative(1.45))
+            .font_family(ui_text::code_family())
+            .text_color(rgb(colors.text))
+            .child(self.output_header(item, command, look, cx))
+            .child(self.command_output_panel(item, "", output, look, cx))
+            .test_support()
+            .into_any_element()
+    }
+
+    fn tool_overlay_button(
+        &self,
+        item: &Item,
+        key: String,
+        symbol: &'static str,
+        label: &'static str,
+        enabled: bool,
+        copied: bool,
+        look: Look,
+    ) -> crate::behavior_controls::Button {
+        widgets::tool_icon_action(id(key), symbol, label, enabled, look)
+            .bg(rgb(look.colors.panel))
+            .opacity(if copied || self.row_is_focused(&item.id) {
+                1.0
+            } else {
+                0.0
+            })
+            .group_hover(SharedString::from(format!("tc:{}", item.id)), |style| {
+                style.opacity(1.0)
+            })
+    }
+
+    fn container_label(&self, text: &str, meta_width: f32) -> String {
+        let pane = self.composer_width.get();
+        let pane = if pane > 0.0 { pane } else { 700.0 };
+        let available = pane.min(f32::from(ui_text::space(COLUMN_WIDTH)))
+            - f32::from(
+                ui_text::space(ROW_INSET_X * 2.0) + text_indent() + ui_text::space(16.0 + 48.0),
+            )
+            - meta_width;
+        let characters = (available / f32::from(ui_text::text(11.0) * 0.62))
+            .floor()
+            .max(8.0) as usize;
+        crate::file_preview::middle_elide(text, characters)
+    }
+
+    pub(super) fn command_container_label(&self, command: &str) -> String {
+        let first = command.trim().lines().next().unwrap_or_default();
+        self.container_label(
+            &format!(
+                "$ {first}{}",
+                if command.trim().lines().count() > 1 {
+                    " …"
+                } else {
+                    ""
+                }
+            ),
+            f32::from(ui_text::space(160.0)),
+        )
+    }
+
+    pub(super) fn file_container_label(&self, path: &str) -> String {
+        self.container_label(&short_output_path(path), f32::from(ui_text::space(140.0)))
+    }
+
+    fn output_header(
+        &self,
+        item: &Item,
+        command: &str,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let running = item.status == crate::chat::model::ItemStatus::InProgress;
+        let (exit, cwd) = match &item.body {
+            ItemBody::Command { exit_code, cwd, .. } => (*exit_code, cwd.as_deref()),
+            _ => (None, None),
+        };
+        let duration = super::display::find(&self.visible, &item.id)
+            .and_then(|row| row.duration_ms)
+            .or_else(|| {
+                item.started_at
+                    .zip(item.ended_at)
+                    .map(|(start, end)| end.saturating_sub(start))
+            });
+        let command_label = self.command_container_label(command);
+        let menu_key = format!("command-copy-menu:{}", item.id);
+        let right_key = menu_key.clone();
+        let close_key = menu_key.clone();
+        let copy_key = menu_key.clone();
+        let full_command = command.to_owned();
+        let command_id = item.id.clone();
+        div()
+            .id(id(format!("output-header:{}", item.id)))
+            .relative()
+            .h(ui_text::space(18.0))
+            .mb(ui_text::space(4.0))
+            .pr(ui_text::space(48.0))
+            .flex()
+            .items_center()
+            .gap(ui_text::space(4.0))
+            .font_family(ui_text::code_family())
+            .text_size(ui_text::text(11.0))
+            .text_color(rgb(look.colors.muted))
+            .child(div().min_w_0().truncate().child(self.selectable(
+                &format!("command:{}", item.id),
+                command_label,
+                Vec::new(),
+                Vec::new(),
+                look,
+                cx,
+            )))
+            .children(exit.filter(|exit| *exit != 0).map(|exit| {
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(4.0))
+                    .child("·")
+                    .child(
+                        div()
+                            .text_color(rgb(look.error()))
+                            .child(format!("exit {exit}")),
+                    )
+            }))
+            .when(running, |header| {
+                let seconds = duration.unwrap_or(0) / 1000;
+                header
+                    .child("·")
+                    .child(div().size(ui_text::space(10.0)).overflow_hidden().child(
+                        widgets::spinner(
+                            id(format!("output-spinner:{}", item.id)),
+                            look.colors.working,
+                        ),
+                    ))
+                    .child(format!("{}:{:02}", seconds / 60, seconds % 60))
+            })
+            .children((!running).then_some(duration).flatten().map(|duration| {
+                div()
+                    .flex_none()
+                    .child(format!("· {}", precise_duration(duration)))
+            }))
+            .children(cwd.filter(|cwd| !cwd.is_empty()).map(|cwd| {
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .child(format!("· {}", short_output_path(cwd)))
+            }))
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(move |view, _, _, cx| {
+                    cx.stop_propagation();
+                    view.toggle(&right_key, None, cx);
+                }),
+            )
+            .children(self.open.contains(&menu_key).then(|| {
+                div()
+                    .absolute()
+                    .top(ui_text::space(18.0))
+                    .left_0()
+                    .p(ui_text::space(4.0))
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(rgb(look.colors.divider))
+                    .bg(rgb(look.colors.panel))
+                    .shadow_sm()
+                    .on_mouse_down_out(cx.listener(move |view, _, _, cx| {
+                        view.open.remove(&close_key);
+                        cx.notify();
+                    }))
+                    .child(
+                        widgets::button(
+                            id(format!("copy-command:{}", item.id)),
+                            "Copy command",
+                            None,
+                            look,
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            cx.stop_propagation();
+                            view.open.remove(&copy_key);
+                            view.copy(
+                                format!("command-copy:{command_id}"),
+                                full_command.clone(),
+                                cx,
+                            );
+                        })),
+                    )
+            }))
+            .test_support()
+            .into_any_element()
+    }
+
+    fn output_lines(
+        &self,
+        name: &str,
+        preview: &cards::OutputPreview,
+        empty_message: bool,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if empty_message {
+            return div()
+                .id(id(format!("output-placeholder:{name}")))
+                .w_full()
+                .text_color(rgb(look.colors.muted))
+                .role(gpui::Role::Label)
+                .aria_label("Waiting for output…")
+                .child("Waiting for output…")
+                .test_support()
+                .into_any_element();
+        }
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .children(cards::output_runs(preview).into_iter().map(|run| {
+                let omitted = run.kind == cards::OutputRunKind::Omission;
+                let error = run.kind == cards::OutputRunKind::Error;
+                let key = run.selection_key(name);
+                let text = run.text;
+                div()
+                    .id(id(format!("output-line:{name}:{}", run.first_line)))
+                    .w_full()
+                    .min_h(ui_text::text(11.5) * 1.45)
+                    .when(error, |line| line.bg(rgb(look.tint(look.error(), 0.12))))
+                    .when(error, |line| line.text_color(rgb(look.diff.removed)))
+                    .when(omitted, |line| line.text_color(rgb(look.colors.muted)))
+                    .when(omitted, |line| line.italic())
+                    .when(omitted, |line| {
+                        line.role(gpui::Role::Label)
+                            .aria_label(text.clone())
+                            .child(text.clone())
+                    })
+                    .when_some(key, |element, key| {
+                        let len = text.len();
+                        element.child(self.selectable(
+                            &key,
+                            text,
+                            if error {
+                                vec![(
+                                    0..len,
+                                    gpui::HighlightStyle {
+                                        color: Some(rgb(look.diff.removed).into()),
+                                        ..Default::default()
+                                    },
+                                )]
+                            } else {
+                                Vec::new()
+                            },
+                            Vec::new(),
+                            look,
+                            cx,
+                        ))
+                    })
+                    .test_support()
+            }))
+            .into_any_element()
+    }
+
+    fn output_footer(
+        &self,
+        item: &Item,
+        omitted: usize,
+        show_all: bool,
+        file: bool,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let all_key = format!("output-all:{}", item.id);
+        let item_ix = self.projected_item(&item.id).map(|(at, _)| at);
+        div()
+            .id(id(format!("output-footer:{}", item.id)))
+            .h(ui_text::space(20.0))
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(ui_text::space(4.0))
+            .font_family(ui_text::ui_family())
+            .text_size(ui_text::text(11.0))
+            .text_color(rgb(look.colors.muted))
+            .when(omitted > 0, |footer| {
+                footer.child(format!("{} ·", cards::omission_label(omitted, file)))
+            })
+            .child(
+                crate::behavior_controls::button_content(
+                    id(format!("show-all:{}", item.id)),
+                    if show_all { "Show less" } else { "Show all" },
+                    if show_all { "Show less" } else { "Show all" },
+                )
+                .text_color(rgb(if look.native {
+                    look.colors.focus
+                } else {
+                    look.colors.cyan
+                }))
+                .underline()
+                .cursor_pointer()
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    cx.stop_propagation();
+                    view.toggle(&all_key, item_ix, cx);
+                })),
+            )
+            .when(show_all && omitted > 0, |footer| {
+                footer.child("· Full output copied by ⧉")
+            })
+            .test_support()
+            .into_any_element()
+    }
+
+    fn output_block(
+        &self,
+        item: &Item,
+        output: &str,
+        prefix: &str,
+        command: Option<&str>,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = look.colors;
+        let running = item.status == crate::chat::model::ItemStatus::InProgress;
+        let show_all = self.open.contains(&format!("output-all:{}", item.id));
+        let preview = cards::output_preview(output, running, show_all);
+        let compact_omits =
+            show_all && !running && cards::output_preview(output, false, false).omitted > 0;
+        let has_body = !preview.text.is_empty() || running;
+        let waiting = running && preview.text.is_empty();
+        let name = format!("{prefix}:{}", item.id);
+        let copy_key = format!("copy:{}", item.id);
+        let copied = self.copied.as_deref() == Some(copy_key.as_str());
+        let command_id = item.id.clone();
+        div()
+            .id(id(format!("output-block:{}", item.id)))
+            .relative()
+            .cursor_text()
+            .w_full()
+            .min_w_0()
+            .rounded(px(4.0))
+            .overflow_hidden()
+            .border_1()
+            .border_color(rgb(colors.divider))
+            .bg(rgb(colors.panel))
+            .py(ui_text::space(6.0))
+            .px(ui_text::space(8.0))
+            .text_size(ui_text::text(11.5))
+            .line_height(gpui::relative(1.45))
+            .font_family(ui_text::code_family())
+            .text_color(rgb(colors.text))
+            .children(command.map(|command| self.output_header(item, command, look, cx)))
+            .when(has_body, |container| {
+                container.child(
+                    self.scroller(&name).attach(
+                        div()
+                            .id(id(name.clone()))
+                            .w_full()
+                            .max_h(ui_text::space(320.0))
+                            .overflow_y_scroll()
+                            .child(self.output_lines(&name, &preview, waiting, look, cx))
+                            .test_support(),
+                    ),
+                )
+            })
+            .when(
+                !running && (preview.omitted > 0 || show_all && compact_omits),
+                |container| {
+                    container.child(self.output_footer(
+                        item,
+                        preview.omitted,
+                        show_all,
+                        false,
+                        look,
+                        cx,
+                    ))
+                },
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(ui_text::space(4.0))
+                    .right(ui_text::space(4.0))
+                    .child(
+                        self.tool_overlay_button(
+                            item,
+                            copy_key,
+                            if copied { "checkmark" } else { "doc.on.doc" },
+                            "Copy output",
+                            true,
+                            copied,
+                            look,
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            cx.stop_propagation();
+                            view.copy_item(&command_id, cx);
+                        })),
+                    ),
+            )
+            .test_support()
+            .into_any_element()
+    }
+
+    /// Rendering only consults this cache. Filesystem validation runs off-window,
+    /// and a stale completion cannot replace a newer target or scope's result.
+    fn excerpt_open_available(&self, item: &Item, target: &str, cx: &mut Context<Self>) -> bool {
+        let mut caches = self.caches.borrow_mut();
+        if let Some(known) = caches.excerpt_open.get(&item.id)
+            && known.target == target
+            && known.status == item.status
+        {
+            return known.available.unwrap_or(false);
+        }
+        caches.excerpt_open_request += 1;
+        let request = caches.excerpt_open_request;
+        caches.excerpt_open.insert(
+            item.id.clone(),
+            super::ExcerptOpenAvailability {
+                target: target.to_owned(),
+                status: item.status,
+                request,
+                available: None,
+            },
+        );
+        drop(caches);
+        let owner = item.id.clone();
+        let target = target.to_owned();
+        let scope = self.image_scope.clone();
+        let work = cx.background_executor().spawn(async move {
+            scope.resolve(&target).is_ok_and(|resolved| {
+                crate::file_preview::validated_live_editor_path(&resolved.root, &resolved.path)
+                    .is_ok()
+            })
+        });
+        cx.spawn(async move |this, cx| {
+            let available = work.await;
+            let _ = this.update(cx, |view, cx| {
+                let mut caches = view.caches.borrow_mut();
+                if let Some(known) = caches.excerpt_open.get_mut(&owner)
+                    && known.request == request
+                {
+                    known.available = Some(available);
+                    drop(caches);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        false
+    }
+
+    fn file_excerpt(
+        &self,
+        item: &Item,
+        output: &str,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let semantic = item.presentation.semantics.as_ref();
+        let target = semantic
+            .and_then(|s| s.target.as_deref())
+            .unwrap_or_default();
+        let start = semantic
+            .and_then(|s| s.range.as_ref())
+            .map(|range| range.start as usize);
+        let lines = cards::numbered_excerpt(output, start);
+        let show_all = self.open.contains(&format!("output-all:{}", item.id));
+        let preview = cards::file_output_preview(output, show_all);
+        let running = item.status == crate::chat::model::ItemStatus::InProgress;
+        let compact_omits =
+            show_all && !running && cards::file_output_preview(output, false).omitted > 0;
+        let failed = item.status == crate::chat::model::ItemStatus::Failed;
+        let first_line = lines.first().and_then(|line| line.number).or(start);
+        let open_target = excerpt_open_target(item, first_line);
+        let resolvable = open_target
+            .as_deref()
+            .is_some_and(|target| self.excerpt_open_available(item, target, cx));
+        let copy_key = format!("copy:{}", item.id);
+        let copied = self.copied.as_deref() == Some(copy_key.as_str());
+        let raw = output.to_owned();
+        let copy_id = item.id.clone();
+        let owner = item.id.clone();
+        let displayed_count = preview.text.lines().count();
+        let number_width = lines
+            .iter()
+            .filter_map(|line| line.number)
+            .max()
+            .map_or(3, |n| n.to_string().len() + 1)
+            .max(3) as f32;
+        let has_numbers = !failed
+            && lines
+                .iter()
+                .take(displayed_count)
+                .any(|line| line.number.is_some());
+        let name = format!("tool-output:{}", item.id);
+        let range_label = semantic.and_then(|s| s.range.as_ref()).map(|range| {
+            let end = range.end.map(|end| {
+                if lines.is_empty() {
+                    end
+                } else {
+                    end.min(range.start.saturating_add(lines.len() as u64 - 1))
+                }
+            });
+            match end {
+                Some(end) if end > range.start => format!("L{}–{end}", range.start),
+                _ => format!("L{}", range.start),
+            }
+        });
+        div()
+            .id(id(format!("output-block:{}", item.id)))
+            .relative()
+            .cursor_text()
+            .w_full()
+            .min_w_0()
+            .rounded(px(4.0))
+            .overflow_hidden()
+            .border_1()
+            .border_color(rgb(look.colors.divider))
+            .bg(rgb(look.colors.panel))
+            .py(ui_text::space(6.0))
+            .px(ui_text::space(8.0))
+            .font_family(ui_text::code_family())
+            .text_size(ui_text::text(11.5))
+            .line_height(gpui::relative(1.45))
+            .text_color(rgb(look.colors.text))
+            .child(
+                div()
+                    .id(id(format!("excerpt-header:{}", item.id)))
+                    .h(ui_text::space(18.0))
+                    .mb(ui_text::space(4.0))
+                    .pr(ui_text::space(48.0))
+                    .flex()
+                    .items_center()
+                    .gap(ui_text::space(4.0))
+                    .text_size(ui_text::text(11.0))
+                    .text_color(rgb(look.colors.muted))
+                    .child(div().min_w_0().truncate().child(self.selectable(
+                        &format!("file-header:{}", item.id),
+                        self.file_container_label(target),
+                        Vec::new(),
+                        vec![(
+                            0..self.file_container_label(target).len(),
+                            target.to_owned(),
+                        )],
+                        look,
+                        cx,
+                    )))
+                    .children(
+                        range_label.map(|label| div().flex_none().child(format!("· {label}"))),
+                    )
+                    .when(!lines.is_empty(), |header| {
+                        header.child(format!("· {} lines", lines.len()))
+                    })
+                    .test_support(),
+            )
+            .when(running, |container| {
+                container.child(div().text_color(rgb(look.colors.muted)).child("Reading…"))
+            })
+            .when(!running && !preview.text.is_empty(), |container| {
+                container.child(
+                    self.scroller(&name).attach(
+                        div()
+                            .id(id(name.clone()))
+                            .w_full()
+                            .max_h(ui_text::space(320.0))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .children(preview.text.lines().enumerate().map(|(index, text)| {
+                                div()
+                                    .id(id(format!("excerpt-line:{}:{index}", item.id)))
+                                    .w_full()
+                                    .flex()
+                                    .items_start()
+                                    .gap(ui_text::space(8.0))
+                                    .min_h(ui_text::text(11.5) * 1.45)
+                                    .when(failed, |line| line.text_color(rgb(look.error())))
+                                    .when(has_numbers, |line| {
+                                        line.child(
+                                            div()
+                                                .id(id(format!(
+                                                    "excerpt-gutter:{}:{index}",
+                                                    item.id
+                                                )))
+                                                .flex_none()
+                                                .w(ui_text::text(11.0) * 0.62 * number_width)
+                                                .text_size(ui_text::text(11.0))
+                                                .text_align(gpui::TextAlign::Right)
+                                                .text_color(rgb(look.colors.muted))
+                                                .child(
+                                                    lines
+                                                        .get(index)
+                                                        .and_then(|line| line.number)
+                                                        .map(|n| n.to_string())
+                                                        .unwrap_or_default(),
+                                                )
+                                                .test_support(),
+                                        )
+                                    })
+                                    .child(div().flex_1().min_w_0().child(self.selectable(
+                                        &format!("{name}:{index}"),
+                                        text.to_owned(),
+                                        if failed {
+                                            vec![(
+                                                0..text.len(),
+                                                gpui::HighlightStyle {
+                                                    color: Some(rgb(look.error()).into()),
+                                                    ..Default::default()
+                                                },
+                                            )]
+                                        } else {
+                                            Vec::new()
+                                        },
+                                        Vec::new(),
+                                        look,
+                                        cx,
+                                    )))
+                                    .test_support()
+                            }))
+                            .test_support(),
+                    ),
+                )
+            })
+            .when(
+                !running && (preview.omitted > 0 || show_all && compact_omits),
+                |container| {
+                    container.child(self.output_footer(
+                        item,
+                        preview.omitted,
+                        show_all,
+                        true,
+                        look,
+                        cx,
+                    ))
+                },
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(ui_text::space(4.0))
+                    .right(ui_text::space(4.0))
+                    .flex()
+                    .gap(ui_text::space(2.0))
+                    .child(
+                        self.tool_overlay_button(
+                            item,
+                            copy_key,
+                            if copied { "checkmark" } else { "doc.on.doc" },
+                            "Copy file excerpt",
+                            true,
+                            copied,
+                            look,
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            cx.stop_propagation();
+                            view.copy(format!("copy:{copy_id}"), cards::excerpt_copy(&raw), cx);
+                        })),
+                    )
+                    .child(
+                        self.tool_overlay_button(
+                            item,
+                            format!("open-excerpt:{}", item.id),
+                            "arrow.up.right.square",
+                            "Open in viewer",
+                            resolvable,
+                            copied,
+                            look,
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            cx.stop_propagation();
+                            if resolvable && let Some(target) = &open_target {
+                                view.preview_reference(target, Some(&owner), cx);
+                            }
+                        })),
+                    ),
+            )
+            .test_support()
+            .into_any_element()
     }
 
     fn changes_body(
@@ -818,8 +1907,7 @@ impl ChatView {
                             .flex()
                             .items_center()
                             .gap(ui_text::space(8.0))
-                            .px(ui_text::space(10.0))
-                            .py(ui_text::space(4.0))
+                            .h(row_space(24.0))
                             .text_size(ui_text::text(11.0))
                             .when(has_diff && !only_one, |row| {
                                 row.cursor_pointer().hover(move |style| {
@@ -913,28 +2001,77 @@ impl ChatView {
         let raw_key = super::tool_views::raw_key(item);
         if let Some(rich) = rich.as_deref() {
             let show_raw = self.open.contains(&raw_key);
+            // A file read keeps "Open in viewer" beside its structured preview.
+            let open_target =
+                (matches!(rich, crate::chat::tool_output::ToolOutput::FileRead { .. })
+                    && is_file_excerpt(item))
+                .then(|| {
+                    let start = item
+                        .presentation
+                        .semantics
+                        .as_ref()
+                        .and_then(|s| s.range.as_ref())
+                        .map(|range| range.start as usize);
+                    let first_line = cards::numbered_excerpt(output.unwrap_or_default(), start)
+                        .first()
+                        .and_then(|line| line.number)
+                        .or(start);
+                    excerpt_open_target(item, first_line)
+                })
+                .flatten();
+            let resolvable = open_target
+                .as_deref()
+                .is_some_and(|target| self.excerpt_open_available(item, target, cx));
+            let owner = item.id.clone();
             return div()
                 .w_full()
                 .min_w_0()
                 .child(self.rich_tool_body(item, rich, look, cx))
                 .child(
-                    div().px(ui_text::space(10.)).py(ui_text::space(5.)).child(
-                        widgets::button(
-                            SharedString::from(raw_key.clone()),
-                            if show_raw {
-                                "Hide raw input/output"
-                            } else {
-                                "Show raw input/output"
-                            },
-                            None,
-                            look,
+                    div()
+                        .px(ui_text::space(10.))
+                        .py(ui_text::space(5.))
+                        .flex()
+                        .items_center()
+                        .gap(ui_text::space(5.))
+                        .child(
+                            widgets::button(
+                                SharedString::from(raw_key.clone()),
+                                if show_raw {
+                                    "Hide raw input/output"
+                                } else {
+                                    "Show raw input/output"
+                                },
+                                None,
+                                look,
+                            )
+                            .aria_expanded(show_raw)
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    view.toggle(&raw_key, None, cx);
+                                    view.list.remeasure();
+                                },
+                            )),
                         )
-                        .aria_expanded(show_raw)
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.toggle(&raw_key, None, cx);
-                            view.list.remeasure();
+                        .children(open_target.map(|target| {
+                            self.tool_overlay_button(
+                                item,
+                                format!("open-read:{}", item.id),
+                                "arrow.up.right.square",
+                                "Open in viewer",
+                                resolvable,
+                                false,
+                                look,
+                            )
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    cx.stop_propagation();
+                                    if resolvable {
+                                        view.preview_reference(&target, Some(&owner), cx);
+                                    }
+                                },
+                            ))
                         })),
-                    ),
                 )
                 .when(show_raw, |body| {
                     body.child(self.raw_tool_body(item, input, output, look, cx))
@@ -952,62 +2089,66 @@ impl ChatView {
         look: Look,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let colors = look.colors;
+        use crate::chat::model::ToolKind;
+        let semantic = item.presentation.semantics.as_ref();
+        let show_input = semantic
+            .is_none_or(|s| matches!(s.kind, ToolKind::Mcp | ToolKind::Other | ToolKind::Subagent));
         let pretty = cards::input_pretty(input);
-        let mut part = |label: &'static str, text: String, at: usize| {
-            let name = format!("tool-{label}:{}", item.id);
-            div()
-                .w_full()
-                .px(ui_text::space(10.0))
-                .py(ui_text::space(6.0))
-                .when(at > 0, |part| {
-                    part.border_t_1().border_color(rgb(colors.divider))
-                })
-                .child(
-                    div()
-                        .text_size(ui_text::text(10.0))
-                        .text_color(rgb(colors.muted))
-                        .child(widgets::sentence(label, look)),
-                )
-                .child(
-                    self.scroller(&name).attach(
-                        div()
-                            .id(id(name.clone()))
-                            .max_h(ui_text::space(240.0))
-                            .flex()
-                            // Items keep their own height, so what is taller than the box scrolls.
-                            .items_start()
-                            .overflow_scroll()
-                            .text_size(ui_text::text(11.0))
-                            .font_family(ui_text::code_family())
-                            .child(div().flex_none().min_w_full().whitespace_nowrap().child(
-                                self.selectable(&name, text, Vec::new(), Vec::new(), look, cx),
-                            )),
-                    ),
-                )
-        };
-        // The end of what a tool printed is what is read, as for a command.
         let output = output
             .filter(|text| !text.is_empty())
-            .map(|text| cards::clean_output(cards::tail(text, OUTPUT_LINES, OUTPUT_BYTES).0));
-        let input = (!pretty.is_empty()).then(|| {
-            cards::tail(&pretty, OUTPUT_LINES, OUTPUT_BYTES)
-                .0
-                .to_owned()
-        });
-        let output_at = usize::from(input.is_some());
-        let input = input.map(|text| part("input", text, 0));
-        let output = output.map(|text| part("output", text, output_at));
+            .or_else(|| semantic.and_then(|s| s.excerpt.as_deref()))
+            .map(|text| cards::inline_image_output(text, !item.presentation.images.is_empty()))
+            .filter(|text| !text.trim().is_empty());
+        let waiting = item.status == crate::chat::model::ItemStatus::InProgress
+            && item.presentation.images.is_empty();
         div()
             .w_full()
             .flex()
             .flex_col()
-            .children(input)
-            .children(output)
+            .when(show_input && !pretty.is_empty(), |body| {
+                body.child(
+                    div()
+                        .w_full()
+                        .pl(row_space(12.0))
+                        .text_size(ui_text::text(11.5))
+                        .font_family(ui_text::code_family())
+                        .text_color(rgb(look.colors.muted))
+                        .child(self.selectable(
+                            &format!("tool-input:{}", item.id),
+                            cards::clean_output(cards::tail(&pretty, OUTPUT_LINES, OUTPUT_BYTES).0),
+                            Vec::new(),
+                            Vec::new(),
+                            look,
+                            cx,
+                        )),
+                )
+            })
+            .when(
+                is_file_excerpt(item) && (output.is_some() || item.presentation.images.is_empty()),
+                |body| {
+                    body.child(div().pl(text_indent()).child(self.file_excerpt(
+                        item,
+                        output.as_deref().unwrap_or_default(),
+                        look,
+                        cx,
+                    )))
+                },
+            )
+            .when(!is_file_excerpt(item), |body| {
+                body.when(output.is_some() || waiting, |body| {
+                    body.child(div().pl(text_indent()).child(self.output_block(
+                        item,
+                        output.as_deref().unwrap_or_default(),
+                        "tool-output",
+                        None,
+                        look,
+                        cx,
+                    )))
+                })
+            })
             .into_any_element()
     }
 
-    /// The row after the transcript: what the chat is doing, and how the tab reaches it.
     fn footer(&self, look: Look) -> AnyElement {
         use crate::chat::model::ChatState;
         let colors = look.colors;
@@ -1113,22 +2254,6 @@ impl ChatView {
 /// A user message block's corner radius under Native.
 const BUBBLE_RADIUS: f32 = 12.0;
 
-/// A card's surface: Native rounds it like its rows and lets the hairline be its edge.
-fn card_box(look: Look) -> gpui::Div {
-    let colors = look.colors;
-    div()
-        .w_full()
-        .rounded(if look.native {
-            controls::radius(controls::ROW_RADIUS)
-        } else {
-            px(4.0)
-        })
-        .border_1()
-        .border_color(rgb(colors.divider))
-        .bg(rgb(colors.panel))
-        .overflow_hidden()
-}
-
 /// The SF Symbol Native shows before a notice: none for one that only informs.
 fn notice_symbol(level: NoticeLevel) -> Option<&'static str> {
     match level {
@@ -1159,8 +2284,6 @@ fn checklist(
     let colors = look.colors;
     div()
         .w_full()
-        .px(ui_text::space(10.0))
-        .py(ui_text::space(6.0))
         .flex()
         .flex_col()
         .gap(ui_text::space(3.0))
@@ -1265,8 +2388,10 @@ impl ChatView {
             }
         };
         let name = format!("diff:{key}");
-        let wrap_key = format!("wrap-diff:{key}");
-        let wrapped = self.open.contains(&wrap_key);
+        // Diffs wrap unless this file's patch was unwrapped.
+        let wrap_id = format!("wrap-diff:{key}");
+        let unwrap_key = format!("unwrap-diff:{key}");
+        let wrapped = !self.open.contains(&unwrap_key);
         let copy_key = format!("copy-diff:{key}");
         let patch = text.to_owned();
         div()
@@ -1283,13 +2408,13 @@ impl ChatView {
                     .children(self.diff_feedback_action(key, look, cx))
                     .child(
                         widgets::button(
-                            SharedString::from(wrap_key.clone()),
+                            SharedString::from(wrap_id),
                             if wrapped { "Unwrap" } else { "Wrap" },
                             None,
                             look,
                         )
                         .on_click(cx.listener(move |view, _, _, cx| {
-                            view.toggle_output_layout(&wrap_key, cx)
+                            view.toggle_output_layout(&unwrap_key, cx)
                         })),
                     )
                     .child(
@@ -1320,9 +2445,8 @@ impl ChatView {
                         .font_family(ui_text::code_family())
                         .child(
                             div()
-                                .when(!wrapped, |body| body.flex_none())
-                                .when(wrapped, |body| body.flex_1().min_w_0())
-                                .min_w_full()
+                                .when(!wrapped, |body| body.flex_none().min_w_full())
+                                .when(wrapped, |body| body.w_full().min_w_0())
                                 .flex()
                                 .flex_col()
                                 .children(drawn.lines.iter().enumerate().map(
@@ -1341,12 +2465,10 @@ impl ChatView {
                                             LineKind::Context => (colors.text, None),
                                         };
                                         div()
-                                            .min_w_full()
-                                            .flex_none()
+                                            .when(!wrapped, |row| row.min_w_full().flex_none())
+                                            .when(wrapped, |row| row.w_full().min_w_0())
                                             .flex()
                                             .items_start()
-                                            .gap(ui_text::space(8.))
-                                            .px(ui_text::space(10.0))
                                             .text_color(rgb(ink))
                                             .when_some(tint, |row, tint| {
                                                 row.bg(rgb(look.tint(
@@ -1358,28 +2480,32 @@ impl ChatView {
                                                     },
                                                 )))
                                             })
-                                            .child(
-                                                div()
-                                                    .flex_none()
-                                                    .w(ui_text::space(76.))
-                                                    .text_color(rgb(colors.muted))
-                                                    .text_right()
-                                                    .child(format!(
-                                                        "{:>5} {:>5}",
-                                                        drawn.numbers[at]
-                                                            .0
-                                                            .map(|n| n.to_string())
-                                                            .unwrap_or_default(),
-                                                        drawn.numbers[at]
-                                                            .1
-                                                            .map(|n| n.to_string())
-                                                            .unwrap_or_default()
-                                                    )),
-                                            )
+                                            .children({
+                                                let (old, new) = drawn
+                                                    .numbers
+                                                    .get(at)
+                                                    .copied()
+                                                    .unwrap_or_default();
+                                                [old, new].into_iter().map(|number| {
+                                                    div()
+                                                        .flex_none()
+                                                        .w(ui_text::space(30.0))
+                                                        .pr(ui_text::space(6.0))
+                                                        .text_right()
+                                                        .text_color(rgb(colors.muted))
+                                                        .bg(rgb(colors.panel))
+                                                        .child(
+                                                            number
+                                                                .map(|n| n.to_string())
+                                                                .unwrap_or_default(),
+                                                        )
+                                                })
+                                            })
                                             .child(
                                                 div()
                                                     .flex_1()
                                                     .min_w_0()
+                                                    .px(ui_text::space(6.0))
                                                     .when(!wrapped, |line| line.whitespace_nowrap())
                                                     .child(self.selectable(
                                                         &format!("diff:{key}:{at}"),
@@ -1408,5 +2534,88 @@ impl ChatView {
                 ),
             )
             .into_any_element()
+    }
+}
+
+fn precise_duration(milliseconds: u64) -> String {
+    if milliseconds < 60_000 && milliseconds % 1_000 != 0 {
+        format!("{:.1}s", milliseconds as f64 / 1_000.0)
+    } else {
+        cards::duration(milliseconds)
+    }
+}
+
+fn short_output_path(path: &str) -> String {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .take(2)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Where "Open in viewer" opens a read result: its file, at the excerpt's first line.
+fn excerpt_open_target(item: &Item, first_line: Option<usize>) -> Option<String> {
+    let target = item
+        .presentation
+        .semantics
+        .as_ref()
+        .and_then(|s| s.target.as_deref())
+        .unwrap_or_default();
+    super::links::local_target(target).ok().map(|(path, line)| {
+        first_line.map(|n| n as u32).or(line).map_or_else(
+            || path.to_string_lossy().into_owned(),
+            |line| format!("{}:{line}", path.to_string_lossy()),
+        )
+    })
+}
+
+pub(super) fn is_file_excerpt(item: &Item) -> bool {
+    use crate::chat::model::ToolKind;
+    item.presentation
+        .semantics
+        .as_ref()
+        .is_some_and(|semantic| {
+            semantic.kind == ToolKind::Read
+                || (!matches!(semantic.kind, ToolKind::Search | ToolKind::List)
+                    && semantic.target.as_deref().is_some_and(|target| {
+                        !target.ends_with('/') && super::links::shaped(target)
+                    }))
+        })
+}
+
+fn card_box(look: Look) -> gpui::Div {
+    let colors = look.colors;
+    div()
+        .w_full()
+        .rounded(if look.native {
+            controls::radius(controls::ROW_RADIUS)
+        } else {
+            px(4.0)
+        })
+        .border_1()
+        .border_color(rgb(colors.divider))
+        .bg(rgb(colors.panel))
+        .overflow_hidden()
+}
+
+/// The native symbol remains stable across providers; semantic metadata selects it.
+fn kind_symbol(kind: riwork_engine::chat::projection::RowKind) -> &'static str {
+    use riwork_engine::chat::projection::RowKind::*;
+    match kind {
+        Shell => "terminal",
+        Read => "doc.text",
+        Search | WebSearch => "magnifyingglass",
+        List => "folder",
+        WebFetch => "globe",
+        Edit => "pencil",
+        Mcp => "network",
+        Subagent => "person.2",
+        Reasoning => "brain",
+        Plan | Todo => "checklist",
+        Group => "square.stack.3d.up",
+        _ => "circle.grid.2x2",
     }
 }

@@ -50,7 +50,7 @@ pub fn read_chat(home: &Path, chat_id: &str) -> Result<Read, String> {
         .map_err(|error| format!("Cannot read the chat's event log: {error}"))?;
     let mut transcript = Transcript::default();
     for envelope in &envelopes {
-        transcript.apply(&envelope.event);
+        transcript.apply_sequenced(envelope.seq, &envelope.event);
     }
     let mut entries = Vec::new();
     for item in &transcript.items {

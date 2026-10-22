@@ -2,7 +2,6 @@
 //! provider dispatch snapshots remain separate. Nothing in this module sends.
 use super::{
     ChatView, diff,
-    display::Row,
     notices::LocalKey,
     widgets::{self, Look},
 };
@@ -496,15 +495,10 @@ impl ChatView {
         else {
             return;
         };
-        if let Some(turn) = self.model.transcript.items[at].turn_id.as_deref() {
-            self.open.insert(super::display::activity_key(turn));
-        }
-        self.refresh_projection(cx);
-        if let Some(row) = self
-            .visible
-            .iter()
-            .position(|row| matches!(row, Row::Item(index) | Row::Details(index) if *index == at))
-        {
+        // Open its turn's activity (and any closed group around it) to bring the row back.
+        let id = self.model.transcript.items[at].id.clone();
+        self.reveal_projected_item(&id, cx);
+        if let Some(row) = self.list_rows.iter().position(|entry| entry.row.id == id) {
             self.find.cancel_reveal();
             self.list.set_follow_mode(gpui::FollowMode::Normal);
             self.list.scroll_to(ListOffset {

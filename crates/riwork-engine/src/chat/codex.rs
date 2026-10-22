@@ -709,6 +709,8 @@ impl Session {
             }
         }
         let item = Item {
+            started_at: None,
+            ended_at: None,
             presentation: Default::default(),
             id,
             turn_id,
@@ -791,6 +793,7 @@ impl Session {
             self.interrupting = false;
             self.emit(ChatEvent::TurnStarted {
                 turn_id: turn_id.to_owned(),
+                started_at: None,
             });
         }
         if let (Some(thread), Some(turn)) = (self.thread_id.clone(), self.turn.clone()) {
@@ -1006,6 +1009,7 @@ impl Session {
         self.emit(ChatEvent::TurnCompleted {
             turn_id: turn_id.to_owned(),
             outcome,
+            ended_at: None,
         });
         // Messages that came too late to steer start the next turn.
         let queued = std::mem::take(&mut self.queued);
@@ -1086,6 +1090,7 @@ impl Session {
             self.emit(ChatEvent::TurnCompleted {
                 turn_id: turn,
                 outcome: TurnOutcome::Interrupted,
+                ended_at: None,
             });
         }
         if !matches!(self.state, ChatState::Failed { .. }) {
@@ -1105,6 +1110,7 @@ impl Session {
                 outcome: TurnOutcome::Failed {
                     message: message.clone(),
                 },
+                ended_at: None,
             });
         }
         self.set_state(ChatState::Failed { message });
@@ -1750,6 +1756,11 @@ impl Codex {
         let RequestKind::Question { ids } = &open.kind else {
             return Ok(());
         };
+        let answer_summary = answers
+            .iter()
+            .map(|answer| answer.join(", "))
+            .collect::<Vec<_>>()
+            .join("; ");
         let mut answers = answers.into_iter();
         let by_question: serde_json::Map<String, Value> = ids
             .iter()
@@ -1763,6 +1774,7 @@ impl Codex {
         self.with(|session| {
             session.emit(ChatEvent::QuestionResolved {
                 request_id: open.request_id.clone(),
+                answer_summary: Some(answer_summary),
             });
             session.refresh_state();
         });
@@ -1893,6 +1905,10 @@ impl Codex {
                     session.emit(ChatEvent::QuestionRequested {
                         question: Question {
                             request_id,
+                            item_id: params["itemId"]
+                                .as_str()
+                                .filter(|id| !id.is_empty())
+                                .map(str::to_owned),
                             questions: prompts,
                         },
                     });
@@ -2124,6 +2140,8 @@ impl Session {
                     self.file_changes.insert(id.to_owned(), changes.clone());
                     self.emit(ChatEvent::ItemStarted {
                         item: Item {
+                            started_at: None,
+                            ended_at: None,
                             presentation: Default::default(),
                             id: id.to_owned(),
                             turn_id,
@@ -2137,6 +2155,8 @@ impl Session {
                 if let Some(turn) = turn_id {
                     self.emit(ChatEvent::ItemStarted {
                         item: Item {
+                            started_at: None,
+                            ended_at: None,
                             presentation: Default::default(),
                             id: format!("plan-{turn}"),
                             turn_id: Some(turn),
@@ -2200,9 +2220,10 @@ impl Session {
                 if let Some(at) = self.requests.iter().position(|open| open.request_id == id) {
                     let open = self.requests.remove(at);
                     self.emit(match open.kind {
-                        RequestKind::Question { .. } => {
-                            ChatEvent::QuestionResolved { request_id: id }
-                        }
+                        RequestKind::Question { .. } => ChatEvent::QuestionResolved {
+                            request_id: id,
+                            answer_summary: None,
+                        },
                         _ => ChatEvent::ApprovalResolved {
                             request_id: id,
                             decision: Decision::Cancel,
@@ -2350,6 +2371,8 @@ impl Session {
         if !std::mem::replace(&mut streamed.started, true) {
             self.emit(ChatEvent::ItemStarted {
                 item: Item {
+                    started_at: None,
+                    ended_at: None,
                     presentation: Default::default(),
                     id: id.to_owned(),
                     turn_id: params["turnId"].as_str().map(str::to_owned),
@@ -2421,7 +2444,10 @@ impl Session {
             }
             _ => None,
         };
+        presentation.semantics = codex_semantics(item, &body);
         let item = Item {
+            started_at: None,
+            ended_at: None,
             presentation,
             id: id.to_owned(),
             turn_id,
@@ -2745,6 +2771,39 @@ fn convert_item(item: &Value, done: bool) -> Option<(ItemBody, ItemStatus)> {
         _ => return None,
     };
     Some((body, status))
+}
+
+/// Preserve provider discriminators before conversion erases them. Child-thread
+/// ingestion remains deferred: collab rows carry known metadata, never invented children.
+fn codex_semantics(item: &Value, body: &ItemBody) -> Option<super::model::Semantics> {
+    use super::model::{Semantics, ToolKind, Worker};
+    match item["type"].as_str() {
+        Some("mcpToolCall") => Some(Semantics {
+            kind: ToolKind::Mcp,
+            ..super::semantics::classify_body(body).unwrap_or_default()
+        }),
+        Some("collabAgentToolCall") => {
+            let objective = ["prompt", "objective", "message"]
+                .into_iter()
+                .find_map(|key| item[key].as_str())
+                .map(str::to_owned);
+            Some(Semantics {
+                kind: ToolKind::Subagent,
+                target: objective.clone(),
+                worker: Some(Worker {
+                    role: item["agentType"]
+                        .as_str()
+                        .or_else(|| item["role"].as_str())
+                        .map(str::to_owned),
+                    objective,
+                    // Receiver thread IDs are not captured child tool calls.
+                    child_count: None,
+                }),
+                ..Default::default()
+            })
+        }
+        _ => super::semantics::classify_body(body),
+    }
 }
 
 fn search_query(item: &Value) -> String {

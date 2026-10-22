@@ -3,7 +3,10 @@
 //! chat. Keys go through the same bindings `main` makes and Kit's own, by native dispatch;
 //! frames that a reveal waits for are delivered with `simulate_next_frame`.
 use super::*;
-use crate::chat::model::{Item, ItemStatus, Presentation};
+use crate::chat::{
+    model::{ChatEvent, Item, ItemStatus, Presentation},
+    wire::Envelope,
+};
 use gpui::{App, ClipboardItem, KeyBinding, TestAppContext, WindowHandle, point};
 use gpui_kit::{base::Root, test::TestWindowExt};
 use std::ops::Range;
@@ -14,6 +17,8 @@ fn message(id: &str, text: &str) -> Item {
     Item {
         id: id.into(),
         turn_id: Some(format!("fixture-turn:{id}")),
+        started_at: None,
+        ended_at: None,
         status: ItemStatus::Completed,
         presentation: Presentation {
             phase: Some(crate::chat::model::MessagePhase::Final),
@@ -71,8 +76,18 @@ fn mount(cx: &mut TestAppContext, items: Vec<Item>) -> (Handle, Entity<ChatView>
 fn install(cx: &mut TestAppContext, handle: Handle, view: &Entity<ChatView>, items: Vec<Item>) {
     act(cx, handle, |window, cx| {
         view.update(cx, |v, cx| {
+            v.model = state::ChatModel::new();
             v.model.link = Link::Live;
-            v.model.transcript.items = items;
+            let events: Vec<_> = items
+                .into_iter()
+                .enumerate()
+                .map(|(at, item)| Envelope {
+                    chat_id: "fixture-chat".into(),
+                    seq: at as u64 + 1,
+                    event: ChatEvent::ItemCompleted { item },
+                })
+                .collect();
+            v.model.apply(&events);
             v.refresh_projection(cx);
             v.list.remeasure();
             cx.notify();
@@ -526,8 +541,13 @@ fn a_match_already_in_view_does_not_scroll_and_a_new_query_starts_from_the_view(
     let (handle, view) = mount(cx, long_chat(31));
     act(cx, handle, |_, cx| {
         view.update(cx, |v, cx| {
+            let row = v
+                .list_rows
+                .iter()
+                .position(|entry| entry.row.id == "long-20")
+                .expect("message has a projected row");
             v.list.scroll_to(gpui::ListOffset {
-                item_ix: 20,
+                item_ix: row,
                 offset_in_item: px(0.),
             });
             cx.notify();
@@ -535,7 +555,7 @@ fn a_match_already_in_view_does_not_scroll_and_a_new_query_starts_from_the_view(
     });
     let before = scroll_top(cx, &view);
     press(cx, handle, "cmd-f");
-    // Every row says "rowNN"; the first at or below the top of the view is row 20's.
+    // Every message says "rowNN"; the first at or below the top of the view is message 20's.
     type_text(cx, handle, "row");
     assert_eq!(status(cx, &view), (Some(21), 40));
     assert_eq!(
@@ -684,20 +704,22 @@ fn streaming_content_updates_the_matches_without_moving_the_view(cx: &mut TestAp
     assert!(before.0 > 0, "{before:?}");
     act(cx, handle, |window, cx| {
         view.update(cx, |v, cx| {
-            let items = &mut v.model.transcript.items;
-            items.push(message("late", "row0 again"));
-            items[0].body = ItemBody::AgentMessage {
+            let mut earlier = v.model.transcript.items[0].clone();
+            earlier.body = ItemBody::AgentMessage {
                 text: "row00 then row0 twice".into(),
             };
-            v.sync_list(
-                &Applied {
-                    appended: 1,
-                    touched: [0].into_iter().collect(),
-                    projection_changed: true,
-                    ..Default::default()
-                },
-                cx,
-            );
+            let next = v.model.last_seq + 1;
+            let events = [earlier, message("late", "row0 again")]
+                .into_iter()
+                .enumerate()
+                .map(|(at, item)| Envelope {
+                    chat_id: "fixture-chat".into(),
+                    seq: next + at as u64,
+                    event: ChatEvent::ItemCompleted { item },
+                })
+                .collect::<Vec<_>>();
+            let applied = v.model.apply(&events);
+            v.sync_list(&applied, cx);
             cx.notify();
         });
         window.render_frame(cx);
@@ -927,6 +949,8 @@ fn escape_closing_a_menu_from_the_find_field_leaves_the_keys_there(cx: &mut Test
 
 fn command(id: &str, turn: &str, output: &str) -> Item {
     Item {
+        started_at: None,
+        ended_at: None,
         id: id.into(),
         turn_id: Some(turn.into()),
         status: ItemStatus::Completed,

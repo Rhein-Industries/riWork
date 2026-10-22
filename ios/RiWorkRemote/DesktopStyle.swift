@@ -206,6 +206,25 @@ struct TargetButtonStyle: ButtonStyle {
     }
 }
 
+/// Keeps a bar's leading controls clear of the window's own controls (iPadOS 26: close, minimize and tile in a window's top-leading
+/// corner, when the app runs in a resizable window). Full screen, on iPhone and before iOS 26 the corner has nothing in it and nothing
+/// moves.
+private struct WindowControlsClearance: ViewModifier {
+    @State private var leading: CGFloat = 0
+    func body(content: Content) -> some View {
+        content.padding(.leading, leading)
+            // Measured outside the padding, so the padding cannot feed back into it.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                if #available(iOS 26.0, *) { max(0, proxy.containerCornerInsets.topLeading.width) } else { 0 }
+            } action: { leading = $0 }
+    }
+}
+
+extension View {
+    /// See `WindowControlsClearance`; for a bar at the top of the window.
+    func clearsWindowControls() -> some View { modifier(WindowControlsClearance()) }
+}
+
 struct DesktopRule: View {
     @Environment(\.desktopStyle) private var style
     var body: some View { Rectangle().fill(style.divider).frame(height: 1).accessibilityHidden(true) }
@@ -232,7 +251,7 @@ struct WorkspaceBar<Actions: View>: View {
                 Spacer(minLength: 4)
                 // Each control on its own glass; a container lets neighbours run together as one group.
                 NativeGlassGroup(style: style) { actions().buttonStyle(DesktopButtonStyle(compact: compact)).nativeGlass(style, in: Capsule()) }
-            }.padding(.horizontal, compact ? 6 : 10).padding(.vertical, style.glass ? 4 : 0).frame(minHeight: style.pt(compact ? 40 : 44))
+            }.padding(.horizontal, compact ? 6 : 10).clearsWindowControls().padding(.vertical, style.glass ? 4 : 0).frame(minHeight: style.pt(compact ? 40 : 44))
                 .background(style.glass ? style.surface : style.panel)
             if !style.glass { DesktopRule() }
         }
@@ -244,7 +263,7 @@ struct WorkspaceBar<Actions: View>: View {
                 Text(title).font(style.mono(13, bold: true, relativeTo: .headline)).lineLimit(1).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 4)
                 actions().buttonStyle(DesktopButtonStyle(compact: compact))
-            }.padding(.horizontal, compact ? 4 : 8).frame(minHeight: style.pt(compact ? 40 : 44)).background(style.panel)
+            }.padding(.horizontal, compact ? 4 : 8).clearsWindowControls().frame(minHeight: style.pt(compact ? 40 : 44)).background(style.panel)
             DesktopRule()
         }
     }

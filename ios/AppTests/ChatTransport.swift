@@ -277,8 +277,11 @@ actor ChatTransport: RemoteTransport {
                 created += 1
                 let provider = ChatProvider(rawValue: params["provider"]?.string ?? "codex") ?? .codex
                 let mode = ChatApprovalMode(rawValue: params["approval_mode"]?.string ?? "") ?? .supervised
+                let contributorMode = ChatContributorMode(rawValue: params["contributor_mode"]?.string ?? "") ?? .off
                 let info = ChatInfo(id: String(format: "cccccccc-0000-4000-8000-%012d", created), provider: provider, projectID: params["project_id"]?.string, worktreeID: params["worktree_id"]?.string,
-                                    cwd: "/fixture", title: provider.chatTitle, createdAtUnix: 100 + UInt64(created), approvalMode: mode, state: .starting)
+                                    cwd: "/fixture", title: provider.chatTitle, createdAtUnix: 100 + UInt64(created),
+                                    contributorMode: contributorMode, contributorOptOut: params["contributor_opt_out"] == .bool(true),
+                                    approvalMode: mode, state: .starting)
                 chats.append(info)
                 return .object(["chat": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(info))])
             }
@@ -414,13 +417,13 @@ actor ChatTransport: RemoteTransport {
             if let usage = transcript.usage { controls.append(.usage(usage)) }
             // As the relay does: usage windows only for a request that opts in (`features: ["rate_limits"]`).
             if !transcript.rateLimits.isEmpty, Self.optsIn(params) { controls.append(.rateLimits(transcript.rateLimits)) }
-            if let turn = transcript.turnID { controls.append(.turnStarted(turnID: turn)) }
+            if let turn = transcript.turnID { controls.append(.turnStarted(turnID: turn, startedAt: transcript.turnTiming[turn]?.startedAt)) }
             controls += transcript.approvals.map { .approvalRequested($0) }
             controls += transcript.questions.map { .questionRequested($0) }
         }
         let page = ChatSnapshotReply(chatID: id, cursor: String(next), next: UInt64(next), before: items.first.map { orders[$0.id]! } ?? 0,
             more: requested == nil && rows.count > items.count, items: items.map { ChatSnapshotRow(order: orders[$0.id]!, item: $0) }, controls: controls,
-            dismissedNotices: params["cursor"] == nil ? dismissedNoticeKeys : [])
+            dismissedNotices: params["cursor"] == nil ? dismissedNoticeKeys : [], turnTiming: transcript.turnTiming)
         let encoded = try JSONEncoder().encode(page)
         if resourceLimits, encoded.count > 120_000 { throw RemoteError.rpc(code: "snapshot_limit", message: "snapshot response limit exceeded") }
         return try JSONDecoder().decode(JSONValue.self, from: encoded)

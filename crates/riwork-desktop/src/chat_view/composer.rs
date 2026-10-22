@@ -45,29 +45,35 @@ pub fn escape(empty: bool, offered: &[Decision]) -> Option<Decision> {
     }
 }
 
-/// The line under the message box while a dictation works: what it is doing. Nothing at
-/// rest, and nothing while the mic is hidden (`mic`): the box carries no helper text, its keys
-/// are in the buttons' tooltips.
-pub fn status(dictation: &Phase, mic: bool) -> Option<String> {
-    if !mic {
-        return None;
-    }
-    let key = dictation::SHORTCUT_LABEL;
+/// Non-hover status for the field's absolute overlay and the mic's accessibility label.
+pub fn speech_status(dictation: &Phase) -> Option<String> {
     match dictation {
         Phase::Preparing { note: Some(note) } => Some(note.clone()),
-        Phase::Preparing { note: None } => Some("Getting the microphone ready…".to_owned()),
-        Phase::Listening { .. } => Some(format!(
-            "Listening, recognized on this Mac · {key} or the mic stops · ⎋ cancels"
-        )),
-        Phase::Finishing { .. } => Some("Finishing what was heard…".to_owned()),
+        Phase::Preparing { note: None } => Some("Preparing microphone…".into()),
+        Phase::Listening { .. } => Some("Listening · Enter sends".into()),
+        Phase::Finishing { .. } => Some("Finishing… · Enter sends".into()),
         Phase::Idle | Phase::Failed(_) => None,
+    }
+}
+
+/// Stop/start shortcuts remain available in the tooltip too.
+pub fn mic_tooltip(dictation: &Phase) -> String {
+    let key = dictation::SHORTCUT_LABEL;
+    match dictation {
+        Phase::Preparing { note: Some(note) } => note.clone(),
+        Phase::Preparing { note: None } => "Getting the microphone ready…".to_owned(),
+        Phase::Listening { .. } => format!("Stop dictating and keep words · {key} or ⎋ · ⏎ sends"),
+        Phase::Finishing { .. } => "Finishing what was heard…".to_owned(),
+        Phase::Idle => format!("Dictate · {key}"),
+        Phase::Failed(_) => format!("Dictate again · {key}"),
     }
 }
 
 /// The chat header's inset from the tab's sides and the gap between its controls, in design
 /// points.
-pub const BAR_INSET: f32 = 10.0;
-pub const BAR_GAP: f32 = 6.0;
+pub(crate) use crate::controls::{
+    DESKTOP_TOOLBAR_GAP as BAR_GAP, DESKTOP_TOOLBAR_INSET as BAR_INSET,
+};
 /// The message box card's inset from the pane's sides and bottom, its padding and the gap
 /// between its pieces, in design points. The bars above it (a notice, a request, a question)
 /// keep the same inset, so the bottom of the chat reads as one column of cards.

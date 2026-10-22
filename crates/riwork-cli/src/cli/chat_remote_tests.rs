@@ -50,6 +50,8 @@ fn usage_event(tokens: u64) -> ChatEvent {
 fn message_event(text: &str) -> ChatEvent {
     ChatEvent::ItemCompleted {
         item: Item {
+            started_at: None,
+            ended_at: None,
             presentation: Default::default(),
             id: "agent-x".into(),
             turn_id: None,
@@ -498,6 +500,8 @@ fn an_event_too_big_for_a_page_keeps_a_sequence_slot_with_cut_text_or_the_existi
         (0..3000).map(|n| (format!("key{n}"), json!("v"))).collect();
     let hopeless = ChatEvent::ItemCompleted {
         item: Item {
+            started_at: None,
+            ended_at: None,
             presentation: Default::default(),
             id: "tool-1".into(),
             turn_id: None,
@@ -1130,6 +1134,8 @@ fn remote_shrink_preserves_small_images_and_marks_large_images_unavailable() {
 fn complete_event_pages_elide_oversized_events_and_keep_sequence_slots() {
     let event = ChatEvent::ItemCompleted {
         item: crate::chat::model::Item {
+            started_at: None,
+            ended_at: None,
             id: "large".into(),
             turn_id: None,
             status: crate::chat::model::ItemStatus::Completed,
@@ -1186,6 +1192,8 @@ fn snapshot_is_read_only_without_a_host_or_an_ensure_call() {
 #[test]
 fn bounded_recovery_represents_bodies_and_never_shortens_or_skips_controls() {
     let item = Item {
+        started_at: None,
+        ended_at: None,
         id: "stable".into(),
         turn_id: Some("turn".into()),
         status: ItemStatus::Completed,
@@ -1233,6 +1241,8 @@ fn bounded_recovery_represents_bodies_and_never_shortens_or_skips_controls() {
 #[test]
 fn bounded_body_placeholder_says_full_text_is_on_the_mac_and_keeps_identity() {
     let item = Item {
+        started_at: None,
+        ended_at: None,
         id: "large-structured-body".into(),
         turn_id: Some("turn".into()),
         status: ItemStatus::Completed,
