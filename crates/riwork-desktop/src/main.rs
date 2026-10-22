@@ -40,6 +40,7 @@ mod nuke_shells;
 mod orchestrator_choice;
 mod orchestrator_wakes;
 mod orchestrators;
+mod pane_layout;
 mod panels;
 mod preview_host;
 mod project_creator;
@@ -10850,7 +10851,10 @@ impl Workspace {
                     cx.stop_propagation();
                 }),
             )
-            .child(div().flex().size_full().min_w_0().min_h_0().child(content))
+            // Laid out at the pane's size, apart from the window's layout (`pane_layout`).
+            .child(pane_layout::laid_out_alone(
+                div().flex().size_full().min_w_0().min_h_0().child(content),
+            ))
             .child(
                 canvas(
                     move |bounds, _, _| measured_body.set(bounds),
@@ -15559,6 +15563,217 @@ mod main_pane_tests {
             });
         });
         (handle, workspace, chats, home, project_id)
+    }
+
+    /// A panel laid out apart from the window still sits in its pane, takes clicks and
+    /// typing where it is drawn, follows its state and scrolls.
+    #[gpui::test]
+    fn a_pane_laid_out_alone_draws_clicks_types_and_scrolls_in_place(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui_kit::test::TestWindowExt as _;
+        let (handle, workspace, _, home, project_id) = strip_workspace(cx, 0);
+        cx.update(|cx| {
+            text_input::init(cx);
+            behavior_controls::init(cx);
+        });
+        let folder: store::ProjectFolder = serde_json::from_value(
+            serde_json::json!({"id":"clients","name":"Clients","created_at":1}),
+        )
+        .unwrap();
+        let mut state = State {
+            project_folders: vec![folder],
+            ..Default::default()
+        };
+        let ids: Vec<String> = (0..40)
+            .map(|p| {
+                if p == 0 {
+                    project_id.clone()
+                } else {
+                    format!("project-{p:02}")
+                }
+            })
+            .collect();
+        for (p, id) in ids.iter().enumerate() {
+            let folder = (p >= 3).then_some("clients");
+            state.projects.push(serde_json::from_value(serde_json::json!({"id":id,"name":format!("Project {p:02}"),"root":home.join(id),"created_at":p,"folder_id":folder})).unwrap());
+        }
+        crate::form_input::test_turn(cx, handle, |window, app| {
+            workspace.update(app, |workspace, cx| {
+                workspace.state = state;
+                let strip = workspace.panes.remove(&1).unwrap();
+                workspace.panes = BTreeMap::from([
+                    (1, pane(vec![panel(1000, PanelKind::Projects)], 0)),
+                    (2, strip),
+                ]);
+                workspace.layout = side(0.3, Layout::Pane(1), Layout::Pane(2));
+                workspace.main_pane = Some(2);
+                workspace.ensure_search_inputs(window, cx);
+            });
+        });
+        let row = |id: &String| format!("project-{id}");
+        let member = row(&ids[3]);
+        let mut lowest = String::new();
+        crate::form_input::test_turn(cx, handle, |window, app| {
+            let header = window.find("project-folder-clients");
+            assert!(header.visible());
+            let width = window.viewport_size().width;
+            let bounds = header.bounds();
+            assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+            assert!(
+                bounds.origin.x >= px(0.) && bounds.right() <= width * 0.3 + px(1.),
+                "the panel stays in its pane: {bounds:?} of {width:?}"
+            );
+            assert!(window.find(member.clone()).visible());
+            lowest = ids
+                .iter()
+                .map(row)
+                .max_by_key(|id| window.find(id.clone()).bounds().origin.y)
+                .unwrap();
+            assert!(!window.find(lowest.clone()).visible(), "below the fold");
+            window.click("project-folder-clients", app);
+        });
+        crate::form_input::test_turn(cx, handle, |window, app| {
+            assert!(
+                workspace
+                    .read(app)
+                    .collapsed_project_folders
+                    .contains("clients")
+            );
+            assert!(
+                window.try_find(member.clone()).is_none(),
+                "the folder folded"
+            );
+            window.click("project-folder-clients", app);
+        });
+        crate::form_input::test_turn(cx, handle, |window, app| {
+            assert!(window.find(member.clone()).visible(), "and opened again");
+            // The wheel over a row scrolls the list it is in.
+            window.scroll(
+                member.clone(),
+                gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-100_000.))),
+                app,
+            );
+        });
+        crate::form_input::test_turn(cx, handle, |window, app| {
+            assert!(window.find(lowest.clone()).visible(), "scrolled to the end");
+            window.click("projects-search-input", app);
+        });
+        // Typing reaches the panel's search field where it is drawn, and the list follows.
+        for character in "Project 05".chars() {
+            let character = character.to_string();
+            crate::form_input::test_turn(cx, handle, |window, app| window.input(&character, app));
+        }
+        crate::form_input::test_turn(cx, handle, |window, app| {
+            assert_eq!(workspace.read(app).search, "Project 05");
+            assert!(window.find(row(&ids[5])).visible());
+            assert!(window.try_find(member.clone()).is_none());
+        });
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// What a redraw of a busy project window costs: a Projects sidebar over many projects
+    /// beside a strip of chats. Run with `--ignored --nocapture`. `RIWORK_FRAME_PROJECTS`,
+    /// `_WORKTREES` (of the shown project), `_TABS`, `_SIDEBAR` (`worktrees`, `shells`,
+    /// `tasks`) and `_MAIN=project_settings` shape the window; `RIWORK_FRAME_SECONDS`
+    /// keeps drawing that long, for a profiler to sample.
+    #[gpui::test]
+    #[ignore]
+    fn measure_a_busy_workspace_frame(cx: &mut gpui::TestAppContext) {
+        use gpui_kit::test::TestWindowExt as _;
+        let knob = |name: &str, default: usize| {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(default)
+        };
+        let (handle, workspace, _, home, project_id) =
+            strip_workspace(cx, knob("RIWORK_FRAME_TABS", 24));
+        cx.update(|cx| {
+            text_input::init(cx);
+            behavior_controls::init(cx);
+        });
+        let mut state = State::default();
+        let projects = knob("RIWORK_FRAME_PROJECTS", 120).max(1);
+        for p in 0..projects {
+            let id = if p == 0 {
+                project_id.clone()
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            };
+            let root = home.join(format!("project-{p}"));
+            state.projects.push(serde_json::from_value(serde_json::json!({"id":id,"name":format!("Project {p}"),"root":root,"created_at":p})).unwrap());
+            for w in 0..if p == 0 {
+                knob("RIWORK_FRAME_WORKTREES", 3)
+            } else {
+                3
+            } {
+                state.worktrees.push(serde_json::from_value(serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"project_id":id,"branch":format!("branch-{w}"),"path":root.join(format!("w{w}")),"is_primary":w == 0,"created_at":w})).unwrap());
+            }
+            for t in 0..4 {
+                state.tasks.push(serde_json::from_value(serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"project_id":id,"title":format!("Task {t}"),"status":"todo","created_at":t,"updated_at":t})).unwrap());
+            }
+        }
+        let shells: Vec<ShellSession> = (0..40)
+            .map(|s| {
+                let mut shell: ShellSession = serde_json::from_value(serde_json::json!({"id":uuid::Uuid::new_v4().to_string(),"project_id":state.projects[s % projects].id,"kind":"project","cwd":"/tmp","command":null,"harness":"claude","created_at_unix":s})).unwrap();
+                shell.alive = true;
+                shell
+            })
+            .collect();
+        let sidebar = match std::env::var("RIWORK_FRAME_SIDEBAR").as_deref() {
+            Ok("worktrees") => PanelKind::Worktrees,
+            Ok("shells") => PanelKind::Shells,
+            Ok("tasks") => PanelKind::Tasks,
+            _ => PanelKind::Projects,
+        };
+        workspace.update(cx, |workspace, _| {
+            workspace.state = state;
+            workspace.shells = shells;
+            let strip = workspace.panes.remove(&1).unwrap();
+            workspace.panes =
+                BTreeMap::from([(1, pane(vec![panel(1000, sidebar)], 0)), (2, strip)]);
+            workspace.layout = side(0.27, Layout::Pane(1), Layout::Pane(2));
+            workspace.main_pane = Some(2);
+        });
+        if std::env::var("RIWORK_FRAME_MAIN").as_deref() == Ok("project_settings") {
+            crate::form_input::test_turn(cx, handle, |window, app| {
+                workspace.update(app, |workspace, cx| {
+                    workspace.ensure_project_settings(window, cx);
+                    let main = workspace.panes.get_mut(&2).unwrap();
+                    main.tabs.push(panel(2000, PanelKind::ProjectSettings));
+                    main.active = main.tabs.len() - 1;
+                });
+            });
+        }
+        let draw = |cx: &mut gpui::TestAppContext| {
+            cx.update_window(handle, |_, window, app| {
+                let started = Instant::now();
+                window.render_frame(app);
+                started.elapsed()
+            })
+            .unwrap()
+        };
+        for _ in 0..3 {
+            draw(cx);
+        }
+        let seconds: u64 = std::env::var("RIWORK_FRAME_SECONDS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        let until = Instant::now() + Duration::from_secs(seconds);
+        let mut frames = Vec::new();
+        while frames.len() < 41 || Instant::now() < until {
+            frames.push(draw(cx));
+        }
+        frames.sort();
+        eprintln!(
+            "busy workspace frame: median {:?}, p90 {:?} over {} frames",
+            frames[frames.len() / 2],
+            frames[frames.len() * 9 / 10],
+            frames.len()
+        );
+        let _ = std::fs::remove_dir_all(home);
     }
 
     fn strip_tab_id(
