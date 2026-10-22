@@ -601,17 +601,20 @@ fn long_chat_streaming_costs(cx: &mut TestAppContext) {
             },
         ),
     }));
-    // Only the fold and list bookkeeping: the test window draws once the update
-    // returns, which `frame` measures separately.
+    // The fold and list bookkeeping alone, and with the draw that follows it: the
+    // test window draws as the update returns, as the app draws the next frame.
     let accept = |cx: &mut TestAppContext, events: Vec<Envelope>| {
-        cx.update_window(handle, |_, window, cx| {
-            view.update(cx, |view, cx| {
-                let started = Instant::now();
-                view.accept(vec![feed::FeedMsg::Events(events)], window, cx);
-                started.elapsed().as_secs_f64() * 1000.
+        let started = Instant::now();
+        let fold = cx
+            .update_window(handle, |_, window, cx| {
+                view.update(cx, |view, cx| {
+                    let started = Instant::now();
+                    view.accept(vec![feed::FeedMsg::Events(events)], window, cx);
+                    started.elapsed().as_secs_f64() * 1000.
+                })
             })
-        })
-        .unwrap()
+            .unwrap();
+        (fold, started.elapsed().as_secs_f64() * 1000.)
     };
     let frame = |cx: &mut TestAppContext| {
         let started = Instant::now();
@@ -619,15 +622,15 @@ fn long_chat_streaming_costs(cx: &mut TestAppContext) {
             .unwrap();
         started.elapsed().as_secs_f64() * 1000.
     };
-    let median = |mut samples: Vec<f64>| {
-        samples.sort_by(f64::total_cmp);
-        samples[samples.len() / 2]
+    let median = |samples: &[(f64, f64)], pick: fn(&(f64, f64)) -> f64| {
+        let mut values: Vec<_> = samples.iter().map(pick).collect();
+        values.sort_by(f64::total_cmp);
+        values[values.len() / 2]
     };
-    let load_ms = accept(cx, events);
+    let (load_ms, _) = accept(cx, events);
     frame(cx);
     // A tool call starting and completing in the live turn: projection work.
     let mut item_ms = Vec::new();
-    let mut item_frame_ms = Vec::new();
     for c in 0..30 * repeat {
         let call = item(
             format!("c-live-{c}"),
@@ -646,16 +649,13 @@ fn long_chat_streaming_costs(cx: &mut TestAppContext) {
             cx,
             vec![envelope(ChatEvent::ItemStarted { item: call })],
         ));
-        item_frame_ms.push(frame(cx));
         item_ms.push(accept(
             cx,
             vec![envelope(ChatEvent::ItemCompleted { item: done })],
         ));
-        item_frame_ms.push(frame(cx));
     }
     // Text streaming into the live answer.
     let mut delta_ms = Vec::new();
-    let mut delta_frame_ms = Vec::new();
     for n in 0..200 * repeat {
         let event = if n == 0 {
             ChatEvent::ItemStarted {
@@ -679,7 +679,6 @@ fn long_chat_streaming_costs(cx: &mut TestAppContext) {
             }
         };
         delta_ms.push(accept(cx, vec![envelope(event)]));
-        delta_frame_ms.push(frame(cx));
     }
     // Idle frames scrolled into history, where completed answers are drawn.
     view.update(cx, |view, cx| {
@@ -692,9 +691,9 @@ fn long_chat_streaming_costs(cx: &mut TestAppContext) {
     let mut idle_frame_ms = Vec::new();
     for _ in 0..30 * repeat {
         view.update(cx, |_, cx| cx.notify());
-        idle_frame_ms.push(frame(cx));
+        idle_frame_ms.push((0., frame(cx)));
     }
-    let completed_ms = accept(
+    let (completed_ms, _) = accept(
         cx,
         vec![envelope(ChatEvent::TurnCompleted {
             turn_id: live.clone(),
@@ -705,14 +704,14 @@ fn long_chat_streaming_costs(cx: &mut TestAppContext) {
     let rows = view.read_with(cx, |view, _| view.items_in_list);
     eprintln!(
         "long chat ({TURNS} turns, {rows} list rows): load={load_ms:.1} ms; \
-         item event median={:.3} ms; item frame median={:.3} ms; \
-         text delta median={:.3} ms; delta frame median={:.3} ms; \
-         idle history frame median={:.3} ms; turn completed={completed_ms:.3} ms",
-        median(item_ms),
-        median(item_frame_ms),
-        median(delta_ms),
-        median(delta_frame_ms),
-        median(idle_frame_ms),
+         item event median fold={:.3} ms, drawn={:.3} ms; \
+         text delta median fold={:.3} ms, drawn={:.3} ms; \
+         idle history frame median={:.3} ms; turn completed fold={completed_ms:.3} ms",
+        median(&item_ms, |s| s.0),
+        median(&item_ms, |s| s.1),
+        median(&delta_ms, |s| s.0),
+        median(&delta_ms, |s| s.1),
+        median(&idle_frame_ms, |s| s.1),
     );
     let _ = std::fs::remove_dir_all(home);
 }

@@ -22,10 +22,10 @@ pub(super) struct ListRow {
 pub(super) fn list_rows(rows: &[Row]) -> Vec<ListRow> {
     fn append(rows: &[Row], depth: usize, out: &mut Vec<ListRow>) {
         for row in rows {
-            let mut leaf = row.clone();
-            leaf.children.clear();
-            leaf.comments.clear();
-            out.push(ListRow { row: leaf, depth });
+            out.push(ListRow {
+                row: leaf(row),
+                depth,
+            });
             if row.open {
                 append(&row.children, depth + 1, out);
             }
@@ -35,6 +35,46 @@ pub(super) fn list_rows(rows: &[Row]) -> Vec<ListRow> {
     let mut out = Vec::new();
     append(rows, 0, &mut out);
     out
+}
+
+/// A row without its children and comments, which are list entries of their own.
+/// Cloning the whole row first copied every subtree once for each of its ancestors.
+/// Every field is named, so a new one cannot be left out silently.
+fn leaf(row: &Row) -> Row {
+    let Row {
+        id,
+        kind,
+        title,
+        target,
+        open,
+        children: _,
+        comments: _,
+        artifacts,
+        failed_count,
+        running,
+        duration_ms,
+        current_label,
+        request_id,
+        provisional,
+        elided,
+    } = row;
+    Row {
+        id: id.clone(),
+        kind: *kind,
+        title: title.clone(),
+        target: target.clone(),
+        open: *open,
+        children: Vec::new(),
+        comments: Vec::new(),
+        artifacts: artifacts.clone(),
+        failed_count: *failed_count,
+        running: *running,
+        duration_ms: *duration_ms,
+        current_label: current_label.clone(),
+        request_id: request_id.clone(),
+        provisional: *provisional,
+        elided: *elided,
+    }
 }
 
 /// A plan reads as a document: its row starts open in both modes, and the plan
@@ -215,6 +255,64 @@ pub(super) fn activity_title(
 mod tests {
     use super::*;
     use crate::chat::model::{ChatImage, ImageSource, Item, ItemStatus, MessagePhase};
+
+    #[test]
+    fn list_entries_are_the_rows_without_their_descendants() {
+        let row = |id: &str, open: bool, children: Vec<Row>, comments: Vec<Row>| Row {
+            id: id.into(),
+            kind: RowKind::Group,
+            title: format!("title {id}"),
+            target: Some(format!("target {id}")),
+            open,
+            children,
+            comments,
+            failed_count: 2,
+            running: true,
+            duration_ms: Some(7),
+            current_label: Some("label".into()),
+            request_id: Some("request".into()),
+            provisional: true,
+            elided: true,
+            ..Row::default()
+        };
+        let tree = vec![row(
+            "group",
+            true,
+            vec![
+                row(
+                    "open",
+                    true,
+                    vec![row("deep", false, vec![], vec![])],
+                    vec![],
+                ),
+                row(
+                    "closed",
+                    false,
+                    vec![row("hidden", false, vec![], vec![])],
+                    vec![],
+                ),
+            ],
+            vec![row("comment", false, vec![], vec![])],
+        )];
+        let mut expected = Vec::new();
+        for (id, depth) in [
+            ("group", 0),
+            ("open", 1),
+            ("deep", 2),
+            ("closed", 1),
+            ("comment", 0),
+        ] {
+            let mut leaf = display_find(&tree, id).clone();
+            leaf.children.clear();
+            leaf.comments.clear();
+            expected.push(ListRow { row: leaf, depth });
+        }
+        assert_eq!(list_rows(&tree), expected);
+    }
+
+    fn display_find<'a>(rows: &'a [Row], id: &str) -> &'a Row {
+        find(rows, id).unwrap()
+    }
 
     fn item(id: &str, turn: &str, body: ItemBody) -> Item {
         Item {

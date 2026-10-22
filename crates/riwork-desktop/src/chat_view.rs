@@ -1119,17 +1119,20 @@ impl ChatView {
             );
         }
         // Keep the legacy body helpers' set in sync; auxiliary file/image keys survive.
-        fn ids(rows: &[display::Row], result: &mut HashSet<String>) {
+        // The ids are borrowed: this runs for every item that starts or completes.
+        fn ids<'a>(rows: &'a [display::Row], result: &mut HashSet<&'a str>) {
             for row in rows {
-                result.insert(row.id.clone());
+                result.insert(&row.id);
                 ids(&row.children, result);
                 ids(&row.comments, result);
             }
         }
-        let mut projected_ids = HashSet::new();
-        ids(&self.visible, &mut projected_ids);
-        ids(&rows, &mut projected_ids);
-        self.open.retain(|id| !projected_ids.contains(id));
+        if !self.open.is_empty() {
+            let mut projected_ids = HashSet::new();
+            ids(&self.visible, &mut projected_ids);
+            ids(&rows, &mut projected_ids);
+            self.open.retain(|id| !projected_ids.contains(id.as_str()));
+        }
         let mut opened = Vec::new();
         display::open_ids(&rows, &mut opened);
         self.open.extend(opened);
