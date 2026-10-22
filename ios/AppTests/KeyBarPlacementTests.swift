@@ -61,6 +61,9 @@ import RiWorkCore
     }
 
     func testAloneAtTheBottomTheBarKeepsItsPlaceItsEndsClearTheCornersAndTheTerminalStaysAboveIt() async throws {
+        // An iPad keeps iPadOS's shortcut bar (the key view's assistant item) under the key bar, so the bar is never alone at the
+        // bottom edge there; the corner clearance (`KeyBarGeometry`) and the pane measured here are the iPhone terminal's.
+        try XCTSkipIf(UIDevice.current.userInterfaceIdiom == .pad, "the iPhone terminal")
         let rig = try await makeRig()
         let baseline = try XCTUnwrap(rig.model.terminalArea)
         // A simulator that has a hardware keyboard connected shows exactly this state by itself; otherwise it is emulated by
