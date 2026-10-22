@@ -486,6 +486,8 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
     let mut streams = SessionStreams::default();
     // Request tasks; dropped (so aborted) with this function, however it ends.
     let mut tasks: JoinSet<Done> = JoinSet::new();
+    // The viewport lease's renewal while it runs (at most one), dropped the same way.
+    let mut renewing: JoinSet<Result<()>> = JoinSet::new();
     let mut lanes: Lanes<Queued> = Lanes::default();
     // Counts sessions: bumped when one ends, so that what its requests still
     // produce is neither sent nor waited for.
@@ -510,13 +512,23 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
         let value = tokio::select! {
             biased;
             _=renew.tick()=>{
-                // A resize that is running renews the lease itself.
-                if let Some(shared)=&viewport
+                // A resize that is running renews the lease itself, and so does a renewal
+                // that has not finished. The CLI runs in a task of its own, holding the
+                // viewport as a resize would, so that the loop goes on reading, answering
+                // and pinging meanwhile; its failure still ends the connection.
+                if renewing.is_empty()
+                    && let Some(shared)=&viewport
                     && last_mobile.elapsed()<=timing.mobile_active
-                    && let Ok(held)=shared.try_lock()
-                    && let Some(v)=held.as_ref()
+                    && let Ok(held)=shared.clone().try_lock_owned()
+                    && held.as_ref().is_some_and(|v| v.selected.is_some())
                 {
-                    rpc.renew_viewport(v).await?;
+                    let rpc=rpc.clone();
+                    renewing.spawn(async move {
+                        match held.as_ref() {
+                            Some(v)=>rpc.renew_viewport(v).await,
+                            None=>Ok(()),
+                        }
+                    });
                 }
                 continue;
             },
@@ -540,6 +552,10 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                     let sealed=seal_body(s,reply,done.received,compress).await?;
                     send_json(&mut ws,&sealed).await?;
                 }
+                continue;
+            },
+            Some(renewed)=renewing.join_next(), if !renewing.is_empty() =>{
+                renewed.context("lease renewal failed")??;
                 continue;
             },
             value=receive_json_seen(&mut ws,&mut last_rx), if reading =>value?,
@@ -961,6 +977,80 @@ mod tests {
         let listed = call(&mut ws, &mut session, "projects.list", json!({})).await;
         assert_eq!(listed["ok"], true, "{listed}");
         eventually(|| renewals(&log) > stopped).await;
+        connector.abort();
+        server.abort();
+    }
+
+    /// The lease renewal runs a CLI every few seconds while the phone shows a terminal.
+    /// A request that arrives meanwhile must not wait for it. `--nocapture` prints how
+    /// long such a request took.
+    #[tokio::test]
+    #[ignore = "slow: real relay and CLI processes; times a call made during a 2 s renewal"]
+    async fn a_lease_renewal_does_not_hold_up_other_requests() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/v1/ws", listener.local_addr().unwrap());
+        let (storage, device, routes) = paired(tmp.path(), &url).await;
+        let relay = Relay::new(private_read::<Routes>(&routes, 1 << 20).unwrap(), 8).unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, relay.router()).await });
+        let shell = uuid::Uuid::new_v4().to_string();
+        let (cli, log, slow) = (
+            tmp.path().join("fake-riwork"),
+            tmp.path().join("cli.log"),
+            tmp.path().join("slow"),
+        );
+        // `shell resize` takes 2 s once `slow` exists; everything else is quick.
+        std::fs::write(
+            &cli,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1 $2\" in\n\
+                 'shell list') printf '[{{\"id\":\"{shell}\",\"alive\":true}}]';;\n\
+                 'orchestrator list'|'project list') echo '[]';;\n\
+                 'shell resize') if [ -e '{}' ]; then sleep 2; fi;;\nesac\n",
+                log.display(),
+                slow.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = std::process::Command::new(&cli).arg("warm").output();
+        let rpc = Arc::new(Rpc::new(cli, storage));
+        let timing = Timing {
+            ping: Duration::from_millis(100),
+            idle: Duration::from_secs(5),
+            renew: Duration::from_millis(200),
+            mobile_active: Duration::from_secs(5),
+            revoke_poll: Duration::from_millis(50),
+        };
+        let pairing = device.pairing.clone();
+        let connector = tokio::spawn(async move { run_device_with(&device, &rpc, timing).await });
+        let (mut ws, mut session) = mobile(&pairing).await;
+        let resized = call(
+            &mut ws,
+            &mut session,
+            "shell.resize",
+            json!({"shell_id":shell,"columns":43,"rows":17}),
+        )
+        .await;
+        assert_eq!(resized["ok"], true, "{resized}");
+
+        // The second renewal to start after `slow` appears is a slow one.
+        let before = renewals(&log);
+        std::fs::write(&slow, "").unwrap();
+        for _ in 0..1000 {
+            if renewals(&log) >= before + 2 {
+                break;
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+        assert!(renewals(&log) >= before + 2, "renewals run");
+        let started = std::time::Instant::now();
+        let listed = call(&mut ws, &mut session, "projects.list", json!({})).await;
+        let took = started.elapsed();
+        assert_eq!(listed["ok"], true, "{listed}");
+        println!("projects.list during a 2 s lease renewal took {took:?}");
+        assert!(took < Duration::from_secs(1), "{took:?}");
         connector.abort();
         server.abort();
     }
