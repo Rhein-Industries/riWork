@@ -106,9 +106,12 @@ pub fn parse(source: &str) -> Vec<Block> {
     parse_with_boundary(source).0
 }
 
-/// Cache only through a closed, top-level code fence followed by a complete blank
-/// line. An appended line cannot extend that block, unlike a list, quote or table.
-/// The normal block parser finds the boundary, so nested fences cannot fool it.
+/// Cache only through a complete, top-level blank line that no list may still span.
+/// A blank line ends a paragraph, quote, table or run of citations, and a heading,
+/// rule or closed fence before it is already whole; only a list continues past one,
+/// when a later marker or indented line follows. Appended text cannot change what
+/// came before such a line. The normal block parser finds the boundary, so nested
+/// fences and lists cannot fool it.
 #[derive(Default)]
 pub(super) struct ParseCache {
     source: String,
@@ -181,6 +184,10 @@ mod incremental_tests {
             "\u{feff}# Heading\n\n```\ncode\n```\n\nTail",
             "Text\n```\nunfinished\n\nmore",
             "```\nx\n```\n\n:codex-file-citation{path=\"/out/Bericht März.docx\" purpose=\"output\"}\nQbit: see :codex-file-citation{path=\"/out/b.pdf\"}.\n:codex-file-citation{path=\"/out/c.png\"}\n\n- item\n  :codex-file-citation{path=\"/out/d.txt\"}",
+            // Lists continue across blank lines; everything else ends at one.
+            "- a\n\n- b\n\n  continued\n\n\n- c\n\n1. one\n\n2. two\n\nAfter\n\n- d\n\n  * nested\n\nend",
+            "Intro **bold\nstill** here.\n\n> q\n\n> r\nlazy\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n| c |\n|---|\n\nText\n# H\n---\n\n***\n\n> [!TIP]\n> tip\n\nfin",
+            "para\n\n\n\n:codex-file-citation{path=\"/a.txt\"}\n\n- [x] done\n\n- [ ] todo\n\n  nested para\n\n12. twelve\n\n13) thirteen\n\n- x\n1. y\n\nz",
         ];
         for source in sources {
             let mut cache = ParseCache::default();
@@ -209,17 +216,27 @@ mod incremental_tests {
     }
 
     #[test]
-    fn only_complete_top_level_fences_seal_a_prefix() {
+    fn complete_top_level_blank_lines_outside_lists_seal_a_prefix() {
         let mut cache = ParseCache::default();
         let prefix = "# Start\n\n```rs\nlet x = 1;\n```\n\n";
         cache.parse(prefix);
         cache.parse(&format!("{prefix}Tail"));
         assert_eq!(cache.reparsed_bytes, 4);
+        // A streaming answer reparses only the paragraph being written.
+        let prose = "Intro **bold**.\n\n> ```\n> code\n> ```\n\n| a |\n|---|\n| b |\n\n";
+        let mut cache = ParseCache::default();
+        cache.parse(prose);
+        cache.parse(&format!("{prose}Next sentence"));
+        assert_eq!(cache.reparsed_bytes, "Next sentence".len());
         for incomplete in [
             "```\ncode\n```\n ",
             "```\ncode\n```\n",
-            "> ```\n> code\n> ```\n\n",
+            "Paragraph\n \t",
             "- list\n  ```\n  code\n  ```\n\n",
+            "- item\n\n",
+            "- item\n\n\n",
+            "- item\n\nmore",
+            "```\nopen\n\nstill code\n\n",
         ] {
             let mut cache = ParseCache::default();
             cache.parse(incomplete);
@@ -317,14 +334,20 @@ fn blocks_with_boundary(
 ) -> Vec<Block> {
     let mut out = Vec::new();
     let mut paragraph: Vec<&str> = Vec::new();
+    // A list followed only by blank lines so far: a later item may still join it.
+    let mut list_open = false;
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i].as_str();
         if line.trim().is_empty() {
             flush(&mut paragraph, &mut out);
             i += 1;
+            if depth == 0 && !list_open {
+                *boundary = Some((i, out.len()));
+            }
             continue;
         }
+        list_open = false;
         if depth >= MAX_DEPTH {
             paragraph.push(line);
             i += 1;
@@ -345,9 +368,6 @@ fn blocks_with_boundary(
                 title: fence.title,
                 text: code.join("\n"),
             });
-            if depth == 0 && i < lines.len() && lines[i].trim().is_empty() {
-                *boundary = Some((i + 1, out.len()));
-            }
             continue;
         }
         if let Some((level, text)) = heading(line) {
@@ -421,6 +441,7 @@ fn blocks_with_boundary(
             let (list, next) = list(lines, i, depth);
             out.push(list);
             i = next;
+            list_open = true;
             continue;
         }
         paragraph.push(line);

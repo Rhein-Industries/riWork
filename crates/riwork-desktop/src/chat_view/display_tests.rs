@@ -716,3 +716,136 @@ fn long_chat_streaming_costs(cx: &mut TestAppContext) {
     );
     let _ = std::fs::remove_dir_all(home);
 }
+
+/// One long prose answer streaming in small deltas, as agents write a final
+/// report: headings, paragraphs, lists and tables, no code fences. Timings of
+/// the fold and the frame after each delta print, early and late in the answer;
+/// run with `--ignored --nocapture`.
+#[gpui::test]
+#[ignore]
+fn long_answer_streaming_costs(cx: &mut TestAppContext) {
+    use crate::chat::{
+        model::{ChatEvent, Delta, Item, ItemStatus, Presentation},
+        wire::Envelope,
+    };
+    use gpui_kit::test::TestWindowExt;
+    let home = home();
+    start(cx, &home);
+    let id = chat_id();
+    let (handle, _, tabs) = mount(cx, &[&id]);
+    let view = tabs[0].clone();
+    let seq = std::cell::Cell::new(0u64);
+    let envelope = |event| {
+        seq.set(seq.get() + 1);
+        Envelope {
+            chat_id: id.clone(),
+            seq: seq.get(),
+            event,
+        }
+    };
+    let item = |id: &str, body| Item {
+        id: id.into(),
+        turn_id: Some("turn".into()),
+        status: ItemStatus::InProgress,
+        presentation: Presentation::default(),
+        started_at: None,
+        ended_at: None,
+        body,
+    };
+    let mut answer = String::new();
+    for n in 0..60 {
+        answer.push_str(&format!(
+            "## Part {n}\n\nThe fold keeps its order because `apply` sorts by sequence, and \
+             **turn {n}** reads [the parser](src/parse.rs:{n}) before it writes. Nothing \
+             else changed in src/lib.rs, so the tests still pass.\n\n\
+             - first point about the change\n- second point\n  - nested detail\n\n\
+             | file | lines |\n|---|---|\n| src/lib.rs | {n} |\n\n"
+        ));
+    }
+    let mut chunks = Vec::new();
+    let mut at = 0;
+    while at < answer.len() {
+        let mut end = (at + 40).min(answer.len());
+        while !answer.is_char_boundary(end) {
+            end += 1;
+        }
+        chunks.push(answer[at..end].to_owned());
+        at = end;
+    }
+    let accept = |cx: &mut TestAppContext, event| {
+        let events = vec![envelope(event)];
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                let started = Instant::now();
+                view.accept(vec![feed::FeedMsg::Events(events)], window, cx);
+                started.elapsed().as_secs_f64() * 1000.
+            })
+        })
+        .unwrap()
+    };
+    let frame = |cx: &mut TestAppContext| {
+        let started = Instant::now();
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        started.elapsed().as_secs_f64() * 1000.
+    };
+    accept(
+        cx,
+        ChatEvent::TurnStarted {
+            turn_id: "turn".into(),
+            started_at: None,
+        },
+    );
+    accept(
+        cx,
+        ChatEvent::ItemStarted {
+            item: item(
+                "prompt",
+                ItemBody::UserMessage {
+                    text: "Write it up.".into(),
+                },
+            ),
+        },
+    );
+    accept(
+        cx,
+        ChatEvent::ItemStarted {
+            item: item(
+                "answer",
+                ItemBody::AgentMessage {
+                    text: String::new(),
+                },
+            ),
+        },
+    );
+    frame(cx);
+    let mut samples = Vec::new();
+    for chunk in chunks {
+        let fold = accept(
+            cx,
+            ChatEvent::ItemDelta {
+                item_id: "answer".into(),
+                delta: Delta::Text(chunk),
+            },
+        );
+        samples.push((fold, frame(cx)));
+    }
+    let median = |samples: &[(f64, f64)], pick: fn(&(f64, f64)) -> f64| {
+        let mut values: Vec<_> = samples.iter().map(pick).collect();
+        values.sort_by(f64::total_cmp);
+        values[values.len() / 2]
+    };
+    let early = &samples[..100];
+    let late = &samples[samples.len() - 100..];
+    eprintln!(
+        "long answer ({} bytes, {} deltas): first 100 fold={:.3} frame={:.3} ms; \
+         last 100 fold={:.3} frame={:.3} ms",
+        answer.len(),
+        samples.len(),
+        median(early, |s| s.0),
+        median(early, |s| s.1),
+        median(late, |s| s.0),
+        median(late, |s| s.1),
+    );
+    let _ = std::fs::remove_dir_all(home);
+}
