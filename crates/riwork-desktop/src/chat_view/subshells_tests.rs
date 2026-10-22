@@ -720,6 +720,52 @@ fn the_running_indicator_jumps_to_a_card_out_of_view_and_only_the_latest_card_is
     .unwrap();
 }
 
+/// The indicator counts every running card out of view and jumps to the earliest,
+/// whichever session's card is listed first.
+#[gpui::test]
+fn the_running_indicator_counts_every_card_out_of_view_and_points_at_the_first(
+    cx: &mut TestAppContext,
+) {
+    let (handle, view, _recording) = editor_tests::mount(cx);
+    live_chat(cx, &view);
+    view.update(cx, |view, cx| {
+        view.apply_display_mode(DisplayMode::Verbose, cx)
+    });
+    let paragraphs = |range: std::ops::Range<usize>| {
+        range.map(|n| message(&format!("m{n}"), "Paragraph\n\nmore"))
+    };
+    let events = std::iter::once(marker("worker:b", "b", false, None))
+        .chain(paragraphs(0..40))
+        .chain([marker("worker:a", "a", false, None)])
+        .chain(paragraphs(40..80))
+        .collect();
+    arrive(cx, handle, &view, events);
+    let running = BTreeMap::from([
+        ("a".to_owned(), live(LiveStatus::Working, "busy")),
+        ("b".to_owned(), live(LiveStatus::Working, "busy")),
+    ]);
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_subshells(running.clone(), None, cx);
+            view.list.set_follow_mode(gpui::FollowMode::Tail);
+        });
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("chat-workers-running").label(),
+            Some("2 workers running ↑")
+        );
+        // Both are above the end; the indicator jumps to the earlier card.
+        view.update(cx, |view, _| {
+            let row = |id: &str| view.list_rows.iter().position(|row| row.row.id == id);
+            let (earlier, later) = (row("worker:b").unwrap(), row("worker:a").unwrap());
+            assert!(earlier < later);
+            assert_eq!(view.workers_out_of_view(), (2, Some((earlier, true))));
+        });
+    })
+    .unwrap();
+}
+
 #[gpui::test]
 fn a_card_that_ends_below_keeps_a_reader_where_they_are(cx: &mut TestAppContext) {
     let (handle, view, _recording) = editor_tests::mount(cx);

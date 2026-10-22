@@ -190,18 +190,27 @@ impl ChatView {
     /// The rows of running cards outside the viewport, first one first, and whether that
     /// one is above it.
     pub(super) fn workers_out_of_view(&self) -> (usize, Option<(usize, bool)>) {
+        // This runs on every frame. Only a session's latest card can be running, so the
+        // list is searched for those few cards rather than every row looked up.
+        let mut running: Vec<(usize, &Item)> = self
+            .workers
+            .latest
+            .values()
+            .filter_map(|&at| {
+                let item = self.model.transcript.items.get(at)?;
+                let worker = workers::of(item)?;
+                self.worker_status(at, worker).running().then_some(item)?;
+                let row = self
+                    .list_rows
+                    .iter()
+                    .position(|shown| shown.row.id == item.id)?;
+                Some((row, item))
+            })
+            .collect();
+        running.sort_by_key(|(row, _)| *row);
         let mut count = 0;
         let mut first = None;
-        for (row, shown) in self.list_rows.iter().enumerate() {
-            let Some((at, item)) = self.projected_item(&shown.row.id) else {
-                continue;
-            };
-            let Some(worker) = workers::of(item) else {
-                continue;
-            };
-            if !self.worker_status(at, worker).running() {
-                continue;
-            }
+        for (row, item) in running {
             let item = &item.id;
             let mut places = self.workers.places.borrow_mut();
             let known = places.get(item).copied();
