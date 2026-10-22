@@ -143,16 +143,19 @@ fn validate_source_layout(source: &Path) -> Result<(PathBuf, SourceLayout), Stri
             source.display()
         ));
     };
-    require_source_files(
-        &source,
-        &[
-            "scripts/bundle-macos.sh",
-            // The only icon the bundler reads.
-            "assets/app-icon/RiWork-legacy.icns",
-        ],
-    )?;
+    require_source_files(&source, &BUNDLE_INPUTS)?;
     Ok((source, layout))
 }
+
+/// The checkout's files the bundler reads, staged beside it.
+const BUNDLE_INPUTS: [&str; 4] = [
+    "scripts/bundle-macos.sh",
+    // The only icon the bundler reads.
+    "assets/app-icon/RiWork-legacy.icns",
+    // The diagram renderer's licenses, copied into the app's resources.
+    "macos/diagram/LICENSE-mermaid",
+    "macos/diagram/THIRD_PARTY_NOTICES.txt",
+];
 
 fn require_source_files(source: &Path, files: &[&str]) -> Result<(), String> {
     for relative in files {
@@ -501,10 +504,7 @@ fn validate_companion(bundle: &Path, required: bool) -> Result<(), String> {
 }
 
 fn stage_bundle_inputs(source: &Path, staging: &Path) -> Result<PathBuf, String> {
-    for relative in [
-        "scripts/bundle-macos.sh",
-        "assets/app-icon/RiWork-legacy.icns",
-    ] {
+    for relative in BUNDLE_INPUTS {
         let destination = staging.join(relative);
         fs::create_dir_all(destination.parent().unwrap())
             .map_err(|error| format!("Cannot create staging directory for {relative}: {error}"))?;
@@ -1224,6 +1224,17 @@ mod tests {
             b"legacy icon fixture",
         )
         .unwrap();
+        fs::create_dir_all(source.join("macos/diagram")).unwrap();
+        fs::write(
+            source.join("macos/diagram/LICENSE-mermaid"),
+            "license fixture",
+        )
+        .unwrap();
+        fs::write(
+            source.join("macos/diagram/THIRD_PARTY_NOTICES.txt"),
+            "notices fixture",
+        )
+        .unwrap();
         source
     }
 
@@ -1372,6 +1383,8 @@ mod tests {
             "crates/riwork-desktop/src/main.rs",
             "scripts/bundle-macos.sh",
             "assets/app-icon/RiWork-legacy.icns",
+            "macos/diagram/LICENSE-mermaid",
+            "macos/diagram/THIRD_PARTY_NOTICES.txt",
         ] {
             let path = workspace.join(relative);
             let original = fs::read(&path).unwrap();
@@ -1425,6 +1438,14 @@ mod tests {
         assert_eq!(
             fs::read(staging.join("assets/app-icon/RiWork-legacy.icns")).unwrap(),
             b"legacy icon fixture"
+        );
+        assert_eq!(
+            fs::read_to_string(staging.join("macos/diagram/LICENSE-mermaid")).unwrap(),
+            "license fixture"
+        );
+        assert_eq!(
+            fs::read_to_string(staging.join("macos/diagram/THIRD_PARTY_NOTICES.txt")).unwrap(),
+            "notices fixture"
         );
 
         let executable = staging.join("riwork");
