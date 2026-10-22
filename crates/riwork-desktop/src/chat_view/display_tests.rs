@@ -477,3 +477,242 @@ fn large_disclosed_turn_virtualizes_children_and_streams_within_budget(cx: &mut 
     );
     let _ = std::fs::remove_dir_all(home);
 }
+
+/// A long text-and-tools chat, the shape a day of agent work leaves: hundreds of
+/// completed turns, each with commands, an edit and a Markdown answer, then one
+/// live turn that streams. Timings print; run with `--ignored --nocapture`.
+#[gpui::test]
+#[ignore]
+fn long_chat_streaming_costs(cx: &mut TestAppContext) {
+    use crate::chat::{
+        model::{
+            ChangeKind, ChatEvent, Delta, FileChange, Item, ItemStatus, Presentation, TurnOutcome,
+        },
+        wire::Envelope,
+    };
+    use gpui_kit::test::TestWindowExt;
+    const TURNS: usize = 400;
+    // `LONG_CHAT_REPEAT=10` lengthens every phase for a sampling profiler.
+    let repeat: usize = std::env::var("LONG_CHAT_REPEAT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1);
+    let home = home();
+    start(cx, &home);
+    let id = chat_id();
+    let (handle, _, tabs) = mount(cx, &[&id]);
+    let view = tabs[0].clone();
+    let seq = std::cell::Cell::new(0u64);
+    let envelope = |event| {
+        seq.set(seq.get() + 1);
+        Envelope {
+            chat_id: id.clone(),
+            seq: seq.get(),
+            event,
+        }
+    };
+    let item = |id: String, turn: &str, status, body| Item {
+        id,
+        turn_id: Some(turn.into()),
+        status,
+        presentation: Presentation::default(),
+        started_at: None,
+        ended_at: None,
+        body,
+    };
+    let answer = |n: usize| {
+        format!(
+            "## Result {n}\n\nI changed `src/lib.rs` and [the parser](src/parse.rs:{n}) so the \
+             fold keeps its order. See https://example.com/issue/{n} for context.\n\n\
+             - first point about **turn {n}** with `code`\n- second point\n  - nested detail\n\n\
+             ```rust\nfn turn_{n}() -> usize {{\n    let x = {n};\n    x * 2\n}}\n```\n\n\
+             | file | lines |\n|---|---|\n| src/lib.rs | {n} |\n| src/parse.rs | 12 |\n\n\
+             That should be all for this step; the tests pass.\n"
+        )
+    };
+    let mut events = Vec::new();
+    for turn in 0..TURNS {
+        let t = format!("turn-{turn}");
+        events.push(envelope(ChatEvent::TurnStarted {
+            turn_id: t.clone(),
+            started_at: None,
+        }));
+        let mut push = |item: Item| {
+            events.push(envelope(ChatEvent::ItemStarted { item: item.clone() }));
+            events.push(envelope(ChatEvent::ItemCompleted { item }));
+        };
+        push(item(
+            format!("u-{turn}"),
+            &t,
+            ItemStatus::Completed,
+            ItemBody::UserMessage {
+                text: format!("Please fix issue {turn} in the parser."),
+            },
+        ));
+        for c in 0..5 {
+            push(item(
+                format!("c-{turn}-{c}"),
+                &t,
+                ItemStatus::Completed,
+                ItemBody::Command {
+                    command: format!("rg -n pattern_{c} src"),
+                    cwd: None,
+                    output: "src/lib.rs:12: let pattern = 1;\n".repeat(40),
+                    exit_code: Some(0),
+                },
+            ));
+        }
+        push(item(
+            format!("f-{turn}"),
+            &t,
+            ItemStatus::Completed,
+            ItemBody::FileChange {
+                changes: vec![FileChange {
+                    path: "src/lib.rs".into(),
+                    kind: ChangeKind::Modify,
+                    diff: Some("@@ -1,3 +1,3 @@\n-old\n+new\n context\n".into()),
+                }],
+            },
+        ));
+        push(item(
+            format!("a-{turn}"),
+            &t,
+            ItemStatus::Completed,
+            ItemBody::AgentMessage { text: answer(turn) },
+        ));
+        events.push(envelope(ChatEvent::TurnCompleted {
+            turn_id: t,
+            outcome: TurnOutcome::Completed,
+            ended_at: None,
+        }));
+    }
+    let live = "turn-live".to_owned();
+    events.push(envelope(ChatEvent::TurnStarted {
+        turn_id: live.clone(),
+        started_at: None,
+    }));
+    events.push(envelope(ChatEvent::ItemStarted {
+        item: item(
+            "u-live".into(),
+            &live,
+            ItemStatus::Completed,
+            ItemBody::UserMessage {
+                text: "One more thing.".into(),
+            },
+        ),
+    }));
+    // Only the fold and list bookkeeping: the test window draws once the update
+    // returns, which `frame` measures separately.
+    let accept = |cx: &mut TestAppContext, events: Vec<Envelope>| {
+        cx.update_window(handle, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                let started = Instant::now();
+                view.accept(vec![feed::FeedMsg::Events(events)], window, cx);
+                started.elapsed().as_secs_f64() * 1000.
+            })
+        })
+        .unwrap()
+    };
+    let frame = |cx: &mut TestAppContext| {
+        let started = Instant::now();
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        started.elapsed().as_secs_f64() * 1000.
+    };
+    let median = |mut samples: Vec<f64>| {
+        samples.sort_by(f64::total_cmp);
+        samples[samples.len() / 2]
+    };
+    let load_ms = accept(cx, events);
+    frame(cx);
+    // A tool call starting and completing in the live turn: projection work.
+    let mut item_ms = Vec::new();
+    let mut item_frame_ms = Vec::new();
+    for c in 0..30 * repeat {
+        let call = item(
+            format!("c-live-{c}"),
+            &live,
+            ItemStatus::InProgress,
+            ItemBody::Command {
+                command: "cargo test".into(),
+                cwd: None,
+                output: String::new(),
+                exit_code: None,
+            },
+        );
+        let mut done = call.clone();
+        done.status = ItemStatus::Completed;
+        item_ms.push(accept(
+            cx,
+            vec![envelope(ChatEvent::ItemStarted { item: call })],
+        ));
+        item_frame_ms.push(frame(cx));
+        item_ms.push(accept(
+            cx,
+            vec![envelope(ChatEvent::ItemCompleted { item: done })],
+        ));
+        item_frame_ms.push(frame(cx));
+    }
+    // Text streaming into the live answer.
+    let mut delta_ms = Vec::new();
+    let mut delta_frame_ms = Vec::new();
+    for n in 0..200 * repeat {
+        let event = if n == 0 {
+            ChatEvent::ItemStarted {
+                item: item(
+                    "a-live".into(),
+                    &live,
+                    ItemStatus::InProgress,
+                    ItemBody::AgentMessage {
+                        text: String::new(),
+                    },
+                ),
+            }
+        } else {
+            ChatEvent::ItemDelta {
+                item_id: "a-live".into(),
+                delta: Delta::Text(if n % 9 == 0 {
+                    "\n\n- a list entry with `code`\n".into()
+                } else {
+                    format!("word{n} and some more text ")
+                }),
+            }
+        };
+        delta_ms.push(accept(cx, vec![envelope(event)]));
+        delta_frame_ms.push(frame(cx));
+    }
+    // Idle frames scrolled into history, where completed answers are drawn.
+    view.update(cx, |view, cx| {
+        view.list.scroll_to(gpui::ListOffset {
+            item_ix: view.items_in_list / 2,
+            offset_in_item: px(0.),
+        });
+        cx.notify();
+    });
+    let mut idle_frame_ms = Vec::new();
+    for _ in 0..30 * repeat {
+        view.update(cx, |_, cx| cx.notify());
+        idle_frame_ms.push(frame(cx));
+    }
+    let completed_ms = accept(
+        cx,
+        vec![envelope(ChatEvent::TurnCompleted {
+            turn_id: live.clone(),
+            outcome: TurnOutcome::Completed,
+            ended_at: None,
+        })],
+    );
+    let rows = view.read_with(cx, |view, _| view.items_in_list);
+    eprintln!(
+        "long chat ({TURNS} turns, {rows} list rows): load={load_ms:.1} ms; \
+         item event median={:.3} ms; item frame median={:.3} ms; \
+         text delta median={:.3} ms; delta frame median={:.3} ms; \
+         idle history frame median={:.3} ms; turn completed={completed_ms:.3} ms",
+        median(item_ms),
+        median(item_frame_ms),
+        median(delta_ms),
+        median(delta_frame_ms),
+        median(idle_frame_ms),
+    );
+    let _ = std::fs::remove_dir_all(home);
+}

@@ -186,13 +186,18 @@ impl ChatModel {
             .filter(|(_, item)| item.id == id)
             .or_else(|| {
                 // Source-only view fixtures install transcripts without event folds.
+                // A folded transcript answers from its index alone, as it does outside
+                // tests, so timing fixtures see the same lookups.
                 #[cfg(test)]
-                return self
-                    .transcript
-                    .items
-                    .iter()
-                    .enumerate()
-                    .find(|(_, item)| item.id == id);
+                return (self.positions.len() != self.transcript.items.len())
+                    .then(|| {
+                        self.transcript
+                            .items
+                            .iter()
+                            .enumerate()
+                            .find(|(_, item)| item.id == id)
+                    })
+                    .flatten();
                 #[cfg(not(test))]
                 None
             })
