@@ -180,7 +180,7 @@ pub struct Device {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_authenticated_unix: Option<u64>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub v: u8,
@@ -190,6 +190,8 @@ pub struct Config {
 #[derive(Clone)]
 pub struct Storage {
     pub dir: PathBuf,
+    /// The last parse of `devices.json`, shared by every clone (see `current`).
+    devices: Arc<ParseCache<Config>>,
 }
 
 pub fn validate_url(raw: &str, dev: bool) -> Result<()> {
@@ -431,7 +433,10 @@ impl Storage {
     pub fn at(home: PathBuf) -> Result<Self> {
         let dir = home.join("remote");
         private_dir(&dir)?;
-        Ok(Self { dir })
+        Ok(Self {
+            dir,
+            devices: Arc::default(),
+        })
     }
     fn open_lock(&self, name: &str) -> Result<File> {
         let f = options()
@@ -483,8 +488,20 @@ impl Storage {
         }
     }
     pub fn config(&self) -> Result<Config> {
+        Ok(Config::clone(&*self.current()?))
+    }
+    /// `devices.json`, checked, as `config` returns it. The connector looks every
+    /// 250 ms and before and after every request (`authorized`), so the parse is
+    /// kept while the file keeps its stamp (`ParseCache`). Pairing, revocation, a
+    /// redeemed invite and a recorded authentication all replace the file, so the
+    /// next look sees them; the directory is checked every time, as before.
+    fn current(&self) -> Result<Arc<Config>> {
         private_dir(&self.dir)?;
         let path = self.dir.join("devices.json");
+        self.devices.get(&path, || self.read_config(&path))
+    }
+    /// The uncached read behind `current`.
+    fn read_config(&self, path: &Path) -> Result<Config> {
         if !path.exists() {
             return Ok(Config {
                 v: 1,
@@ -492,7 +509,7 @@ impl Storage {
                 devices: vec![],
             });
         }
-        let c: Config = private_read(&path, 2 * 1024 * 1024)?;
+        let c: Config = private_read(path, 2 * 1024 * 1024)?;
         ensure!(
             c.v == 1 && c.devices.len() <= 64,
             "unsupported/oversized desktop config"
@@ -521,7 +538,7 @@ impl Storage {
     }
     pub fn authorized(&self, id: &str) -> Result<bool> {
         Ok(self
-            .config()?
+            .current()?
             .devices
             .iter()
             .any(|d| d.pairing.device_id == id && !d.revoked))
@@ -724,10 +741,11 @@ impl Storage {
     }
     pub fn fresh_device(&self, id: &str) -> Result<Option<Device>> {
         Ok(self
-            .config()?
+            .current()?
             .devices
-            .into_iter()
-            .find(|d| d.pairing.device_id == id && !d.revoked))
+            .iter()
+            .find(|d| d.pairing.device_id == id && !d.revoked)
+            .cloned())
     }
     /// Blocks one invite so an overlapping `redeem_invite` returns `invite_race`
     /// without consuming it. Drop the guard to release the claim.
@@ -1122,6 +1140,111 @@ mod tests {
             .find(|d| d.pairing.device_id == mac.device_id)
             .unwrap();
         assert!(record.revoked && record.kind == DeviceKind::Desktop);
+    }
+
+    /// The connector's storage keeps its parse of `devices.json`; `pair` and `revoke`
+    /// run in other processes, with storages of their own.
+    #[cfg(unix)]
+    #[test]
+    fn devices_are_reread_whenever_another_process_changes_them() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let connector = Storage::at(dir.path().into()).unwrap();
+        let cli = Storage::at(dir.path().into()).unwrap();
+        let pair = |name: &str| {
+            cli.pair(
+                "wss://relay.example.com/v1/ws".into(),
+                name.into(),
+                false,
+                &dir.path().join(format!("{name}.json")),
+                None,
+            )
+            .unwrap()
+        };
+        assert!(connector.config().unwrap().devices.is_empty());
+        let phone = pair("phone");
+        assert!(connector.authorized(&phone.device_id).unwrap());
+        assert!(
+            Arc::ptr_eq(&connector.current().unwrap(), &connector.current().unwrap()),
+            "an unchanged file is served from the kept parse"
+        );
+
+        // Revoked elsewhere: refused at the very next look.
+        cli.revoke(&phone.device_id).unwrap();
+        assert!(!connector.authorized(&phone.device_id).unwrap());
+        assert!(connector.fresh_device(&phone.device_id).unwrap().is_none());
+        let tablet = pair("tablet");
+        assert!(connector.fresh_device(&tablet.device_id).unwrap().is_some());
+
+        // Edited in place, keeping the inode.
+        let path = connector.dir.join("devices.json");
+        let text = fs::read_to_string(&path).unwrap();
+        fs::write(&path, text.replace("\"tablet\"", "\"renamed\"")).unwrap();
+        let named = connector.fresh_device(&tablet.device_id).unwrap().unwrap();
+        assert_eq!(named.pairing.device_name, "renamed");
+
+        // Permissions that are no longer private fail closed, file or directory.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(connector.authorized(&tablet.device_id).is_err());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(connector.authorized(&tablet.device_id).unwrap());
+        fs::set_permissions(&connector.dir, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(connector.authorized(&tablet.device_id).is_err());
+        fs::set_permissions(&connector.dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(connector.authorized(&tablet.device_id).unwrap());
+
+        // Gone: no device at all.
+        fs::remove_file(&path).unwrap();
+        assert!(!connector.authorized(&tablet.device_id).unwrap());
+        assert!(connector.config().unwrap().devices.is_empty());
+    }
+
+    /// `cargo test -p riwork-remote --lib devices_read_cost -- --ignored --nocapture` prints
+    /// what one look at `devices.json` costs (the connector's 250 ms watch, and the
+    /// `authorized` check before and after every request): reading and checking it,
+    /// against the kept parse of an unchanged file.
+    #[test]
+    #[ignore = "prints timings; run on demand"]
+    fn devices_read_cost() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::at(dir.path().into()).unwrap();
+        let mut id = String::new();
+        for name in ["phone", "tablet"] {
+            id = storage
+                .pair(
+                    "wss://relay.example.com/v1/ws".into(),
+                    name.into(),
+                    false,
+                    &dir.path().join(format!("{name}.json")),
+                    None,
+                )
+                .unwrap()
+                .device_id;
+        }
+        let path = storage.dir.join("devices.json");
+        let rounds = 2000;
+        let started = Instant::now();
+        for _ in 0..rounds {
+            // What every look did before the parse was kept.
+            private_dir(&storage.dir).unwrap();
+            let config = storage.read_config(&path).unwrap();
+            assert!(config.devices.iter().any(|d| d.pairing.device_id == id));
+        }
+        let read = started.elapsed() / rounds;
+        let started = Instant::now();
+        for _ in 0..rounds {
+            assert!(storage.authorized(&id).unwrap());
+        }
+        let authorized = started.elapsed() / rounds;
+        let started = Instant::now();
+        for _ in 0..rounds {
+            assert_eq!(storage.config().unwrap().devices.len(), 2);
+        }
+        let config = started.elapsed() / rounds;
+        println!(
+            "devices.json ({} bytes): read and check {read:?}; kept: authorized {authorized:?}, config {config:?}",
+            fs::metadata(&path).unwrap().len()
+        );
     }
 
     #[cfg(unix)]
