@@ -905,16 +905,20 @@ pub fn inventory(home: &Path, project: &str) -> Result<Vec<Session>, String> {
     let state = crate::store::Store::open(home)?.snapshot()?;
     state.project(project)?;
     let manager = crate::sessions::SessionManager::at(home.to_owned())?;
-    let (shells, activity) = manager.list_with_activity()?;
-    let entries = serde_json::to_value(crate::cli_agents::shell_entries(home, &shells, &activity))
-        .map_err(|e| e.to_string())?;
-    let entries = entries.as_array().ok_or("invalid shell inventory")?;
-    let directories = manager.sample(false)?.directories.unwrap_or_default();
-    let mut result = Vec::new();
-    for shell in shells
-        .iter()
+    // The shells as `list` has them, from the shared sample: a window's refresh
+    // has just taken it, so this asks tmux nothing there.
+    let sample = manager.sample(false)?;
+    let directories = sample.directories.unwrap_or_default();
+    let shells = sample
+        .shells
+        .into_iter()
         .filter(|s| s.project_id.as_deref() == Some(project))
-    {
+        .collect::<Vec<_>>();
+    // Read cold, which costs a rollout lookup and read per live Codex agent, so
+    // only for the agents of this project.
+    let agents = crate::activity::states_once(home, &shells, crate::activity::unix_now());
+    let mut result = Vec::new();
+    for shell in &shells {
         let name = shell_base_title(
             shell,
             &state,
@@ -922,10 +926,7 @@ pub fn inventory(home: &Path, project: &str) -> Result<Vec<Session>, String> {
         );
         let status = shell_status(
             shell.alive,
-            entries
-                .iter()
-                .find(|e| e["id"].as_str() == Some(&shell.id))
-                .and_then(|e| e["activity"].as_str()),
+            agents.get(&shell.id).map(|agent| agent.activity.as_str()),
         );
         result.push(Session {
             title_priority: if shell.kind == crate::sessions::ShellKind::Orchestrator {
