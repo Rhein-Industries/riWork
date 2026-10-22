@@ -81,3 +81,53 @@ enum ToolUIPerformanceFixture {
         return transcript
     }
 }
+
+/// A chat of long Markdown answers, as an agent writes them: a heading, prose with emphasis, code spans and links, a list, a table, a
+/// code block and a quote. Line `n` differs from every other answer's, so nothing is shared between messages but the shape.
+enum MarkdownPerformanceFixture {
+    static let turns = 150
+    static func message(_ n: Int) -> String {
+        """
+        ## Step \(n): tighten the **render** path
+
+        The `ChatMarkdown` parser for turn \(n) reads *blocks* first, then [inline text](https://example.com/\(n)) with `code spans`, **bold** and ~~struck~~ words, so a long answer stays readable on a phone.
+
+        - Parse `src/render_\(n).rs` once per **change**
+        - Keep the [docs](https://example.com/docs/\(n)) next to the code
+        - [x] Check the `List` identity for row \(n)
+        - Measure *before* and *after* on a synthetic chat
+
+        | File | Lines | Status |
+        | --- | ---: | :---: |
+        | `src/a_\(n).rs` | \(n * 3) | **ok** |
+        | `src/b_\(n).rs` | \(n * 7) | *slow* |
+
+        ```swift
+        let value\(n) = ChatMarkdown.parse(source)
+        print(value\(n).count)
+        ```
+
+        > Note \(n): the quote keeps its own **muted** text and a `span`.
+
+        Finally, turn \(n) ends with a paragraph that mentions [a link](https://example.com/end/\(n)) and `more code`.
+        """
+    }
+    /// A question and its answer per turn.
+    static func items() -> [ChatItem] {
+        (0..<turns).flatMap { n in
+            [ChatItem(id: "md-user-\(n)", turnID: "md-turn-\(n)", status: .completed, body: .userMessage("Explain step \(n) of the render path.")),
+             ChatItem(id: "md-agent-\(n)", turnID: "md-turn-\(n)", status: .completed, body: .agentMessage(message(n)))]
+        }
+    }
+    /// The `k`th delta of an answer that streams in: words that grow a paragraph, new paragraphs, headings and list items.
+    static func chunk(_ k: Int) -> String {
+        switch k % 6 {
+        case 0: "\n\n### Part \(k)\n\n"
+        case 1: "The **delta** \(k) adds `code_\(k)` and [a link](https://example.com/\(k)) to the paragraph. "
+        case 2: "More *streamed* words for part \(k), still in the same paragraph. "
+        case 3: "\n\n- item \(k) with a `span`\n"
+        case 4: "- another **item** \(k)\n"
+        default: "\nClosing sentence \(k) of the block.\n"
+        }
+    }
+}

@@ -460,6 +460,32 @@ import RiWorkCore
         XCTAssertEqual(wakes.count, 2, "emptying the screen does")
     }
 
+    // MARK: Chat
+
+    /// What the chat's file index (`ChatFileCatalogCache`, read by the chat screen's body) costs per reply while a long answer streams in
+    /// after 150 answered turns: only the answer is read again, and of it only what the delta changed.
+    func testFileIndexWhileAnAnswerStreams() {
+        let cache = ChatFileCatalogCache()
+        var items = MarkdownPerformanceFixture.items()
+        var answer = MarkdownPerformanceFixture.message(999)
+        items.append(ChatItem(id: "md-live", turnID: "md-live", body: .agentMessage(answer)))
+        var revision: UInt64 = 1
+        _ = cache.index(items: items, revision: revision)
+        let built = cache.rebuiltItemCount
+        let deltas = 240
+        let clock = ContinuousClock()
+        let began = clock.now
+        for k in 0..<deltas {
+            answer += MarkdownPerformanceFixture.chunk(k)
+            items[items.count - 1].body = .agentMessage(answer)
+            revision += 1
+            _ = cache.index(items: items, revision: revision)
+        }
+        let d = (clock.now - began).components
+        report("chat: file index per streamed delta (answer to \(answer.utf8.count / 1024) KB)", (Double(d.seconds) * 1000 + Double(d.attoseconds) / 1e15) / Double(deltas))
+        XCTAssertEqual(cache.rebuiltItemCount - built, deltas, "a delta reads the answer again, and no other item")
+    }
+
     // MARK: Launch
 
     /// What the app does on the main thread before its first frame that is its own: reading the paired desktops from the Keychain, the

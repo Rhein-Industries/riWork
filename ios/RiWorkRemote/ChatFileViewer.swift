@@ -138,14 +138,20 @@ enum ChatFileCatalog {
         }.joined(separator: "\n").trimmingCharacters(in: .newlines)
     }
 
-    static func references(in text: String) -> [ChatPathRef] {
-        // Matches Codex file citations, Markdown file links and ordinary file:line references, without treating web URLs as local files.
-        var refs: [ChatPathRef] = []
+    static func references(in text: String) -> [ChatPathRef] { merged(referencePasses(in: text)) }
+
+    /// What `references(in:)` finds, pass by pass: Codex file citations, then each expression (Markdown file links, ordinary file:line
+    /// references), each pass in text order without repeats, never treating web URLs as local files. No reference spans a line break
+    /// (a citation, a link and a file:line stay on their line), so the passes of a text cut after a line break are those of its two
+    /// parts, one after the other (`ChatGrowingReferences`).
+    static func referencePasses(in text: String) -> [[ChatPathRef]] {
+        var citations: [ChatPathRef] = []
         for (_, citation) in ChatFileCitation.find(in: text) where !citation.path.hasPrefix("http:") && !citation.path.hasPrefix("https:") {
             let ref = ChatPathRef(path: citation.path, line: nil)
-            if !refs.contains(ref) { refs.append(ref) }
+            if !citations.contains(ref) { citations.append(ref) }
         }
-        for regex in referenceExpressions {
+        return [citations] + referenceExpressions.map { regex in
+            var refs: [ChatPathRef] = []
             for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
                 guard let pathRange = Range(match.range(at: 1), in: text) else { continue }
                 var path = String(text[pathRange])
@@ -158,7 +164,14 @@ enum ChatFileCatalog {
                 let ref = ChatPathRef(path: path, line: line)
                 if !refs.contains(ref) { refs.append(ref) }
             }
+            return refs
         }
+    }
+
+    /// The references of the passes as one list, in pass order, each once.
+    static func merged(_ passes: [[ChatPathRef]]) -> [ChatPathRef] {
+        var refs: [ChatPathRef] = []
+        for pass in passes { for ref in pass where !refs.contains(ref) { refs.append(ref) } }
         return refs
     }
 
@@ -169,7 +182,8 @@ enum ChatFileCatalog {
         return match
     }
 
-    static func entries(item: ChatItem, images: ChatAttachmentImages) -> [ChatFileEntry] {
+    /// `messageReferences` are the agent message's `references(in:)`, when the caller has them already (`ChatGrowingReferences`).
+    static func entries(item: ChatItem, images: ChatAttachmentImages, messageReferences: [ChatPathRef]? = nil) -> [ChatFileEntry] {
         var files: [ChatFileEntry] = []
         let user: Bool
         if case .userMessage = item.body { user = true } else { user = false }
@@ -262,7 +276,7 @@ enum ChatFileCatalog {
             add(path: path, name: name, image: image.source, imageIndex: index, attachment: user)
         }
         if case .agentMessage(let text) = item.body {
-            for ref in references(in: text) { add(path: ref.path, line: ref.line.map(Int.init(clamping:))) }
+            for ref in messageReferences ?? references(in: text) { add(path: ref.path, line: ref.line.map(Int.init(clamping:))) }
         }
         if item.presentation.semantics?.kind == .search || item.presentation.semantics?.kind == .list {
             let output: String?

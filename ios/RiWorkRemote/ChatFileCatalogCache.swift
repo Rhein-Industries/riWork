@@ -33,6 +33,35 @@ struct ChatFileIndex: Equatable {
     }
 }
 
+/// The file references (`ChatFileCatalog.references(in:)`) of a message that is still arriving. A streamed message grows at its end, so
+/// the lines it had complete at the last delta are still there: their references are kept, and only the lines after them are read again.
+/// A text that does not start with those lines (an edit, another message) is read from the start.
+struct ChatGrowingReferences {
+    /// The text read last; the first `complete` UTF-8 bytes of it are whole lines, whose references (by pass) are `head`.
+    private var text = ""
+    private var complete = 0
+    private var head: [[ChatPathRef]] = []
+
+    mutating func references(in source: String) -> [ChatPathRef] {
+        let bytes = source.utf8
+        if complete > 0, !bytes.starts(with: text.utf8.prefix(complete)) { complete = 0; head = [] }
+        let start = bytes.index(bytes.startIndex, offsetBy: complete)
+        if let newline = bytes[start...].lastIndex(of: 10) {
+            let end = bytes.index(after: newline)
+            head = Self.joined(head, ChatFileCatalog.referencePasses(in: String(source[start..<end])))
+            complete = bytes.distance(from: bytes.startIndex, to: end)
+        }
+        text = source
+        return ChatFileCatalog.merged(Self.joined(head, ChatFileCatalog.referencePasses(in: String(source[bytes.index(bytes.startIndex, offsetBy: complete)...]))))
+    }
+
+    /// The passes of a text followed by those of the text after it.
+    private static func joined(_ first: [[ChatPathRef]], _ second: [[ChatPathRef]]) -> [[ChatPathRef]] {
+        guard !first.isEmpty else { return second }
+        return zip(first, second).map { before, after in before + after.filter { !before.contains($0) } }
+    }
+}
+
 /// Kept on the chat model, outside SwiftUI observation. A token changes one item, so historical items and turns retain
 /// their parsed files and references. State, keyboard and disclosure renders return the same index immediately.
 @MainActor final class ChatFileCatalogCache {
@@ -40,6 +69,11 @@ struct ChatFileIndex: Equatable {
         var item: ChatItem
         var files: [ChatFileEntry]
         var references: [String: [ChatPathRef]]
+        /// The references of every paragraph and heading of the item's text, none included: a delta to a streamed message changes its
+        /// last ones, and the others are not read again.
+        var paragraphs: [String: [ChatPathRef]] = [:]
+        /// The message's own references while it is still arriving.
+        var growing = ChatGrowingReferences()
     }
     private struct TurnCache {
         var members: [ChatItem]
@@ -79,13 +113,21 @@ struct ChatFileIndex: Equatable {
                 var cwd: String?
                 for item in members {
                     if itemCache[item.id]?.item != item {
-                        let files = ChatFileCatalog.entries(item: item, images: images)
+                        // What was read of an item that is still arriving is kept for its next delta; a finished one keeps nothing.
+                        let arriving = item.status == .inProgress
+                        let previous = itemCache[item.id]
+                        var growing = previous?.growing ?? ChatGrowingReferences()
+                        var messageReferences: [ChatPathRef]?
+                        if arriving, case .agentMessage(let text) = item.body { messageReferences = growing.references(in: text) }
+                        let files = ChatFileCatalog.entries(item: item, images: images, messageReferences: messageReferences)
                         let source: String?
                         switch item.body {
                         case .agentMessage(let text), .userMessage(let text), .reasoning(let text): source = text
                         default: source = nil
                         }
-                        itemCache[item.id] = ItemCache(item: item, files: files, references: source.map(Self.references) ?? [:])
+                        let (references, paragraphs) = source.map { Self.references($0, known: previous?.paragraphs ?? [:]) } ?? ([:], [:])
+                        itemCache[item.id] = ItemCache(item: item, files: files, references: references, paragraphs: arriving ? paragraphs : [:],
+                                                       growing: arriving ? growing : ChatGrowingReferences())
                         rebuiltItemCount += 1
                     }
                     parsedFiles[item.id] = itemCache[item.id]?.files ?? []
@@ -112,13 +154,16 @@ struct ChatFileIndex: Equatable {
         return value
     }
 
-    private static func references(_ source: String) -> [String: [ChatPathRef]] {
+    /// The references of each paragraph and heading that has some, and of every one (`known` gives those read before).
+    private static func references(_ source: String, known: [String: [ChatPathRef]]) -> (some: [String: [ChatPathRef]], all: [String: [ChatPathRef]]) {
         var result: [String: [ChatPathRef]] = [:]
+        var all: [String: [ChatPathRef]] = [:]
         func collect(_ blocks: [ChatMarkdownBlock]) {
             for block in blocks {
                 switch block {
                 case .paragraph(let text), .heading(_, let text):
-                    let references = ChatFileCatalog.references(in: text)
+                    let references = all[text] ?? known[text] ?? ChatFileCatalog.references(in: text)
+                    all[text] = references
                     if !references.isEmpty { result[text] = references }
                 case .quote(let blocks): collect(blocks)
                 case .list(_, _, let items): for item in items { collect(item.blocks) }
@@ -127,6 +172,6 @@ struct ChatFileIndex: Equatable {
             }
         }
         collect(ChatMarkdown.parse(source))
-        return result
+        return (result, all)
     }
 }
