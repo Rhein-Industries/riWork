@@ -307,6 +307,52 @@ fn completed_prefix_item_cannot_enable_a_streaming_child_source(cx: &mut TestApp
         assert!(!view.completed_code("user:answer/child/0"));
         assert!(!view.completed_code("plan:answer/child:document/0"));
         assert!(!view.completed_code("unknown/0"));
+        assert!(view.completed_code("plan:answer:document/0"));
+        assert!(view.completed_code("user:answer/0"));
+        assert!(!view.completed_code("answer"));
+        // `user:x/0` is as specific for an item `user:x` as for an item `x`:
+        // the later item owns it.
+        for (first, second) in [("user:x", "x"), ("x", "user:x")] {
+            view.model.transcript.items = vec![
+                item(first, "one", ItemStatus::InProgress),
+                item(second, "two", ItemStatus::Completed),
+            ];
+            assert!(view.completed_code("user:x/0"));
+            view.model.transcript.items.reverse();
+            assert!(!view.completed_code("user:x/0"));
+        }
+    });
+}
+
+/// The same answers from the model's index, as a folded chat looks items up.
+#[gpui::test]
+fn code_sources_are_found_in_a_folded_chat(cx: &mut TestAppContext) {
+    use crate::chat::{model::ChatEvent, wire::Envelope};
+    let (_, view, _) = editor_tests::mount_selection(cx);
+    view.update(cx, |view, _| {
+        let events: Vec<_> = [
+            item("answer", "done", ItemStatus::Completed),
+            item("answer/child", "streaming", ItemStatus::InProgress),
+            item("x", "x", ItemStatus::Completed),
+            item("user:x", "user x", ItemStatus::InProgress),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(seq, item)| Envelope {
+            chat_id: "chat".into(),
+            seq: seq as u64 + 1,
+            event: ChatEvent::ItemCompleted { item },
+        })
+        .collect();
+        view.model.apply(&events);
+        assert!(view.completed_code("answer/0"));
+        assert!(view.completed_code("answer/2/0"));
+        assert!(!view.completed_code("answer/child/0"));
+        assert!(!view.completed_code("user:answer/child/0"));
+        assert!(view.completed_code("plan:answer:document/0"));
+        assert!(!view.completed_code("plan:answer/child:document/0"));
+        assert!(!view.completed_code("user:x/0"));
+        assert!(!view.completed_code("unknown/0"));
     });
 }
 

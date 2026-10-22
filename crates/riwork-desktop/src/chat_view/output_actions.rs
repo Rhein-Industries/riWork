@@ -113,33 +113,34 @@ impl ChatView {
     pub(super) fn completed_code(&self, key: &str) -> bool {
         // Item IDs may themselves contain separators. The most specific source
         // owns the block; a completed prefix item cannot enable a streaming child.
-        self.model
-            .transcript
-            .items
-            .iter()
-            .filter_map(|item| {
-                let direct = key
-                    .strip_prefix(&item.id)
-                    .filter(|tail| tail.starts_with('/'))
-                    .map(|_| item.id.len());
-                let user = key
-                    .strip_prefix("user:")
-                    .and_then(|key| key.strip_prefix(&item.id))
-                    .filter(|tail| tail.starts_with('/'))
-                    .map(|_| item.id.len() + 5);
-                let plan = key
-                    .strip_prefix("plan:")
-                    .and_then(|key| key.strip_prefix(&item.id))
-                    .filter(|tail| tail.starts_with(":document/"))
-                    .map(|_| item.id.len() + 14);
-                direct
-                    .into_iter()
-                    .chain(user)
-                    .chain(plan)
-                    .max()
-                    .map(|length| (length, item.status))
+        // An owner is the key up to a separator, so each candidate is looked up
+        // rather than every item compared: this runs per code block per frame.
+        fn owners<'a>(
+            rest: &'a str,
+            separator: &'static str,
+            prefix: usize,
+        ) -> impl Iterator<Item = (&'a str, usize)> {
+            rest.match_indices(separator)
+                .map(move |(at, _)| (&rest[..at], at + prefix))
+        }
+        let direct = owners(key, "/", 0);
+        let user = key
+            .strip_prefix("user:")
+            .into_iter()
+            .flat_map(|rest| owners(rest, "/", 5));
+        let plan = key
+            .strip_prefix("plan:")
+            .into_iter()
+            .flat_map(|rest| owners(rest, ":document/", 14));
+        direct
+            .chain(user)
+            .chain(plan)
+            .filter_map(|(id, length)| {
+                let (at, item) = self.model.item(id)?;
+                // Of equally specific owners, the later item, as a scan would find.
+                Some(((length, at), item.status))
             })
-            .max_by_key(|(length, _)| *length)
+            .max_by_key(|(rank, _)| *rank)
             .is_some_and(|(_, status)| status != ItemStatus::InProgress)
     }
 
