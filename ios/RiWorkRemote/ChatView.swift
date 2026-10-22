@@ -1016,7 +1016,7 @@ private struct ChatTranscriptList: View {
             let bottom = new.bottomOffset
             let settle = sticky.following && !userDriven && new.resized(since: old) && new.distanceFromBottom > 0.5
             if response == .scrollToBottom || settle || (sticky.following && !userDriven && new.offset > bottom + 2) {
-                scheduleBottomCorrection(again: new.resized(since: old)) { proxy.scrollTo(Self.end, anchor: .bottom) }
+                scheduleBottomCorrection(again: new.resized(since: old)) { scrollToEnd(proxy) }
             }
         }
         .onChange(of: conversation.feed.itemArrivals) { _, count in sticky.contentChanged(end: count, epoch: 0) }
@@ -1034,7 +1034,7 @@ private struct ChatTranscriptList: View {
             // resize/streaming corrections until another gesture.
             if sticky.following {
                 cancelHistoryAnchor()
-                scheduleBottomCorrection { proxy.scrollTo(Self.end, anchor: .bottom) }
+                scheduleBottomCorrection { scrollToEnd(proxy) }
                 return
             }
             if !preservingHistory { captureHistoryAnchor() }
@@ -1135,7 +1135,7 @@ private struct ChatTranscriptList: View {
         accessibilityPageTarget = target
         if target >= metrics.bottomOffset - 0.5 {
             sticky.jumpToBottom()
-            scheduleBottomCorrection { proxy.scrollTo(Self.end, anchor: .bottom) }
+            scheduleBottomCorrection { scrollToEnd(proxy) }
         } else { scrollToAbsoluteY(CGFloat(target)) }
         if abs(metrics.offset - target) <= 0.5 {
             accessibilityPageTarget = nil
@@ -1261,6 +1261,18 @@ private struct ChatTranscriptList: View {
             position.scrollTo(y: offset)
         }
     }
+    /// To the end marker, the list's last row, by the list's own collection view and at once. `ScrollViewProxy` resolves a row's index
+    /// against the rows the list shows when asked and scrolls on its next update: rows the conversation dropped in between (a reset or
+    /// a new snapshot after the history expired, the log cut short) left it scrolling past the end of the list, which raises. The
+    /// collection view counts the rows it has when it scrolls; the next rows get their own correction once they are in (`rows`).
+    private func scrollToEnd(_ proxy: ScrollViewProxy) {
+        guard let list = viewport.nativeScrollView as? UICollectionView else { return proxy.scrollTo(Self.end, anchor: .bottom) }
+        let section = list.numberOfSections - 1
+        guard section >= 0 else { return }
+        let count = list.numberOfItems(inSection: section)
+        guard count > 0 else { return }
+        list.scrollToItem(at: IndexPath(item: count - 1, section: section), at: .bottom, animated: false)
+    }
 
     /// Lazy rows can change their measured height during layout (especially with accessibility text). Scroll after that pass,
     /// rather than feeding a new scroll position back into the geometry callback. A reader's gesture cancels the pending correction.
@@ -1337,7 +1349,7 @@ private struct ChatTranscriptList: View {
         }
         if followTail {
             cancelHistoryAnchor()
-            scheduleBottomCorrection { proxy.scrollTo(Self.end, anchor: .bottom) }
+            scheduleBottomCorrection { scrollToEnd(proxy) }
             return
         }
         if let anchor = viewport.anchor, let id = anchorID(anchor.id, before: rows, after: self.rows) {
@@ -1351,8 +1363,8 @@ private struct ChatTranscriptList: View {
         cancelHistoryAnchor()
         revealCorrection?.cancel(); revealCorrection = nil
         sticky.jumpToBottom()
-        proxy.scrollTo(Self.end, anchor: .bottom)
-        scheduleBottomCorrection { proxy.scrollTo(Self.end, anchor: .bottom) }
+        scrollToEnd(proxy)
+        scheduleBottomCorrection { scrollToEnd(proxy) }
     }
 
     private func placeholder(_ text: String, spinner: Bool) -> some View {
