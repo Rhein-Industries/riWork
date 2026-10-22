@@ -131,6 +131,40 @@ import RiWorkCore
         check(.completed)
     }
 
+    /// The kept index follows items that go, turns that go, an item that moves to another turn and a chat that starts over: each time it
+    /// is the index a cache that kept nothing builds.
+    func testCatalogFollowsItemsAndTurnsThatChange() {
+        func edit(_ id: String, _ turn: String, _ path: String) -> ChatItem {
+            ChatItem(id: id, turnID: turn, status: .completed, body: .fileChange([.init(path: path, kind: .modify)]))
+        }
+        func command(_ id: String, _ turn: String, _ cwd: String) -> ChatItem {
+            ChatItem(id: id, turnID: turn, status: .completed, body: .command(command: "make", cwd: cwd, output: "", exitCode: 0))
+        }
+        let full = [edit("a", "one", "a.swift"), command("b", "one", "/one"), ChatItem(id: "c", turnID: "one", status: .completed, body: .agentMessage("See src/c.swift:3")),
+                    edit("d", "two", "d.swift"), command("e", "two", "/two"), edit("f", "three", "f.swift"),
+                    ChatItem(id: "g", turnID: "three", status: .completed, body: .agentMessage("Done with [f](f.swift)."))]
+        let steps: [(String, [ChatItem])] = [
+            ("all", full),
+            ("an item goes", full.filter { $0.id != "d" }),
+            ("a turn goes", full.filter { $0.turnID != "two" }),
+            ("an item moves to another turn", full.map { $0.id == "a" ? edit("a", "three", "a.swift") : $0 }),
+            ("the same again", full.map { $0.id == "a" ? edit("a", "three", "a.swift") : $0 }),
+            ("nothing", []),
+            ("all again", full),
+            ("a turn's directory changes", full.map { $0.id == "e" ? command("e", "two", "/elsewhere") : $0 })
+        ]
+        let cache = ChatFileCatalogCache()
+        for (revision, (step, items)) in steps.enumerated() {
+            let kept = cache.index(items: items, revision: UInt64(revision + 1))
+            let fresh = ChatFileCatalogCache().index(items: items, revision: 0)
+            XCTAssertEqual(kept.entries, fresh.entries, step)
+            XCTAssertEqual(kept.byItem, fresh.byItem, step)
+            XCTAssertEqual(kept.byTurn, fresh.byTurn, step)
+            XCTAssertEqual(kept.cwdByTurn, fresh.cwdByTurn, step)
+            XCTAssertEqual(kept.markdownReferences, fresh.markdownReferences, step)
+        }
+    }
+
     /// A text file of 3,000 lines while its zoom changes, as a pinch changes it every frame: the file is split into lines once per change,
     /// not again for every row on screen.
     func testCodeFileSplitsItsLinesOncePerZoomChange() throws {

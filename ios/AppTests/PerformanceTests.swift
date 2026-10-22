@@ -465,8 +465,12 @@ import RiWorkCore
     /// What the chat's file index (`ChatFileCatalogCache`, read by the chat screen's body) costs per reply while a long answer streams in
     /// after 150 answered turns: only the answer is read again, and of it only what the delta changed.
     func testFileIndexWhileAnAnswerStreams() {
+        measureFileIndex(MarkdownPerformanceFixture.items(), label: "after 150 turns")
+        measureFileIndex(ToolUIPerformanceFixture.items(), label: "after 2,200 items")
+    }
+    private func measureFileIndex(_ held: [ChatItem], label: String) {
         let cache = ChatFileCatalogCache()
-        var items = MarkdownPerformanceFixture.items()
+        var items = held
         var answer = MarkdownPerformanceFixture.message(999)
         items.append(ChatItem(id: "md-live", turnID: "md-live", body: .agentMessage(answer)))
         var revision: UInt64 = 1
@@ -482,7 +486,7 @@ import RiWorkCore
             _ = cache.index(items: items, revision: revision)
         }
         let d = (clock.now - began).components
-        report("chat: file index per streamed delta (answer to \(answer.utf8.count / 1024) KB)", (Double(d.seconds) * 1000 + Double(d.attoseconds) / 1e15) / Double(deltas))
+        report("chat: file index per streamed delta, \(label)", (Double(d.seconds) * 1000 + Double(d.attoseconds) / 1e15) / Double(deltas))
         XCTAssertEqual(cache.rebuiltItemCount - built, deltas, "a delta reads the answer again, and no other item")
     }
 

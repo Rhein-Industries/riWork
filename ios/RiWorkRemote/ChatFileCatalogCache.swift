@@ -85,6 +85,8 @@ struct ChatGrowingReferences {
     private var imageDirectory: URL?
     private var itemCache: [String: ItemCache] = [:]
     private var turnCache: [String: TurnCache] = [:]
+    /// The turns `value` was put together from, in order.
+    private var turnOrder: [String] = []
     private var value = ChatFileIndex()
     /// Useful to verify that streaming does not re-parse historical file references.
     private(set) var rebuiltItemCount = 0
@@ -101,10 +103,8 @@ struct ChatGrowingReferences {
             if membersByTurn[turn] == nil { order.append(turn) }
             membersByTurn[turn, default: []].append(item)
         }
-        let itemIDs = Set(items.map(\.id))
-        itemCache = itemCache.filter { itemIDs.contains($0.key) }
-        turnCache = turnCache.filter { membersByTurn[$0.key] != nil }
-        var result = ChatFileIndex()
+        // Whether a turn's files, references or working directory changed: a delta to an answer's prose changes none.
+        var changed = order != turnOrder
         for turn in order {
             let members = membersByTurn[turn] ?? []
             if turnCache[turn]?.members != members {
@@ -134,11 +134,25 @@ struct ChatGrowingReferences {
                     references.merge(itemCache[item.id]?.references ?? [:]) { first, _ in first }
                     if case .command(_, let directory, _, _) = item.body, cwd == nil { cwd = directory }
                 }
-                turnCache[turn] = TurnCache(members: members,
-                                            files: ChatFileCatalog.entries(items: members, images: images, itemEntries: parsedFiles),
-                                            references: references, cwd: cwd)
+                let rebuilt = TurnCache(members: members, files: ChatFileCatalog.entries(items: members, images: images, itemEntries: parsedFiles),
+                                        references: references, cwd: cwd)
+                if let before = turnCache[turn], before.files == rebuilt.files, before.references == rebuilt.references, before.cwd == rebuilt.cwd {} else { changed = true }
+                turnCache[turn] = rebuilt
                 rebuiltTurnCount += 1
             }
+        }
+        // Every item and turn there is now has its entry, so more entries than those are left over from items that went (a reset, another
+        // snapshot): only then are the caches copied without them. Rebuilding both dictionaries with every reply cost more than the rest.
+        if itemCache.count > items.count {
+            let itemIDs = Set(items.map(\.id))
+            itemCache = itemCache.filter { itemIDs.contains($0.key) }
+        }
+        if turnCache.count > order.count { turnCache = turnCache.filter { membersByTurn[$0.key] != nil } }
+        // The same turns with the same files make the same index: it is not put together again.
+        guard changed else { return value }
+        turnOrder = order
+        var result = ChatFileIndex()
+        for turn in order {
             guard let cached = turnCache[turn] else { continue }
             result.entries.append(contentsOf: cached.files)
             result.byTurn[turn] = cached.files
