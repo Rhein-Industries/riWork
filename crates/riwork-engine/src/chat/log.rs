@@ -14,9 +14,11 @@
 
 use super::model::{ChatEvent, ChatInfo, ItemBody};
 use super::wire::Envelope;
+use memchr::memmem::Finder;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use uuid::Uuid;
 
 const INFO: &str = "info.json";
@@ -501,10 +503,8 @@ pub fn read_transcript_tail(
 /// that, so only their lines are parsed: a caller that asks no more does not fold every
 /// item of the log's end.
 pub fn read_open_turn(home: &Path, id: &str) -> Result<Option<String>, String> {
-    fold_tail(home, id, TRANSCRIPT_TAIL, |line| {
-        contains(line, br#""event":"turn_"#)
-    })
-    .map(|transcript| transcript.turn_id)
+    fold_tail(home, id, TRANSCRIPT_TAIL, |line| contains(line, &TURN_LINE))
+        .map(|transcript| transcript.turn_id)
 }
 
 /// `read_transcript_tail`, folding only the lines `keep` takes.
@@ -594,7 +594,7 @@ pub fn notice_tail(dir: &Path, max: u64) -> super::model::Transcript {
             Ok(_) => {}
         }
         // Only notice lines are parsed; the rest of a long chat is skipped as bytes.
-        if line.last() != Some(&b'\n') || !contains(&line, br#""type":"notice""#) {
+        if line.last() != Some(&b'\n') || !contains(&line, &NOTICE_LINE) {
             continue;
         }
         if let Ok(envelope) = serde_json::from_slice::<Envelope>(&line) {
@@ -604,10 +604,18 @@ pub fn notice_tail(dir: &Path, max: u64) -> super::model::Transcript {
     transcript
 }
 
-/// Whether `needle` is in `haystack`. Every line of a whole log can pass through here, so
-/// this is a vectorized substring search, not a comparison at every offset.
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    memchr::memmem::find(haystack, needle).is_some()
+// The keys that pick lines out of a whole log without parsing the rest. Every line of a
+// long chat passes through one, most of them short deltas, so each search is vectorized
+// and prepared once rather than at every line.
+static NOTICE_LINE: LazyLock<Finder<'static>> =
+    LazyLock::new(|| Finder::new(br#""type":"notice""#));
+static WORKER_LINE: LazyLock<Finder<'static>> =
+    LazyLock::new(|| Finder::new(br#""tool":"worker""#));
+static TURN_LINE: LazyLock<Finder<'static>> = LazyLock::new(|| Finder::new(br#""event":"turn_"#));
+
+/// Whether `line` has the key `marker` finds.
+pub(super) fn contains(line: &[u8], marker: &Finder) -> bool {
+    marker.find(line).is_some()
 }
 
 // Snapshot v1 reads one immutable prefix without contacting or upgrading the host.
@@ -1412,7 +1420,6 @@ mod tests {
 
     #[test]
     fn a_marker_is_found_wherever_it_is_in_a_line() {
-        let marker = br#""type":"notice""#;
         for (line, found) in [
             (&br#""type":"notice""#[..], true),
             (br#"{"body":{"type":"notice","text":"x"}}"#, true),
@@ -1423,7 +1430,7 @@ mod tests {
             (b"", false),
         ] {
             assert_eq!(
-                contains(line, marker),
+                contains(line, &NOTICE_LINE),
                 found,
                 "{}",
                 String::from_utf8_lossy(line)
@@ -1914,7 +1921,7 @@ pub(super) fn read_notice_transcript(dir: &Path) -> Result<super::model::Transcr
         {
             break;
         }
-        if line.last() != Some(&b'\n') || !contains(&line, br#""type":"notice""#) {
+        if line.last() != Some(&b'\n') || !contains(&line, &NOTICE_LINE) {
             continue;
         }
         let envelope: Envelope = serde_json::from_slice(&line).map_err(|e| e.to_string())?;
@@ -1944,7 +1951,7 @@ pub(super) fn read_worker_markers(dir: &Path) -> Result<Vec<super::model::Item>,
         {
             break;
         }
-        if line.last() != Some(&b'\n') || !contains(&line, br#""tool":"worker""#) {
+        if line.last() != Some(&b'\n') || !contains(&line, &WORKER_LINE) {
             continue;
         }
         let Ok(envelope) = serde_json::from_slice::<Envelope>(&line) else {
