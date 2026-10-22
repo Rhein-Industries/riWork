@@ -247,9 +247,21 @@ import RiWorkCore
 
     func testReturnSendsAndShiftReturnMakesANewLine() async throws {
         let rig = try await makeRig()
+        // Until the chat has caught up with the desktop (`catchingUp`, its first read held here) the composer is not live: ⏎ sends
+        // nothing and the draft stays.
+        await rig.transport.gateEvents(true)
         let view = try await openChat(rig)
         view.insertText("fix the build")
         await eventually("the draft follows the text") { rig.model.conversation(self.chatID).draft == "fix the build" }
+        await eventually("it says the chat is updating") { rig.model.conversation(self.chatID).catchingUp && rig.layout.frames["banner-catch-up"] != nil }
+        press(view, "\r")
+        try await Task.sleep(for: .milliseconds(100))
+        let early = await sentCommands(rig)
+        XCTAssertTrue(early.isEmpty, "⏎ before the chat has caught up sends nothing")
+        XCTAssertEqual(view.text, "fix the build")
+        await rig.transport.gateEvents(false)
+        // Caught up, and drawn so: the composer the keys reach is live again.
+        await eventually("the chat has caught up") { !rig.model.conversation(self.chatID).catchingUp && rig.layout.frames["banner-catch-up"] == nil }
         press(view, "\r", .shift)
         XCTAssertEqual(view.text, "fix the build\n", "⇧⏎ is a line break, and sends nothing")
         let none = await sentCommands(rig)
