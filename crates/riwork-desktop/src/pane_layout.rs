@@ -8,6 +8,9 @@
 //! every frame the window drew, a chat's streaming included. So the window lays out an
 //! empty box of the pane's size, and the content is laid out in that box afterwards, as
 //! the cached Settings view is, only without the cache: it is drawn anew every frame.
+//! The global window's body and the dashboard's table and rails, whose sizes do not
+//! depend on what they list either, are laid out the same way
+//! (`measure_a_busy_dashboard_frame`).
 
 use std::panic::Location;
 

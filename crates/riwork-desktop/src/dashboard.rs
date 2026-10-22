@@ -1163,24 +1163,28 @@ fn body<V: 'static>(
 
 /// A column of sections that scrolls on its own, so the projects never push it away.
 fn rail(id: &'static str, sections: Vec<AnyElement>, fill: bool, colors: Palette) -> AnyElement {
-    div()
+    // The rail's size never depends on its sections, so they are laid out at that size
+    // (`pane_layout`).
+    let sections = div()
         .id(id)
-        .when(fill, |rail| rail.flex_1().min_w_0())
+        .size_full()
         .when(!fill, |rail| {
-            rail.flex_none()
-                .w(ui_text::space(RAIL))
-                .pl(ui_text::space(4.0))
+            rail.pl(ui_text::space(4.0))
                 .border_l_1()
                 .border_color(rgb(colors.divider))
         })
-        .min_h_0()
         .overflow_y_scroll()
         .flex()
         .flex_col()
         .gap(ui_text::space(4.0))
         .pt(ui_text::space(4.0))
         .children(sections)
-        .test_support()
+        .test_support();
+    div()
+        .when(fill, |rail| rail.flex_1().min_w_0())
+        .when(!fill, |rail| rail.flex_none().w(ui_text::space(RAIL)))
+        .min_h_0()
+        .child(crate::pane_layout::laid_out_alone(sections))
         .into_any_element()
 }
 
@@ -1710,15 +1714,21 @@ fn projects_region<V: 'static>(
         .flex_col()
         .child(heading.test_support())
         .child(table_head(layout, colors))
+        // The table fills what is left; its rows are laid out at that size
+        // (`pane_layout`).
         .child(
             div()
-                .id("dashboard-projects-scroll")
                 .flex_1()
                 .min_h_0()
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .children(rows),
+                .child(crate::pane_layout::laid_out_alone(
+                    div()
+                        .id("dashboard-projects-scroll")
+                        .size_full()
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .children(rows),
+                )),
         )
         .test_support()
         .into_any_element()

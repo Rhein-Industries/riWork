@@ -1798,7 +1798,15 @@ impl Render for GlobalWindow {
             .text_color(rgb(colors.text))
             .font_family(ui_text::ui_family())
             .child(self.render_bar(window, cx))
-            .child(div().flex_1().min_h_0().child(body))
+            // Laid out at its size, apart from the window's layout (`pane_layout`).
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(crate::pane_layout::laid_out_alone(
+                        div().size_full().child(body),
+                    )),
+            )
             .children(self.render_notice(cx))
             .children(self.decision_review.as_ref().map(|dialog| {
                 div()

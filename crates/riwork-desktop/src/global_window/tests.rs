@@ -991,3 +991,56 @@ fn an_observed_decision_opens_its_review_without_starting_a_host(cx: &mut gpui::
     assert!(!home.0.join("run/chat.sock").exists());
     assert!(!home.0.join("sessions.json").exists());
 }
+
+/// What a redraw of a busy dashboard costs: many projects, sessions and chats. Run with
+/// `--ignored --nocapture`; `RIWORK_FRAME_WIDTH` picks the arrangement and
+/// `RIWORK_FRAME_COUNT` how many frames are drawn, for a profiler to sample.
+#[gpui::test]
+#[ignore]
+fn measure_a_busy_dashboard_frame(cx: &mut gpui::TestAppContext) {
+    let knob = |name: &str, default: usize| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    };
+    init_app(cx);
+    let home = Home::new();
+    let fixture = open_global(cx, &home.0, GlobalWindowState::default());
+    let mut state = State::default();
+    for p in 0..120 {
+        state.projects.push(serde_json::from_value(serde_json::json!({"id":format!("project-{p:03}"),"name":format!("Project {p}"),"root":home.0.join(format!("p{p}")),"created_at":p})).unwrap());
+    }
+    let shells = (0..40)
+        .map(|s| {
+            let project = format!("project-{:03}", s % 120);
+            shell(&format!("shell-{s:02}"), ShellKind::Project, Some(&project))
+        })
+        .collect();
+    let chats = (0..60)
+        .map(|c| {
+            let state = ["waiting", "running", "idle"][c % 3];
+            chat_info(serde_json::json!({"project_id":format!("project-{:03}", c % 120),"title":format!("Chat {c}"),"state":{"state":state}}))
+        })
+        .collect();
+    fixture.global.update(cx, |global, _| global.state = state);
+    sample(cx, &fixture, shells, chats);
+    let width = knob("RIWORK_FRAME_WIDTH", 1500) as f32;
+    cx.simulate_window_resize(fixture.handle, gpui::size(px(width), px(1000.0)));
+    cx.run_until_parked();
+    let mut frames = Vec::new();
+    for _ in 0..knob("RIWORK_FRAME_COUNT", 41) {
+        cx.update_window(fixture.handle, |_, window, app| {
+            let started = Instant::now();
+            window.render_frame(app);
+            frames.push(started.elapsed());
+        })
+        .unwrap();
+    }
+    frames.sort();
+    eprintln!(
+        "busy dashboard frame: median {:?}, p90 {:?}",
+        frames[frames.len() / 2],
+        frames[frames.len() * 9 / 10]
+    );
+}
