@@ -769,15 +769,21 @@ pub fn read_snapshot_with_features(
     };
     retain_snapshot_turns(&mut snapshot);
     // Reduce by whole oldest items only. Oversized controls or one item are explicit errors.
-    while serde_json::to_vec(&snapshot)
-        .map_err(|e| e.to_string())?
-        .len()
-        > max_bytes
-    {
+    // Each row is serialized once: a row's JSON does not depend on its neighbours, so the
+    // reply's length is the rest of the snapshot's plus the rows' and a comma between two.
+    let mut row_bytes = snapshot
+        .items
+        .iter()
+        .map(|row| serde_json::to_vec(row).map(|json| json.len()))
+        .collect::<Result<std::collections::VecDeque<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let mut rows_bytes = row_bytes.iter().sum::<usize>() + row_bytes.len().saturating_sub(1);
+    while snapshot_len(&mut snapshot, rows_bytes)? > max_bytes {
         if !item_ids.is_empty() || snapshot.items.len() <= 1 {
             return Err("snapshot response limit exceeded".into());
         }
         let removed = snapshot.items.remove(0);
+        rows_bytes -= row_bytes.pop_front().unwrap_or_default() + 1;
         let boundary = snapshot_item_boundary(&snapshot.items[0], &snapshot.turn_starts);
         // If a byte cap cuts through a turn interval, item-exact pagination is
         // required: an older page must still be able to recover every dropped row.
@@ -803,6 +809,15 @@ pub fn read_snapshot_with_features(
         retain_snapshot_turns(&mut snapshot);
     }
     Ok(snapshot)
+}
+
+/// The length of `snapshot` as compact JSON, given `rows_bytes` for its `items` without
+/// their brackets: everything else is serialized around an empty list.
+fn snapshot_len(snapshot: &mut Snapshot, rows_bytes: usize) -> Result<usize, String> {
+    let items = std::mem::take(&mut snapshot.items);
+    let rest = serde_json::to_vec(&*snapshot).map(|json| json.len());
+    snapshot.items = items;
+    Ok(rest.map_err(|e| e.to_string())? + rows_bytes)
 }
 
 fn snapshot_item_boundary(
@@ -1365,6 +1380,96 @@ mod snapshot_tests {
         assert!(!older.more);
         assert_eq!(older.requests.len(), 1);
         assert_eq!(older.requests[0].request_id, "first");
+    }
+
+    /// What the response limit did before each row was measured once: serialize the whole
+    /// snapshot again after every removal.
+    fn fit_by_serializing(mut snapshot: Snapshot, max_bytes: usize) -> Result<Snapshot, String> {
+        while serde_json::to_vec(&snapshot).unwrap().len() > max_bytes {
+            if snapshot.items.len() <= 1 {
+                return Err("snapshot response limit exceeded".into());
+            }
+            let removed = snapshot.items.remove(0);
+            let boundary = snapshot_item_boundary(&snapshot.items[0], &snapshot.turn_starts);
+            let partial_start = removed.order >= boundary;
+            snapshot.before = if partial_start {
+                snapshot.items[0].order
+            } else {
+                boundary
+            };
+            snapshot
+                .requests
+                .retain(|record| record.requested_seq >= snapshot.before);
+            snapshot.provisional |= partial_start
+                || snapshot.items.iter().any(|row| {
+                    row.item.turn_id.as_ref().is_some_and(|turn| {
+                        snapshot
+                            .turn_starts
+                            .get(turn)
+                            .is_some_and(|start| *start <= removed.order)
+                    })
+                });
+            snapshot.more = true;
+            retain_snapshot_turns(&mut snapshot);
+        }
+        Ok(snapshot)
+    }
+
+    #[test]
+    fn the_response_limit_drops_the_same_rows_as_serializing_after_each_removal() {
+        let mut f = Fixture::new();
+        // Rows of every size, with escapes and multibyte text, across turns with requests,
+        // and notices outside any turn.
+        let texts = ["", "\"quoted\" \\ \u{1}\t\n", "é漢字🙂", "plain"];
+        for turn in 0..6 {
+            let turn_id = format!("turn-{turn}");
+            f.event(json!({"event":"turn_started","turn_id":turn_id}));
+            f.event(json!({"event":"approval_requested","approval":{
+                "request_id":format!("request-{turn}"),"kind":"command","title":"x".repeat(turn * 300),
+                "choices":["accept"]
+            }}));
+            for n in 0..(turn + 2) {
+                let text = texts[n % texts.len()].repeat(1 + (turn * 7 + n * 13) % 9 * 400);
+                f.event(json!({"event":"item_completed","item":{
+                    "id":format!("{turn_id}-{n}"),"turn_id":turn_id,"status":"completed",
+                    "body":{"type":"agent_message","text":text}
+                }}));
+            }
+            f.event(json!({"event":"item_completed","item":{
+                "id":format!("notice-{turn}"),"status":"completed",
+                "body":{"type":"notice","level":"info","text":"z".repeat(turn * 200)}
+            }}));
+            if turn % 2 == 0 {
+                f.event(json!({"event":"turn_completed","turn_id":turn_id,"outcome":{"outcome":"completed"}}));
+            }
+        }
+        let full = read_snapshot(&f.home, &f.id, None, u64::MAX, 100, 8 << 20, &[]).unwrap();
+        let length = serde_json::to_vec(&full).unwrap().len();
+        assert!(full.items.len() > 30 && length > 60_000);
+        let mut fitted = 0;
+        for max_bytes in (4096..length + 64).step_by(997).chain([length - 1, length]) {
+            let expected = read_snapshot(&f.home, &f.id, None, u64::MAX, 100, 8 << 20, &[])
+                .and_then(|full| fit_by_serializing(full, max_bytes));
+            let got = read_snapshot(&f.home, &f.id, None, u64::MAX, 100, max_bytes, &[]);
+            match (expected, got) {
+                (Ok(expected), Ok(got)) => {
+                    assert!(serde_json::to_vec(&got).unwrap().len() <= max_bytes);
+                    assert_eq!(
+                        serde_json::to_value(&expected).unwrap(),
+                        serde_json::to_value(&got).unwrap(),
+                        "max_bytes {max_bytes}"
+                    );
+                    fitted += 1;
+                }
+                (Err(expected), Err(got)) => assert_eq!(expected, got),
+                (expected, got) => panic!(
+                    "max_bytes {max_bytes}: {:?} / {:?}",
+                    expected.map(|s| s.items.len()),
+                    got.map(|s| s.items.len())
+                ),
+            }
+        }
+        assert!(fitted > 50);
     }
 
     #[test]
