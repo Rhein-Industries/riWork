@@ -11,6 +11,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, PoisonError},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -124,6 +125,8 @@ struct Owner {
 #[derive(Clone, Debug)]
 pub struct PreviewControl {
     directory: PathBuf,
+    /// The host record this control last wrote, shared by its clones.
+    heartbeat: Arc<Mutex<Option<(PathBuf, Vec<u8>)>>>,
 }
 
 impl PreviewControl {
@@ -141,26 +144,47 @@ impl PreviewControl {
         ] {
             crate::paths::create_private_dir(path).map_err(io_error)?;
         }
-        Ok(Self { directory })
+        Ok(Self {
+            directory,
+            heartbeat: Arc::default(),
+        })
     }
 
     /// Call at least every five seconds while this project window is open.
     pub fn heartbeat(&self, host_id: &str, project_id: &str) -> Result<()> {
         valid_id(host_id)?;
         valid_id(project_id)?;
-        self.write(
-            &self.path("hosts", host_id),
-            &Host {
-                id: host_id.into(),
-                project_id: project_id.into(),
-                pid: std::process::id(),
-                updated_at: now(),
-            },
-        )
+        let path = self.path("hosts", host_id);
+        let record = serde_json::to_vec(&Host {
+            id: host_id.into(),
+            project_id: project_id.into(),
+            pid: std::process::id(),
+            updated_at: now(),
+        })
+        .map_err(io_error)?;
+        // A window beats with every request poll (every 250 ms), but the record
+        // only changes once a second; the one already written is not written again.
+        let mut written = self
+            .heartbeat
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if written
+            .as_ref()
+            .is_some_and(|(at, bytes)| *at == path && *bytes == record)
+        {
+            return Ok(());
+        }
+        self.write_bytes(&path, &record)?;
+        *written = Some((path, record));
+        Ok(())
     }
 
     pub fn remove_host(&self, host_id: &str) -> Result<()> {
         valid_id(host_id)?;
+        *self
+            .heartbeat
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
         remove_optional(&self.path("hosts", host_id))
     }
 

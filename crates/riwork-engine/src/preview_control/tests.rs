@@ -362,3 +362,61 @@ fn beginning_a_new_run_invalidates_readiness_and_rejects_old_queued_frames() {
     assert!(new.ready);
     assert_eq!(new.revision, 1);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_heartbeat_is_written_only_when_its_record_changes() {
+    use std::os::unix::fs::MetadataExt;
+    let f = Fixture::new();
+    let path = f.control.path("hosts", &f.host);
+    // Every write replaces the file, so an unchanged inode means no write.
+    let written = || {
+        let host: Host = f.control.read(&path).unwrap();
+        (
+            fs::metadata(&path).unwrap().ino(),
+            host.project_id,
+            host.updated_at,
+        )
+    };
+    let mut skipped = false;
+    for _ in 0..5 {
+        f.control.heartbeat(&f.host, &f.project).unwrap();
+        let before = written();
+        f.control.heartbeat(&f.host, &f.project).unwrap();
+        let after = written();
+        // A pair that straddles a second moves `updated_at` and is written.
+        if after.2 == before.2 {
+            assert_eq!(
+                after.0, before.0,
+                "an unchanged heartbeat was written again"
+            );
+            skipped = true;
+            break;
+        }
+        assert_ne!(after.0, before.0);
+    }
+    assert!(skipped);
+    // Another project is written at once, as is a host that was removed.
+    let other = Uuid::new_v4().to_string();
+    f.control.heartbeat(&f.host, &other).unwrap();
+    assert_eq!(written().1, other);
+    let clone = f.control.clone();
+    clone.remove_host(&f.host).unwrap();
+    assert!(!path.exists());
+    f.control.heartbeat(&f.host, &other).unwrap();
+    assert_eq!(written().1, other);
+    assert_eq!(f.control.hosts(&other).unwrap().len(), 1);
+}
+
+#[test]
+#[ignore = "timing: cargo test -p riwork-engine --lib -- --ignored --nocapture time_a_windows_request_poll"]
+fn time_a_windows_request_poll() {
+    let f = Fixture::new();
+    // What each project window runs every 250 ms.
+    let rounds = 200;
+    let started = Instant::now();
+    for _ in 0..rounds {
+        f.control.take_requests(&f.host, &f.project).unwrap();
+    }
+    eprintln!("take_requests: {:?} per call", started.elapsed() / rounds);
+}
