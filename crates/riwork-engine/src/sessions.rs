@@ -2111,6 +2111,12 @@ impl SessionManager {
         editor_path: Option<PathBuf>,
     ) -> Result<ShellSession, String> {
         let binding = codex_binding_unlocked(&self.home, harness, project_id.as_deref())?;
+        if harness.is_some() || (kind == ShellKind::Orchestrator && binding.is_some()) {
+            // An agent's PATH includes the login shell's. Asking the shell for it
+            // takes its startup (a second or more), once per process: do that
+            // before taking the lock that every create, close and launch waits on.
+            login_shell_dirs();
+        }
         let _lock = self.lock_registry()?;
         let mut registry = self.read_registry()?;
         let mut session = self.new_tmux_session(
