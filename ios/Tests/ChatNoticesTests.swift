@@ -144,6 +144,25 @@ final class ChatUsageLimitsTests: XCTestCase {
         XCTAssertEqual(ChatUsageLimits.live([expired, five, weekly, codex], now: now).map(\.id), ["seven_day", "primary", "five_hour"])
         XCTAssertNil(ChatUsageLimits.chip([ChatRateWindow(id: "u", label: "5h", usedPercent: 80)], now: now)?.resetText, "no reset known: none said")
     }
+    /// The formatters are kept between calls, so each time zone and locale must get its own, and coming back to one gives its time again.
+    func testTheResetTimeFollowsTheTimeZoneAndLocaleOfEachCall() {
+        let reset: UInt64 = 1_767_366_000
+        func zone(_ identifier: String) -> Calendar { var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: identifier)!; return c }
+        func fresh(_ calendar: Calendar, _ locale: Locale) -> String {
+            let formatter = DateFormatter()
+            formatter.calendar = calendar; formatter.locale = locale; formatter.timeZone = calendar.timeZone
+            formatter.setLocalizedDateFormatFromTemplate("EEE HH:mm")
+            return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(reset)))
+        }
+        XCTAssertEqual(ChatUsageLimits.resetTime(reset, calendar: zone("Europe/Zurich"), locale: locale), "Fri 16:00")
+        XCTAssertEqual(ChatUsageLimits.resetTime(reset, calendar: zone("America/New_York"), locale: locale), "Fri 10:00", "another time zone")
+        XCTAssertEqual(ChatUsageLimits.resetTime(reset, calendar: zone("Europe/Zurich"), locale: Locale(identifier: "de_CH")), fresh(zone("Europe/Zurich"), Locale(identifier: "de_CH")), "another locale")
+        XCTAssertEqual(ChatUsageLimits.resetTime(reset + 3600, calendar: zone("Europe/Zurich"), locale: locale), "Fri 17:00", "the same settings again")
+        for (index, identifier) in ["Asia/Tokyo", "UTC", "Europe/London", "Australia/Sydney", "America/Los_Angeles", "Asia/Kolkata", "Europe/Zurich", "Pacific/Auckland", "America/Sao_Paulo"].enumerated() {
+            let locale = Locale(identifier: ["en_GB", "fr_FR", "ja_JP"][index % 3])
+            XCTAssertEqual(ChatUsageLimits.resetTime(reset, calendar: zone(identifier), locale: locale), fresh(zone(identifier), locale), "\(identifier), more settings than are kept")
+        }
+    }
     func testDismissNoticeIsOneValidatedCommandAndTheSnapshotCarriesTheHostsDismissals() throws {
         let chat = "11111111-1111-4111-8111-111111111111"
         let request = try ChatCommandRequest(chatID: chat, command: .dismissNotice(itemID: "notice-1"))

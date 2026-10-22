@@ -287,6 +287,16 @@ final class PerformanceTests: XCTestCase {
         }
     }
 
+    // MARK: Chat
+
+    /// The reset time a usage limit's banner line and the usage detail show ("resets Thu 14:00"): the banner row is built again with
+    /// every reply of the chat while the limit is reached.
+    func testResetTimeOfAUsageLimit() {
+        var text = ""
+        bench("chat: usage limit reset time", inner: 200) { text = ChatUsageLimits.resetTime(1_766_000_000) }
+        XCTAssertFalse(text.isEmpty)
+    }
+
     /// The same, with the line cache the app would keep between answers.
     func testOneAnswerEndToEndWithTheLineCache() throws {
         var buffer = filledBuffer(history: 50_000)

@@ -66,9 +66,30 @@ public enum ChatUsageLimits {
     }
     /// "Thu 14:00", in local time.
     public static func resetTime(_ seconds: UInt64, calendar: Calendar = .current, locale: Locale = .current) -> String {
-        let formatter = DateFormatter()
-        formatter.calendar = calendar; formatter.locale = locale; formatter.timeZone = calendar.timeZone
-        formatter.setLocalizedDateFormatFromTemplate("EEE HH:mm")
-        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(seconds)))
+        ResetFormatters.shared.string(from: Date(timeIntervalSince1970: TimeInterval(seconds)), calendar: calendar, locale: locale)
+    }
+}
+
+/// The formatters of `resetTime`, one per calendar (with its time zone) and locale: making one, and its pattern from the template, costs
+/// far more than formatting, and the banner row of a reached limit formats the time again with every reply of the chat. A calendar, time
+/// zone or locale that changes is another key, so it gets a formatter of its own.
+private final class ResetFormatters: @unchecked Sendable {
+    static let shared = ResetFormatters()
+    private struct Key: Hashable { let calendar: Calendar; let locale: Locale }
+    private let lock = NSLock()
+    private var formatters: [Key: DateFormatter] = [:]
+
+    func string(from date: Date, calendar: Calendar, locale: Locale) -> String {
+        lock.withLock {
+            let key = Key(calendar: calendar, locale: locale)
+            if let formatter = formatters[key] { return formatter.string(from: date) }
+            let formatter = DateFormatter()
+            formatter.calendar = calendar; formatter.locale = locale; formatter.timeZone = calendar.timeZone
+            formatter.setLocalizedDateFormatFromTemplate("EEE HH:mm")
+            // Only a few are ever in use; ones for settings since changed are dropped together.
+            if formatters.count >= 8 { formatters.removeAll() }
+            formatters[key] = formatter
+            return formatter.string(from: date)
+        }
     }
 }
