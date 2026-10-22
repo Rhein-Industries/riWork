@@ -5734,14 +5734,13 @@ impl Workspace {
         changed |= self.refresh_remote(cx);
         self.refresh_chat_image_scopes(cx);
         // The panels draw what they were last told; the open ones are asked again
-        // each tick and redraw themselves when it differs. The rest of the window
-        // has a few ages ("3m ago") that move with the clock, so it is drawn every
-        // few ticks even when nothing else changed.
-        // A window nobody can see skips the heartbeat and panel redraws; it
-        // catches up on the first tick after it shows again.
+        // each tick and redraw themselves when it differs, so they need no redraw
+        // from here. The rest of the window has a few ages ("3m ago") that move
+        // with the clock, so it is drawn every few ticks even when nothing else
+        // changed. A window nobody can see skips that heartbeat; it catches up on
+        // the first tick after it shows again.
         let heartbeat = self.window_visible && self.refresh_count.is_multiple_of(IDLE_REDRAW_TICKS);
-        let panels_open = self.window_visible && (project_settings_visible || files_visible);
-        if changed || heartbeat || panels_open {
+        if changed || heartbeat {
             cx.notify();
         }
     }

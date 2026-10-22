@@ -446,6 +446,15 @@ impl SaveStatus {
     }
 }
 
+type DrawnChoices = (
+    Project,
+    Vec<ProjectFolder>,
+    BTreeMap<String, String>,
+    Option<String>,
+    Field,
+    Option<String>,
+);
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
     Name,
@@ -966,7 +975,11 @@ impl ProjectSettingsPanel {
 
     /// Refresh choices without replacing the user's partially edited project name, and the
     /// memo when it was saved elsewhere and has no unsaved edits here.
+    ///
+    /// The window asks again every tick while this panel shows, so it redraws only when
+    /// what it draws changed: laying the whole form out costs a frame for nothing.
     pub fn refresh_folders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let drawn = self.drawn_choices();
         match self.store.snapshot() {
             Ok(state) => {
                 self.memo
@@ -1024,7 +1037,22 @@ impl ProjectSettingsPanel {
             }
             Err(error) => self.error = Some(error),
         }
-        cx.notify();
+        if self.drawn_choices() != drawn {
+            cx.notify();
+        }
+    }
+
+    /// What `refresh_folders` can change that the panel draws. The name and memo inputs
+    /// redraw themselves.
+    fn drawn_choices(&self) -> DrawnChoices {
+        (
+            self.project.clone(),
+            self.folders.clone(),
+            self.folder_paths.clone(),
+            self.folder_id.clone(),
+            self.active,
+            self.error.clone(),
+        )
     }
 
     fn edited(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3323,6 +3351,107 @@ mod tests {
         assert_eq!(
             saved(&project.id).workhorse,
             Some(Route::recommended(Provider::Codex))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The window asks the panel to refresh every tick while it shows. A tick that changes
+    /// nothing must not redraw the form; a folder or name changed elsewhere must, and shows.
+    #[gpui::test]
+    fn a_refresh_redraws_only_when_the_store_changed(cx: &mut gpui::TestAppContext) {
+        use crate::form_input::{test_turn, test_window};
+        use std::{cell::Cell, rc::Rc};
+        let dir =
+            std::env::temp_dir().join(format!("riwork-project-redraw-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("demo")).unwrap();
+        let store = Store::open(dir.join("state")).unwrap();
+        let project = store.add_project(dir.join("demo"), Some("Demo")).unwrap();
+        cx.update(|app| {
+            app.set_global(CodexAccountsState {
+                snapshot: None,
+                pending: true,
+            })
+        });
+        let (handle, panel) = {
+            let (store, project) = (store.clone(), project.clone());
+            test_window(cx, move |window, cx| {
+                ProjectSettingsPanel::new(store, project, window, cx)
+            })
+        };
+        let redraws = Rc::new(Cell::new(0));
+        let _counting = {
+            let redraws = redraws.clone();
+            cx.update(|app| app.observe(&panel, move |_, _| redraws.set(redraws.get() + 1)))
+        };
+        let refresh = |cx: &mut gpui::TestAppContext| {
+            test_turn(cx, handle, |window, app| {
+                panel.update(app, |panel, cx| panel.refresh_folders(window, cx));
+            });
+        };
+
+        for _ in 0..3 {
+            refresh(cx);
+        }
+        assert_eq!(redraws.get(), 0, "an unchanged store redraws nothing");
+
+        store.create_project_folder_in("Clients", None).unwrap();
+        refresh(cx);
+        assert_eq!(redraws.get(), 1, "a new folder redraws");
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.folders.iter().any(|folder| folder.name == "Clients"));
+        });
+        refresh(cx);
+        assert_eq!(redraws.get(), 1, "and only once");
+
+        store.rename_project(&project.id, "Renamed").unwrap();
+        refresh(cx);
+        assert_eq!(redraws.get(), 2, "a rename elsewhere redraws");
+        panel.read_with(cx, |panel, cx| {
+            assert_eq!(panel.project.name, "Renamed");
+            assert_eq!(panel.name_state.read(cx).value(), "Renamed");
+        });
+
+        std::fs::write(dir.join("state").join("state.json"), "not a state").unwrap();
+        refresh(cx);
+        assert_eq!(redraws.get(), 3, "a store that cannot be read says so");
+        panel.read_with(cx, |panel, _| assert!(panel.error.is_some()));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// What a redraw of the form costs: run with `--ignored --nocapture` to compare.
+    #[gpui::test]
+    #[ignore]
+    fn measure_a_project_settings_frame(cx: &mut gpui::TestAppContext) {
+        use crate::form_input::test_window;
+        use gpui_kit::test::TestWindowExt as _;
+        let dir =
+            std::env::temp_dir().join(format!("riwork-project-frame-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("demo")).unwrap();
+        let store = Store::open(dir.join("state")).unwrap();
+        let project = store.add_project(dir.join("demo"), Some("Demo")).unwrap();
+        cx.update(|app| {
+            app.set_global(CodexAccountsState {
+                snapshot: None,
+                pending: true,
+            })
+        });
+        let (handle, _) = test_window(cx, move |window, cx| {
+            ProjectSettingsPanel::new(store, project, window, cx)
+        });
+        let mut frames = Vec::new();
+        for _ in 0..21 {
+            cx.update_window(handle, |_, window, app| {
+                let started = std::time::Instant::now();
+                window.render_frame(app);
+                frames.push(started.elapsed());
+            })
+            .unwrap();
+        }
+        frames.sort();
+        eprintln!(
+            "project settings frame: median {:?}, max {:?}",
+            frames[frames.len() / 2],
+            frames[frames.len() - 1]
         );
         let _ = std::fs::remove_dir_all(dir);
     }
