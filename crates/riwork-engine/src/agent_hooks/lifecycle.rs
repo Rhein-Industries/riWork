@@ -140,7 +140,7 @@ struct Input {
     source: Option<String>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 struct Cursor {
     session: String,
     turn: String,
@@ -218,6 +218,7 @@ pub fn record_harness_hook(
         return Ok(());
     }
     let mut cursor = previous
+        .clone()
         .filter(|c| c.session == input.session_id)
         .unwrap_or(Cursor {
             session: input.session_id,
@@ -288,6 +289,12 @@ pub fn record_harness_hook(
     }
     if phase == "done" {
         complete(home, shell, &session, &cursor)?;
+    }
+    // A fast tool's PreToolUse and PostToolUse come within the same second and
+    // leave the cursor as it was: the file already says this, so it is not
+    // written and synced again while the agent waits on its hook.
+    if previous.as_ref() == Some(&cursor) {
+        return Ok(());
     }
     save_cursor(&path, &cursor)
 }
@@ -410,6 +417,120 @@ pub(crate) fn settle_rollout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_that_changes_nothing_leaves_the_cursor_file_alone() {
+        use std::os::unix::fs::MetadataExt;
+        let home = std::env::temp_dir().join(format!("riwork-hook-unchanged-{}", Uuid::new_v4()));
+        fs::create_dir_all(&home).unwrap();
+        let shell = Uuid::new_v4().to_string();
+        fs::write(
+            home.join("sessions.json"),
+            json!({"sessions":[{"id":shell,"kind":"project","cwd":"/tmp","harness":"codex","created_at_unix":1}]})
+                .to_string(),
+        )
+        .unwrap();
+        let record = |event: &str| {
+            let body = json!({"session_id":"00000000-0000-4000-8000-000000000002","hook_event_name":event,"prompt_id":"turn-a"});
+            record_harness_hook(&home, &shell, HarnessKind::Codex, &body.to_string()).unwrap();
+        };
+        let path = home.join(format!("agent-hooks/codex/{shell}.json"));
+        let written = || {
+            let cursor = read_cursor(&path).unwrap();
+            (
+                fs::metadata(&path).unwrap().ino(),
+                cursor.phase,
+                cursor.seen,
+            )
+        };
+        record("UserPromptSubmit");
+        // Every write replaces the file, so an unchanged inode means no write.
+        // A pair that straddles a second moves `seen` and is written; try again.
+        let mut skipped = false;
+        for _ in 0..5 {
+            record("PreToolUse");
+            let before = written();
+            record("PostToolUse");
+            let after = written();
+            assert_eq!(after.1, "working");
+            if after.2 == before.2 {
+                assert_eq!(after.0, before.0, "an unchanged cursor was written again");
+                skipped = true;
+                break;
+            }
+            assert_ne!(after.0, before.0, "a newer `seen` was not written");
+        }
+        assert!(skipped);
+        // A change is written at once.
+        let before = written();
+        record("PermissionRequest");
+        let after = written();
+        assert_ne!(after.0, before.0);
+        assert_eq!(after.1, "waiting");
+        assert_eq!(
+            harness_state(&home, &shell, HarnessKind::Codex)
+                .unwrap()
+                .activity,
+            AgentActivity::Waiting
+        );
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    #[ignore = "timing: cargo test -p riwork-engine --lib -- --ignored --nocapture time_codex_tool_hooks"]
+    fn time_codex_tool_hooks_with_a_long_registry() {
+        let home = std::env::temp_dir().join(format!("riwork-hook-timing-{}", Uuid::new_v4()));
+        fs::create_dir_all(&home).unwrap();
+        if SessionManager::at(home.clone()).is_err() {
+            return;
+        }
+        // A long-used registry: 174 shells, about 370 KB.
+        let shell = Uuid::new_v4().to_string();
+        let rows = std::iter::once(json!({"id":shell,"kind":"project","cwd":"/tmp","harness":"codex","created_at_unix":1}))
+            .chain((0..173).map(|_| json!({"id":Uuid::new_v4().to_string(),"kind":"project","cwd":"/tmp","harness":"codex","command":"x".repeat(2100),"created_at_unix":1})))
+            .collect::<Vec<_>>();
+        fs::write(
+            home.join("sessions.json"),
+            json!({ "sessions": rows }).to_string(),
+        )
+        .unwrap();
+        let record = |event: &str| {
+            let body = json!({"session_id":"00000000-0000-4000-8000-000000000002","hook_event_name":event,"prompt_id":"turn-a"});
+            record_harness_hook(&home, &shell, HarnessKind::Codex, &body.to_string()).unwrap();
+        };
+        record("UserPromptSubmit");
+        let rounds = 50;
+        // A fast tool: its PreToolUse and PostToolUse come within the same second.
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            record("PreToolUse");
+            record("PostToolUse");
+        }
+        eprintln!(
+            "Codex tool hook: {:?} per call",
+            started.elapsed() / (2 * rounds)
+        );
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            SessionManager::at(home.clone())
+                .unwrap()
+                .registered_session(&shell)
+                .unwrap();
+        }
+        eprintln!(
+            "  registry lookup: {:?} per call",
+            started.elapsed() / rounds
+        );
+        let path = home.join(format!("agent-hooks/codex/{shell}.json"));
+        let cursor = read_cursor(&path).unwrap();
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            save_cursor(&path, &cursor).unwrap();
+        }
+        eprintln!("  cursor save: {:?} per call", started.elapsed() / rounds);
+        let _ = fs::remove_dir_all(home);
+    }
 
     #[test]
     fn real_envelopes_track_approvals_and_queue_each_worker_completion_once() {
