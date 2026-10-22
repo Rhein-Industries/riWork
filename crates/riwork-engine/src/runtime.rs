@@ -12,7 +12,6 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     sync::{
         Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -818,25 +817,21 @@ impl RuntimeRegistration {
             let _lock = self.manager.lock()?;
             write_json(&self.manager.restore_path(&request.ticket_id)?, &snapshot)?;
         }
-        let mut command = Command::new(executable);
-        command
-            .env("RIWORK_HOME", &snapshot.state_home)
-            .env("RIWORK_RUNTIME_DIR", &self.manager.directory)
-            .env("RIWORK_RESTORE_TICKET", &snapshot.ticket_id)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        if let Some(first) = snapshot.windows.first() {
-            if first.path.is_dir() {
-                command.current_dir(&first.path);
-            }
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        let mut child = command.spawn().map_err(|e| {
+        let directory = snapshot
+            .windows
+            .first()
+            .map(|first| first.path.as_path())
+            .filter(|path| path.is_dir());
+        let (pid, wait) = spawn_replacement(
+            &executable,
+            &[
+                ("RIWORK_HOME", snapshot.state_home.as_os_str()),
+                ("RIWORK_RUNTIME_DIR", self.manager.directory.as_os_str()),
+                ("RIWORK_RESTORE_TICKET", snapshot.ticket_id.as_ref()),
+            ],
+            directory,
+        )
+        .map_err(|e| {
             let _ = fs::remove_file(
                 self.manager
                     .restore_path(&request.ticket_id)
@@ -844,14 +839,13 @@ impl RuntimeRegistration {
             );
             format!("Cannot launch replacement RiWork GUI: {e}")
         })?;
-        let pid = child.id();
         // Taken before anything else can happen to the child. It is not reaped
         // until the thread below runs, so its pid cannot have been reused yet.
         let replacement = ReplacementProcess::of(pid, cfg!(unix));
         let exited = Arc::new(AtomicBool::new(false));
         let child_exited = exited.clone();
         thread::spawn(move || {
-            let _ = child.wait();
+            wait();
             child_exited.store(true, Ordering::Release);
         });
         Ok(ReloadLaunch {
@@ -2238,6 +2232,171 @@ fn current_uid() -> u32 {
 fn current_uid() -> u32 {
     0
 }
+
+/// Starts a replacement GUI with `vars` added to this process's environment,
+/// its output discarded and a process group of its own, and returns its pid
+/// and what waits for it to exit.
+///
+/// macOS charges privacy prompts and grants (Documents, Full Disk Access) to
+/// the app responsible for a process, and a child's is its parent's. A
+/// replacement this GUI started would ask as this build for as long as it runs,
+/// though `riwork update` has moved this build aside, and with another
+/// signature both builds take turns asking for the same folder. So the
+/// replacement disclaims that and answers for itself, as it would when opened
+/// from the Finder.
+#[cfg(target_os = "macos")]
+fn spawn_replacement(
+    executable: &Path,
+    vars: &[(&str, &std::ffi::OsStr)],
+    directory: Option<&Path>,
+) -> std::io::Result<(u32, Box<dyn FnOnce() + Send>)> {
+    use libc::{c_char, c_int, posix_spawn_file_actions_t, posix_spawnattr_t};
+    use std::{ffi::CString, io, os::unix::ffi::OsStrExt, ptr};
+    unsafe extern "C" {
+        fn responsibility_spawnattrs_setdisclaim(
+            attrs: *mut posix_spawnattr_t,
+            disclaim: c_int,
+        ) -> c_int;
+        fn posix_spawn_file_actions_addchdir_np(
+            actions: *mut posix_spawn_file_actions_t,
+            path: *const c_char,
+        ) -> c_int;
+    }
+    struct Attributes(posix_spawnattr_t);
+    impl Drop for Attributes {
+        fn drop(&mut self) {
+            unsafe { libc::posix_spawnattr_destroy(&mut self.0) };
+        }
+    }
+    struct Actions(posix_spawn_file_actions_t);
+    impl Drop for Actions {
+        fn drop(&mut self) {
+            unsafe { libc::posix_spawn_file_actions_destroy(&mut self.0) };
+        }
+    }
+    let check = |code: c_int| match code {
+        0 => Ok(()),
+        code => Err(io::Error::from_raw_os_error(code)),
+    };
+    let c_string = |bytes: &[u8]| {
+        CString::new(bytes).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+    };
+    let program = c_string(executable.as_os_str().as_bytes())?;
+    let null = c_string(b"/dev/null")?;
+    let directory = directory
+        .map(|path| c_string(path.as_os_str().as_bytes()))
+        .transpose()?;
+    let environment = env::vars_os()
+        .filter(|(key, _)| !vars.iter().any(|(name, _)| key.as_os_str() == *name))
+        .chain(vars.iter().map(|(name, value)| (name.into(), value.into())))
+        .map(|(key, value)| {
+            let mut entry = key.as_bytes().to_vec();
+            entry.push(b'=');
+            entry.extend_from_slice(value.as_bytes());
+            c_string(&entry)
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let argv = [program.as_ptr().cast_mut(), ptr::null_mut()];
+    let envp: Vec<*mut c_char> = environment
+        .iter()
+        .map(|entry| entry.as_ptr().cast_mut())
+        .chain([ptr::null_mut()])
+        .collect();
+    let mut pid: libc::pid_t = 0;
+    unsafe {
+        let mut attributes = ptr::null_mut();
+        check(libc::posix_spawnattr_init(&mut attributes))?;
+        let mut attributes = Attributes(attributes);
+        let mut actions = ptr::null_mut();
+        check(libc::posix_spawn_file_actions_init(&mut actions))?;
+        let mut actions = Actions(actions);
+        // As `Command` leaves a child: no blocked signals, SIGPIPE back to its
+        // default, which Rust ignores in this process.
+        let mut signals = std::mem::zeroed();
+        libc::sigemptyset(&mut signals);
+        check(libc::posix_spawnattr_setsigmask(
+            &mut attributes.0,
+            &signals,
+        ))?;
+        libc::sigaddset(&mut signals, libc::SIGPIPE);
+        check(libc::posix_spawnattr_setsigdefault(
+            &mut attributes.0,
+            &signals,
+        ))?;
+        check(libc::posix_spawnattr_setpgroup(&mut attributes.0, 0))?;
+        check(libc::posix_spawnattr_setflags(
+            &mut attributes.0,
+            (libc::POSIX_SPAWN_SETPGROUP
+                | libc::POSIX_SPAWN_SETSIGMASK
+                | libc::POSIX_SPAWN_SETSIGDEF) as libc::c_short,
+        ))?;
+        check(responsibility_spawnattrs_setdisclaim(&mut attributes.0, 1))?;
+        for (fd, flags) in [
+            (0, libc::O_RDONLY),
+            (1, libc::O_WRONLY),
+            (2, libc::O_WRONLY),
+        ] {
+            check(libc::posix_spawn_file_actions_addopen(
+                &mut actions.0,
+                fd,
+                null.as_ptr(),
+                flags,
+                0,
+            ))?;
+        }
+        if let Some(directory) = &directory {
+            check(posix_spawn_file_actions_addchdir_np(
+                &mut actions.0,
+                directory.as_ptr(),
+            ))?;
+        }
+        check(libc::posix_spawn(
+            &mut pid,
+            program.as_ptr(),
+            &actions.0,
+            &attributes.0,
+            argv.as_ptr(),
+            envp.as_ptr(),
+        ))?;
+    }
+    let wait = move || {
+        let mut status = 0;
+        while unsafe { libc::waitpid(pid, &mut status, 0) } == -1
+            && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+        {}
+    };
+    Ok((pid as u32, Box::new(wait)))
+}
+#[cfg(not(target_os = "macos"))]
+fn spawn_replacement(
+    executable: &Path,
+    vars: &[(&str, &std::ffi::OsStr)],
+    directory: Option<&Path>,
+) -> std::io::Result<(u32, Box<dyn FnOnce() + Send>)> {
+    use std::process::{Command, Stdio};
+    let mut command = Command::new(executable);
+    command
+        .envs(vars.iter().copied())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(directory) = directory {
+        command.current_dir(directory);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn()?;
+    Ok((
+        child.id(),
+        Box::new(move || {
+            let _ = child.wait();
+        }),
+    ))
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) fn process_identity(pid: u32) -> Result<Option<ProcessIdentity>, String> {
     use std::{ffi::c_void, os::unix::ffi::OsStringExt};
@@ -2322,6 +2481,7 @@ pub(crate) fn process_identity(_pid: u32) -> Result<Option<ProcessIdentity>, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::{Command, Stdio};
     struct Fixture {
         path: PathBuf,
         manager: RuntimeManager,
@@ -2358,6 +2518,48 @@ mod tests {
             kind: WindowKind::Project,
             global: None,
         }
+    }
+    /// The replacement gets this environment plus the restore variables, the first window's
+    /// folder, a group of its own and no terminal, and the waiter returns once it has exited.
+    #[cfg(unix)]
+    #[test]
+    fn spawn_replacement_starts_a_detached_child_with_the_restore_environment() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = Fixture::new();
+        let folder = fixture.path.join("project folder");
+        fs::create_dir_all(&folder).unwrap();
+        let report = fixture.path.join("report");
+        let script = fixture.path.join("replacement");
+        fs::write(
+            &script,
+            "#!/bin/sh\n{ echo $$; ps -o pgid= -p $$; pwd -P; echo \"$RIWORK_RESTORE_TICKET\"; echo \"${HOME:+inherited}\"; [ -t 0 ] || echo detached; } > \"$REPORT\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let (pid, wait) = spawn_replacement(
+            &script,
+            &[
+                ("RIWORK_RESTORE_TICKET", "ticket-1".as_ref()),
+                ("REPORT", report.as_os_str()),
+            ],
+            Some(&folder),
+        )
+        .unwrap();
+        wait();
+        let report = fs::read_to_string(&report).unwrap();
+        let lines: Vec<&str> = report.lines().map(str::trim).collect();
+        let folder = folder.canonicalize().unwrap();
+        assert_eq!(
+            lines,
+            [
+                pid.to_string().as_str(),
+                pid.to_string().as_str(),
+                folder.to_str().unwrap(),
+                "ticket-1",
+                "inherited",
+                "detached",
+            ]
+        );
     }
     /// The Cua guard's view of the registry: the pids of GUIs that are running, read without
     /// the lock, and nothing pruned, even a registration of a process that has ended.
