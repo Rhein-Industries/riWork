@@ -423,6 +423,8 @@ impl ChatView {
         });
         let item = self.projected_item(&row.id).map(|(_, item)| item);
         let thumbnail = item.and_then(|item| self.image_header_thumbnail(item, look, cx));
+        // A finished activity line summarizes its whole turn: work it out once a frame.
+        let title = self.row_title(row);
         let height = row_space(24.0);
         let geometry = self.header_bounds.clone();
         let geometry_key = row.id.clone();
@@ -473,16 +475,16 @@ impl ChatView {
                 ))
             })
             .child({
-                let title = div().min_w_0().h_full().flex().items_center();
+                let label = div().min_w_0().h_full().flex().items_center();
                 #[cfg(test)]
-                let title = {
+                let label = {
                     let geometry = self.header_bounds.clone();
                     let key = format!("label:{}", row.id);
-                    title.on_prepaint(move |bounds, _, _| {
+                    label.on_prepaint(move |bounds, _, _| {
                         geometry.borrow_mut().insert(key, bounds);
                     })
                 };
-                title.child(self.header_label(row, group))
+                label.child(self.header_label(row, &title, group))
             })
             .when(
                 !activity && (!meta.is_empty() || duration.is_some()),
@@ -516,7 +518,6 @@ impl ChatView {
                         .map(|badge| widgets::badge(id(format!("badge:{}", row.id)), badge, look)),
                 )
             });
-        let title = self.row_title(row);
         // A summarized activity line already states its failures.
         let summarized = title != row.title;
         let control = widgets::content_button(
@@ -613,12 +614,13 @@ impl ChatView {
     fn header_label(
         &self,
         row: &super::display::Row,
+        title: &str,
         group: bool,
     ) -> super::header_line::HeaderLine {
         use super::header_line::{Span, header_line};
         let item = self.projected_item(&row.id).map(|(_, item)| item);
         let text = if row.kind == riwork_engine::chat::projection::RowKind::Activity {
-            cards::first_line(&self.row_title(row))
+            cards::first_line(title)
         } else {
             super::display::header_text(row, item)
         };
