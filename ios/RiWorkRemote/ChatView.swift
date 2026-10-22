@@ -1101,9 +1101,11 @@ private struct ChatTranscriptList: View {
         let generation = UUID(); revealGeneration = generation
         revealCorrection = Task { @MainActor in
             defer { if revealGeneration == generation { revealCorrection = nil } }
+            // A change of the rows does not end the reveal (it opens the card's ancestors itself); a card the conversation no longer
+            // has (a reset, another snapshot) does, before the list resolves it against rows it is about to drop (`scrollToEnd`).
             for _ in 0..<8 {
                 try? await Task.sleep(for: .milliseconds(60))
-                guard !Task.isCancelled, !userDriven, let metrics = viewport.metrics else { return }
+                guard !Task.isCancelled, !userDriven, isListed(id), let metrics = viewport.metrics else { return }
                 let top = CGFloat(metrics.topInset), bottom = top + CGFloat(metrics.viewportHeight)
                 if let frame = viewport.frames[id] {
                     if frame.minY >= top - 1, frame.maxY <= bottom + 1 { return }
@@ -1115,7 +1117,7 @@ private struct ChatTranscriptList: View {
                 let step = CGFloat(metrics.viewportHeight) * 0.75, offset = CGFloat(metrics.offset)
                 scrollToAbsoluteY(target < seen ? max(-top, offset - step) : min(CGFloat(metrics.bottomOffset), offset + step))
                 try? await Task.sleep(for: .milliseconds(30))
-                guard !Task.isCancelled, !userDriven else { return }
+                guard !Task.isCancelled, !userDriven, isListed(id) else { return }
                 proxy.scrollTo(id, anchor: .top)
             }
         }
@@ -1177,7 +1179,9 @@ private struct ChatTranscriptList: View {
                 if remapped != anchor.id { viewport.anchor = (id: remapped, y: max(0, anchor.y)) }
             }
             viewport.pageInstalled = true
-            let aligned = await viewport.alignInstalledAnchor(while: { preservingHistory && !userDriven }) { id in
+            // The alignment yields first, and the live read can reset the conversation or install another snapshot meanwhile: then
+            // the page is no longer this feed's, and the list would resolve the anchor against rows it is about to drop (`scrollToEnd`).
+            let aligned = await viewport.alignInstalledAnchor(while: { preservingHistory && !userDriven && conversation.feed.historyCursor == pin }) { id in
                 proxy.scrollTo(id, anchor: .top)
             }
             if aligned { scheduleHistoryCorrection(proxy) }
